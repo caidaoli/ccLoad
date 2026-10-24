@@ -1124,13 +1124,15 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"models":{
-			"claude-opus-4-6-thinking":{},
-			"claude-sonnet-4-6":{},
+			"claude-opus-5-5-low":{},
+			"claude-opus-5-5-medium":{},
+			"claude-opus-5-5-high":{},
+			"CLAUDE-SONNET-5-5-HIGH":{},
+			"gemini-4-argon-high":{},
 			"gemini-3.8-flash":{},
 			"gemini-3.8-flash-high":{},
 			"gemini-3.8-flash-medium":{},
 			"gemini-3.7-flash":{},
-			"gemini-3.7-flash-high":{},
 			"gemini-3.6-flash-high":{},
 			"gemini-3-flash":{},
 			"gemini-3-flash-agent":{},
@@ -1198,17 +1200,14 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	}
 	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
 	want := []model.ModelEntry{
-		{Model: "claude-opus-4-6-thinking", RedirectModel: "claude-opus-4-6-thinking"},
-		{Model: "claude-sonnet-4-6", RedirectModel: "claude-sonnet-4-6"},
+		{Model: "claude-opus-5-5-high", RedirectModel: "claude-opus-5-5-high"},
+		{Model: "claude-sonnet-5-5-high", RedirectModel: "claude-sonnet-5-5-high"},
 		{Model: "gemini-3-flash", RedirectModel: "gemini-3-flash"},
 		{Model: "gemini-3.1-flash-image", RedirectModel: "gemini-3.1-flash-image"},
 		{Model: "gemini-3.1-flash-lite", RedirectModel: "gemini-3.1-flash-lite"},
 		{Model: "gemini-3.5-flash-lite", RedirectModel: "gemini-3.5-flash-lite"},
-		{Model: "gemini-3.7-flash", RedirectModel: "gemini-3.7-flash"},
-		{Model: "gemini-3.8-flash", RedirectModel: "gemini-3.8-flash"},
 		{Model: "gemini-3.8-flash-high", RedirectModel: "gemini-3.8-flash-high"},
-		{Model: "gemini-3.8-flash-medium", RedirectModel: "gemini-3.8-flash-medium"},
-		{Model: "gemini-pro-agent", RedirectModel: "gemini-pro-agent"},
+		{Model: "gemini-4-argon-high", RedirectModel: "gemini-4-argon-high"},
 		{Model: "gpt-oss-120b-medium", RedirectModel: "gpt-oss-120b-medium"},
 	}
 	if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) || resp.Data.Protocol != "gemini" {

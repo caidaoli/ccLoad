@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/model"
+	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -21,23 +23,7 @@ const (
 	antigravityOAuthMaxConcurrency = 3
 )
 
-// 导入凭证和动态模型发现必须共享这一份 Antigravity 模型目录。
-var antigravityOAuthDefaultModels = []string{
-	"claude-opus-4-6-thinking",
-	"claude-sonnet-4-6",
-	"gemini-3.8-flash",
-	"gemini-3.8-flash-high",
-	"gemini-3.8-flash-medium",
-	"gemini-3.7-flash",
-	"gemini-3-flash",
-	"gemini-3.1-flash-image",
-	"gemini-pro-agent",
-	"gpt-oss-120b-medium",
-	"gemini-3.1-flash-lite",
-	"gemini-3.5-flash-lite",
-}
-
-func createAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential) (*model.Config, error) {
+func createAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential, models []string) (*model.Config, error) {
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return nil, err
@@ -94,7 +80,7 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 				}
 				expected := cfg.Clone()
 				cfg.ModelEntries = preserveConfiguredVariants(cfg.ModelEntries,
-					model.CarryModelPricing(cfg.ModelEntries, antigravityOAuthModelEntries()))
+					model.CarryModelPricing(cfg.ModelEntries, oauthModelEntries(models)))
 				maxConcurrency := antigravityOAuthMaxConcurrency
 				matched, saveErr := store.UpdateModelStateIfSnapshotMatches(
 					ctx, expected, cfg.ModelEntries, cfg.ScheduledCheckModel, &maxConcurrency,
@@ -108,21 +94,21 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 			}
 		}
 	}
-	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel(uniqueAntigravityChannelName(configs, credential), credentialJSON))
+	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel(uniqueAntigravityChannelName(configs, credential), credentialJSON, models))
 	if err != nil {
 		return nil, fmt.Errorf("create Antigravity channel: %w", err)
 	}
 	return created, nil
 }
 
-func newAntigravityOAuthChannel(name, credentialJSON string) *model.Config {
+func newAntigravityOAuthChannel(name, credentialJSON string, models []string) *model.Config {
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credentialJSON,
 		URLs:                  antigravityOAuthPersistedURLs(),
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
 		Priority:              0, Enabled: true, CostMultiplier: 1,
 		MaxConcurrency: antigravityOAuthMaxConcurrency,
-		ModelEntries:   antigravityOAuthModelEntries(),
+		ModelEntries:   oauthModelEntries(models),
 	}
 }
 
@@ -142,22 +128,43 @@ func antigravityOAuthDefaultURLs() model.ChannelURLs {
 	}
 }
 
-func antigravityOAuthModelEntries() []model.ModelEntry {
-	return oauthModelEntries(antigravityOAuthDefaultModels)
+// antigravityCatalogModels is the embedded CLIProxyAPI Antigravity catalog. The
+// request path reads output caps and thinking levels from the same entries, so
+// channels only list models it knows.
+func antigravityCatalogModels() []string {
+	return cliproxyregistry.CatalogModelIDs(antigravityauth.ChannelType)
 }
 
+// antigravityOAuthAvailableModels keeps the catalog models the account lists,
+// matching IDs case-insensitively like CLIProxyAPI.
 func antigravityOAuthAvailableModels(upstreamModels []string) []string {
 	available := make(map[string]struct{}, len(upstreamModels))
 	for _, name := range upstreamModels {
-		available[name] = struct{}{}
+		available[strings.ToLower(name)] = struct{}{}
 	}
-	models := make([]string, 0, len(antigravityOAuthDefaultModels))
-	for _, name := range antigravityOAuthDefaultModels {
-		if _, ok := available[name]; ok {
+	catalog := antigravityCatalogModels()
+	models := make([]string, 0, len(catalog))
+	for _, name := range catalog {
+		if _, ok := available[strings.ToLower(name)]; ok {
 			models = append(models, name)
 		}
 	}
 	return models
+}
+
+// antigravityAccountModels narrows the catalog to the models the account's
+// project serves. Authorization must not depend on discovery, so a failed
+// listing keeps the full catalog.
+func antigravityAccountModels(ctx context.Context, service *antigravityauth.Service, credential *antigravityauth.Credential) []string {
+	upstream, err := service.FetchAvailableModels(ctx, service.DailyAPIBaseURL, credential)
+	if err == nil {
+		if models := antigravityOAuthAvailableModels(upstream); len(models) > 0 {
+			return models
+		}
+		err = errors.New("no catalog model listed")
+	}
+	log.Printf("[WARN] Antigravity 模型发现失败，使用完整目录: %v", err)
+	return antigravityCatalogModels()
 }
 
 func sameAntigravityIdentity(a, b *antigravityauth.Credential) bool {

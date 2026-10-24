@@ -546,7 +546,9 @@ func (s *Server) prepareOAuthCredentialImportFile(
 			return prepared
 		}
 		prepared.ChannelName = antigravityChannelBaseName(credential)
-		prepared.Config = newAntigravityOAuthChannel(prepared.ChannelName, credentialJSON)
+		prepared.Config = newAntigravityOAuthChannel(
+			prepared.ChannelName, credentialJSON, antigravityAccountModels(ctx, s.antigravityService, credential),
+		)
 	case xaiauth.ChannelType:
 		credential, err := xaiauth.ParseCredential(file.Raw)
 		if err != nil {

@@ -1859,6 +1859,8 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 			_, _ = io.WriteString(w, `{"email":"gravity@example.com"}`)
 		case "/v1internal:loadCodeAssist":
 			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"gravity-project","paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
+		case "/v1internal:fetchAvailableModels":
+			_, _ = io.WriteString(w, `{"models":{"claude-opus-5-5-low":{},"claude-opus-5-5-high":{},"gemini-3-flash":{},"gemini-3.8-flash-medium":{}}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1921,13 +1923,10 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 		channel.MaxConcurrency != antigravityOAuthMaxConcurrency {
 		t.Fatalf("created Antigravity channel = %#v", channel)
 	}
+	// The account's listing narrows the catalog; variants outside it stay hidden.
+	wantModels := []model.ModelEntry{{Model: "claude-opus-5-5-high"}, {Model: "gemini-3-flash"}}
 	wantURLs := []string{antigravityDailyBaseURL}
-	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
-		!channel.SupportsModel("gemini-3.7-flash") ||
-		channel.SupportsModel("gemini-3.7-flash-high") ||
-		!channel.SupportsModel("gemini-3.8-flash") ||
-		!channel.SupportsModel("gemini-3.8-flash-high") ||
-		!channel.SupportsModel("gemini-3.8-flash-medium") ||
+	if len(channel.URLs) != len(wantURLs) || !reflect.DeepEqual(channel.ModelEntries, wantModels) ||
 		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
 		!strings.Contains(channel.OAuthCredential, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
 		t.Fatalf("created Antigravity channel contract = %#v", channel)
@@ -1951,7 +1950,7 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	existingConfig := newAntigravityOAuthChannel("Antigravity-existing@example.com", existingPayload)
+	existingConfig := newAntigravityOAuthChannel("Antigravity-existing@example.com", existingPayload, antigravityCatalogModels())
 	existingConfig.MaxConcurrency = 0
 	variants := []model.ModelEntry{
 		{Model: "auto", RedirectModel: "claude-sonnet-4-6", Disabled: true, Pricing: channelPrice(1, 2)},
@@ -1967,7 +1966,7 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
 		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "new-project",
 	}
-	updated, err := createAntigravityChannel(context.Background(), store, updatedCredential)
+	updated, err := createAntigravityChannel(context.Background(), store, updatedCredential, antigravityCatalogModels())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2008,7 +2007,7 @@ func TestCreateAntigravityChannelPreservesModelEditAtCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial := newAntigravityOAuthChannel("original", oldPayload)
+	initial := newAntigravityOAuthChannel("original", oldPayload, antigravityCatalogModels())
 	initial.ModelEntries = append(initial.ModelEntries, model.ModelEntry{Model: "auto", RedirectModel: "target-a"})
 	created, err := store.CreateConfig(ctx, initial)
 	if err != nil {
@@ -2032,7 +2031,7 @@ func TestCreateAntigravityChannelPreservesModelEditAtCommit(t *testing.T) {
 		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
 		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "new-project",
 	}
-	updated, err := createAntigravityChannel(ctx, interleaved, newCredential)
+	updated, err := createAntigravityChannel(ctx, interleaved, newCredential, antigravityCatalogModels())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2063,7 +2062,7 @@ func TestCreateAntigravityChannelPreservesQuotaCostUpdateAtModelCommit(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel("original", oldPayload))
+	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel("original", oldPayload, antigravityCatalogModels()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2095,7 +2094,7 @@ func TestCreateAntigravityChannelPreservesQuotaCostUpdateAtModelCommit(t *testin
 		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
 		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "project",
 	}
-	updated, err := createAntigravityChannel(ctx, interleaved, newCredential)
+	updated, err := createAntigravityChannel(ctx, interleaved, newCredential, antigravityCatalogModels())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2156,7 +2155,7 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		channel, err := baseStore.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity same", payload))
+		channel, err := baseStore.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity same", payload, antigravityCatalogModels()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2169,7 +2168,7 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		store := &concurrentOAuthWinnerStore{Store: baseStore, authType: model.AuthTypeAntigravityOAuth, winnerJSON: winnerJSON}
 		incoming := *current
 		incoming.AccessToken, incoming.RefreshToken = "new-at", "new-rt"
-		updated, err := createAntigravityChannel(context.Background(), store, &incoming)
+		updated, err := createAntigravityChannel(context.Background(), store, &incoming, antigravityCatalogModels())
 		if err != nil || updated.ID != channel.ID {
 			t.Fatalf("reauthorization = (%#v, %v)", updated, err)
 		}
@@ -2281,7 +2280,7 @@ func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity editor", payload))
+	channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity editor", payload, antigravityCatalogModels()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2323,7 +2322,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	existing, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity-duplicate@example.com", existingPayload))
+	existing, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity-duplicate@example.com", existingPayload, antigravityCatalogModels()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2878,7 +2877,7 @@ func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testin
 		store: store, client: newAcceptedCodexImportClient(),
 		antigravityService: newAntigravityPaidTierTestService(t),
 	}
-	existingAntigravity := newAntigravityOAuthChannel("Antigravity-existing", `{}`)
+	existingAntigravity := newAntigravityOAuthChannel("Antigravity-existing", `{}`, antigravityCatalogModels())
 	existingAntigravity.Priority = 40
 	existingCodex := newCodexOAuthChannel("Codex-existing", `{}`, "plus")
 	existingCodex.Priority = 100
@@ -5424,7 +5423,7 @@ func TestAntigravityCredentialManagerCASMissReusesConcurrentWinner(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel, err := baseStore.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity CAS", initialJSON))
+	channel, err := baseStore.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity CAS", initialJSON, antigravityCatalogModels()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5501,7 +5500,7 @@ func TestAntigravityMetadataFailurePreservesRefreshedCredential(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("metadata", payload))
+			cfg, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("metadata", payload, antigravityCatalogModels()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -5573,7 +5572,7 @@ func TestAntigravityCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity reload", initialJSON))
+			channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity reload", initialJSON, antigravityCatalogModels()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7782,7 +7781,7 @@ func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 					t.Fatalf("encode Antigravity credential: %v", err)
 				}
 				channel, err := server.store.CreateConfig(
-					context.Background(), newAntigravityOAuthChannel("Antigravity-expired", raw),
+					context.Background(), newAntigravityOAuthChannel("Antigravity-expired", raw, antigravityCatalogModels()),
 				)
 				if err != nil {
 					t.Fatalf("create Antigravity channel: %v", err)
@@ -7998,7 +7997,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	if err != nil {
 		t.Fatalf("Antigravity credential JSON: %v", err)
 	}
-	channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity quota", payload))
+	channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity quota", payload, antigravityCatalogModels()))
 	if err != nil {
 		t.Fatalf("create Antigravity channel: %v", err)
 	}

@@ -217,7 +217,7 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 				if !ok || credential == nil {
 					return 0, errors.New("oauth: Antigravity exchange returned an invalid credential")
 				}
-				channel, err := createAntigravityChannel(ctx, store, credential)
+				channel, err := createAntigravityChannel(ctx, store, credential, antigravityAccountModels(ctx, &flowService, credential))
 				if err != nil {
 					return 0, err
 				}
