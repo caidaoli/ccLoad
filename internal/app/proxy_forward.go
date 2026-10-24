@@ -1025,7 +1025,8 @@ var sseSynthesizedMessageStopEvent = []byte("event: message_stop\ndata: {\"type\
 //
 // Gemini 线协议没有 [DONE]，但 CLIProxyAPI executor 会在 EOF 补喂一次；
 // gemini→{Responses,Claude} 转换器在 finishReason 后等 usage 或 [DONE] 才发终态，
-// 末帧不带 usageMetadata、或只回 promptFeedback.blockReason 时同样要靠这里收尾。
+// 末帧不带 usageMetadata 时同样要靠这里收尾（只回 promptFeedback.blockReason 的拦截
+// 在提交前已按客户端错误返回，见 translatedGeminiPromptBlockError）。
 // 转换器在 [DONE] 上沿用已记下的 finishReason，MAX_TOKENS 不会被改报成 end_turn。
 //
 // Anthropic 的语义终态是 message_delta.stop_reason，claude→Responses 转换器却只在
@@ -1685,6 +1686,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()
 
+	if blockErr := translatedGeminiPromptBlockError(reqCtx, responseBody); blockErr != nil {
+		result.Body = []byte(blockErr.Error())
+		return result, reqCtx.Duration().Seconds(), blockErr
+	}
+
 	if reqCtx.responsesCompaction != nil && !responsesCompactionSummaryComplete(protocol.Protocol(upstreamProtocol), responseBody) {
 		result.Body = []byte("compaction summary did not finish successfully")
 		return result, reqCtx.Duration().Seconds(), fmt.Errorf("%w: %s", util.ErrUpstreamInvalidResponse, result.Body)
@@ -1789,6 +1795,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	var state any
 	var translatedError []byte
 	var translationErr error
+	var promptBlockErr error
 	recordTranslatedOutput := func(chunks [][]byte) {
 		for _, chunk := range chunks {
 			eventType, data := parseSSEEventChunk(chunk)
@@ -1926,6 +1933,11 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if !deferredWriter.Committed() && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
+			if !deferredWriter.Committed() {
+				if promptBlockErr = translatedGeminiPromptBlockError(reqCtx, sseEventData(parserEvent)); promptBlockErr != nil {
+					return errAbortStreamBeforeWrite
+				}
+			}
 			return nil
 		},
 		translateEvent,
@@ -2025,8 +2037,32 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	} else if streamComplete && streamErr != nil {
 		streamErr = nil
 	}
+	if promptBlockErr != nil {
+		return result, reqCtx.Duration().Seconds(), promptBlockErr
+	}
 
 	return result, reqCtx.Duration().Seconds(), streamErr
+}
+
+// translatedGeminiPromptBlockError 把 Gemini 拦截提示词的响应（没有 candidates，只有
+// promptFeedback.blockReason）转成客户端错误。原生 Gemini 客户端能读 promptFeedback，照常透传；
+// 跨协议转换后它只剩一条空的正常完成，客户端会把拦截当成模型无话可说（对齐 CLIProxyAPI
+// 3f5d3a16）。拦截由提示词决定，按客户端错误返回，不冷却、不换渠道。
+func translatedGeminiPromptBlockError(reqCtx *requestContext, payload []byte) error {
+	if reqCtx.transformPlan.UpstreamProtocol != protocol.Gemini || reqCtx.transformPlan.ClientProtocol == protocol.Gemini {
+		return nil
+	}
+	if candidates := gjson.GetBytes(payload, "candidates"); candidates.IsArray() && len(candidates.Array()) > 0 {
+		return nil
+	}
+	reason := strings.TrimSpace(gjson.GetBytes(payload, "promptFeedback.blockReason").String())
+	if reason == "" {
+		return nil
+	}
+	if detail := strings.TrimSpace(gjson.GetBytes(payload, "promptFeedback.blockReasonMessage").String()); detail != "" {
+		return fmt.Errorf("%w: %s - %s", util.ErrUpstreamPromptBlocked, reason, detail)
+	}
+	return fmt.Errorf("%w: %s", util.ErrUpstreamPromptBlocked, reason)
 }
 
 // isHTTP2StreamCloseError 判断是否是 HTTP/2 流关闭相关的错误

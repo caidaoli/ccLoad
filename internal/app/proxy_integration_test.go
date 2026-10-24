@@ -12963,9 +12963,8 @@ func TestProxy_Success_Streaming_AnthropicMessageStopWithoutEOF(t *testing.T) {
 }
 
 // 跨协议转换流在上游与转换输出都没有终态时干净 EOF：Claude/Responses/OpenAI Chat 客户端
-// 拿到的是半截回复，必须判 599 并冷却；Gemini 的 promptFeedback.blockReason、
-// 不带 usage 的 finishReason 与 Anthropic 不带 message_stop 的 stop_reason 是合法终态，
-// 客户端要收到完整终止序列。
+// 拿到的是半截回复，必须判 599 并冷却；Gemini 不带 usage 的 finishReason 与 Anthropic
+// 不带 message_stop 的 stop_reason 是合法终态，客户端要收到完整终止序列。
 func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -12973,7 +12972,6 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 		openAIPartial    = `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}` + "\n\n"
 		openAIFinished   = `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}` + "\n\n"
 		geminiPartial    = `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]}}],"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
-		geminiBlocked    = `data: {"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
 		geminiMaxNoUsage = `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]},"finishReason":"MAX_TOKENS"}],"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
 		anthropicPartial = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-trunc\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
@@ -13020,9 +13018,7 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 		{name: "gemini to chat truncated", upstream: util.ProtocolGemini, path: "/v1/chat/completions", sse: geminiPartial},
 		{name: "anthropic to chat truncated", upstream: util.ProtocolAnthropic, path: "/v1/chat/completions", sse: anthropicPartial},
 		{name: "openai finish_reason without DONE", upstream: util.ProtocolOpenAI, path: "/v1/messages", sse: openAIFinished, wantComplete: true, wantTerminal: "event: message_stop", wantStop: "end_turn"},
-		{name: "gemini blockReason only", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiBlocked, wantComplete: true, wantTerminal: "event: message_stop"},
 		{name: "gemini MAX_TOKENS without usage", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiMaxNoUsage, wantComplete: true, wantTerminal: "event: message_stop", wantStop: "max_tokens"},
-		{name: "gemini blockReason to responses", upstream: util.ProtocolGemini, path: "/v1/responses", sse: geminiBlocked, wantComplete: true, wantTerminal: "event: response.completed"},
 		{name: "gemini MAX_TOKENS to chat", upstream: util.ProtocolGemini, path: "/v1/chat/completions", sse: geminiMaxNoUsage, wantComplete: true, wantTerminal: `"finish_reason":"length"`},
 		{name: "anthropic stop_reason without message_stop to responses", upstream: util.ProtocolAnthropic, path: "/v1/responses", sse: anthropicStopped, wantComplete: true, wantTerminal: "event: response.completed"},
 		{name: "anthropic stop_reason without message_stop to chat", upstream: util.ProtocolAnthropic, path: "/v1/chat/completions", sse: anthropicStopped, wantComplete: true, wantTerminal: `"finish_reason":"stop"`},
@@ -13108,6 +13104,85 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 				}
 				if stopReason != testCase.wantStop {
 					t.Fatalf("stop_reason=%q, want %q; body=%s", stopReason, testCase.wantStop, body)
+				}
+			}
+		})
+	}
+}
+
+// Gemini 拦截提示词时只回 promptFeedback.blockReason、没有 candidates；跨协议客户端必须收到
+// 400 和拦截原因，而不是一条空的正常完成。拦截由提示词决定：不换渠道、不冷却。
+func TestProxy_TranslatedGeminiPromptBlockReturnsClientError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		blockedChunk = `data: {"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
+		blockedJSON  = `{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"unsafe prompt"},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro","responseId":"g1"}`
+	)
+	tests := []struct {
+		name        string
+		path        string
+		stream      bool
+		contentType string
+		upstream    string
+		wantMessage string
+	}{
+		{name: "stream to messages", path: "/v1/messages", stream: true, contentType: "text/event-stream", upstream: blockedChunk, wantMessage: "upstream blocked the prompt: PROHIBITED_CONTENT"},
+		{name: "stream to responses", path: "/v1/responses", stream: true, contentType: "text/event-stream", upstream: blockedChunk, wantMessage: "upstream blocked the prompt: PROHIBITED_CONTENT"},
+		{name: "non-stream to chat", path: "/v1/chat/completions", contentType: "application/json", upstream: blockedJSON, wantMessage: "upstream blocked the prompt: SAFETY - unsafe prompt"},
+	}
+
+	for i, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			modelName := fmt.Sprintf("gemini-blocked-%d", i)
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "blocked-a", upstreamProtocol: util.ProtocolGemini, models: modelName, apiKey: "sk-blocked-a"},
+				{name: "blocked-b", upstreamProtocol: util.ProtocolGemini, models: modelName, apiKey: "sk-blocked-b"},
+			}, map[int]string{0: "https://blocked-a.example.com", 1: "https://blocked-b.example.com"})
+			var calls atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{testCase.contentType}},
+					Body:       io.NopCloser(strings.NewReader(testCase.upstream)),
+				}, nil
+			})}
+
+			requestBody := map[string]any{
+				"model": modelName, "max_tokens": 64, "stream": testCase.stream,
+				"messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}
+			if testCase.path == "/v1/responses" {
+				requestBody = map[string]any{"model": modelName, "stream": testCase.stream, "input": "hi"}
+			}
+			response := doProxyRequest(t, env.engine, testCase.path, requestBody, nil)
+			body := response.Body.String()
+			if response.Code != http.StatusBadRequest || !strings.Contains(body, testCase.wantMessage) {
+				t.Fatalf("status=%d body=%s, want 400 with %q", response.Code, body, testCase.wantMessage)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("upstream calls=%d, want 1 (no channel switch)", got)
+			}
+
+			waitForProxyLog(t, env, modelName)
+			modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil {
+				t.Fatalf("GetAllModelCooldowns: %v", err)
+			}
+			for channelID, models := range modelCooldowns {
+				if until, ok := models[modelName]; ok && until.After(time.Now()) {
+					t.Fatalf("channel %d model cooled until %v", channelID, until)
+				}
+			}
+			channelCooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+			if err != nil {
+				t.Fatalf("GetAllChannelCooldowns: %v", err)
+			}
+			for channelID, until := range channelCooldowns {
+				if until.After(time.Now()) {
+					t.Fatalf("channel %d cooled until %v", channelID, until)
 				}
 			}
 		})

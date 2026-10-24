@@ -1316,6 +1316,10 @@ func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
 			name: "invalid_request_message_fallback",
 			body: []byte(`{"error":{"type":"invalid_request_error","message":"Maximum context length exceeded."}}`),
 		},
+		{
+			name: "anthropic_prompt_too_long",
+			body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215000 tokens > 200000 maximum"}}`),
+		},
 	}
 
 	for _, tt := range tests {

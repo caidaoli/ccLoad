@@ -30,6 +30,10 @@ var ErrUpstreamEmptyResponse = errors.New("upstream returned empty response")
 // ErrUpstreamInvalidResponse 是上游返回 2xx 但正文不是 API 响应的统一错误标识。
 var ErrUpstreamInvalidResponse = errors.New("upstream returned invalid response")
 
+// ErrUpstreamPromptBlocked 表示上游安全策略拦截了提示词本身（Gemini 不带 candidates 的
+// promptFeedback.blockReason）。结果由请求内容决定，换 Key 或渠道都一样。
+var ErrUpstreamPromptBlocked = errors.New("upstream blocked the prompt")
+
 // resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
 // 格式示例: 2025-12-09 18:08:11
 var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
@@ -226,7 +230,8 @@ func (r *sseErrorResponse) ErrorType() string {
 
 // IsContextLengthExceededError reports whether an upstream error says that the
 // current request exceeds the model context window. Codex can emit the error as
-// error, response.error, or a top-level streaming error object.
+// error, response.error, or a top-level streaming error object; Anthropic sends
+// it as an invalid_request_error identified only by its message.
 func IsContextLengthExceededError(responseBody []byte) bool {
 	if len(responseBody) == 0 {
 		return false
@@ -256,8 +261,10 @@ func IsContextLengthExceededError(responseBody []byte) bool {
 			continue
 		}
 		message := strings.ToLower(strings.TrimSpace(detail.Message))
+		// Anthropic 只用消息报告输入超限："prompt is too long: N tokens > M maximum"。
 		if strings.Contains(message, "context window") ||
 			strings.Contains(message, "context length") ||
+			strings.HasPrefix(message, "prompt is too long") ||
 			strings.Contains(message, "maximum context") ||
 			strings.Contains(message, "too many tokens") {
 			return true
@@ -1657,8 +1664,8 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 		return http.StatusBadGateway, ErrorLevelChannel, true
 	}
 
-	// 快速路径1.5：协议转换明确声明为客户端请求结构不支持
-	if errors.Is(err, protocol.ErrUnsupportedRequestShape) {
+	// 快速路径1.5：协议转换明确声明为客户端请求结构不支持，或上游拦截了提示词
+	if errors.Is(err, protocol.ErrUnsupportedRequestShape) || errors.Is(err, ErrUpstreamPromptBlocked) {
 		return http.StatusBadRequest, ErrorLevelClient, false
 	}
 
