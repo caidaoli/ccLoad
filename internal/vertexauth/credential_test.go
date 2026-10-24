@@ -174,6 +174,9 @@ func TestPublisherBaseURL(t *testing.T) {
 	if got := PublisherBaseURL("p1", GlobalLocation); got != "https://aiplatform.googleapis.com/v1/projects/p1/locations/global/publishers/google" {
 		t.Fatalf("global base URL = %q", got)
 	}
+	if got := PublisherBaseURL("p1", "eu"); got != "https://aiplatform.eu.rep.googleapis.com/v1/projects/p1/locations/eu/publishers/google" {
+		t.Fatalf("multi-region base URL = %q", got)
+	}
 }
 
 func TestMintAccessTokenUsesSignedJWTBearerGrant(t *testing.T) {

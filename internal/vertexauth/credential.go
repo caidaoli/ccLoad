@@ -152,9 +152,15 @@ func (c *Credential) BaseURL() string {
 
 // PublisherBaseURL builds the Vertex publisher endpoint for a project and location.
 func PublisherBaseURL(projectID, location string) string {
-	host := "https://" + location + "-aiplatform.googleapis.com"
-	if location == GlobalLocation {
+	var host string
+	switch location {
+	case GlobalLocation:
 		host = "https://aiplatform.googleapis.com"
+	case "us", "eu":
+		// Multi-region locations are served only by Regional Endpoint (REP) hosts.
+		host = "https://aiplatform." + location + ".rep.googleapis.com"
+	default:
+		host = "https://" + location + "-aiplatform.googleapis.com"
 	}
 	return host + "/v1/projects/" + projectID + "/locations/" + location + "/publishers/google"
 }
