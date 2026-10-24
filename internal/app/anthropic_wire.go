@@ -1206,7 +1206,7 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 	cacheControl := anthropicCloakCacheControl(cacheTTL)
 	if system := gjson.GetBytes(body, "system"); system.IsArray() {
 		hasBreakpoint := false
-		lastObject := -1
+		lastEligible := -1
 		for index, block := range system.Array() {
 			if !block.IsObject() {
 				continue
@@ -1215,10 +1215,12 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 				hasBreakpoint = true
 				break
 			}
-			lastObject = index
+			if !isBlankAnthropicTextBlock(block) {
+				lastEligible = index
+			}
 		}
-		if !hasBreakpoint && lastObject >= 0 {
-			body = setJSONRaw(body, "system."+strconv.Itoa(lastObject)+".cache_control", cacheControl)
+		if !hasBreakpoint && lastEligible >= 0 {
+			body = setJSONRaw(body, "system."+strconv.Itoa(lastEligible)+".cache_control", cacheControl)
 		}
 	}
 	messages := gjson.GetBytes(body, "messages")
@@ -1227,6 +1229,7 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 	}
 	items := messages.Array()
 	lastEligible := -1
+	lastEligibleRole := ""
 	for index := len(items) - 1; index >= skipMessagePrefix; index-- {
 		message := items[index]
 		if !message.IsObject() {
@@ -1237,7 +1240,7 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 			continue
 		}
 		if anthropicMessageEligibleForRollingCache(message, role) {
-			lastEligible = index
+			lastEligible, lastEligibleRole = index, role
 			break
 		}
 	}
@@ -1266,10 +1269,8 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 				return body
 			}
 		}
-		for index := len(blocks) - 1; index >= 0; index-- {
-			if blocks[index].IsObject() {
-				return setJSONRaw(body, target+"."+strconv.Itoa(index)+".cache_control", cacheControl)
-			}
+		if index := anthropicRollingCacheBlockIndex(blocks, lastEligibleRole); index >= 0 {
+			return setJSONRaw(body, target+"."+strconv.Itoa(index)+".cache_control", cacheControl)
 		}
 	}
 	return body
@@ -1305,20 +1306,36 @@ func anthropicMessageEligibleForRollingCache(message gjson.Result, role string) 
 	content := message.Get("content")
 	switch {
 	case content.Type == gjson.String:
-		return true
+		return strings.TrimSpace(content.String()) != ""
 	case content.IsArray():
-		blocks := content.Array()
-		if len(blocks) == 0 {
-			return false
-		}
-		if role != "assistant" {
-			return true
-		}
-		typ := strings.ToLower(strings.TrimSpace(jsonStringValue(blocks[len(blocks)-1].Get("type"))))
-		return typ != "thinking" && typ != "redacted_thinking"
+		return anthropicRollingCacheBlockIndex(content.Array(), role) >= 0
 	default:
 		return false
 	}
+}
+
+// anthropicRollingCacheBlockIndex 返回消息里承载滚动断点的块下标，-1 表示这条消息不能承载。
+// 空白 text 块 Anthropic 拒收 cache_control，出站前还会被删掉，跳过它往前找（对齐
+// CLIProxyAPI df07b1e5）；assistant 以 thinking 收尾时断点无处可挂，原生选择器跳过整条消息。
+func anthropicRollingCacheBlockIndex(blocks []gjson.Result, role string) int {
+	for index := len(blocks) - 1; index >= 0; index-- {
+		block := blocks[index]
+		if !block.IsObject() || isBlankAnthropicTextBlock(block) {
+			continue
+		}
+		if role == "assistant" {
+			switch strings.ToLower(strings.TrimSpace(jsonStringValue(block.Get("type")))) {
+			case "thinking", "redacted_thinking":
+				return -1
+			}
+		}
+		return index
+	}
+	return -1
+}
+
+func isBlankAnthropicTextBlock(block gjson.Result) bool {
+	return jsonStringValue(block.Get("type")) == "text" && strings.TrimSpace(jsonStringValue(block.Get("text"))) == ""
 }
 
 // orderAnthropicCacheControlWireShape 把每个 cache_control 的成员归一成原生键序

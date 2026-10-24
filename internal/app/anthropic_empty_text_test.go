@@ -177,3 +177,45 @@ func TestNativeClaudeCodeFinalizeDropsRejectedCacheControls(t *testing.T) {
 		}
 	})
 }
+
+// 滚动缓存断点不能落在空白 text 块上：Anthropic 拒收这种 cache_control，出站清理又会把块
+// 连同断点一起删掉。断点要落到最后一个非空白块，整条消息都空白时退到更早的消息。
+func TestAnthropicCloakRollingCacheSkipsBlankTextBlocks(t *testing.T) {
+	t.Parallel()
+	cfg := anthropicGoldenConfig(t, anthropicGoldenCase{oauth: true})
+	tests := []struct {
+		name     string
+		lastTurn string
+		want     string
+		absent   string
+	}{
+		{
+			name:     "trailing blank block",
+			lastTurn: `[{"type":"text","text":"second"},{"type":"text","text":"  "}]`,
+			want:     "messages.2.content.0.cache_control",
+		},
+		{
+			name:     "blank-only turn",
+			lastTurn: `[{"type":"text","text":" "}]`,
+			want:     "messages.1.content.0.cache_control",
+			absent:   "messages.2.content.0.cache_control",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"first"},` +
+				`{"role":"assistant","content":"answer"},{"role":"user","content":` + test.lastTurn + `}]}`)
+			out, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", nil, anthropicOfficialTestURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(out, test.want+".type").String(); got != "ephemeral" {
+				t.Fatalf("%s.type = %q, want ephemeral: %s", test.want, got, out)
+			}
+			if test.absent != "" && gjson.GetBytes(out, test.absent).Exists() {
+				t.Fatalf("breakpoint landed on a blank text block: %s", out)
+			}
+		})
+	}
+}
