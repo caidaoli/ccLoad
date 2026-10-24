@@ -19,6 +19,7 @@ func TestConvertClaudeResponseToOpenAINonStream_NativeMessagesJSON(t *testing.T)
 		{"text", `[{"type":"text","text":"Hello "},{"type":"text","text":"world!"}]`, "end_turn", "stop", false},
 		{"tools", `[{"type":"text","text":"Hello world!"},{"type":"tool_use","id":"toolu_weather","name":"get_weather","input":{"city":"Paris","days":2}},{"type":"tool_use","id":"toolu_clock","name":"get_time","input":{}}]`, "tool_use", "tool_calls", true},
 		{"max_tokens", `[{"type":"text","text":"Hello world!"}]`, "max_tokens", "length", false},
+		{"truncated tools", `[{"type":"text","text":"Hello world!"},{"type":"tool_use","id":"toolu_weather","name":"get_weather","input":{"city":"Paris","days":2}},{"type":"tool_use","id":"toolu_clock","name":"get_time","input":{}}]`, "model_context_window_exceeded", "length", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			raw := []byte(fmt.Sprintf(`{"id":"msg_native","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":%s,"stop_reason":%q,"stop_sequence":null,"usage":{"input_tokens":13,"cache_read_input_tokens":7,"cache_creation_input_tokens":3,"output_tokens":5}}`, tt.content, tt.stopReason))

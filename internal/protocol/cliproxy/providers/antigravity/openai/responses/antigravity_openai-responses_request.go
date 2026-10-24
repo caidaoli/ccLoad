@@ -201,6 +201,7 @@ func WantsWebSearch(payload []byte) bool {
 func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, stream bool) ([]byte, error) {
 	includedDomains := coreresponses.ExtractResponsesWebSearchAllowedDomains(gjson.ParseBytes(payload))
 	rawJSON, errConvert := coreresponses.ConvertOpenAIResponsesRequestToGemini(model, payload, stream)
+	rawJSON = stripAntigravityServerSideToolInvocations(rawJSON)
 	rawJSON = rewriteOpenAIResponsesReasoningForAntigravityClaude(model, payload, rawJSON)
 	out, _ := antigravitygemini.ConvertGeminiRequestToAntigravity(model, rawJSON, stream)
 	out, _ = sjson.SetBytes(out, "requestType", "web_search")
@@ -292,6 +293,23 @@ func stripAntigravityResponsesGoogleSearch(payload []byte) []byte {
 			} else {
 				payload, _ = sjson.SetRawBytes(payload, path, translatorcommon.JoinRawArray(filtered))
 			}
+		}
+	}
+	return stripAntigravityServerSideToolInvocations(payload)
+}
+
+// stripAntigravityServerSideToolInvocations removes includeServerSideToolInvocations
+// injected by the shared Gemini Responses translator because Antigravity does not
+// support the includeServerSideToolInvocations parameter.
+func stripAntigravityServerSideToolInvocations(payload []byte) []byte {
+	for _, toolConfigPath := range []string{"toolConfig", "request.toolConfig"} {
+		flagPath := toolConfigPath + ".includeServerSideToolInvocations"
+		if !gjson.GetBytes(payload, flagPath).Exists() {
+			continue
+		}
+		payload, _ = sjson.DeleteBytes(payload, flagPath)
+		if tc := gjson.GetBytes(payload, toolConfigPath); tc.IsObject() && len(tc.Map()) == 0 {
+			payload, _ = sjson.DeleteBytes(payload, toolConfigPath)
 		}
 	}
 	return payload

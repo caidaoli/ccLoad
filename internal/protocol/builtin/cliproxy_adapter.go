@@ -134,7 +134,16 @@ func cliproxyGeminiResponseToAnthropicStream(ctx context.Context, model string, 
 }
 
 func cliproxyGeminiResponseToAnthropicNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
-	return cliproxyJSONResponse("gemini response to anthropic", raw, claudegemini.ConvertGeminiResponseToClaudeNonStream(ctx, model, original, translated, raw, nil))
+	output, err := cliproxyJSONResponse("gemini response to anthropic", raw, claudegemini.ConvertGeminiResponseToClaudeNonStream(ctx, model, original, translated, raw, nil))
+	if err != nil {
+		return nil, err
+	}
+	// The converter reports an unrecoverable upstream turn (MALFORMED_FUNCTION_CALL)
+	// as an Anthropic error object. A 2xx success body must not carry it.
+	if gjson.GetBytes(output, "type").String() == "error" {
+		return nil, fmt.Errorf("gemini response to anthropic: %s", gjson.GetBytes(output, "error.message").String())
+	}
+	return output, nil
 }
 
 func cliproxyGeminiRequestToAnthropic(model string, raw []byte, stream bool) ([]byte, error) {
@@ -154,7 +163,7 @@ func cliproxyAnthropicResponseToGeminiNonStream(ctx context.Context, model strin
 }
 
 func cliproxyCodexRequestToGemini(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateCodexRequest(raw, false); err != nil {
+	if err := cliproxyValidateCodexRequest(raw, true, false); err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("codex request to gemini", model, raw, stream, openairespgemini.ConvertOpenAIResponsesRequestToGemini)
@@ -187,7 +196,7 @@ func cliproxyCodexResponseToGeminiNonStream(ctx context.Context, model string, o
 }
 
 func cliproxyCodexRequestToAnthropic(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateCodexRequest(raw, false); err != nil {
+	if err := cliproxyValidateCodexRequest(raw, false, false); err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("codex request to anthropic", model, raw, stream, oairespclaude.ConvertOpenAIResponsesRequestToClaude)
@@ -227,7 +236,7 @@ func cliproxyCodexResponseToAnthropicNonStream(ctx context.Context, model string
 }
 
 func cliproxyCodexRequestToOpenAI(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateCodexRequest(raw, true); err != nil {
+	if err := cliproxyValidateCodexRequest(raw, true, true); err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("codex request to openai", model, raw, stream, openairesponses.ConvertOpenAIResponsesRequestToOpenAIChatCompletions)
@@ -345,7 +354,12 @@ func cliproxyValidateAnthropicRequest(raw []byte) error {
 	return nil
 }
 
-func cliproxyValidateCodexRequest(raw []byte, allowToolSearch bool) error {
+// cliproxyValidateCodexRequest rejects Codex input items the target bridge
+// cannot represent. allowToolSearch admits client tool_search history (the
+// OpenAI and Gemini converters round-trip it; the Claude converter's switch
+// stays off in ccLoad). allowCompaction admits the encrypted compaction item,
+// which only the OpenAI bridge drops safely.
+func cliproxyValidateCodexRequest(raw []byte, allowToolSearch, allowCompaction bool) error {
 	var request struct {
 		Input json.RawMessage `json:"input"`
 	}
@@ -398,7 +412,7 @@ func cliproxyValidateCodexRequest(raw []byte, allowToolSearch bool) error {
 			// Chat Completions has no equivalent for Codex's encrypted context
 			// control item. The OpenAI bridge drops it in the converter while
 			// preserving representable messages; other bridges still reject it.
-			if !allowToolSearch {
+			if !allowCompaction {
 				return fmt.Errorf("unsupported Codex input item type %q", itemType)
 			}
 		case "tool_search_call", "tool_search_output":

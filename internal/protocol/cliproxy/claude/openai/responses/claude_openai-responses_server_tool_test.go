@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -177,22 +178,58 @@ func TestClaudeWebSearchWithoutResultBlockStillEmitsItem(t *testing.T) {
 }
 
 func TestUnmappedServerToolProducesNoItem(t *testing.T) {
-	for _, block := range []string{
-		`{"type":"server_tool_use","id":"srvtoolu_1","name":"code_execution","input":{}}`,
-		`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_missing","content":[]}`,
-	} {
-		chunks := [][]byte{
-			[]byte(`data: {"type":"message_start","message":{"id":"msg_ws","usage":{"input_tokens":1}}}`),
-			[]byte(`data: {"type":"content_block_start","index":0,"content_block":` + block + `}`),
-			[]byte(`data: {"type":"content_block_stop","index":0}`),
-			[]byte(`data: {"type":"message_stop"}`),
-		}
-		for _, output := range translateClaudeResponsesStream(chunks) {
-			if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" && data.Get("response.output.#").Int() != 0 {
-				t.Fatalf("block %s produced output: %s", block, data.Raw)
-			}
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_ws","usage":{"input_tokens":1}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"code_execution","input":{}}}`),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+	for _, output := range translateClaudeResponsesStream(chunks) {
+		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" && data.Get("response.output.#").Int() != 0 {
+			t.Fatalf("code_execution produced output: %s", data.Raw)
 		}
 	}
+}
+
+// A result block whose server_tool_use arrived in an earlier response is the
+// continuation of a search paused by pause_turn. It surfaces under the same id
+// so the client keeps the result in its history.
+func TestWebSearchResultWithoutMatchingUseKeepsContinuationResult(t *testing.T) {
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_ws","usage":{"input_tokens":1,"output_tokens":0}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_paused","content":[{"type":"web_search_result","url":"https://example.com","title":"Example","encrypted_content":"ENC_P"}]}}`),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+	check := func(t *testing.T, response gjson.Result) {
+		t.Helper()
+		if got := response.Get("output.#").Int(); got != 1 {
+			t.Fatalf("output items = %d, want 1: %s", got, response.Get("output").Raw)
+		}
+		item := response.Get("output.0")
+		if item.Get("type").String() != "web_search_call" || item.Get("id").String() != responsesWebSearchCallID("srvtoolu_paused") {
+			t.Fatalf("continuation item = %s", item.Raw)
+		}
+		if got := item.Get("results.0.encrypted_content").String(); got != "ENC_P" {
+			t.Fatalf("continuation result = %q", got)
+		}
+		if got := item.Get("status").String() != "completed"; got {
+			t.Fatalf("continuation status = %q", item.Get("status").String())
+		}
+	}
+	completed := 0
+	for _, o := range translateClaudeResponsesStream(chunks) {
+		if event, data := parseClaudeResponsesSSEEvent(t, o); event == "response.completed" {
+			completed++
+			check(t, data.Get("response"))
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("completed events = %d", completed)
+	}
+	output := ConvertClaudeResponseToOpenAIResponsesNonStream(
+		context.Background(), "claude-test", nil, nil, bytes.Join(chunks, []byte("\n")), nil)
+	check(t, gjson.ParseBytes(output))
 }
 
 func TestWebSearchCallQueryAcceptsNativeOpenAIActionShapes(t *testing.T) {
@@ -265,19 +302,6 @@ func TestWebSearchCallWithoutIDProducesNoBlocks(t *testing.T) {
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 		if got := claudeAssistantBlockTypes(t, out); len(got) != 0 {
 			t.Fatalf("id=%q produced %v", id, got)
-		}
-	}
-}
-
-func TestWebSearchResultWithoutMatchingUseIsIgnored(t *testing.T) {
-	chunks := [][]byte{
-		[]byte(`data: {"type":"message_start","message":{"id":"msg_ws","usage":{"input_tokens":1}}}`),
-		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_missing","content":[]}}`),
-		[]byte(`data: {"type":"message_stop"}`),
-	}
-	for _, output := range translateClaudeResponsesStream(chunks) {
-		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" && data.Get("response.output.#").Int() != 0 {
-			t.Fatalf("orphan result produced output: %s", data.Raw)
 		}
 	}
 }

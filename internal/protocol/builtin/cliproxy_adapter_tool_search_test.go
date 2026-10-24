@@ -8,7 +8,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestCodexToolSearchIsOnlyEnabledForOpenAIResponsesBridge(t *testing.T) {
+func TestCodexToolSearchIsEnabledForOpenAIAndGeminiBridges(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5.4",
 		"tools":[{"type":"tool_search","execution":"client","parameters":{"type":"object"}}],
@@ -26,8 +26,15 @@ func TestCodexToolSearchIsOnlyEnabledForOpenAIResponsesBridge(t *testing.T) {
 		t.Fatalf("unexpected translated search function %q: %s", got, translated)
 	}
 
-	if _, err := cliproxyCodexRequestToGemini("gpt-5.4", raw, false); err == nil || !strings.Contains(err.Error(), "tool_search") {
-		t.Fatalf("Gemini bridge should reject unimplemented tool_search, got %v", err)
+	geminiTranslated, err := cliproxyCodexRequestToGemini("gpt-5.4", raw, false)
+	if err != nil {
+		t.Fatalf("Gemini bridge rejected client tool_search: %v", err)
+	}
+	if got := gjson.GetBytes(geminiTranslated, "tools.0.functionDeclarations.0.name").String(); got != "tool_search" {
+		t.Fatalf("unexpected Gemini search function %q: %s", got, geminiTranslated)
+	}
+	if got := gjson.GetBytes(geminiTranslated, "contents.0.parts.0.functionCall.name").String(); got != "tool_search" {
+		t.Fatalf("Gemini bridge dropped tool_search history: %s", geminiTranslated)
 	}
 	if _, err := cliproxyCodexRequestToAnthropic("gpt-5.4", raw, false); err == nil || !strings.Contains(err.Error(), "tool_search") {
 		t.Fatalf("Anthropic bridge should reject unimplemented tool_search, got %v", err)

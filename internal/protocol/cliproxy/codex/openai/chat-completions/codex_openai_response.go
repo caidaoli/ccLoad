@@ -38,12 +38,93 @@ type toolCallStreamState struct {
 	Done             bool
 }
 
+// codexChatToolMetadata carries request-derived tool facts shared by the
+// streaming and non-streaming translators. It is resolved once, on first
+// tool call, instead of re-scanning the original request per tool event;
+// callers pass the same request bytes for a stream's lifetime.
+type codexChatToolMetadata struct {
+	resolved           bool
+	reverseToolNames   map[string]string
+	functionToolNames  map[string]struct{}
+	customPatchWinners map[string]bool
+	// chatCustomToolNames holds tools declared in OpenAI Chat's nested custom
+	// form (ccLoad local), which expect native custom tool_calls.
+	chatCustomToolNames map[string]struct{}
+}
+
+func (m *codexChatToolMetadata) resolve(original []byte) {
+	if m.resolved {
+		return
+	}
+	m.resolved = true
+	m.reverseToolNames = buildReverseMapFromOriginalOpenAI(original)
+	m.functionToolNames = map[string]struct{}{}
+	for _, tool := range gjson.GetBytes(original, "tools").Array() {
+		if tool.Get("type").String() == "function" {
+			m.functionToolNames[tool.Get("function.name").String()] = struct{}{}
+		}
+	}
+	m.customPatchWinners = map[string]bool{}
+	for name, winner := range util.CollectResponsesToolWinners(gjson.ParseBytes(original)) {
+		if applypatch.IsCustomTool(winner.Tool) {
+			m.customPatchWinners[name] = true
+		}
+	}
+	m.chatCustomToolNames = map[string]struct{}{}
+	for _, tool := range gjson.GetBytes(original, "tools").Array() {
+		if tool.Get("type").String() == "custom" && tool.Get("custom").IsObject() {
+			m.chatCustomToolNames[tool.Get("custom.name").String()] = struct{}{}
+		}
+	}
+}
+
+// restoreToolName maps a shortened upstream tool name back to the
+// client-declared original, matching buildReverseMapFromOriginalOpenAI.
+func (m *codexChatToolMetadata) restoreToolName(original []byte, name string) string {
+	m.resolve(original)
+	if orig, ok := m.reverseToolNames[name]; ok {
+		return orig
+	}
+	return name
+}
+
+// isCustomPatch never promotes an ordinary same-name function to custom:
+// Chat Completions prefers ordinary functions for ambiguous names, regardless
+// of order.
+func (m *codexChatToolMetadata) isCustomPatch(original []byte, item gjson.Result) bool {
+	if item.Get("type").String() != "custom_tool_call" {
+		return false
+	}
+	m.resolve(original)
+	name := util.QualifyResponsesNamespaceToolName(item.Get("namespace").String(), item.Get("name").String())
+	if _, ok := m.functionToolNames[name]; ok {
+		return false
+	}
+	return m.customPatchWinners[name]
+}
+
+// isChatCustomTool reports whether the client declared the called tool in
+// OpenAI Chat's nested custom form, which expects native custom tool_calls.
+// Chat Completions prefers ordinary functions for ambiguous names.
+func (m *codexChatToolMetadata) isChatCustomTool(original []byte, item gjson.Result, name string) bool {
+	if item.Get("type").String() != "custom_tool_call" {
+		return false
+	}
+	m.resolve(original)
+	if _, ok := m.functionToolNames[name]; ok {
+		return false
+	}
+	_, ok := m.chatCustomToolNames[name]
+	return ok
+}
+
 // ConvertCliToOpenAIParams holds parameters for response conversion.
 type ConvertCliToOpenAIParams struct {
 	translatorcommon.ApplyPatchErrorState
 	PatchEnabled          bool
 	Completed             bool
 	ServiceTier           string
+	toolMetadata          codexChatToolMetadata
 	ResponseID            string
 	CreatedAt             int64
 	Model                 string
@@ -253,17 +334,13 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		// Increment index for this new tool call item.
 		p := (*param).(*ConvertCliToOpenAIParams)
 		// Restore original tool name if it was shortened.
-		name := itemResult.Get("name").String()
-		rev := buildReverseMapFromOriginalOpenAI(originalRequestRawJSON)
-		if orig, ok := rev[name]; ok {
-			name = orig
-		}
+		name := p.toolMetadata.restoreToolName(originalRequestRawJSON, itemResult.Get("name").String())
 
 		p.FunctionCallIndex++
 		state := &toolCallStreamState{
 			Index:  p.FunctionCallIndex,
-			Patch:  isOriginalCustomPatch(originalRequestRawJSON, itemResult),
-			Custom: isOriginalChatCustomTool(originalRequestRawJSON, itemResult, name),
+			Patch:  p.toolMetadata.isCustomPatch(originalRequestRawJSON, itemResult),
+			Custom: p.toolMetadata.isChatCustomTool(originalRequestRawJSON, itemResult, name),
 		}
 		p.PatchEnabled = p.PatchEnabled || state.Patch
 		registerToolCallState(p, rootResult, itemResult, state)
@@ -426,19 +503,15 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 
 		// Fallback path: model skipped output_item.added, so emit the complete tool call now.
 		// Restore original tool name if it was shortened.
-		name := itemResult.Get("name").String()
-		rev := buildReverseMapFromOriginalOpenAI(originalRequestRawJSON)
-		if orig, ok := rev[name]; ok {
-			name = orig
-		}
+		name := p.toolMetadata.restoreToolName(originalRequestRawJSON, itemResult.Get("name").String())
 
 		p.FunctionCallIndex++
 		state = &toolCallStreamState{
 			Index:            p.FunctionCallIndex,
 			ArgumentsEmitted: true,
 			Done:             true,
-			Patch:            isOriginalCustomPatch(originalRequestRawJSON, itemResult),
-			Custom:           isOriginalChatCustomTool(originalRequestRawJSON, itemResult, name),
+			Patch:            p.toolMetadata.isCustomPatch(originalRequestRawJSON, itemResult),
+			Custom:           p.toolMetadata.isChatCustomTool(originalRequestRawJSON, itemResult, name),
 		}
 		p.PatchEnabled = p.PatchEnabled || state.Patch
 		registerToolCallState(p, rootResult, itemResult, state)
@@ -553,6 +626,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 	}
 
 	// Process the output array for content and function calls
+	var toolMetadata codexChatToolMetadata
 	var toolCalls [][]byte
 	var images [][]byte
 	outputResult := responseResult.Get("output")
@@ -606,15 +680,11 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 				}
 			case "function_call", "custom_tool_call":
 				// Handle function and custom tool call content.
-				n := outputItem.Get("name").String()
-				rev := buildReverseMapFromOriginalOpenAI(originalRequestRawJSON)
-				if orig, ok := rev[n]; ok {
-					n = orig
-				}
-				state := &toolCallStreamState{Index: -1, Custom: isOriginalChatCustomTool(originalRequestRawJSON, outputItem, n)}
+				n := toolMetadata.restoreToolName(originalRequestRawJSON, outputItem.Get("name").String())
+				state := &toolCallStreamState{Index: -1, Custom: toolMetadata.isChatCustomTool(originalRequestRawJSON, outputItem, n)}
 
 				fullArgs := codexToolCallArguments(outputItem)
-				if isOriginalCustomPatch(originalRequestRawJSON, outputItem) {
+				if toolMetadata.isCustomPatch(originalRequestRawJSON, outputItem) {
 					fullArgs = applypatch.WrapInput(fullArgs)
 				}
 				functionCallTemplate := newChatToolCall(state, outputItem.Get("call_id").String(), n, fullArgs)
@@ -890,45 +960,6 @@ func setCodexCacheWriteTokens(template []byte, usage gjson.Result) []byte {
 	template, _ = sjson.SetRawBytes(template, "usage.prompt_tokens_details.cache_write_tokens", []byte(value.Raw))
 	template, _ = sjson.SetRawBytes(template, "usage.prompt_tokens_details.cached_creation_tokens", []byte(value.Raw))
 	return template
-}
-
-// isOriginalCustomPatch never promotes an ordinary same-name function to custom.
-func isOriginalCustomPatch(original []byte, item gjson.Result) bool {
-	if item.Get("type").String() != "custom_tool_call" {
-		return false
-	}
-	name := util.QualifyResponsesNamespaceToolName(item.Get("namespace").String(), item.Get("name").String())
-	// Chat Completions prefers ordinary functions for ambiguous names, regardless of order.
-	for _, tool := range gjson.GetBytes(original, "tools").Array() {
-		if tool.Get("type").String() == "function" && tool.Get("function.name").String() == name {
-			return false
-		}
-	}
-	winner, ok := util.CollectResponsesToolWinners(gjson.ParseBytes(original))[name]
-	return ok && applypatch.IsCustomTool(winner.Tool)
-}
-
-// isOriginalChatCustomTool reports whether the client declared the called tool in
-// OpenAI Chat's nested custom form, which expects native custom tool_calls.
-func isOriginalChatCustomTool(original []byte, item gjson.Result, name string) bool {
-	if item.Get("type").String() != "custom_tool_call" {
-		return false
-	}
-	declared := false
-	for _, tool := range gjson.GetBytes(original, "tools").Array() {
-		switch tool.Get("type").String() {
-		case "function":
-			// Chat Completions prefers ordinary functions for ambiguous names.
-			if tool.Get("function.name").String() == name {
-				return false
-			}
-		case "custom":
-			if tool.Get("custom").IsObject() && tool.Get("custom.name").String() == name {
-				declared = true
-			}
-		}
-	}
-	return declared
 }
 
 // newChatToolCall builds the first tool_calls entry; a negative index omits it (non-stream).

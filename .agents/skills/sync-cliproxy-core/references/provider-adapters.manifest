@@ -4,6 +4,7 @@ provider|antigravity|internal/translator/antigravity|internal/protocol/cliproxy/
 exclude|antigravity|internal/translator/antigravity/*/init.go
 exclude|antigravity|internal/translator/antigravity/*/noop_optimization_test.go
 exclude|antigravity|internal/translator/antigravity/*_benchmark_test.go
+exclude|antigravity|internal/translator/antigravity/*_perf_test.go
 exclude|antigravity|internal/translator/antigravity/interactions/*.go
 exclude|antigravity|internal/translator/antigravity/claude/antigravity_claude_request_test.go
 exclude|antigravity|internal/translator/antigravity/claude/antigravity_claude_response_test.go
@@ -28,6 +29,7 @@ file|antigravity|source|internal/translator/antigravity/openai/responses/antigra
 file|antigravity|source|internal/translator/antigravity/openai/responses/antigravity_openai-responses_response.go|internal/protocol/cliproxy/providers/antigravity/openai/responses/antigravity_openai-responses_response.go
 file|antigravity|test|internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go|internal/protocol/cliproxy/providers/antigravity/openai/responses/antigravity_openai-responses_request_test.go
 file|antigravity|test|internal/translator/antigravity/openai/responses/antigravity_openai-responses_response_test.go|internal/protocol/cliproxy/providers/antigravity/openai/responses/antigravity_openai-responses_response_test.go
+file|antigravity|test|internal/translator/antigravity/openai/responses/antigravity_openai-responses_tool_search_test.go|internal/protocol/cliproxy/providers/antigravity/openai/responses/antigravity_openai-responses_tool_search_test.go
 file|antigravity|test|internal/translator/antigravity/openai/responses/antigravity_openai-responses_user_turn_test.go|internal/protocol/cliproxy/providers/antigravity/openai/responses/antigravity_openai-responses_user_turn_test.go
 wiring|antigravity|ccLoad/internal/protocol/cliproxy/providers/antigravity/claude|internal/app
 wiring|antigravity|ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini|internal/app

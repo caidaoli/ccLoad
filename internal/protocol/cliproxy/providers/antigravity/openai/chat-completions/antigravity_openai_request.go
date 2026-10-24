@@ -389,15 +389,6 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					functionDeclarations = append(functionDeclarations, fnRawBytes)
 				}
 			}
-			if t.Get("type").String() == "web_search" {
-				googleToolNode := []byte(`{}`)
-				var errSet error
-				googleToolNode, errSet = sjson.SetRawBytes(googleToolNode, "googleSearch", []byte(`{}`))
-				if errSet != nil {
-					continue
-				}
-				googleSearchNodes = append(googleSearchNodes, googleToolNode)
-			}
 			if gs := t.Get("google_search"); gs.Exists() {
 				googleToolNode := []byte(`{}`)
 				var errSet error
@@ -528,9 +519,6 @@ func applyOpenAIToolChoiceToAntigravity(out, rawJSON []byte, functionNameMap map
 	}
 
 	out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.mode", mode)
-	if mode == "NONE" {
-		out, _ = sjson.DeleteBytes(out, "request.tools")
-	}
 	if strings.TrimSpace(allowedName) != "" {
 		mappedName := util.MapSanitizedFunctionName(functionNameMap, allowedName)
 		out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames", []string{mappedName})

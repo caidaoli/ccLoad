@@ -22,3 +22,5 @@
 - 上游补丁参数非法、身份冲突或流缺少源协议终态时，转换边界传播工具输入错误，不得伪造成功；已开始的 Responses 流最多发送一次 `response.failed`。EOF 时上游已有语义终态（如 OpenAI `finish_reason`）则先补终止事件，再检查转换状态；启用补丁转换且缺少语义终态的流不得用合成终态掩盖截断。传输错误、取消与上游错误事件保留原错误，不改判为工具参数错误。普通工具与同协议透传保持原契约。
 - OpenAI → Claude 接收 reasoning_content、reasoning、reasoning_details 的首个有效表示；工具流保留 length/content_filter，累计参数不是有效对象时不得标成正常 tool_use。单条 system 输入继续作为原始用户提示，不包中途提醒。流式 `finish_reason` 块不发 `message_delta`/`message_stop`，等尾部 usage 块或 `[DONE]`（含网关补喂）再用权威 usage 收尾。
 - Gemini 原生搜索仅查询静态模型能力；响应转换以实际发出的 googleSearch 请求判断搜索模式，不引入动态模型注册或探测。
+- Codex 客户端 `tool_search_call`/`tool_search_output` 只由 OpenAI Chat 与 Gemini 桥接往返；Anthropic 桥接仍拒绝（Claude 开关保持关闭）。Registry 层的 `compaction` 条目只有 OpenAI 桥接接受。
+- Gemini 转 Anthropic 遇到无工具调用的 `MALFORMED_FUNCTION_CALL` 时，流式发 `error` 事件，非流返回转换错误；不得把错误体当 2xx 成功响应输出。

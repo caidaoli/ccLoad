@@ -9,37 +9,6 @@ import (
 	"ccLoad/internal/protocol/cliproxy/signature"
 )
 
-func TestConvertOpenAIRequestToAntigravity_WebSearchToolOnlyWhenMixed(t *testing.T) {
-	input := []byte(`{
-		"model":"gemini-3-flash-preview",
-		"messages":[{"role":"user","content":"hello"}],
-		"tools":[
-			{"type":"function","function":{"name":"add_memory","parameters":{"type":"object","properties":{"content":{"type":"string"}}}}},
-			{"google_search":{}},
-			{"code_execution":{}}
-		]
-	}`)
-
-	out, err := ConvertOpenAIRequestToAntigravity("gemini-3-flash-preview", input, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tools := gjson.GetBytes(out, "request.tools").Array()
-	if got := len(tools); got != 3 {
-		t.Fatalf("len(request.tools) = %d, want %d", got, 3)
-	}
-	if !gjson.GetBytes(out, "request.tools.0.functionDeclarations").Exists() {
-		t.Fatalf("request.tools.0.functionDeclarations missing")
-	}
-	if !gjson.GetBytes(out, "request.tools.1.googleSearch").Exists() {
-		t.Fatalf("request.tools.1.googleSearch missing")
-	}
-	if !gjson.GetBytes(out, "request.tools.2.codeExecution").Exists() {
-		t.Fatalf("request.tools.2.codeExecution missing")
-	}
-}
-
 func TestConvertOpenAIRequestToAntigravitySkipsEmptyTextPartsWithoutNulls(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3-flash",
@@ -720,7 +689,7 @@ func TestConvertOpenAIRequestToAntigravityPreservesToolResponseAsString(t *testi
 	}
 }
 
-func TestConvertOpenAIRequestToAntigravityToolChoiceNoneOmitsTools(t *testing.T) {
+func TestConvertOpenAIRequestToAntigravityToolChoiceNoneKeepsTools(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		toolChoice string
@@ -739,8 +708,8 @@ func TestConvertOpenAIRequestToAntigravityToolChoiceNoneOmitsTools(t *testing.T)
 			if got := gjson.GetBytes(out, "request.toolConfig.functionCallingConfig.mode").String(); got != "NONE" {
 				t.Fatalf("expected mode NONE, got %q", got)
 			}
-			if gjson.GetBytes(out, "request.tools").Exists() {
-				t.Fatalf("expected request.tools to be omitted, got %s", gjson.GetBytes(out, "request.tools").Raw)
+			if got := gjson.GetBytes(out, "request.tools.0.functionDeclarations.0.name").String(); got != "get_weather" {
+				t.Fatalf("expected tool declaration get_weather with mode NONE, got %q", got)
 			}
 		})
 	}

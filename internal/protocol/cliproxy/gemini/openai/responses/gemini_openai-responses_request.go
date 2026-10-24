@@ -40,6 +40,7 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 	// Extract tools and forward map early so request contents and toolDeclarations use the exact same forward map
 	functionDeclarations, forwardMap, _ := util.BuildGeminiFunctionDeclarations(root)
 	var toolBlocks [][]byte
+	hasGoogleSearch := false
 	if HasResponsesWebSearchTool(root) && ModelSupportsWebSearch(modelName) && AllowsResponsesWebSearchToolChoice(root) {
 		googleSearchBlock := []byte(`{"googleSearch":{}}`)
 		if allowedDomains := ExtractResponsesWebSearchAllowedDomains(root); len(allowedDomains) > 0 {
@@ -48,6 +49,7 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 			}
 		}
 		toolBlocks = append(toolBlocks, googleSearchBlock)
+		hasGoogleSearch = true
 	}
 	if len(functionDeclarations) > 0 {
 		fnBlock := []byte(`{"functionDeclarations":[]}`)
@@ -66,6 +68,11 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 			}
 		}
 	}
+	// Gemini rejects built-in googleSearch combined with functionDeclarations
+	// unless server-side tool invocations are declared.
+	if hasGoogleSearch && len(functionDeclarations) > 0 {
+		out, _ = sjson.SetBytes(out, "toolConfig.includeServerSideToolInvocations", true)
+	}
 
 	// Extract system instruction from OpenAI "instructions" field.
 	systemParts := make([][]byte, 0, 2)
@@ -77,7 +84,7 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 	// Convert input messages to Gemini contents format
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		inputItems, hasGeminiCarrier := normalizeGeminiResponsesCarriers(input.Array())
+		inputItems, hasGeminiCarrier := normalizeGeminiResponsesCarriers(normalizeOpenAIResponsesToolSearchItems(input.Array(), forwardMap))
 		if hasGeminiCarrier {
 			useGeminiNativeReasoningLayout = true
 		}

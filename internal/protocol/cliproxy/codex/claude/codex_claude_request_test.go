@@ -694,6 +694,83 @@ func TestConvertClaudeRequestToCodex_AssistantGrokSignatureToReasoningItem(t *te
 	}
 }
 
+func testMetaClaudeSignature() string {
+	// Shape-valid synthetic Meta envelope; no captured value is embedded.
+	signature := "Q-PaDgE"
+	for len(signature) < 1426 {
+		signature += "A"
+	}
+	return signature
+}
+
+func TestConvertClaudeRequestToCodex_AssistantMetaSignatureToReasoningItem(t *testing.T) {
+	signature := testMetaClaudeSignature()
+	payload := []byte(`{"model":"muse-spark-1.3","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
+	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+
+	out, _ := ConvertClaudeRequestToCodex("muse-spark-1.3", payload, false)
+	reasoning := gjson.GetBytes(out, "input.0")
+	if reasoning.Get("type").String() != "reasoning" {
+		t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
+	}
+	if got := reasoning.Get("encrypted_content").String(); got != signature {
+		t.Fatalf("encrypted_content = %q, want Meta signature", got)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_IgnoresMetaSignatureForNonMetaTargets(t *testing.T) {
+	signature := testMetaClaudeSignature()
+	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
+	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+
+	for _, modelName := range []string{"gpt-5.4", "claude-sonnet-4-6", "grok-4.5"} {
+		t.Run(modelName, func(t *testing.T) {
+			out, _ := ConvertClaudeRequestToCodex(modelName, payload, false)
+			if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
+				t.Fatalf("got %d reasoning items for non-Meta target, want 0; output=%s", got, out)
+			}
+		})
+	}
+}
+
+func TestConvertClaudeRequestToCodex_AssistantRoutedMetaSignatureToReasoningItem(t *testing.T) {
+	// OpenRouter serves Meta Muse models and appends a dot-delimited
+	// alphanumeric suffix to the native envelope; the full value must replay
+	// verbatim.
+	signature := testMetaClaudeSignature() + "." + strings.Repeat("Ab3", 23)[:67]
+	payload := []byte(`{"model":"meta/muse-wonder","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
+	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+
+	out, _ := ConvertClaudeRequestToCodex("meta/muse-wonder", payload, false)
+	reasoning := gjson.GetBytes(out, "input.0")
+	if reasoning.Get("type").String() != "reasoning" {
+		t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
+	}
+	if got := reasoning.Get("encrypted_content").String(); got != signature {
+		t.Fatalf("encrypted_content = %q, want routed Meta signature verbatim", got)
+	}
+
+	out, _ = ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+	if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
+		t.Fatalf("got %d reasoning items for non-Meta target, want 0; output=%s", got, out)
+	}
+
+	// A foreign GPT signature must not be replayed when the target is a Meta Muse model.
+	gptPayload := []byte(`{"model":"muse-spark-1.3","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
+	gptPayload, _ = sjson.SetBytes(gptPayload, "messages.0.content.0.signature", validCodexReasoningSignature())
+	out, _ = ConvertClaudeRequestToCodex("muse-spark-1.3", gptPayload, false)
+	if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
+		t.Fatalf("got %d reasoning items for GPT signature on Meta target, want 0; output=%s", got, out)
+	}
+
+	// When modelName is an unmapped upstream deployment alias, the client-requested
+	// Meta Muse model in the payload preserves Meta signatures.
+	aliasOut, _ := ConvertClaudeRequestToCodex("deployment-123", payload, false)
+	if got := countRequestInputItemsByType(aliasOut, "reasoning"); got != 1 {
+		t.Fatalf("got %d reasoning items for aliased Meta target, want 1; output=%s", got, aliasOut)
+	}
+}
+
 func TestConvertClaudeRequestToCodex_IgnoresGrokSignatureForNonGrokTargets(t *testing.T) {
 	signature := "HmlYdr2aCAqCYP/m9mr8PS6KOsdMs72FGDigmydR+Jsmuv8KX97yWPlbOwmXJgWn0CbHaCacdQD3+n5EvpgLfPNmafS3kdICBjRuDf4bzHy7uBiUhNVhqPtp/ee1y9q4imPE4LYgD1VZ4J+bp9mTeqA1+nC9Oue58CiNEMV9SVaGenCD+aBnVuSTzQhD32Y+68i6HLJW0Dx6ifaRfb8hxYtA/sPM+/FTvAMW11nRho5a2BBSkpnzfqqAz/e/vGJ77/bygpXM823QA9wL9i0X"
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
@@ -789,29 +866,110 @@ func validCodexReasoningSignature() string {
 }
 
 func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
-	payload := []byte(`{
-		"messages":[{"role":"user","content":"return JSON"}],
-		"output_config":{"format":{"type":"json_schema","name":"answer_schema","strict":false,"schema":{"type":"object","properties":{"answer":{"type":"string"}}}}}
-	}`)
-	out, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-	root := gjson.ParseBytes(out)
-	if got := root.Get("text.format.type").String(); got != "json_schema" {
-		t.Fatalf("text.format.type = %q", got)
-	}
-	if got := root.Get("text.format.name").String(); got != "answer_schema" {
-		t.Fatalf("text.format.name = %q", got)
-	}
-	if root.Get("text.format.strict").Bool() {
-		t.Fatal("text.format.strict = true, want false")
-	}
-	if got := root.Get("text.format.schema.properties.answer.type").String(); got != "string" {
-		t.Fatalf("schema answer type = %q", got)
-	}
+	t.Run("Valid json_schema format", func(t *testing.T) {
+		payload := []byte(`{
+			"model": "gpt-5.4",
+			"max_tokens": 128,
+			"messages": [
+				{"role": "user", "content": "Return an object with one string field named answer."}
+			],
+			"output_config": {
+				"format": {
+					"type": "json_schema",
+					"schema": {
+						"type": "object",
+						"properties": {
+							"answer": {"type": "string"}
+						},
+						"required": ["answer"],
+						"additionalProperties": false
+					}
+				}
+			}
+		}`)
 
-	withoutFormat, _ := ConvertClaudeRequestToCodex("gpt-5.4", []byte(`{"messages":[{"role":"user","content":"hello"}]}`), false)
-	if gjson.GetBytes(withoutFormat, "text.format").Exists() {
-		t.Fatalf("unexpected text.format: %s", withoutFormat)
-	}
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		root := gjson.ParseBytes(translated)
+
+		if !root.Get("text.format").Exists() {
+			t.Fatalf("expected text.format in translated payload, got: %s", translated)
+		}
+		if got := root.Get("text.format.type").String(); got != "json_schema" {
+			t.Errorf("expected text.format.type to be 'json_schema', got %q", got)
+		}
+		if got := root.Get("text.format.name").String(); got != "cli_proxy_structured_output" {
+			t.Errorf("expected text.format.name to be 'cli_proxy_structured_output', got %q", got)
+		}
+		if got := root.Get("text.format.strict").Bool(); !got {
+			t.Errorf("expected text.format.strict to be true, got %v", got)
+		}
+		if got := root.Get("text.format.schema.properties.answer.type").String(); got != "string" {
+			t.Errorf("expected schema.properties.answer.type to be 'string', got %q", got)
+		}
+	})
+
+	t.Run("Valid json_schema format with custom name and strict false", func(t *testing.T) {
+		payload := []byte(`{
+			"model": "gpt-5.4",
+			"messages": [
+				{"role": "user", "content": "hello"}
+			],
+			"output_config": {
+				"format": {
+					"type": "json_schema",
+					"name": "custom_schema",
+					"strict": false,
+					"schema": {
+						"type": "object"
+					}
+				}
+			}
+		}`)
+
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		root := gjson.ParseBytes(translated)
+
+		if got := root.Get("text.format.name").String(); got != "custom_schema" {
+			t.Errorf("expected text.format.name to be 'custom_schema', got %q", got)
+		}
+		if got := root.Get("text.format.strict").Bool(); got != false {
+			t.Errorf("expected text.format.strict to be false, got %v", got)
+		}
+	})
+
+	t.Run("No output_config.format", func(t *testing.T) {
+		payload := []byte(`{
+			"model": "gpt-5.4",
+			"messages": [
+				{"role": "user", "content": "hello"}
+			]
+		}`)
+
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		root := gjson.ParseBytes(translated)
+		if root.Get("text.format").Exists() {
+			t.Fatalf("expected no text.format in translated payload, got: %s", translated)
+		}
+	})
+
+	t.Run("output_config with effort only", func(t *testing.T) {
+		payload := []byte(`{
+			"model": "gpt-5.4",
+			"output_config": {"effort": "high"},
+			"messages": [
+				{"role": "user", "content": "hello"}
+			]
+		}`)
+
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		root := gjson.ParseBytes(translated)
+		if root.Get("text.format").Exists() {
+			t.Fatalf("expected no text.format in translated payload, got: %s", translated)
+		}
+		if got := root.Get("reasoning.effort").String(); got != "high" {
+			t.Errorf("expected reasoning.effort to be 'high', got %q", got)
+		}
+	})
 
 	t.Run("json_schema with optional property downgrades strict", func(t *testing.T) {
 		payload := []byte(`{

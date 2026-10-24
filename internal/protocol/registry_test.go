@@ -117,15 +117,15 @@ func TestRegistry_TranslateRequest_AnthropicToGemini3_UsesThinkingLevel(t *testi
 		effort   string
 		want     string
 	}{
-		{name: "missing stays absent", model: "gemini-3.6-flash-high"},
-		{name: "adaptive without effort stays absent", model: "gemini-3.6-flash-high", adaptive: true},
-		{name: "minimal clamps to catalog minimum", model: "gemini-3.6-flash-high", effort: "minimal", want: "low"},
-		{name: "low stays low", model: "gemini-3.6-flash-high", effort: "low", want: "low"},
-		{name: "medium stays medium", model: "gemini-3.6-flash-high", effort: "medium", want: "medium"},
-		{name: "high stays high", model: "gemini-3.6-flash-high", effort: "high", want: "high"},
+		{name: "missing stays absent", model: "gemini-3.8-flash-high"},
+		{name: "adaptive without effort stays absent", model: "gemini-3.8-flash-high", adaptive: true},
+		{name: "minimal clamps to catalog minimum", model: "gemini-3.8-flash-high", effort: "minimal", want: "low"},
+		{name: "low stays low", model: "gemini-3.8-flash-high", effort: "low", want: "low"},
+		{name: "medium stays medium", model: "gemini-3.8-flash-high", effort: "medium", want: "medium"},
+		{name: "high stays high", model: "gemini-3.8-flash-high", effort: "high", want: "high"},
 		{name: "Gemini 3.7 minimal stays minimal", model: "gemini-3.7-flash-high", effort: "minimal", want: "minimal"},
-		{name: "xhigh clamps to maximum", model: "gemini-3.6-flash-high", effort: "xhigh", want: "high"},
-		{name: "max clamps to maximum", model: "gemini-3.6-flash-high", effort: "max", want: "high"},
+		{name: "xhigh clamps to maximum", model: "gemini-3.8-flash-high", effort: "xhigh", want: "high"},
+		{name: "max clamps to maximum", model: "gemini-3.8-flash-high", effort: "max", want: "high"},
 		{name: "pro minimal clamps to minimum", model: "gemini-3.1-pro-low", effort: "minimal", want: "low"},
 		{name: "missing middle level uses lower on tie", model: "gemini-3-pro", effort: "medium", want: "low"},
 	}

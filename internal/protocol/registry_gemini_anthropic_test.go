@@ -122,6 +122,19 @@ func TestRegistry_TranslateRequest_GeminiToAnthropic_PreservesThinkingLevel(t *t
 	}
 }
 
+func TestRegistry_TranslateResponseNonStream_GeminiMalformedFunctionCallToAnthropicFails(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawResp := []byte(`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":3,"totalTokenCount":3},"modelVersion":"gemini-2.5-pro"}`)
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, rawResp)
+	if err == nil || !strings.Contains(err.Error(), "MALFORMED_FUNCTION_CALL") {
+		t.Fatalf("malformed Gemini function call must fail translation, got err=%v body=%s", err, got)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_AnthropicToGemini(t *testing.T) {
 	t.Parallel()
 

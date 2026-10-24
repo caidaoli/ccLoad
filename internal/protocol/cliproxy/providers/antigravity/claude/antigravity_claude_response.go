@@ -63,101 +63,44 @@ func formatClaudeSignatureValue(modelName, signature string) string {
 // This structure tracks the current state of the response translation process to ensure
 // proper sequencing of SSE events and transitions between different content types.
 type Params struct {
-	HasFirstResponse     bool   // Indicates if the initial message_start event has been sent
-	ResponseType         int    // Current response type: 0=none, 1=content, 2=thinking, 3=function
-	ResponseIndex        int    // Index counter for content blocks in the streaming response
-	HasFinishReason      bool   // Tracks whether a finish reason has been observed
-	FinishReason         string // The finish reason string returned by the provider
-	HasUsageMetadata     bool   // Tracks whether usage metadata has been observed
-	PromptTokenCount     int64  // Cached prompt token count from usage metadata
-	CandidatesTokenCount int64  // Cached candidate token count from usage metadata
-	ThoughtsTokenCount   int64  // Cached thinking token count from usage metadata
-	TotalTokenCount      int64  // Cached total token count from usage metadata
-	CachedTokenCount     int64  // Cached content token count (indicates prompt caching)
-	HasSentFinalEvents   bool   // Indicates if final content/message events have been sent
-	HasToolUse           bool   // Indicates if tool use was observed in the stream
-	HasContent           bool   // Tracks whether any content (text, thinking, or tool use) has been output
-	HasSemanticContent   bool
-	LastSemanticKind     string
-	HasWebSearchTool     bool
-	WebSearchRequests    int64
-	WebSearchTextBuffer  strings.Builder
+	ModelName               string // Resolved once from the translated request
+	WebSearchStreamMode     bool   // Resolved once from both request formats
+	RequestMetadataResolved bool   // Also caches empty model names and disabled web search
+	HasFirstResponse        bool   // Indicates if the initial message_start event has been sent
+	ResponseType            int    // Current response type: 0=none, 1=content, 2=thinking, 3=function
+	ResponseIndex           int    // Index counter for content blocks in the streaming response
+	HasFinishReason         bool   // Tracks whether a finish reason has been observed
+	FinishReason            string // The finish reason string returned by the provider
+	HasUsageMetadata        bool   // Tracks whether usage metadata has been observed
+	PromptTokenCount        int64  // Cached prompt token count from usage metadata
+	CandidatesTokenCount    int64  // Cached candidate token count from usage metadata
+	ThoughtsTokenCount      int64  // Cached thinking token count from usage metadata
+	TotalTokenCount         int64  // Cached total token count from usage metadata
+	CachedTokenCount        int64  // Cached content token count (indicates prompt caching)
+	HasSentFinalEvents      bool   // Indicates if final content/message events have been sent
+	HasToolUse              bool   // Indicates if tool use was observed in the stream
+	HasContent              bool   // Tracks whether any content (text, thinking, or tool use) has been output
+	HasSemanticContent      bool
+	LastSemanticKind        string
+	HasWebSearchTool        bool
+	WebSearchRequests       int64
+	WebSearchTextBuffer     strings.Builder
 
 	// Signature caching support
 	CurrentThinkingText   strings.Builder // Accumulates thinking text for signature caching
 	CurrentThinkingSigned bool            // Tracks whether the active thinking block already has its terminal signature
-	PseudoThinkingOpen    bool
-	PseudoThinkingTail    string
 
 	// Reverse map: sanitized Gemini function name → original Claude tool name.
 	// Populated lazily on the first response chunk from the original request JSON.
 	ToolNameMap map[string]string
+
+	CurrentToolName            string // Client-facing name of the currently open tool_use block
+	CurrentToolIsParameterless bool   // Whether the open tool_use block was declared parameterless
+	CurrentToolInputEmitted    bool   // Whether cleaned input JSON was already emitted for the open tool_use block
 }
 
 // toolUseIDCounter provides a process-wide unique counter for tool use identifiers.
 var toolUseIDCounter uint64
-
-const (
-	pseudoThinkingOpenTag  = "<thinking>"
-	pseudoThinkingCloseTag = "</thinking>"
-)
-
-type pseudoThinkingSegment struct {
-	thinking bool
-	text     string
-}
-
-func consumePseudoThinkingSegments(params *Params, text string, final bool) []pseudoThinkingSegment {
-	if params == nil {
-		if text == "" {
-			return nil
-		}
-		return []pseudoThinkingSegment{{text: text}}
-	}
-
-	params.PseudoThinkingTail += text
-	segments := make([]pseudoThinkingSegment, 0, 2)
-	for params.PseudoThinkingTail != "" {
-		tag := pseudoThinkingOpenTag
-		if params.PseudoThinkingOpen {
-			tag = pseudoThinkingCloseTag
-		}
-
-		idx := strings.Index(params.PseudoThinkingTail, tag)
-		if idx >= 0 {
-			if prefix := params.PseudoThinkingTail[:idx]; prefix != "" {
-				segments = append(segments, pseudoThinkingSegment{thinking: params.PseudoThinkingOpen, text: prefix})
-			}
-			params.PseudoThinkingOpen = !params.PseudoThinkingOpen
-			params.PseudoThinkingTail = params.PseudoThinkingTail[idx+len(tag):]
-			continue
-		}
-
-		keep := 0
-		if !final {
-			keep = pseudoThinkingPartialSuffixLen(params.PseudoThinkingTail, tag)
-		}
-		if emit := params.PseudoThinkingTail[:len(params.PseudoThinkingTail)-keep]; emit != "" {
-			segments = append(segments, pseudoThinkingSegment{thinking: params.PseudoThinkingOpen, text: emit})
-		}
-		params.PseudoThinkingTail = params.PseudoThinkingTail[len(params.PseudoThinkingTail)-keep:]
-		break
-	}
-	return segments
-}
-
-func pseudoThinkingPartialSuffixLen(text, tag string) int {
-	maxLen := len(tag) - 1
-	if len(text) < maxLen {
-		maxLen = len(text)
-	}
-	for n := maxLen; n > 0; n-- {
-		if strings.HasPrefix(tag, text[len(text)-n:]) {
-			return n
-		}
-	}
-	return 0
-}
 
 func antigravityClaudeToolUseID(modelName string, functionCall gjson.Result, fallback string) string {
 	if sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini {
@@ -193,60 +136,18 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 			ToolNameMap:      util.DisambiguatedToolNameMap(originalRequestRawJSON),
 		}
 	}
-	modelName := gjson.GetBytes(requestRawJSON, "model").String()
-
 	params := (*param).(*Params)
-
-	output := make([]byte, 0, 1024)
-	appendEvent := func(event, payload string) {
-		output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+	// Request metadata is resolved once per stream; callers pass the same
+	// request bytes for the stream's lifetime.
+	if !params.RequestMetadataResolved {
+		params.ModelName = gjson.GetBytes(requestRawJSON, "model").String()
+		params.WebSearchStreamMode = shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON)
+		params.RequestMetadataResolved = true
 	}
-	appendThinkingText := func(text string) {
-		if text == "" {
-			return
-		}
-		if params.ResponseType != 2 {
-			if params.ResponseType != 0 {
-				appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
-				params.ResponseIndex++
-			}
-			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
-			params.ResponseType = 2
-			params.CurrentThinkingText.Reset()
-		}
-		params.CurrentThinkingText.WriteString(text)
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", text)
-		appendEvent("content_block_delta", string(data))
-		params.HasContent = true
-	}
-	appendText := func(text string) {
-		if text == "" {
-			return
-		}
-		if params.ResponseType != 1 {
-			if params.ResponseType != 0 {
-				appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
-				params.ResponseIndex++
-			}
-			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
-			params.ResponseType = 1
-		}
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", text)
-		appendEvent("content_block_delta", string(data))
-		params.HasContent = true
-	}
-	appendPseudoThinkingSegments := func(text string, final bool) {
-		for _, segment := range consumePseudoThinkingSegments(params, text, final) {
-			if segment.thinking {
-				appendThinkingText(segment.text)
-				continue
-			}
-			appendText(segment.text)
-		}
-	}
+	modelName := params.ModelName
 
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
-		appendPseudoThinkingSegments("", true)
+		output := make([]byte, 0, 256)
 		if params.HasFirstResponse && !params.HasContent {
 			output = translatorcommon.AppendSSEEventString(output, "content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex), 3)
 			params.ResponseType = 1
@@ -262,7 +163,11 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		return [][]byte{}
 	}
 
-	webSearchStreamMode := shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON)
+	output := make([]byte, 0, 1024)
+	appendEvent := func(event, payload string) {
+		output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+	}
+	webSearchStreamMode := params.WebSearchStreamMode
 	appendThinkingSignature := func(signature, direction, targetKind string) {
 		if signature == "" || params.ResponseType != 2 {
 			return
@@ -424,12 +329,20 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 					if hasThoughtSignature {
 						signatureTargetsVisibleText = appendPartSignature(thoughtSignatureResult.String(), geminiClaudeCarrierNext, geminiClaudeCarrierText)
 					}
-					// Empty text parts must not close an active block; appendText
-					// already reuses an open text block and only opens a new one
-					// for non-empty segments.
-					finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason")
-					if partText != "" || !finishReasonResult.Exists() {
-						appendPseudoThinkingSegments(partText, false)
+					if params.ResponseType == 1 {
+						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+						appendEvent("content_block_delta", string(data))
+						params.HasContent = true
+					} else if partText != "" {
+						if params.ResponseType != 0 {
+							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+							params.ResponseIndex++
+						}
+						appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
+						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+						appendEvent("content_block_delta", string(data))
+						params.ResponseType = 1
+						params.HasContent = true
 					}
 					if partText != "" {
 						params.HasSemanticContent = true
@@ -449,6 +362,27 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				params.HasToolUse = true
 				fcName := util.RestoreSanitizedToolName(params.ToolNameMap, functionCallResult.Get("name").String())
 
+				if params.ResponseType == 3 && fcName == "" && params.CurrentToolName != "" {
+					if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
+						partialJSON := util.CleanClaudeToolArgumentsWithTranslated(fcArgsResult.Raw, params.CurrentToolName, originalRequestRawJSON, requestRawJSON)
+						if params.CurrentToolIsParameterless {
+							if params.CurrentToolInputEmitted {
+								partialJSON = ""
+							} else {
+								params.CurrentToolInputEmitted = true
+							}
+						} else if partialJSON != "" {
+							params.CurrentToolInputEmitted = true
+						}
+						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", partialJSON)
+						appendEvent("content_block_delta", string(data))
+					}
+					params.HasContent = true
+					params.HasSemanticContent = true
+					params.LastSemanticKind = geminiClaudeCarrierFunction
+					continue
+				}
+
 				// Handle state transitions when switching to function calls
 				// Close any existing function call block first
 				if params.ResponseType == 3 {
@@ -463,6 +397,9 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 					params.ResponseIndex++
 				}
 
+				params.CurrentToolName = fcName
+				params.CurrentToolIsParameterless = util.ClaudeToolIsParameterless(fcName, originalRequestRawJSON)
+				params.CurrentToolInputEmitted = false
 				// Start a new tool use content block
 				// This creates the structure for a function call in Claude Code format
 				// Create the tool use block with unique ID and function details
@@ -476,7 +413,17 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				appendEvent("content_block_start", string(data))
 
 				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
-					data, _ = sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", fcArgsResult.Raw)
+					cleanArgs := util.CleanClaudeToolArgumentsWithTranslated(fcArgsResult.Raw, fcName, originalRequestRawJSON, requestRawJSON)
+					if params.CurrentToolIsParameterless {
+						if params.CurrentToolInputEmitted {
+							cleanArgs = ""
+						} else {
+							params.CurrentToolInputEmitted = true
+						}
+					} else if cleanArgs != "" {
+						params.CurrentToolInputEmitted = true
+					}
+					data, _ = sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", cleanArgs)
 					appendEvent("content_block_delta", string(data))
 				}
 				params.ResponseType = 3
@@ -494,17 +441,19 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	if usageResult := gjson.GetBytes(rawJSON, "response.usageMetadata"); usageResult.Exists() {
 		params.HasUsageMetadata = true
+		rawPromptTokenCount := usageResult.Get("promptTokenCount").Int()
 		params.CachedTokenCount = usageResult.Get("cachedContentTokenCount").Int()
-		params.PromptTokenCount = usageResult.Get("promptTokenCount").Int() - params.CachedTokenCount
+		params.PromptTokenCount = rawPromptTokenCount - params.CachedTokenCount
+		if params.PromptTokenCount < 0 {
+			params.PromptTokenCount = 0
+		}
 		params.CandidatesTokenCount = usageResult.Get("candidatesTokenCount").Int()
 		params.ThoughtsTokenCount = usageResult.Get("thoughtsTokenCount").Int()
 		params.TotalTokenCount = usageResult.Get("totalTokenCount").Int()
 		if params.CandidatesTokenCount == 0 && params.TotalTokenCount > 0 {
-			// PromptTokenCount 已减去 cached，而 TotalTokenCount 仍含 cached，
-			// 必须把 cached 加回来口径才一致；否则缓存命中的输入会被整段
-			// 算成输出 token，按输出价计费。
-			params.CandidatesTokenCount = params.TotalTokenCount -
-				(params.PromptTokenCount + params.CachedTokenCount) - params.ThoughtsTokenCount
+			// totalTokenCount includes the cached part of promptTokenCount, so the
+			// fallback must use the raw prompt count, not the cache-reduced one.
+			params.CandidatesTokenCount = params.TotalTokenCount - rawPromptTokenCount - params.ThoughtsTokenCount
 			if params.CandidatesTokenCount < 0 {
 				params.CandidatesTokenCount = 0
 			}
@@ -513,10 +462,6 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	if webSearchStreamMode && !params.HasWebSearchTool && params.HasFinishReason && params.WebSearchTextBuffer.Len() > 0 {
 		appendBufferedWebSearchTextBlock(params, appendEvent)
-	}
-
-	if params.HasFinishReason {
-		appendPseudoThinkingSegments("", true)
 	}
 
 	if params.HasUsageMetadata && params.HasFinishReason {
@@ -572,7 +517,8 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 	stopReason := resolveStopReason(params)
 	usageOutputTokens := params.CandidatesTokenCount + params.ThoughtsTokenCount
 	if usageOutputTokens == 0 && params.TotalTokenCount > 0 {
-		// 同上：TotalTokenCount 含 cached，PromptTokenCount 已减掉，要加回来。
+		// PromptTokenCount excludes cached tokens for input_tokens, while
+		// TotalTokenCount includes them; add the cache back for the fallback.
 		usageOutputTokens = params.TotalTokenCount - (params.PromptTokenCount + params.CachedTokenCount)
 		if usageOutputTokens < 0 {
 			usageOutputTokens = 0
@@ -674,7 +620,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	thinkingSignature := ""
 	thinkingSignatureDirection := geminiClaudeCarrierStandalone
 	thinkingSignatureTargetKind := geminiClaudeCarrierText
-	pseudoParams := &Params{}
 	toolIDCounter := 0
 	hasToolCall := false
 	hasSemanticContent := false
@@ -715,17 +660,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		carrier, _ = sjson.SetBytes(carrier, "signature", formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind))
 		blocks = append(blocks, carrier)
 	}
-	appendPseudoSegments := func(text string, final bool) {
-		for _, segment := range consumePseudoThinkingSegments(pseudoParams, text, final) {
-			if segment.thinking {
-				flushText()
-				thinkingBuilder.WriteString(segment.text)
-				continue
-			}
-			flushThinking()
-			textBuilder.WriteString(segment.text)
-		}
-	}
 
 	if parts.IsArray() {
 		for _, part := range parts.Array() {
@@ -739,7 +673,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			}
 
 			if functionCall := part.Get("functionCall"); functionCall.Exists() {
-				appendPseudoSegments("", true)
 				signatureAttachedToThought := false
 				isClaudeTarget := antigravityModelGroup(modelName) == "claude"
 				if !isClaudeTarget && signature != "" && thinkingBuilder.Len() > 0 && thinkingSignature == "" {
@@ -765,7 +698,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				}
 
 				if args := functionCall.Get("args"); args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
-					toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(args.Raw))
+					cleanArgs := util.CleanClaudeToolArgumentsWithTranslated(args.Raw, name, originalRequestRawJSON, requestRawJSON)
+					toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(cleanArgs))
 				}
 
 				blocks = append(blocks, toolBlock)
@@ -823,7 +757,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			}
 			if text.Exists() && text.String() != "" {
 				flushThinking()
-				appendPseudoSegments(text.String(), false)
+				textBuilder.WriteString(text.String())
 				hasSemanticContent = true
 				lastSemanticKind = geminiClaudeCarrierText
 				if visibleSignatureCarrier {
@@ -833,7 +767,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		}
 	}
 
-	appendPseudoSegments("", true)
 	flushThinking()
 	flushText()
 
