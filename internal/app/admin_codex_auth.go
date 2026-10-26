@@ -98,6 +98,7 @@ type codexOAuthCallbackRequest struct {
 }
 
 type codexPersonalAccessTokenRequest struct {
+	oauthLoginStartRequest
 	AccessToken string `json:"access_token"`
 }
 
@@ -116,7 +117,7 @@ func (r *codexPersonalAccessTokenRequest) Validate() error {
 	if !strings.HasPrefix(r.AccessToken, "at-") {
 		return errors.New("codex personal access token must start with at-")
 	}
-	return nil
+	return r.oauthLoginStartRequest.Validate()
 }
 
 type codexOAuthCancelRequest struct {
@@ -130,14 +131,72 @@ func (r *codexOAuthCancelRequest) Validate() error {
 	return nil
 }
 
+// oauthLoginStartRequest is the optional body of a browser OAuth start. Its
+// proxy carries every upstream request of that login and stays on the
+// resulting channel.
+type oauthLoginStartRequest struct {
+	ProxyURL string `json:"proxy_url"`
+}
+
+func (r *oauthLoginStartRequest) Validate() error {
+	proxyURL, err := normalizeChannelProxyURL(r.ProxyURL)
+	if err != nil {
+		return err
+	}
+	r.ProxyURL = proxyURL
+	return nil
+}
+
+// bindOAuthLoginStart parses the optional start body; a start without a body
+// keeps the default egress.
+func bindOAuthLoginStart(c *gin.Context, request RequestValidator) bool {
+	if c.Request.ContentLength == 0 {
+		return true
+	}
+	if err := BindAndValidate(c, request); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return false
+	}
+	return true
+}
+
+// oauthLoginOptions is what one login session takes from its start request.
+type oauthLoginOptions struct {
+	hint     string
+	proxyURL string
+	// client is the proxied client; nil keeps the provider service's own.
+	client *http.Client
+}
+
+func (o oauthLoginOptions) clientOr(fallback *http.Client) *http.Client {
+	if o.client != nil {
+		return o.client
+	}
+	return fallback
+}
+
+// oauthLoginOptions resolves the session egress. A proxy that cannot be built
+// fails the login instead of silently going direct.
+func (s *Server) oauthLoginOptions(request oauthLoginStartRequest, antigravityHTTP11Only bool) (oauthLoginOptions, error) {
+	options := oauthLoginOptions{proxyURL: request.ProxyURL}
+	if options.proxyURL == "" {
+		return options, nil
+	}
+	client, err := s.proxyHTTPClient(options.proxyURL, antigravityHTTP11Only)
+	if err != nil {
+		return oauthLoginOptions{}, fmt.Errorf("oauth login proxy: %w", err)
+	}
+	options.client = client
+	return options, nil
+}
+
 type codexOAuthManager struct {
 	startMu              sync.Mutex
 	mu                   sync.Mutex
 	provider             string
 	callbackPath         string
 	redirectURI          string
-	prepare              func(string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error)
-	prepareWithHint      func(string, string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error)
+	prepare              func(string, oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error)
 	parseCallbackRequest func(*http.Request, string) (codexOAuthResult, error)
 	parseSubmittedURL    func(string, string) (codexOAuthResult, error)
 	listenAddr           string
@@ -153,7 +212,7 @@ func newCodexOAuthManager(service *codexauth.Service, store storage.Store, inval
 		provider: "Codex", callbackPath: "/auth/callback", listenAddr: codexOAuthCallbackAddr,
 		timeout: codexOAuthTimeout, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
-		prepare: func(redirectURI string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
+		prepare: func(redirectURI string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
 			if service == nil || store == nil {
 				return "", "", nil, nil, errors.New("oauth: Codex is unavailable")
 			}
@@ -167,6 +226,7 @@ func newCodexOAuthManager(service *codexauth.Service, store storage.Store, inval
 			}
 			flowService := *service
 			flowService.RedirectURI = redirectURI
+			flowService.Client = options.clientOr(flowService.Client)
 			authURL, err := flowService.AuthorizationLink(state, pkce)
 			if err != nil {
 				return "", "", nil, nil, err
@@ -179,7 +239,7 @@ func newCodexOAuthManager(service *codexauth.Service, store storage.Store, inval
 				if !ok || credential == nil {
 					return 0, errors.New("oauth: Codex exchange returned an invalid credential")
 				}
-				channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+				channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, options.proxyURL)
 				if err != nil {
 					return 0, err
 				}
@@ -195,7 +255,7 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 		provider: "Antigravity", callbackPath: "/oauth-callback", listenAddr: antigravityOAuthCallbackAddr,
 		timeout: codexOAuthTimeout, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
-		prepare: func(redirectURI string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
+		prepare: func(redirectURI string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
 			if service == nil || store == nil {
 				return "", "", nil, nil, errors.New("oauth: Antigravity is unavailable")
 			}
@@ -205,6 +265,7 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 			}
 			flowService := *service
 			flowService.RedirectURI = redirectURI
+			flowService.Client = options.clientOr(flowService.Client)
 			authURL, err := flowService.AuthorizationLink(state)
 			if err != nil {
 				return "", "", nil, nil, err
@@ -217,7 +278,9 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 				if !ok || credential == nil {
 					return 0, errors.New("oauth: Antigravity exchange returned an invalid credential")
 				}
-				channel, err := createAntigravityChannel(ctx, store, credential, antigravityAccountModels(ctx, &flowService, credential))
+				channel, err := createAntigravityChannel(
+					ctx, store, credential, antigravityAccountModels(ctx, &flowService, credential), options.proxyURL,
+				)
 				if err != nil {
 					return 0, err
 				}
@@ -228,12 +291,8 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 	}
 }
 
-func (m *codexOAuthManager) start() (string, string, error) {
-	return m.startWithHint("")
-}
-
-func (m *codexOAuthManager) startWithHint(hint string) (string, string, error) {
-	if m == nil || (m.prepare == nil && m.prepareWithHint == nil) {
+func (m *codexOAuthManager) start(options oauthLoginOptions) (string, string, error) {
+	if m == nil || m.prepare == nil {
 		return "", "", errors.New("oauth is unavailable")
 	}
 	m.startMu.Lock()
@@ -275,15 +334,7 @@ func (m *codexOAuthManager) startWithHint(hint string) (string, string, error) {
 		m.mu.Unlock()
 		return "", "", fmt.Errorf("%s OAuth redirect URI is unavailable", m.provider)
 	}
-	var state, authURL string
-	var exchange func(context.Context, string) (any, error)
-	var commit func(context.Context, any) (int64, error)
-	var err error
-	if m.prepareWithHint != nil {
-		state, authURL, exchange, commit, err = m.prepareWithHint(redirectURI, hint)
-	} else {
-		state, authURL, exchange, commit, err = m.prepare(redirectURI)
-	}
+	state, authURL, exchange, commit, err := m.prepare(redirectURI, options)
 	if err != nil {
 		if listener != nil {
 			_ = listener.Close()
@@ -635,7 +686,14 @@ func (m *codexOAuthManager) close() {
 	}
 }
 
-func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, credential *codexauth.Credential) (*model.Config, bool, error) {
+// createOrUpdateCodexChannel persists a login. A non-empty proxyURL is the
+// egress the login used and becomes the channel's proxy.
+func createOrUpdateCodexChannel(
+	ctx context.Context,
+	store storage.Store,
+	credential *codexauth.Credential,
+	proxyURL string,
+) (*model.Config, bool, error) {
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return nil, false, err
@@ -646,7 +704,7 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 	}
 	cfg, existing, identity := findCodexOAuthChannel(configs, credential)
 	if cfg != nil {
-		return updateExistingCodexChannel(ctx, store, cfg, existing, identity, credential)
+		return updateExistingCodexChannel(ctx, store, cfg, existing, identity, credential, proxyURL)
 	}
 
 	codexChannelCreateMu.Lock()
@@ -656,10 +714,11 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 		return nil, false, fmt.Errorf("reload channels for Codex credential: %w", err)
 	}
 	if cfg, existing, identity = findCodexOAuthChannel(configs, credential); cfg != nil {
-		return updateExistingCodexChannel(ctx, store, cfg, existing, identity, credential)
+		return updateExistingCodexChannel(ctx, store, cfg, existing, identity, credential, proxyURL)
 	}
-	name := uniqueCodexChannelName(configs, credential)
-	created, err := store.CreateConfig(ctx, newCodexOAuthChannel(name, credentialJSON, credential.PlanType))
+	channel := newCodexOAuthChannel(uniqueCodexChannelName(configs, credential), credentialJSON, credential.PlanType)
+	channel.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, false, fmt.Errorf("create Codex channel: %w", err)
 	}
@@ -669,7 +728,14 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 // reactivateReauthorizedChannel returns a reauthorized channel to rotation: the
 // fresh login supersedes the rejected credential that disabled or cooled it down.
 // Model and URL cooldowns describe the upstream, not the credential, and stay.
-func reactivateReauthorizedChannel(ctx context.Context, store storage.Store, channelID int64) (*model.Config, error) {
+// A login made through a proxy moves the channel onto it; an empty proxyURL
+// keeps the channel's own setting.
+func reactivateReauthorizedChannel(ctx context.Context, store storage.Store, channelID int64, proxyURL string) (*model.Config, error) {
+	if proxyURL != "" {
+		if _, err := store.BatchPatchConfigs(ctx, []int64{channelID}, model.BatchConfigPatch{ProxyURL: &proxyURL}); err != nil {
+			return nil, fmt.Errorf("apply login proxy after reauthorization: %w", err)
+		}
+	}
 	if err := store.ResetChannelCooldown(ctx, channelID); err != nil {
 		return nil, fmt.Errorf("clear channel cooldown after reauthorization: %w", err)
 	}
@@ -683,6 +749,7 @@ func updateExistingCodexChannel(
 	current *codexauth.Credential,
 	identity codexIdentityMatch,
 	credential *codexauth.Credential,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -711,7 +778,7 @@ func updateExistingCodexChannel(
 			return nil, false, err
 		}
 		if credentialUpdated {
-			updated, err := reactivateReauthorizedChannel(ctx, store, currentCfg.ID)
+			updated, err := reactivateReauthorizedChannel(ctx, store, currentCfg.ID, proxyURL)
 			return updated, false, err
 		}
 
@@ -868,7 +935,16 @@ func codexChannelBaseName(credential *codexauth.Credential) string {
 
 // HandleStartCodexOAuth starts the local callback listener and returns the browser URL.
 func (s *Server) HandleStartCodexOAuth(c *gin.Context) {
-	url, state, err := s.codexOAuth.start()
+	var request oauthLoginStartRequest
+	if !bindOAuthLoginStart(c, &request) {
+		return
+	}
+	options, err := s.oauthLoginOptions(request, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	url, state, err := s.codexOAuth.start(options)
 	if err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return
@@ -936,7 +1012,14 @@ func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex personal access token authorization is unavailable")
 		return
 	}
-	credential, err := s.codexService.ValidatePersonalAccessToken(c.Request.Context(), request.AccessToken)
+	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	service := *s.codexService
+	service.Client = options.clientOr(service.Client)
+	credential, err := service.ValidatePersonalAccessToken(c.Request.Context(), request.AccessToken)
 	request.AccessToken = ""
 	if err != nil {
 		status := http.StatusBadGateway
@@ -948,7 +1031,7 @@ func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {
 		RespondError(c, status, err)
 		return
 	}
-	channel, created, err := createOrUpdateCodexChannel(c.Request.Context(), s.store, credential)
+	channel, created, err := createOrUpdateCodexChannel(c.Request.Context(), s.store, credential, options.proxyURL)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

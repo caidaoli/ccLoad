@@ -33,6 +33,7 @@ const (
 var zaiChannelCreateMu sync.Mutex
 
 type zaiCredentialImportRequest struct {
+	oauthLoginStartRequest
 	// APIKey is a Coding Plan key taken from the Z.ai console.
 	APIKey string `json:"api_key"`
 	// AccessToken is a ZCode account authorization; ccLoad derives the Coding
@@ -49,7 +50,7 @@ func (r *zaiCredentialImportRequest) Validate() error {
 	if strings.ContainsAny(r.APIKey, " \r\n\t") || strings.ContainsAny(r.AccessToken, " \r\n\t") {
 		return errors.New("credential contains invalid characters")
 	}
-	return nil
+	return r.oauthLoginStartRequest.Validate()
 }
 
 type zaiCredentialImportResponse struct {
@@ -73,13 +74,18 @@ func (s *Server) HandleImportZAICredential(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "z.ai credential import is unavailable")
 		return
 	}
+	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
 	ctx := c.Request.Context()
-	credential, err := s.buildZAICredential(ctx, request)
+	credential, err := s.buildZAICredential(ctx, request, options)
 	if err != nil {
 		RespondError(c, http.StatusBadGateway, err)
 		return
 	}
-	cfg, created, err := s.commitZAICredential(ctx, credential)
+	cfg, created, err := s.commitZAICredential(ctx, credential, options)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -133,24 +139,33 @@ func (s *Server) HandleRefreshZAICredential(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"oauth_credential": credential})
 }
 
+// zaiLoginService is the Z.ai service whose requests take the login's egress.
+func (s *Server) zaiLoginService(options oauthLoginOptions) *zaiauth.Service {
+	service := *s.zaiService
+	service.Client = options.clientOr(service.Client)
+	return &service
+}
+
 // buildZAICredential turns admin input into a validated credential. A supplied
 // access token always wins: it can re-mint the Coding Plan key later.
 func (s *Server) buildZAICredential(
 	ctx context.Context,
 	request zaiCredentialImportRequest,
+	options oauthLoginOptions,
 ) (*zaiauth.Credential, error) {
+	service := s.zaiLoginService(options)
 	credential := &zaiauth.Credential{
 		Type: zaiauth.ChannelType, APIKey: request.APIKey, AccessToken: request.AccessToken,
 		LastRefresh: time.Now().UTC().Format(time.RFC3339),
 	}
 	if request.AccessToken != "" {
-		apiKey, identity, err := s.zaiService.ResolveCodingPlanAPIKey(ctx, request.AccessToken)
+		apiKey, identity, err := service.ResolveCodingPlanAPIKey(ctx, request.AccessToken)
 		if err != nil {
 			return nil, err
 		}
 		credential.APIKey = apiKey
 		credential.UserID, credential.Email = identity.UserID, identity.Email
-	} else if err := s.zaiService.ValidateAPIKey(ctx, credential.APIKey); err != nil {
+	} else if err := service.ValidateAPIKey(ctx, credential.APIKey); err != nil {
 		return nil, err
 	}
 	if err := credential.Normalize(); err != nil {
@@ -163,9 +178,12 @@ func (s *Server) buildZAICredential(
 func (s *Server) commitZAICredential(
 	ctx context.Context,
 	credential *zaiauth.Credential,
+	options oauthLoginOptions,
 ) (*model.Config, bool, error) {
 	cfg, created, err := createOrUpdateZAIChannel(
-		ctx, s.store, credential, s.zaiCodingPlanBaseURL(ctx), s.zaiChannelModels(ctx, credential.APIKey),
+		ctx, s.store, credential,
+		s.zaiCodingPlanBaseURL(ctx, s.zaiLoginService(options)), s.zaiChannelModels(ctx, credential.APIKey, options.proxyURL),
+		options.proxyURL,
 	)
 	if err != nil {
 		return nil, false, err
@@ -178,8 +196,8 @@ func (s *Server) commitZAICredential(
 
 // zaiChannelModels seeds a new channel from the live Coding Plan catalog so it
 // starts with whatever the account can actually call today.
-func (s *Server) zaiChannelModels(ctx context.Context, apiKey string) []string {
-	models, err := s.zaiCodingPlanModels(ctx, nil, apiKey)
+func (s *Server) zaiChannelModels(ctx context.Context, apiKey, proxyURL string) []string {
+	models, err := s.zaiCodingPlanModels(ctx, &model.Config{ProxyURL: proxyURL}, apiKey)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			log.Printf("[WARN] Z.ai 模型目录不可用，新渠道使用内置列表: %v", err)
@@ -192,11 +210,8 @@ func (s *Server) zaiChannelModels(ctx context.Context, apiKey string) []string {
 // zaiCodingPlanBaseURL resolves the endpoint ZCode currently routes Coding Plan
 // traffic to. Routing is an optimization: an unreachable table falls back to the
 // endpoint ZCode shipped with.
-func (s *Server) zaiCodingPlanBaseURL(ctx context.Context) string {
-	if s == nil || s.zaiService == nil {
-		return zaiauth.CodingPlanProxyBaseURL
-	}
-	base, err := s.zaiService.ResolveProxyBaseURL(ctx)
+func (s *Server) zaiCodingPlanBaseURL(ctx context.Context, service *zaiauth.Service) string {
+	base, err := service.ResolveProxyBaseURL(ctx)
 	if err != nil || strings.TrimSpace(base) == "" {
 		return zaiauth.CodingPlanProxyBaseURL
 	}
@@ -209,6 +224,7 @@ func createOrUpdateZAIChannel(
 	credential *zaiauth.Credential,
 	baseURL string,
 	models []string,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	if store == nil || credential == nil {
 		return nil, false, errors.New("persist z.ai credential: unavailable")
@@ -224,11 +240,12 @@ func createOrUpdateZAIChannel(
 	if err != nil {
 		return nil, false, fmt.Errorf("list channels for z.ai credential: %w", err)
 	}
-	if existing, found, updateErr := updateExistingZAIChannel(ctx, store, configs, credential); found || updateErr != nil {
+	if existing, found, updateErr := updateExistingZAIChannel(ctx, store, configs, credential, proxyURL); found || updateErr != nil {
 		return existing, false, updateErr
 	}
-	name := uniqueZAIChannelName(configs, zaiChannelBaseName(credential))
-	created, err := store.CreateConfig(ctx, newZAIOAuthChannel(name, credentialJSON, baseURL, models))
+	channel := newZAIOAuthChannel(uniqueZAIChannelName(configs, zaiChannelBaseName(credential)), credentialJSON, baseURL, models)
+	channel.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, false, fmt.Errorf("create z.ai channel: %w", err)
 	}
@@ -242,6 +259,7 @@ func updateExistingZAIChannel(
 	store storage.Store,
 	configs []*model.Config,
 	credential *zaiauth.Credential,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	identity := credential.Identity()
 	for _, cfg := range configs {
@@ -278,7 +296,7 @@ func updateExistingZAIChannel(
 		if !updated {
 			return nil, true, errors.New("z.ai credential changed during reauthorization")
 		}
-		persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, cfg.ID)
+		persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, cfg.ID, proxyURL)
 		return persisted, true, reactivateErr
 	}
 	return nil, false, nil

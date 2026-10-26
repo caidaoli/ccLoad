@@ -25,7 +25,7 @@ const {
   batchRefreshSelectedOAuthUsage,
   refreshOAuthCredential,
   renderOAuthCredential,
-  zedOAuthStartOptions,
+  oauthStartOptions,
   openOAuthCredentialImportDialog,
   openOAuthLoginDialog,
   pollOAuthStatus,
@@ -382,11 +382,11 @@ test('CodeBuddy CLI file authorization preserves the session and uses the dedica
 test('CodeBuddy international edition uses its dedicated credential endpoint', async () => {
   const input = { value: JSON.stringify({ auth: { accessToken: 'intl-access' } }) };
   await submitCodeBuddyCredentialFile(input, async (url, options) => {
-    assert.equal(url, '/admin/codebuddy-international/credentials/import');
+    assert.equal(url, '/admin/codebuddy-international/credentials/import?proxy_url=socks5%3A%2F%2F127.0.0.1%3A1080');
     assert.equal(options.method, 'POST');
     assert.equal(JSON.parse(options.body).auth.accessToken, 'intl-access');
     return { channel_id: 2 };
-  }, undefined, 'international');
+  }, undefined, 'international', ' socks5://127.0.0.1:1080 ');
   assert.equal(input.value, '');
 });
 
@@ -435,9 +435,12 @@ test('Vertex import posts the raw key and passes location only when set', async 
     assert.equal(content.value, '');
     content.value = key;
     await submitVertexCredential(content, '  ', fetcher);
+    content.value = key;
+    await submitVertexCredential(content, 'us-central1', fetcher, undefined, 'http://proxy.local:8080');
     assert.deepEqual(requests.map(request => request.url), [
       '/admin/vertex/credentials/import?location=global',
-      '/admin/vertex/credentials/import'
+      '/admin/vertex/credentials/import',
+      '/admin/vertex/credentials/import?location=us-central1&proxy_url=http%3A%2F%2Fproxy.local%3A8080'
     ]);
     for (const request of requests) {
       assert.equal(request.options.method, 'POST');
@@ -448,20 +451,26 @@ test('Vertex import posts the raw key and passes location only when set', async 
     content.value = '{not json';
     await assert.rejects(submitVertexCredential(content, '', fetcher), /channels\.vertex\.contentInvalid/);
     assert.equal(content.value, '', 'a rejected key must not stay on the page');
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3);
   } finally {
     global.window = previousWindow;
   }
 });
 
-test('Zed login submits the registered installation identity', () => {
+test('OAuth login start submits the session proxy and Zed installation identity', () => {
   const previousWindow = global.window;
   global.window = { t: key => key };
   try {
-    const options = zedOAuthStartOptions(' 9d4b8c17-12ae-4091-96bc-1a79ce2de601 ');
+    const options = oauthStartOptions('zed', {
+      proxyURL: ' socks5://127.0.0.1:1080 ', systemID: ' 9d4b8c17-12ae-4091-96bc-1a79ce2de601 '
+    });
     assert.equal(options.method, 'POST');
-    assert.deepEqual(JSON.parse(options.body), { system_id: '9d4b8c17-12ae-4091-96bc-1a79ce2de601' });
-    assert.throws(() => zedOAuthStartOptions('not-a-uuid'), /channels\.zed\.systemIDInvalid/);
+    assert.equal(options.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(options.body), {
+      proxy_url: 'socks5://127.0.0.1:1080', system_id: '9d4b8c17-12ae-4091-96bc-1a79ce2de601'
+    });
+    assert.deepEqual(JSON.parse(oauthStartOptions('codex', { systemID: 'ignored' }).body), { proxy_url: '' });
+    assert.throws(() => oauthStartOptions('zed', { systemID: 'not-a-uuid' }), /channels\.zed\.systemIDInvalid/);
   } finally {
     global.window = previousWindow;
   }
@@ -481,9 +490,11 @@ test('Cursor credential import accepts only a user API key', async () => {
     await submitCursorCredential(input, async (url, options) => {
       request = { url, options };
       return { channel_name: 'Cursor-user@example.com' };
-    });
+    }, undefined, ' http://proxy.local:8080 ');
     assert.equal(request.url, '/admin/cursor/credentials/import');
-    assert.deepEqual(JSON.parse(request.options.body), { api_key: 'cursor-user-key' });
+    assert.deepEqual(JSON.parse(request.options.body), {
+      api_key: 'cursor-user-key', proxy_url: 'http://proxy.local:8080'
+    });
     assert.equal(input.value, '');
   } finally {
     global.window = previousWindow;
@@ -991,7 +1002,8 @@ test('xAI refresh-token and SSO jobs survive progress read errors and clear subm
           });
         },
         undefined,
-        async () => {}
+        async () => {},
+        'socks5h://proxy.local:1080'
       );
       assert.equal(result.created, 1);
       assert.equal(pollAttempts, 1);
@@ -999,7 +1011,8 @@ test('xAI refresh-token and SSO jobs survive progress read errors and clear subm
       assert.deepEqual(JSON.parse(captured.options.body), {
         method,
         values: secret,
-        priority_increment: 10
+        priority_increment: 10,
+        proxy_url: 'socks5h://proxy.local:1080'
       });
       assert.equal(textarea.value, '');
       assert.doesNotMatch(captured.url, /secret/);
@@ -1030,7 +1043,7 @@ test('Codex Personal Access Token submission clears the secret and uses the dedi
     assert.deepEqual(result, { status: 'complete', channel_id: 17, created: true });
     assert.equal(captured.url, '/admin/codex/personal-access-token');
     assert.equal(captured.options.method, 'POST');
-    assert.deepEqual(JSON.parse(captured.options.body), { access_token: 'at-secret-value' });
+    assert.deepEqual(JSON.parse(captured.options.body), { access_token: 'at-secret-value', proxy_url: '' });
     assert.equal(input.value, '');
 
     input.value = 'not-a-personal-access-token';

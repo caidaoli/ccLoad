@@ -893,14 +893,14 @@ async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
 
 // submitZAICodingPlanKey imports a Coding Plan key without a browser round trip.
 // The secret is cleared from the page before the request is awaited.
-async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal = undefined) {
+async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal = undefined, proxyURL = '') {
   let apiKey = String(input?.value || '').trim();
   if (!apiKey) {
     input?.setAttribute?.('aria-invalid', 'true');
     input?.focus?.();
     throw new Error(window.t('channels.zai.apiKeyRequired'));
   }
-  let body = JSON.stringify({ api_key: apiKey });
+  let body = JSON.stringify({ api_key: apiKey, proxy_url: String(proxyURL || '').trim() });
   apiKey = '';
   clearZAICodingPlanKey(input);
   try {
@@ -926,7 +926,20 @@ async function loadCredentialFile(input, content, fileRequiredKey) {
   if (input.files?.[0] === file && content.value === previous) content.value = body;
 }
 
-async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth, signal = undefined, edition = 'codebuddy') {
+// oauthImportQuery carries the import options of a raw credential body.
+function oauthImportQuery(params) {
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries(params)) {
+    const normalized = String(value || '').trim();
+    if (normalized) query.set(name, normalized);
+  }
+  const encoded = query.toString();
+  return encoded ? `?${encoded}` : '';
+}
+
+async function submitCodeBuddyCredentialFile(
+  input, fetcher = fetchDataWithAuth, signal = undefined, edition = 'codebuddy', proxyURL = ''
+) {
   const body = String(input?.value || '').trim();
   if (!body || new TextEncoder().encode(body).length > 1048576) {
     throw new Error(window.t('channels.codebuddy.contentRequired'));
@@ -939,14 +952,14 @@ async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth,
   }
   input.value = '';
   const provider = codeBuddyOAuthProvider(edition);
-  return fetcher(`/admin/${provider}/credentials/import`, {
+  return fetcher(`/admin/${provider}/credentials/import${oauthImportQuery({ proxy_url: proxyURL })}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal
   });
 }
 
 // submitVertexCredential imports a service account key. The key leaves the
 // page before validation so it never outlives the attempt.
-async function submitVertexCredential(content, location, fetcher = fetchDataWithAuth, signal = undefined) {
+async function submitVertexCredential(content, location, fetcher = fetchDataWithAuth, signal = undefined, proxyURL = '') {
   const body = String(content?.value || '').trim();
   if (content) content.value = '';
   if (!body || new TextEncoder().encode(body).length > 1048576) {
@@ -958,8 +971,7 @@ async function submitVertexCredential(content, location, fetcher = fetchDataWith
     throw new Error(window.t('channels.vertex.contentInvalid'));
   }
   signal?.throwIfAborted();
-  const normalizedLocation = String(location || '').trim();
-  const query = normalizedLocation ? `?location=${encodeURIComponent(normalizedLocation)}` : '';
+  const query = oauthImportQuery({ location, proxy_url: proxyURL });
   return fetcher(`/admin/vertex/credentials/import${query}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal
   });
@@ -997,7 +1009,7 @@ function openCursorUserAPIKeysPage() {
   }
 }
 
-async function submitCursorCredential(input, fetcher = fetchDataWithAuth, signal = undefined) {
+async function submitCursorCredential(input, fetcher = fetchDataWithAuth, signal = undefined, proxyURL = '') {
   let secret = String(input?.value || '').trim();
   if (!secret) {
     input?.setAttribute?.('aria-invalid', 'true');
@@ -1010,7 +1022,7 @@ async function submitCursorCredential(input, fetcher = fetchDataWithAuth, signal
     input?.focus?.();
     throw new Error(window.t('channels.cursor.apiKeyNotSession'));
   }
-  let body = JSON.stringify({ api_key: secret });
+  let body = JSON.stringify({ api_key: secret, proxy_url: String(proxyURL || '').trim() });
   secret = '';
   clearCursorSecret(input);
   try {
@@ -1031,7 +1043,8 @@ async function submitXAICredentialBatch(
   button,
   fetcher = fetchWithAuth,
   signal = undefined,
-  delay = codexOAuthDelay
+  delay = codexOAuthDelay,
+  proxyURL = ''
 ) {
   const normalizedMethod = String(method || '').trim().toLowerCase();
   if (!['refresh_token', 'sso'].includes(normalizedMethod)) {
@@ -1043,7 +1056,9 @@ async function submitXAICredentialBatch(
     textarea?.focus?.();
     throw new Error(window.t('channels.xai.secretRequired'));
   }
-  let body = JSON.stringify({ method: normalizedMethod, values: secret, priority_increment: 10 });
+  let body = JSON.stringify({
+    method: normalizedMethod, values: secret, priority_increment: 10, proxy_url: String(proxyURL || '').trim()
+  });
   secret = '';
   clearXAICredentialSecrets(textarea);
   if (button) {
@@ -1079,7 +1094,7 @@ async function submitXAICredentialBatch(
   }
 }
 
-async function submitCodexPersonalAccessToken(input, fetcher = fetchDataWithAuth, signal = undefined) {
+async function submitCodexPersonalAccessToken(input, fetcher = fetchDataWithAuth, signal = undefined, proxyURL = '') {
   let accessToken = String(input?.value || '').trim();
   if (!accessToken) {
     input?.setAttribute?.('aria-invalid', 'true');
@@ -1091,7 +1106,7 @@ async function submitCodexPersonalAccessToken(input, fetcher = fetchDataWithAuth
     input?.focus?.();
     throw new Error(window.t('channels.codex.personalAccessTokenInvalid'));
   }
-  let body = JSON.stringify({ access_token: accessToken });
+  let body = JSON.stringify({ access_token: accessToken, proxy_url: String(proxyURL || '').trim() });
   accessToken = '';
   clearCodexPersonalAccessToken(input);
   try {
@@ -1147,17 +1162,18 @@ async function startOAuth(provider, button) {
   try {
     if (button) button.disabled = true;
     setCodexAuthStatus(window.t(`${config.i18n}.oauthStarting`));
-    let startOptions = { method: 'POST' };
-    if (config.provider === 'zed') {
-      const systemIDInput = document.getElementById('zedSystemID');
-      try {
-        startOptions = zedOAuthStartOptions(systemIDInput?.value);
-        systemIDInput?.removeAttribute?.('aria-invalid');
-      } catch (error) {
-        systemIDInput?.setAttribute?.('aria-invalid', 'true');
-        systemIDInput?.focus?.();
-        throw error;
-      }
+    const systemIDInput = config.provider === 'zed' ? document.getElementById('zedSystemID') : null;
+    let startOptions;
+    try {
+      startOptions = oauthStartOptions(config.provider, {
+        proxyURL: oauthProxyURLValue(),
+        systemID: systemIDInput?.value
+      });
+      systemIDInput?.removeAttribute?.('aria-invalid');
+    } catch (error) {
+      systemIDInput?.setAttribute?.('aria-invalid', 'true');
+      systemIDInput?.focus?.();
+      throw error;
     }
     const session = await fetchDataWithAuth(`/admin/${config.provider}/oauth/start`, startOptions);
     if (!session?.url || !session?.state) throw new Error(window.t(`${config.i18n}.oauthFailed`));
@@ -1197,16 +1213,25 @@ async function startOAuth(provider, button) {
   }
 }
 
-function zedOAuthStartOptions(rawSystemID) {
-  const systemID = String(rawSystemID || '').trim();
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (systemID && (!uuidPattern.test(systemID) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(systemID))) {
-    throw new Error(window.t('channels.zed.systemIDInvalid'));
+function oauthProxyURLValue() {
+  return document.getElementById('oauthProxyURL')?.value || '';
+}
+
+// oauthStartOptions builds the start request; the proxy carries the whole login
+// and is saved on the channel it creates.
+function oauthStartOptions(provider, { proxyURL = '', systemID = '' } = {}) {
+  const body = { proxy_url: String(proxyURL || '').trim() };
+  if (provider === 'zed') {
+    body.system_id = String(systemID || '').trim();
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (body.system_id && (!uuidPattern.test(body.system_id) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(body.system_id))) {
+      throw new Error(window.t('channels.zed.systemIDInvalid'));
+    }
   }
   return {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ system_id: systemID })
+    body: JSON.stringify(body)
   };
 }
 
@@ -2783,7 +2808,9 @@ function setupOAuthActions() {
         try {
           setCodexOAuthDialogStatus(window.t(`${codebuddyI18n}.fileSubmitting`));
           codebuddyFile.value = '';
-          await submitCodeBuddyCredentialFile(codebuddyContent, fetchDataWithAuth, flow.controller.signal, codebuddyEditionValue);
+          await submitCodeBuddyCredentialFile(
+            codebuddyContent, fetchDataWithAuth, flow.controller.signal, codebuddyEditionValue, oauthProxyURLValue()
+          );
           if (activeCodeBuddyFileFlow !== flow) return;
           closeOAuthLoginDialogElement();
           setCodexAuthStatus(window.t(`${codebuddyI18n}.oauthComplete`), 'success');
@@ -2812,7 +2839,9 @@ function setupOAuthActions() {
         authorizeButton.setAttribute?.('aria-busy', 'true');
         try {
           setCodexOAuthDialogStatus(window.t('channels.codex.personalAccessTokenValidating'));
-          await submitCodexPersonalAccessToken(codexPersonalAccessToken, fetchDataWithAuth, controller?.signal);
+          await submitCodexPersonalAccessToken(
+            codexPersonalAccessToken, fetchDataWithAuth, controller?.signal, oauthProxyURLValue()
+          );
           if (flow.cancelling || activeCodexPersonalAccessTokenFlow !== flow) return;
           closeOAuthLoginDialogElement();
           setCodexAuthStatus(window.t('channels.codex.personalAccessTokenComplete'), 'success');
@@ -2852,7 +2881,8 @@ function setupOAuthActions() {
           try {
             setCodexOAuthDialogStatus(window.t('channels.xai.importing'));
             const result = await submitXAICredentialBatch(
-              method, xaiCredentialValues, authorizeButton, fetchWithAuth, controller?.signal
+              method, xaiCredentialValues, authorizeButton, fetchWithAuth, controller?.signal,
+              codexOAuthDelay, oauthProxyURLValue()
             );
             if (flow.cancelling || activeXAIImportFlow !== flow) return;
             const message = window.t('channels.oauth.importSummary', result);
@@ -2876,7 +2906,7 @@ function setupOAuthActions() {
         authorizeButton.setAttribute?.('aria-busy', 'true');
         try {
           setCodexOAuthDialogStatus(window.t('channels.cursor.apiKeyValidating'));
-          const result = await submitCursorCredential(input, fetchDataWithAuth, controller?.signal);
+          const result = await submitCursorCredential(input, fetchDataWithAuth, controller?.signal, oauthProxyURLValue());
           if (flow.cancelling || activeCursorImportFlow !== flow) return;
           closeOAuthLoginDialogElement();
           const message = window.t('channels.cursor.importComplete', { channel: result?.channel_name || '' });
@@ -2903,7 +2933,9 @@ function setupOAuthActions() {
         try {
           setCodexOAuthDialogStatus(window.t('channels.vertex.submitting'));
           if (vertexFile) vertexFile.value = '';
-          const result = await submitVertexCredential(vertexContent, vertexLocation?.value, fetchDataWithAuth, flow.controller.signal);
+          const result = await submitVertexCredential(
+            vertexContent, vertexLocation?.value, fetchDataWithAuth, flow.controller.signal, oauthProxyURLValue()
+          );
           if (activeVertexImportFlow !== flow) return;
           closeOAuthLoginDialogElement();
           const message = window.t(result?.created ? 'channels.vertex.importCreated' : 'channels.vertex.importUpdated', {
@@ -2933,7 +2965,7 @@ function setupOAuthActions() {
         authorizeButton.setAttribute?.('aria-busy', 'true');
         try {
           setCodexOAuthDialogStatus(window.t('channels.zai.apiKeyValidating'));
-          const result = await submitZAICodingPlanKey(zaiCodingPlanKey, fetchDataWithAuth, controller?.signal);
+          const result = await submitZAICodingPlanKey(zaiCodingPlanKey, fetchDataWithAuth, controller?.signal, oauthProxyURLValue());
           if (flow.cancelling || activeZAIKeyFlow !== flow) return;
           closeOAuthLoginDialogElement();
           const message = window.t('channels.zai.apiKeyComplete', { channel: result?.channel_name || '' });
@@ -3339,7 +3371,7 @@ if (typeof module !== 'undefined' && module.exports) {
     resetActiveChannelUsageAutoRefreshState,
     resetCodexQuota,
     renderOAuthCredential,
-    zedOAuthStartOptions,
+    oauthStartOptions,
     setOAuthCredentialView,
     setupOAuthActions,
     showOAuthSession,

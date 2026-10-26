@@ -382,11 +382,15 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.xaiOAuth = newXAIOAuthManager(
 		s.baseCtx,
 		s.xaiService,
-		func(ctx context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
-			return completeXAICredential(ctx, s.xaiService, s.client, credential, xaiauth.CLIBaseURL)
+		func(ctx context.Context, options oauthLoginOptions, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			service := s.xaiService
+			if options.client != nil {
+				service = nil
+			}
+			return completeXAICredential(ctx, service, options.clientOr(s.client), credential, xaiauth.CLIBaseURL)
 		},
-		func(ctx context.Context, credential *xaiauth.Credential) (int64, error) {
-			cfg, _, err := createOrUpdateXAIChannel(ctx, store, credential)
+		func(ctx context.Context, options oauthLoginOptions, credential *xaiauth.Credential) (int64, error) {
+			cfg, _, err := createOrUpdateXAIChannel(ctx, store, credential, options.proxyURL)
 			if err != nil {
 				return 0, err
 			}
@@ -417,11 +421,11 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.zaiOAuth = newZAIOAuthManager(
 		s.baseCtx,
 		s.zaiService,
-		func(ctx context.Context, accessToken string) (*zaiauth.Credential, error) {
-			return s.buildZAICredential(ctx, zaiCredentialImportRequest{AccessToken: accessToken})
+		func(ctx context.Context, options oauthLoginOptions, accessToken string) (*zaiauth.Credential, error) {
+			return s.buildZAICredential(ctx, zaiCredentialImportRequest{AccessToken: accessToken}, options)
 		},
-		func(ctx context.Context, credential *zaiauth.Credential) (int64, string, error) {
-			cfg, _, err := s.commitZAICredential(ctx, credential)
+		func(ctx context.Context, options oauthLoginOptions, credential *zaiauth.Credential) (int64, string, error) {
+			cfg, _, err := s.commitZAICredential(ctx, credential, options)
 			if err != nil {
 				return 0, "", err
 			}
@@ -1490,26 +1494,39 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	if cfg.ProxyURL == "" {
 		return defaultClient
 	}
-	cacheKey := upstreamHTTPClientCacheKey{
-		proxyURL:              cfg.ProxyURL,
-		antigravityHTTP11Only: antigravityHTTP11Only,
-	}
-	if v, ok := s.proxyTransports.Load(cacheKey); ok {
-		return v.(*http.Client)
-	}
-
-	t, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify, s.upstreamChannelCount)
+	client, err := s.proxyHTTPClient(cfg.ProxyURL, antigravityHTTP11Only)
 	if err != nil {
 		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
 		return defaultClient
 	}
+	return client
+}
+
+// proxyHTTPClient returns the shared client that egresses through proxyURL.
+func (s *Server) proxyHTTPClient(proxyURL string, antigravityHTTP11Only bool) (*http.Client, error) {
+	cacheKey := upstreamHTTPClientCacheKey{
+		proxyURL:              proxyURL,
+		antigravityHTTP11Only: antigravityHTTP11Only,
+	}
+	if v, ok := s.proxyTransports.Load(cacheKey); ok {
+		return v.(*http.Client), nil
+	}
+
+	t, err := buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
+	if err != nil {
+		return nil, err
+	}
+	clientFactory := newUpstreamHTTPClient
+	if antigravityHTTP11Only {
+		clientFactory = newAntigravityHTTPClient
+	}
 	c := clientFactory(t, s.upstreamConnectionMaxAge)
 	if actual, loaded := s.proxyTransports.LoadOrStore(cacheKey, c); loaded {
 		closeUpstreamHTTPClient(c)
-		return actual.(*http.Client)
+		return actual.(*http.Client), nil
 	}
-	log.Printf("[INFO] 渠道 %d 使用独立代理: %s", cfg.ID, cfg.ProxyURL)
-	return c
+	log.Printf("[INFO] 使用独立代理: %s", proxyURL)
+	return c, nil
 }
 
 // buildChannelProxyTransport 构建带代理的 Transport（HTTP/HTTPS 直连，SOCKS5 用自定义 Dialer）。

@@ -52,8 +52,8 @@ func (u *zaiOAuthTestUpstream) handler(t *testing.T) http.Handler {
 func newZAIOAuthTestManager(
 	t *testing.T,
 	upstream *zaiOAuthTestUpstream,
-	resolve func(context.Context, string) (*zaiauth.Credential, error),
-	commit func(context.Context, *zaiauth.Credential) (int64, string, error),
+	resolve func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error),
+	commit func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error),
 ) *zaiOAuthManager {
 	t.Helper()
 	server := httptest.NewServer(upstream.handler(t))
@@ -86,17 +86,17 @@ func TestZAIOAuthManagerCommitsAuthorizedAccount(t *testing.T) {
 	var resolvedToken string
 	var committed *zaiauth.Credential
 	manager := newZAIOAuthTestManager(t, upstream,
-		func(_ context.Context, accessToken string) (*zaiauth.Credential, error) {
+		func(_ context.Context, _ oauthLoginOptions, accessToken string) (*zaiauth.Credential, error) {
 			resolvedToken = accessToken
 			return &zaiauth.Credential{APIKey: "key.secret"}, nil
 		},
-		func(_ context.Context, credential *zaiauth.Credential) (int64, string, error) {
+		func(_ context.Context, _ oauthLoginOptions, credential *zaiauth.Credential) (int64, string, error) {
 			committed = credential
 			return 42, "Z.ai-user@example.com", nil
 		},
 	)
 
-	started, err := manager.start(context.Background(), "admin-1")
+	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -128,16 +128,16 @@ func TestZAIOAuthManagerReportsUpstreamRejection(t *testing.T) {
 	t.Parallel()
 	upstream := &zaiOAuthTestUpstream{failed: true}
 	manager := newZAIOAuthTestManager(t, upstream,
-		func(context.Context, string) (*zaiauth.Credential, error) {
+		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) {
 			t.Error("a rejected authorization must not resolve a key")
 			return nil, nil
 		},
-		func(context.Context, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
 			t.Error("a rejected authorization must not create a channel")
 			return 0, "", nil
 		},
 	)
-	started, err := manager.start(context.Background(), "admin-1")
+	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -150,14 +150,14 @@ func TestZAIOAuthManagerReportsUpstreamRejection(t *testing.T) {
 func TestZAIOAuthManagerSurfacesCommitFailure(t *testing.T) {
 	t.Parallel()
 	manager := newZAIOAuthTestManager(t, &zaiOAuthTestUpstream{},
-		func(context.Context, string) (*zaiauth.Credential, error) {
+		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) {
 			return &zaiauth.Credential{APIKey: "key.secret"}, nil
 		},
-		func(context.Context, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
 			return 0, "", errors.New("channel write failed")
 		},
 	)
-	started, err := manager.start(context.Background(), "admin-1")
+	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -172,10 +172,14 @@ func TestZAIOAuthManagerScopesSessionsToAdministrator(t *testing.T) {
 	t.Parallel()
 	upstream := &zaiOAuthTestUpstream{readyAfter: 1 << 30}
 	manager := newZAIOAuthTestManager(t, upstream,
-		func(context.Context, string) (*zaiauth.Credential, error) { return nil, errors.New("unused") },
-		func(context.Context, *zaiauth.Credential) (int64, string, error) { return 0, "", nil },
+		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) {
+			return nil, errors.New("unused")
+		},
+		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+			return 0, "", nil
+		},
 	)
-	started, err := manager.start(context.Background(), "admin-1")
+	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -200,10 +204,12 @@ func TestZAIOAuthManagerScopesSessionsToAdministrator(t *testing.T) {
 func TestZAIOAuthManagerRejectsAnonymousStart(t *testing.T) {
 	t.Parallel()
 	manager := newZAIOAuthTestManager(t, &zaiOAuthTestUpstream{},
-		func(context.Context, string) (*zaiauth.Credential, error) { return nil, nil },
-		func(context.Context, *zaiauth.Credential) (int64, string, error) { return 0, "", nil },
+		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) { return nil, nil },
+		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+			return 0, "", nil
+		},
 	)
-	if _, err := manager.start(context.Background(), "  "); err == nil {
+	if _, err := manager.start(context.Background(), "  ", oauthLoginOptions{}); err == nil {
 		t.Fatal("start() must require an administrator session")
 	}
 }
@@ -219,11 +225,13 @@ func TestZAIOAuthManagerReportsUnavailableFlow(t *testing.T) {
 	service := zaiauth.NewService(server.Client())
 	service.OAuthBaseURL = server.URL + "/api/v1"
 	manager := newZAIOAuthManager(context.Background(), service,
-		func(context.Context, string) (*zaiauth.Credential, error) { return nil, nil },
-		func(context.Context, *zaiauth.Credential) (int64, string, error) { return 0, "", nil },
+		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) { return nil, nil },
+		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+			return 0, "", nil
+		},
 	)
 	t.Cleanup(manager.close)
-	_, err := manager.start(context.Background(), "admin-1")
+	_, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
 	if !errors.Is(err, zaiauth.ErrOAuthFlowUnavailable) {
 		t.Fatalf("start() error = %v", err)
 	}

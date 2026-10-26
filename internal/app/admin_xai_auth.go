@@ -48,6 +48,7 @@ var xaiOAuthDefaultModels = []string{
 var xaiChannelCreateMu sync.Mutex
 
 type xaiCredentialBatchRequest struct {
+	oauthLoginStartRequest
 	Method            string `json:"method"`
 	Values            string `json:"values"`
 	PriorityIncrement int    `json:"priority_increment"`
@@ -63,7 +64,7 @@ func (r *xaiCredentialBatchRequest) Validate() error {
 	}
 	switch r.PriorityIncrement {
 	case 0, 10, 20, 50:
-		return nil
+		return r.oauthLoginStartRequest.Validate()
 	default:
 		return errors.New("priority_increment must be one of 0, 10, 20, or 50")
 	}
@@ -80,6 +81,11 @@ type xaiCredentialImportBatch struct {
 	Values            []string
 	PriorityIncrement int
 	NextPriority      int
+	// ProxyURL routes every upstream request of the batch and becomes the
+	// proxy of each created channel. Client and SSOClient are nil without it.
+	ProxyURL  string
+	Client    *http.Client
+	SSOClient *http.Client
 }
 
 // HandleImportXAICredentialsStream streams one background import. A broken SSE
@@ -161,16 +167,31 @@ func (s *Server) prepareXAICredentialImport(c *gin.Context) (*xaiCredentialImpor
 	if s.client == nil || s.store == nil {
 		return nil, http.StatusServiceUnavailable, errors.New("xAI credential import is unavailable")
 	}
+	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
 	nextPriority, err := s.nextXAICredentialPriority(c.Request.Context(), request.PriorityIncrement)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
-	return &xaiCredentialImportBatch{
+	batch := &xaiCredentialImportBatch{
 		Method:            request.Method,
 		Values:            values,
 		PriorityIncrement: request.PriorityIncrement,
 		NextPriority:      nextPriority,
-	}, 0, nil
+		ProxyURL:          options.proxyURL,
+		Client:            options.client,
+	}
+	if batch.ProxyURL != "" && batch.Method == "sso" {
+		// SSO conversion needs its own HTTP/1.1 client; it lives for this batch only.
+		transport, err := buildChannelProxyTransport(batch.ProxyURL, s.skipTLSVerify, s.upstreamChannelCount)
+		if err != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("oauth login proxy: %w", err)
+		}
+		batch.SSOClient = newXAISSOHTTPClient(transport)
+	}
+	return batch, 0, nil
 }
 
 func wipeXAICredentialImportBatch(batch *xaiCredentialImportBatch) {
@@ -181,6 +202,8 @@ func wipeXAICredentialImportBatch(batch *xaiCredentialImportBatch) {
 		batch.Values[index] = ""
 	}
 	batch.Values = nil
+	closeUpstreamHTTPClient(batch.SSOClient)
+	batch.SSOClient = nil
 }
 
 func (s *Server) runXAICredentialImport(
@@ -201,10 +224,17 @@ func (s *Server) runXAICredentialImport(
 
 	batchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	service := xaiauth.NewService(s.client)
-	ssoClient := s.xaiSSOClient
+	client := s.client
+	if batch.Client != nil {
+		client = batch.Client
+	}
+	service := xaiauth.NewService(client)
+	ssoClient := batch.SSOClient
 	if ssoClient == nil {
-		ssoClient = s.client
+		ssoClient = s.xaiSSOClient
+	}
+	if ssoClient == nil {
+		ssoClient = client
 	}
 	ssoService := xaiauth.NewService(ssoClient)
 	jobs := make(chan int)
@@ -218,7 +248,7 @@ func (s *Server) runXAICredentialImport(
 				itemCtx, itemCancel := context.WithTimeout(batchCtx, itemTimeout)
 				credential, itemErr := acquireXAICredential(itemCtx, service, ssoService, batch.Method, batch.Values[index])
 				if itemErr == nil {
-					credential, itemErr = completeXAICredential(itemCtx, service, s.client, credential, xaiauth.CLIBaseURL)
+					credential, itemErr = completeXAICredential(itemCtx, service, client, credential, xaiauth.CLIBaseURL)
 				}
 				itemCancel()
 				select {
@@ -274,7 +304,7 @@ func (s *Server) runXAICredentialImport(
 					stopped = true
 					break
 				}
-				result := s.persistXAICredentialBatchItem(batchCtx, batch.Method, ready, fileName, nextPriority)
+				result := s.persistXAICredentialBatchItem(batchCtx, batch, ready, fileName, nextPriority)
 				if result.Status == "created" {
 					nextPriority += batch.PriorityIncrement
 				}
@@ -356,12 +386,13 @@ func (s *Server) nextXAICredentialPriority(ctx context.Context, increment int) (
 
 func (s *Server) persistXAICredentialBatchItem(
 	ctx context.Context,
-	method string,
+	batch *xaiCredentialImportBatch,
 	item xaiCredentialBatchItem,
 	fileName string,
 	priority int,
 ) oauthCredentialImportResult {
 	result := oauthCredentialImportResult{FileName: fileName}
+	method := batch.Method
 	if item.err != nil || item.credential == nil {
 		result.Status = "failed"
 		if method == "sso" && item.err != nil {
@@ -373,7 +404,7 @@ func (s *Server) persistXAICredentialBatchItem(
 		}
 		return result
 	}
-	channelName, created, err := createImportedXAIChannel(ctx, s.store, item.credential, priority)
+	channelName, created, err := createImportedXAIChannel(ctx, s.store, item.credential, priority, batch.ProxyURL)
 	if err != nil {
 		result.Status, result.Error = "failed", "xAI credential persistence failed"
 		return result
@@ -532,7 +563,12 @@ func mergeXAIBillingMetadata(credential *xaiauth.Credential, metadata xaiBilling
 	}
 }
 
-func createOrUpdateXAIChannel(ctx context.Context, store storage.Store, credential *xaiauth.Credential) (*model.Config, bool, error) {
+func createOrUpdateXAIChannel(
+	ctx context.Context,
+	store storage.Store,
+	credential *xaiauth.Credential,
+	proxyURL string,
+) (*model.Config, bool, error) {
 	if store == nil || credential == nil {
 		return nil, false, errors.New("persist xAI credential: unavailable")
 	}
@@ -548,7 +584,7 @@ func createOrUpdateXAIChannel(ctx context.Context, store storage.Store, credenti
 	}
 	identity := credential.Identity()
 	if identity.Email != "" || identity.Subject != "" {
-		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential); found || updateErr != nil {
+		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential, proxyURL); found || updateErr != nil {
 			return existing, false, updateErr
 		}
 	}
@@ -560,12 +596,13 @@ func createOrUpdateXAIChannel(ctx context.Context, store storage.Store, credenti
 		return nil, false, fmt.Errorf("reload channels for xAI credential: %w", err)
 	}
 	if identity.Email != "" || identity.Subject != "" {
-		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential); found || updateErr != nil {
+		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential, proxyURL); found || updateErr != nil {
 			return existing, false, updateErr
 		}
 	}
-	name := uniqueXAIChannelName(configs, xaiChannelBaseName(credential))
-	created, err := store.CreateConfig(ctx, newXAIOAuthChannel(name, credentialJSON))
+	channel := newXAIOAuthChannel(uniqueXAIChannelName(configs, xaiChannelBaseName(credential)), credentialJSON)
+	channel.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, false, fmt.Errorf("create xAI channel: %w", err)
 	}
@@ -577,6 +614,7 @@ func updateExistingXAIIdentity(
 	store storage.Store,
 	configs []*model.Config,
 	credential *xaiauth.Credential,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	for _, cfg := range configs {
 		if cfg == nil || !cfg.UsesXAIOAuth() || strings.TrimSpace(cfg.OAuthCredential) == "" {
@@ -612,14 +650,16 @@ func updateExistingXAIIdentity(
 			if !updated {
 				continue
 			}
-			persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, currentCfg.ID)
+			persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, currentCfg.ID, proxyURL)
 			return persisted, true, reactivateErr
 		}
 	}
 	return nil, false, nil
 }
 
-func createImportedXAIChannel(ctx context.Context, store storage.Store, credential *xaiauth.Credential, priority int) (string, bool, error) {
+// createImportedXAIChannel skips an account that already has a channel, so a
+// batch never rewrites the proxy of an existing channel.
+func createImportedXAIChannel(ctx context.Context, store storage.Store, credential *xaiauth.Credential, priority int, proxyURL string) (string, bool, error) {
 	if store == nil || credential == nil {
 		return "", false, errors.New("persist xAI credential: unavailable")
 	}
@@ -643,6 +683,7 @@ func createImportedXAIChannel(ctx context.Context, store storage.Store, credenti
 	}
 	channel := newXAIOAuthChannel(name, credentialJSON)
 	channel.Priority = priority
+	channel.ProxyURL = proxyURL
 	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return "", false, fmt.Errorf("create xAI channel: %w", err)

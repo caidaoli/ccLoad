@@ -1208,10 +1208,10 @@ func TestXAIOAuthHandlersGenerateLocallyAndExchangeManualCallback(t *testing.T) 
 		}, nil
 	})}
 	manager := newXAIOAuthManager(context.Background(), xaiauth.NewService(client),
-		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+		func(_ context.Context, _ oauthLoginOptions, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
 			return credential, nil
 		},
-		func(context.Context, *xaiauth.Credential) (int64, error) { return 99, nil },
+		func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error) { return 99, nil },
 	)
 	t.Cleanup(manager.close)
 	server := &Server{xaiOAuth: manager}
@@ -1274,13 +1274,13 @@ func TestXAIOAuthAcceptsBareCodeForCurrentAdminSession(t *testing.T) {
 		}, nil
 	})}
 	manager := newXAIOAuthManager(context.Background(), xaiauth.NewService(client),
-		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+		func(_ context.Context, _ oauthLoginOptions, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
 			return credential, nil
 		},
-		func(context.Context, *xaiauth.Credential) (int64, error) { return 7, nil },
+		func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error) { return 7, nil },
 	)
 	t.Cleanup(manager.close)
-	started, err := manager.start("admin-session")
+	started, err := manager.start("admin-session", oauthLoginOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1306,18 +1306,18 @@ func TestXAIOAuthCancellationRespectsCommitBoundary(t *testing.T) {
 		completeStarted := make(chan struct{})
 		var commits atomic.Int32
 		manager := newXAIOAuthManager(context.Background(), newService(),
-			func(ctx context.Context, _ *xaiauth.Credential) (*xaiauth.Credential, error) {
+			func(ctx context.Context, _ oauthLoginOptions, _ *xaiauth.Credential) (*xaiauth.Credential, error) {
 				close(completeStarted)
 				<-ctx.Done()
 				return nil, ctx.Err()
 			},
-			func(context.Context, *xaiauth.Credential) (int64, error) {
+			func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error) {
 				commits.Add(1)
 				return 0, nil
 			},
 		)
 		defer manager.close()
-		started, err := manager.start("admin-session")
+		started, err := manager.start("admin-session", oauthLoginOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1344,10 +1344,10 @@ func TestXAIOAuthCancellationRespectsCommitBoundary(t *testing.T) {
 		releaseCommit := make(chan struct{})
 		now := time.Now()
 		manager := newXAIOAuthManager(context.Background(), newService(),
-			func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			func(_ context.Context, _ oauthLoginOptions, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
 				return credential, nil
 			},
-			func(context.Context, *xaiauth.Credential) (int64, error) {
+			func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error) {
 				close(commitStarted)
 				<-releaseCommit
 				return 42, nil
@@ -1355,7 +1355,7 @@ func TestXAIOAuthCancellationRespectsCommitBoundary(t *testing.T) {
 		)
 		defer manager.close()
 		manager.now = func() time.Time { return now }
-		started, err := manager.start("admin-session")
+		started, err := manager.start("admin-session", oauthLoginOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1563,7 +1563,7 @@ func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 	if err := first.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	created, wasCreated, err := createOrUpdateXAIChannel(context.Background(), store, first)
+	created, wasCreated, err := createOrUpdateXAIChannel(context.Background(), store, first, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("first persistence = (%#v, %v, %v)", created, wasCreated, err)
 	}
@@ -1573,7 +1573,7 @@ func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 	if err := rotated.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	updated, wasCreated, err := createOrUpdateXAIChannel(context.Background(), store, rotated)
+	updated, wasCreated, err := createOrUpdateXAIChannel(context.Background(), store, rotated, "")
 	if err != nil || wasCreated || updated.ID != created.ID {
 		t.Fatalf("second persistence = (%#v, %v, %v)", updated, wasCreated, err)
 	}
@@ -1601,7 +1601,7 @@ func TestXAIOAuthConcurrentInteractivePersistenceCreatesOneStableIdentity(t *tes
 	results := make(chan persistenceResult, 2)
 	for range 2 {
 		go func() {
-			channel, _, err := createOrUpdateXAIChannel(context.Background(), store, credential)
+			channel, _, err := createOrUpdateXAIChannel(context.Background(), store, credential, "")
 			results <- persistenceResult{channel: channel, err: err}
 		}()
 	}
@@ -1645,7 +1645,7 @@ func TestCodexPersonalAccessTokenConcurrentPersistenceCreatesOneStableIdentity(t
 	for range 2 {
 		candidate := cloneCodexCredential(credential)
 		go func() {
-			channel, created, err := createOrUpdateCodexChannel(context.Background(), store, candidate)
+			channel, created, err := createOrUpdateCodexChannel(context.Background(), store, candidate, "")
 			results <- persistenceResult{channel: channel, created: created, err: err}
 		}()
 	}
@@ -1685,7 +1685,7 @@ func TestXAIFilePersistenceIsCreateOnlyAndCaseInsensitive(t *testing.T) {
 	if err := first.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	name, created, err := createImportedXAIChannel(context.Background(), store, first, 10)
+	name, created, err := createImportedXAIChannel(context.Background(), store, first, 10, "")
 	if err != nil || !created || name != "xAI-User@Example.com" {
 		t.Fatalf("first import = (%q, %v, %v)", name, created, err)
 	}
@@ -1694,7 +1694,7 @@ func TestXAIFilePersistenceIsCreateOnlyAndCaseInsensitive(t *testing.T) {
 	if err := second.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	name, created, err = createImportedXAIChannel(context.Background(), store, second, 20)
+	name, created, err = createImportedXAIChannel(context.Background(), store, second, 20, "")
 	if err != nil || created || name != "xAI-User@Example.com" {
 		t.Fatalf("duplicate import = (%q, %v, %v)", name, created, err)
 	}
@@ -1865,7 +1865,7 @@ func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 	manager.timeout = 2 * time.Second
 	defer manager.close()
 
-	authURL, state, err := manager.start()
+	authURL, state, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -1951,7 +1951,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	manager.timeout = 2 * time.Second
 	defer manager.close()
 
-	authURL, state, err := manager.start()
+	authURL, state, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -2040,7 +2040,7 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
 		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "new-project",
 	}
-	updated, err := createAntigravityChannel(context.Background(), store, updatedCredential, antigravityCatalogModels())
+	updated, err := createAntigravityChannel(context.Background(), store, updatedCredential, antigravityCatalogModels(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2105,7 +2105,7 @@ func TestCreateAntigravityChannelPreservesModelEditAtCommit(t *testing.T) {
 		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
 		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "new-project",
 	}
-	updated, err := createAntigravityChannel(ctx, interleaved, newCredential, antigravityCatalogModels())
+	updated, err := createAntigravityChannel(ctx, interleaved, newCredential, antigravityCatalogModels(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2168,7 +2168,7 @@ func TestCreateAntigravityChannelPreservesQuotaCostUpdateAtModelCommit(t *testin
 		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
 		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "project",
 	}
-	updated, err := createAntigravityChannel(ctx, interleaved, newCredential, antigravityCatalogModels())
+	updated, err := createAntigravityChannel(ctx, interleaved, newCredential, antigravityCatalogModels(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2206,7 +2206,7 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		store := &concurrentOAuthWinnerStore{Store: baseStore, authType: model.AuthTypeAnthropicOAuth, winnerJSON: winnerJSON}
 		incoming := *current
 		incoming.AccessToken, incoming.RefreshToken = "new-at", "new-rt"
-		updated, created, err := createOrUpdateAnthropicChannel(context.Background(), store, &incoming)
+		updated, created, err := createOrUpdateAnthropicChannel(context.Background(), store, &incoming, "")
 		if err != nil || created || updated.ID != channel.ID {
 			t.Fatalf("reauthorization = (%#v, %t, %v)", updated, created, err)
 		}
@@ -2242,7 +2242,7 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		store := &concurrentOAuthWinnerStore{Store: baseStore, authType: model.AuthTypeAntigravityOAuth, winnerJSON: winnerJSON}
 		incoming := *current
 		incoming.AccessToken, incoming.RefreshToken = "new-at", "new-rt"
-		updated, err := createAntigravityChannel(context.Background(), store, &incoming, antigravityCatalogModels())
+		updated, err := createAntigravityChannel(context.Background(), store, &incoming, antigravityCatalogModels(), "")
 		if err != nil || updated.ID != channel.ID {
 			t.Fatalf("reauthorization = (%#v, %v)", updated, err)
 		}
@@ -2281,7 +2281,7 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		if err := incoming.Normalize(); err != nil {
 			t.Fatal(err)
 		}
-		updated, created, err := createOrUpdateXAIChannel(context.Background(), store, incoming)
+		updated, created, err := createOrUpdateXAIChannel(context.Background(), store, incoming, "")
 		if err != nil || created || updated.ID != channel.ID {
 			t.Fatalf("reauthorization = (%#v, %t, %v)", updated, created, err)
 		}
@@ -2307,14 +2307,14 @@ func TestOAuthReauthorizationReactivatesChannel(t *testing.T) {
 			channel, _, err := createOrUpdateAnthropicChannel(ctx, store, &anthropicauth.Credential{
 				Type: anthropicauth.ChannelType, AccessToken: token, RefreshToken: "rt",
 				Expired: expired, AccountUUID: "account", EmailAddress: "same@example.com",
-			})
+			}, "")
 			return channel, err
 		}},
 		{name: "Antigravity", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
 			return createAntigravityChannel(ctx, store, &antigravityauth.Credential{
 				Type: antigravityauth.ChannelType, AccessToken: token, RefreshToken: "rt",
 				Expired: expired, Email: "same@example.com", ProjectID: "project",
-			}, antigravityCatalogModels())
+			}, antigravityCatalogModels(), "")
 		}},
 		{name: "xAI", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
 			credential := xaiTestCredential(token, "rt", time.Now().Add(time.Hour))
@@ -2322,19 +2322,19 @@ func TestOAuthReauthorizationReactivatesChannel(t *testing.T) {
 			if err := credential.Normalize(); err != nil {
 				return nil, err
 			}
-			channel, _, err := createOrUpdateXAIChannel(ctx, store, credential)
+			channel, _, err := createOrUpdateXAIChannel(ctx, store, credential, "")
 			return channel, err
 		}},
 		{name: "Z.ai", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
 			channel, _, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{
 				APIKey: token + ".secret", AccessToken: "access", Email: "same@example.com", UserID: "user",
-			}, "", nil)
+			}, "", nil, "")
 			return channel, err
 		}},
 		{name: "Cursor", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
 			channel, _, err := createOrUpdateCursorChannel(ctx, store, &cursorauth.Credential{
 				AccessToken: token, RefreshToken: "rt", Email: "same@example.com", UserID: "user",
-			}, nil)
+			}, nil, "")
 			return channel, err
 		}},
 	}
@@ -3703,7 +3703,7 @@ func TestCodexOAuthManualCallbackCreatesDatabaseChannel(t *testing.T) {
 	manager.timeout = 2 * time.Second
 	defer manager.close()
 
-	authURL, state, err := manager.start()
+	authURL, state, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -3776,7 +3776,7 @@ func TestCodexOAuthCancelStopsPendingSessionAndAllowsRestart(t *testing.T) {
 	manager.timeout = 2 * time.Second
 	defer manager.close()
 
-	authURL, state, err := manager.start()
+	authURL, state, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -3801,7 +3801,7 @@ func TestCodexOAuthCancelStopsPendingSessionAndAllowsRestart(t *testing.T) {
 		t.Fatal("cancelled OAuth callback unexpectedly accepted")
 	}
 
-	_, restartedState, err := manager.start()
+	_, restartedState, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("restart after cancel error = %v", err)
 	}
@@ -3820,11 +3820,11 @@ func TestCodexOAuthStartReplacesExistingPendingSession(t *testing.T) {
 	manager.timeout = 2 * time.Second
 	defer manager.close()
 
-	_, firstState, err := manager.start()
+	_, firstState, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("first start() error = %v", err)
 	}
-	_, secondState, err := manager.start()
+	_, secondState, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("second start() error = %v", err)
 	}
@@ -3869,7 +3869,7 @@ func TestCodexOAuthCancelInterruptsTokenExchangeWithoutCreatingChannel(t *testin
 	manager.timeout = 2 * time.Second
 	defer manager.close()
 
-	authURL, state, err := manager.start()
+	authURL, state, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -3914,7 +3914,7 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		Type: "codex", AccessToken: "at-1", RefreshToken: "rt-1", Expired: now,
 		ChatGPTUserID: "user-1", AccountID: "account-1", Email: "user@example.com",
 	}
-	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, first)
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, first, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("first import = (%#v, %v, %v)", created, wasCreated, err)
 	}
@@ -3927,7 +3927,7 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		Type: "codex", AccessToken: "at-2", RefreshToken: "rt-2", Expired: now,
 		ChatGPTUserID: first.ChatGPTUserID, AccountID: "renamed-account", Email: "user@example.com",
 	}
-	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, second)
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, second, "")
 	if err != nil || wasCreated {
 		t.Fatalf("second import = (%#v, %v, %v)", updated, wasCreated, err)
 	}
@@ -3971,7 +3971,7 @@ func TestCodexReauthorizationMigratesLegacyEmailIdentity(t *testing.T) {
 		Email: "caidaoli+2@gmail.com", PlanType: "plus",
 	}
 
-	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized)
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized, "")
 	if err != nil || wasCreated || updated.ID != emailMatch.ID {
 		t.Fatalf("reauthorization = (%#v, %v, %v), want channel %d", updated, wasCreated, err, emailMatch.ID)
 	}
@@ -4015,7 +4015,7 @@ func TestCodexOAuthCreatesChannelForDifferentUserInSameAccount(t *testing.T) {
 		Email: "caidaoli+4@gmail.com", PlanType: "team",
 	}
 
-	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plusFour)
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plusFour, "")
 	if err != nil || !wasCreated || created.ID == plusTwo.ID || created.Name != "Codex-caidaoli+4@gmail.com" {
 		t.Fatalf("shared-account authorization = (%#v, %v, %v)", created, wasCreated, err)
 	}
@@ -4042,7 +4042,7 @@ func TestCodexOAuthDoesNotOverwriteDifferentUserWithSameEmail(t *testing.T) {
 		Expired: expiresAt, ChatGPTUserID: "user-first", AccountID: "shared-workspace",
 		Email: "shared@example.com", PlanType: "team",
 	}
-	firstChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, first)
+	firstChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, first, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("first authorization = (%#v, %v, %v)", firstChannel, wasCreated, err)
 	}
@@ -4051,7 +4051,7 @@ func TestCodexOAuthDoesNotOverwriteDifferentUserWithSameEmail(t *testing.T) {
 		Expired: expiresAt, ChatGPTUserID: "user-second", AccountID: first.AccountID,
 		Email: first.Email, PlanType: first.PlanType,
 	}
-	secondChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, second)
+	secondChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, second, "")
 	if err != nil || !wasCreated || secondChannel.ID == firstChannel.ID {
 		t.Fatalf("second authorization = (%#v, %v, %v)", secondChannel, wasCreated, err)
 	}
@@ -4074,7 +4074,7 @@ func TestCodexOAuthDoesNotOverwriteUserWhenIncomingUserIDIsMissing(t *testing.T)
 		Expired: expiresAt, ChatGPTUserID: "user-existing", AccountID: "shared-workspace",
 		Email: "shared@example.com", PlanType: "team",
 	}
-	existingChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, existing)
+	existingChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, existing, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("existing authorization = (%#v, %v, %v)", existingChannel, wasCreated, err)
 	}
@@ -4082,7 +4082,7 @@ func TestCodexOAuthDoesNotOverwriteUserWhenIncomingUserIDIsMissing(t *testing.T)
 		Type: codexauth.ChannelType, AccessToken: "at-incoming", RefreshToken: "rt-incoming",
 		Expired: expiresAt, AccountID: existing.AccountID, Email: existing.Email, PlanType: existing.PlanType,
 	}
-	incomingChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, incoming)
+	incomingChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, incoming, "")
 	if err != nil || !wasCreated || incomingChannel.ID == existingChannel.ID {
 		t.Fatalf("missing-user-id authorization = (%#v, %v, %v)", incomingChannel, wasCreated, err)
 	}
@@ -4106,7 +4106,7 @@ func TestCodexOAuthDoesNotUseAccountIDAsUserIdentity(t *testing.T) {
 		Expired: expiresAt, ChatGPTUserID: "user-initial", AccountID: "shared-workspace",
 		Email: "initial@example.com", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4114,7 +4114,7 @@ func TestCodexOAuthDoesNotUseAccountIDAsUserIdentity(t *testing.T) {
 		Type: codexauth.ChannelType, AccessToken: "at-without-identity", RefreshToken: "rt-without-identity",
 		Expired: expiresAt, AccountID: initial.AccountID, PlanType: initial.PlanType,
 	}
-	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, withoutUserIdentity)
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, withoutUserIdentity, "")
 	if err != nil || !wasCreated || created.ID == channel.ID {
 		t.Fatalf("shared account authorization = (%#v, %v, %v)", created, wasCreated, err)
 	}
@@ -4160,7 +4160,7 @@ func TestCodexReauthorizationMatchesUserIDAfterEmailChanges(t *testing.T) {
 		Email: "renamed-plus-2@example.com", PlanType: "plus",
 	}
 
-	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized)
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized, "")
 	if err != nil || wasCreated || updated.ID != plusTwo.ID {
 		t.Fatalf("reauthorization = (%#v, %v, %v), want channel %d", updated, wasCreated, err, plusTwo.ID)
 	}
@@ -4187,7 +4187,7 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 		ChatGPTUserID: "user-reauthorize", AccountID: "account-reauthorize",
 		Email: "reauthorize@example.com", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4215,7 +4215,7 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 		Email: initial.Email, PlanType: initial.PlanType,
 	}
 
-	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized)
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized, "")
 	if err != nil || wasCreated || updated.ID != channel.ID {
 		t.Fatalf("reauthorization = (%#v, %v, %v)", updated, wasCreated, err)
 	}
@@ -4243,7 +4243,7 @@ func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
 		Type: "codex", AccessToken: "at-plus", RefreshToken: "rt-plus", Expired: expiresAt,
 		ChatGPTUserID: "user-plan", AccountID: "account-plan", Email: "plan@example.com", PlanType: "plus",
 	}
-	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plus)
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plus, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("plus import = (%#v, %v, %v)", created, wasCreated, err)
 	}
@@ -4252,7 +4252,7 @@ func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
 		Type: "codex", AccessToken: "at-free", RefreshToken: "rt-free", Expired: expiresAt,
 		ChatGPTUserID: plus.ChatGPTUserID, AccountID: "account-plan", Email: "plan@example.com", PlanType: "free",
 	}
-	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, free)
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, free, "")
 	if err != nil || wasCreated {
 		t.Fatalf("free reimport = (%#v, %v, %v)", updated, wasCreated, err)
 	}
@@ -4286,7 +4286,7 @@ func TestReauthorizationStartsQuotaEpochOnIdentityChange(t *testing.T) {
 	reauthorize := func(next *codexauth.Credential) (*codexauth.Credential, int64, int64) {
 		t.Helper()
 		before := time.Now().Unix()
-		updated, wasCreated, err := createOrUpdateCodexChannel(ctx, store, next)
+		updated, wasCreated, err := createOrUpdateCodexChannel(ctx, store, next, "")
 		after := time.Now().Unix()
 		if err != nil || wasCreated {
 			t.Fatalf("reauthorization = (%#v, %v, %v)", updated, wasCreated, err)
@@ -4330,7 +4330,7 @@ func TestReauthorizationStartsQuotaEpochOnIdentityChange(t *testing.T) {
 
 	team := credential("team", "account-plan-change", "team")
 	team.QuotaCostUsage = window(351)
-	created, wasCreated, err := createOrUpdateCodexChannel(ctx, store, team)
+	created, wasCreated, err := createOrUpdateCodexChannel(ctx, store, team, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("team import = (%#v, %v, %v)", created, wasCreated, err)
 	}
@@ -4383,7 +4383,7 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 				Type: "codex", AccessToken: "at", RefreshToken: "rt", PlanType: tt.plan,
 				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-" + tt.plan,
 			}
-			channel, created, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+			channel, created, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 			if err != nil || !created {
 				t.Fatalf("create channel = (%#v, %v, %v)", channel, created, err)
 			}
@@ -4410,7 +4410,7 @@ func TestHandleImportCodexCredentialCreatesSkipsAndReportsFilesWithoutLeakingTok
 	existing, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
 		Type: "codex", AccessToken: "at-existing", RefreshToken: "rt-existing", Expired: expiresAt,
 		AccountID: "account-existing", Email: "duplicate@example.com",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("create existing Codex channel: %v", err)
 	}
@@ -4518,7 +4518,7 @@ func TestHandleChannelEditorExposesOAuthCredentialOnlyInEditorData(t *testing.T)
 		Email:        "editor@example.com",
 		PlanType:     "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -4598,7 +4598,7 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 		Type: "codex", AccessToken: "at", RefreshToken: "rt",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-read-only", PlanType: "free",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -4668,7 +4668,7 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 		Type: "codex", AccessToken: "at-old", RefreshToken: "rt-old",
 		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-refresh", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -4746,7 +4746,7 @@ func TestCodexEarlyRefreshFailureBacksOffWhileTokenIsValid(t *testing.T) {
 		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
 		Expired: start.Add(2 * time.Minute).Format(time.RFC3339), AccountID: "account-backoff", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -4787,7 +4787,7 @@ func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
 		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
 		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-cas", PlanType: "free",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4848,7 +4848,7 @@ func TestCodexCredentialManagerCASMissMergesPassiveUsageWithoutRefreshingTwice(t
 		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-once",
 		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-passive-cas", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4910,7 +4910,7 @@ func TestCodexPassiveUsageKeepsLatestResultPerQuotaGroup(t *testing.T) {
 		Type: codexauth.ChannelType, AccessToken: "at", RefreshToken: "rt",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-quota-order", PlanType: "pro",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5034,7 +5034,7 @@ func TestCodexPassiveUsageDoesNotResetCostFromStaleMergedWindow(t *testing.T) {
 			SampledUpstreamAtUnixNano:  activeSampledAt.UnixNano(),
 		}}},
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5095,7 +5095,7 @@ func TestCodexPassiveSparkRollbackDoesNotResetCodexWeeklyCost(t *testing.T) {
 				SampledUpstreamUsedPercent: &sparkUsed, SampledUpstreamAtUnixNano: base.UnixNano()},
 		}},
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5163,7 +5163,7 @@ func TestCodexReserveResponsePreservesMainQuotaCost(t *testing.T) {
 						SampledUpstreamUsedPercent: float64Pointer(0), SampledUpstreamAtUnixNano: base.UnixNano()},
 				}},
 			}
-			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -5274,7 +5274,7 @@ func TestCodexWeeklyRoleChangePersistsCost(t *testing.T) {
 						SampledUpstreamUsedPercent: float64Pointer(30), SampledUpstreamAtUnixNano: base.UnixNano()},
 				}},
 			}
-			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -5353,7 +5353,7 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 			Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
 			Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reload", PlanType: "plus",
 		}
-		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
+		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5399,7 +5399,7 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 			Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
 			Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-refresh-winner", PlanType: "plus",
 		}
-		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
+		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5506,7 +5506,7 @@ func TestCodexCredentialManagerCachesSQLiteWinnerWhenPrimarySyncFails(t *testing
 		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
 		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-hybrid", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), hybrid, initial)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), hybrid, initial, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5792,7 +5792,7 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 		Expired:   time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
 		AccountID: "account-manual-refresh", PlanType: "plus",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -5978,7 +5978,7 @@ func TestHandleOAuthUsageReconcilesCostsAfterWindowChange(t *testing.T) {
 				Expired: now.Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "quota-window-account",
 				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{oldSample}, oldSample.SampledAt),
 			}
-			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -6049,7 +6049,7 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 		PlanType:       "plus",
 		AccountFedRAMP: true,
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -6914,7 +6914,7 @@ func TestHandleOAuthUsageSilentlyFallsBackWhenCodexResetCreditDetailsAreUnavaila
 		Type: "codex", AccessToken: "at-reset-fallback", RefreshToken: "rt-reset-fallback",
 		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reset-fallback",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6975,7 +6975,7 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 			},
 		},
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7089,7 +7089,7 @@ func TestHandleResetCodexQuotaRejectsConcurrentConsume(t *testing.T) {
 		Type: "codex", AccessToken: "at-reset-concurrent", RefreshToken: "rt-reset-concurrent",
 		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reset-concurrent",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7170,7 +7170,7 @@ func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResu
 			AccountID:    fmt.Sprintf("account-batch-quota-%d", index),
 			PlanType:     "plus",
 		}
-		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 		if err != nil {
 			t.Fatalf("create batch quota channel %d: %v", index, err)
 		}
@@ -7301,7 +7301,7 @@ func TestHandleOAuthUsageDoesNotOverwriteNewerSnapshotAfterCASConflict(t *testin
 		Type: codexauth.ChannelType, AccessToken: "at-quota-race", RefreshToken: "rt-quota-race",
 		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-quota-race",
 	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7393,7 +7393,7 @@ func TestPersistOAuthUsageKeepsNewerPassiveQuotaAfterCASConflict(t *testing.T) {
 		Expired: base.Add(time.Hour).Format(time.RFC3339), AccountID: "quota-cas-account",
 		QuotaCostUsage: reconcileOAuthQuotaCostUsage(nil, active, quotaAt),
 	}
-	channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+	channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7517,7 +7517,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "account-anthropic-quota", EmailAddress: "quota@example.com",
 				PlanType: test.initialPlan, ClaudeCodeTrialEndsAt: test.initialTrial, Scope: test.scope,
 			}
-			channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+			channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
 			if err != nil {
 				t.Fatalf("createOrUpdateAnthropicChannel() error = %v", err)
 			}
@@ -7672,7 +7672,7 @@ func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:inference user:profile",
 		AccountUUID: "reset-account", EmailAddress: "reset@example.com",
 	}
-	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7766,7 +7766,7 @@ func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *t
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:inference",
 		AccountUUID: "reset-error-account", EmailAddress: "reset-error@example.com",
 	}
-	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7792,7 +7792,7 @@ func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *t
 	credential.Scope = "user:profile"
 	credential.AccountUUID = "reset-error-account-with-scope"
 	credential.EmailAddress = "reset-error-with-scope@example.com"
-	channel, _, err = createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	channel, _, err = createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7837,7 +7837,7 @@ func TestHandleAnthropicResetCreditsRefreshesOnceAfterUnauthorized(t *testing.T)
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:profile",
 		AccountUUID: "reset-retry-account", EmailAddress: "reset-retry@example.com",
 	}
-	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7894,7 +7894,7 @@ func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 					Type: codexauth.ChannelType, AccessToken: "expired-codex-access", RefreshToken: "expired-codex-refresh",
 					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), AccountID: "expired-codex-account",
 				}
-				channel, _, err := createOrUpdateCodexChannel(context.Background(), server.store, credential)
+				channel, _, err := createOrUpdateCodexChannel(context.Background(), server.store, credential, "")
 				if err != nil {
 					t.Fatalf("create Codex channel: %v", err)
 				}
@@ -7912,7 +7912,7 @@ func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 					Type: anthropicauth.ChannelType, AccessToken: "expired-anthropic-access", RefreshToken: "expired-anthropic-refresh",
 					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), AccountUUID: "expired-anthropic-account",
 				}
-				channel, _, err := createOrUpdateAnthropicChannel(context.Background(), server.store, credential)
+				channel, _, err := createOrUpdateAnthropicChannel(context.Background(), server.store, credential, "")
 				if err != nil {
 					t.Fatalf("create Anthropic channel: %v", err)
 				}
@@ -8335,7 +8335,7 @@ func TestHandleOAuthUsageHidesUpstreamErrorBody(t *testing.T) {
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
 		Type: "codex", AccessToken: "at-safe", RefreshToken: "rt-safe",
 		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-safe",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
@@ -8403,7 +8403,7 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 	manager := newAnthropicOAuthManager(service, store, nil)
 	defer manager.close()
 
-	_, state, err := manager.start()
+	_, state, err := manager.start(oauthLoginOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -8438,6 +8438,98 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 			t.Fatalf("OAuth did not complete: %+v", status)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestAnthropicOAuthLoginEgressesThroughSessionProxy(t *testing.T) {
+	t.Parallel()
+	const tokenResponse = `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","token_type":"Bearer","expires_in":3600,"scope":"user:inference","organization":{"uuid":"org-1"},"account":{"uuid":"account-1","email_address":"user@example.com"}}`
+	newProxy := func(hits *atomic.Int32) *httptest.Server {
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.Host != "anthropic-token.invalid" {
+				t.Errorf("proxy forwarded host %q", request.Host)
+			}
+			hits.Add(1)
+			_, _ = io.WriteString(w, tokenResponse)
+		}))
+		t.Cleanup(proxy.Close)
+		return proxy
+	}
+	var firstHits, secondHits, directHits atomic.Int32
+	firstProxy, secondProxy := newProxy(&firstHits), newProxy(&secondHits)
+	service := anthropicauth.NewService(&http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		directHits.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(tokenResponse)), Request: request,
+		}, nil
+	})})
+	service.TokenURL = "http://anthropic-token.invalid/v1/oauth/token"
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.anthropicOAuth = newAnthropicOAuthManager(service, store, nil)
+	defer server.anthropicOAuth.close()
+
+	start := func(body any) *httptest.ResponseRecorder {
+		t.Helper()
+		request := newRequest(http.MethodPost, "/admin/anthropic/oauth/start", nil)
+		if body != nil {
+			request = newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/start", body)
+		}
+		c, w := newTestContext(t, request)
+		server.HandleStartAnthropicOAuth(c)
+		return w
+	}
+	login := func(body any) *model.Config {
+		t.Helper()
+		w := start(body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("start status=%d body=%s", w.Code, w.Body.String())
+		}
+		var started struct {
+			State string `json:"state"`
+		}
+		mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &started)
+		if _, err := server.anthropicOAuth.submitAuthorizationCode(started.State, "code-1#"+started.State); err != nil {
+			t.Fatalf("submitAuthorizationCode() error = %v", err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			status, ok := server.anthropicOAuth.status(started.State)
+			if !ok {
+				t.Fatal("OAuth session disappeared")
+			}
+			if status.Status == "complete" {
+				channel, err := store.GetConfig(context.Background(), status.ChannelID)
+				if err != nil {
+					t.Fatalf("GetConfig() error = %v", err)
+				}
+				return channel
+			}
+			if status.Status == "error" {
+				t.Fatalf("OAuth failed: %s", status.Error)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("OAuth did not complete: %+v", status)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	created := login(map[string]string{"proxy_url": " " + firstProxy.URL + " "})
+	if created.ProxyURL != firstProxy.URL || firstHits.Load() != 1 || directHits.Load() != 0 {
+		t.Fatalf("created proxy=%q proxy hits=%d direct hits=%d", created.ProxyURL, firstHits.Load(), directHits.Load())
+	}
+	kept := login(nil)
+	if kept.ID != created.ID || kept.ProxyURL != firstProxy.URL || directHits.Load() != 1 {
+		t.Fatalf("direct reauthorization channel=%d proxy=%q direct hits=%d", kept.ID, kept.ProxyURL, directHits.Load())
+	}
+	replaced := login(map[string]string{"proxy_url": secondProxy.URL})
+	if replaced.ID != created.ID || replaced.ProxyURL != secondProxy.URL || secondHits.Load() != 1 {
+		t.Fatalf("proxied reauthorization channel=%d proxy=%q proxy hits=%d", replaced.ID, replaced.ProxyURL, secondHits.Load())
+	}
+	if w := start(map[string]string{"proxy_url": "ftp://127.0.0.1:9"}); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid proxy status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -9006,7 +9098,7 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 	channel, _, err := createOrUpdateCodexChannel(ctx, store, &codexauth.Credential{
 		Type: "codex", AccessToken: "at-plan-poll", RefreshToken: "rt-plan-poll",
 		ChatGPTUserID: "user-plan-poll", Expired: base.Add(2 * time.Hour).Format(time.RFC3339), AccountID: "account-plan-poll", PlanType: "free",
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -9119,7 +9211,7 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 			Type: "codex", AccessToken: "at-plan-poll", RefreshToken: "rt-plan-poll",
 			ChatGPTUserID: "user-plan-poll", AccountID: "account-plan-poll", PlanType: plan,
 			Expired: time.Now().Add(time.Hour).Format(time.RFC3339),
-		})
+		}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -9134,7 +9226,7 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 		Type: "codex", AccessToken: "at-account-b", RefreshToken: "rt-account-b",
 		ChatGPTUserID: "user-plan-poll", AccountID: "account-b", PlanType: "pro",
 		Expired: time.Now().Add(time.Hour).Format(time.RFC3339),
-	})
+	}, "")
 	if err != nil || created || updated.ID != channel.ID {
 		t.Fatalf("reauthorization: created=%v err=%v", created, err)
 	}
@@ -9180,7 +9272,7 @@ func TestCodexQuotaEpochRejectsSamplesAfterCASConflict(t *testing.T) {
 				Type: "codex", AccessToken: "at-epoch-cas", RefreshToken: "rt-epoch-cas",
 				AccountID: "epoch-cas", PlanType: "pro", Expired: base.Add(time.Hour).Format(time.RFC3339),
 			}
-			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -9241,5 +9333,67 @@ func TestCodexQuotaEpochRejectsSamplesAfterCASConflict(t *testing.T) {
 				t.Fatal("rejected active sample changed winner credential")
 			}
 		})
+	}
+}
+
+func TestHandleCreateCodexPersonalAccessTokenEgressesThroughProxy(t *testing.T) {
+	t.Parallel()
+	const whoamiResponse = `{"email":"pat@example.com","chatgpt_user_id":"pat-user","chatgpt_account_id":"pat-account","chatgpt_plan_type":"plus","chatgpt_account_is_fedramp":false}`
+	var proxyHits, directHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Host != "codex-whoami.invalid" {
+			t.Errorf("proxy forwarded host %q", request.Host)
+		}
+		proxyHits.Add(1)
+		_, _ = io.WriteString(w, whoamiResponse)
+	}))
+	defer proxy.Close()
+	service := codexauth.NewService(&http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		directHits.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(whoamiResponse)), Request: request,
+		}, nil
+	})})
+	service.WhoAmIURL = "http://codex-whoami.invalid/whoami"
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.codexService = service
+
+	submit := func(body map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/codex/personal-access-token", body))
+		server.HandleCreateCodexPersonalAccessToken(c)
+		return w
+	}
+	channelOf := func(w *httptest.ResponseRecorder) *model.Config {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var response struct {
+			ChannelID int64 `json:"channel_id"`
+		}
+		mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &response)
+		channel, err := store.GetConfig(context.Background(), response.ChannelID)
+		if err != nil {
+			t.Fatalf("GetConfig() error = %v", err)
+		}
+		return channel
+	}
+
+	if w := submit(map[string]string{"access_token": "at-secret", "proxy_url": "ftp://proxy.invalid"}); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid proxy status=%d body=%s", w.Code, w.Body.String())
+	}
+	if proxyHits.Load() != 0 || directHits.Load() != 0 {
+		t.Fatalf("invalid proxy reached upstream: proxy=%d direct=%d", proxyHits.Load(), directHits.Load())
+	}
+	created := channelOf(submit(map[string]string{"access_token": "at-secret", "proxy_url": " " + proxy.URL + " "}))
+	if created.ProxyURL != proxy.URL || proxyHits.Load() != 1 || directHits.Load() != 0 {
+		t.Fatalf("created proxy=%q proxy hits=%d direct hits=%d", created.ProxyURL, proxyHits.Load(), directHits.Load())
+	}
+	kept := channelOf(submit(map[string]string{"access_token": "at-secret"}))
+	if kept.ID != created.ID || kept.ProxyURL != proxy.URL || directHits.Load() != 1 {
+		t.Fatalf("reimport channel=%d proxy=%q direct hits=%d", kept.ID, kept.ProxyURL, directHits.Load())
 	}
 }

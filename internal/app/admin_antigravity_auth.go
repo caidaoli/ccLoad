@@ -23,7 +23,13 @@ const (
 	antigravityOAuthMaxConcurrency = 3
 )
 
-func createAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential, models []string) (*model.Config, error) {
+func createAntigravityChannel(
+	ctx context.Context,
+	store storage.Store,
+	credential *antigravityauth.Credential,
+	models []string,
+	proxyURL string,
+) (*model.Config, error) {
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return nil, err
@@ -89,12 +95,14 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 					return nil, fmt.Errorf("update Antigravity channel: %w", saveErr)
 				}
 				if matched {
-					return reactivateReauthorizedChannel(ctx, store, cfg.ID)
+					return reactivateReauthorizedChannel(ctx, store, cfg.ID, proxyURL)
 				}
 			}
 		}
 	}
-	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel(uniqueAntigravityChannelName(configs, credential), credentialJSON, models))
+	channel := newAntigravityOAuthChannel(uniqueAntigravityChannelName(configs, credential), credentialJSON, models)
+	channel.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, fmt.Errorf("create Antigravity channel: %w", err)
 	}
@@ -209,7 +217,16 @@ func uniqueAntigravityChannelName(configs []*model.Config, credential *antigravi
 
 // HandleStartAntigravityOAuth starts a local Antigravity OAuth callback flow.
 func (s *Server) HandleStartAntigravityOAuth(c *gin.Context) {
-	authURL, state, err := s.antigravityOAuth.start()
+	var request oauthLoginStartRequest
+	if !bindOAuthLoginStart(c, &request) {
+		return
+	}
+	options, err := s.oauthLoginOptions(request, true)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	authURL, state, err := s.antigravityOAuth.start(options)
 	if err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return

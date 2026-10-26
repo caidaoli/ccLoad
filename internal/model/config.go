@@ -404,8 +404,10 @@ type BatchConfigPatch struct {
 	RPMLimit              *int
 	MaxConcurrency        *int
 	ProtocolTransformMode *string
-	ModelEntries          []ModelEntry
-	ModelImportMode       string
+	// ProxyURL 由调用方校验；空串表示改为直连。
+	ProxyURL        *string
+	ModelEntries    []ModelEntry
+	ModelImportMode string
 }
 
 // BatchConfigPatchResult 汇总一次原子批量更新的结果。
@@ -431,7 +433,7 @@ type BatchModelDeleteResult struct {
 // Normalize validates a batch patch and returns an independent normalized copy.
 func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
 	if p.Priority == nil && p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
-		p.ProtocolTransformMode == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
+		p.ProtocolTransformMode == nil && p.ProxyURL == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
 		return BatchConfigPatch{}, errors.New("batch config patch cannot be empty")
 	}
 	if p.Priority != nil {
@@ -473,6 +475,10 @@ func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
 			return BatchConfigPatch{}, fmt.Errorf("invalid protocol_transform_mode %q", *p.ProtocolTransformMode)
 		}
 		p.ProtocolTransformMode = &mode
+	}
+	if p.ProxyURL != nil {
+		value := strings.TrimSpace(*p.ProxyURL)
+		p.ProxyURL = &value
 	}
 
 	p.ModelImportMode = strings.ToLower(strings.TrimSpace(p.ModelImportMode))

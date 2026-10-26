@@ -23,6 +23,7 @@ const maxCursorCredentialImportBytes = 1 << 16
 var cursorChannelCreateMu sync.Mutex
 
 type cursorCredentialImportRequest struct {
+	oauthLoginStartRequest
 	APIKey string `json:"api_key"`
 }
 
@@ -37,7 +38,7 @@ func (r *cursorCredentialImportRequest) Validate() error {
 	if looksLikeCursorCLISessionSecret(r.APIKey) {
 		return errCursorCLISessionNotAPIKey
 	}
-	return nil
+	return r.oauthLoginStartRequest.Validate()
 }
 
 var errCursorCLISessionNotAPIKey = errors.New("需要 Cursor Dashboard 的 User API Key，不能导入 CLI auth.json 会话令牌")
@@ -79,13 +80,18 @@ func (s *Server) HandleImportCursorCredential(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "cursor credential import is unavailable")
 		return
 	}
+	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
 	ctx := c.Request.Context()
-	credential, err := s.buildCursorCredential(ctx, request)
+	credential, err := s.buildCursorCredential(ctx, request.APIKey, options)
 	if err != nil {
 		RespondError(c, http.StatusBadGateway, err)
 		return
 	}
-	cfg, created, err := s.commitCursorCredential(ctx, credential)
+	cfg, created, err := s.commitCursorCredential(ctx, credential, options.proxyURL)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -126,19 +132,22 @@ func (s *Server) HandleRefreshCursorCredential(c *gin.Context) {
 
 func (s *Server) buildCursorCredential(
 	ctx context.Context,
-	request cursorCredentialImportRequest,
+	apiKey string,
+	options oauthLoginOptions,
 ) (*cursorauth.Credential, error) {
 	credential := &cursorauth.Credential{
 		Type: cursorauth.ChannelType, LastRefresh: time.Now().UTC().Format(time.RFC3339),
 	}
-	pair, err := s.cursorService.ExchangeAPIKey(ctx, request.APIKey)
+	service := *s.cursorService
+	service.Client = options.clientOr(service.Client)
+	pair, err := service.ExchangeAPIKey(ctx, apiKey)
 	if err != nil {
 		return nil, err
 	}
-	credential.APIKey = request.APIKey
+	credential.APIKey = apiKey
 	credential.AccessToken = pair.AccessToken
 	credential.RefreshToken = pair.RefreshToken
-	identity, name, err := s.cursorService.FetchIdentity(ctx, credential.AccessToken)
+	identity, name, err := service.FetchIdentity(ctx, credential.AccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +161,10 @@ func (s *Server) buildCursorCredential(
 func (s *Server) commitCursorCredential(
 	ctx context.Context,
 	credential *cursorauth.Credential,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	cfg, created, err := createOrUpdateCursorChannel(
-		ctx, s.store, credential, s.cursorChannelModels(ctx, credential),
+		ctx, s.store, credential, s.cursorChannelModels(ctx, credential), proxyURL,
 	)
 	if err != nil {
 		return nil, false, err
@@ -197,6 +207,7 @@ func createOrUpdateCursorChannel(
 	store storage.Store,
 	credential *cursorauth.Credential,
 	models []string,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	if store == nil || credential == nil {
 		return nil, false, errors.New("persist cursor credential: unavailable")
@@ -212,11 +223,13 @@ func createOrUpdateCursorChannel(
 	if err != nil {
 		return nil, false, fmt.Errorf("list channels for cursor credential: %w", err)
 	}
-	if existing, found, updateErr := updateExistingCursorChannel(ctx, store, configs, credential); found || updateErr != nil {
+	if existing, found, updateErr := updateExistingCursorChannel(ctx, store, configs, credential, proxyURL); found || updateErr != nil {
 		return existing, false, updateErr
 	}
 	name := uniqueCursorChannelName(configs, cursorChannelBaseName(credential))
-	created, err := store.CreateConfig(ctx, newCursorOAuthChannel(name, credentialJSON, models))
+	cfg := newCursorOAuthChannel(name, credentialJSON, models)
+	cfg.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
 		return nil, false, fmt.Errorf("create cursor channel: %w", err)
 	}
@@ -228,6 +241,7 @@ func updateExistingCursorChannel(
 	store storage.Store,
 	configs []*model.Config,
 	credential *cursorauth.Credential,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	identity := credential.Identity()
 	for _, cfg := range configs {
@@ -262,7 +276,7 @@ func updateExistingCursorChannel(
 		if !updated {
 			return nil, true, errors.New("cursor credential changed during reauthorization")
 		}
-		persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, cfg.ID)
+		persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, cfg.ID, proxyURL)
 		return persisted, true, reactivateErr
 	}
 	return nil, false, nil

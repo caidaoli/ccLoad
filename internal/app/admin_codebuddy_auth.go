@@ -46,8 +46,9 @@ func newCodeBuddyChannel(name, credential string) *model.Config {
 		ProtocolTransformMode: model.ProtocolTransformModeLocal, Enabled: true, CostMultiplier: 1}
 }
 
-func (s *Server) prepareCodeBuddyChannel(ctx context.Context, name, credential string) (*model.Config, error) {
+func (s *Server) prepareCodeBuddyChannel(ctx context.Context, name, credential, proxyURL string) (*model.Config, error) {
 	cfg := newCodeBuddyChannel(name, credential)
+	cfg.ProxyURL = proxyURL
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	response, err := sortOAuthFetchModels(s.fetchCodeBuddyOAuthModels(ctx, cfg, ""))
@@ -68,7 +69,11 @@ func codeBuddyIdentityMatches(a, b *codebuddyauth.Credential) bool {
 	return a.AccessToken == b.AccessToken
 }
 
-func (s *Server) commitCodeBuddyCredential(ctx context.Context, credential *codebuddyauth.Credential) (*model.Config, bool, error) {
+func (s *Server) commitCodeBuddyCredential(
+	ctx context.Context,
+	credential *codebuddyauth.Credential,
+	proxyURL string,
+) (*model.Config, bool, error) {
 	payload, err := credential.JSON()
 	if err != nil {
 		return nil, false, err
@@ -95,7 +100,7 @@ func (s *Server) commitCodeBuddyCredential(ctx context.Context, credential *code
 		if !updated {
 			return nil, false, errors.New("CodeBuddy credential changed concurrently; retry authorization")
 		}
-		cfg, err = reactivateReauthorizedChannel(ctx, s.store, existing.ID)
+		cfg, err = reactivateReauthorizedChannel(ctx, s.store, existing.ID, proxyURL)
 		if err != nil {
 			return nil, false, err
 		}
@@ -104,7 +109,7 @@ func (s *Server) commitCodeBuddyCredential(ctx context.Context, credential *code
 	created := cfg == nil
 	if created {
 		name := codeBuddyChannelBaseName(credential)
-		cfg, err = s.prepareCodeBuddyChannel(ctx, uniqueZedChannelName(configs, name), payload)
+		cfg, err = s.prepareCodeBuddyChannel(ctx, uniqueZedChannelName(configs, name), payload, proxyURL)
 		if err != nil {
 			return nil, false, err
 		}
@@ -130,6 +135,11 @@ func (s *Server) handleImportCodeBuddyCredential(c *gin.Context, baseURL string)
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
+	proxyURL, err := normalizeChannelProxyURL(c.Query("proxy_url"))
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
 	if strings.TrimSpace(baseURL) != "" {
 		if strings.TrimSpace(credential.BaseURL) == "" {
 			credential.BaseURL = baseURL
@@ -142,7 +152,7 @@ func (s *Server) handleImportCodeBuddyCredential(c *gin.Context, baseURL string)
 			return
 		}
 	}
-	cfg, created, err := s.commitCodeBuddyCredential(c.Request.Context(), credential)
+	cfg, created, err := s.commitCodeBuddyCredential(c.Request.Context(), credential, proxyURL)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -251,7 +261,18 @@ func (s *Server) handleStartCodeBuddyOAuth(c *gin.Context, baseURL string) {
 		RespondErrorMsg(c, http.StatusUnauthorized, "administrator session required")
 		return
 	}
-	login, err := s.codeBuddyService.StartAt(c.Request.Context(), baseURL)
+	var request oauthLoginStartRequest
+	if !bindOAuthLoginStart(c, &request) {
+		return
+	}
+	options, err := s.oauthLoginOptions(request, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	service := *s.codeBuddyService
+	service.Client = options.clientOr(service.Client)
+	login, err := service.StartAt(c.Request.Context(), baseURL)
 	if err != nil {
 		RespondError(c, http.StatusBadGateway, err)
 		return
@@ -280,7 +301,7 @@ func (s *Server) handleStartCodeBuddyOAuth(c *gin.Context, baseURL string) {
 	m.sessions[state] = session
 	m.wg.Add(1)
 	m.mu.Unlock()
-	go m.run(ctx, session, login)
+	go m.run(ctx, session, &service, login, options.proxyURL)
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "url": login.URL, "status": "pending"})
 }
 
@@ -294,13 +315,19 @@ func (s *Server) HandleStartCodeBuddyInternationalOAuth(c *gin.Context) {
 	s.handleStartCodeBuddyOAuth(c, codebuddyauth.WorkBuddyBaseURL)
 }
 
-func (m *codeBuddyOAuthManager) run(ctx context.Context, session *codeBuddyLoginSession, login *codebuddyauth.Login) {
+func (m *codeBuddyOAuthManager) run(
+	ctx context.Context,
+	session *codeBuddyLoginSession,
+	service *codebuddyauth.Service,
+	login *codebuddyauth.Login,
+	proxyURL string,
+) {
 	defer m.wg.Done()
 	defer session.cancel()
 	var credential *codebuddyauth.Credential
 	var err error
 	for ctx.Err() == nil {
-		credential, err = m.server.codeBuddyService.Poll(ctx, login)
+		credential, err = service.Poll(ctx, login)
 		if credential != nil || err != nil {
 			break
 		}
@@ -328,7 +355,7 @@ func (m *codeBuddyOAuthManager) run(ctx context.Context, session *codeBuddyLogin
 	// Once committing, cancellation cannot report success while a channel is created.
 	session.status.Status = "exchanging"
 	m.mu.Unlock()
-	cfg, _, err := m.server.commitCodeBuddyCredential(ctx, credential)
+	cfg, _, err := m.server.commitCodeBuddyCredential(ctx, credential, proxyURL)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session.finished = time.Now()

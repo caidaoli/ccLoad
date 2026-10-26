@@ -179,6 +179,8 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.loginDialogTitle': 'OAuth sign-in',
   'channels.oauth.loginDialogDescription': 'Choose an authentication type, then generate an authorization link.',
   'channels.oauth.credentialType': 'Authentication type',
+  'channels.oauth.proxyURLLabel': 'Proxy (optional)',
+  'channels.oauth.proxyURLHint': 'Authorization, import validation, and account and model lookups go through this proxy, and it is saved as the channel proxy. Leave empty to connect directly; when reauthorizing, empty keeps the channel\'s existing proxy.',
   'channels.oauth.providerCodex': 'Codex',
   'channels.oauth.providerAntigravity': 'Antigravity',
   'channels.oauth.providerXAI': 'xAI',

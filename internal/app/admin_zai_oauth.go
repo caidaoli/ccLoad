@@ -73,8 +73,8 @@ type zaiOAuthSession struct {
 type zaiOAuthManager struct {
 	mu       sync.Mutex
 	service  *zaiauth.Service
-	resolve  func(context.Context, string) (*zaiauth.Credential, error)
-	commit   func(context.Context, *zaiauth.Credential) (int64, string, error)
+	resolve  func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error)
+	commit   func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error)
 	baseCtx  context.Context
 	now      func() time.Time
 	sleep    func(context.Context, time.Duration)
@@ -91,8 +91,8 @@ type zaiOAuthManager struct {
 func newZAIOAuthManager(
 	baseCtx context.Context,
 	service *zaiauth.Service,
-	resolve func(context.Context, string) (*zaiauth.Credential, error),
-	commit func(context.Context, *zaiauth.Credential) (int64, string, error),
+	resolve func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error),
+	commit func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error),
 ) *zaiOAuthManager {
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -116,7 +116,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string) (zaiOAuthStartResponse, error) {
+func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, options oauthLoginOptions) (zaiOAuthStartResponse, error) {
 	if m == nil || m.service == nil || m.resolve == nil || m.commit == nil {
 		return zaiOAuthStartResponse{}, errors.New("z.ai OAuth is unavailable")
 	}
@@ -128,7 +128,9 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string) (z
 	if err != nil {
 		return zaiOAuthStartResponse{}, err
 	}
-	flow, err := m.service.InitFlow(ctx, pollToken)
+	service := *m.service
+	service.Client = options.clientOr(service.Client)
+	flow, err := service.InitFlow(ctx, pollToken)
 	if err != nil {
 		return zaiOAuthStartResponse{}, err
 	}
@@ -152,12 +154,18 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string) (z
 	m.pollers.Add(1)
 	m.mu.Unlock()
 
-	go m.run(session, flow, pollToken)
+	go m.run(session, &service, flow, pollToken, options)
 	return zaiOAuthStartResponse{URL: flow.AuthorizeURL, State: session.state, Status: "pending"}, nil
 }
 
 // run owns one authorization from the browser hand-off to the committed channel.
-func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow, pollToken string) {
+func (m *zaiOAuthManager) run(
+	session *zaiOAuthSession,
+	service *zaiauth.Service,
+	flow *zaiauth.Flow,
+	pollToken string,
+	options oauthLoginOptions,
+) {
 	defer m.pollers.Done()
 	interval := zaiauth.PollInterval
 	if flow.PollIntervalSec > 0 {
@@ -174,7 +182,7 @@ func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow, poll
 		if session.ctx.Err() != nil {
 			return
 		}
-		result, err := m.service.Poll(session.ctx, flow.FlowID, pollToken)
+		result, err := service.Poll(session.ctx, flow.FlowID, pollToken)
 		if err != nil {
 			if session.ctx.Err() != nil {
 				return
@@ -184,7 +192,7 @@ func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow, poll
 		}
 		switch result.Status {
 		case zaiauth.PollReady:
-			m.completeAuthorization(session, result)
+			m.completeAuthorization(session, result, options)
 			return
 		case zaiauth.PollFailed:
 			m.finish(session, "error", "z.ai rejected the authorization", 0, "")
@@ -198,7 +206,7 @@ func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow, poll
 	}
 }
 
-func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result *zaiauth.PollResult) {
+func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result *zaiauth.PollResult, options oauthLoginOptions) {
 	m.mu.Lock()
 	if session.status != "pending" {
 		m.mu.Unlock()
@@ -210,7 +218,7 @@ func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result
 	}
 	m.mu.Unlock()
 
-	credential, err := m.resolve(session.ctx, result.AccessToken)
+	credential, err := m.resolve(session.ctx, options, result.AccessToken)
 	if err != nil {
 		m.finish(session, "error", err.Error(), 0, "")
 		return
@@ -230,7 +238,7 @@ func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result
 		m.finish(session, "error", err.Error(), 0, "")
 		return
 	}
-	channelID, channelName, err := m.commit(session.ctx, credential)
+	channelID, channelName, err := m.commit(session.ctx, options, credential)
 	if err != nil {
 		m.finish(session, "error", err.Error(), 0, "")
 		return
@@ -371,7 +379,16 @@ func (s *Server) HandleStartZAIOAuth(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "z.ai OAuth is unavailable")
 		return
 	}
-	response, err := s.zaiOAuth.start(c.Request.Context(), adminSessionHash)
+	var request oauthLoginStartRequest
+	if !bindOAuthLoginStart(c, &request) {
+		return
+	}
+	options, err := s.oauthLoginOptions(request, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	response, err := s.zaiOAuth.start(c.Request.Context(), adminSessionHash, options)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, zaiauth.ErrOAuthFlowUnavailable) {

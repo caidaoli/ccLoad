@@ -89,6 +89,11 @@
 
 - **OAuth 全局上游地址**:`CODEX_BASE_URL`(完整 Responses URL)、`XAI_BASE_URL`(API 根地址,通常以 `/v1` 结尾)、`ANTIGRAVITY_URL`、`ANTHROPIC_BASE_URL`(API 根地址)默认均为空;设置页分别以 `https://chatgpt.com/backend-api/codex/responses`、`https://cli-chat-proxy.grok.com/v1`、`https://daily-cloudcode-pa.googleapis.com`、`https://api.anthropic.com` 显示默认渠道地址占位提示,Antigravity 另有 `https://cloudcode-pa.googleapis.com` 备用地址。非空时对应 OAuth 渠道的数据请求、模型发现、测试和额度查询只使用该全局地址并忽略渠道 URL,Antigravity 的 Cloud Code 元数据请求(loadCodeAssist/onboardUser)同样跟随;OAuth 授权、Token 交换/刷新仍使用提供商官方地址,API Key 渠道不受影响。属于系统设置,修改后重启生效
 
+## OAuth 登录代理
+
+- **会话代理**(`admin_codex_auth.go:oauthLoginOptions`,对齐上游 `27f3abfb` 的会话级代理):`codex`、`anthropic`、`antigravity`、`codebuddy`/`codebuddy-international`、`xai`、`zed`、`zai` 的 `POST /admin/<provider>/oauth/start` 接受可选 JSON `{"proxy_url"}`(空 body 仍可用;Zed 与 `system_id` 同一 body),校验同渠道编辑。非空时该会话的全部上游请求——起 flow 与轮询(CodeBuddy/Z.ai)、code/token 交换、账号/项目/模型发现、xAI 凭证补全——都经 `proxyHTTPClient`(与渠道代理共享 transport 缓存,Antigravity 用 HTTP/1.1 客户端);代理无法构建时 start 返回 400,不回退直连。新建渠道在 `CreateConfig` 时一并写入 `proxy_url`;重新授权命中已有渠道时,非空代理经 `BatchPatchConfigs` 替换渠道代理,留空保留原代理。本地 loopback 回调由浏览器直达 ccLoad,不受影响。
+- **单项导入代理**:登录对话框的导入方式同一规则——JSON 接口 `POST /admin/codex/personal-access-token`、`/admin/cursor/credentials/import`、`/admin/zai/credentials/import`、`/admin/xai/credentials/import/stream` 在 body 加 `proxy_url`;原始认证文件接口 `/admin/vertex/credentials/import`、`/admin/codebuddy[-international]/credentials/import` 用查询参数 `?proxy_url=`(与 Vertex `?location=` 并列)。代理非法返回 400;导入期间的校验、换 token、身份/模型发现都经代理(xAI SSO 另建该批次专用的 HTTP/1.1 代理客户端,批次结束关闭)。新建渠道写入代理;命中已有渠道时 Codex PAT/Cursor/Z.ai/Vertex/CodeBuddy 按会话代理规则替换或保留,xAI 批量导入照旧跳过同名渠道,不改写其代理。例外:Cursor 新渠道的模型目录由本地 SDK bridge 拉取,不经代理。
+
 ## OAuth 认证文件批量导入
 
 - **账号代理**(`admin_oauth_import.go:parseOAuthCredentialProxyURL`):CLIProxyAPI 认证文件(含 `cliproxyapi-auth-bundle` 子账号)顶层的 `proxy_url`(上游 `27f3abfb` 按账号持久化)写入新建渠道的 `proxy_url`,校验同渠道编辑(http/https/socks5/socks5h,非法值或非字符串使该文件失败);此后凭证刷新与转发都经 `getClientForChannel` 走该代理。上游 `direct`/`none` 只表示绕过 CLIProxyAPI 全局代理,ccLoad 渠道没有对应模式,按无渠道代理导入。导入阶段的凭证补全、校验请求仍走默认出口;同名已存在渠道照旧跳过,不改写其代理。

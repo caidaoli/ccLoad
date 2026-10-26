@@ -56,7 +56,7 @@ func newAnthropicOAuthManager(
 		provider: "Anthropic", redirectURI: anthropicauth.RedirectURI,
 		timeout: 30 * time.Minute, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
-		prepare: func(string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
+		prepare: func(_ string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
 			if service == nil || store == nil {
 				return "", "", nil, nil, errors.New("oauth: Anthropic is unavailable")
 			}
@@ -68,19 +68,21 @@ func newAnthropicOAuthManager(
 			if err != nil {
 				return "", "", nil, nil, err
 			}
-			authURL, err := service.AuthorizationLink(state, pkce)
+			flowService := *service
+			flowService.Client = options.clientOr(flowService.Client)
+			authURL, err := flowService.AuthorizationLink(state, pkce)
 			if err != nil {
 				return "", "", nil, nil, err
 			}
 			exchange := func(ctx context.Context, code string) (any, error) {
-				return service.ExchangeCode(ctx, code, state, pkce)
+				return flowService.ExchangeCode(ctx, code, state, pkce)
 			}
 			commit := func(ctx context.Context, raw any) (int64, error) {
 				credential, ok := raw.(*anthropicauth.Credential)
 				if !ok || credential == nil {
 					return 0, errors.New("oauth: Anthropic exchange returned an invalid credential")
 				}
-				channel, _, err := createOrUpdateAnthropicChannel(ctx, store, credential)
+				channel, _, err := createOrUpdateAnthropicChannel(ctx, store, credential, options.proxyURL)
 				if err != nil {
 					return 0, err
 				}
@@ -95,6 +97,7 @@ func createOrUpdateAnthropicChannel(
 	ctx context.Context,
 	store storage.Store,
 	credential *anthropicauth.Credential,
+	proxyURL string,
 ) (*model.Config, bool, error) {
 	credentialJSON, err := credential.JSON()
 	if err != nil {
@@ -138,12 +141,13 @@ func createOrUpdateAnthropicChannel(
 			if !updated {
 				continue
 			}
-			winner, reactivateErr := reactivateReauthorizedChannel(ctx, store, currentCfg.ID)
+			winner, reactivateErr := reactivateReauthorizedChannel(ctx, store, currentCfg.ID, proxyURL)
 			return winner, false, reactivateErr
 		}
 	}
-	name := uniqueAnthropicChannelName(configs, credential)
-	created, err := store.CreateConfig(ctx, newAnthropicOAuthChannel(name, credentialJSON))
+	channel := newAnthropicOAuthChannel(uniqueAnthropicChannelName(configs, credential), credentialJSON)
+	channel.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, false, fmt.Errorf("create Anthropic channel: %w", err)
 	}
@@ -207,7 +211,16 @@ func (s *Server) HandleStartAnthropicOAuth(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic OAuth is unavailable")
 		return
 	}
-	authURL, state, err := s.anthropicOAuth.start()
+	var request oauthLoginStartRequest
+	if !bindOAuthLoginStart(c, &request) {
+		return
+	}
+	options, err := s.oauthLoginOptions(request, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	authURL, state, err := s.anthropicOAuth.start(options)
 	if err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return

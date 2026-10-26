@@ -28,6 +28,7 @@ type zedLoginResult struct {
 }
 
 type zedOAuthStartRequest struct {
+	oauthLoginStartRequest
 	SystemID string `json:"system_id"`
 }
 
@@ -40,7 +41,7 @@ func (r *zedOAuthStartRequest) Validate() error {
 		return err
 	}
 	r.SystemID = systemID
-	return nil
+	return r.oauthLoginStartRequest.Validate()
 }
 
 func newZedOAuthManager(service *zedauth.Service, store storage.Store, invalidate func(int64)) *codexOAuthManager {
@@ -54,10 +55,12 @@ func newZedOAuthManager(service *zedauth.Service, store storage.Store, invalidat
 		return parseZedOAuthCallbackURL(rawURL, state)
 	}
 	manager.parseSubmittedURL = parseZedOAuthCallbackURL
-	manager.prepareWithHint = func(redirectURI, requestedSystemID string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
+	manager.prepare = func(redirectURI string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
 		if service == nil || store == nil {
 			return "", "", nil, nil, errors.New("oauth: Zed is unavailable")
 		}
+		flowService := *service
+		flowService.Client = options.clientOr(flowService.Client)
 		callbackURL, err := url.Parse(redirectURI)
 		if err != nil {
 			return "", "", nil, nil, fmt.Errorf("parse Zed callback URL: %w", err)
@@ -78,7 +81,7 @@ func newZedOAuthManager(service *zedauth.Service, store storage.Store, invalidat
 		if err != nil {
 			return "", "", nil, nil, err
 		}
-		systemID, err := zedauth.NormalizeSystemID(requestedSystemID)
+		systemID, err := zedauth.NormalizeSystemID(options.hint)
 		if err != nil {
 			return "", "", nil, nil, err
 		}
@@ -106,15 +109,15 @@ func newZedOAuthManager(service *zedauth.Service, store storage.Store, invalidat
 			if credentialErr != nil {
 				return nil, credentialErr
 			}
-			minted, mintErr := service.MintLLMToken(ctx, credential)
+			minted, mintErr := flowService.MintLLMToken(ctx, credential)
 			if mintErr != nil {
 				return nil, mintErr
 			}
-			models, modelsErr := service.FetchModels(ctx, minted)
+			models, modelsErr := flowService.FetchModels(ctx, minted)
 			if modelsErr != nil {
 				return nil, modelsErr
 			}
-			account, accountErr := service.FetchAccount(ctx, minted)
+			account, accountErr := flowService.FetchAccount(ctx, minted)
 			if accountErr != nil {
 				return nil, accountErr
 			}
@@ -129,7 +132,7 @@ func newZedOAuthManager(service *zedauth.Service, store storage.Store, invalidat
 			if !ok || result == nil || result.credential == nil {
 				return 0, errors.New("oauth: Zed exchange returned an invalid credential")
 			}
-			channel, _, persistErr := createOrUpdateZedChannel(ctx, store, result.credential, result.models)
+			channel, _, persistErr := createOrUpdateZedChannel(ctx, store, result.credential, result.models, options.proxyURL)
 			if persistErr != nil {
 				return 0, persistErr
 			}
@@ -177,7 +180,13 @@ func findZedSystemID(ctx context.Context, store storage.Store, userID string) (s
 	return "", nil
 }
 
-func createOrUpdateZedChannel(ctx context.Context, store storage.Store, credential *zedauth.Credential, models []string) (*model.Config, bool, error) {
+func createOrUpdateZedChannel(
+	ctx context.Context,
+	store storage.Store,
+	credential *zedauth.Credential,
+	models []string,
+	proxyURL string,
+) (*model.Config, bool, error) {
 	if store == nil || credential == nil {
 		return nil, false, errors.New("persist Zed credential: unavailable")
 	}
@@ -198,21 +207,29 @@ func createOrUpdateZedChannel(ctx context.Context, store storage.Store, credenti
 		if parseErr != nil || existing.UserID != credential.UserID {
 			continue
 		}
-		return updateExistingZedChannel(ctx, store, cfg, existing, credential, models)
+		return updateExistingZedChannel(ctx, store, cfg, existing, credential, models, proxyURL)
 	}
 	payload, err := credential.JSON()
 	if err != nil {
 		return nil, false, err
 	}
-	name := uniqueZedChannelName(configs, zedChannelBaseName(credential))
-	created, err := store.CreateConfig(ctx, newZedOAuthChannel(name, payload, models))
+	channel := newZedOAuthChannel(uniqueZedChannelName(configs, zedChannelBaseName(credential)), payload, models)
+	channel.ProxyURL = proxyURL
+	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, false, fmt.Errorf("create Zed channel: %w", err)
 	}
 	return created, true, nil
 }
 
-func updateExistingZedChannel(ctx context.Context, store storage.Store, cfg *model.Config, existing, replacement *zedauth.Credential, models []string) (*model.Config, bool, error) {
+func updateExistingZedChannel(
+	ctx context.Context,
+	store storage.Store,
+	cfg *model.Config,
+	existing, replacement *zedauth.Credential,
+	models []string,
+	proxyURL string,
+) (*model.Config, bool, error) {
 	for {
 		next := zedauth.CloneCredential(replacement)
 		next.SystemID = existing.SystemID
@@ -246,7 +263,7 @@ func updateExistingZedChannel(ctx context.Context, store storage.Store, cfg *mod
 					break
 				}
 			}
-			persisted, err := reactivateReauthorizedChannel(ctx, store, cfg.ID)
+			persisted, err := reactivateReauthorizedChannel(ctx, store, cfg.ID, proxyURL)
 			return persisted, false, err
 		}
 		cfg, err = store.GetConfig(ctx, cfg.ID)
@@ -331,13 +348,16 @@ func (s *Server) HandleStartZedOAuth(c *gin.Context) {
 		return
 	}
 	var request zedOAuthStartRequest
-	if c.Request.ContentLength != 0 {
-		if err := BindAndValidate(c, &request); err != nil {
-			RespondError(c, http.StatusBadRequest, err)
-			return
-		}
+	if !bindOAuthLoginStart(c, &request) {
+		return
 	}
-	loginURL, state, err := s.zedOAuth.startWithHint(request.SystemID)
+	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	options.hint = request.SystemID
+	loginURL, state, err := s.zedOAuth.start(options)
 	if err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return

@@ -179,6 +179,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.loginDialogTitle': 'OAuth 登录',
   'channels.oauth.loginDialogDescription': '选择认证类型，然后生成授权链接。',
   'channels.oauth.credentialType': '认证类型',
+  'channels.oauth.proxyURLLabel': '代理（可选）',
+  'channels.oauth.proxyURLHint': '授权、导入校验及读取账号与模型时经此代理，并保存为渠道代理。留空则直连；重新授权时留空会保留渠道原有代理。',
   'channels.oauth.providerCodex': 'Codex',
   'channels.oauth.providerAntigravity': 'Antigravity',
   'channels.oauth.providerXAI': 'xAI',

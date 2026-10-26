@@ -500,7 +500,7 @@ func (s *Server) prepareOAuthCredentialImportFile(
 			return prepared
 		}
 		prepared.ChannelName = codeBuddyChannelBaseName(credential)
-		prepared.Config, err = s.prepareCodeBuddyChannel(ctx, prepared.ChannelName, credentialJSON)
+		prepared.Config, err = s.prepareCodeBuddyChannel(ctx, prepared.ChannelName, credentialJSON, "")
 		if err != nil {
 			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
 			return prepared

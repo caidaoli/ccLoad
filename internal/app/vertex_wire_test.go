@@ -632,3 +632,37 @@ func TestHandleImportOAuthCredentialsDetectsVertexServiceAccount(t *testing.T) {
 		t.Fatalf("token mints=%d, want the key validated once", calls)
 	}
 }
+
+func TestHandleImportVertexCredentialEgressesThroughProxy(t *testing.T) {
+	t.Parallel()
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "vertex-token.invalid" || r.URL.Path != "/token" {
+			t.Errorf("proxy forwarded %s%s", r.Host, r.URL.Path)
+		}
+		proxyHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"tok-proxy","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	t.Cleanup(proxy.Close)
+	// A real transport: an injected test RoundTripper would bypass the channel proxy.
+	srv := &Server{store: newCodexAuthTestStore(t), client: &http.Client{Transport: &http.Transport{}}}
+	key := vertexTestServiceAccount(t, "http://vertex-token.invalid/token", 0)
+
+	w := importVertexCredential(t, srv, "/admin/vertex/credentials/import?proxy_url=ftp%3A%2F%2Fproxy.invalid", key)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid proxy status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = importVertexCredential(t, srv, "/admin/vertex/credentials/import?location=us-central1&proxy_url="+proxy.URL, key)
+	if w.Code != http.StatusOK {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	created := mustParseAPIResponse[vertexCredentialImportResponse](t, w.Body.Bytes()).Data
+	cfg, err := srv.store.GetConfig(context.Background(), created.ChannelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Created || cfg.ProxyURL != proxy.URL || proxyHits.Load() != 1 {
+		t.Fatalf("created=%v proxy=%q proxy hits=%d", created.Created, cfg.ProxyURL, proxyHits.Load())
+	}
+}

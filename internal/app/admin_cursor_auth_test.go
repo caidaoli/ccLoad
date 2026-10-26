@@ -122,7 +122,7 @@ func TestCreateOrUpdateCursorChannelReauthorizesSameAccount(t *testing.T) {
 	ctx := context.Background()
 
 	first := &cursorauth.Credential{AccessToken: "tok-1", RefreshToken: "ref-1", Email: "user@example.com", UserID: "auth-1"}
-	created, isNew, err := createOrUpdateCursorChannel(ctx, store, first, nil)
+	created, isNew, err := createOrUpdateCursorChannel(ctx, store, first, nil, "")
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateCursorChannel() created=%v err=%v", isNew, err)
 	}
@@ -131,7 +131,7 @@ func TestCreateOrUpdateCursorChannelReauthorizesSameAccount(t *testing.T) {
 	}
 
 	second := &cursorauth.Credential{AccessToken: "tok-2", Email: "USER@example.com"}
-	updated, isNew, err := createOrUpdateCursorChannel(ctx, store, second, nil)
+	updated, isNew, err := createOrUpdateCursorChannel(ctx, store, second, nil, "")
 	if err != nil || isNew {
 		t.Fatalf("reauthorization created=%v err=%v", isNew, err)
 	}

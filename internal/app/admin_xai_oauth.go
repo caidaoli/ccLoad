@@ -60,6 +60,7 @@ type xaiOAuthSession struct {
 	state            string
 	adminSessionHash string
 	codeVerifier     string
+	options          oauthLoginOptions
 	ctx              context.Context
 	cancel           context.CancelFunc
 	status           string
@@ -72,8 +73,8 @@ type xaiOAuthSession struct {
 type xaiOAuthManager struct {
 	mu          sync.Mutex
 	service     *xaiauth.Service
-	complete    func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error)
-	commit      func(context.Context, *xaiauth.Credential) (int64, error)
+	complete    func(context.Context, oauthLoginOptions, *xaiauth.Credential) (*xaiauth.Credential, error)
+	commit      func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error)
 	baseCtx     context.Context
 	now         func() time.Time
 	sessions    map[string]*xaiOAuthSession
@@ -87,8 +88,8 @@ type xaiOAuthManager struct {
 func newXAIOAuthManager(
 	baseCtx context.Context,
 	service *xaiauth.Service,
-	complete func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error),
-	commit func(context.Context, *xaiauth.Credential) (int64, error),
+	complete func(context.Context, oauthLoginOptions, *xaiauth.Credential) (*xaiauth.Credential, error),
+	commit func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error),
 ) *xaiOAuthManager {
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -102,7 +103,7 @@ func newXAIOAuthManager(
 	return manager
 }
 
-func (m *xaiOAuthManager) start(adminSessionHash string) (xaiOAuthStartResponse, error) {
+func (m *xaiOAuthManager) start(adminSessionHash string, options oauthLoginOptions) (xaiOAuthStartResponse, error) {
 	if m == nil || m.service == nil || m.complete == nil || m.commit == nil {
 		return xaiOAuthStartResponse{}, errors.New("xAI OAuth is unavailable")
 	}
@@ -127,7 +128,7 @@ func (m *xaiOAuthManager) start(adminSessionHash string) (xaiOAuthStartResponse,
 	sessionCtx, cancel := context.WithCancel(m.baseCtx)
 	session := &xaiOAuthSession{
 		state: authorization.State, adminSessionHash: adminSessionHash,
-		codeVerifier: authorization.CodeVerifier, ctx: sessionCtx, cancel: cancel,
+		codeVerifier: authorization.CodeVerifier, options: options, ctx: sessionCtx, cancel: cancel,
 		status: "pending", createdAt: m.now(),
 	}
 	m.sessions[session.state] = session
@@ -165,12 +166,16 @@ func (m *xaiOAuthManager) submitCallback(adminSessionHash, rawInput string) (xai
 		return xaiOAuthStatusResponse{}, fmt.Errorf("xAI OAuth session is %s", session.status)
 	}
 	session.status = "processing"
-	verifier := session.codeVerifier
+	verifier, options := session.codeVerifier, session.options
 	m.mu.Unlock()
 
-	credential, err := m.service.ExchangeCode(session.ctx, input.Code, verifier)
+	service := m.service
+	if options.client != nil {
+		service = xaiauth.NewService(options.client)
+	}
+	credential, err := service.ExchangeCode(session.ctx, input.Code, verifier)
 	if err == nil {
-		credential, err = m.complete(session.ctx, credential)
+		credential, err = m.complete(session.ctx, options, credential)
 	}
 	if err != nil {
 		m.mu.Lock()
@@ -195,7 +200,7 @@ func (m *xaiOAuthManager) submitCallback(adminSessionHash, rawInput string) (xai
 	}
 	m.mu.Unlock()
 
-	channelID, err := m.commit(session.ctx, credential)
+	channelID, err := m.commit(session.ctx, options, credential)
 	m.mu.Lock()
 	if err != nil {
 		m.finishSessionLocked(session, "error", err.Error(), 0)
@@ -352,7 +357,16 @@ func (s *Server) HandleStartXAIOAuth(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "xAI OAuth is unavailable")
 		return
 	}
-	response, err := s.xaiOAuth.start(adminSessionHash)
+	var request oauthLoginStartRequest
+	if !bindOAuthLoginStart(c, &request) {
+		return
+	}
+	options, err := s.oauthLoginOptions(request, false)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	response, err := s.xaiOAuth.start(adminSessionHash, options)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

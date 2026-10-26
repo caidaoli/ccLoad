@@ -85,7 +85,7 @@ func testZedOAuthManagerCompletesNativeLogin(t *testing.T, systemID string) {
 	manager := newZedOAuthManager(service, store, nil)
 	defer manager.close()
 
-	authorizationURL, state, err := manager.startWithHint(systemID)
+	authorizationURL, state, err := manager.start(oauthLoginOptions{hint: systemID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestCreateOrUpdateZedChannelPreservesInstallationAndUsage(t *testing.T) {
 	}
 	first.AccessToken = "old.jwt.token"
 	first.OAuthUsage = []byte(`{"sample":"keep"}`)
-	created, wasCreated, err := createOrUpdateZedChannel(ctx, store, first, []string{"gpt-old"})
+	created, wasCreated, err := createOrUpdateZedChannel(ctx, store, first, []string{"gpt-old"}, "")
 	if err != nil || !wasCreated {
 		t.Fatalf("create channel: created=%v err=%v", wasCreated, err)
 	}
@@ -191,7 +191,7 @@ func TestCreateOrUpdateZedChannelPreservesInstallationAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement.AccessToken = "new.jwt.token"
-	updated, wasCreated, err := createOrUpdateZedChannel(ctx, store, replacement, []string{"gpt-new"})
+	updated, wasCreated, err := createOrUpdateZedChannel(ctx, store, replacement, []string{"gpt-new"}, "")
 	if err != nil || wasCreated || updated.ID != created.ID {
 		t.Fatalf("update channel: channel=%+v created=%v err=%v", updated, wasCreated, err)
 	}
@@ -256,7 +256,7 @@ func TestCreateOrUpdateZedChannelPreservesConcurrentModelEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	first.AccessToken = "old.jwt.token"
-	created, _, err := createOrUpdateZedChannel(ctx, store, first, []string{"gpt-old"})
+	created, _, err := createOrUpdateZedChannel(ctx, store, first, []string{"gpt-old"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestCreateOrUpdateZedChannelPreservesConcurrentModelEdit(t *testing.T) {
 		_, err = store.UpdateConfig(ctx, created.ID, current)
 		return err
 	}
-	if _, _, err := createOrUpdateZedChannel(ctx, interleaved, replacement, []string{"gpt-new"}); err != nil {
+	if _, _, err := createOrUpdateZedChannel(ctx, interleaved, replacement, []string{"gpt-new"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	persisted, err := store.GetConfig(ctx, created.ID)
@@ -329,7 +329,7 @@ func TestZedRejectedOldTokenDoesNotRefreshNewWinner(t *testing.T) {
 	}
 	credential.AccessToken = oldToken
 	credential.ExpiresAt = expiresAt
-	cfg, _, err := createOrUpdateZedChannel(ctx, store, credential, []string{"gpt-5.6-sol"})
+	cfg, _, err := createOrUpdateZedChannel(ctx, store, credential, []string{"gpt-5.6-sol"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

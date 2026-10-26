@@ -172,7 +172,8 @@ func (s *Server) validateVertexCredential(ctx context.Context, cfg *model.Config
 // commitVertexCredential replaces the key of the channel serving the same
 // service account and project, or creates a channel routed to the credential's
 // location. An existing channel keeps its URL: the channel URL owns routing.
-func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexauth.Credential) (*model.Config, bool, error) {
+// A non-empty proxyURL carries the token mint and replaces the channel proxy.
+func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexauth.Credential, proxyURL string) (*model.Config, bool, error) {
 	payload, err := credential.JSON()
 	if err != nil {
 		return nil, false, err
@@ -191,7 +192,12 @@ func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexa
 		if parseErr != nil || !stored.SameAccount(credential) {
 			continue
 		}
-		if err := s.validateVertexCredential(ctx, existing, credential); err != nil {
+		target := existing
+		if proxyURL != "" {
+			target = existing.Clone()
+			target.ProxyURL = proxyURL
+		}
+		if err := s.validateVertexCredential(ctx, target, credential); err != nil {
 			return nil, false, err
 		}
 		updated, updateErr := s.store.CompareAndSwapOAuthCredential(ctx, existing.ID, model.AuthTypeVertexOAuth, existing.OAuthCredential, payload)
@@ -201,7 +207,7 @@ func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexa
 		if !updated {
 			return nil, false, errors.New("vertex credential changed concurrently; retry import")
 		}
-		cfg, err := reactivateReauthorizedChannel(ctx, s.store, existing.ID)
+		cfg, err := reactivateReauthorizedChannel(ctx, s.store, existing.ID, proxyURL)
 		if err != nil {
 			return nil, false, err
 		}
@@ -210,6 +216,7 @@ func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexa
 		return cfg, false, nil
 	}
 	cfg := newVertexOAuthChannel(uniqueZedChannelName(configs, vertexChannelBaseName(credential)), payload, credential)
+	cfg.ProxyURL = proxyURL
 	if err := s.validateVertexCredential(ctx, cfg, credential); err != nil {
 		return nil, false, err
 	}
@@ -224,7 +231,8 @@ func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexa
 
 // HandleImportVertexCredential imports a Google service account key or a
 // CLIProxyAPI Vertex auth file. The optional location query overrides the
-// file's location for a newly created channel.
+// file's location for a newly created channel; the optional proxy_url query
+// routes the import through that proxy and becomes the channel proxy.
 func (s *Server) HandleImportVertexCredential(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxVertexCredentialImportBytes)
 	raw, err := io.ReadAll(c.Request.Body)
@@ -244,11 +252,16 @@ func (s *Server) HandleImportVertexCredential(c *gin.Context) {
 			return
 		}
 	}
+	proxyURL, err := normalizeChannelProxyURL(c.Query("proxy_url"))
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
 	if s.store == nil {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "vertex credential import is unavailable")
 		return
 	}
-	cfg, created, err := s.commitVertexCredential(c.Request.Context(), credential)
+	cfg, created, err := s.commitVertexCredential(c.Request.Context(), credential, proxyURL)
 	if err != nil {
 		if errors.Is(err, errVertexCredentialUnusable) {
 			RespondError(c, http.StatusBadGateway, err)

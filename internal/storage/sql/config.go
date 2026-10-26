@@ -923,6 +923,10 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			if patch.ProtocolTransformMode != nil {
 				nextProtocolMode = *patch.ProtocolTransformMode
 			}
+			nextProxyURL := state.proxyURL
+			if patch.ProxyURL != nil {
+				nextProxyURL = *patch.ProxyURL
+			}
 			nextScheduledCheckModel := state.scheduledCheckModel
 			nextModels := state.modelEntries
 			modelsChanged := false
@@ -943,6 +947,7 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				state.rpmLimit != nextRPMLimit ||
 				state.maxConcurrency != nextMaxConcurrency ||
 				state.protocolTransformMode != nextProtocolMode ||
+				state.proxyURL != nextProxyURL ||
 				state.scheduledCheckModel != nextScheduledCheckModel
 			changed := channelChanged || keyMultiplierChanged || modelsChanged
 			if !changed {
@@ -955,10 +960,10 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				if _, err := s.execTx(ctx, tx, `
 					UPDATE channels
 					SET priority = ?, cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
-						protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
+						protocol_transform_mode = ?, proxy_url = ?, scheduled_check_model = ?, updated_at = ?
 					WHERE id = ?
 				`, nextPriority, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
-					nextProtocolMode, nextScheduledCheckModel, updatedAtUnix, channelID); err != nil {
+					nextProtocolMode, nextProxyURL, nextScheduledCheckModel, updatedAtUnix, channelID); err != nil {
 					return fmt.Errorf("patch channel %d: %w", channelID, err)
 				}
 			}
@@ -1060,6 +1065,7 @@ type batchConfigPatchState struct {
 	rpmLimit              int
 	maxConcurrency        int
 	protocolTransformMode string
+	proxyURL              string
 	scheduledCheckModel   string
 	authType              string
 	modelEntries          []model.ModelEntry
@@ -1112,7 +1118,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
 	query := `SELECT id, priority, cost_multiplier, daily_cost_limit, rpm_limit, max_concurrency,
-		protocol_transform_mode, scheduled_check_model, auth_type
+		protocol_transform_mode, proxy_url, scheduled_check_model, auth_type
 		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
 	if s.supportsRowLock() {
 		query += ` FOR UPDATE`
@@ -1127,7 +1133,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 		state := &batchConfigPatchState{}
 		if err := rows.Scan(
 			&channelID, &state.priority, &state.costMultiplier, &state.dailyCostLimit, &state.rpmLimit, &state.maxConcurrency,
-			&state.protocolTransformMode, &state.scheduledCheckModel, &state.authType,
+			&state.protocolTransformMode, &state.proxyURL, &state.scheduledCheckModel, &state.authType,
 		); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan channel for batch patch: %w", err)
