@@ -1109,6 +1109,78 @@ func TestHandleImportOAuthCredentialsDetectsXAIAndExpandsCredentialsMap(t *testi
 	}
 }
 
+func TestHandleImportOAuthCredentialsCarriesCLIProxyAPIProxyURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.String() != xaiauth.CLIBaseURL+"/billing" {
+			return nil, fmt.Errorf("unexpected request: %s %s", request.Method, request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)), Request: request}, nil
+	})}
+	server := &Server{store: store, client: client}
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	account := func(email, proxyURL string) string {
+		return fmt.Sprintf(`{"type":"xai","access_token":"at-%s","refresh_token":"rt-%s","email":%q,"expired":%q,"proxy_url":%q}`,
+			email, email, email, expiresAt, proxyURL)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("provider", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]string{
+		"proxied.json": account("proxied@example.com", " socks5h://user:pass@127.0.0.1:1080 "),
+		"direct.json":  account("direct@example.com", "direct"),
+		"invalid.json": account("invalid@example.com", "ftp://127.0.0.1:21"),
+	} {
+		part, err := writer.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(part, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := importOAuthCredentialsViaJob(t, server, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+	if result.Data.Created != 2 || result.Data.Failed != 1 {
+		t.Fatalf("import summary = %#v", result.Data)
+	}
+	for _, item := range result.Data.Results {
+		if item.FileName == "invalid.json" && (item.Status != "failed" || !strings.Contains(item.Error, "proxy_url")) {
+			t.Fatalf("invalid proxy result = %#v", item)
+		}
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 2 {
+		t.Fatalf("channels=%d error=%v", len(channels), err)
+	}
+	wantProxy := map[string]string{
+		"xAI-proxied@example.com": "socks5h://user:pass@127.0.0.1:1080",
+		"xAI-direct@example.com":  "",
+	}
+	for _, channel := range channels {
+		want, ok := wantProxy[channel.Name]
+		if !ok || channel.ProxyURL != want {
+			t.Fatalf("channel %q proxy_url=%q, want %q", channel.Name, channel.ProxyURL, want)
+		}
+		if strings.Contains(channel.OAuthCredential, "proxy_url") {
+			t.Fatalf("channel %q kept proxy_url inside the credential: %s", channel.Name, channel.OAuthCredential)
+		}
+	}
+}
+
 func TestXAIOAuthHandlersGenerateLocallyAndExchangeManualCallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	adminA, adminB := "admin-a-bearer", "admin-b-bearer"

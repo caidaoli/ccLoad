@@ -29,6 +29,7 @@ type oauthCredentialImportFile struct {
 	SortName string
 	Raw      []byte
 	Priority int
+	ProxyURL string
 	Err      error
 }
 
@@ -301,14 +302,16 @@ func isOAuthCredentialArchiveEntry(name string) bool {
 }
 
 func newOAuthCredentialImportFile(fileName, sortName string, raw []byte) oauthCredentialImportFile {
-	priority, err := parseOAuthCredentialPriority(raw)
-	return oauthCredentialImportFile{
-		FileName: fileName,
-		SortName: sortName,
-		Raw:      raw,
-		Priority: priority,
-		Err:      err,
+	file := oauthCredentialImportFile{FileName: fileName, SortName: sortName, Raw: raw}
+	fields, err := decodeOAuthCredentialFields(raw)
+	if err == nil {
+		file.Priority, err = parseOAuthCredentialPriority(fields)
 	}
+	if err == nil {
+		file.ProxyURL, err = parseOAuthCredentialProxyURL(fields)
+	}
+	file.Err = err
+	return file
 }
 
 func failedOAuthCredentialImportFile(fileName string, err error) oauthCredentialImportFile {

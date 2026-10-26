@@ -120,11 +120,7 @@ func decodeOAuthCredentialFields(raw []byte) (map[string]json.RawMessage, error)
 	return fields, nil
 }
 
-func parseOAuthCredentialPriority(raw []byte) (int, error) {
-	fields, err := decodeOAuthCredentialFields(raw)
-	if err != nil {
-		return 0, err
-	}
+func parseOAuthCredentialPriority(fields map[string]json.RawMessage) (int, error) {
 	rawPriority, exists := fields["priority"]
 	if !exists || string(rawPriority) == "null" {
 		return 0, nil
@@ -140,6 +136,26 @@ func parseOAuthCredentialPriority(raw []byte) (int, error) {
 		}
 	}
 	return 0, errors.New("credential priority must be an integer")
+}
+
+// parseOAuthCredentialProxyURL reads the per-account proxy CLIProxyAPI stores
+// at the top level of an auth file. Its "direct"/"none" only bypass
+// CLIProxyAPI's global proxy; ccLoad channels have no such mode, so those
+// accounts import without a channel proxy.
+func parseOAuthCredentialProxyURL(fields map[string]json.RawMessage) (string, error) {
+	rawProxyURL, exists := fields["proxy_url"]
+	if !exists || string(rawProxyURL) == "null" {
+		return "", nil
+	}
+	var proxyURL string
+	if err := json.Unmarshal(rawProxyURL, &proxyURL); err != nil {
+		return "", errors.New("credential proxy_url must be a string")
+	}
+	switch strings.ToLower(strings.TrimSpace(proxyURL)) {
+	case "direct", "none":
+		return "", nil
+	}
+	return normalizeChannelProxyURL(proxyURL)
 }
 
 func detectOAuthCredentialProvider(raw []byte) (string, error) {
@@ -641,6 +657,9 @@ func (s *Server) prepareOAuthCredentialImportFile(
 	default:
 		prepared.Result.Status = "failed"
 		prepared.Result.Error = fmt.Sprintf("unsupported credential provider %q", credentialProvider)
+	}
+	if prepared.Config != nil {
+		prepared.Config.ProxyURL = file.ProxyURL
 	}
 	return prepared
 }

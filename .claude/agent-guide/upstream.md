@@ -89,6 +89,10 @@
 
 - **OAuth 全局上游地址**:`CODEX_BASE_URL`(完整 Responses URL)、`XAI_BASE_URL`(API 根地址,通常以 `/v1` 结尾)、`ANTIGRAVITY_URL`、`ANTHROPIC_BASE_URL`(API 根地址)默认均为空;设置页分别以 `https://chatgpt.com/backend-api/codex/responses`、`https://cli-chat-proxy.grok.com/v1`、`https://daily-cloudcode-pa.googleapis.com`、`https://api.anthropic.com` 显示默认渠道地址占位提示,Antigravity 另有 `https://cloudcode-pa.googleapis.com` 备用地址。非空时对应 OAuth 渠道的数据请求、模型发现、测试和额度查询只使用该全局地址并忽略渠道 URL,Antigravity 的 Cloud Code 元数据请求(loadCodeAssist/onboardUser)同样跟随;OAuth 授权、Token 交换/刷新仍使用提供商官方地址,API Key 渠道不受影响。属于系统设置,修改后重启生效
 
+## OAuth 认证文件批量导入
+
+- **账号代理**(`admin_oauth_import.go:parseOAuthCredentialProxyURL`):CLIProxyAPI 认证文件(含 `cliproxyapi-auth-bundle` 子账号)顶层的 `proxy_url`(上游 `27f3abfb` 按账号持久化)写入新建渠道的 `proxy_url`,校验同渠道编辑(http/https/socks5/socks5h,非法值或非字符串使该文件失败);此后凭证刷新与转发都经 `getClientForChannel` 走该代理。上游 `direct`/`none` 只表示绕过 CLIProxyAPI 全局代理,ccLoad 渠道没有对应模式,按无渠道代理导入。导入阶段的凭证补全、校验请求仍走默认出口;同名已存在渠道照旧跳过,不改写其代理。
+
 ## xAI
 
 - **客户端版本**：`xaiauth.CLIClientVersion` 统一驱动 `x-grok-client-version`、模型请求 UA 和账单 UA。2026-10-01 对齐官方 npm [`@xai-official/grok@1.0.46`](https://registry.npmjs.org/@xai-official/grok/1.0.46) 稳定版；版本头取发行版本的契约参照官方 `xai-org/grok-build` `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` 的 `xai-grok-shell/src/agent/proxy_headers.rs` 与 `xai-grok-version/src/lib.rs`。
