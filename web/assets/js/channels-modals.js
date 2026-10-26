@@ -532,8 +532,7 @@ function resetModalKeyStatusFilter() {
 
 const openCodeChannelPresets = {
   opencode_zen: { name: 'OpenCode-Zen', url: 'https://opencode.ai/zen' },
-  opencode_zen_go: { name: 'OpenCode-Zen-Go', url: 'https://opencode.ai/zen/go' },
-  opencode_anonymous: { name: 'OpenCode-Anonymous', url: 'https://opencode.ai/inference', api_key: 'public' }
+  opencode_zen_go: { name: 'OpenCode-Zen-Go', url: 'https://opencode.ai/zen/go' }
 };
 
 function openOpenCodeChannelDialog() {
@@ -610,7 +609,6 @@ async function showAddModal(authType = 'api_key', channelPreset = '') {
   clearChannelDuplicateHint();
 
   inlineKeyTableData = [makeInlineKeyRow()];
-  if (preset?.api_key) inlineKeyTableData[0].api_key = preset.api_key;
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
@@ -3768,7 +3766,7 @@ async function fetchModelsFromAPI({ markDirty = true } = {}) {
     }
 
     if (availableKeys.length === 0) {
-      // OpenCode 官方模型目录无需认证，没有可用 Key 时沿用匿名入口的 public。
+      // OpenCode 官方模型目录无需认证，没有可用 Key 时用占位 Key public。
       if (!isOpenCodeChannel({ auth_type: editingChannelAuthType, urls })) {
         window.showError(window.t('channels.addAtLeastOneEnabledKey'));
         return;

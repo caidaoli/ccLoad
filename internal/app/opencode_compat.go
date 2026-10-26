@@ -45,20 +45,10 @@ func isOpenCodeEndpoint(raw string) bool {
 	return isOpenCodePath(raw, opencodePath)
 }
 
-// Zen, Go and anonymous share the inference wire; quota and muse compatibility
-// remain Go-only.
-func isOpenCodeZenEndpoint(raw string) bool {
-	return isOpenCodePath(raw, "/zen")
-}
-
-// Anonymous free-tier lane. Since 2026-10-14 Zen rejects free models under
-// /zen with FreeTierError; this path still serves them with the public key.
-func isOpenCodeAnonymousEndpoint(raw string) bool {
-	return isOpenCodePath(raw, "/inference")
-}
-
+// Zen and Go share the inference wire; quota and muse compatibility remain
+// Go-only.
 func isOpenCodeOfficialEndpoint(raw string) bool {
-	return isOpenCodeZenEndpoint(raw) || isOpenCodeAnonymousEndpoint(raw)
+	return isOpenCodePath(raw, "/zen")
 }
 
 func isOpenCodeAPIKeyEndpoint(cfg *model.Config, raw string) bool {
@@ -219,10 +209,6 @@ func injectOpenCodeHeaders(req *http.Request, cfg *model.Config, upstream protoc
 	default:
 		return
 	}
-	anonymous := isOpenCodeAnonymousEndpoint(req.URL.String())
-	if anonymous {
-		key = "public"
-	}
 	identity := cloneHeaders(req.Header)
 	ensureOpenCodeSessionHeader(identity, source, executionIdentity)
 	session := openCodeSessionID(identity.Get(opencodeSessionHeader))
@@ -243,14 +229,13 @@ func injectOpenCodeHeaders(req *http.Request, cfg *model.Config, upstream protoc
 	if parent := opencodeHeaderValue(source, "x-parent-session-id"); parent != "" {
 		req.Header.Set("X-Parent-Session-Id", parent)
 	}
-	switch {
-	case upstream == protocol.Anthropic:
+	switch upstream {
+	case protocol.Anthropic:
 		req.Header.Set("X-Api-Key", key)
 		req.Header.Set("Anthropic-Version", "2023-06-01")
 		req.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
-	case upstream == protocol.Gemini && !anonymous:
-		// Keyed Gemini routes read only x-goog-api-key; the anonymous free
-		// gate accepts only the Bearer public credential.
+	case protocol.Gemini:
+		// Keyed Gemini routes read only x-goog-api-key.
 		req.Header.Set("x-goog-api-key", key)
 	default:
 		req.Header.Set("Authorization", "Bearer "+key)
@@ -275,8 +260,7 @@ func isOpenCodeSystemOneModel(name string) bool {
 }
 
 func isOpenCodeFreeRequest(cfg *model.Config, target string, upstream protocol.Protocol, path, name string) bool {
-	return isOpenCodeAPIKeyEndpoint(cfg, target) && isOpenCodeInferencePath(upstream, path) &&
-		(isOpenCodeAnonymousEndpoint(target) || isOpenCodeFreeModel(name))
+	return isOpenCodeAPIKeyEndpoint(cfg, target) && isOpenCodeInferencePath(upstream, path) && isOpenCodeFreeModel(name)
 }
 
 // isOpenCodeInferencePath reports the per-protocol inference routes OpenCode

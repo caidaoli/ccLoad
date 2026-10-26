@@ -2141,7 +2141,7 @@ func TestTestChannelAPI_OpenCodeFreeNonStreamPreservesToolsAndUsage(t *testing.T
 			toolPath: "content.1.name", argumentsPath: "content.1.input",
 		},
 	}
-	for _, endpoint := range []string{"https://opencode.ai/inference", "https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
+	for _, endpoint := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
 		for _, tc := range protocols {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
 				srv := newInMemoryServer(t)
@@ -2157,15 +2157,6 @@ func TestTestChannelAPI_OpenCodeFreeNonStreamPreservesToolsAndUsage(t *testing.T
 					}
 					if !gjson.GetBytes(body, "stream").Bool() {
 						t.Errorf("OpenCode free request must stream upstream: %s", body)
-					}
-					if endpoint == "https://opencode.ai/inference" {
-						if tc.name == "anthropic" {
-							if r.Header.Get("X-Api-Key") != "public" {
-								t.Errorf("anonymous X-Api-Key=%q, want public", r.Header.Get("X-Api-Key"))
-							}
-						} else if r.Header.Get("Authorization") != "Bearer public" {
-							t.Errorf("anonymous authorization=%q, want Bearer public", r.Header.Get("Authorization"))
-						}
 					}
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.stream)), Request: r}, nil
 				})}

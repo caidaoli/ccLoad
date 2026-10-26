@@ -181,9 +181,8 @@ test('CodeBuddy 额度工具栏提供独立的手动签到状态', () => {
 
 test('OpenCode 渠道按官方 URL 和 API Key 认证识别，与名称无关', () => {
   for (const url of [
-    'https://opencode.ai/zen', 'https://opencode.ai/zen/go', 'https://opencode.ai/inference',
+    'https://opencode.ai/zen', 'https://opencode.ai/zen/go',
     'https://opencode.ai/zen/v1/responses#', 'https://opencode.ai/zen/go/v1/chat/completions',
-    'https://opencode.ai/inference/v1/chat/completions',
     'HTTPS://OpenCode.AI/zen', 'https://opencode.ai/%7Aen/go'
   ]) {
     assert.equal(isOpenCodeChannel({ name: 'arbitrary name', auth_type: 'api_key', urls: [{ url }] }), true);
@@ -191,7 +190,7 @@ test('OpenCode 渠道按官方 URL 和 API Key 认证识别，与名称无关', 
   }
   for (const url of [
     'https://example.com/zen', 'https://opencode.ai.example/zen', 'https://opencode.ai/zenith',
-    'https://opencode.ai/inference-extra', 'http://opencode.ai/zen', 'https://user@opencode.ai/zen',
+    'https://opencode.ai/inference', 'http://opencode.ai/zen', 'https://user@opencode.ai/zen',
     'https://opencode.ai:443/zen', 'https://@opencode.ai/zen', 'https://opencode.ai/zen/go/../x',
     'https://opencode.ai/other/../zen', 'https://opencode.ai/zen/%2E%2E/x', 'https://opencode.ai/zen?x=1'
   ]) {
@@ -337,7 +336,7 @@ test('管理账户只对已配置凭据的 API Key 渠道渲染动作，签到�
       auth_type: 'api_key',
       management_account: { profile: 'new_api', credential_configured: false }
     }), '');
-    for (const url of ['https://opencode.ai/zen', 'https://opencode.ai/zen/go', 'https://opencode.ai/inference']) {
+    for (const url of ['https://opencode.ai/zen', 'https://opencode.ai/zen/go']) {
       assert.equal(buildManagementAccountStatusHtml({
         id: 3, auth_type: 'api_key', urls: [{ url }],
         management_account: { profile: 'new_api', credential_configured: true }

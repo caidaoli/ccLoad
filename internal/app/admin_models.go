@@ -1759,15 +1759,8 @@ func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool
 
 func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, client *http.Client) (*FetchModelsResponse, error) {
 	official := isOpenCodeOfficialEndpoint(channelURL)
-	anonymous := isOpenCodeAnonymousEndpoint(channelURL)
 	// OpenCode has no System One catalog; its jev-* models sit in the OpenAI one.
 	systemOne := official && util.NormalizeProtocol(upstreamProtocol) == util.ProtocolSystemOne
-	if anonymous {
-		channelURL, apiKey = "https://opencode.ai/zen", "public"
-		if !systemOne {
-			upstreamProtocol = util.ProtocolOpenAI
-		}
-	}
 	fetchProtocol := upstreamProtocol
 	if systemOne {
 		fetchProtocol = util.ProtocolOpenAI
@@ -1807,7 +1800,7 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 	if official {
 		filtered := modelNames[:0]
 		for _, name := range modelNames {
-			if isOpenCodeSystemOneModel(name) == systemOne && (!anonymous || isOpenCodeFreeModel(name)) {
+			if isOpenCodeSystemOneModel(name) == systemOne {
 				filtered = append(filtered, name)
 			}
 		}

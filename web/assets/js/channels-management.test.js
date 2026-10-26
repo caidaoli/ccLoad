@@ -183,7 +183,7 @@ test('OpenCode 官方渠道隐藏管理账户并保留已有账户，普通 API 
     for (const urls of [
       ['https://opencode.ai/zen'],
       [{ url: 'https://opencode.ai/zen/go' }],
-      [{ url: 'https://opencode.ai/inference/v1/chat/completions', exact: true }]
+      [{ url: 'https://opencode.ai/zen/v1/chat/completions', exact: true }]
     ]) {
       for (const account of [null, saved]) {
         mod.resetManagementAccountDraft(account, urls, 'api_key');

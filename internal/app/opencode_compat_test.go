@@ -669,7 +669,7 @@ func TestOpenCodeRequestBodyAnthropicThinking(t *testing.T) {
 }
 
 func TestOpenCodeRequestBodyAndHeadersEndpointScope(t *testing.T) {
-	for _, target := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go", "https://example.test/v1"} {
+	for _, target := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go", "https://example.test/v1", "https://opencode.ai/zen"} {
 		t.Run(target, func(t *testing.T) {
 			srv := newInMemoryServer(t)
 			cfg := &model.Config{ID: 4, URLs: model.ChannelURLs{{URL: "https://opencode.ai/zen/go"}, {URL: "https://example.test/v1"}}}
@@ -690,7 +690,7 @@ func TestOpenCodeRequestBodyAndHeadersEndpointScope(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if strings.Contains(target, "example.test") {
+				if !strings.HasPrefix(target, "https://opencode.ai/zen") {
 					if gjson.GetBytes(wire, "max_output_tokens").Int() != 1 || strings.HasPrefix(req.Header.Get("User-Agent"), "opencode/") || req.Header.Get("X-Opencode-Session-Id") != "" || req.Header.Get("X-Opencode-Project") != "" {
 						t.Fatalf("OpenCode wire leaked into other selected URL: headers=%v body=%s", req.Header, wire)
 					}
@@ -759,12 +759,9 @@ func TestOpenCodeRequestBodyFreeToolsAndStreaming(t *testing.T) {
 		{"responses", "codex", "/v1/responses", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-free\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg-free\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"},
 		{"messages", "anthropic", "/v1/messages", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-free\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"model-free\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"},
 	} {
-		for _, endpoint := range []string{"https://opencode.ai/inference", "https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
+		for _, endpoint := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
 			t.Run(tc.name+"/"+endpoint, func(t *testing.T) {
-				modelName := "model-free"
-				if strings.HasSuffix(endpoint, "/inference") {
-					modelName = "unlisted-model"
-				}
+				const modelName = "model-free"
 				env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", upstreamProtocol: tc.upstream, protocolTransformMode: model.ProtocolTransformModeLocal, models: modelName, apiKey: "test-key"}}, map[int]string{0: endpoint})
 				tool := func(name string) any {
 					params := map[string]any{"type": "object", "properties": map[string]any{"opaque": map[string]any{"type": "integer", "default": json.Number("9007199254740993")}}}
@@ -1055,7 +1052,7 @@ func TestOpenCodeFreeNonStreamRejectsFailedOrTruncatedSSE(t *testing.T) {
 	for _, upstream := range []protocol.Protocol{protocol.OpenAI, protocol.Codex, protocol.Anthropic, protocol.Gemini} {
 		for _, failure := range []string{"truncated", "rate-limit"} {
 			t.Run(string(upstream)+"/"+failure, func(t *testing.T) {
-				env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "OpenCode", upstreamProtocol: string(upstream), protocolTransformMode: model.ProtocolTransformModeLocal, models: "model-free", apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/inference"}, map[string]string{"cooldown_fallback_enabled": "false"})
+				env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "OpenCode", upstreamProtocol: string(upstream), protocolTransformMode: model.ProtocolTransformModeLocal, models: "model-free", apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/zen"}, map[string]string{"cooldown_fallback_enabled": "false"})
 				prefix, _ := openCodeFreeToolStreamFixture(upstream)
 				wire := prefix
 				if failure == "rate-limit" {
@@ -1086,7 +1083,7 @@ func TestOpenCodeFreeNonStreamRejectsFailedOrTruncatedSSE(t *testing.T) {
 func TestOpenCodeFreeNonStreamStopsFirstByteDeadlineAfterEvent(t *testing.T) {
 	for _, upstream := range []protocol.Protocol{protocol.OpenAI, protocol.Codex, protocol.Anthropic, protocol.Gemini} {
 		t.Run(string(upstream), func(t *testing.T) {
-			env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", upstreamProtocol: string(upstream), protocolTransformMode: model.ProtocolTransformModeLocal, models: "model-free", apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/inference"})
+			env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", upstreamProtocol: string(upstream), protocolTransformMode: model.ProtocolTransformModeLocal, models: "model-free", apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/zen"})
 			const firstByteTimeout = 100 * time.Millisecond
 			const completionDelay = 3 * firstByteTimeout
 			env.server.firstByteTimeout = firstByteTimeout
@@ -1123,7 +1120,7 @@ func TestOpenCodeFreeNonStreamStopsFirstByteDeadlineAfterEvent(t *testing.T) {
 }
 
 func TestOpenCodeFreeResponsesPreservesOpaqueToolsWithCoreNames(t *testing.T) {
-	env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", upstreamProtocol: "codex", protocolTransformMode: model.ProtocolTransformModeLocal, models: "model-free", apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/inference"})
+	env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", upstreamProtocol: "codex", protocolTransformMode: model.ProtocolTransformModeLocal, models: "model-free", apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/zen"})
 	called := false
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		called = true
@@ -1180,7 +1177,7 @@ func assertOpenCodeNoPersistedCooldown(t *testing.T, srv *Server) {
 }
 
 func TestProxyOpenCodeAutoNegotiatesProtocolPerModel(t *testing.T) {
-	for _, endpoint := range []string{"https://opencode.ai/inference", "https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
+	for _, endpoint := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
 		for _, streaming := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%v", endpoint, streaming), func(t *testing.T) {
 				const muse = "muse-spark-1.3-contributor-free"
@@ -1262,7 +1259,7 @@ func TestProxyOpenCodeAutoNegotiatesProtocolPerModel(t *testing.T) {
 }
 
 func TestHandleChannelTestOpenCodeAutoNegotiatesModelProtocol(t *testing.T) {
-	for _, endpoint := range []string{"https://opencode.ai/inference", "https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
+	for _, endpoint := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
 		for _, streaming := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%v", endpoint, streaming), func(t *testing.T) {
 				const actualModel = "muse-spark-1.3-contributor-free"
@@ -1335,14 +1332,14 @@ func TestOpenCodeProtocolNegotiationScopeAndExhaustion(t *testing.T) {
 		wantAttempts                    int
 		wantNoCooldown                  bool
 	}{
-		{name: "exhausted auto", endpoint: "https://opencode.ai/inference", mode: model.ProtocolTransformModeAuto, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 4, wantNoCooldown: true},
-		{name: "declared auto", endpoint: "https://opencode.ai/inference", mode: model.ProtocolTransformModeAuto, protocols: []string{"openai"}, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1, wantNoCooldown: true},
+		{name: "exhausted auto", endpoint: "https://opencode.ai/zen", mode: model.ProtocolTransformModeAuto, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 4, wantNoCooldown: true},
+		{name: "declared auto", endpoint: "https://opencode.ai/zen", mode: model.ProtocolTransformModeAuto, protocols: []string{"openai"}, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1, wantNoCooldown: true},
 		{name: "declared local", endpoint: "https://opencode.ai/zen/go", mode: model.ProtocolTransformModeLocal, protocols: []string{"openai"}, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1, wantNoCooldown: true},
-		{name: "upstream mode", endpoint: "https://opencode.ai/inference", mode: model.ProtocolTransformModeUpstream, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1, wantNoCooldown: true},
+		{name: "upstream mode", endpoint: "https://opencode.ai/zen", mode: model.ProtocolTransformModeUpstream, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1, wantNoCooldown: true},
 		{name: "other host", endpoint: "https://gateway.example/inference", mode: model.ProtocolTransformModeAuto, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1},
 		{name: "mixed URLs actual other host", endpoint: "https://gateway.example/inference", mode: model.ProtocolTransformModeAuto, errorBody: openCodeUnsupportedProtocolResponse, wantAttempts: 1},
-		{name: "ordinary data error", endpoint: "https://opencode.ai/inference", mode: model.ProtocolTransformModeAuto, errorBody: `{"error":{"type":"invalid_request_error","message":"ModelProtocolUnsupported in prompt is invalid"}}`, wantAttempts: 1},
-		{name: "wrong typed field", endpoint: "https://opencode.ai/inference", mode: model.ProtocolTransformModeAuto, errorBody: `{"error":{"code":"ModelProtocolUnsupported","message":"invalid input"}}`, wantAttempts: 1},
+		{name: "ordinary data error", endpoint: "https://opencode.ai/zen", mode: model.ProtocolTransformModeAuto, errorBody: `{"error":{"type":"invalid_request_error","message":"ModelProtocolUnsupported in prompt is invalid"}}`, wantAttempts: 1},
+		{name: "wrong typed field", endpoint: "https://opencode.ai/zen", mode: model.ProtocolTransformModeAuto, errorBody: `{"error":{"code":"ModelProtocolUnsupported","message":"invalid input"}}`, wantAttempts: 1},
 	} {
 		for _, admin := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/admin=%v", tc.name, admin), func(t *testing.T) {
@@ -1354,9 +1351,9 @@ func TestOpenCodeProtocolNegotiationScopeAndExhaustion(t *testing.T) {
 				}
 				cfg.URLs[0].Protocols = tc.protocols
 				if tc.name == "mixed URLs actual other host" {
-					cfg.URLs = append(cfg.URLs, model.ChannelURL{URL: "https://opencode.ai/inference"})
+					cfg.URLs = append(cfg.URLs, model.ChannelURL{URL: "https://opencode.ai/zen"})
 					// Keep OpenCode configured while selecting only the ordinary URL.
-					env.server.urlSelector.DisableURL(cfg.ID, "https://opencode.ai/inference")
+					env.server.urlSelector.DisableURL(cfg.ID, "https://opencode.ai/zen")
 				}
 				if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
 					t.Fatal(err)
@@ -1409,63 +1406,6 @@ func TestOpenCodeProtocolNegotiationScopeAndExhaustion(t *testing.T) {
 						t.Fatalf("ordinary 400 classification changed: %v", models)
 					}
 				}
-			})
-		}
-	}
-}
-
-// The anonymous lane screens Gemini requests before the model lookup: an
-// unknown route is an empty 404 and an unshaped request fails the free tier.
-// Either would cool the channel instead of reporting the missing protocol.
-func TestOpenCodeAnonymousGeminiProbeReachesFreeGate(t *testing.T) {
-	const jev = "jev-1.13-free"
-	for _, admin := range []bool{false, true} {
-		for _, streaming := range []bool{false, true} {
-			t.Run(fmt.Sprintf("admin=%v/stream=%v", admin, streaming), func(t *testing.T) {
-				env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", protocolTransformMode: model.ProtocolTransformModeAuto, models: jev, apiKey: "personal-key"}}, map[int]string{0: "https://opencode.ai/inference"})
-				var paths []string
-				env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-					body, err := io.ReadAll(r.Body)
-					if err != nil {
-						return nil, err
-					}
-					paths = append(paths, r.URL.Path)
-					switch r.URL.Path {
-					case "/inference/v1/chat/completions", "/inference/v1/messages", "/inference/v1/responses":
-						return jsonResponseStatus(r, http.StatusBadRequest, openCodeUnsupportedProtocolResponse)
-					case "/inference/v1/models/" + jev + ":streamGenerateContent":
-					default:
-						return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
-					}
-					session := r.Header.Get("X-Opencode-Session")
-					sessions := session != ""
-					for _, header := range []string{"X-Opencode-Session-Id", "X-Session-Affinity", "X-Session-Id"} {
-						sessions = sessions && r.Header.Get(header) == session
-					}
-					if r.Header.Get("Authorization") != "Bearer public" || r.Header.Get("x-goog-api-key") != "" || r.URL.Query().Get("alt") != "sse" || len(gjson.GetBytes(body, "tools.0.functionDeclarations").Array()) == 0 || !sessions {
-						return jsonResponseStatus(r, http.StatusForbidden, `{"type":"error","error":{"type":"FreeTierError","message":"free tier requires the OpenCode agent"}}`)
-					}
-					return jsonResponseStatus(r, http.StatusBadRequest, openCodeUnsupportedProtocolResponse)
-				})}
-				if admin {
-					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": jev, "client_protocol": "openai", "stream": streaming, "content": "hello"}))
-					c.Params = gin.Params{{Key: "id", Value: "1"}}
-					env.server.HandleChannelTest(c)
-					result := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
-					if w.Code != http.StatusOK || result.Data["success"] != false || result.Data["status_code"] != float64(http.StatusBadRequest) || result.Data["upstream_protocol"] != "gemini" ||
-						result.Data["upstream_request_url"] != "https://opencode.ai/inference/v1/models/"+jev+":streamGenerateContent?alt=sse" {
-						t.Fatalf("admin Gemini probe missed the free gate: paths=%v response=%s", paths, w.Body.String())
-					}
-				} else {
-					got := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": jev, "stream": streaming, "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
-					if got.Code != http.StatusBadRequest {
-						t.Fatalf("proxy Gemini probe missed the free gate: paths=%v status=%d body=%s", paths, got.Code, got.Body.String())
-					}
-				}
-				if len(paths) != 4 || !strings.HasSuffix(paths[3], ":streamGenerateContent") {
-					t.Fatalf("unexpected protocol probes: %v", paths)
-				}
-				assertOpenCodeNoPersistedCooldown(t, env.server)
 			})
 		}
 	}

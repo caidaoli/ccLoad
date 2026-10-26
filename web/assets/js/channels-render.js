@@ -180,7 +180,7 @@ function isOpenCodeChannel(channel) {
   const entries = Array.isArray(channel?.urls) ? channel.urls : [];
   return entries.some(entry => {
     const raw = typeof entry === 'string' ? entry : entry?.url;
-    return isOpenCodeEndpoint(raw, '/zen') || isOpenCodeEndpoint(raw, '/inference');
+    return isOpenCodeEndpoint(raw, '/zen');
   });
 }
 

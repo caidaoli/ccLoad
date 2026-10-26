@@ -170,10 +170,6 @@ func TestChannelManagementOpenCodeChannelsIgnoreManagementAccount(t *testing.T) 
 	if w := putChannel(update); w.Code != http.StatusConflict {
 		t.Fatalf("encoded OpenCode update with management_account status=%d body=%s, want 409", w.Code, w.Body.String())
 	}
-	update["urls"] = []map[string]any{{"url": "https://opencode.ai/inference"}}
-	if w := putChannel(update); w.Code != http.StatusConflict {
-		t.Fatalf("anonymous OpenCode update with management_account status=%d body=%s, want 409", w.Code, w.Body.String())
-	}
 	if current, err := server.store.GetConfig(context.Background(), stored.ID); err != nil ||
 		len(current.URLs) != len(stored.URLs) || current.URLs[0].URL != stored.URLs[0].URL {
 		t.Fatalf("rejected OpenCode update changed stored URLs: %+v err=%v", current, err)

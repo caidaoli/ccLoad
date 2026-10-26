@@ -85,23 +85,15 @@ func TestAdminModels_CodeBuddyLiveCatalog(t *testing.T) {
 }
 
 // OpenCode lists System One-only jev-* models in its OpenAI catalog; official
-// endpoints split them out by channel kind, and anonymous ones keep free models.
+// endpoints split them out by channel kind.
 func TestAdminModels_OpenCodeOfficialDiscoveryCatalog(t *testing.T) {
 	for _, tc := range []struct {
 		name, endpoint, upstream, key, authType string
 		wantModels                              []string
 	}{
 		{
-			name: "anonymous", endpoint: "https://opencode.ai/inference", upstream: "https://opencode.ai/zen/v1/models", key: "public",
-			wantModels: []string{"big-pickle", "kimi-k2.5-free"},
-		},
-		{
 			name: "zen", endpoint: "https://opencode.ai/zen", upstream: "https://opencode.ai/zen/v1/models", key: "personal-key",
 			wantModels: []string{"big-pickle", "gpt-5.4", "kimi-k2.5-free"},
-		},
-		{
-			name: "anonymous system one", endpoint: "https://opencode.ai/inference", upstream: "https://opencode.ai/zen/v1/models", key: "public", authType: model.AuthTypeSystemOne,
-			wantModels: []string{"jev-1.13-free"},
 		},
 		{
 			name: "zen system one", endpoint: "https://opencode.ai/zen", upstream: "https://opencode.ai/zen/v1/models", key: "personal-key", authType: model.AuthTypeSystemOne,

@@ -1554,7 +1554,7 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
     openOpenCodeChannelDialog();
     assert.equal(dialog.open, true);
     assert.equal(selection.value, 'opencode_zen');
-    selection.value = 'opencode_anonymous';
+    selection.value = 'opencode_zen_go';
     closeOpenCodeChannelDialog();
     await continueOpenCodeChannel({ preventDefault() {} });
     assert.equal(dialog.open, false);
@@ -1576,10 +1576,9 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
     assert.equal(global.editingChannelId, 42);
     assert.equal(submitted.length, 0);
 
-    for (const [preset, name, url, presetKey] of [
-      ['opencode_zen', 'OpenCode-Zen', 'https://opencode.ai/zen', ''],
-      ['opencode_zen_go', 'OpenCode-Zen-Go', 'https://opencode.ai/zen/go', ''],
-      ['opencode_anonymous', 'OpenCode-Anonymous', 'https://opencode.ai/inference', 'public']
+    for (const [preset, name, url] of [
+      ['opencode_zen', 'OpenCode-Zen', 'https://opencode.ai/zen'],
+      ['opencode_zen_go', 'OpenCode-Zen-Go', 'https://opencode.ai/zen/go']
     ]) {
       openOpenCodeChannelDialog();
       assert.equal(selection.value, 'opencode_zen');
@@ -1592,7 +1591,7 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
       assert.equal(fixture.getElement('channelName').value, name);
       assert.equal(fixture.getElement('protocolTransformModeValue').value, 'auto');
       assert.deepEqual(global.inlineURLTableData, [{ url, exact: false, protocols: [] }]);
-      assert.equal(global.inlineKeyTableData[0].api_key, presetKey);
+      assert.equal(global.inlineKeyTableData[0].api_key, '');
 
       // The public catalog is fetched on open, before the user enters a key.
       const discovery = submitted.at(-1);
@@ -1603,8 +1602,8 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
       assert.deepEqual(global.redirectTableData.map(row => row.model), ['big-pickle']);
       assert.equal(dirtyMarks, 0, 'preset discovery must not count as an unsaved edit');
 
-      const apiKey = presetKey || 'user-api-key';
-      if (!presetKey) global.inlineKeyTableData[0].api_key = apiKey;
+      const apiKey = 'user-api-key';
+      global.inlineKeyTableData[0].api_key = apiKey;
       fixture.getElement('channelName').value = `${name} custom`;
       await saveChannel({ preventDefault() {} });
       const request = submitted.at(-1);
