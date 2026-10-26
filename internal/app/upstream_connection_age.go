@@ -2,9 +2,14 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 var errUpstreamConnectionAgeTransportClosed = errors.New("upstream connection age transport is closed")
@@ -69,7 +74,41 @@ func newHTTPClientWithRoundTripperFactory(
 	if maxAge > 0 {
 		roundTripper = newUpstreamConnectionAgeTransportWithFactory(base, maxAge, factory)
 	}
-	return &http.Client{Transport: roundTripper, Timeout: 0}
+	return &http.Client{Transport: roundTripper, Timeout: 0, CheckRedirect: refuseCrossOriginRedirect}
+}
+
+// refuseCrossOriginRedirect keeps upstream credentials on the requested origin.
+// net/http rebuilds every hop from the original headers and strips only
+// Authorization and cookies, so x-api-key, x-goog-api-key and channel custom
+// headers would follow a redirect to any host. A cross-origin hop fails as an
+// invalid upstream response so the proxy switches channels instead of relaying
+// the redirect to the client.
+func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	// Every earlier hop already passed this check, so the first request is the
+	// only origin to compare against.
+	if !sameURLOrigin(via[0].URL, req.URL) {
+		return fmt.Errorf("%w: redirect to another origin %s://%s", util.ErrUpstreamInvalidResponse, req.URL.Scheme, req.URL.Host)
+	}
+	return nil
+}
+
+func sameURLOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		urlOriginPort(a) == urlOriginPort(b)
+}
+
+func urlOriginPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 func newDefaultUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {

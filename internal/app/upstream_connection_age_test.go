@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 )
 
 type closeIdleTrackingRoundTripper struct {
@@ -1219,5 +1220,65 @@ func TestServerAppliesUpstreamConnectionMaxAgeToChannelProxy(t *testing.T) {
 	case <-closed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("channel proxy connection was not closed after max age")
+	}
+}
+
+// net/http keeps x-api-key and other non-Authorization credentials on a
+// redirect to any host, so upstream clients must not follow one off-origin.
+func TestUpstreamHTTPClientRefusesCrossOriginRedirect(t *testing.T) {
+	t.Parallel()
+	var foreignHits atomic.Int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		foreignHits.Add(1)
+		_, _ = io.WriteString(w, "leaked")
+	}))
+	t.Cleanup(foreign.Close)
+	var origin *httptest.Server
+	origin = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same":
+			http.Redirect(w, r, origin.URL+"/final", http.StatusTemporaryRedirect)
+		case "/cross":
+			http.Redirect(w, r, foreign.URL+"/final", http.StatusTemporaryRedirect)
+		case "/final":
+			_, _ = io.WriteString(w, r.Header.Get("x-api-key"))
+		}
+	}))
+	t.Cleanup(origin.Close)
+	client := newUpstreamHTTPClient(buildHTTPTransport(false, 1), 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+	get := func(path string) (*http.Response, error) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, origin.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("x-api-key", "secret")
+		return client.Do(req)
+	}
+
+	resp, err := get("/same")
+	if err != nil {
+		t.Fatalf("same-origin redirect: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != "secret" {
+		t.Fatalf("same-origin redirect = (%d, %q, %v), want followed with credentials", resp.StatusCode, body, err)
+	}
+
+	resp, err = get("/cross")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, util.ErrUpstreamInvalidResponse) {
+		t.Fatalf("cross-origin redirect error = %v, want invalid upstream response", err)
+	}
+	if _, level, retry := util.ClassifyError(err); level != util.ErrorLevelChannel || !retry {
+		t.Fatalf("cross-origin redirect classified as (%v, retry=%t), want channel failover", level, retry)
+	}
+	if hits := foreignHits.Load(); hits != 0 {
+		t.Fatalf("foreign origin received %d requests", hits)
 	}
 }

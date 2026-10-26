@@ -27,7 +27,7 @@ var ErrUpstreamStreamTimeout = errors.New("upstream stream timeout")
 // ErrUpstreamEmptyResponse 是上游 200 但无响应体的统一错误标识。
 var ErrUpstreamEmptyResponse = errors.New("upstream returned empty response")
 
-// ErrUpstreamInvalidResponse 是上游返回 2xx 但正文不是 API 响应的统一错误标识。
+// ErrUpstreamInvalidResponse 是上游未返回可用 API 响应的统一错误标识：2xx 正文不是 API 响应，或重定向到其他源。
 var ErrUpstreamInvalidResponse = errors.New("upstream returned invalid response")
 
 // ErrUpstreamPromptBlocked 表示上游安全策略拦截了提示词本身（Gemini 不带 candidates 的
