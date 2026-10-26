@@ -33,7 +33,11 @@ type ModelInfo struct {
 	ContextLength       int                 `json:"context_length,omitempty"`
 	InputModalities     []string            `json:"supportedInputModalities,omitempty"`
 	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
-	Thinking            *ThinkingSupport    `json:"thinking,omitempty"`
+	// Gemini-family catalog entries record limits under the Gemini field names
+	// instead of ContextLength/MaxCompletionTokens.
+	InputTokenLimit  int              `json:"inputTokenLimit,omitempty"`
+	OutputTokenLimit int              `json:"outputTokenLimit,omitempty"`
+	Thinking         *ThinkingSupport `json:"thinking,omitempty"`
 }
 
 type modelCatalog struct {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -63,21 +65,48 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 
 	// 构造 Gemini API 响应格式
 	type ModelInfo struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"displayName"`
+		Name                       string   `json:"name"`
+		DisplayName                string   `json:"displayName"`
+		InputTokenLimit            int      `json:"inputTokenLimit,omitempty"`
+		OutputTokenLimit           int      `json:"outputTokenLimit,omitempty"`
+		SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 	}
 
 	modelList := make([]ModelInfo, 0, len(models))
 	for _, model := range models {
+		inputLimit, outputLimit := geminiModelTokenLimits(model)
 		modelList = append(modelList, ModelInfo{
-			Name:        "models/" + model,
-			DisplayName: formatModelDisplayName(model),
+			Name:                       "models/" + model,
+			DisplayName:                formatModelDisplayName(model),
+			InputTokenLimit:            inputLimit,
+			OutputTokenLimit:           outputLimit,
+			SupportedGenerationMethods: []string{"generateContent"},
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"models": modelList,
 	})
+}
+
+// geminiModelTokenLimits 从内嵌目录读取 token 上限；Zed 等客户端会丢弃缺少上限的
+// 模型。未收录的模型返回 0，由 omitempty 省略字段，不猜测默认值。
+func geminiModelTokenLimits(modelID string) (int, int) {
+	info := cliproxyregistry.LookupModelInfo(modelID, "gemini")
+	if info == nil {
+		info = cliproxyregistry.LookupModelInfo(modelID)
+	}
+	if info == nil {
+		return 0, 0
+	}
+	input, output := info.InputTokenLimit, info.OutputTokenLimit
+	if input <= 0 {
+		input = info.ContextLength
+	}
+	if output <= 0 {
+		output = info.MaxCompletionTokens
+	}
+	return input, output
 }
 
 // detectModelsClientProtocol 根据请求头判断 /v1/models 的客户端协议。

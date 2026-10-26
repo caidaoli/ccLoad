@@ -841,3 +841,68 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 	})
 }
+
+func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	// gemini-2.5-pro 在目录里用 inputTokenLimit/outputTokenLimit，claude-sonnet-4-6
+	// 用 context_length/max_completion_tokens，两种来源都必须映射成 Gemini 字段。
+	if _, err := store.CreateConfig(context.Background(), &model.Config{
+		Name:     "limits",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 1,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-2.5-pro"},
+			{Model: "claude-sonnet-4-6"},
+			{Model: "local-unlisted-model"},
+		},
+	}); err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/v1beta/models", nil))
+	server.handleListGeminiModels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	byName := make(map[string]map[string]json.RawMessage, len(resp.Models))
+	for _, entry := range resp.Models {
+		var name string
+		mustUnmarshalJSON(t, entry["name"], &name)
+		byName[name] = entry
+		var methods []string
+		mustUnmarshalJSON(t, entry["supportedGenerationMethods"], &methods)
+		if !slices.Contains(methods, "generateContent") {
+			t.Fatalf("%s supportedGenerationMethods=%v, want generateContent", name, methods)
+		}
+	}
+
+	for _, name := range []string{"models/gemini-2.5-pro", "models/claude-sonnet-4-6"} {
+		entry, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing %s in %s", name, w.Body.String())
+		}
+		for _, field := range []string{"inputTokenLimit", "outputTokenLimit"} {
+			var limit int
+			mustUnmarshalJSON(t, entry[field], &limit)
+			if limit <= 0 {
+				t.Fatalf("%s %s=%d, want positive catalog limit", name, field, limit)
+			}
+		}
+	}
+	unlisted, ok := byName["models/local-unlisted-model"]
+	if !ok {
+		t.Fatalf("missing unlisted model in %s", w.Body.String())
+	}
+	for _, field := range []string{"inputTokenLimit", "outputTokenLimit"} {
+		if _, present := unlisted[field]; present {
+			t.Fatalf("unlisted model exposes %s without a catalog limit: %s", field, w.Body.String())
+		}
+	}
+}
