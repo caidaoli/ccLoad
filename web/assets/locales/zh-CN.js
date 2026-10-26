@@ -458,7 +458,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.vertex.contentRequired': '请输入非空且不超过 1 MiB 的服务账号密钥 JSON。',
   'channels.vertex.contentInvalid': '服务账号密钥不是有效的 JSON。',
   'channels.vertex.locationLabel': '区域（可选）',
-  'channels.vertex.locationHint': '填写 global 或区域（如 us-central1），默认 us-central1。仅用于新建渠道的上游 URL。',
+  'channels.vertex.locationHint': '填写 global 或区域（如 us-central1），默认 global。仅用于新建渠道的上游 URL。',
   'channels.vertex.submit': '导入并保存渠道',
   'channels.vertex.submitting': '正在校验 Vertex 服务账号密钥…',
   'channels.vertex.importCreated': 'Vertex 渠道 {channel} 已创建。',

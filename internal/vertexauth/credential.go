@@ -12,10 +12,11 @@ import (
 
 // Vertex AI endpoints and credential identity.
 const (
-	ChannelType     = "vertex"
-	DefaultLocation = "us-central1"
-	// GlobalLocation routes to the location-less aiplatform host.
+	ChannelType = "vertex"
+	// GlobalLocation routes to the location-less aiplatform host. It is also the
+	// default for credentials without a location, matching CLIProxyAPI.
 	GlobalLocation     = "global"
+	DefaultLocation    = GlobalLocation
 	CloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 	DefaultTokenURI    = "https://oauth2.googleapis.com/token"
 	serviceAccountType = "service_account"

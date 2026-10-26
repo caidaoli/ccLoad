@@ -458,7 +458,7 @@ window.I18N_LOCALES['en'] = {
   'channels.vertex.contentRequired': 'Enter nonempty service account key JSON no larger than 1 MiB.',
   'channels.vertex.contentInvalid': 'The service account key is not valid JSON.',
   'channels.vertex.locationLabel': 'Location (optional)',
-  'channels.vertex.locationHint': 'Enter global or a region such as us-central1. Defaults to us-central1. Used only for the upstream URL of a new channel.',
+  'channels.vertex.locationHint': 'Enter global or a region such as us-central1. Defaults to global. Used only for the upstream URL of a new channel.',
   'channels.vertex.submit': 'Import and save channel',
   'channels.vertex.submitting': 'Validating the Vertex service account key…',
   'channels.vertex.importCreated': 'Vertex channel {channel} was created.',

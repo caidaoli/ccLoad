@@ -515,7 +515,7 @@ func TestHandleImportVertexCredentialCreatesThenRotatesChannel(t *testing.T) {
 	srv := newInMemoryServer(t)
 	ctx := context.Background()
 
-	w := importVertexCredential(t, srv, "/admin/vertex/credentials/import?location=global",
+	w := importVertexCredential(t, srv, "/admin/vertex/credentials/import?location=us-central1",
 		vertexTestServiceAccount(t, upstream.tokenURI(), 0))
 	if w.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
@@ -528,7 +528,7 @@ func TestHandleImportVertexCredentialCreatesThenRotatesChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantURL := "https://aiplatform.googleapis.com/v1/projects/" + vertexTestProject + "/locations/global/publishers/google"
+	wantURL := "https://us-central1-aiplatform.googleapis.com" + vertexTestRegionURL
 	if !cfg.UsesVertexOAuth() || len(cfg.URLs) != 1 || cfg.URLs[0].URL != wantURL || !cfg.SupportsModel(vertexTestModel) {
 		t.Fatalf("channel=%+v", cfg)
 	}
@@ -542,7 +542,7 @@ func TestHandleImportVertexCredentialCreatesThenRotatesChannel(t *testing.T) {
 	}
 
 	// The rotated key for the same account replaces the credential in place;
-	// the channel keeps its URL although the new file defaults to us-central1.
+	// the channel keeps its URL although the new file defaults to global.
 	w = importVertexCredential(t, srv, "/admin/vertex/credentials/import", vertexTestServiceAccount(t, upstream.tokenURI(), 1))
 	if w.Code != http.StatusOK {
 		t.Fatalf("rotate status=%d body=%s", w.Code, w.Body.String())

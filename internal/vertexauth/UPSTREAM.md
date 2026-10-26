@@ -14,7 +14,7 @@ Adopted from upstream `gemini_vertex_executor.go`: the service account
 `publishers/google` URL layout, the `global` host without a location prefix,
 the Regional Endpoint hosts (`aiplatform.{us,eu}.rep.googleapis.com`) for the
 `us`/`eu` multi-region locations (upstream `88732ad5`),
-the default `us-central1` location, `alt=sse` on streaming requests, and the
+the default `global` location (upstream `ba06ec58`), `alt=sse` on streaming requests, and the
 removal of `functionCall.id`/`functionResponse.id` for OpenAI Responses
 sources. ccLoad routes by the channel URL instead of the credential, so the
 credential `location` only seeds the URL of a newly created channel. Upstream

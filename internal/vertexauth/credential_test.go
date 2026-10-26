@@ -79,7 +79,7 @@ func TestParseCredentialAcceptsRawServiceAccountKey(t *testing.T) {
 		t.Fatalf("ParseCredential: %v", err)
 	}
 	if credential.Type != ChannelType || credential.ProjectID != "demo-project" ||
-		credential.Email != "runner@demo-project.iam.gserviceaccount.com" || credential.Location != DefaultLocation {
+		credential.Email != "runner@demo-project.iam.gserviceaccount.com" || credential.Location != "global" {
 		t.Fatalf("unexpected credential: %+v", credential)
 	}
 	privateKey, _ := credential.ServiceAccount["private_key"].(string)
