@@ -89,7 +89,7 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 					return nil, fmt.Errorf("update Antigravity channel: %w", saveErr)
 				}
 				if matched {
-					return store.GetConfig(ctx, cfg.ID)
+					return reactivateReauthorizedChannel(ctx, store, cfg.ID)
 				}
 			}
 		}

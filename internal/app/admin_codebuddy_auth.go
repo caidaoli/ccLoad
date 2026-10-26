@@ -95,10 +95,7 @@ func (s *Server) commitCodeBuddyCredential(ctx context.Context, credential *code
 		if !updated {
 			return nil, false, errors.New("CodeBuddy credential changed concurrently; retry authorization")
 		}
-		if err := s.store.ResetChannelCooldown(ctx, existing.ID); err != nil {
-			return nil, false, err
-		}
-		cfg, err = s.store.UpdateChannelEnabled(ctx, existing.ID, true)
+		cfg, err = reactivateReauthorizedChannel(ctx, s.store, existing.ID)
 		if err != nil {
 			return nil, false, err
 		}

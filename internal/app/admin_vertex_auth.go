@@ -201,10 +201,7 @@ func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexa
 		if !updated {
 			return nil, false, errors.New("vertex credential changed concurrently; retry import")
 		}
-		if err := s.store.ResetChannelCooldown(ctx, existing.ID); err != nil {
-			return nil, false, err
-		}
-		cfg, err := s.store.UpdateChannelEnabled(ctx, existing.ID, true)
+		cfg, err := reactivateReauthorizedChannel(ctx, s.store, existing.ID)
 		if err != nil {
 			return nil, false, err
 		}

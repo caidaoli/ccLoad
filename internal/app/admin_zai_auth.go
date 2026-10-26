@@ -278,8 +278,8 @@ func updateExistingZAIChannel(
 		if !updated {
 			return nil, true, errors.New("z.ai credential changed during reauthorization")
 		}
-		persisted, getErr := store.GetConfig(ctx, cfg.ID)
-		return persisted, true, getErr
+		persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, cfg.ID)
+		return persisted, true, reactivateErr
 	}
 	return nil, false, nil
 }

@@ -246,10 +246,7 @@ func updateExistingZedChannel(ctx context.Context, store storage.Store, cfg *mod
 					break
 				}
 			}
-			if err := store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
-				return nil, false, fmt.Errorf("clear Zed channel cooldown after reauthorization: %w", err)
-			}
-			persisted, err := store.UpdateChannelEnabled(ctx, cfg.ID, true)
+			persisted, err := reactivateReauthorizedChannel(ctx, store, cfg.ID)
 			return persisted, false, err
 		}
 		cfg, err = store.GetConfig(ctx, cfg.ID)

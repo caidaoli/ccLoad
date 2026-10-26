@@ -32,12 +32,14 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -2218,6 +2220,86 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 			t.Fatalf("persisted xAI credential = (%#v, %v)", persisted, err)
 		}
 	})
+}
+
+// A rejected credential disables or cools down its channel. Logging in again as
+// the same account must return it to rotation and keep upstream model cooldowns.
+func TestOAuthReauthorizationReactivatesChannel(t *testing.T) {
+	t.Parallel()
+	expired := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name  string
+		login func(context.Context, storage.Store, string) (*model.Config, error)
+	}{
+		{name: "Anthropic", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
+			channel, _, err := createOrUpdateAnthropicChannel(ctx, store, &anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: token, RefreshToken: "rt",
+				Expired: expired, AccountUUID: "account", EmailAddress: "same@example.com",
+			})
+			return channel, err
+		}},
+		{name: "Antigravity", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
+			return createAntigravityChannel(ctx, store, &antigravityauth.Credential{
+				Type: antigravityauth.ChannelType, AccessToken: token, RefreshToken: "rt",
+				Expired: expired, Email: "same@example.com", ProjectID: "project",
+			}, antigravityCatalogModels())
+		}},
+		{name: "xAI", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
+			credential := xaiTestCredential(token, "rt", time.Now().Add(time.Hour))
+			credential.IDToken = xaiTestJWT("same@example.com", "stable-subject")
+			if err := credential.Normalize(); err != nil {
+				return nil, err
+			}
+			channel, _, err := createOrUpdateXAIChannel(ctx, store, credential)
+			return channel, err
+		}},
+		{name: "Z.ai", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
+			channel, _, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{
+				APIKey: token + ".secret", AccessToken: "access", Email: "same@example.com", UserID: "user",
+			}, "", nil)
+			return channel, err
+		}},
+		{name: "Cursor", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
+			channel, _, err := createOrUpdateCursorChannel(ctx, store, &cursorauth.Credential{
+				AccessToken: token, RefreshToken: "rt", Email: "same@example.com", UserID: "user",
+			}, nil)
+			return channel, err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			store := newCodexAuthTestStore(t)
+			channel, err := tc.login(ctx, store, "old-at")
+			if err != nil {
+				t.Fatalf("initial login: %v", err)
+			}
+			if err := store.SetChannelCooldown(ctx, channel.ID, time.Now().Add(24*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.UpdateChannelEnabled(ctx, channel.ID, false); err != nil {
+				t.Fatal(err)
+			}
+			const preservedModel = "preserved-cooldown-model"
+			if err := store.SetModelCooldown(ctx, channel.ID, preservedModel, time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+
+			reauthorized, err := tc.login(ctx, store, "new-at")
+			if err != nil || reauthorized.ID != channel.ID {
+				t.Fatalf("reauthorization = (%#v, %v), want channel %d", reauthorized, err, channel.ID)
+			}
+			persisted, err := store.GetConfig(ctx, channel.ID)
+			if err != nil || !persisted.Enabled || persisted.CooldownUntil != 0 {
+				t.Fatalf("reauthorization did not reactivate channel: channel=%+v err=%v", persisted, err)
+			}
+			modelCooldowns, err := store.GetAllModelCooldowns(ctx)
+			if err != nil || modelCooldowns[channel.ID][preservedModel].IsZero() {
+				t.Fatalf("reauthorization cleared model cooldown: cooldowns=%+v err=%v", modelCooldowns, err)
+			}
+		})
+	}
 }
 
 func testQuotaCostUsage(markerSeconds int64) *oauthcost.Usage {

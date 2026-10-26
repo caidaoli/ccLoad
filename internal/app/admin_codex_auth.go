@@ -666,6 +666,16 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 	return created, true, nil
 }
 
+// reactivateReauthorizedChannel returns a reauthorized channel to rotation: the
+// fresh login supersedes the rejected credential that disabled or cooled it down.
+// Model and URL cooldowns describe the upstream, not the credential, and stay.
+func reactivateReauthorizedChannel(ctx context.Context, store storage.Store, channelID int64) (*model.Config, error) {
+	if err := store.ResetChannelCooldown(ctx, channelID); err != nil {
+		return nil, fmt.Errorf("clear channel cooldown after reauthorization: %w", err)
+	}
+	return store.UpdateChannelEnabled(ctx, channelID, true)
+}
+
 func updateExistingCodexChannel(
 	ctx context.Context,
 	store storage.Store,
@@ -701,10 +711,7 @@ func updateExistingCodexChannel(
 			return nil, false, err
 		}
 		if credentialUpdated {
-			if err := store.ResetChannelCooldown(ctx, currentCfg.ID); err != nil {
-				return nil, false, fmt.Errorf("clear Codex channel cooldown after reauthorization: %w", err)
-			}
-			updated, err := store.UpdateChannelEnabled(ctx, currentCfg.ID, true)
+			updated, err := reactivateReauthorizedChannel(ctx, store, currentCfg.ID)
 			return updated, false, err
 		}
 

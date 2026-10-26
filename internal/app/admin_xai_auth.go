@@ -612,8 +612,8 @@ func updateExistingXAIIdentity(
 			if !updated {
 				continue
 			}
-			persisted, getErr := store.GetConfig(ctx, currentCfg.ID)
-			return persisted, true, getErr
+			persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, currentCfg.ID)
+			return persisted, true, reactivateErr
 		}
 	}
 	return nil, false, nil

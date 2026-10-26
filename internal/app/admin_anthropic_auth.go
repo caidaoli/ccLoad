@@ -138,8 +138,8 @@ func createOrUpdateAnthropicChannel(
 			if !updated {
 				continue
 			}
-			winner, getErr := store.GetConfig(ctx, currentCfg.ID)
-			return winner, false, getErr
+			winner, reactivateErr := reactivateReauthorizedChannel(ctx, store, currentCfg.ID)
+			return winner, false, reactivateErr
 		}
 	}
 	name := uniqueAnthropicChannelName(configs, credential)

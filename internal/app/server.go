@@ -356,6 +356,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.codexCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.codexOAuth = newCodexOAuthManager(codexOAuthService, store, func(channelID int64) {
 		s.codexCredentials.invalidate(channelID)
+		s.invalidateCooldownCache()
 		s.InvalidateChannelListCache()
 	})
 	s.antigravityService = antigravityauth.NewService(s.antigravityClient)
@@ -370,6 +371,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.antigravityCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.antigravityOAuth = newAntigravityOAuthManager(s.antigravityService, store, func(channelID int64) {
 		s.antigravityCredentials.invalidate(channelID)
+		s.invalidateCooldownCache()
 		s.InvalidateChannelListCache()
 	})
 	s.xaiService = xaiauth.NewService(s.client)
@@ -389,6 +391,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 				return 0, err
 			}
 			s.xaiCredentials.invalidate(cfg.ID)
+			s.invalidateCooldownCache()
 			s.InvalidateChannelListCache()
 			return cfg.ID, nil
 		},
@@ -400,6 +403,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.anthropicCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.anthropicOAuth = newAnthropicOAuthManager(s.anthropicService, store, func(channelID int64) {
 		s.anthropicCredentials.invalidate(channelID)
+		s.invalidateCooldownCache()
 		s.InvalidateChannelListCache()
 	})
 	s.zaiService = zaiauth.NewService(s.client)
@@ -431,6 +435,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.zedCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.zedOAuth = newZedOAuthManager(s.zedService, store, func(channelID int64) {
 		s.zedCredentials.invalidate(channelID)
+		s.invalidateCooldownCache()
 		s.InvalidateChannelListCache()
 	})
 	s.cursorService = cursorauth.NewService(s.client)
