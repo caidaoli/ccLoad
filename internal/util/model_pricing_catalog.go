@@ -230,6 +230,12 @@ var basePricing = map[string]ModelPricing{
 		InputPriceHigh: 4.00, OutputPriceHigh: 15.00, CacheReadPriceHigh: 0.20, // >272K context
 		CacheReadCountsTowardTier: true,
 	},
+	// GPT-6.1 Terra 官方价格（2026-10-27 核实）：缓存读为输入价格的 5%，>272K 整段按高价计费。
+	"gpt-6.1-terra": {
+		InputPrice: 1.00, OutputPrice: 5.00, CacheReadPrice: 0.05, HasCacheReadPrice: true,
+		InputPriceHigh: 2.00, OutputPriceHigh: 7.50, CacheReadPriceHigh: 0.10, // >272K context
+		CacheReadCountsTowardTier: true,
+	},
 	// GPT-6 Sol/Luna 官方价格：缓存读为输入价格的 10%，缓存写按输入价格的 1.25×计费。
 	"gpt-6-sol": {
 		InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,

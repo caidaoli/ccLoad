@@ -503,6 +503,7 @@ func isOpenAIModel(model string) bool {
 var serviceTierModels = map[string]bool{
 	"gpt-6-astra":       true,
 	"gpt-6.1-sol":       true,
+	"gpt-6.1-terra":     true,
 	"gpt-6-sol":         true,
 	"gpt-6-luna":        true,
 	"gpt-5.6":           true,

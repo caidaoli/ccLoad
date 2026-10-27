@@ -492,6 +492,8 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		{"gpt-6-astra", 1000, 1000, 1000, 0.061},            // 缓存读取 $1.00/1M
 		{"gpt-6.1-sol", 1000, 1000, 0, 0.012},               // $2.00/1M input, $10.00/1M output
 		{"gpt-6.1-sol", 1000, 1000, 1000, 0.0121},           // 缓存读取 $0.10/1M
+		{"gpt-6.1-terra", 1000, 1000, 0, 0.006},             // $1.00/1M input, $5.00/1M output
+		{"gpt-6.1-terra", 1000, 1000, 1000, 0.00605},        // 缓存读取 $0.05/1M
 		{"gpt-6-sol", 1000, 1000, 0, 0.012},                 // $2.00/1M input, $10.00/1M output
 		{"gpt-6-sol", 1000, 1000, 1000, 0.0122},             // 缓存读取 $0.20/1M
 		{"gpt-6-luna", 1000, 1000, 0, 0.0006},               // $0.10/1M input, $0.50/1M output
@@ -619,6 +621,9 @@ func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 		{name: "astra base row", model: "gpt-6-astra", inputTokens: 1000, outputTokens: 1000, expected: 0.06},
 		{name: "gpt-6 sol boundary", model: "gpt-6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 0.554},
 		{name: "gpt-6 sol above boundary", model: "gpt-6-sol", inputTokens: 272_001, outputTokens: 1_000, expected: 1.103004},
+		{name: "gpt-6.1 terra boundary", model: "gpt-6.1-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.277},
+		{name: "gpt-6.1 terra above boundary", model: "gpt-6.1-terra", inputTokens: 272_001, outputTokens: 1_000, expected: 0.551502},
+		{name: "gpt-6.1 terra cache crosses boundary and write uses high tier", model: "gpt-6.1-terra", inputTokens: 100_000, cacheRead: 200_000, cacheWrite: 1_000, expected: 0.2225},
 		{name: "gpt-6 luna boundary", model: "gpt-6-luna", inputTokens: 272_000, outputTokens: 1_000, expected: 0.0277},
 		{name: "gpt-6 luna above boundary", model: "gpt-6-luna", inputTokens: 272_001, outputTokens: 1_000, expected: 0.0551502},
 		{name: "terra boundary", model: "gpt-5.6-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.556},
@@ -737,6 +742,8 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"gpt-6-sol", "ultrafast", 6.0},
 		{"gpt-6-luna", "fast", 2.0},
 		{"gpt-6-luna", "flex", 0.5},
+		{"gpt-6.1-terra", "fast", 2.0},
+		{"gpt-6.1-terra", "flex", 0.5},
 		{"gpt-5.6", "priority", 2.0},
 		{"gpt-5.6", "auto", 2.0},
 		{"gpt-5.6", "ultrafast", 6.0},
