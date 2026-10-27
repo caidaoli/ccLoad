@@ -8123,11 +8123,9 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	}
 }
 
-// HTTP 渠道切换到原生 WS 渠道时重放的完整 transcript 会带 input item status，而官方
-// Codex 后端在 WebSocket 上同样以 unknown_parameter 拒绝它（线上表现为 HTTP 101 之后
-// 的 SSE error `[input[N].status]`）。发送边界必须在首帧就剥离，而不是撞 400 再靠重试
-// 自愈——自愈多一个 RTT，且在响应已提交时根本不可用。
-func TestNativeCodexWebsocketStripsInputItemStatusBeforeFirstSend(t *testing.T) {
+// 原生 WS 首帧与 HTTP 一样原样保留 input item status：官方 Codex 后端对
+// web_search_call/apply_patch_call 的 status 必填，预剥离会撞 400 missing_required_parameter。
+func TestNativeCodexWebsocketPreservesInputItemStatusOnFirstSend(t *testing.T) {
 	t.Parallel()
 	requests := make(chan []byte, 1)
 	var handshakes atomic.Int32
@@ -8177,6 +8175,10 @@ func TestNativeCodexWebsocketStripsInputItemStatusBeforeFirstSend(t *testing.T) 
 				"type": "function_call_output", "call_id": "call_status_strip",
 				"output": "done", "status": "completed",
 			},
+			map[string]any{
+				"type": "web_search_call", "id": "ws_item_1", "status": "completed",
+				"action": map[string]any{"type": "search", "query": "q"},
+			},
 		},
 	}); err != nil {
 		t.Fatalf("write status-strip request: %v", err)
@@ -8187,15 +8189,16 @@ func TestNativeCodexWebsocketStripsInputItemStatusBeforeFirstSend(t *testing.T) 
 		t.Fatalf("unexpected status-strip completion: %#v", completed)
 	}
 
+	// 官方后端对 web_search_call 的 status 必填，首帧必须原样带上全部 status。
 	sent := <-requests
-	if statuses := gjson.GetBytes(sent, "input.#.status").Array(); len(statuses) != 0 {
-		t.Fatalf("first websocket send kept %d input item status fields: %s", len(statuses), sent)
+	if statuses := gjson.GetBytes(sent, "input.#.status").Array(); len(statuses) != 3 {
+		t.Fatalf("first websocket send kept %d input item status fields, want 3: %s", len(statuses), sent)
 	}
-	if gjson.GetBytes(sent, "input.1.call_id").String() != "call_status_strip" {
-		t.Fatalf("status strip damaged the input transcript: %s", sent)
+	if gjson.GetBytes(sent, "input.3.status").String() != "completed" {
+		t.Fatalf("web_search_call status missing on first send: %s", sent)
 	}
 	if got := handshakes.Load(); got != 1 {
-		t.Fatalf("status strip must succeed on the first send, handshakes=%d", got)
+		t.Fatalf("status-preserving request must succeed on the first send, handshakes=%d", got)
 	}
 }
 

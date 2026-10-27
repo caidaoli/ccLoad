@@ -2042,33 +2042,19 @@ func TestResponsesRetryBodyForUnknownParameter_RequiresCodexResponsesScope(t *te
 	}
 }
 
-func TestResponsesBodyForHTTPTransport_StripsInputItemStatus(t *testing.T) {
+func TestResponsesBodyForHTTPTransport_PreservesInputItemStatus(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
-	want := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
-	plan := protocol.TransformPlan{
-		ClientProtocol:   protocol.Codex,
-		UpstreamProtocol: protocol.Codex,
-		RequestFamily:    protocol.RequestFamilyResponses,
-	}
-	got := responsesBodyForHTTPTransport(&model.Config{}, plan, body)
-	if gjson.GetBytes(got, "input.0.status").Exists() {
-		t.Fatalf("HTTP Codex body kept input status: %s", got)
-	}
-	if gjson.GetBytes(got, "input.0.call_id").String() != "call_1" {
-		t.Fatalf("HTTP Codex body lost function_call: %s", got)
-	}
-	if gjson.GetBytes(got, "seed").Raw != "9007199254740993" {
-		t.Fatalf("HTTP Codex body changed large integer: %s", got)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("HTTP Codex body changed unrelated serialized bytes:\n got: %s\nwant: %s", got, want)
-	}
-
-	plan.UpstreamProtocol = protocol.OpenAI
-	got = responsesBodyForHTTPTransport(&model.Config{}, plan, body)
-	if !gjson.GetBytes(got, "input.0.status").Exists() {
-		t.Fatalf("non-Codex upstream body lost input status: %s", got)
+	// 官方 Codex 后端对 web_search_call/apply_patch_call 的 status 必填，发送边界不得剥离。
+	body := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"},{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"}},{"type":"apply_patch_call","call_id":"call_2","status":"completed","operation":{"type":"delete_file","path":"a.txt"}},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
+	for _, upstream := range []protocol.Protocol{protocol.Codex, protocol.OpenAI} {
+		plan := protocol.TransformPlan{
+			ClientProtocol:   protocol.Codex,
+			UpstreamProtocol: upstream,
+			RequestFamily:    protocol.RequestFamilyResponses,
+		}
+		if got := responsesBodyForHTTPTransport(&model.Config{}, plan, body); !bytes.Equal(got, body) {
+			t.Fatalf("%s upstream body changed input transcript:\n got: %s\nwant: %s", upstream, got, body)
+		}
 	}
 }
 

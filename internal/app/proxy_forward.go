@@ -2951,19 +2951,17 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 }
 
 // responsesBodyForHTTPTransport 收尾 HTTP 传输边界的 Codex Responses 上游 body。
-// status 剥离不是 HTTP 独有契约：官方 Codex 后端在 HTTP 与原生 WebSocket 上是同一套
-// 校验，WS 侧的对应剥离在 doCodexWebsocketRequest 里。别把它挪进
-// prepareCodexResponsesBodyForUpstream——那里同时服务 WS transcript 的装配阶段，
-// 剥离必须留在两条传输的发送边界上。反过来 prepareCodexOAuthHTTPBody 才是真正的
-// HTTP 专有处理：它删掉 previous_response_id/stream_options，WS 增量请求依赖这两个
-// 字段续接，所以本函数整体不可被 WS 路径复用。
+// input item 的 status 原样保留：官方 Codex 后端对 web_search_call/apply_patch_call
+// 把 status 当必填，预剥离会撞 400 missing_required_parameter；拒收 status 的中转
+// 由 strip_unknown_input_parameter 重试兜底。prepareCodexOAuthHTTPBody 是 HTTP 专有
+// 处理：它删掉 previous_response_id/stream_options，WS 增量请求依赖这两个字段续接，
+// 所以本函数整体不可被 WS 路径复用。
 func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPlan, body []byte) []byte {
 	body = prepareCodexOAuthHTTPBody(cfg, plan.UpstreamProtocol, plan.UpstreamPath, body)
 	if plan.ClientProtocol != protocol.Codex || plan.UpstreamProtocol != protocol.Codex ||
 		plan.RequestFamily != protocol.RequestFamilyResponses {
 		return body
 	}
-	body = stripResponsesInputItemStatus(body)
 	if !gjson.GetBytes(body, "generate").Exists() {
 		return body
 	}
@@ -2974,9 +2972,9 @@ func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPla
 	return stripped
 }
 
-// stripResponsesInputItemStatus 剥离 Responses input item 的 status 字段。Codex HTTP
-// 上游不定义该字段（官方端点对 function_call 的 status 报 400 "Unknown parameter"），
-// 工具完成态由 call_id/function_call_output 配对重建，剥离不改变执行语义。
+// stripResponsesInputItemStatus 剥离 Responses input item 的 status 字段，只供
+// strip_unknown_input_parameter 重试使用：部分 Codex 兼容中转对 status 报 400
+// "Unknown parameter"，官方后端则接受且对部分工具项必填，所以不能在发送边界预剥离。
 // 必须定点删除而不能整份 Unmarshal/Marshal：Go map 重编码会随机改变 transcript 字段
 // 顺序，破坏相邻请求共享的 prompt-cache 字节前缀。一次收集全部删除区间并压缩，
 // 避免逐字段 DeleteBytes 随历史 status 数量增长成 O(k·n)。

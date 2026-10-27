@@ -42,7 +42,7 @@ func responsesRetryBodyForMissingRequiredParameter(
 }
 
 // responsesRetryBodyForUnknownParameter 在上游报 unknown/unsupported parameter 时，
-// 一次性剥离所有 input item 的 status 字段（与 HTTP 传输前置剥离同一逻辑），
+// 一次性剥离所有 input item 的 status 字段（发送边界保留 status，只在此兜底剥离），
 // 供同渠道同 Key 重试一次。策略串是常量，重试循环按完整串去重，天然限 1 轮。
 // 只接受明确指向 input[N].status 的错误，避免因其他参数拒绝而重放 POST。
 // thinking/reasoning 相关错误交给 strip_codex_thinking 专门策略。响应已提交则不能换 body。
