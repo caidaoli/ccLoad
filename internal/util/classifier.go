@@ -389,7 +389,8 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 // 分类策略：
 //   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
 //   - 400/413 默认按模型级处理，避免一个模型的请求约束误伤整个渠道；Anthropic 账号终态
-//     （组织禁用/余额耗尽/需身份验证）的 400 例外，按 Key 级处理；
+//     （组织禁用/余额耗尽/需身份验证）的 400 例外，按 Key 级处理；上下文超限与图片无法处理
+//     （`Could not process image`）由请求内容决定，换渠道也不会成功，按客户端错误直返；
 //     413 不能当客户端直返：同一份 Claude Code 历史在 Anthropic 能过、在别的网关会 RequestTooLarge，
 //     直返会打断已经开始的渠道 failover
 //   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
@@ -490,6 +491,13 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// SSE 路径使用 597 承载 HTTP 200 中的错误事件；普通 Codex 错误使用 400/413。
 	if (statusCode == StatusSSEError || statusCode == http.StatusBadRequest || statusCode == http.StatusRequestEntityTooLarge) &&
 		IsContextLengthExceededError(responseBody) {
+		return HTTPResponseClassification{Level: ErrorLevelClient}
+	}
+
+	// 图片解不开同样由请求内容决定：Antigravity/Vertex 把 Anthropic 原错误包在 error.message 里，
+	// 后端仍是同一个解码器，换渠道只会重复失败并冷却无辜模型。原样直返，Claude Code 会移除该图片后重试。
+	if statusCode == http.StatusBadRequest &&
+		strings.Contains(upstreamErrorMessageLower(responseBody), "could not process image") {
 		return HTTPResponseClassification{Level: ErrorLevelClient}
 	}
 

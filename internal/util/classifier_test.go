@@ -1357,6 +1357,31 @@ func TestClassifyHTTPResponseContextLengthMessageDoesNotHideServerError(t *testi
 	}
 }
 
+func TestClassifyHTTPResponseUnprocessableImageIsClientError(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "anthropic",
+			body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"},"request_id":"req_011CgS2teyVeuy1GdTJkaVLr"}`),
+		},
+		{
+			name: "antigravity_wrapped",
+			body: []byte(`{"error":{"code":400,"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Could not process image\"},\"request_id\":\"req_vrtx_011CgS2teyVeuy1GdTJkaVLr\"}","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INVALID_MEDIA","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2011"}}]}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusBadRequest, nil, tt.body)
+			if classification.Level != ErrorLevelClient || classification.ModelScoped {
+				t.Fatalf("classification=%+v, want client-level without model scope", classification)
+			}
+		})
+	}
+}
+
 func TestClassifyHTTPResponseStreamFailuresAreModelScoped(t *testing.T) {
 	for _, status := range []int{StatusFirstByteTimeout, StatusStreamIncomplete} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
