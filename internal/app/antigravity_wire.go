@@ -20,6 +20,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxycommon "ccLoad/internal/protocol/cliproxy/common"
 	antigravityclaude "ccLoad/internal/protocol/cliproxy/providers/antigravity/claude"
 	antigravitygemini "ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini"
 	antigravitychat "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/chat-completions"
@@ -286,6 +287,7 @@ func prepareAntigravityRequestBody(
 	request = deleteJSONPath(request, "safetySettings")
 	request = normalizeAntigravityContentsRoles(request)
 	request = restoreAntigravityAnthropicToolIDs(request, sourceBody)
+	request, structuredOutputPrompt := takeAntigravityClaude55StructuredOutput(request, modelName)
 	request = normalizeAntigravitySchemas(request, modelName)
 	request = normalizeAntigravityThinkingLevel(request)
 	lookupID := strings.ToLower(strings.TrimSpace(modelName))
@@ -297,7 +299,9 @@ func prepareAntigravityRequestBody(
 			}
 		}
 		request = normalizeAntigravityClaudeToolResultOrder(request)
-		request = ensureAntigravityValidatedToolMode(request)
+		if structuredOutputPrompt == "" {
+			request = ensureAntigravityValidatedToolMode(request)
+		}
 	} else {
 		if gjson.GetBytes(request, "generationConfig").IsObject() {
 			request = deleteJSONPath(request, "generationConfig.maxOutputTokens")
@@ -341,7 +345,53 @@ func prepareAntigravityRequestBody(
 	if err != nil {
 		return nil, fmt.Errorf("encode Antigravity request: %w", err)
 	}
-	return obfuscateAntigravitySystemInstruction(raw, matcher), nil
+	raw = obfuscateAntigravitySystemInstruction(raw, matcher)
+	if structuredOutputPrompt != "" {
+		// 在混淆之后追加，schema 字段名里的敏感词不能被插入零宽字符。
+		raw = setJSONValue(raw, "request.systemInstruction.parts.-1.text", structuredOutputPrompt)
+	}
+	return raw, nil
+}
+
+// takeAntigravityClaude55StructuredOutput 对齐 CPA PrepareAntigravityClaudeStructuredOutput：
+// Antigravity 的原生结构化输出靠强制工具实现，而 Opus/Sonnet 5.5 拒绝强制工具。
+// 这里取出未清洗的 schema 生成提示词，删除原生输出字段并把 ANY/VALIDATED 降为
+// AUTO。返回非空提示词时调用方不得再写回 VALIDATED。
+func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) ([]byte, string) {
+	if anthropicForcedToolChoiceRejectingFamily(anthropicCanonicalModelName(modelName)) == "" {
+		return request, ""
+	}
+	configKeys := []string{"generationConfig", "generation_config"}
+	schemaKeys := []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"}
+	var schema gjson.Result
+	for _, configKey := range configKeys {
+		for _, schemaKey := range schemaKeys {
+			if candidate := gjson.GetBytes(request, configKey+"."+schemaKey); candidate.IsObject() && !schema.Exists() {
+				schema = candidate
+			}
+		}
+	}
+	if !schema.Exists() {
+		return request, ""
+	}
+	prompt := cliproxycommon.BuildClaudeStructuredOutputInstruction(gjson.Parse(`{"type":"json_schema","schema":` + schema.Raw + `}`))
+	for _, configKey := range configKeys {
+		for _, key := range append(schemaKeys, "responseMimeType", "response_mime_type") {
+			request = deleteJSONPath(request, configKey+"."+key)
+		}
+	}
+	for _, toolConfigKey := range []string{"toolConfig", "tool_config"} {
+		for _, callingKey := range []string{"functionCallingConfig", "function_calling_config"} {
+			path := toolConfigKey + "." + callingKey
+			switch strings.ToUpper(jsonStringValue(gjson.GetBytes(request, path+".mode"))) {
+			case "ANY", "VALIDATED":
+				request = setJSONValue(request, path+".mode", "AUTO")
+				request = deleteJSONPath(request, path+".allowedFunctionNames")
+				request = deleteJSONPath(request, path+".allowed_function_names")
+			}
+		}
+	}
+	return request, prompt
 }
 
 // normalizeAntigravityThinkingLevel replaces client-facing effort aliases that

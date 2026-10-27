@@ -566,9 +566,11 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
 		callerWire = classifyAnthropicRequestCallerWire(callerBody, headers, upstreamProtocol, requestPath, callerBodyIsAnthropic)
 		if callerBodyIsAnthropic {
-			if err := validateAnthropicOpus55Request(callerBody, requestModel); err != nil {
+			if err := validateAnthropicClaude55Request(callerBody, requestModel); err != nil {
 				return nil, "", err
 			}
+		} else if !wireBodyRulesApplied {
+			body = relaxAnthropicClaude55ForcedToolChoice(body, requestModel)
 		}
 	}
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)

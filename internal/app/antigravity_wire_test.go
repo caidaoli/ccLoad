@@ -2,15 +2,86 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 
 	"github.com/tidwall/gjson"
 )
 
 const antigravitySchemaTestModel = "gemini-3-pro"
+
+func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	const schema = `{"type":"object","title":"Answer","description":"Final answer","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}`
+	body := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` +
+		`"tools":[{"functionDeclarations":[{"name":"lookup","parameters":{"type":"object"}}]}],` +
+		`"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["lookup"]}},` +
+		`"generationConfig":{"temperature":0.2,"responseMimeType":"application/json","responseSchema":` + schema + `}}}`)
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	// 敏感词命中 schema 字段名：提示词必须在混淆之后追加，否则 schema 被插入零宽字符。
+	matcher := regexp.MustCompile(`answer`)
+
+	t.Run("claude 5.5 moves schema into the system prompt", func(t *testing.T) {
+		t.Parallel()
+		got, err := prepareAntigravityRequestBody(cfg, "claude-opus-5-5-high", body, body, http.Header{}, matcher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := gjson.GetBytes(got, "request")
+		if mode := request.Get("toolConfig.functionCallingConfig.mode").String(); mode != "AUTO" {
+			t.Fatalf("mode=%q, want AUTO: %s", mode, got)
+		}
+		for _, path := range []string{"toolConfig.functionCallingConfig.allowedFunctionNames", "generationConfig.responseSchema", "generationConfig.responseMimeType"} {
+			if request.Get(path).Exists() {
+				t.Fatalf("%s survived: %s", path, got)
+			}
+		}
+		if request.Get("generationConfig.temperature").Float() != 0.2 {
+			t.Fatalf("unrelated generationConfig field lost: %s", got)
+		}
+		parts := request.Get("systemInstruction.parts").Array()
+		if len(parts) == 0 {
+			t.Fatalf("missing system prompt: %s", got)
+		}
+		prompt := parts[len(parts)-1].Get("text").String()
+		start := strings.IndexByte(prompt, '{')
+		if start < 0 {
+			t.Fatalf("prompt has no schema: %q", prompt)
+		}
+		var gotSchema, wantSchema any
+		if err := json.NewDecoder(strings.NewReader(prompt[start:])).Decode(&gotSchema); err != nil {
+			t.Fatalf("decode prompt schema: %v: %q", err, prompt)
+		}
+		if err := json.Unmarshal([]byte(schema), &wantSchema); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(gotSchema, wantSchema) {
+			t.Fatalf("prompt schema=%v, want untouched %v", gotSchema, wantSchema)
+		}
+	})
+
+	t.Run("other claude keeps native structured output", func(t *testing.T) {
+		t.Parallel()
+		got, err := prepareAntigravityRequestBody(cfg, "claude-sonnet-4-6", body, body, http.Header{}, matcher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := gjson.GetBytes(got, "request.toolConfig.functionCallingConfig.mode").String(); mode != "VALIDATED" {
+			t.Fatalf("mode=%q, want VALIDATED: %s", mode, got)
+		}
+		if !gjson.GetBytes(got, "request.generationConfig.responseSchema").IsObject() {
+			t.Fatalf("responseSchema removed: %s", got)
+		}
+	})
+}
 
 func TestNormalizeAntigravitySchemasConsolidatesParametersAliases(t *testing.T) {
 	t.Parallel()

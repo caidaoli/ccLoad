@@ -3004,7 +3004,7 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 	}
 }
 
-func TestValidateAnthropicOpus55Request(t *testing.T) {
+func TestValidateAnthropicClaude55Request(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
@@ -3016,12 +3016,16 @@ func TestValidateAnthropicOpus55Request(t *testing.T) {
 		{name: "enabled thinking", body: `{"model":"claude-opus-5-5","thinking":{"type":"enabled"}}`, wantErr: true},
 		{name: "required tool", body: `{"model":"claude-opus-5-5","tool_choice":"required"}`, wantErr: true},
 		{name: "any tool", body: `{"model":"claude-opus-5-5","tool_choice":{"type":"any"}}`, wantErr: true},
+		{name: "sonnet any tool", body: `{"model":"claude-sonnet-5-5","tool_choice":{"type":"any"}}`, wantErr: true},
+		{name: "sonnet named tool", body: `{"model":"anthropic/claude-sonnet-5-5-20260901","tool_choice":{"type":"tool","name":"lookup"}}`, wantErr: true},
+		{name: "sonnet auto tool", body: `{"model":"claude-sonnet-5-5","tool_choice":{"type":"auto"}}`},
+		{name: "haiku any tool", body: `{"model":"claude-haiku-5-5","tool_choice":{"type":"any"}}`},
 		{name: "other model", body: `{"model":"claude-opus-4-6","thinking":{"type":"enabled"}}`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			err := validateAnthropicOpus55Request([]byte(testCase.body), "")
+			err := validateAnthropicClaude55Request([]byte(testCase.body), "")
 			if (err != nil) != testCase.wantErr {
-				t.Fatalf("validateAnthropicOpus55Request() error=%v, wantErr=%v", err, testCase.wantErr)
+				t.Fatalf("validateAnthropicClaude55Request() error=%v, wantErr=%v", err, testCase.wantErr)
 			}
 		})
 	}
@@ -3054,27 +3058,89 @@ func TestAnthropicCountTokensFinalizerFirstPartyFields(t *testing.T) {
 	}
 }
 
-func TestAnthropicOpus55GuardUsesCallerBody(t *testing.T) {
-	body := []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hello"}],"thinking":{"type":"disabled"}}`)
+func TestAnthropicClaude55GuardUsesCallerBody(t *testing.T) {
+	const tools = `"tools":[{"name":"lookup","description":"Look up","input_schema":{"type":"object"}}]`
 	cfg := &model.Config{Name: "anthropic-api-key"}
 	for _, testCase := range []struct {
 		name              string
+		model             string
+		body              string
 		callerIsAnthropic bool
 		wantErr           bool
+		wantChoice        string
 	}{
-		{name: "converted OpenAI request", callerIsAnthropic: false},
-		{name: "native Anthropic request", callerIsAnthropic: true, wantErr: true},
+		{
+			name:  "converted request drops manual thinking",
+			model: "claude-opus-5-5",
+			body:  `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hello"}],"thinking":{"type":"disabled"}}`,
+		},
+		{
+			name:              "native Anthropic request keeps manual thinking error",
+			model:             "claude-opus-5-5",
+			body:              `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hello"}],"thinking":{"type":"disabled"}}`,
+			callerIsAnthropic: true,
+			wantErr:           true,
+		},
+		{
+			name:       "converted opus named tool becomes auto",
+			model:      "claude-opus-5-5",
+			body:       `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hello"}],` + tools + `,"tool_choice":{"type":"tool","name":"lookup","disable_parallel_tool_use":true},"thinking":{"type":"adaptive"}}`,
+			wantChoice: `{"type":"auto","disable_parallel_tool_use":true}`,
+		},
+		{
+			name:       "converted sonnet any becomes auto",
+			model:      "claude-sonnet-5-5",
+			body:       `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hello"}],` + tools + `,"tool_choice":{"type":"any"}}`,
+			wantChoice: `{"type":"auto"}`,
+		},
+		{
+			name:       "converted haiku keeps forced tool",
+			model:      "claude-haiku-5-5",
+			body:       `{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hello"}],` + tools + `,"tool_choice":{"type":"any"}}`,
+			wantChoice: `{"type":"any"}`,
+		},
+		{
+			name:              "native sonnet forced tool is rejected",
+			model:             "claude-sonnet-5-5",
+			body:              `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hello"}],` + tools + `,"tool_choice":{"type":"any"}}`,
+			callerIsAnthropic: true,
+			wantErr:           true,
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			body := []byte(testCase.body)
 			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
-				cfg, protocol.Anthropic, "/v1/messages", "claude-opus-5-5", body, body,
+				cfg, protocol.Anthropic, "/v1/messages", testCase.model, body, body,
 				"sk-ant-key", http.Header{}, false, anthropicOfficialTestURL, false, testCase.callerIsAnthropic,
 			)
 			if (err != nil) != testCase.wantErr {
 				t.Fatalf("err=%v, wantErr=%v", err, testCase.wantErr)
 			}
-			if err == nil && gjson.GetBytes(got, "thinking.type").String() == "disabled" {
+			if err != nil {
+				var validationErr *requestValidationError
+				if !errors.As(err, &validationErr) {
+					t.Fatalf("err=%T %v, want requestValidationError", err, err)
+				}
+				return
+			}
+			if gjson.GetBytes(got, "thinking.type").String() == "disabled" {
 				t.Fatalf("converted request kept unsupported thinking: %s", got)
+			}
+			if testCase.wantChoice == "" {
+				return
+			}
+			var gotChoice, wantChoice any
+			if err := json.Unmarshal([]byte(gjson.GetBytes(got, "tool_choice").Raw), &gotChoice); err != nil {
+				t.Fatalf("decode tool_choice: %v: %s", err, got)
+			}
+			if err := json.Unmarshal([]byte(testCase.wantChoice), &wantChoice); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(gotChoice, wantChoice) {
+				t.Fatalf("tool_choice=%v, want %v: %s", gotChoice, wantChoice, got)
+			}
+			if gjson.GetBytes(body, "thinking.type").String() == "adaptive" && gjson.GetBytes(got, "thinking.type").String() != "adaptive" {
+				t.Fatalf("relaxed tool_choice still dropped adaptive thinking: %s", got)
 			}
 		})
 	}

@@ -154,37 +154,68 @@ func validateAnthropicLegacySystemRequestForUpstream(
 	return validateAnthropicLegacySystemMessages(body)
 }
 
-// validateAnthropicOpus55Request mirrors Claude Code's request guard for the
-// Opus 5.5 contract. It must run before the CLI finalizer normalizes thinking
+// validateAnthropicClaude55Request mirrors Claude Code's request guard for the
+// Claude 5.5 contract. It must run before the CLI finalizer normalizes thinking
 // or tool_choice, otherwise an invalid caller request would be silently turned
 // into a different request instead of receiving the same 400 as the native API.
-func validateAnthropicOpus55Request(body []byte, requestModel string) error {
-	modelName := strings.ToLower(strings.TrimSpace(requestModel))
-	if modelName == "" && isAnthropicJSONObject(body) {
-		modelName = strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "model"))))
+func validateAnthropicClaude55Request(body []byte, requestModel string) error {
+	modelName := anthropicRequestModelName(body, requestModel)
+	if strings.HasPrefix(modelName, "claude-opus-5-5") {
+		thinkingType := strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type"))))
+		if thinkingType == "disabled" || thinkingType == "enabled" {
+			return &requestValidationError{message: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort"}
+		}
 	}
-	if slash := strings.LastIndexByte(modelName, '/'); slash >= 0 {
-		modelName = modelName[slash+1:]
-	}
-	if !strings.HasPrefix(modelName, "claude-opus-5-5") {
+	family := anthropicForcedToolChoiceRejectingFamily(modelName)
+	if family == "" {
 		return nil
-	}
-
-	thinkingType := strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type"))))
-	if thinkingType == "disabled" || thinkingType == "enabled" {
-		return &requestValidationError{message: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort"}
 	}
 	toolChoice := gjson.GetBytes(body, "tool_choice")
-	if strings.EqualFold(strings.TrimSpace(jsonStringValue(toolChoice)), "required") {
-		return &requestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
-	}
-	choiceType := strings.ToLower(strings.TrimSpace(jsonStringValue(toolChoice.Get("type"))))
-	switch choiceType {
+	forced := strings.EqualFold(strings.TrimSpace(jsonStringValue(toolChoice)), "required")
+	switch strings.ToLower(strings.TrimSpace(jsonStringValue(toolChoice.Get("type")))) {
 	case "any", "tool", "function", "custom", "namespace":
-		return &requestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
-	default:
+		forced = true
+	}
+	if !forced {
 		return nil
 	}
+	return &requestValidationError{message: family + " does not support forced tool_choice; use auto or none"}
+}
+
+// relaxAnthropicClaude55ForcedToolChoice 对齐 CPA NormalizeClaudeToolChoice：
+// 协议转换出的 Opus/Sonnet 5.5 请求把 any/tool 降为 auto。转换方的调用方看不到
+// Anthropic 契约，留给上游只会得到 400 并冷却模型。必须早于 normalizeAnthropicToolChoice
+// （强制选择会先删掉 thinking/effort）和渠道 BodyRules（规则仍可覆盖）。
+func relaxAnthropicClaude55ForcedToolChoice(body []byte, requestModel string) []byte {
+	if anthropicForcedToolChoiceRejectingFamily(anthropicRequestModelName(body, requestModel)) == "" {
+		return body
+	}
+	switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "tool_choice.type")))) {
+	case "any", "tool":
+		body = setJSONValue(body, "tool_choice.type", "auto")
+		return deleteJSONPath(body, "tool_choice.name")
+	default:
+		return body
+	}
+}
+
+// anthropicForcedToolChoiceRejectingFamily 返回拒绝强制 tool_choice 的模型族：
+// Opus/Sonnet 5.5 拒绝 any/tool，Haiku 5.5 仍接受。
+func anthropicForcedToolChoiceRejectingFamily(modelName string) string {
+	for _, family := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
+		if strings.HasPrefix(modelName, family) {
+			return family
+		}
+	}
+	return ""
+}
+
+// anthropicRequestModelName 优先用路由后的上游模型，缺省时退回请求体 model。
+func anthropicRequestModelName(body []byte, requestModel string) string {
+	if strings.TrimSpace(requestModel) == "" && isAnthropicJSONObject(body) {
+		requestModel = jsonStringValue(gjson.GetBytes(body, "model"))
+	}
+	return anthropicCanonicalModelName(requestModel)
 }
 
 // buildAnthropicClaudeCodeURL 给 /v1/messages 补 ?beta=true。真实 Claude Code
