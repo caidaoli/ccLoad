@@ -65,7 +65,7 @@ func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) 
 		}, messages...)
 	}
 	replacer := strings.NewReplacer(
-		"You are Claude Code, Anthropic's official CLI for Claude.", "You are Claude Code, Anthropic's official CLI tool for Claude.",
+		"You are Claude Code, Anthropic's official CLI for Claude.", codeBuddyDefaultSystemPrompt,
 		"Main branch (you will usually use this for PRs)", "Default branch (you will usually use this for PRs)",
 	)
 	for _, message := range messages {

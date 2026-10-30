@@ -129,7 +129,7 @@ func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 						texts = append(texts, message.Get("content").String())
 					}
 					joined := strings.Join(texts, "\n")
-					if !strings.Contains(joined, "official CLI tool for Claude.") || !strings.Contains(joined, "Default branch (you will usually use this for PRs)") {
+					if !strings.Contains(joined, "You are CodeBuddy Code.You are an interactive CLI tool that helps users with software engineering tasks.\nDefault branch (you will usually use this for PRs)") || strings.Contains(joined, "You are Claude Code") {
 						t.Errorf("template not rewritten: %s", body)
 					}
 					w.Header().Set("Content-Type", "text/event-stream")
