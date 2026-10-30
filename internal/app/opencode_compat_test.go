@@ -616,6 +616,94 @@ func TestOpenCodeRequestBodyChatReasoning(t *testing.T) {
 	}
 }
 
+func TestOpenCodeDeepSeekDeveloperRole(t *testing.T) {
+	for _, tc := range []struct{ name, target, requested, actual, role string }{
+		{"zen", "https://opencode.ai/zen", "alias", "deepseek-v4-flash", "system"},
+		{"go", "https://opencode.ai/zen/go", "alias", "DeepSeek-chat", "system"},
+		{"other model", "https://opencode.ai/zen/go", "deepseek-alias", "gpt-test", "developer"},
+		{"other vendor", "https://opencode.ai/zen/go", "alias", "kimi-test", "developer"},
+		{"unrelated name", "https://opencode.ai/zen/go", "alias", "custom-deepseek-test", "developer"},
+		{"other host", "https://example.test/v1", "alias", "deepseek-v4-flash", "developer"},
+		{"lookalike host", "https://opencode.ai.example.test/zen", "alias", "deepseek-v4-flash", "developer"},
+	} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, streaming), func(t *testing.T) {
+				env := setupProxyTestEnv(t, []testChannel{{name: "role", upstreamProtocol: "openai", apiKey: "test-key",
+					modelEntries: []model.ModelEntry{{Model: tc.requested, RedirectModel: tc.actual}},
+				}}, map[int]string{0: tc.target})
+				called := false
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					called = true
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						return nil, err
+					}
+					root := gjson.ParseBytes(body)
+					if root.Get("model").String() != tc.actual || root.Get("messages.0.role").String() != tc.role ||
+						root.Get("messages.1.role").String() != "system" || root.Get("messages.2.role").String() != "user" ||
+						root.Get("messages.0.content.0.text").String() != "developer instruction" || root.Get("messages.0.opaque").String() != "preserved" {
+						t.Errorf("unexpected upstream payload: %s", body)
+					}
+					contentType := "application/json"
+					reply := `{"id":"chat-role","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
+					if streaming {
+						contentType = "text/event-stream"
+						reply = "data: " + reply + "\n\ndata: [DONE]\n\n"
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(reply))}, nil
+				})}
+				response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+					"model": tc.requested, "stream": streaming, "messages": []any{
+						map[string]any{"role": "developer", "content": []any{map[string]any{"type": "text", "text": "developer instruction"}}, "opaque": "preserved"},
+						map[string]any{"role": "system", "content": "system instruction"},
+						map[string]any{"role": "user", "content": "hello"},
+					},
+				}, nil)
+				if !called || response.Code != http.StatusOK {
+					t.Fatalf("called=%v status=%d body=%s", called, response.Code, response.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestOpenCodeDeepSeekRoleDoesNotLeakOnFailover(t *testing.T) {
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "OpenCode", upstreamProtocol: "openai", models: "deepseek-test", apiKey: "key-a", priority: 10},
+		{name: "fallback", upstreamProtocol: "openai", models: "deepseek-test", apiKey: "key-b", priority: 5},
+	}, map[int]string{0: "https://opencode.ai/zen/go", 1: "https://example.test/v1"})
+	var roles []string
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		role := gjson.GetBytes(body, "messages.0.role").String()
+		roles = append(roles, role)
+		status := http.StatusOK
+		reply := `{"id":"chat-role","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
+		if r.URL.Hostname() == "opencode.ai" {
+			if role != "system" {
+				t.Errorf("OpenCode role=%q, want system", role)
+			}
+			status = http.StatusServiceUnavailable
+			reply = `{"error":{"message":"temporarily unavailable"}}`
+		} else if role != "developer" {
+			t.Errorf("fallback role=%q, want original developer", role)
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(reply))}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "deepseek-test", "messages": []any{
+			map[string]any{"role": "developer", "content": "instructions"},
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}, nil)
+	if response.Code != http.StatusOK || len(roles) < 2 || roles[0] != "system" || roles[len(roles)-1] != "developer" {
+		t.Fatalf("status=%d roles=%v body=%s", response.Code, roles, response.Body.String())
+	}
+}
+
 func TestOpenCodeRequestBodyAnthropicThinking(t *testing.T) {
 	for _, modelName := range []string{"deepseek-test", "kimi-test", "moonshot-test", "mimo-test", "claude-test"} {
 		t.Run(modelName, func(t *testing.T) {

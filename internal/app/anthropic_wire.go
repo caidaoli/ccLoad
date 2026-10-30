@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
@@ -1618,9 +1619,24 @@ func anthropicBillingHeader(firstUserText, clientVersion string) string {
 }
 
 func anthropicBillingFingerprint(firstUserText, clientVersion string) string {
-	padded := []byte(firstUserText + strings.Repeat("0", 21))
-	selected := []byte{padded[4], padded[7], padded[20]}
-	digest := sha256.Sum256(append([]byte(anthropicBillingSalt), append(selected, []byte(clientVersion)...)...))
+	indices := [...]int{4, 7, 20}
+	// JS string indices count UTF-16 units; only the prefix through index 20 matters.
+	units := make([]uint16, 0, 22)
+	for _, r := range firstUserText {
+		units = utf16.AppendRune(units, r)
+		if len(units) > indices[len(indices)-1] {
+			break
+		}
+	}
+	selected := [3]uint16{'0', '0', '0'}
+	for index, offset := range indices {
+		if offset < len(units) {
+			selected[index] = units[offset]
+		}
+	}
+	// Join before decoding: sampled halves can pair up; lone halves become U+FFFD.
+	sample := string(utf16.Decode(selected[:]))
+	digest := sha256.Sum256([]byte(anthropicBillingSalt + sample + clientVersion))
 	return hex.EncodeToString(digest[:])[:3]
 }
 

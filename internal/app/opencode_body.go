@@ -34,7 +34,8 @@ func prepareOpenCodeRequestBody(body []byte, upstream protocol.Protocol, path st
 		}
 		return root.render(), nil
 	}
-	vendor := isOpenCodeVendorReasoningModel(openCodeBodyString(root, "model"))
+	modelName := openCodeBodyString(root, "model")
+	vendor := isOpenCodeVendorReasoningModel(modelName)
 	if !vendor && (upstream == protocol.Anthropic || !openCodeBodyEnablesReasoning(root)) {
 		return root.render(), nil
 	}
@@ -42,8 +43,18 @@ func prepareOpenCodeRequestBody(body []byte, upstream protocol.Protocol, path st
 	if messages == nil || messages.kind != '[' {
 		return root.render(), nil
 	}
+	deepSeekChat := upstream == protocol.OpenAI && strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek")
 	for _, message := range messages.array {
-		if message.kind != '{' || openCodeBodyString(message, "role") != "assistant" {
+		if message.kind != '{' {
+			continue
+		}
+		role := openCodeBodyString(message, "role")
+		// The selected OpenCode endpoint routes DeepSeek Chat to a provider
+		// that accepts system instructions but rejects the developer role.
+		if deepSeekChat && role == "developer" {
+			message.overridePath([]string{"role"}, &orderedJSONNode{raw: `"system"`})
+		}
+		if role != "assistant" {
 			continue
 		}
 		if upstream == protocol.OpenAI {

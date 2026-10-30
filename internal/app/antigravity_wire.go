@@ -131,6 +131,17 @@ func translateAntigravityResponseNonStream(
 	return translated, nil
 }
 
+// Antigravity reports malformed tool output in a successful HTTP response.
+// Reject it before conversion can turn the empty candidate into a completion.
+func antigravityNonStreamResponseErrorBody(response []byte) []byte {
+	for _, candidate := range gjson.GetBytes(response, "candidates").Array() {
+		if candidate.Get("finishReason").String() == "MALFORMED_FUNCTION_CALL" {
+			return []byte(`{"error":{"type":"api_error","code":"malformed_function_call","message":"Antigravity returned MALFORMED_FUNCTION_CALL"}}`)
+		}
+	}
+	return nil
+}
+
 func translateAntigravityResponseStream(
 	ctx context.Context,
 	clientProtocol protocol.Protocol,

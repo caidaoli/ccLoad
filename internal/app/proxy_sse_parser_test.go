@@ -1368,6 +1368,39 @@ func TestJSONUsageParser_OpenAIChatCompletionsWithCacheFormat(t *testing.T) {
 	feedAndAssertUsage(t, newJSONUsageParser("openai"), jsonData, 150, 200, 350, 0)
 }
 
+func TestUsageParser_OpenAIChatDeepSeekCache(t *testing.T) {
+	tests := []struct {
+		name      string
+		fields    string
+		wantCache int
+	}{
+		{"deepseek", `"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20`, 80},
+		{"standard wins", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":64}`, 64},
+		{"standard zero wins", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":0}`, 0},
+		{"missing standard", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{}`, 80},
+		{"null standard", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":null}`, 80},
+		{"nonnumeric standard", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":"64"}`, 80},
+		{"negative standard is authoritative zero", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":-1}`, 0},
+		{"overflow standard is authoritative zero", `"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":1e300}`, 0},
+		{"zero hit", `"prompt_cache_hit_tokens":0`, 0},
+		{"negative hit", `"prompt_cache_hit_tokens":-1`, 0},
+		{"overflow hit", `"prompt_cache_hit_tokens":1e300`, 0},
+		{"nonnumeric hit", `"prompt_cache_hit_tokens":"80"`, 0},
+		{"miss is not cache read", `"prompt_cache_miss_tokens":20`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"id":"chatcmpl-deepseek","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,` + tt.fields + `}}`
+			t.Run("JSON", func(t *testing.T) {
+				feedAndAssertUsage(t, newJSONUsageParser("openai"), body, 100-tt.wantCache, 5, tt.wantCache, 0)
+			})
+			t.Run("SSE", func(t *testing.T) {
+				feedAndAssertUsage(t, newSSEUsageParser("openai"), "data: "+body+"\n\ndata: [DONE]\n\n", 100-tt.wantCache, 5, tt.wantCache, 0)
+			})
+		})
+	}
+}
+
 func TestJSONUsageParser_OpenAIChatMixedZeroAliases(t *testing.T) {
 	jsonData := `{"id":"chatcmpl-windhub","object":"chat.completion","model":"mimo-v2.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1340,"completion_tokens":357,"total_tokens":1697,"prompt_tokens_details":{"cached_tokens":24576},"completion_tokens_details":{"reasoning_tokens":0},"input_tokens":0,"output_tokens":0,"input_tokens_details":null}}`
 

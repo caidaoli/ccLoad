@@ -13,6 +13,7 @@
 - 转换核心丢弃无法发送的内容块后,若某个 user turn 不再有可发送内容(`common.UserTurnDrops` → `UnsupportedPartError`),必须返回错误并由 Registry 包装为 `RequestTranslationError`,不得静默发出空回合;同回合仍有实际文本或附件时只丢弃该块。ccLoad 保留远程 URL、`file_id`、`file_url` 等可透传引用,只有既无字节也无引用的块才算无法发送
 - Registry 边界测试定义 ccLoad 线协议契约,上游同步测试守住转换行为;改协议后先跑命令区快照审计,再跑全量 `internal/...`
 - Anthropic 转 Responses 的原生 JSON 与 SSE 都把 `max_tokens` 映射为 `incomplete`;流式 output item 在下一个内容块或 message stop 时确定最终状态,不得在得知截断原因前报告完成
+- OpenAI Chat JSON/SSE 的 DeepSeek `prompt_cache_hit_tokens` 在自有 `builtin/cliproxy_adapter.go` 边界归一化到 `prompt_tokens_details.cached_tokens`，标准数字字段含 0 优先；不修改 CLIProxyAPI 快照，同协议原文继续透传，app 计量独立识别同一字段。
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。

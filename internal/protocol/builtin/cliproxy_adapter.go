@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -51,6 +52,7 @@ func cliproxyOpenAIResponseToGeminiStream(ctx context.Context, model string, ori
 }
 
 func cliproxyOpenAIResponseToGeminiNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
+	raw = cliproxyNormalizeOpenAIChatCacheUsage(raw)
 	return cliproxyJSONResponse("openai response to gemini", raw, openaigemini.ConvertOpenAIResponseToGeminiNonStream(ctx, model, original, translated, raw, nil))
 }
 
@@ -85,6 +87,7 @@ func cliproxyOpenAIResponseToAnthropicStream(ctx context.Context, model string, 
 }
 
 func cliproxyOpenAIResponseToAnthropicNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
+	raw = cliproxyNormalizeOpenAIChatCacheUsage(raw)
 	return cliproxyJSONResponse("openai response to anthropic", raw, claude.ConvertOpenAIResponseToClaudeNonStream(ctx, model, original, translated, raw, nil))
 }
 
@@ -247,12 +250,39 @@ func cliproxyOpenAIResponseToCodexStream(ctx context.Context, model string, orig
 }
 
 func cliproxyOpenAIResponseToCodexNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
+	raw = cliproxyNormalizeOpenAIChatCacheUsage(raw)
 	var state any
 	translatedResponse, err := openairesponses.ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStreamWithError(ctx, model, original, translated, raw, &state)
 	if err != nil {
 		return nil, err
 	}
 	return cliproxyJSONResponseWithState("openai response to codex", raw, translatedResponse, state)
+}
+
+// Normalize DeepSeek's cache-read extension at the ccLoad boundary, before any
+// Chat Completions converter consumes JSON or a normalized single-data SSE event.
+// Match the usage parser: numeric standard counts, including zero, take priority;
+// nonnumeric/missing counts fall back, and invalid numeric hit counts become zero.
+func cliproxyNormalizeOpenAIChatCacheUsage(raw []byte) []byte {
+	payload := bytes.TrimSpace(bytes.TrimPrefix(raw, []byte("data:")))
+	usage := gjson.GetBytes(payload, "usage")
+	if usage.Get("prompt_tokens").Type != gjson.Number || usage.Get("completion_tokens").Type != gjson.Number ||
+		usage.Get("prompt_tokens_details.cached_tokens").Type == gjson.Number {
+		return raw
+	}
+	hit := usage.Get("prompt_cache_hit_tokens")
+	if hit.Type != gjson.Number || !json.Valid(payload) {
+		return raw
+	}
+	tokens := 0
+	if value := hit.Float(); value >= 0 && value < math.MaxInt {
+		tokens = int(value)
+	}
+	normalized, _ := sjson.SetBytes(payload, "usage.prompt_tokens_details.cached_tokens", tokens)
+	if bytes.HasPrefix(raw, []byte("data:")) {
+		return append([]byte("data: "), normalized...)
+	}
+	return normalized
 }
 
 func cliproxyJSONResponseWithState(label string, input, output []byte, state any) ([]byte, error) {
@@ -549,6 +579,7 @@ func cliproxyTranslateOpenAIToCodexStream(ctx context.Context, model string, ori
 	if len(data) == 0 && len(raw) != 0 {
 		return nil, nil
 	}
+	data = cliproxyNormalizeOpenAIChatCacheUsage(data)
 	if param == nil {
 		var local any
 		param = &local
@@ -588,6 +619,7 @@ func cliproxyTranslateOpenAIToAnthropicStream(ctx context.Context, model string,
 	if len(data) == 0 {
 		return nil, nil
 	}
+	data = cliproxyNormalizeOpenAIChatCacheUsage(data)
 	if param == nil {
 		var local any
 		param = &local
@@ -627,6 +659,7 @@ func cliproxyTranslateOpenAIToGeminiStream(ctx context.Context, model string, or
 	if len(data) == 0 {
 		return nil, nil
 	}
+	data = cliproxyNormalizeOpenAIChatCacheUsage(data)
 	if param == nil {
 		var local any
 		param = &local

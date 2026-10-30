@@ -4220,6 +4220,119 @@ func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
+	t.Parallel()
+	for _, adapter := range antigravityProviderAdapterCases() {
+		for _, test := range []struct {
+			name       string
+			candidates string
+			fallback   bool
+		}{
+			{name: "without-parts", candidates: `[{"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
+			{name: "with-text", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
+			{name: "later-candidate", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"STOP"},{"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
+			{name: "channel-fallback", candidates: `[{"finishReason":"MALFORMED_FUNCTION_CALL"}]`, fallback: true},
+		} {
+			t.Run(adapter.name+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				var primaryHits, fallbackHits atomic.Int64
+				primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					primaryHits.Add(1)
+					if r.URL.Path != "/v1internal:generateContent" {
+						t.Errorf("non-stream URL=%s", r.URL.Path)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"response":{"candidates":`+test.candidates+`,"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":5,"totalTokenCount":14},"modelVersion":"gemini-3-flash"}}`)
+				}))
+				fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					fallbackHits.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"fallback answer"}]},"finishReason":"STOP"}]}}`)
+				}))
+				channels := []testChannel{{
+					name: "antigravity-malformed", upstreamProtocol: "gemini", models: "gemini-3-flash,gemini-other", priority: 100,
+					authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-malformed"),
+				}}
+				if test.fallback {
+					channels = append(channels, testChannel{
+						name: "antigravity-fallback", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 10,
+						authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-malformed-fallback"),
+					})
+				}
+				env := setupProxyTestEnv(t, channels, map[int]string{0: primary.URL, 1: fallback.URL})
+				response := doProxyRequest(t, env.engine, adapter.path, adapter.body, nil)
+				if test.fallback {
+					if response.Code != http.StatusOK || gjson.Get(response.Body.String(), adapter.nonStreamTextPath).String() != "fallback answer" {
+						t.Fatalf("fallback status=%d body=%s", response.Code, response.Body.String())
+					}
+				} else if response.Code != http.StatusBadGateway || gjson.Get(response.Body.String(), "error.code").String() != "malformed_function_call" {
+					t.Fatalf("status=%d body=%s, want structured 502", response.Code, response.Body.String())
+				}
+				var wantFallbackHits int64
+				if test.fallback {
+					wantFallbackHits = 1
+				}
+				if primaryHits.Load() != 1 || fallbackHits.Load() != wantFallbackHits {
+					t.Fatalf("primary=%d fallback=%d", primaryHits.Load(), fallbackHits.Load())
+				}
+				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+					return entry.StatusCode == http.StatusBadGateway && entry.ChannelID > 0
+				})
+				if entry.Cost != 0 || entry.InputTokens != 9 || entry.OutputTokens != 5 || !strings.Contains(entry.Message, "MALFORMED_FUNCTION_CALL") {
+					t.Fatalf("failed generation log=%+v, want usage preserved and no charge", entry)
+				}
+				ctx := context.Background()
+				cooldowns, err := env.store.GetAllModelCooldowns(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if until := cooldowns[entry.ChannelID]["gemini-3-flash"]; !until.After(time.Now()) || len(cooldowns[entry.ChannelID]) != 1 {
+					t.Fatalf("model cooldowns=%v, want only failed model", cooldowns[entry.ChannelID])
+				}
+				stored, err := env.store.GetConfig(ctx, entry.ChannelID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if time.Unix(stored.CooldownUntil, 0).After(time.Now()) {
+					t.Fatalf("channel unexpectedly cooled until %d", stored.CooldownUntil)
+				}
+			})
+		}
+	}
+}
+
+func TestProxy_AntigravityNonStreamToolCall(t *testing.T) {
+	t.Parallel()
+	for _, adapter := range antigravityProviderAdapterCases() {
+		t.Run(adapter.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"weather","args":{"city":"Paris"}}}]},"finishReason":"STOP"}]}}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-tool-stop", upstreamProtocol: "gemini", models: "gemini-3-flash",
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-tool-stop"),
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, adapter.path, adapter.body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			path := map[string]string{
+				"Claude": "content.0.input", "Gemini": "candidates.0.content.parts.0.functionCall.args",
+				"OpenAI": "choices.0.message.tool_calls.0.function.arguments", "Codex": "output.0.arguments",
+			}[adapter.name]
+			arguments := gjson.Get(response.Body.String(), path)
+			if arguments.Type == gjson.String {
+				arguments = gjson.Parse(arguments.String())
+			}
+			if arguments.Get("city").String() != "Paris" {
+				t.Fatalf("tool arguments=%s body=%s", arguments, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range antigravityProviderAdapterCases() {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -65,8 +64,16 @@ func (m *vertexCredentialManager) accessToken(ctx context.Context, cfg *model.Co
 	}
 
 	credentialHash := sha256.Sum256([]byte(cfg.OAuthCredential))
-	key := strconv.FormatInt(cfg.ID, 10) + ":" + hex.EncodeToString(credentialHash[:])
+	// Different rejected tokens must not share a flight that can return cached tokens.
+	key := oauthCredentialRefreshSingleflightKey(cfg.ID, rejectedAccessToken, true) + ":" + hex.EncodeToString(credentialHash[:])
 	resultCh := m.mints.DoChan(key, func() (any, error) {
+		// Another mint may finish between the outer cache read and DoChan.
+		now := m.now()
+		cached, ok := m.cached(cfg)
+		if ok && cached.AccessToken != rejectedAccessToken && cached.ExpiresAt.After(now) &&
+			(rejectedAccessToken != "" || cached.ExpiresAt.After(now.Add(vertexTokenRefreshLead))) {
+			return cached.AccessToken, nil
+		}
 		credential, err := vertexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {
 			return nil, fmt.Errorf("parse Vertex credential for channel %d: %w", cfg.ID, err)

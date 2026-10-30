@@ -1693,6 +1693,17 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), blockErr
 	}
 
+	if reqCtx.antigravityOAuth {
+		if errorBody := antigravityNonStreamResponseErrorBody(responseBody); len(errorBody) > 0 {
+			result.Status = http.StatusBadGateway
+			result.Body = errorBody
+			result.Header.Set("Content-Type", "application/json")
+			result.Header.Del("Content-Encoding")
+			result.Header.Del("Content-Length")
+			return result, reqCtx.Duration().Seconds(), nil
+		}
+	}
+
 	if reqCtx.responsesCompaction != nil && !responsesCompactionSummaryComplete(protocol.Protocol(upstreamProtocol), responseBody) {
 		result.Body = []byte("compaction summary did not finish successfully")
 		return result, reqCtx.Duration().Seconds(), fmt.Errorf("%w: %s", util.ErrUpstreamInvalidResponse, result.Body)

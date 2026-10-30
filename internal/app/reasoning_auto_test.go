@@ -1438,6 +1438,16 @@ func TestReasoningAutoStateCapacityKeepsExistingSessionsAndIndependentOverflow(t
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "bounded-state", upstreamProtocol: "openai", models: "gpt-5.6-sol",
 	}}, []string{business.server.URL})
+	// Under race/load this loop can outlast the auth cache reload interval.
+	// Keep its token in the store so reloading cannot remove a memory-only fixture.
+	if err := env.store.CreateAuthToken(t.Context(), &model.AuthToken{
+		Token: model.HashToken("test-api-key"), CreatedAt: time.Now(), IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
 	started := time.Now()
 	for session := range retainedSessions {
 		reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Complex task."), map[string]string{

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
@@ -317,6 +318,188 @@ func TestProxy_VertexOAuthRemintsTokenAfterUnauthorized(t *testing.T) {
 	}
 	if calls := upstream.tokenCalls.Load(); calls != 2 {
 		t.Fatalf("token mints=%d, want 2", calls)
+	}
+}
+
+func TestVertexCredentialsConcurrentRefresh(t *testing.T) {
+	t.Parallel()
+	upstream := newVertexTestUpstream(t)
+	manager := newVertexCredentialManager(func(*model.Config) *http.Client { return upstream.server.Client() })
+	now := time.Now()
+	manager.now = func() time.Time { return now }
+	cfg := &model.Config{ID: 1, AuthType: model.AuthTypeVertexOAuth, OAuthCredential: vertexTestCredential(t, upstream.tokenURI())}
+
+	checkBatch := func(rejected, wantToken string, wantMints int32) {
+		t.Helper()
+		const concurrency = 32
+		start := make(chan struct{})
+		errors := make(chan error, concurrency)
+		var workers sync.WaitGroup
+		for range concurrency {
+			workers.Go(func() {
+				<-start
+				token, err := manager.accessToken(context.Background(), cfg, rejected)
+				if err != nil {
+					errors <- err
+				} else if token != wantToken {
+					errors <- fmt.Errorf("token=%q, want %q", token, wantToken)
+				}
+			})
+		}
+		close(start)
+		workers.Wait()
+		close(errors)
+		for err := range errors {
+			t.Error(err)
+		}
+		if calls := upstream.tokenCalls.Load(); calls != wantMints {
+			t.Fatalf("token mints=%d, want %d", calls, wantMints)
+		}
+	}
+	checkBatch("", "tok-1", 1)
+	checkBatch("tok-1", "tok-2", 2)
+	checkBatch("tok-1", "tok-2", 2)
+	// A replacement for a rejected token remains usable inside the refresh lead;
+	// ordinary requests still refresh five minutes before expiry.
+	now = now.Add(56 * time.Minute)
+	checkBatch("tok-1", "tok-2", 2)
+	checkBatch("", "tok-3", 3)
+
+	rotated, err := vertexauth.ParseCredential(vertexTestServiceAccount(t, upstream.tokenURI(), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.OAuthCredential, err = rotated.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkBatch("", "tok-4", 4)
+}
+
+func TestVertexCredentialsRefreshFailureFallback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		elapsed   time.Duration
+		rejected  string
+		wantToken string
+	}{
+		{name: "near_expiry", elapsed: 56 * time.Minute, wantToken: "tok-1"},
+		{name: "expired", elapsed: 61 * time.Minute},
+		{name: "rejected", rejected: "tok-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if calls.Add(1) > 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}`)
+			}))
+			manager := newVertexCredentialManager(func(*model.Config) *http.Client { return upstream.Client() })
+			now := time.Now()
+			manager.now = func() time.Time { return now }
+			cfg := &model.Config{ID: 1, AuthType: model.AuthTypeVertexOAuth, OAuthCredential: vertexTestCredential(t, upstream.URL+"/token")}
+			if token, err := manager.accessToken(context.Background(), cfg, ""); err != nil || token != "tok-1" {
+				t.Fatalf("initial token=%q err=%v", token, err)
+			}
+			now = now.Add(tc.elapsed)
+			token, err := manager.accessToken(context.Background(), cfg, tc.rejected)
+			if err == nil || token != tc.wantToken {
+				t.Fatalf("refresh token=%q err=%v, want %q with error", token, err, tc.wantToken)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("token mints=%d, want 2", got)
+			}
+		})
+	}
+}
+
+func TestVertexCredentialsConcurrentMixedRejections(t *testing.T) {
+	t.Parallel()
+	for _, leaderRejected := range []string{"", "tok-1"} {
+		t.Run("leader_rejected_"+leaderRejected, func(t *testing.T) {
+			firstStarted := make(chan struct{})
+			releaseFirst := make(chan struct{})
+			release := sync.OnceFunc(func() { close(releaseFirst) })
+			defer release()
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				call := calls.Add(1)
+				if call == 1 {
+					close(firstStarted)
+					<-releaseFirst
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"access_token":"tok-%d","expires_in":3600,"token_type":"Bearer"}`, call+1)
+			}))
+			manager := newVertexCredentialManager(func(*model.Config) *http.Client { return upstream.Client() })
+			cfg := &model.Config{ID: 1, AuthType: model.AuthTypeVertexOAuth, OAuthCredential: vertexTestCredential(t, upstream.URL+"/token")}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			type tokenResult struct {
+				token string
+				err   error
+			}
+			leader := make(chan tokenResult, 1)
+			leaderDone := make(chan struct{})
+			go func() {
+				defer close(leaderDone)
+				token, err := manager.accessToken(ctx, cfg, leaderRejected)
+				leader <- tokenResult{token, err}
+			}()
+			defer func() {
+				release()
+				<-leaderDone
+			}()
+			select {
+			case <-firstStarted:
+			case <-ctx.Done():
+				t.Fatal("first mint did not start")
+			}
+			// This caller already knows tok-2 is rejected, even though the cache
+			// is empty. It must not share the first caller's pending tok-2 mint.
+			token, err := manager.accessToken(ctx, cfg, "tok-2")
+			if err != nil || token != "tok-3" {
+				t.Fatalf("mixed-rejection token=%q err=%v, want tok-3", token, err)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("token mints=%d, want 2", got)
+			}
+			release()
+			select {
+			case result := <-leader:
+				if result.err != nil || result.token != "tok-2" {
+					t.Errorf("leader token=%q err=%v, want tok-2", result.token, result.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("first mint did not complete")
+			}
+		})
+	}
+}
+
+func TestVertexCredentialsRemintAcceptsRepeatedToken(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"same-token","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	manager := newVertexCredentialManager(func(*model.Config) *http.Client { return upstream.Client() })
+	cfg := &model.Config{ID: 1, AuthType: model.AuthTypeVertexOAuth, OAuthCredential: vertexTestCredential(t, upstream.URL+"/token")}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for _, rejected := range []string{"", "same-token"} {
+		if token, err := manager.accessToken(ctx, cfg, rejected); err != nil || token != "same-token" {
+			t.Fatalf("rejected=%q: token=%q err=%v", rejected, token, err)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("token mints=%d, want 2", got)
 	}
 }
 

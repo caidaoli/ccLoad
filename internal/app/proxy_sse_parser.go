@@ -1753,11 +1753,12 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 	if val, ok := usageTokenCount(usage["completion_tokens"]); ok {
 		u.OutputTokens = val
 	}
-	// OpenAI Chat Completions缓存字段: prompt_tokens_details.cached_tokens
-	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		if val, ok := usageTokenCount(details["cached_tokens"]); ok {
-			u.CacheReadInputTokens = val
-		}
+	// 标准字段（含显式 0）优先；DeepSeek 的 hit 已包含在 prompt_tokens 中。
+	details, _ := usage["prompt_tokens_details"].(map[string]any)
+	if val, ok := usageTokenCount(details["cached_tokens"]); ok {
+		u.CacheReadInputTokens = val
+	} else if val, ok := usageTokenCount(usage["prompt_cache_hit_tokens"]); ok {
+		u.CacheReadInputTokens = val
 	}
 	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
 		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {

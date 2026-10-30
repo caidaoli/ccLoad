@@ -3113,6 +3113,63 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
+	t.Parallel()
+	for _, clientProtocol := range []string{"openai", "anthropic", "codex", "gemini"} {
+		t.Run(clientProtocol, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":5,"totalTokenCount":14}}}`)
+			}))
+			srv := newInMemoryServer(t)
+			srv.antigravityClient = upstream.Client()
+			created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+			created.ModelEntries = append(created.ModelEntries, model.ModelEntry{Model: "gemini-other"})
+			ctx := context.Background()
+			if _, err := srv.store.UpdateConfig(ctx, created.ID, created); err != nil {
+				t.Fatal(err)
+			}
+			channelID := fmt.Sprintf("%d", created.ID)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+				"model": "gemini-3-flash", "client_protocol": clientProtocol, "stream": false, "content": "hello",
+			}))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			srv.HandleChannelTest(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("admin status=%d body=%s", w.Code, w.Body.String())
+			}
+			resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+			if success, _ := resp.Data["success"].(bool); success || resp.Data["status_code"] != float64(http.StatusBadGateway) || resp.Data["upstream_status_code"] != float64(http.StatusOK) {
+				t.Fatalf("malformed generation reported as success: %+v", resp.Data)
+			}
+			if resp.Data["cooldown_action"] != "model_cooldown_applied" || resp.Data["error"] != "Antigravity returned MALFORMED_FUNCTION_CALL" {
+				t.Fatalf("failure classification=%+v", resp.Data)
+			}
+			if gjson.Get(fmt.Sprint(resp.Data["raw_response"]), "error.code").String() != "malformed_function_call" {
+				t.Fatalf("missing structured error: %+v", resp.Data)
+			}
+			if cost, _ := resp.Data["cost_usd"].(float64); cost != 0 {
+				t.Fatalf("failed generation charged %v", cost)
+			}
+			cooldowns, err := srv.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if until := cooldowns[created.ID]["gemini-3-flash"]; !until.After(time.Now()) || len(cooldowns[created.ID]) != 1 {
+				t.Fatalf("model cooldowns=%v", cooldowns[created.ID])
+			}
+			stored, err := srv.store.GetConfig(ctx, created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if time.Unix(stored.CooldownUntil, 0).After(time.Now()) {
+				t.Fatalf("channel unexpectedly cooled until %d", stored.CooldownUntil)
+			}
+		})
+	}
+}
+
 func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex

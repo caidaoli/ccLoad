@@ -12,6 +12,8 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
+
+	"github.com/tidwall/gjson"
 )
 
 // anthropic wire 的字节级金标准。
@@ -317,5 +319,54 @@ func TestAnthropicWireGolden(t *testing.T) {
 		if _, exists := outputs[name]; !exists {
 			t.Errorf("%s: present in golden but no longer produced", name)
 		}
+	}
+}
+
+func TestAnthropicWireBillingFingerprintUTF16(t *testing.T) {
+	// Expected fingerprints come from Node.js crypto with
+	// [4, 7, 20].map(i => text[i] ?? '0').join('') and version 2.1.293.
+	cases := []struct {
+		name        string
+		text        string
+		fingerprint string
+	}{
+		{name: "ascii", text: "abcdefghijklmnopqrstu", fingerprint: "b63"},
+		{name: "empty", text: "", fingerprint: "9b8"},
+		{name: "short_ascii", text: "hello", fingerprint: "72d"},
+		{name: "short_chinese", text: "你好世界", fingerprint: "9b8"},
+		{name: "chinese", text: "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏", fingerprint: "df0"},
+		{name: "emoji", text: "😀😁😂😃😄😅😆😇😈😉😊", fingerprint: "c32"},
+		{name: "joined_surrogate_pair", text: "abcd😀😁xxxxxxxxxxxxZ", fingerprint: "3a3"},
+		{name: "lone_high_surrogate", text: "abcd😀xxxxxxxxxxxxxxZ", fingerprint: "0f6"},
+		{name: "lone_low_surrogate", text: "abc😀xxxxxxxxxxxxxxxZ", fingerprint: "0f6"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, blocks := range []bool{false, true} {
+				var content any = testCase.text
+				if blocks {
+					content = []any{map[string]any{"type": "text", "text": testCase.text}}
+				}
+				body, err := json.Marshal(map[string]any{
+					"model": "claude-sonnet-4-5", "max_tokens": 1024,
+					"messages": []any{map[string]any{"role": "user", "content": content}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				headers := anthropicGoldenCallerHeaders()
+				headers.Set("User-Agent", "claude-cli/2.1.293 (external, cli)")
+				finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body,
+					&model.Config{AuthType: model.AuthTypeAPIKey}, anthropicGoldenAPIKey,
+					headers, anthropicOfficialTestURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "x-anthropic-billing-header: cc_version=2.1.293." + testCase.fingerprint + "; cc_entrypoint=cli;"
+				if got := gjson.GetBytes(finalized, "system.0.text").String(); got != want {
+					t.Errorf("blocks=%t: billing header = %q, want %q", blocks, got, want)
+				}
+			}
+		})
 	}
 }

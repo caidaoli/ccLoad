@@ -2095,6 +2095,15 @@ func (s *Server) parseTestNonStreamResponse(
 				result["raw_response"] = string(bodyBytes)
 				return result
 			}
+			if errorBody := antigravityNonStreamResponseErrorBody(upstreamBody); len(errorBody) > 0 {
+				result["success"] = false
+				result["upstream_status_code"] = resp.StatusCode
+				result["status_code"] = http.StatusBadGateway
+				result["error"] = gjson.GetBytes(errorBody, "error.message").String()
+				result["raw_response"] = string(errorBody)
+				result["upstream_response_body"] = string(bodyBytes)
+				return result
+			}
 			translatedRequestBody, unwrapErr = unwrapAntigravityRequest(requestPlan.requestBody)
 			if unwrapErr != nil {
 				result["success"] = false
