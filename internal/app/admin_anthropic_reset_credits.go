@@ -158,7 +158,7 @@ func requestAnthropicResetBlock(ctx context.Context, client *http.Client, creden
 func setAnthropicResetHeaders(req *http.Request) {
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("x-app", "cli")
-	req.Header.Set("User-Agent", "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)")
+	req.Header.Set("User-Agent", "claude-cli/"+anthropicCLIVersion+" (external, cli)")
 }
 
 // HandleAnthropicResetCredits queries native reset credits without redeeming them.

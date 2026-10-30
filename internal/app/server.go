@@ -153,10 +153,9 @@ type Server struct {
 	codexMap429To503 bool
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
-	// anthropicOAuthFingerprints keeps the account-level Claude Code header
-	// fingerprint used by native OAuth requests; the private credential is durable.
+	// anthropicOAuthFingerprints caches only durable account platforms; software is request-scoped.
 	anthropicOAuthFingerprintMu      sync.Mutex
-	anthropicOAuthFingerprints       map[string]anthropicOAuthFingerprint
+	anthropicOAuthFingerprints       map[string]anthropicOAuthPlatform
 	anthropicOAuthFingerprintDirty   map[string]bool
 	anthropicOAuthFingerprintSaving  map[string]bool
 	anthropicOAuthFingerprintRetryAt map[string]time.Time
@@ -177,15 +176,14 @@ type Server struct {
 	maxConcurrency int           // 最大并发数（默认1000）
 
 	// 优雅关闭机制
-	baseCtx                     context.Context    // server生命周期context，Shutdown时取消
-	baseCancel                  context.CancelFunc // 取消baseCtx
-	shutdownCh                  chan struct{}      // 关闭信号channel
-	shutdownDone                chan struct{}      // Shutdown完成信号（幂等）
-	isShuttingDown              atomic.Bool        // shutdown标志，防止向已关闭channel写入
-	modelCatalogSyncMu          sync.Mutex         // 串行化模型目录启动和关闭，保护 WaitGroup
-	modelCatalogSyncStarted     atomic.Bool
-	anthropicCLIVersionSyncOnce sync.Once
-	wg                          sync.WaitGroup // 等待所有后台goroutine结束
+	baseCtx                 context.Context    // server生命周期context，Shutdown时取消
+	baseCancel              context.CancelFunc // 取消baseCtx
+	shutdownCh              chan struct{}      // 关闭信号channel
+	shutdownDone            chan struct{}      // Shutdown完成信号（幂等）
+	isShuttingDown          atomic.Bool        // shutdown标志，防止向已关闭channel写入
+	modelCatalogSyncMu      sync.Mutex         // 串行化模型目录启动和关闭，保护 WaitGroup
+	modelCatalogSyncStarted atomic.Bool
+	wg                      sync.WaitGroup // 等待所有后台goroutine结束
 
 	oauthCredentialImportRunMu   sync.Mutex
 	oauthCredentialImportJobsMu  sync.Mutex

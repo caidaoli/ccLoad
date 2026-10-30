@@ -1136,7 +1136,7 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 		t.Fatalf("Anthropic-Beta=%q declared extended cache TTL for a caller that never asked", betas)
 	}
 	if upstreamHeaders.Get("X-Claude-Code-Session-Id") != nativeSessionID || headerValueFold(upstreamHeaders, "x-client-request-id") == "" ||
-		upstreamHeaders.Get("X-Stainless-Runtime-Version") != "v26.3.0" {
+		upstreamHeaders.Get("X-Stainless-Runtime-Version") != anthropicStainlessRuntimeVersion {
 		t.Fatalf("Claude Code identity headers=%v", upstreamHeaders)
 	}
 	// 下游 UA 不是 claude-cli，网关按 Claude Code CLI 指纹重写 body：system 换成
@@ -1685,7 +1685,7 @@ func TestProxy_AnthropicOAuthPreservesRelayedClaudeCodeRequest(t *testing.T) {
 		t.Fatalf("status=%d upstream_headers=%v body=%s", response.Code, capturedHeaders, response.Body.String())
 	}
 	if got, want := gjson.GetBytes(capturedBody, "system.0.text").String(),
-		strings.Replace(anthropicBillingHeader("hello", anthropicEffectiveCLIVersion()), "cc_entrypoint=cli;", "cc_entrypoint=claude-vscode;", 1); got != want {
+		strings.Replace(anthropicBillingHeader("hello", anthropicCLIVersion), "cc_entrypoint=cli;", "cc_entrypoint=claude-vscode;", 1); got != want {
 		t.Fatalf("billing block=%q, want %q; body=%s", got, want, capturedBody)
 	}
 	if got := gjson.GetBytes(capturedBody, "system.1.text").String(); got != "caller prompt" ||
@@ -1703,8 +1703,10 @@ func TestProxy_AnthropicOAuthPreservesRelayedClaudeCodeRequest(t *testing.T) {
 	}
 }
 
-func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T) {
+func TestProxy_AnthropicOAuthAccountPlatformPersistsWithRequestSoftwareProfile(t *testing.T) {
 	t.Parallel()
+	newerVersion := anthropicTestCLIVersion(t, 0, 0, 1)
+	futureVersion := anthropicTestCLIVersion(t, 0, 1, 1000)
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "fingerprint-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
 		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "oauth-fingerprint-token"),
@@ -1712,11 +1714,12 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	type capturedRequest struct {
 		headers http.Header
 		body    []byte
+		path    string
 	}
 	var captured []capturedRequest
-	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
-		captured = append(captured, capturedRequest{headers: r.Header.Clone(), body: body})
+		captured = append(captured, capturedRequest{headers: r.Header.Clone(), body: body, path: r.URL.Path})
 		payload := `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
 		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
 			payload = `{"input_tokens":37}`
@@ -1724,119 +1727,145 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
 			Body: io.NopCloser(strings.NewReader(payload))}, nil
 	})}
+	env.server.client = client
 
-	const originalSession = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
 	body := map[string]any{
 		"model": "claude-sonnet-4-6", "max_tokens": 64,
-		"metadata": map[string]any{"user_id": `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"` + originalSession + `"}`},
+		"metadata": map[string]any{"user_id": `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`},
 		"system":   []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;"}},
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 	}
-	send := func(path string, headers map[string]string) capturedRequest {
+	softwareHeaders := func(version, sdk, runtime string) map[string]string {
+		return map[string]string{
+			"User-Agent": "claude-cli/" + version + " (external, claude-vscode)", "X-App": "cli",
+			"X-Stainless-Lang": "js", "X-Stainless-Package-Version": sdk,
+			"X-Stainless-Runtime": "node", "X-Stainless-Runtime-Version": runtime,
+			"X-Stainless-OS": "Windows", "X-Stainless-Arch": "x64",
+		}
+	}
+	send := func(t testing.TB, path string, requestBody map[string]any, headers map[string]string) capturedRequest {
 		t.Helper()
-		response := doProxyRequest(t, env.engine, path, body, headers)
-		if response.Code != http.StatusOK {
-			t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+		before := len(captured)
+		response := doProxyRequest(t, env.engine, path, requestBody, headers)
+		if response.Code != http.StatusOK || len(captured) != before+1 {
+			t.Fatalf("proxy status=%d upstream=%d body=%s", response.Code, len(captured)-before, response.Body.String())
 		}
 		return captured[len(captured)-1]
 	}
-	baseVersion := anthropicEffectiveCLIVersion()
-	baseUA := "claude-cli/" + baseVersion + " (external, claude-vscode)"
-	foreign := send("/v1/messages", map[string]string{
-		"User-Agent": "OpenAI/Python 2.0", "X-Stainless-Lang": "python", "X-Stainless-OS": "Windows",
-	})
-	if headerValueFold(foreign.headers, "X-Stainless-Lang") != "js" ||
-		headerValueFold(foreign.headers, "X-Stainless-OS") != "Linux" {
-		t.Fatalf("foreign SDK poisoned account fingerprint: %v", foreign.headers)
+	assertProfile := func(t testing.TB, sent capturedRequest, ua, version, sdk, runtime string) {
+		t.Helper()
+		for name, want := range map[string]string{
+			"User-Agent": ua, "X-Stainless-Lang": "js", "X-Stainless-Package-Version": sdk,
+			"X-Stainless-Runtime": "node", "X-Stainless-Runtime-Version": runtime,
+			"X-Stainless-OS": "MacOS", "X-Stainless-Arch": "arm64",
+		} {
+			if got := headerValueFold(sent.headers, name); got != want {
+				t.Fatalf("%s=%q, want %q; headers=%v", name, got, want, sent.headers)
+			}
+		}
+		if got := anthropicBillingVersion(sent.body); (sent.path != "/v1/messages/count_tokens" || got != "") && got != version {
+			t.Fatalf("billing version=%q, want %q; body=%s", got, version, sent.body)
+		}
 	}
-	first := send("/v1/messages", map[string]string{
-		"User-Agent": "claude-cli/2.1.220 (external, claude-vscode)", "X-App": "cli",
-		"X-Stainless-OS": "Darwin", "X-Stainless-Package-Version": "0.120.0",
-	})
-	if got := headerValueFold(first.headers, "User-Agent"); got != baseUA {
-		t.Fatalf("first UA=%q, want %q", got, baseUA)
+	assertBaseline := func(t testing.TB, sent capturedRequest) {
+		t.Helper()
+		assertProfile(t, sent, "claude-cli/"+anthropicCLIVersion+" (external, cli)", anthropicCLIVersion,
+			anthropicStainlessPackageVersion, anthropicStainlessRuntimeVersion)
 	}
-	if got := headerValueFold(first.headers, "X-Stainless-OS"); got != "Darwin" {
-		t.Fatalf("first Stainless OS=%q", got)
+
+	// 新账号的平台来自网关默认值，第一次请求也不能学到调用方平台。
+	complete := softwareHeaders(anthropicCLIVersion, anthropicStainlessPackageVersion, anthropicStainlessRuntimeVersion)
+	first := send(t, "/v1/messages", body, complete)
+	assertProfile(t, first, complete["User-Agent"], anthropicCLIVersion, anthropicStainlessPackageVersion, anthropicStainlessRuntimeVersion)
+	firstIdentity := gjson.Parse(gjson.GetBytes(first.body, "metadata.user_id").String())
+	accountDevice := firstIdentity.Get("device_id").String()
+	if accountDevice == "" || accountDevice == "native-device" ||
+		firstIdentity.Get("account_uuid").String() != anthropicProxyTestAccountUUID {
+		t.Fatalf("account device identity changed: %s", first.body)
 	}
-	second := send("/v1/messages", map[string]string{
-		"User-Agent": "claude-cli/2.1.100 (external, cli)", "X-App": "cli",
-		"X-Stainless-OS": "Windows", "X-Stainless-Package-Version": "0.01.0",
-	})
-	if headerValueFold(second.headers, "User-Agent") != baseUA ||
-		headerValueFold(second.headers, "X-Stainless-OS") != "Darwin" ||
-		headerValueFold(second.headers, "X-Stainless-Package-Version") != anthropicStainlessPackageVersion {
-		t.Fatalf("older client changed account fingerprint: %v", second.headers)
+
+	// 软件组合只属于当前请求；允许远超 100 patch 和跨 minor 的有效同 major 客户端。
+	for _, profile := range []struct{ version, sdk, runtime string }{
+		{futureVersion, "0.140.0", "v28.1.0"},
+		{newerVersion, "0.129.0", "v26.13.0"},
+		{futureVersion, "0.140.0", "v28.1.0"},
+	} {
+		headers := softwareHeaders(profile.version, profile.sdk, profile.runtime)
+		assertProfile(t, send(t, "/v1/messages", body, headers), headers["User-Agent"], profile.version, profile.sdk, profile.runtime)
 	}
-	parts, ok := parseAnthropicCLIVersion(baseVersion)
-	if !ok {
-		t.Fatalf("invalid runtime Claude Code version %q", baseVersion)
+
+	for _, testCase := range []struct {
+		name, field, value string
+	}{
+		{name: "old CLI", field: "User-Agent", value: "claude-cli/" + anthropicTestCLIVersion(t, 0, 0, -1) + " (external, cli)"},
+		{name: "other major", field: "User-Agent", value: "claude-cli/" + anthropicTestCLIVersion(t, 1, 0, 0) + " (external, cli)"},
+		{name: "foreign UA", field: "User-Agent", value: "OpenAI/Python 2.0"},
+		{name: "malformed UA", field: "User-Agent", value: "claude-cli/" + futureVersion + "junk (external, cli)"},
+		{name: "missing package", field: "X-Stainless-Package-Version"},
+		{name: "invalid package", field: "X-Stainless-Package-Version", value: "0.140"},
+		{name: "missing runtime version", field: "X-Stainless-Runtime-Version"},
+		{name: "invalid runtime version", field: "X-Stainless-Runtime-Version", value: "28.1.0"},
+		{name: "missing language", field: "X-Stainless-Lang"},
+		{name: "other language", field: "X-Stainless-Lang", value: "python"},
+		{name: "missing runtime", field: "X-Stainless-Runtime"},
+		{name: "other runtime", field: "X-Stainless-Runtime", value: "bun"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			headers := softwareHeaders(futureVersion, "0.140.0", "v28.1.0")
+			if testCase.value == "" {
+				delete(headers, testCase.field)
+			} else {
+				headers[testCase.field] = testCase.value
+			}
+			assertBaseline(t, send(t, "/v1/messages", body, headers))
+		})
 	}
-	newerVersion := fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2]+1)
-	newerUA := "claude-cli/" + newerVersion + " (external, cli)"
-	third := send("/v1/messages", map[string]string{
-		"User-Agent": newerUA, "X-App": "cli", "X-Stainless-OS": "Linux",
-	})
-	if headerValueFold(third.headers, "User-Agent") != newerUA ||
-		headerValueFold(third.headers, "X-Stainless-OS") != "Linux" ||
-		headerValueFold(third.headers, "X-Stainless-Package-Version") != anthropicStainlessPackageVersion {
-		t.Fatalf("newer client did not merge account fingerprint: %v", third.headers)
+
+	newer := softwareHeaders(newerVersion, "0.129.0", "v26.13.0")
+	count := send(t, "/v1/messages/count_tokens", body, newer)
+	assertProfile(t, count, newer["User-Agent"], newerVersion, "0.129.0", "v26.13.0")
+	if gjson.GetBytes(count.body, "metadata").Exists() {
+		t.Fatalf("count_tokens retained metadata: %s", count.body)
 	}
-	fourth := send("/v1/messages", map[string]string{
-		"User-Agent": "claude-cli/9999.0.0 (external, cli)", "X-App": "cli", "X-Stainless-OS": "Windows",
-	})
-	if headerValueFold(fourth.headers, "User-Agent") != newerUA || headerValueFold(fourth.headers, "X-Stainless-OS") != "Linux" {
-		t.Fatalf("implausible UA changed account fingerprint: %v", fourth.headers)
+	assertBaseline(t, send(t, "/v1/messages/count_tokens", body, nil))
+	simulatedBody := map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 	}
-	sameMajorSentinel := send("/v1/messages", map[string]string{
-		"User-Agent": fmt.Sprintf("claude-cli/%d.%d.%d (external, cli)", parts[0], parts[1], parts[2]+1000),
-		"X-App":      "cli", "X-Stainless-OS": "Windows",
-	})
-	if headerValueFold(sameMajorSentinel.headers, "User-Agent") != newerUA ||
-		headerValueFold(sameMajorSentinel.headers, "X-Stainless-OS") != "Linux" {
-		t.Fatalf("same-major sentinel UA changed account fingerprint: %v", sameMajorSentinel.headers)
+	simulated := send(t, "/v1/messages", simulatedBody, nil)
+	assertBaseline(t, simulated)
+	if got := gjson.Parse(gjson.GetBytes(simulated.body, "metadata.user_id").String()).Get("device_id").String(); got != accountDevice {
+		t.Fatalf("simulated device=%q, want native account device %q", got, accountDevice)
 	}
-	crossMajor := send("/v1/messages", map[string]string{
-		"User-Agent": "claude-cli/4.0.0 (external, cli)", "X-App": "cli", "X-Stainless-OS": "Windows",
-	})
-	if headerValueFold(crossMajor.headers, "User-Agent") != newerUA || headerValueFold(crossMajor.headers, "X-Stainless-OS") != "Linux" {
-		t.Fatalf("cross-major UA changed account fingerprint: %v", crossMajor.headers)
-	}
+	assertBaseline(t, send(t, "/v1/messages/count_tokens", simulatedBody, nil))
+	// 软件头完整也不能把没有原生身份的普通 Messages 请求伪装成可信 CLI。
+	assertBaseline(t, send(t, "/v1/messages", simulatedBody, newer))
 
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("stored configs=%d err=%v", len(configs), err)
 	}
 	credential, err := anthropicauth.ParseCredential([]byte(configs[0].OAuthCredential))
-	if err != nil || credential.Fingerprint == nil || credential.Fingerprint.UserAgent != newerUA ||
-		credential.Fingerprint.StainlessOS != "Linux" || credential.Fingerprint.StainlessPackageVersion != anthropicStainlessPackageVersion {
-		t.Fatalf("persisted account fingerprint=%+v err=%v", credential, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	env.server.anthropicOAuthFingerprintMu.Lock()
-	clear(env.server.anthropicOAuthFingerprints)
-	env.server.anthropicOAuthFingerprintMu.Unlock()
-	env.server.InvalidateChannelListCache()
-	count := send("/v1/messages/count_tokens", map[string]string{
-		"User-Agent": "claude-cli/2.1.100 (external, cli)", "X-App": "cli", "X-Stainless-OS": "Windows",
-	})
-	if headerValueFold(count.headers, "User-Agent") != newerUA || headerValueFold(count.headers, "X-Stainless-OS") != "Linux" ||
-		gjson.GetBytes(count.body, "metadata").Exists() || anthropicBillingVersion(count.body) != newerVersion ||
-		gjson.GetBytes(count.body, "system.0.text").String() != anthropicBillingHeader("hello", newerVersion) {
-		t.Fatalf("count_tokens lost persisted fingerprint: headers=%v body=%s", count.headers, count.body)
+	if credential.DeviceID != anthropicProxyTestDeviceID || credential.Fingerprint == nil ||
+		*credential.Fingerprint != (anthropicauth.Fingerprint{StainlessOS: "MacOS", StainlessArch: "arm64"}) {
+		t.Fatalf("persisted software or caller platform: %+v", credential.Fingerprint)
 	}
-	simulated := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
-		"model": "claude-sonnet-4-6", "max_tokens": 64,
-		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
-	}, nil)
-	if simulated.Code != http.StatusOK {
-		t.Fatalf("simulated status=%d body=%s", simulated.Code, simulated.Body.String())
+
+	// 用实际落库的凭证重建服务；软件 profile 不依赖旧服务的进程缓存。
+	env = setupProxyTestEnv(t, []testChannel{{
+		name: "restarted-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: configs[0].OAuthCredential,
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	env.server.client = client
+	restarted := send(t, "/v1/messages", simulatedBody, nil)
+	assertBaseline(t, restarted)
+	if got := gjson.Parse(gjson.GetBytes(restarted.body, "metadata.user_id").String()).Get("device_id").String(); got != accountDevice {
+		t.Fatalf("restarted device=%q, want original account device %q", got, accountDevice)
 	}
-	simulatedWire := captured[len(captured)-1]
-	if got := headerValueFold(simulatedWire.headers, "User-Agent"); got != "claude-cli/"+baseVersion+" (external, cli)" ||
-		anthropicBillingVersion(simulatedWire.body) != baseVersion ||
-		headerValueFold(simulatedWire.headers, "X-Stainless-OS") != "Linux" {
-		t.Fatalf("simulated identity diverged from billing: headers=%v body=%s", simulatedWire.headers, simulatedWire.body)
-	}
+	assertProfile(t, send(t, "/v1/messages/count_tokens", body, newer), newer["User-Agent"], newerVersion, "0.129.0", "v26.13.0")
 }
 
 type blockingFingerprintStore struct {
@@ -1873,59 +1902,211 @@ func (s *countingFingerprintStore) CompareAndSwapOAuthCredential(
 	return s.Store.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 }
 
-// Sequential: it moves the process-wide runtime Claude Code version.
-func TestAnthropicOAuthFingerprintVersionFloorDoesNotRewriteCredential(t *testing.T) {
-	base := anthropicEffectiveCLIVersion()
-	// 旧版本学到的 SDK 配对低于内置配对，与抬升后的 UA 不再匹配。
-	credential := &anthropicauth.Credential{
-		Type: anthropicauth.ChannelType, AccessToken: "oauth-floor", RefreshToken: "rt-anthropic",
-		Expired:     time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
-		AccountUUID: anthropicProxyTestAccountUUID, DeviceID: anthropicProxyTestDeviceID,
-		Fingerprint: &anthropicauth.Fingerprint{
-			UserAgent: "claude-cli/" + base + " (external, cli)", StainlessLang: "js",
-			StainlessPackageVersion: "0.94.0", StainlessOS: "Linux", StainlessArch: "arm64",
-			StainlessRuntime: "node", StainlessRuntimeVersion: "v24.3.0",
-		},
+func TestProxy_AnthropicOAuthLegacySoftwareDoesNotRewriteCredential(t *testing.T) {
+	t.Parallel()
+	newerVersion := anthropicTestCLIVersion(t, 0, 0, 1)
+	for _, platform := range []struct {
+		name, os, arch, wantOS, wantArch string
+	}{
+		{name: "existing platform", os: "Linux", arch: "x64", wantOS: "Linux", wantArch: "x64"},
+		{name: "missing OS", arch: "x64", wantOS: "MacOS", wantArch: "x64"},
+		{name: "missing architecture", os: "Windows", wantOS: "Windows", wantArch: "arm64"},
+	} {
+		t.Run(platform.name, func(t *testing.T) {
+			// 历史软件信息保留在凭证中，但不能与当前请求的新 UA 混搭或覆盖账号平台。
+			credential := &anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: "oauth-floor", RefreshToken: "rt-anthropic",
+				Expired:     time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+				AccountUUID: anthropicProxyTestAccountUUID, DeviceID: anthropicProxyTestDeviceID,
+				Fingerprint: &anthropicauth.Fingerprint{
+					UserAgent: "claude-cli/2.1.1000 (external, cli)", StainlessLang: "python",
+					StainlessPackageVersion: "0.94.0", StainlessOS: platform.os, StainlessArch: platform.arch,
+					StainlessRuntime: "bun", StainlessRuntimeVersion: "v24.3.0",
+				},
+			}
+			credentialJSON, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "legacy-profile", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+				authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+			}}, map[int]string{0: "https://api.anthropic.com"})
+			counting := &countingFingerprintStore{Store: env.store}
+			env.server.store = counting
+			var headers http.Header
+			var sentBody []byte
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				headers = r.Header.Clone()
+				sentBody, _ = io.ReadAll(r.Body)
+				payload := `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+				if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+					payload = `{"input_tokens":37}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+					Body: io.NopCloser(strings.NewReader(payload))}, nil
+			})}
+			body := map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 64,
+				"metadata": map[string]any{"user_id": `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`},
+				"system":   []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;"}},
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}
+			for _, testCase := range []struct {
+				name, path, version, sdk, runtime string
+				incoming                          map[string]string
+			}{
+				{name: "legacy does not supply missing software", path: "/v1/messages", version: anthropicCLIVersion,
+					sdk: anthropicStainlessPackageVersion, runtime: anthropicStainlessRuntimeVersion},
+				{name: "current complete request", path: "/v1/messages", version: newerVersion, sdk: "0.129.0", runtime: "v26.13.0",
+					incoming: map[string]string{
+						"User-Agent": "claude-cli/" + newerVersion + " (external, cli)", "X-Stainless-Lang": "js",
+						"X-Stainless-Package-Version": "0.129.0", "X-Stainless-Runtime": "node",
+						"X-Stainless-Runtime-Version": "v26.13.0", "X-Stainless-OS": "Windows", "X-Stainless-Arch": "arm64",
+					}},
+				{name: "count uses baseline after new client", path: "/v1/messages/count_tokens", version: anthropicCLIVersion,
+					sdk: anthropicStainlessPackageVersion, runtime: anthropicStainlessRuntimeVersion},
+			} {
+				t.Run(testCase.name, func(t *testing.T) {
+					response := doProxyRequest(t, env.engine, testCase.path, body, testCase.incoming)
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					for name, want := range map[string]string{
+						"User-Agent":       "claude-cli/" + testCase.version + " (external, cli)",
+						"X-Stainless-Lang": "js", "X-Stainless-Package-Version": testCase.sdk,
+						"X-Stainless-Runtime": "node", "X-Stainless-Runtime-Version": testCase.runtime,
+						"X-Stainless-OS": platform.wantOS, "X-Stainless-Arch": platform.wantArch,
+					} {
+						if got := headerValueFold(headers, name); got != want {
+							t.Fatalf("%s=%q, want %q; headers=%v", name, got, want, headers)
+						}
+					}
+					if got := anthropicBillingVersion(sentBody); got != testCase.version {
+						t.Fatalf("billing=%q, want %q; body=%s", got, testCase.version, sentBody)
+					}
+				})
+			}
+			if got := counting.writes.Load(); platform.os != "" && platform.arch != "" && got != 0 {
+				t.Fatalf("request software rewrote the credential: writes=%d", got)
+			}
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+			credential.Fingerprint.StainlessOS = platform.wantOS
+			credential.Fingerprint.StainlessArch = platform.wantArch
+			wantCredential, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if configs[0].OAuthCredential != wantCredential {
+				t.Fatalf("historical software or account platform changed: %s", configs[0].OAuthCredential)
+			}
+		})
 	}
-	credentialJSON, err := credential.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+}
+
+func TestProxy_AnthropicOAuthPlatformInitializationKeepsConcurrentStoredPlatform(t *testing.T) {
+	t.Parallel()
+	newerVersion := anthropicTestCLIVersion(t, 0, 0, 1)
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "floor", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
-		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+		name: "concurrent-platform", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "oauth-platform-token"),
 	}}, map[int]string{0: "https://api.anthropic.com"})
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("configs=%d err=%v", len(configs), err)
 	}
-	counting := &countingFingerprintStore{Store: env.store}
-	env.server.store = counting
+	blocked := &blockingFingerprintStore{Store: env.store, blockID: configs[0].ID,
+		entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(blocked.release) }) }
+	t.Cleanup(release)
+	env.server.store = blocked
+	var sent []http.Header
+	var bodies [][]byte
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		sent = append(sent, r.Header.Clone())
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+	})}
+	body := map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"metadata": map[string]any{"user_id": `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`},
+		"system":   []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;"}},
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	headers := map[string]string{
+		"User-Agent": "claude-cli/" + newerVersion + " (external, cli)", "X-Stainless-Lang": "js",
+		"X-Stainless-Package-Version": "0.129.0", "X-Stainless-Runtime": "node",
+		"X-Stainless-Runtime-Version": "v26.13.0", "X-Stainless-OS": "Windows", "X-Stainless-Arch": "arm64",
+	}
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { firstDone <- doProxyRequest(t, env.engine, "/v1/messages", body, headers) }()
+	select {
+	case <-blocked.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("platform initialization did not enter persistence")
+	}
 
-	stored := env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0], nil)
-	if stored.StainlessPackageVersion != anthropicStainlessPackageVersion ||
-		stored.StainlessRuntimeVersion != anthropicStainlessRuntimeVersion {
-		t.Fatalf("stale SDK pair was sent: %s/%s", stored.StainlessPackageVersion, stored.StainlessRuntimeVersion)
+	credential, err := anthropicauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := counting.writes.Load(); got != 0 {
-		t.Fatalf("SDK floor rewrote the credential: writes=%d", got)
+	credential.Fingerprint = &anthropicauth.Fingerprint{
+		StainlessOS: "Linux", StainlessArch: "x64", UserAgent: "claude-cli/2.1.220 (external, cli)",
+		StainlessPackageVersion: "0.94.0", StainlessRuntimeVersion: "v24.3.0",
 	}
-
-	parts, ok := parseAnthropicCLIVersion(base)
-	if !ok {
-		t.Fatalf("invalid runtime Claude Code version %q", base)
+	concurrentCredential, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
 	}
-	raised := fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2]+1)
-	previous := anthropicRuntimeCLIVersion.Load()
-	anthropicRuntimeCLIVersion.Store(&raised)
-	t.Cleanup(func() { anthropicRuntimeCLIVersion.Store(previous) })
-
-	fingerprint := env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0], nil)
-	if fingerprint.UserAgent != "claude-cli/"+raised+" (external, cli)" {
-		t.Fatalf("UA=%q did not follow the raised floor %s", fingerprint.UserAgent, raised)
+	swapped, err := env.store.CompareAndSwapOAuthCredential(context.Background(), configs[0].ID,
+		model.AuthTypeAnthropicOAuth, configs[0].OAuthCredential, concurrentCredential)
+	if err != nil || !swapped {
+		t.Fatalf("save concurrent account platform: swapped=%t err=%v", swapped, err)
 	}
-	if got := counting.writes.Load(); got != 0 {
-		t.Fatalf("floor raise rewrote the credential: writes=%d", got)
+	release()
+	select {
+	case response := <-firstDone:
+		if response.Code != http.StatusOK {
+			t.Fatalf("first status=%d body=%s", response.Code, response.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request did not resume after platform initialization")
+	}
+	response := doProxyRequest(t, env.engine, "/v1/messages", body, nil)
+	if response.Code != http.StatusOK || len(sent) != 2 {
+		t.Fatalf("next status=%d upstream=%d body=%s", response.Code, len(sent), response.Body.String())
+	}
+	for i, requestHeaders := range sent {
+		for name, want := range map[string]string{"X-Stainless-OS": "Linux", "X-Stainless-Arch": "x64"} {
+			if got := headerValueFold(requestHeaders, name); got != want {
+				t.Fatalf("request %d %s=%q, want concurrent platform %q", i, name, got, want)
+			}
+		}
+		version, sdk, runtime := anthropicCLIVersion, anthropicStainlessPackageVersion, anthropicStainlessRuntimeVersion
+		if i == 0 {
+			version, sdk, runtime = newerVersion, "0.129.0", "v26.13.0"
+		}
+		for name, want := range map[string]string{
+			"User-Agent":                  "claude-cli/" + version + " (external, cli)",
+			"X-Stainless-Package-Version": sdk, "X-Stainless-Runtime-Version": runtime,
+		} {
+			if got := headerValueFold(requestHeaders, name); got != want {
+				t.Fatalf("request %d %s=%q, want %q", i, name, got, want)
+			}
+		}
+		if got := anthropicBillingVersion(bodies[i]); got != version {
+			t.Fatalf("request %d billing=%q, want %q", i, got, version)
+		}
+	}
+	stored, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(stored) != 1 || stored[0].OAuthCredential != concurrentCredential {
+		t.Fatalf("concurrent platform was overwritten: configs=%v err=%v", stored, err)
 	}
 }
 
@@ -2035,7 +2216,7 @@ func TestProxy_AnthropicNativeBodyRulesKeepNativeWire(t *testing.T) {
 				t.Fatalf("native body changed after rule: %s", capturedBody)
 			}
 			for name, want := range map[string]string{
-				"User-Agent":        "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
+				"User-Agent":        "claude-cli/" + anthropicCLIVersion + " (external, cli)",
 				"Accept-Language":   "zh-CN,zh;q=0.9",
 				"Sec-Fetch-Mode":    "cors",
 				"X-Stainless-Async": "false",
@@ -2120,7 +2301,7 @@ func TestProxy_AnthropicCountTokensUsesUpstreamOAuthWire(t *testing.T) {
 	native := sent[1]
 	if gjson.GetBytes(native.body, "metadata").Exists() ||
 		gjson.GetBytes(native.body, "system.0.text").String() != anthropicBillingHeader("hello", anthropicCLIVersion) ||
-		headerValueFold(native.headers, "User-Agent") != "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)" ||
+		headerValueFold(native.headers, "User-Agent") != "claude-cli/"+anthropicCLIVersion+" (external, cli)" ||
 		!strings.Contains(headerValueFold(native.headers, "Anthropic-Beta"), "token-counting-2024-11-01") {
 		t.Fatalf("native wire headers=%v body=%s", native.headers, native.body)
 	}

@@ -2793,7 +2793,7 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 		headerValueFold(request.Header, "anthropic-version") != "2023-06-01" ||
 		!strings.Contains(headerValueFold(request.Header, "anthropic-beta"), "oauth-2025-04-20") ||
 		headerValueFold(request.Header, "X-Claude-Code-Session-Id") != "" || headerValueFold(request.Header, "x-client-request-id") == "" ||
-		headerValueFold(request.Header, "X-Stainless-OS") != "Linux" ||
+		headerValueFold(request.Header, "X-Stainless-OS") != "MacOS" ||
 		headerValueFold(request.Header, "X-Stainless-Arch") != "arm64" ||
 		headerValueFold(request.Header, "X-Stainless-Runtime-Version") != anthropicStainlessRuntimeVersion {
 		t.Fatalf("Anthropic OAuth headers = %v", request.Header)
@@ -3528,7 +3528,7 @@ func TestAnthropicOAuthBuildProxyRequestKeepsCustomHeaderRules(t *testing.T) {
 	}
 	if headerValueFold(request.Header, "Authorization") != "Bearer oauth-access" ||
 		headerValueFold(request.Header, "User-Agent") != "claude-cli/"+anthropicCLIVersion+" (external, cli)" ||
-		headerValueFold(request.Header, "X-Stainless-OS") != "Linux" ||
+		headerValueFold(request.Header, "X-Stainless-OS") != "MacOS" ||
 		headerValueFold(request.Header, "X-Configured") != "must-drop" ||
 		strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "attacker-beta") ||
 		!strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "oauth-2025-04-20") ||
@@ -4415,13 +4415,35 @@ func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
 	}
 }
 
+func anthropicTestCLIVersion(t testing.TB, majorDelta, minorDelta, patchDelta int) string {
+	t.Helper()
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(anthropicCLIVersion, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		t.Fatalf("parse baseline CLI version %q: %v", anthropicCLIVersion, err)
+	}
+	major, minor, patch = major+majorDelta, minor+minorDelta, patch+patchDelta
+	if patch < 0 {
+		minor--
+		patch = 999
+	}
+	if minor < 0 {
+		major--
+		minor = 999
+	}
+	if major < 0 {
+		t.Fatal("baseline CLI version has no older version")
+	}
+	return fmt.Sprintf("%d.%d.%d", major, minor, patch)
+}
+
 func TestAnthropicClientVersionFloorsOldCLI(t *testing.T) {
 	t.Parallel()
-	old := http.Header{"User-Agent": {"claude-cli/2.1.209 (external, cli)"}}
+	older := anthropicTestCLIVersion(t, 0, 0, -1)
+	old := http.Header{"User-Agent": {"claude-cli/" + older + " (external, cli)"}}
 	if got := anthropicClientVersion(old); got != anthropicCLIVersion {
 		t.Fatalf("old client version=%q, want pin %q", got, anthropicCLIVersion)
 	}
-	newer := "2.1.999"
+	newer := anthropicTestCLIVersion(t, 0, 0, 1)
 	fresh := http.Header{"User-Agent": {"claude-cli/" + newer + " (external, cli)"}}
 	if got := anthropicClientVersion(fresh); got != newer {
 		t.Fatalf("newer client version=%q, want %q", got, newer)
@@ -4435,7 +4457,7 @@ func TestAnthropicClientVersionFloorsOldCLI(t *testing.T) {
 		t.Fatal("current pin must still be native")
 	}
 	nativeOld := nativeOK.Clone()
-	nativeOld.Set("User-Agent", "claude-cli/2.1.209 (external, cli)")
+	nativeOld.Set("User-Agent", "claude-cli/"+older+" (external, cli)")
 	if !isNativeAnthropicClaudeCodeRequest([]byte(`{"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"s\"}"}}`), nativeOld) {
 		t.Fatal("a valid older Claude CLI must still passthrough without body rewriting")
 	}
@@ -4501,11 +4523,11 @@ func TestAnthropicNativeTitleHelperPreservesStructuredOutput(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			headers := http.Header{
-				"User-Agent":                  {"claude-cli/2.1.293 (external, cli)"},
+				"User-Agent":                  {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 				"X-App":                       {"cli"},
 				"Anthropic-Beta":              {test.betas},
-				"X-Stainless-Package-Version": {"0.128.0"},
-				"X-Stainless-Runtime-Version": {"v26.3.0"},
+				"X-Stainless-Package-Version": {anthropicStainlessPackageVersion},
+				"X-Stainless-Runtime-Version": {anthropicStainlessRuntimeVersion},
 				"X-Stainless-Runtime":         {"node"},
 				"X-Stainless-Lang":            {"js"},
 				"X-Stainless-OS":              {"MacOS"},
@@ -4550,5 +4572,59 @@ func TestAnthropicNativeTitleHelperPreservesStructuredOutput(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnthropicOAuthSoftwareProfileSurvivesReplayAndAccountSwitch(t *testing.T) {
+	newer := anthropicTestCLIVersion(t, 0, 0, 1)
+	server := &Server{}
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"s\"}"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=` + newer + `.abc; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"hello"}]}`)
+	headers := http.Header{
+		"User-Agent": {"claude-cli/" + newer + " (external, cli)"}, "X-Stainless-Lang": {"js"},
+		"X-Stainless-Package-Version": {"0.129.0"}, "X-Stainless-Runtime": {"node"},
+		"X-Stainless-Runtime-Version": {"v26.13.0"},
+	}
+	requestContext := &requestContext{ctx: context.Background(), startTime: time.Now(),
+		clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
+		transformPlan: protocol.TransformPlan{OriginalBody: body},
+	}
+	for _, target := range []struct{ account, os, arch string }{
+		{"one", "Linux", "x64"}, {"one", "Linux", "x64"}, {"two", "MacOS", "arm64"},
+	} {
+		credential := &anthropicauth.Credential{Type: anthropicauth.ChannelType, AccessToken: "test-token", RefreshToken: "test-refresh",
+			Expired: "2030-01-01T00:00:00Z", AccountUUID: target.account, Fingerprint: &anthropicauth.Fingerprint{StainlessOS: target.os, StainlessArch: target.arch}}
+		payload, err := credential.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := &model.Config{Name: target.account, AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: payload,
+			CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+				{Action: model.RuleActionOverride, Name: "User-Agent", Value: "fake-client"},
+				{Action: model.RuleActionOverride, Name: "X-Stainless-Runtime-Version", Value: "v1.0.0"},
+				{Action: model.RuleActionOverride, Name: "X-Stainless-Package-Version", Value: "0.1.0"},
+				{Action: model.RuleActionOverride, Name: "X-Stainless-OS", Value: "Windows"},
+			}},
+		}
+		request, err := server.buildProxyRequest(requestContext, cfg, "test-token", http.MethodPost,
+			body, headers, "", "/v1/messages", "https://api.anthropic.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err = io.ReadAll(request.Body)
+		_ = request.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range map[string]string{
+			"User-Agent": "claude-cli/" + newer + " (external, cli)", "X-Stainless-Package-Version": "0.129.0",
+			"X-Stainless-Runtime-Version": "v26.13.0", "X-Stainless-OS": target.os, "X-Stainless-Arch": target.arch,
+		} {
+			if got := headerValueFold(request.Header, name); got != want {
+				t.Errorf("account %s: %s=%q, want %q", target.account, name, got, want)
+			}
+		}
+		if got := anthropicBillingVersion(body); got != newer {
+			t.Fatalf("billing version=%q, want %q", got, newer)
+		}
 	}
 }

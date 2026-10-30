@@ -2235,7 +2235,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		}
 		applyAnthropicClaudeCodeHeaders(&http.Request{Header: requestPlan.headers},
 			anthropicClaudeCodeMimicBetas(requestPlan.requestBody, cfgForBuild.UsesAnthropicOAuth()),
-			anthropicSessionIDFromBody(requestPlan.requestBody), anthropicEffectiveCLIVersion(), false)
+			anthropicSessionIDFromBody(requestPlan.requestBody), anthropicCLIVersion, false)
 		requestPlan.anthropicTestBody = requestPlan.requestBody
 	}
 	for key, value := range testReq.Headers {
@@ -2285,7 +2285,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		callerBody, requestPlan.headers, upstreamProtocolValue, requestPath, callerBodyIsAnthropic)
 	if cfgForBuild.UsesAnthropicOAuth() {
 		fingerprintSource := http.Header(nil)
-		if callerWire.nativeClaudeCode {
+		if callerWire.nativeClaudeCode && len(requestPlan.anthropicTestBody) == 0 {
 			fingerprintSource = requestPlan.headers
 		}
 		requestPlan.anthropicOAuthFingerprint = s.getAnthropicOAuthFingerprint(ctx, cfgForBuild, fingerprintSource)
@@ -2315,7 +2315,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		if err != nil {
 			return nil, nil, fmt.Errorf("rebase test request identity: %w", err)
 		}
-		if callerWire.nativeClaudeCode && requestPlan.anthropicOAuthFingerprint != nil {
+		if requestPlan.anthropicOAuthFingerprint != nil {
 			requestPlan.requestBody = syncAnthropicOAuthBillingVersion(
 				requestPlan.requestBody, requestPlan.anthropicOAuthFingerprint.UserAgent)
 		}
@@ -2459,15 +2459,11 @@ func (s *Server) newTestUpstreamRequest(
 	if isAnthropicCountTokensRequest(requestProtocol, requestPlan.endpointPath) && isOfficialAnthropicURL(req.URL) {
 		req.Header.Del("X-Claude-Code-Session-Id")
 	}
-	// 指纹路径重建请求头；原生 OAuth 使用账号指纹，模拟请求保留 billing 同源的头。
+	// 指纹路径重建请求头后，恢复本次软件组合与账号固定平台。
 	if wireRebuilt {
 		applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 		if cfgForBuild.UsesAnthropicOAuth() {
-			if callerOwnsAnthropicWire {
-				applyAnthropicOAuthFingerprint(req, oauthFingerprint)
-			} else {
-				applyAnthropicOAuthMimicFingerprint(req, requestPlan.requestBody)
-			}
+			applyAnthropicOAuthFingerprint(req, oauthFingerprint)
 		}
 	}
 	// anyrouter 渠道：确保 anthropic-beta 包含 context-1m，与代理链路步骤 6.2 对齐。

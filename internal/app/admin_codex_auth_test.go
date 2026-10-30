@@ -7533,7 +7533,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				}
 				wantUserAgent := anthropicUsageUserAgent
 				if request.URL.String() == expectedUsageURL && test.scope != "" {
-					wantUserAgent = "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)"
+					wantUserAgent = "claude-cli/" + anthropicCLIVersion + " (external, cli)"
 					if request.Header.Get("x-app") != "cli" {
 						t.Error("reset usage request missing CLI header")
 					}
@@ -7687,7 +7687,7 @@ func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 		if request.URL.String() != "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1" ||
 			request.Method != http.MethodGet || request.Header.Get("Authorization") != "Bearer reset-access-secret" ||
 			request.Header.Get("anthropic-beta") != "oauth-2025-04-20" || request.Header.Get("x-app") != "cli" ||
-			request.Header.Get("User-Agent") != "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)" {
+			request.Header.Get("User-Agent") != "claude-cli/"+anthropicCLIVersion+" (external, cli)" {
 			t.Errorf("reset request = %s %s %v", request.Method, request.URL, request.Header)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(upstreamBody)), Request: request}, nil

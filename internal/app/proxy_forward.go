@@ -230,10 +230,12 @@ func (s *Server) buildProxyRequest(
 	callerOwnsAnthropicWire := callerWire.ownsWire()
 	var oauthFingerprint *anthropicOAuthFingerprint
 	if cfg.UsesAnthropicOAuth() {
-		fingerprintSource := http.Header(nil)
+		var fingerprintSource http.Header
 		if callerWire.nativeClaudeCode {
 			fingerprintSource = hdr
 		}
+		// Retries retain the original headers: software selection is pure and
+		// never depends on another request's cached software versions.
 		oauthFingerprint = s.getAnthropicOAuthFingerprint(reqCtx.ctx, cfg, fingerprintSource)
 	}
 	// 上游 URL 在 body 最终化前解析，供旧版 Haiku helper 的 CCH 策略使用。
@@ -318,7 +320,7 @@ func (s *Server) buildProxyRequest(
 		if err != nil {
 			return nil, err
 		}
-		if callerWire.nativeClaudeCode && oauthFingerprint != nil {
+		if oauthFingerprint != nil {
 			body = syncAnthropicOAuthBillingVersion(body, oauthFingerprint.UserAgent)
 		}
 	}
@@ -470,16 +472,11 @@ func (s *Server) buildProxyRequest(
 	}
 
 	// 6.1 Claude Code CLI / ZCode / Antigravity 指纹路径清空（或整体替换）了请求头再
-	// 重建，步骤 6 的规则产物随之丢失。原生 OAuth 请求继续使用账号指纹；
-	// 模拟请求保留与 billing 版本一致的 User-Agent 和 Stainless 头。
+	// 重建，步骤 6 的规则产物随之丢失。OAuth 恢复本次已选的软件组合与账号平台。
 	if wireRebuilt {
 		applyHeaderRules(req.Header, cfg.HeaderRules())
 		if cfg.UsesAnthropicOAuth() {
-			if callerOwnsAnthropicWire {
-				applyAnthropicOAuthFingerprint(req, oauthFingerprint)
-			} else {
-				applyAnthropicOAuthMimicFingerprint(req, body)
-			}
+			applyAnthropicOAuthFingerprint(req, oauthFingerprint)
 		}
 	}
 

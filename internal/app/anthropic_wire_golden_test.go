@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -323,22 +324,24 @@ func TestAnthropicWireGolden(t *testing.T) {
 }
 
 func TestAnthropicWireBillingFingerprintUTF16(t *testing.T) {
-	// Expected fingerprints come from Node.js crypto with
-	// [4, 7, 20].map(i => text[i] ?? '0').join('') and version 2.1.293.
+	// Samples come from Node.js Buffer.from([4, 7, 20].map(i => text[i] ?? '0').join('')).
+	// Keep UTF-16 sampling independent of Go; only the release version changes the digest.
+	// The salt is the fixed Claude Code billing protocol value.
+	const salt = "59cf53e54c78"
 	cases := []struct {
-		name        string
-		text        string
-		fingerprint string
+		name   string
+		text   string
+		sample string
 	}{
-		{name: "ascii", text: "abcdefghijklmnopqrstu", fingerprint: "b63"},
-		{name: "empty", text: "", fingerprint: "9b8"},
-		{name: "short_ascii", text: "hello", fingerprint: "72d"},
-		{name: "short_chinese", text: "你好世界", fingerprint: "9b8"},
-		{name: "chinese", text: "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏", fingerprint: "df0"},
-		{name: "emoji", text: "😀😁😂😃😄😅😆😇😈😉😊", fingerprint: "c32"},
-		{name: "joined_surrogate_pair", text: "abcd😀😁xxxxxxxxxxxxZ", fingerprint: "3a3"},
-		{name: "lone_high_surrogate", text: "abcd😀xxxxxxxxxxxxxxZ", fingerprint: "0f6"},
-		{name: "lone_low_surrogate", text: "abc😀xxxxxxxxxxxxxxxZ", fingerprint: "0f6"},
+		{name: "ascii", text: "abcdefghijklmnopqrstu", sample: "ehu"},
+		{name: "empty", text: "", sample: "000"},
+		{name: "short_ascii", text: "hello", sample: "o00"},
+		{name: "short_chinese", text: "你好世界", sample: "000"},
+		{name: "chinese", text: "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏", sample: "宇荒秋"},
+		{name: "emoji", text: "😀😁😂😃😄😅😆😇😈😉😊", sample: "😃\uFFFD"},
+		{name: "joined_surrogate_pair", text: "abcd😀😁xxxxxxxxxxxxZ", sample: "😁Z"},
+		{name: "lone_high_surrogate", text: "abcd😀xxxxxxxxxxxxxxZ", sample: "\uFFFDxZ"},
+		{name: "lone_low_surrogate", text: "abc😀xxxxxxxxxxxxxxxZ", sample: "\uFFFDxZ"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -355,14 +358,16 @@ func TestAnthropicWireBillingFingerprintUTF16(t *testing.T) {
 					t.Fatal(err)
 				}
 				headers := anthropicGoldenCallerHeaders()
-				headers.Set("User-Agent", "claude-cli/2.1.293 (external, cli)")
+				headers.Set("User-Agent", "claude-cli/"+anthropicCLIVersion+" (external, cli)")
 				finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body,
 					&model.Config{AuthType: model.AuthTypeAPIKey}, anthropicGoldenAPIKey,
 					headers, anthropicOfficialTestURL)
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := "x-anthropic-billing-header: cc_version=2.1.293." + testCase.fingerprint + "; cc_entrypoint=cli;"
+				digest := sha256.Sum256([]byte(salt + testCase.sample + anthropicCLIVersion))
+				fingerprint := fmt.Sprintf("%x", digest)[:3]
+				want := "x-anthropic-billing-header: cc_version=" + anthropicCLIVersion + "." + fingerprint + "; cc_entrypoint=cli;"
 				if got := gjson.GetBytes(finalized, "system.0.text").String(); got != want {
 					t.Errorf("blocks=%t: billing header = %q, want %q", blocks, got, want)
 				}

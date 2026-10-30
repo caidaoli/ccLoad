@@ -33,6 +33,24 @@ Tag 形状固定：
 
 ## 发布流程
 
+0. 先检查本地 Claude Code 软件基线，再检查 diff 和推导提交 subject。仅计算版本或预检时运行只读检查：
+
+   ```bash
+   python3 scripts/claude_profile.py --check
+   ```
+
+   已授权发布时改用 `python3 scripts/claude_profile.py --apply`。脚本只静态读取 PATH 中 `claude` 指向的本地原生安装，不执行客户端、不联网下载、不安装或升级 Claude。需要指定已核实的本地安装时可传 `--claude /absolute/path/to/claude`。当前识别已验证的 darwin-arm64 原生布局（2.1.312 / 2.1.314）；其他布局或脚本包装器按不支持处理，不执行它们来探测版本。
+
+   仅当提取到同一安装中无歧义的 CLI / Stainless SDK / Node 兼容版本，且 CLI 与内置基线同主版本并更高时，才原子更新 `internal/app/anthropic_wire.go` 的三个软件版本常量。相同或更旧版本保持不动；找不到安装、格式不支持或提取有歧义时报告原因并沿用已有基线，禁止猜测缺失值。宿主机 OS/Arch 不进入账号指纹。源码常量异常或写入失败属于错误，修复后再继续。
+
+   若基线已更新，先刷新受影响的 wire golden 并核对 diff 只包含预期版本、billing 指纹等变化：
+
+   ```bash
+   UPDATE_ANTHROPIC_GOLDEN=1 go test -tags sonic ./internal/app -run '^TestAnthropicWireGolden$'
+   ```
+
+   同步上游契约中的基线说明，运行受影响测试、`go test -tags sonic ./internal/...` 和 `golangci-lint run ./...`；失败时停止发布并修复，禁止通过批量改写期望值掩盖回归。最终 diff 包含基线和必要 fixture 更新后才推导提交 subject。只读预检发现新版本时只报告待更新组合，不刷新 golden、不改源码；其版本计划以当前工作区为准，实际发布准备后重新计算。预览后不再更新本地基线；如果本地安装或工作区变化，重新准备并预览。
+
 1. 检查 `git status` 和完整 diff。工作区有改动时，根据实际改动推导一个单行 Conventional Commit subject；必须准确反映最高语义版本影响，禁止使用掩盖功能变更的通用 `chore`。不要为提交或推送重复询问用户。
 
 2. 从仓库根目录运行预览。默认渠道是 `beta`。工作区干净时运行：
@@ -71,7 +89,7 @@ Tag 形状固定：
 
 - 当前分支必须是 `master`。本地 `master` 可与 `origin/master` 相等或领先；远端领先或双方分叉时停止，禁止自动 pull、merge、rebase 或 force-push。
 - Beta 的目标 Tag 必须遵守“固定最近稳定版主版本和次版本”的版本规则；脚本输出出现 minor/major Beta 增量时必须停止。
-- dry-run 不提交、不推送、不打 Tag。publish 自动提交全部当前工作区改动；禁止 amend、拆改已有提交或修改版本文件。
+- dry-run 不提交、不推送、不打 Tag。publish 自动提交全部当前工作区改动；禁止 amend、拆改已有提交或修改 ccLoad 发布版本文件；上述发布准备步骤更新的是 Claude 客户端软件基线。
 - `Test` workflow 是提交级唯一发布门禁，必须覆盖后端测试、Web 验证、构建、lint 和 PostgreSQL 集成测试。发布脚本必须按完整 commit SHA 找到并等待该 workflow；找不到、被取消或失败时不得创建 Tag。
 - 分支推送只能是普通 fast-forward push。推送后以及 `Test` workflow 成功后都必须重新 fetch 并确认本地 `HEAD` 等于 `origin/master`，才能创建 Tag。CI 失败时保留已经推送的提交，不自动回滚。
 - Beta Release 必须是 prerelease 且不得成为 latest；稳定版 Release 必须成为 latest。
@@ -81,6 +99,13 @@ Tag 形状固定：
 - 不绕过 `.github/workflows/release.yml` 的 Tag 校验，也不创建 `beta`、`latest` 这类浮动 Git Tag；它们只允许作为 GHCR 镜像别名由发布工作流管理。
 
 ## 脚本自检
+
+修改本地指纹提取器后运行：
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_claude_profile.py'
+python3 scripts/claude_profile.py --check
+```
 
 修改发布脚本后运行：
 

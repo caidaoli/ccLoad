@@ -1461,9 +1461,9 @@ func TestAnthropicChannelTestUsesLightweightClaudeCodeWire(t *testing.T) {
 					t.Fatalf("request URI=%s", req.URL.RequestURI())
 				}
 				for name, want := range map[string]string{
-					"User-Agent":                  "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
-					"X-Stainless-Package-Version": "0.128.0",
-					"X-Stainless-Runtime-Version": "v26.3.0",
+					"User-Agent":                  "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+					"X-Stainless-Package-Version": anthropicStainlessPackageVersion,
+					"X-Stainless-Runtime-Version": anthropicStainlessRuntimeVersion,
 					"X-Stainless-Timeout":         "600",
 					"Accept-Encoding":             "gzip, deflate, br, zstd",
 					"x-claude-code-request-class": "",
@@ -7694,5 +7694,54 @@ func TestSystemOneChannelTestLocalLimitsDoNotCooldown(t *testing.T) {
 				t.Fatalf("local limit status = %d", status)
 			}
 		})
+	}
+}
+
+func TestAnthropicOAuthChannelTestUsesAccountPlatformAndBaselineSoftware(t *testing.T) {
+	srv := newInMemoryServer(t)
+	credential, err := anthropicauth.ParseCredential([]byte(anthropicProxyTestCredential(t, "test-token")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.Fingerprint = &anthropicauth.Fingerprint{
+		UserAgent: "claude-cli/2.9.999 (external, cli)", StainlessPackageVersion: "0.01.0",
+		StainlessRuntimeVersion: "v18.0.0", StainlessOS: "Linux", StainlessArch: "x64",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{Name: "admin-platform", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: payload,
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "claude-cli/2.1.900 (external, cli)"},
+			{Action: model.RuleActionOverride, Name: "X-Stainless-Package-Version", Value: "0.900.0"},
+			{Action: model.RuleActionOverride, Name: "X-Stainless-OS", Value: "Windows"},
+		}},
+	}
+	testReq := &testutil.TestChannelRequest{Model: "claude-sonnet-4-6", ClientProtocol: util.ProtocolAnthropic, Content: "hello",
+		Headers: map[string]string{
+			"User-Agent": "claude-cli/2.1.901 (external, cli)", "X-Stainless-Package-Version": "0.901.0",
+			"X-Stainless-Runtime-Version": "v28.0.0", "X-Stainless-Runtime": "node", "X-Stainless-Lang": "js",
+		},
+	}
+	built, plan, err := srv.buildTestUpstreamRequestPlan(context.Background(), cfg, "test-token", testReq,
+		testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, "https://api.anthropic.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, cancel, err := srv.newTestUpstreamRequest(context.Background(), built, testReq, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	defer func() { _ = request.Body.Close() }()
+	for name, want := range map[string]string{
+		"User-Agent": "claude-cli/" + anthropicCLIVersion + " (external, cli)", "X-Stainless-Package-Version": anthropicStainlessPackageVersion,
+		"X-Stainless-Runtime-Version": anthropicStainlessRuntimeVersion, "X-Stainless-Runtime": "node", "X-Stainless-Lang": "js",
+		"X-Stainless-OS": "Linux", "X-Stainless-Arch": "x64",
+	} {
+		if got := headerValueFold(request.Header, name); got != want {
+			t.Errorf("%s=%q, want %q", name, got, want)
+		}
 	}
 }

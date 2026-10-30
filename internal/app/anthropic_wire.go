@@ -32,9 +32,8 @@ import (
 )
 
 const (
-	// anthropicCLIVersion 是 Claude Code wire 的内置最低版本/离线回退值。
-	// 运行中的服务会由 anthropic_cli_version_sync.go 向前同步官方稳定版。
-	anthropicCLIVersion  = "2.1.293"
+	// anthropicCLIVersion 与下方 SDK/Node 常量来自同一份 Claude Code 2.1.314 抓包。
+	anthropicCLIVersion  = "2.1.314"
 	anthropicBillingSalt = "59cf53e54c78"
 
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
@@ -46,9 +45,8 @@ const (
 var anthropicClaudeCLIUserAgentPattern = regexp.MustCompile(
 	`(?i)^claude-cli/([0-9]+\.[0-9]+\.[0-9]+)`)
 
-// anthropicFingerprintUserAgentPattern is the stricter form used when a UA is
-// allowed to become an account-level fingerprint. The version must be followed
-// by whitespace or the end of the value, matching sub2api's cache guard.
+// anthropicFingerprintUserAgentPattern validates a request software profile.
+// A version must end at whitespace or the end of the UA, not an arbitrary suffix.
 var anthropicFingerprintUserAgentPattern = regexp.MustCompile(
 	`(?i)^(claude-cli/)([0-9]+\.[0-9]+\.[0-9]+)(\s.*)?$`)
 
@@ -289,8 +287,8 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	firstUserText := anthropicFirstUserText(gjson.GetBytes(body, "messages"))
 	clientVersion := anthropicClientVersion(headers)
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
-		// sub2api 的模拟 UA 与 billing 同取本次运行期版本，不继承下游 UA。
-		clientVersion = anthropicEffectiveCLIVersion()
+		// 模拟请求整组使用已验证基线，不继承下游软件版本。
+		clientVersion = anthropicCLIVersion
 	}
 	systemBlocks := []string{
 		anthropicTextBlockRaw(anthropicBillingHeader(firstUserText, clientVersion), ""),
@@ -1002,7 +1000,7 @@ func rebaseAnthropicNativeOAuthIdentity(
 		version = anthropicBillingVersion(body)
 	}
 	if version == "" {
-		version = anthropicEffectiveCLIVersion()
+		version = anthropicCLIVersion
 	}
 	identity := anthropicFormatSub2APIUserIdentity(clientID, targetAccount, mappedSession, version)
 	updated, err := sjson.SetBytes(body, "metadata.user_id", identity)
@@ -1713,6 +1711,11 @@ func parseAnthropicCLIVersion(version string) ([3]int, bool) {
 		return out, false
 	}
 	for i, part := range parts {
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return out, false
+			}
+		}
 		n, err := strconv.Atoi(part)
 		if err != nil || n < 0 {
 			return out, false
@@ -1726,7 +1729,7 @@ func parseAnthropicCLIVersion(version string) ([3]int, bool) {
 // Callers older than anthropicCLIVersion are raised to the pin so Anthropic
 // does not 400 new models; newer official CLIs keep their real version.
 func anthropicClientVersion(headers http.Header) string {
-	floor := anthropicEffectiveCLIVersion()
+	floor := anthropicCLIVersion
 	if version := anthropicUserAgentVersion(headers); version != "" &&
 		anthropicCLIVersionGTE(version, floor) {
 		return version
@@ -1734,35 +1737,59 @@ func anthropicClientVersion(headers http.Header) string {
 	return floor
 }
 
-// OAuth fingerprints are persisted with the private credential and cached per server.
+// Software fingerprints are selected per request; only the account platform is persisted.
 type anthropicOAuthFingerprint = anthropicauth.Fingerprint
 
-// Claude Code 2.1.292 抓包（docs/claude/name.txt）随附的 SDK 与运行时版本。
-// CLI 版本只升不降，SDK 版本随之单调，低于这一组的 Stainless 版本不可能与当前 UA 配套。
+// 用户提供的 Claude Code 2.1.314 原生请求抓包（2026-10-30）：软件版本必须整组更新。
 const (
 	anthropicStainlessPackageVersion = "0.128.0"
-	anthropicStainlessRuntimeVersion = "v26.3.0"
+	anthropicStainlessRuntimeVersion = "v26.12.1"
 )
 
 func defaultAnthropicOAuthFingerprint() anthropicOAuthFingerprint {
 	return anthropicOAuthFingerprint{
-		UserAgent:               "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
+		UserAgent:               "claude-cli/" + anthropicCLIVersion + " (external, cli)",
 		StainlessLang:           "js",
 		StainlessPackageVersion: anthropicStainlessPackageVersion,
-		StainlessOS:             "Linux",
+		StainlessOS:             "MacOS",
 		StainlessArch:           "arm64",
 		StainlessRuntime:        "node",
 		StainlessRuntimeVersion: anthropicStainlessRuntimeVersion,
 	}
 }
 
-// resetStaleAnthropicStainlessVersions 把低于内置配对的 SDK/运行时版本换成内置配对。
-// 旧默认值（0.94.0）和旧客户端学到的版本都会随 UA 抬升到下限而失配。
-func resetStaleAnthropicStainlessVersions(fp *anthropicOAuthFingerprint) {
-	if fp.StainlessPackageVersion != "" && !anthropicCLIVersionGTE(fp.StainlessPackageVersion, anthropicStainlessPackageVersion) {
-		fp.StainlessPackageVersion = anthropicStainlessPackageVersion
-		fp.StainlessRuntimeVersion = anthropicStainlessRuntimeVersion
+// anthropicOAuthPlatform is the only account-scoped part of the header fingerprint.
+type anthropicOAuthPlatform struct {
+	OS   string
+	Arch string
+}
+
+// anthropicRequestFingerprint accepts only a complete native software tuple.
+// The caller must classify the original request before supplying its headers.
+func anthropicRequestFingerprint(incoming http.Header) anthropicOAuthFingerprint {
+	fp := defaultAnthropicOAuthFingerprint()
+	ua := strings.TrimSpace(anthropicHeaderValue(incoming, "User-Agent"))
+	if !anthropicAcceptableFingerprintUserAgent(ua) {
+		return fp
 	}
+	pkg := strings.TrimSpace(anthropicHeaderValue(incoming, "X-Stainless-Package-Version"))
+	runtimeVersion := strings.TrimSpace(anthropicHeaderValue(incoming, "X-Stainless-Runtime-Version"))
+	if _, ok := parseAnthropicCLIVersion(pkg); !ok {
+		return fp
+	}
+	nodeVersion, ok := strings.CutPrefix(runtimeVersion, "v")
+	if !ok {
+		return fp
+	}
+	if _, ok := parseAnthropicCLIVersion(nodeVersion); !ok ||
+		anthropicHeaderValue(incoming, "X-Stainless-Lang") != "js" ||
+		anthropicHeaderValue(incoming, "X-Stainless-Runtime") != "node" {
+		return fp
+	}
+	fp.UserAgent = ua
+	fp.StainlessPackageVersion = pkg
+	fp.StainlessRuntimeVersion = runtimeVersion
+	return fp
 }
 
 func anthropicOAuthFingerprintKey(cfg *model.Config) string {
@@ -1789,102 +1816,21 @@ func anthropicAcceptableFingerprintUserAgent(userAgent string) bool {
 		return false
 	}
 	version, ok := parseAnthropicCLIVersion(matches[2])
-	if !ok {
-		return false
-	}
-	current, currentOK := parseAnthropicCLIVersion(anthropicEffectiveCLIVersion())
-	if !currentOK {
-		return true
-	}
-	return anthropicFingerprintVersionPlausible(version, current)
+	baseline, _ := parseAnthropicCLIVersion(anthropicCLIVersion)
+	return ok && version[0] == baseline[0] && anthropicCLIVersionGTE(matches[2], anthropicCLIVersion)
 }
 
-// anthropicFingerprintMaxPatchLead bounds how far a client may lead the runtime
-// version. A genuine client leads it only by releases the hourly sync has not
-// seen yet; an adopted sentinel such as 2.999.0 would otherwise pin the account
-// forever, because the floor only ever raises a stored version.
-const anthropicFingerprintMaxPatchLead = 100
-
-func anthropicFingerprintVersionPlausible(version, current [3]int) bool {
-	switch {
-	case version[0] != current[0]:
-		return false
-	case version[1] < current[1]:
-		return true
-	case version[1] == current[1]:
-		return version[2] <= current[2]+anthropicFingerprintMaxPatchLead
-	case version[1] == current[1]+1:
-		return version[2] <= anthropicFingerprintMaxPatchLead
-	default:
-		return false
-	}
-}
-
-func normalizeAnthropicFingerprintUserAgent(userAgent string) string {
-	userAgent = strings.TrimSpace(userAgent)
-	matches := anthropicFingerprintUserAgentPattern.FindStringSubmatch(userAgent)
-	if len(matches) != 4 {
-		return defaultAnthropicOAuthFingerprint().UserAgent
-	}
-	effective := anthropicEffectiveCLIVersion()
-	if anthropicCLIVersionGTE(matches[2], effective) {
-		return userAgent
-	}
-	return matches[1] + effective + matches[3]
-}
-
-func anthropicFingerprintVersionIsNewer(candidate, cached string) bool {
-	candidateVersion := anthropicUserAgentVersion(http.Header{"User-Agent": []string{candidate}})
-	cachedVersion := anthropicUserAgentVersion(http.Header{"User-Agent": []string{cached}})
-	return candidateVersion != "" && cachedVersion != "" &&
-		candidateVersion != cachedVersion && anthropicCLIVersionGTE(candidateVersion, cachedVersion)
-}
-
-func anthropicFingerprintHeadersFromIncoming(fp *anthropicOAuthFingerprint, incoming http.Header) bool {
-	if fp == nil {
-		return false
-	}
-	ua := anthropicHeaderValue(incoming, "User-Agent")
-	if !anthropicAcceptableFingerprintUserAgent(ua) {
-		return false
-	}
-	fp.UserAgent = normalizeAnthropicFingerprintUserAgent(ua)
-	mergeAnthropicOAuthFingerprintHeaders(fp, incoming)
-	return true
-}
-
-func mergeAnthropicOAuthFingerprintHeaders(fp *anthropicOAuthFingerprint, incoming http.Header) {
-	if fp == nil {
-		return
-	}
-	for _, field := range []struct {
-		name  string
-		value *string
-	}{
-		{"X-Stainless-Lang", &fp.StainlessLang},
-		{"X-Stainless-Package-Version", &fp.StainlessPackageVersion},
-		{"X-Stainless-OS", &fp.StainlessOS},
-		{"X-Stainless-Arch", &fp.StainlessArch},
-		{"X-Stainless-Runtime", &fp.StainlessRuntime},
-		{"X-Stainless-Runtime-Version", &fp.StainlessRuntimeVersion},
-	} {
-		if value := strings.TrimSpace(anthropicHeaderValue(incoming, field.name)); value != "" {
-			*field.value = value
-		}
-	}
-}
-
-// getAnthropicOAuthFingerprint keeps one account identity across requests and
-// restarts. Only a newer, well-formed Claude CLI UA may replace it.
+// getAnthropicOAuthFingerprint combines this request's software tuple with the
+// account's durable platform. Historical software fields are never candidates.
 func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Config, incoming http.Header) *anthropicOAuthFingerprint {
-	fallback := defaultAnthropicOAuthFingerprint()
+	fp := anthropicRequestFingerprint(incoming)
 	if s == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
-		return &fallback
+		return &fp
 	}
 	key := anthropicOAuthFingerprintKey(cfg)
 	s.anthropicOAuthFingerprintMu.Lock()
 	if s.anthropicOAuthFingerprints == nil {
-		s.anthropicOAuthFingerprints = make(map[string]anthropicOAuthFingerprint)
+		s.anthropicOAuthFingerprints = make(map[string]anthropicOAuthPlatform)
 	}
 	if s.anthropicOAuthFingerprintDirty == nil {
 		s.anthropicOAuthFingerprintDirty = make(map[string]bool)
@@ -1895,103 +1841,52 @@ func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Co
 	if s.anthropicOAuthFingerprintRetryAt == nil {
 		s.anthropicOAuthFingerprintRetryAt = make(map[string]time.Time)
 	}
-	cached, exists := s.anthropicOAuthFingerprints[key]
+	platform, exists := s.anthropicOAuthFingerprints[key]
 	if !exists {
 		if credential := anthropicCredentialForWire(cfg, ""); credential != nil && credential.Fingerprint != nil {
-			cached = *credential.Fingerprint
-			exists = true
+			platform = anthropicOAuthPlatform{OS: credential.Fingerprint.StainlessOS, Arch: credential.Fingerprint.StainlessArch}
 		}
 	}
-	previous := cached
-	if !exists || !anthropicAcceptableFingerprintUserAgent(cached.UserAgent) {
-		cached = fallback
-		anthropicFingerprintHeadersFromIncoming(&cached, incoming)
-	} else {
-		// Raise an older stored version to the runtime floor without changing its
-		// suffix. The floor is re-applied on every read, so raising it is not an
-		// account change: persisting it would rewrite every OAuth credential and
-		// flush the channel cache once per account after each version sync.
-		cached.UserAgent = normalizeAnthropicFingerprintUserAgent(cached.UserAgent)
-		resetStaleAnthropicStainlessVersions(&cached)
-		previous.UserAgent = cached.UserAgent
-		previous.StainlessPackageVersion = cached.StainlessPackageVersion
-		previous.StainlessRuntimeVersion = cached.StainlessRuntimeVersion
-		if candidate := strings.TrimSpace(anthropicHeaderValue(incoming, "User-Agent")); anthropicAcceptableFingerprintUserAgent(candidate) {
-			candidate = normalizeAnthropicFingerprintUserAgent(candidate)
-			if anthropicFingerprintVersionIsNewer(candidate, cached.UserAgent) || cached == fallback {
-				cached.UserAgent = candidate
-				mergeAnthropicOAuthFingerprintHeaders(&cached, incoming)
-			} else if candidate == cached.UserAgent {
-				// A native client at the same version can correct stale header metadata.
-				mergeAnthropicOAuthFingerprintHeaders(&cached, incoming)
-			}
-		}
+	incomplete := platform.OS == "" || platform.Arch == ""
+	if platform.OS == "" {
+		platform.OS = fp.StainlessOS
 	}
-	cached = completeAnthropicOAuthFingerprint(cached, fallback)
-	s.anthropicOAuthFingerprints[key] = cached
-	changed := !exists || cached != previous
-	save := (changed || s.anthropicOAuthFingerprintDirty[key]) &&
-		!s.anthropicOAuthFingerprintSaving[key] &&
-		(changed || !time.Now().Before(s.anthropicOAuthFingerprintRetryAt[key]))
+	if platform.Arch == "" {
+		platform.Arch = fp.StainlessArch
+	}
+	s.anthropicOAuthFingerprints[key] = platform
+	if incomplete {
+		s.anthropicOAuthFingerprintDirty[key] = true
+	}
+	save := s.anthropicOAuthFingerprintDirty[key] && !s.anthropicOAuthFingerprintSaving[key] &&
+		!time.Now().Before(s.anthropicOAuthFingerprintRetryAt[key])
 	if save {
 		s.anthropicOAuthFingerprintSaving[key] = true
 	}
 	s.anthropicOAuthFingerprintMu.Unlock()
 
 	if save {
-		persisted, err := s.persistAnthropicOAuthFingerprint(ctx, cfg, cached)
+		persisted, err := s.persistAnthropicOAuthPlatform(ctx, cfg, platform)
 		s.anthropicOAuthFingerprintMu.Lock()
 		delete(s.anthropicOAuthFingerprintSaving, key)
-		latest := s.anthropicOAuthFingerprints[key]
 		if err != nil {
-			s.anthropicOAuthFingerprintDirty[key] = true
 			s.anthropicOAuthFingerprintRetryAt[key] = time.Now().Add(time.Minute)
 		} else {
+			platform = persisted
+			s.anthropicOAuthFingerprints[key] = platform
+			delete(s.anthropicOAuthFingerprintDirty, key)
 			delete(s.anthropicOAuthFingerprintRetryAt, key)
-			if anthropicFingerprintVersionIsNewer(persisted.UserAgent, latest.UserAgent) || latest == cached {
-				latest = persisted
-				s.anthropicOAuthFingerprints[key] = latest
-			}
-			if latest == persisted {
-				delete(s.anthropicOAuthFingerprintDirty, key)
-			} else {
-				s.anthropicOAuthFingerprintDirty[key] = true
-			}
 		}
 		s.anthropicOAuthFingerprintMu.Unlock()
 		if err != nil {
-			log.Printf("[WARN] persist Anthropic OAuth fingerprint for channel %d: %v", cfg.ID, err)
+			log.Printf("[WARN] persist Anthropic OAuth platform for channel %d: %v", cfg.ID, err)
 		}
-		cached = latest
 	}
-	copy := cached
-	return &copy
+	fp.StainlessOS, fp.StainlessArch = platform.OS, platform.Arch
+	return &fp
 }
 
-func completeAnthropicOAuthFingerprint(fp, fallback anthropicOAuthFingerprint) anthropicOAuthFingerprint {
-	resetStaleAnthropicStainlessVersions(&fp)
-	if fp.StainlessLang == "" {
-		fp.StainlessLang = fallback.StainlessLang
-	}
-	if fp.StainlessPackageVersion == "" {
-		fp.StainlessPackageVersion = fallback.StainlessPackageVersion
-	}
-	if fp.StainlessOS == "" {
-		fp.StainlessOS = fallback.StainlessOS
-	}
-	if fp.StainlessArch == "" {
-		fp.StainlessArch = fallback.StainlessArch
-	}
-	if fp.StainlessRuntime == "" {
-		fp.StainlessRuntime = fallback.StainlessRuntime
-	}
-	if fp.StainlessRuntimeVersion == "" {
-		fp.StainlessRuntimeVersion = fallback.StainlessRuntimeVersion
-	}
-	return fp
-}
-
-func (s *Server) persistAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Config, proposed anthropicOAuthFingerprint) (anthropicOAuthFingerprint, error) {
+func (s *Server) persistAnthropicOAuthPlatform(ctx context.Context, cfg *model.Config, proposed anthropicOAuthPlatform) (anthropicOAuthPlatform, error) {
 	if s.store == nil || cfg.ID <= 0 || cfg.OAuthCredential == "" {
 		return proposed, nil
 	}
@@ -2004,18 +1899,22 @@ func (s *Server) persistAnthropicOAuthFingerprint(ctx context.Context, cfg *mode
 		if err != nil {
 			return proposed, err
 		}
-		chosen := proposed
-		if credential.Fingerprint != nil && anthropicAcceptableFingerprintUserAgent(credential.Fingerprint.UserAgent) {
-			stored := completeAnthropicOAuthFingerprint(*credential.Fingerprint, defaultAnthropicOAuthFingerprint())
-			stored.UserAgent = normalizeAnthropicFingerprintUserAgent(stored.UserAgent)
-			if anthropicFingerprintVersionIsNewer(stored.UserAgent, proposed.UserAgent) {
-				chosen = stored
-			}
+		if credential.Fingerprint == nil {
+			credential.Fingerprint = &anthropicOAuthFingerprint{}
 		}
-		if credential.Fingerprint != nil && *credential.Fingerprint == chosen {
-			return chosen, nil
+		// A concurrent initializer wins. Preserve legacy software fields without
+		// interpreting or rewriting them when filling a missing platform field.
+		stored := credential.Fingerprint
+		if stored.StainlessOS != "" && stored.StainlessArch != "" {
+			return anthropicOAuthPlatform{OS: stored.StainlessOS, Arch: stored.StainlessArch}, nil
 		}
-		credential.Fingerprint = &chosen
+		if stored.StainlessOS == "" {
+			stored.StainlessOS = proposed.OS
+		}
+		if stored.StainlessArch == "" {
+			stored.StainlessArch = proposed.Arch
+		}
+		chosen := anthropicOAuthPlatform{OS: stored.StainlessOS, Arch: stored.StainlessArch}
 		payload, err := credential.JSON()
 		if err != nil {
 			return proposed, err
@@ -2033,13 +1932,13 @@ func (s *Server) persistAnthropicOAuthFingerprint(ctx context.Context, cfg *mode
 			return proposed, err
 		}
 		if !currentCfg.UsesAnthropicOAuth() {
-			return proposed, errors.New("anthropic OAuth channel changed while saving fingerprint")
+			return proposed, errors.New("anthropic OAuth channel changed while saving platform")
 		}
 		if anthropicOAuthFingerprintKey(currentCfg) != anthropicOAuthFingerprintKey(cfg) {
-			return proposed, errors.New("anthropic OAuth account changed while saving fingerprint")
+			return proposed, errors.New("anthropic OAuth account changed while saving platform")
 		}
 	}
-	return proposed, errors.New("anthropic OAuth fingerprint changed during save")
+	return proposed, errors.New("anthropic OAuth credential changed during platform save")
 }
 
 func applyAnthropicOAuthFingerprint(req *http.Request, fingerprint *anthropicOAuthFingerprint) {
@@ -2097,19 +1996,10 @@ func injectAnthropicOAuthHeadersWithFingerprint(
 	setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
 	clientVersion := anthropicBillingVersion(body)
 	if clientVersion == "" {
-		clientVersion = anthropicEffectiveCLIVersion()
+		clientVersion = anthropicCLIVersion
 	}
 	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeMimicBetas(body, true), "", clientVersion, true)
-}
-
-// Header rules run after the wire headers are rebuilt. Restore only the
-// identity fields so custom rules can still control unrelated headers.
-func applyAnthropicOAuthMimicFingerprint(req *http.Request, body []byte) {
-	fingerprint := defaultAnthropicOAuthFingerprint()
-	if version := anthropicBillingVersion(body); version != "" {
-		fingerprint.UserAgent = "claude-cli/" + version + " (external, cli)"
-	}
-	applyAnthropicOAuthFingerprint(req, &fingerprint)
+	applyAnthropicOAuthFingerprint(req, fingerprint)
 }
 
 // injectAnthropicAPIKeyHeaders 为 API Key 渠道重建 Claude Code CLI 请求头。
@@ -2162,7 +2052,8 @@ func injectAnthropicCountTokensHeadersWithFingerprint(req *http.Request, cfg *mo
 				betas = appendAnthropicBeta(betas, beta)
 			}
 			applyAnthropicClaudeCodeHeaders(req, appendAnthropicBeta(betas, "token-counting-2024-11-01"),
-				"", anthropicEffectiveCLIVersion(), true)
+				"", anthropicCLIVersion, true)
+			applyAnthropicOAuthFingerprint(req, fingerprint)
 		}
 		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(apiKey))
 		return
@@ -2387,12 +2278,11 @@ func anthropicIsTitleHelperRequest(body []byte) bool {
 	return properties.IsObject() && len(properties.Map()) == 1 && properties.Get("title").Exists()
 }
 
-// applyAnthropicNativeOAuthDefaults 与 sub2api 的 OAuth 透传路径一样，只补调用方
-// 缺失的必需头。UA 被中间网关替换时恢复 CLI UA；已有的原生值保持不动。
+// applyAnthropicNativeOAuthDefaults applies the selected request profile before
+// filling the remaining required OAuth headers.
 func applyAnthropicNativeOAuthDefaults(req *http.Request, body []byte, fingerprint *anthropicOAuthFingerprint) {
-	// sub2api applies the cached account fingerprint before filling generic
-	// Claude OAuth defaults. This deliberately overrides a native client's
-	// per-request UA/Stainless values after the account fingerprint is known.
+	// Software was selected from the original request as one tuple; platform
+	// comes from the account, independently of the calling client.
 	applyAnthropicOAuthFingerprint(req, fingerprint)
 	for _, header := range [][2]string{
 		{"Accept", "application/json"}, {"Content-Type", "application/json"},
