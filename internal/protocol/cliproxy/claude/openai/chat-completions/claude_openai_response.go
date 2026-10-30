@@ -40,7 +40,8 @@ type claudeUsageTokens struct {
 	OutputTokens             int64
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
-	ReasoningTokens          int64
+	ThinkingTokens           int64
+	HasThinkingTokens        bool
 	HasUsage                 bool
 }
 
@@ -78,8 +79,24 @@ func (u *claudeUsageTokens) Merge(usage gjson.Result) {
 		u.CacheReadInputTokens = cacheReadInputTokens.Int()
 	}
 	if reasoningTokens := usage.Get("reasoning_tokens"); reasoningTokens.Exists() {
-		u.ReasoningTokens = reasoningTokens.Int()
+		u.ThinkingTokens = reasoningTokens.Int()
+		u.HasThinkingTokens = true
 	}
+	if thinkingTokens := usage.Get("output_tokens_details.thinking_tokens"); thinkingTokens.Exists() {
+		u.ThinkingTokens = thinkingTokens.Int()
+		u.HasThinkingTokens = true
+	}
+}
+
+// applyReasoningTokens maps Claude's output_tokens_details.thinking_tokens to OpenAI's
+// completion_tokens_details.reasoning_tokens. Both are a subset of the output token count.
+// The field is left out when upstream did not report it, so clients never see a false 0.
+func (u claudeUsageTokens) applyReasoningTokens(out []byte) []byte {
+	if !u.HasThinkingTokens {
+		return out
+	}
+	out, _ = sjson.SetBytes(out, "usage.completion_tokens_details.reasoning_tokens", u.ThinkingTokens)
+	return out
 }
 
 func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens int64) {
@@ -317,9 +334,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 			if cacheCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.CacheCreationInputTokens; cacheCreationTokens > 0 {
 				template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokens)
 			}
-			if reasoningTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.ReasoningTokens; reasoningTokens > 0 {
-				template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", reasoningTokens)
-			}
+			template = (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.applyReasoningTokens(template)
 		}
 		return [][]byte{template}
 
@@ -349,6 +364,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
 			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
 			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens_details.cache_write_tokens", cachedCreationTokens)
+			usageTemplate = p.Usage.applyReasoningTokens(usageTemplate)
 			out = append(out, usageTemplate)
 		}
 		out = append(out, []byte("[DONE]"))
@@ -489,9 +505,7 @@ func convertClaudeResponseToOpenAINonStreamMessage(_ context.Context, modelName 
 		if usage.CacheCreationInputTokens > 0 {
 			out, _ = sjson.SetBytes(out, "usage.cache_creation_input_tokens", usage.CacheCreationInputTokens)
 		}
-		if usage.ReasoningTokens > 0 {
-			out, _ = sjson.SetBytes(out, "usage.completion_tokens_details.reasoning_tokens", usage.ReasoningTokens)
-		}
+		out = usage.applyReasoningTokens(out)
 	}
 
 	return out
@@ -613,6 +627,7 @@ func ConvertClaudeResponseToOpenAINonStream(ctx context.Context, modelName strin
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cache_write_tokens", cachedCreationTokens)
+		out = usageTokens.applyReasoningTokens(out)
 	}
 
 	// Set basic response fields including message ID, creation time, and model

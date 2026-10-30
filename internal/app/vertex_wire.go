@@ -17,6 +17,12 @@ import (
 // publisher endpoint: a service account project, an express API key, or a relay.
 const vertexPublisherPathSuffix = "/publishers/google"
 
+// isGeminiAPIURL identifies the Google Gemini API, whose signatures differ
+// from Vertex. An arbitrary relay URL does not establish its backend dialect.
+func isGeminiAPIURL(target *url.URL) bool {
+	return target != nil && strings.EqualFold(target.Hostname(), "generativelanguage.googleapis.com")
+}
+
 // usesVertexWire identifies Gemini requests that need Vertex body adaptation.
 // Exact URLs still need that adaptation; callers skip only their URL remapping.
 func usesVertexWire(cfg *model.Config, upstreamProtocol protocol.Protocol, baseURL string) bool {
@@ -27,7 +33,24 @@ func usesVertexWire(cfg *model.Config, upstreamProtocol protocol.Protocol, baseU
 		return true
 	}
 	parsed, err := url.Parse(strings.TrimSpace(model.StripExactUpstreamURLMarker(baseURL)))
-	return err == nil && strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), vertexPublisherPathSuffix)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, vertexPublisherPathSuffix) {
+		return true
+	}
+	if !model.HasExactUpstreamURLMarker(baseURL) {
+		return false
+	}
+	// Exact API-key URLs can name the complete publisher model endpoint.
+	// They still need Vertex body/signature policy even though no URL is built.
+	_, modelAction, publisherModel := strings.Cut(path, vertexPublisherPathSuffix+"/models/")
+	if !publisherModel || strings.Contains(modelAction, "/") {
+		return false
+	}
+	modelName, action, hasAction := strings.Cut(modelAction, ":")
+	return hasAction && modelName != "" && (action == "generateContent" || action == "streamGenerateContent" || action == "countTokens")
 }
 
 // buildVertexPublisherURL maps a Gemini API path onto a Vertex publisher base:

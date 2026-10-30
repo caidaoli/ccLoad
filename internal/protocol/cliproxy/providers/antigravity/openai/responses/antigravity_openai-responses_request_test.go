@@ -1124,7 +1124,7 @@ func TestConvertOpenAIResponsesRequestToAntigravity_ReasoningSummaries(t *testin
 
 // Static generic search support must not bypass Antigravity's dedicated-request contract.
 func TestConvertOpenAIResponsesRequestToAntigravity_CrossProviderCapabilityIsolation(t *testing.T) {
-	const model = "gpt-5.5"
+	const model = "gpt-6.1-terra"
 	input := []byte(`{"input":"Search and look up data","tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`)
 	generic, _ := coreresponses.ConvertOpenAIResponsesRequestToGemini(model, input, false)
 	if !gjson.GetBytes(generic, "tools.0.googleSearch").Exists() {

@@ -2485,3 +2485,101 @@ func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleError_CapacityRetryAfterReplacesBackoffForReportingModel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "capacity-retry-after", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "model-a"}, {Model: "model-b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "capacity-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID: cfg.ID, Model: "model-a", KeyIndex: 0, StatusCode: http.StatusTooManyRequests,
+			Headers: http.Header{"Retry-After": {"7"}}, ErrorBody: []byte(`{"error":{"code":"turn_rate_limit_exceeded"}}`),
+		})
+		if action != ActionRetryModel {
+			t.Fatalf("action=%v", action)
+		}
+		until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+		if !exists || until.Before(before.Add(6*time.Second)) || until.After(time.Now().Add(7*time.Second)) {
+			t.Fatalf("capacity deadline=%v", until)
+		}
+		if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-b"); exists {
+			t.Fatal("unrelated model cooled")
+		}
+		if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && until.After(time.Now()) {
+			t.Fatal("capacity cooled key")
+		}
+		current, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.IsCoolingDown(time.Now()) {
+			t.Fatal("capacity cooled channel")
+		}
+	}
+}
+
+func TestHandleError_Ordinary429RetryAfterPreservesBackoff(t *testing.T) {
+	for _, retryAfter := range []string{"1", "86400"} {
+		t.Run(retryAfter, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+			manager := NewManager(store, nil)
+			ctx := context.Background()
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "ordinary-rate-limit", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+				ModelEntries: []model.ModelEntry{{Model: "model-a"}, {Model: "model-b"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "rate-limit-key"}}); err != nil {
+				t.Fatal(err)
+			}
+			for _, wantSeconds := range []int{60, 120, 240, 480, 960, 1800, 1800} {
+				before := time.Now()
+				action := manager.HandleError(ctx, ErrorInput{
+					ChannelID: cfg.ID, Model: "model-a", KeyIndex: 0, StatusCode: http.StatusTooManyRequests,
+					Headers: http.Header{"Retry-After": {retryAfter}}, ErrorBody: []byte(`{"error":{"code":"rate_limit_exceeded"}}`),
+				})
+				if action != ActionRetryModel {
+					t.Fatalf("action=%v, want ActionRetryModel", action)
+				}
+				until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+				// The store persists whole Unix seconds.
+				if duration := time.Duration(wantSeconds) * time.Second; !exists || until.Before(before.Add(duration-time.Second)) || until.After(time.Now().Add(duration)) {
+					t.Fatalf("Retry-After=%s deadline=%v, want backoff %ds", retryAfter, until, wantSeconds)
+				}
+				if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-b"); exists {
+					t.Fatal("ordinary 429 cooled an unrelated model")
+				}
+				if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && until.After(time.Now()) {
+					t.Fatal("ordinary 429 cooled the key")
+				}
+			}
+			if err := store.SetModelCooldown(ctx, cfg.ID, "model-a", time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			before := time.Now()
+			manager.HandleError(ctx, ErrorInput{
+				ChannelID: cfg.ID, Model: "model-a", KeyIndex: 0, StatusCode: http.StatusTooManyRequests,
+				Headers: http.Header{"Retry-After": {retryAfter}}, ErrorBody: []byte(`{"error":{"code":"rate_limit_exceeded"}}`),
+			})
+			until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+			if !exists || until.Before(before.Add(9*time.Second)) || until.After(time.Now().Add(10*time.Second)) {
+				t.Fatalf("minimum backoff deadline=%v, want 10s", until)
+			}
+		})
+	}
+}

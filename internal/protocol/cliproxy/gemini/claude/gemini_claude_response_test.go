@@ -10,6 +10,224 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertGeminiResponseToClaude_VertexStreamingPartialArgs(t *testing.T) {
+	ctx := context.Background()
+	var param any
+	requestJSON := []byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"weather?"}],"tools":[{"name":"get_weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}]}`)
+	chunks := [][]byte{
+		[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"New ","willContinue":true}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-partial-1"}`),
+		[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.city","stringValue":"York"}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-partial-1"}`),
+		[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-partial-1"}`),
+		[]byte("[DONE]"),
+	}
+
+	var partialJSON strings.Builder
+	var firstChunkDelta string
+	for chunkIdx, chunk := range chunks {
+		outs := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, chunk, &param)
+		raw := string(bytes.Join(outs, nil))
+		for _, line := range strings.Split(raw, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if gjson.Get(payload, "type").String() == "content_block_delta" && gjson.Get(payload, "delta.type").String() == "input_json_delta" {
+				piece := gjson.Get(payload, "delta.partial_json").String()
+				partialJSON.WriteString(piece)
+				if chunkIdx == 0 {
+					firstChunkDelta += piece
+				}
+			}
+		}
+	}
+	if !strings.Contains(firstChunkDelta, "New ") {
+		t.Fatalf("expected first chunk to stream 'New ' in input_json_delta, got %q (total=%q)", firstChunkDelta, partialJSON.String())
+	}
+	if got := partialJSON.String(); got != `{"city":"New York"}` {
+		t.Fatalf("concatenated Claude partial_json = %q, want %q", got, `{"city":"New York"}`)
+	}
+
+	t.Run("multiple same-name calls and interrupted stream", func(t *testing.T) {
+		var p any
+		multiChunks := [][]byte{
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"Par","willContinue":true}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-multi"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.city","stringValue":"is"}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-multi"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{}},{"functionCall":{"name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"Lyon"}],"willContinue":false}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-multi"}`),
+			[]byte("[DONE]"),
+		}
+		byBlock := make(map[int64]*strings.Builder)
+		var toolIDs []string
+		for _, ch := range multiChunks {
+			outs := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, ch, &p)
+			for _, line := range strings.Split(string(bytes.Join(outs, nil)), "\n") {
+				line = strings.TrimSpace(line)
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				switch gjson.Get(payload, "type").String() {
+				case "content_block_start":
+					if gjson.Get(payload, "content_block.type").String() == "tool_use" {
+						toolIDs = append(toolIDs, gjson.Get(payload, "content_block.id").String())
+					}
+				case "content_block_delta":
+					if gjson.Get(payload, "delta.type").String() == "input_json_delta" {
+						idx := gjson.Get(payload, "index").Int()
+						if byBlock[idx] == nil {
+							byBlock[idx] = &strings.Builder{}
+						}
+						byBlock[idx].WriteString(gjson.Get(payload, "delta.partial_json").String())
+					}
+				}
+			}
+		}
+		if len(toolIDs) != 2 || toolIDs[0] == toolIDs[1] {
+			t.Fatalf("expected 2 distinct tool_use blocks, got %v", toolIDs)
+		}
+		if got0 := byBlock[0].String(); got0 != `{"city":"Paris"}` {
+			t.Fatalf("block 0 partial_json = %q, want %q", got0, `{"city":"Paris"}`)
+		}
+		if got1 := byBlock[1].String(); got1 != `{"city":"Lyon"}` {
+			t.Fatalf("block 1 partial_json = %q, want %q", got1, `{"city":"Lyon"}`)
+		}
+
+		// Interrupted stream should not emit message_stop or content_block_stop on [DONE].
+		var pTrunc any
+		truncOut := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, multiChunks[0], &pTrunc)
+		truncOut = append(truncOut, ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, []byte("[DONE]"), &pTrunc)...)
+		truncText := string(bytes.Join(truncOut, nil))
+		if strings.Contains(truncText, `"type":"message_stop"`) || strings.Contains(truncText, `"type":"content_block_stop"`) {
+			t.Fatalf("interrupted stream must not emit stop events: %s", truncText)
+		}
+	})
+
+	t.Run("standalone thoughtSignature during streaming tool call does not split block", func(t *testing.T) {
+		var p any
+		sigChunks := [][]byte{
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"Ber","willContinue":true}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-sig"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-sig"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"","thoughtSignature":"sig-mid-1"}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-sig"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"lin"}],"willContinue":true},"thoughtSignature":"sig-mid-2"}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-sig"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-sig"}`),
+			[]byte("[DONE]"),
+		}
+		var block0JSON strings.Builder
+		var deferredSigs []string
+		var toolStopped bool
+		for _, ch := range sigChunks {
+			outs := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, ch, &p)
+			for _, line := range strings.Split(string(bytes.Join(outs, nil)), "\n") {
+				line = strings.TrimSpace(line)
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				switch gjson.Get(payload, "type").String() {
+				case "content_block_delta":
+					if gjson.Get(payload, "delta.type").String() == "input_json_delta" {
+						if gotIdx := gjson.Get(payload, "index").Int(); gotIdx != 0 {
+							t.Fatalf("input_json_delta index = %d, want 0; payload=%s", gotIdx, payload)
+						}
+						if toolStopped {
+							t.Fatalf("input_json_delta emitted after tool block stopped: %s", payload)
+						}
+						block0JSON.WriteString(gjson.Get(payload, "delta.partial_json").String())
+					} else if gjson.Get(payload, "delta.type").String() == "signature_delta" {
+						if !toolStopped {
+							t.Fatalf("signature_delta emitted before tool block finished: %s", payload)
+						}
+						deferredSigs = append(deferredSigs, gjson.Get(payload, "delta.signature").String())
+					}
+				case "content_block_stop":
+					if gjson.Get(payload, "index").Int() == 0 {
+						toolStopped = true
+					}
+				}
+			}
+		}
+		if got := block0JSON.String(); got != `{"city":"Berlin"}` {
+			t.Fatalf("block 0 JSON = %q, want %q", got, `{"city":"Berlin"}`)
+		}
+		if len(deferredSigs) != 2 || deferredSigs[0] != "sig-mid-1" || deferredSigs[1] != "sig-mid-2" {
+			t.Fatalf("expected deferred signatures [sig-mid-1 sig-mid-2], got %v", deferredSigs)
+		}
+	})
+
+	t.Run("strips nested injected placeholder fields while streaming real declared reason and dotted keys", func(t *testing.T) {
+		origReq := []byte(`{"tools":[{"name":"complex_tool","input_schema":{"type":"object","properties":{"options":{"type":"object","additionalProperties":false},"a":{"type":"object","properties":{"b":{"type":"object","properties":{"keep":{"type":"number"}}}}},"a.b":{"type":"object","additionalProperties":false},"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"number"}},"additionalProperties":false}},"real":{"type":"object","properties":{"reason":{"type":"string"}}}},"additionalProperties":false}}]}`)
+		transReq := []byte(`{"tools":[{"functionDeclarations":[{"name":"complex_tool","parameters":{"type":"object","properties":{"options":{"type":"object","properties":{"reason":{"type":"string"}},"required":["reason"]},"a":{"type":"object","properties":{"b":{"type":"object","properties":{"keep":{"type":"number"}}}}},"a.b":{"type":"object","properties":{"reason":{"type":"string"}},"required":["reason"]},"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"number"},"_":{"type":"boolean"}},"required":["_"]}},"real":{"type":"object","properties":{"reason":{"type":"string"}}}}}}]}]}`)
+
+		chunks := [][]byte{
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"complex_tool","partialArgs":[{"jsonPath":"$.real.reason","stringValue":"ke","willContinue":true},{"jsonPath":"$.a.b.keep","numberValue":1},{"jsonPath":"$['a.b'].junk","stringValue":"drop"},{"jsonPath":"$.options.reason","stringValue":"injected","willContinue":true},{"jsonPath":"$.items[0]._","boolValue":true},{"jsonPath":"$.items[0].id","numberValue":7}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-clean"}`),
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.real.reason","stringValue":"pt"},{"jsonPath":"$.options.reason","stringValue":"-more"}],"willContinue":false}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-2.5-pro","responseId":"resp-clean"}`),
+			[]byte("[DONE]"),
+		}
+		var p any
+		var argBuf strings.Builder
+		var chunk0Delta string
+		for chunkIdx, ch := range chunks {
+			outs := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", origReq, transReq, ch, &p)
+			for _, line := range strings.Split(string(bytes.Join(outs, nil)), "\n") {
+				line = strings.TrimSpace(line)
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if gjson.Get(payload, "type").String() == "content_block_delta" && gjson.Get(payload, "delta.type").String() == "input_json_delta" {
+					d := gjson.Get(payload, "delta.partial_json").String()
+					if chunkIdx == 0 {
+						chunk0Delta += d
+					}
+					argBuf.WriteString(d)
+				}
+			}
+		}
+		if !strings.Contains(chunk0Delta, `"real":{"reason":"ke`) {
+			t.Fatalf("expected declared real.reason to stream in chunk 0, got chunk0Delta=%s", chunk0Delta)
+		}
+		want := `{"real":{"reason":"kept"},"a":{"b":{"keep":1}},"a.b":{},"options":{},"items":[{"id":7}]}`
+		if got := argBuf.String(); got != want {
+			t.Fatalf("cleaned streaming args = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("single-chunk willContinue false parameterless call and empty partialArgs with complete args", func(t *testing.T) {
+		var p1 any
+		cPing := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"ping","willContinue":false}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-ping"}`)
+		outs1 := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", nil, nil, cPing, &p1)
+		text1 := string(bytes.Join(outs1, nil))
+		if !strings.Contains(text1, `"partial_json":"{}"`) || !strings.Contains(text1, `"type":"content_block_stop","index":0`) {
+			t.Fatalf("expected immediate {} and content_block_stop for single-chunk willContinue:false, got: %s", text1)
+		}
+
+		var p2 any
+		cArgs := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"},"partialArgs":[]}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7},"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-args"}`)
+		outs2 := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", nil, nil, cArgs, &p2)
+		text2 := string(bytes.Join(outs2, nil))
+		if !strings.Contains(text2, `{\"city\":\"Paris\"}`) {
+			t.Fatalf("expected Paris args to be preserved when partialArgs is empty array, got: %s", text2)
+		}
+	})
+
+	t.Run("replaced unfinished tool call does not emit content_block_stop for incomplete block", func(t *testing.T) {
+		var p any
+		c1 := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_a","name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"New ","willContinue":true}],"willContinue":true}}]}}],"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-replace"}`)
+		c2 := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_b","name":"get_weather","partialArgs":[{"jsonPath":"$.city","stringValue":"LA"}],"willContinue":false}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-replace"}`)
+		var outs [][]byte
+		outs = append(outs, ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, c1, &p)...)
+		outs = append(outs, ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, c2, &p)...)
+		outs = append(outs, ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", requestJSON, requestJSON, []byte("[DONE]"), &p)...)
+		full := string(bytes.Join(outs, nil))
+		if strings.Contains(full, `{"type":"content_block_stop","index":0}`) {
+			t.Fatalf("must not emit content_block_stop for unfinished block 0: %s", full)
+		}
+		if strings.Contains(full, `"type":"message_stop"`) {
+			t.Fatalf("must not emit message_stop when block 0 was incomplete: %s", full)
+		}
+	})
+}
+
 func TestConvertGeminiResponseToClaude_SignatureOnlyPartDoesNotOpenEmptyTextBlock(t *testing.T) {
 	requestJSON := []byte(`{"model":"gemini-test","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 	thinkingChunk := []byte(`{
@@ -530,6 +748,7 @@ func TestConvertGeminiResponseToClaudeNonStream_SafetyAndMalformedFunctionCallRe
 		{finishReason: "SPII", wantReason: "refusal"},
 		{finishReason: "BLOCKLIST", wantReason: "refusal"},
 		{finishReason: "IMAGE_SAFETY", wantReason: "refusal"},
+		{finishReason: "MALFORMED_RESPONSE", wantReason: "refusal"},
 		{finishReason: "MAX_TOKENS", wantReason: "max_tokens"},
 		{finishReason: "STOP", wantReason: "end_turn"},
 	}
@@ -1126,5 +1345,77 @@ func TestConvertGeminiResponseToClaude_ParameterlessToolContinuationDoesNotDupli
 	streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, continuationChunk, &param), nil)...)
 	if got := geminiClaudeInputJSONDeltas(t, string(streamBytes)); got != "{}" {
 		t.Fatalf("expected concatenated partial_json {}, got %q (stream: %s)", got, string(streamBytes))
+	}
+}
+
+func TestConvertGeminiResponseToClaude_ImplicitOpenToolContinuationOrdering(t *testing.T) {
+	origRequest := []byte(`{"model":"gemini-3-flash","tools":[{"name":"echo","input_schema":{"type":"object","properties":{}}}]}`)
+
+	for _, tc := range []struct {
+		name      string
+		firstArgs string
+		contArgs  string
+		want      string
+	}{
+		{"empty_then_real_args", `{}`, `{"user":"v"}`, `{"user":"v"}`},
+		{"placeholder_then_real_args", `{"reason":"thinking"}`, `{"user":"v"}`, `{"user":"v"}`},
+		{"real_args_then_empty", `{"user":"v"}`, `{}`, `{"user":"v"}`},
+		{"real_args_then_placeholder", `{"user":"v"}`, `{"reason":"done"}`, `{"user":"v"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			firstChunk := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"echo","args":` + tc.firstArgs + `}}],"role":"model"}}],"modelVersion":"gemini-3-flash","responseId":"resp-echo"}`)
+			continuationChunk := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"args":` + tc.contArgs + `}}],"role":"model"},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash","responseId":"resp-echo"}`)
+
+			ctx := context.Background()
+			var param any
+			streamBytes := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, firstChunk, &param), nil)
+			streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, continuationChunk, &param), nil)...)
+			if got := geminiClaudeInputJSONDeltas(t, string(streamBytes)); got != tc.want {
+				t.Fatalf("expected concatenated partial_json %s, got %q (stream: %s)", tc.want, got, string(streamBytes))
+			}
+		})
+	}
+}
+
+func TestConvertGeminiResponseToClaude_RejectsContentDuringPartialArgs(t *testing.T) {
+	for _, part := range []string{`{"text":"interrupted"}`, `{"thought":true,"text":"interrupted"}`} {
+		t.Run(part, func(t *testing.T) {
+			var param any
+			initial := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"fn","partialArgs":[{"jsonPath":"$.x","stringValue":"A","willContinue":true}],"willContinue":true}}]}}]}`)
+			ConvertGeminiResponseToClaude(context.Background(), "gemini", nil, nil, initial, &param)
+			chunk := []byte(`{"candidates":[{"content":{"parts":[` + part + `,{"functionCall":{"partialArgs":[{"jsonPath":"$.x","stringValue":"B"}],"willContinue":false}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":1}}`)
+			out := ConvertGeminiResponseToClaude(context.Background(), "gemini", nil, nil, chunk, &param)
+			if param.(interface{ ToolInputError() error }).ToolInputError() == nil {
+				t.Fatal("substantive content must immediately reject incomplete tool input")
+			}
+			out = append(out, ConvertGeminiResponseToClaude(context.Background(), "gemini", nil, nil, initial, &param)...)
+			out = append(out, ConvertGeminiResponseToClaude(context.Background(), "gemini", nil, nil, []byte("[DONE]"), &param)...)
+			for _, line := range strings.Split(string(bytes.Join(out, nil)), "\n") {
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				switch event.Get("type").String() {
+				case "content_block_start", "content_block_delta", "message_delta", "message_stop":
+					t.Fatalf("failed tool input emitted further content or success: %s", event.Raw)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertGeminiResponseToClaude_PartialArgsIDAliasConflict(t *testing.T) {
+	for _, alias := range []string{"call_id", "callId"} {
+		t.Run(alias, func(t *testing.T) {
+			var param any
+			initial := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"` + alias + `":"a","name":"fn","partialArgs":[{"jsonPath":"$.x","stringValue":"A","willContinue":true}],"willContinue":true}}]}}]}`)
+			ConvertGeminiResponseToClaude(context.Background(), "gemini", nil, nil, initial, &param)
+			conflict := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"` + alias + `":"b","name":"fn","partialArgs":[{"jsonPath":"$.x","stringValue":"B"}],"willContinue":false}}]},"finishReason":"STOP"}]}`)
+			out := ConvertGeminiResponseToClaude(context.Background(), "gemini", nil, nil, conflict, &param)
+			param.(interface{ FinalizeToolInput() [][]byte }).FinalizeToolInput()
+			if param.(interface{ ToolInputError() error }).ToolInputError() == nil {
+				t.Fatalf("conflicting alias identities must not complete as one call: %q", out)
+			}
+		})
 	}
 }

@@ -1267,6 +1267,9 @@ func TestClassifySSEErrorStatus_RateLimits(t *testing.T) {
 		name string
 		body []byte
 	}{
+		{name: "turn_capacity_code_only", body: []byte(`{"type":"error","error":{"code":"turn_rate_limit_exceeded"}}`)},
+		{name: "model_capacity_nested", body: []byte(`{"type":"response.failed","response":{"error":{"code":"model_at_capacity"}}}`)},
+		{name: "capacity_message", body: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Service is at capacity"}}`)},
 		{
 			name: "openai_tokens_rate_limit_exceeded",
 			body: []byte(`{"type":"error","error":{"type":"tokens","code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.5 in organization org-test on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 29693. Please try again in 44ms.","param":null},"sequence_number":2}`),

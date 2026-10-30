@@ -26,6 +26,7 @@ import (
 	antigravitychat "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/chat-completions"
 	antigravityresponses "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/responses"
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
+	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
@@ -314,6 +315,7 @@ func prepareAntigravityRequestBody(
 			request = ensureAntigravityValidatedToolMode(request)
 		}
 	} else {
+		request = cliproxysignature.SanitizeVertexSignaturesForNonVertex(request, "contents")
 		if gjson.GetBytes(request, "generationConfig").IsObject() {
 			request = deleteJSONPath(request, "generationConfig.maxOutputTokens")
 		}

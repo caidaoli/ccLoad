@@ -18,7 +18,7 @@
 - **生命周期**:上游每 45s 发 Ping,连续 5 min 无帧/Pong 判失活;下游全断满 5 min 后由每分钟清理器关上游物理连接(实际约 5–6 min);稳定逻辑会话与已提交 transcript 在 `responses_ws_session_ttl_minutes`(默认 15,小内存机器可设 10)到期前不因容量/预算压力被逐出
 - **超限语义**:达 `responses_ws_max_sessions` 只拒绝新会话身份;已提交 payload 超 `responses_ws_max_transcript_bytes` 后,所有新回合在触达上游前以 `429/rate_limit_error/rate_limit` 拒绝,已准入回合仍可提交,有限最坏超量 `max_sessions × max_body_bytes`
 - **连接轮换**:达到 `upstream_connection_reuse_limit_seconds` 的空闲连接立即关闭,在途 turn 完成后再关;下一轮优先原渠道/Key/URL,按需重连并重放完整 transcript——Response ID 只在原物理 WebSocket 上有效
-- **`response.interrupt`**:读协程在回合进行中直接拦截(不排队到回合后)。原生上游 WS 正在推流时原样透传,以上游 `response.incomplete`(`reason=interrupted`)收尾;HTTP/转换回合或上游不可写时取消本地回合,按客户端取消记 499、不冷却不换渠道,下发带 `response_id` 与已收集 output 的合成 `response.incomplete`,同连接可用该 ID 续接。`reason=interrupted` 的空 incomplete 不按 599 空流处理。缺 `response_id` 返回 `invalid_request`;无在途回合的合法中断静默忽略(上游返回 400,刻意不同:错误会被归到客户端下一轮)
+- **`response.interrupt`**:读协程在回合进行中直接拦截，只接受当前回合已向客户端发出的 Response ID；排队中、未知 ID、旧 ID 和已终态请求静默忽略。原生上游 WS 以状态锁内的 live/Response ID 快照作为中断受理点，之后只持写锁发送，避免网络写阻塞 reader 和断开处理；下一回合写入不得越过已受理中断。正在推流时原样透传，以上游 `response.incomplete`(`reason=interrupted`)收尾；HTTP/转换回合在本地取消，按客户端取消记 499、不冷却不换渠道，下发当前 ID 与已收集 output 的合成 `response.incomplete`，同连接可续接。原生上游已终态或不可写时保留原终态/1011 客户端重放路径，不伪造本地取消成功。`reason=interrupted` 的空 incomplete 不按 599 空流处理。缺 `response_id` 返回 `invalid_request`；无在途回合的合法中断静默忽略。
 - **指标**:`/admin/runtime-metrics` 的 `transcript_bytes` 只统计有效 payload,不是 Go 堆占用;另有 `ttl_expired`/`capacity_rejected`/`budget_rejected`/`previous_response_misses` 进程累计计数
 
 ## 故障切换(`util/classifier.go` + `cooldown/detection.go`)
@@ -49,6 +49,8 @@
   - 首个语义输出前:非 WS→非 WS、原生 WS→非 WS/原生 WS 均可网关内部切换,WS→非 WS 用 execution session 完整 transcript;非 WS 故障且下一候选为原生 WS 时返回 `status=502` 的 `server_error/upstream_unavailable` 并以 close 1011 断开,让 Codex 客户端完整 replay
   - 已有语义输出后:禁止网关内部切换或重放;成功响应流在终结事件前中断 → `status=502` 的 `server_error/upstream_stream_interrupted` + close 1011,客户端重连并完整 replay 当前 turn;已完成的工具调用先提交 execution session,普通残缺文本不提交
   - 原生上游 WS 的 close 1006、心跳故障、嵌套网关返回的 `upstream_stream_interrupted`,统一按具体 WS 目标连续计数:首次不冷却,10 min 内第二个新物理连接仍失败才冷却 2 min,成功终结事件清零;不得升级为模型冷却
+
+- **容量型 429**：`turn_rate_limit_exceeded`/模型容量错误即使只在 SSE/WS error.code 出现也归为 429，事件与握手的 Retry-After 保留。仅识别出的容量错误按有效 Retry-After（秒或 HTTP 日期）设置精确模型冷却截止时间；普通 429 即使带 Retry-After 也按既有策略指数退避，遵守其上下限；已识别配额 reset 优先，Anthropic 每分钟限流仍沿用指数退避。最终 Codex 429→503 的重试契约不变。
 
 ## 自定义状态码(改相关代码前先读语义)
 

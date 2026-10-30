@@ -94,10 +94,14 @@ func (usage geminiResponsesUsage) JSON() []byte {
 }
 
 func geminiResponsesTerminalState(finishReason string) (eventType, status string, incompleteDetails []byte) {
-	if strings.EqualFold(strings.TrimSpace(finishReason), "MAX_TOKENS") {
+	switch strings.ToUpper(strings.TrimSpace(finishReason)) {
+	case "MAX_TOKENS":
 		return "response.incomplete", "incomplete", []byte(`{"reason":"max_output_tokens"}`)
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "MALFORMED_RESPONSE", "MALFORMED_FUNCTION_CALL":
+		return "response.incomplete", "incomplete", []byte(`{"reason":"content_filter"}`)
+	default:
+		return "response.completed", "completed", nil
 	}
-	return "response.completed", "completed", nil
 }
 
 type geminiToResponsesState struct {
@@ -136,21 +140,24 @@ type geminiToResponsesState struct {
 	LastSemanticKind          string
 
 	// function call aggregation (keyed by output_index)
-	NextIndex        int
-	FuncArgsBuf      map[int]*strings.Builder
-	FuncInputBuf     map[int]string
-	FuncCustom       map[int]bool
-	FuncToolSearch   map[int]bool
-	FuncNames        map[int]string
-	FuncNamespaces   map[int]string
-	FuncCallIDs      map[int]string
-	FuncDone         map[int]bool
-	SanitizedNameMap map[string]string
-	ToolIdentityMap  map[string]util.ResponsesToolIdentity
-	RequestJSON      []byte
-	RequestResolved  bool
-	ToolMapsResolved bool
-	FunctionEvidence map[string]*geminiFunctionCallEvidence
+	NextIndex              int
+	FuncArgsBuf            map[int]*strings.Builder
+	FuncInputBuf           map[int]string
+	FuncCustom             map[int]bool
+	FuncToolSearch         map[int]bool
+	FuncNames              map[int]string
+	FuncNamespaces         map[int]string
+	FuncCallIDs            map[int]string
+	FuncDone               map[int]bool
+	SanitizedNameMap       map[string]string
+	ToolIdentityMap        map[string]util.ResponsesToolIdentity
+	RequestJSON            []byte
+	RequestResolved        bool
+	ToolMapsResolved       bool
+	FunctionEvidence       map[string]*geminiFunctionCallEvidence
+	ActiveStreamingFunc    *translatorcommon.VertexStreamingToolCall
+	ActiveStreamingPatch   *translatorcommon.ApplyPatchCallState
+	HasFailedStreamingFunc bool
 
 	// web search aggregation
 	WebSearchStreamMode          bool
@@ -370,7 +377,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 	done := bytes.Equal(rawJSON, []byte("[DONE]"))
 	if done {
-		if !st.Started {
+		if !st.Started || st.ActiveStreamingFunc != nil || st.HasFailedStreamingFunc {
 			return [][]byte{}
 		}
 		if st.FinishReason == "" {
@@ -860,6 +867,15 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			text := part.Get("text")
 			isThought := part.Get("thought").Bool()
 
+			if active := st.ActiveStreamingFunc; active != nil && (text.String() != "" || (functionCall.Exists() && !active.CanContinueWith(functionCall))) {
+				st.HasFailedStreamingFunc = true
+				st.ActiveStreamingFunc = nil
+				st.ActiveStreamingPatch = nil
+				st.SetToolInputError(fmt.Errorf("upstream Gemini content or call identity interrupted incomplete tool arguments"))
+				out = append(out, st.failVertexToolInput())
+				return false
+			}
+
 			var partKind string
 			switch {
 			case isThought:
@@ -910,7 +926,8 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				}
 			}
 			st.StreamPartIndex = currentPartIndex
-			if functionCall.Exists() && st.PendingReasoningSignature != "" {
+			isStreamingFuncContinuation := functionCall.Exists() && st.ActiveStreamingFunc != nil && st.ActiveStreamingFunc.CanContinueWith(functionCall)
+			if functionCall.Exists() && !isStreamingFuncContinuation && st.PendingReasoningSignature != "" {
 				if signature == "" {
 					emitDetachedReasoning(st.PendingReasoningSignature, geminiResponsesCarrierNext, geminiResponsesCarrierFunction)
 				} else {
@@ -920,7 +937,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			}
 			reasoningActive := (st.ReasoningOpened && !st.ReasoningClosed) || (!st.ReasoningOpened && (st.ReasoningBuf.Len() > 0 || st.ReasoningEnc != ""))
 			if signature != "" && !isThought {
-				if reasoningActive {
+				if isStreamingFuncContinuation {
+					if !st.SeenReasoningSignatures[signature] {
+						if st.PendingReasoningSignature != "" && st.PendingReasoningSignature != signature {
+							emitTrailingDetachedReasoning(st.PendingReasoningSignature)
+						}
+						st.PendingReasoningSignature = signature
+					}
+				} else if reasoningActive {
 					switch st.ReasoningEnc {
 					case "", signature:
 						st.ReasoningEnc = signature
@@ -1127,6 +1151,184 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				finalizeMessage()
 				st.LastSemanticKind = geminiResponsesCarrierFunction
 
+				if isStreamingFuncContinuation || translatorcommon.IsVertexStreamingFunctionCall(fc) {
+					if !isStreamingFuncContinuation {
+						rawName := strings.TrimSpace(fc.Get("name").String())
+						if rawName == "" {
+							st.HasFailedStreamingFunc = true
+							return true
+						}
+						identity, hasIdentity := st.ToolIdentityMap[rawName]
+						if !hasIdentity {
+							restored := util.RestoreSanitizedToolName(st.SanitizedNameMap, rawName)
+							identity = util.ResponsesToolIdentity{Name: restored}
+						}
+						name := identity.Name
+						namespace := identity.Namespace
+						isCustom := identity.Custom
+						isToolSearch := identity.ToolSearch
+
+						idx := st.NextIndex
+						st.NextIndex++
+						if st.FuncArgsBuf[idx] == nil {
+							st.FuncArgsBuf[idx] = &strings.Builder{}
+						}
+						upstreamID := translatorcommon.VertexFunctionCallID(fc)
+						callID := strings.TrimSpace(fc.Get("id").String())
+						if callID == "" {
+							callID = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), atomic.AddUint64(&funcCallIDCounter, 1))
+						}
+						st.FuncCallIDs[idx] = callID
+						st.FuncNames[idx] = name
+						st.FuncNamespaces[idx] = namespace
+						st.FuncCustom[idx] = isCustom
+						st.FuncToolSearch[idx] = isToolSearch
+						st.ActiveStreamingFunc = translatorcommon.NewVertexStreamingToolCall(rawName, name, upstreamID, callID, idx)
+
+						if isToolSearch {
+							itemID := openAIResponsesToolSearchCallItemID(callID)
+							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{}}`)
+							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
+							item, _ = sjson.SetBytes(item, "output_index", idx)
+							item, _ = sjson.SetRawBytes(item, "item", buildOpenAIResponsesToolSearchCallItem(itemID, callID, "in_progress", "{}"))
+							out = append(out, emitEvent("response.output_item.added", item))
+						} else if isCustom {
+							if identity.ApplyPatch {
+								st.ActiveStreamingPatch = &translatorcommon.ApplyPatchCallState{ItemID: fmt.Sprintf("ctc_%s", callID), CallID: callID, Name: name, Namespace: namespace, OutputIndex: idx}
+							}
+							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`)
+							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
+							item, _ = sjson.SetBytes(item, "output_index", idx)
+							item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("ctc_%s", callID))
+							item, _ = sjson.SetBytes(item, "item.call_id", callID)
+							item = translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, "item")
+							out = append(out, emitEvent("response.output_item.added", item))
+						} else {
+							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
+							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
+							item, _ = sjson.SetBytes(item, "output_index", idx)
+							item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("fc_%s", callID))
+							item, _ = sjson.SetBytes(item, "item.call_id", callID)
+							item = translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, "item")
+							out = append(out, emitEvent("response.output_item.added", item))
+						}
+					}
+
+					active := st.ActiveStreamingFunc
+					idx := active.Index
+					delta, fcDone := active.Assembler.PushFunctionCall(fc)
+					if active.Assembler.Err() != nil {
+						st.HasFailedStreamingFunc = true
+						st.ActiveStreamingFunc = nil
+						st.SetToolInputError(active.Assembler.Err())
+						st.ActiveStreamingPatch = nil
+						out = append(out, st.failVertexToolInput())
+						return false
+					}
+					if delta != "" {
+						st.FuncArgsBuf[idx].WriteString(delta)
+						if st.FuncCustom[idx] {
+							if st.ActiveStreamingPatch != nil {
+								inputDelta, errPush := st.ActiveStreamingPatch.PushArguments(delta)
+								if errPush != nil {
+									st.SetToolInputError(errPush)
+									st.Completed = true
+									out = append(out, emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, nextSeq())))
+									return false
+								}
+								if inputDelta != "" {
+									out = append(out, emitEvent("response.custom_tool_call_input.delta", translatorcommon.ApplyPatchInputDelta(st.ActiveStreamingPatch, inputDelta, nextSeq())))
+								}
+							}
+						} else if !st.FuncToolSearch[idx] {
+							ad := []byte(`{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`)
+							ad, _ = sjson.SetBytes(ad, "sequence_number", nextSeq())
+							ad, _ = sjson.SetBytes(ad, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+							ad, _ = sjson.SetBytes(ad, "output_index", idx)
+							ad, _ = translatorcommon.SetStringWithoutHTMLEscape(ad, "delta", delta)
+							out = append(out, emitEvent("response.function_call_arguments.delta", ad))
+						}
+					}
+
+					if fcDone {
+						fullArgs := active.Assembler.FullArguments()
+						st.ActiveStreamingFunc = nil
+						if st.FuncToolSearch[idx] {
+							itemStatus := "completed"
+							if fr := root.Get("candidates.0.finishReason").String(); fr != "" {
+								_, itemStatus, _ = geminiResponsesTerminalState(fr)
+							} else if st.FinishReason != "" {
+								_, itemStatus, _ = geminiResponsesTerminalState(st.FinishReason)
+							}
+							itemID := openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx])
+							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
+							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
+							itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
+							itemDone, _ = sjson.SetRawBytes(itemDone, "item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], itemStatus, fullArgs))
+							out = append(out, emitEvent("response.output_item.done", itemDone))
+						} else if st.FuncCustom[idx] {
+							var inputStr string
+							if st.ActiveStreamingPatch != nil {
+								tail, fullInput, errFinishArguments := st.ActiveStreamingPatch.FinishArguments("")
+								if errFinishArguments != nil {
+									st.SetToolInputError(errFinishArguments)
+									st.Completed = true
+									out = append(out, emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, nextSeq())))
+									return false
+								}
+								if tail != "" {
+									out = append(out, emitEvent("response.custom_tool_call_input.delta", translatorcommon.ApplyPatchInputDelta(st.ActiveStreamingPatch, tail, nextSeq())))
+								}
+								inputStr = fullInput
+							} else {
+								inputStr = util.UnwrapResponsesCustomToolInput(fullArgs)
+							}
+							st.FuncInputBuf[idx] = inputStr
+							inputDone := []byte(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
+							inputDone, _ = sjson.SetBytes(inputDone, "sequence_number", nextSeq())
+							inputDone, _ = sjson.SetBytes(inputDone, "item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+							inputDone, _ = sjson.SetBytes(inputDone, "output_index", idx)
+							inputDone, _ = sjson.SetBytes(inputDone, "input", inputStr)
+							if st.ActiveStreamingPatch != nil {
+								inputDone = translatorcommon.ApplyPatchInputDone(st.ActiveStreamingPatch, inputStr, st.Seq)
+								st.ActiveStreamingPatch = nil
+							}
+							out = append(out, emitEvent("response.custom_tool_call_input.done", inputDone))
+
+							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
+							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
+							itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
+							itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+							itemDone, _ = sjson.SetBytes(itemDone, "item.input", inputStr)
+							itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
+							itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
+							out = append(out, emitEvent("response.output_item.done", itemDone))
+						} else {
+							fcDoneEvent := []byte(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
+							fcDoneEvent, _ = sjson.SetBytes(fcDoneEvent, "sequence_number", nextSeq())
+							fcDoneEvent, _ = sjson.SetBytes(fcDoneEvent, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+							fcDoneEvent, _ = sjson.SetBytes(fcDoneEvent, "output_index", idx)
+							fcDoneEvent, _ = translatorcommon.SetStringWithoutHTMLEscape(fcDoneEvent, "arguments", fullArgs)
+							out = append(out, emitEvent("response.function_call_arguments.done", fcDoneEvent))
+
+							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
+							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
+							itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
+							itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+							itemDone, _ = translatorcommon.SetStringWithoutHTMLEscape(itemDone, "item.arguments", fullArgs)
+							itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
+							itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
+							out = append(out, emitEvent("response.output_item.done", itemDone))
+						}
+						st.FuncDone[idx] = true
+						if st.PendingReasoningSignature != "" {
+							emitTrailingDetachedReasoning(st.PendingReasoningSignature)
+							st.PendingReasoningSignature = ""
+						}
+					}
+					return true
+				}
+
 				evidence := geminiRecordFunctionEvidence(st, fc, explicitPartIndex, gjson.ValidBytes(rawJSON))
 				if evidence.ApplyPatch && evidence.Err != nil {
 					st.SetToolInputError(evidence.Err)
@@ -1322,7 +1524,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	if fr := root.Get("candidates.0.finishReason").String(); fr != "" && st.FinishReason == "" {
 		st.FinishReason = fr
 	}
-	if st.FinishReason != "" {
+	if st.FinishReason != "" && st.ActiveStreamingFunc == nil && !st.HasFailedStreamingFunc {
 		if errIdentity := geminiPendingIdentityError(st); errIdentity != nil {
 			st.SetToolInputError(errIdentity)
 			st.Completed = true
@@ -2208,8 +2410,14 @@ func geminiPendingIdentityError(st *geminiToResponsesState) error {
 	return nil
 }
 
-// FinalizeToolInput rejects a patch-enabled stream lacking its source terminator.
+// FinalizeToolInput rejects incomplete Vertex arguments and patch streams without a source terminator.
 func (st *geminiToResponsesState) FinalizeToolInput() [][]byte {
+	if !st.Completed && (st.ActiveStreamingFunc != nil || st.HasFailedStreamingFunc) {
+		if st.ToolInputError() == nil {
+			st.SetToolInputError(fmt.Errorf("upstream Gemini function call ended with invalid or incomplete arguments"))
+		}
+		return [][]byte{st.failVertexToolInput()}
+	}
 	if st.ToolInputError() != nil || st.Completed {
 		return nil
 	}
@@ -2237,4 +2445,11 @@ func (st *geminiToResponsesState) FinalizeToolInput() [][]byte {
 	st.Completed = true
 	st.Seq++
 	return [][]byte{emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, st.Seq))}
+}
+
+func (st *geminiToResponsesState) failVertexToolInput() []byte {
+	st.Completed = true
+	st.Seq++
+	failure := translatorcommon.ToolInputFailure(st.ResponseID, st.Seq, "Invalid or incomplete Gemini tool arguments received from upstream.")
+	return emitEvent("response.failed", failure)
 }

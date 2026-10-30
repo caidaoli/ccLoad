@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -198,6 +199,87 @@ func TestProxy_VertexOAuthMapsGeminiPassthroughToPublisherEndpoint(t *testing.T)
 	}
 	if calls := upstream.tokenCalls.Load(); calls != 1 {
 		t.Fatalf("token mints=%d, want one cached token", calls)
+	}
+}
+
+func TestProxy_VertexPreservesBareTinkThoughtSignatures(t *testing.T) {
+	t.Parallel()
+	// Vertex emits bare Tink output with this observed key ID, without the
+	// protobuf envelope used by other Gemini endpoints.
+	decoded := append([]byte{1, 0x8f, 0x3d, 0x6b, 0x5f}, bytes.Repeat([]byte{0x42}, 400)...)
+	signature := base64.StdEncoding.EncodeToString(decoded)
+	for _, authType := range []string{model.AuthTypeVertexOAuth, model.AuthTypeAPIKey} {
+		for _, exact := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/exact=%v", authType, exact), func(t *testing.T) {
+				t.Parallel()
+				upstream := newVertexTestUpstream(t)
+				baseURL := upstream.server.URL + vertexTestRegionURL
+				if exact {
+					baseURL += "/models/" + vertexTestModel + ":generateContent" + model.ExactUpstreamURLMarker
+				}
+				channel := testChannel{name: "vertex", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel, authType: authType}
+				if authType == model.AuthTypeVertexOAuth {
+					channel.oauthCredential = vertexTestCredential(t, upstream.tokenURI())
+				}
+				env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: baseURL})
+				response := doProxyRequest(t, env.engine, "/v1beta/models/"+vertexTestModel+":generateContent", map[string]any{
+					"contents": []any{
+						map[string]any{"role": "model", "parts": []any{
+							map[string]any{"text": "thinking", "thought": true, "thoughtSignature": signature},
+							map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}}, "thoughtSignature": signature},
+						}},
+						map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "lookup", "response": map[string]any{"ok": true}}}}},
+					},
+				}, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				_, bodies := upstream.calls()
+				if len(bodies) != 1 {
+					t.Fatalf("publisher calls=%d, want 1", len(bodies))
+				}
+				parts := gjson.GetBytes(bodies[0], "contents.0.parts").Array()
+				if len(parts) != 2 {
+					t.Fatalf("Vertex signed history changed: %s", bodies[0])
+				}
+				for _, part := range parts {
+					if got := part.Get("thoughtSignature").String(); got != signature {
+						t.Fatalf("Vertex signature changed: %q", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestProxy_VertexAPIKeyCompleteURLRequiresExactMarker(t *testing.T) {
+	t.Parallel()
+	for _, exact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exact=%v", exact), func(t *testing.T) {
+			t.Parallel()
+			upstream := newVertexTestUpstream(t)
+			endpoint := vertexTestRegionURL + "/models/" + vertexTestModel + ":generateContent"
+			requestPath := "/v1beta/models/" + vertexTestModel + ":generateContent"
+			baseURL := upstream.server.URL + endpoint
+			wantPath := endpoint + requestPath
+			if exact {
+				baseURL += model.ExactUpstreamURLMarker
+				wantPath = endpoint
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "vertex", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel,
+			}}, map[int]string{0: baseURL})
+			response := doProxyRequest(t, env.engine, requestPath, map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			requests, _ := upstream.calls()
+			if len(requests) != 1 || requests[0].URL.Path != wantPath {
+				t.Fatalf("complete URL exact=%v: calls=%v, want path %s", exact, requests, wantPath)
+			}
+		})
 	}
 }
 

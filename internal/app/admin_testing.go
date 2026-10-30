@@ -26,6 +26,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -2299,6 +2300,8 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	if vertexWire {
 		requestPlan.requestBody = prepareVertexRequestBody(requestPlan.requestBody, requestPlan.clientProtocol == string(protocol.Codex))
+	} else if upstreamProtocolValue == protocol.Gemini && !cfgForBuild.UsesAntigravityOAuth() && isGeminiAPIURL(parsedTestURL) {
+		requestPlan.requestBody = cliproxysignature.SanitizeVertexSignaturesForNonVertex(requestPlan.requestBody, "contents")
 	}
 	if cfgForBuild.UsesAnthropicOAuth() &&
 		(isAnthropicMessagesRequest(upstreamProtocolValue, requestPath) || isAnthropicCountTokensRequest(upstreamProtocolValue, requestPath)) {

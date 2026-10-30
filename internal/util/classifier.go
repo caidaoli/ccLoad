@@ -505,6 +505,9 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
 	// 服务类错误切换渠道但只冷却当前模型；认证/限流类错误仍冷却 Key。
 	// 模型不可用（如 Codex WS 错误事件 "model is not supported"）与 HTTP 400 同口径：只冷却当前模型。
+	if statusCode == StatusSSEError && IsTransientCapacityError(responseBody) {
+		statusCode = http.StatusTooManyRequests
+	}
 	if statusCode == StatusSSEError {
 		level := classifySSEError(responseBody)
 		return HTTPResponseClassification{
@@ -562,6 +565,14 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			classification.ModelCooldownUntil = until
 			classification.HasModelCooldownUntil = true
 			classification.ModelCooldownReason = "anthropic_unified_reset"
+			return classification
+		}
+		if IsTransientCapacityError(responseBody) {
+			if until, ok := parseRateLimitRetryAfter(headers, now); ok {
+				classification.ModelCooldownUntil = until
+				classification.HasModelCooldownUntil = true
+				classification.ModelCooldownReason = "retry_after"
+			}
 		}
 		return classification
 	}
@@ -663,6 +674,60 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 包括:认证失败、权限不足、额度用尽、余额不足等
 	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
 	return HTTPResponseClassification{Level: ErrorLevelKey}
+}
+
+// IsTransientCapacityError recognizes structured turn/model admission failures.
+// An explicit unrelated code wins over capacity wording in the message.
+func IsTransientCapacityError(body []byte) bool {
+	type capacityError struct {
+		Code    string `json:"code"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	var payload struct {
+		capacityError
+		Error    capacityError `json:"error"`
+		Response struct {
+			Error capacityError `json:"error"`
+		} `json:"response"`
+		Body struct {
+			Error capacityError `json:"error"`
+		} `json:"body"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	entries := []capacityError{payload.Error, payload.Response.Error, payload.Body.Error, payload.capacityError}
+	for _, entry := range entries {
+		if code := strings.ToLower(strings.TrimSpace(entry.Code)); code != "" {
+			switch code {
+			case "turn_rate_limit_exceeded", "model_at_capacity", "model_is_at_capacity":
+				return true
+			default:
+				return false
+			}
+		}
+	}
+	for _, entry := range entries {
+		message := strings.ToLower(strings.TrimSpace(entry.Message))
+		if strings.Contains(message, "model is at capacity") ||
+			(strings.EqualFold(strings.TrimSpace(entry.Type), "rate_limit_error") && strings.Contains(message, "at capacity")) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseRateLimitRetryAfter(headers map[string][]string, now time.Time) (time.Time, bool) {
+	value := strings.TrimSpace(firstHeaderValueFold(headers, "Retry-After"))
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds > 0 && seconds <= int64((1<<63-1)/time.Second) {
+			return now.Add(time.Duration(seconds) * time.Second), true
+		}
+		return time.Time{}, false
+	}
+	until, err := http.ParseTime(value)
+	return until, err == nil && until.After(now)
 }
 
 // classifyRateLimitError 分析 429 的限流范围。

@@ -1331,6 +1331,9 @@ func TestResponsesWebsocketInterruptForwardsToNativeUpstream(t *testing.T) {
 		t.Fatalf("write first turn: %v", err)
 	}
 	readWebsocketUntilType(t, downstream, "response.output_text.delta")
+	if err := downstream.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "unknown-response"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := downstream.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-native-1"}); err != nil {
 		t.Fatalf("write interrupt: %v", err)
 	}
@@ -1393,6 +1396,9 @@ func TestResponsesWebsocketInterruptCancelsHTTPTurnLocally(t *testing.T) {
 		t.Fatalf("write first turn: %v", err)
 	}
 	readWebsocketUntilType(t, conn, "response.output_text.delta")
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "unknown-response"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-1"}); err != nil {
 		t.Fatalf("write interrupt: %v", err)
 	}
@@ -8365,7 +8371,7 @@ func assertTokenRPMWebsocketError(t testing.TB, conn *websocket.Conn, seconds in
 	}
 }
 
-func TestResponsesWebsocketTokenRPMInterruptWhileWaitingForGlobalSlot(t *testing.T) {
+func TestResponsesWebsocketTokenRPMUnknownInterruptWhileWaitingForGlobalSlot(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-after-wait\",\"output\":[]}}\n\ndata: [DONE]\n\n")
@@ -8415,17 +8421,18 @@ func TestResponsesWebsocketTokenRPMInterruptWhileWaitingForGlobalSlot(t *testing
 	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-waiting"}); err != nil {
 		t.Fatal(err)
 	}
-	event := readWebsocketUntilType(t, conn, "response.incomplete")
-	response := event["response"].(map[string]any)
-	if response["id"] != "resp-waiting" {
-		t.Fatalf("interrupt response=%+v", response)
-	}
+	// No response exists while queued: the client cannot invent an identity
+	// and cancel this turn. Releasing capacity must complete the original turn.
 	release()
 	release = nil
-	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": "after-wait"}); err != nil {
+	var event map[string]any
+	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatal(err)
 	}
-	readWebsocketUntilType(t, conn, "response.completed")
+	if event["type"] != "response.completed" {
+		t.Fatalf("queued turn event=%#v", event)
+	}
+
 }
 
 func TestResponsesWebsocketTokenRPMAdmittedLocalFailureCounts(t *testing.T) {
@@ -8462,4 +8469,361 @@ func TestResponsesWebsocketTokenRPMAdmittedLocalFailureCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertTokenRPMWebsocketError(t, conn, 60)
+}
+
+func TestResponsesWebsocketToolSearchIDsAtOutboundBoundary(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprintf("native=%v", native), func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			captured := make(chan []byte, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if native {
+					conn, err := upgrader.Upgrade(w, r, nil)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					_, body, err := conn.ReadMessage()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					captured <- body
+					_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-search","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`))
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				captured <- body
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-search\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n")
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{name: "tool-search-ids", upstreamProtocol: "codex", websockets: native, models: "gpt-test"}}, map[int]string{0: upstream.URL})
+			env.server.client = upstream.Client()
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			input := []any{}
+			for _, id := range []string{"ts_old", "plain", "tsc_valid", "ts_collision", "tsc_collision", "ts_" + strings.Repeat("x", 80), "tscwithout", "ts_"} {
+				input = append(input, map[string]any{"type": "tool_search_call", "id": id, "call_id": "call-preserved", "status": "completed", "arguments": "{}"})
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": input}); err != nil {
+				t.Fatal(err)
+			}
+			readWebsocketUntilType(t, conn, "response.completed")
+			body := <-captured
+			items := gjson.GetBytes(body, "input").Array()
+			if len(items) != len(input) {
+				t.Fatalf("outbound input=%s", body)
+			}
+			for idx, want := range []string{"tsc_old", "tsc_plain", "tsc_valid"} {
+				if items[idx].Get("id").String() != want {
+					t.Errorf("item %d id=%q want=%q", idx, items[idx].Get("id").String(), want)
+				}
+			}
+			seen := map[string]bool{}
+			for _, item := range items {
+				id := item.Get("id").String()
+				if !strings.HasPrefix(id, "tsc_") || len([]rune(id)) > codexInputItemIDLimit || seen[id] {
+					t.Errorf("invalid/colliding outbound id=%q", id)
+				}
+				seen[id] = true
+				if item.Get("call_id").String() != "call-preserved" {
+					t.Errorf("call_id changed: %s", item.Raw)
+				}
+			}
+			if items[6].Get("id").String() != "tsc_tscwithout" || items[7].Get("id").String() != "tsc_ts_" {
+				t.Errorf("noncanonical prefix IDs=%s", body)
+			}
+			if items[4].Get("id").String() != "tsc_collision" {
+				t.Error("existing valid ID must win collision")
+			}
+		})
+	}
+}
+
+// codexInterruptWriteGate blocks one application write after the handshake.
+// Closing the socket still works, but the failed write returns only after release
+// so replacement-socket invalidation can be checked without scheduler timing.
+type codexInterruptWriteGate struct {
+	net.Conn
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *codexInterruptWriteGate) Write(payload []byte) (int, error) {
+	if c.armed.CompareAndSwap(true, false) {
+		close(c.entered)
+		<-c.release
+	}
+	return c.Conn.Write(payload)
+}
+
+func TestNativeCodexWebsocketInterruptWriteDoesNotBlockSession(t *testing.T) {
+	for _, outcome := range []string{"terminal", "disconnect", "replacement"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			peers := make(chan *websocket.Conn, 2)
+			stop := make(chan struct{})
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				peer, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = peer.Close() }()
+				peers <- peer
+				<-stop
+			}))
+			t.Cleanup(func() { close(stop); upstream.Close() })
+			session := newCodexUpstreamWebsocketSession(1<<20, 0, newCodexWebsocketFailureTracker())
+			t.Cleanup(session.Close)
+			gates := make(chan *codexInterruptWriteGate, 2)
+			dialer := &websocket.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				raw, err := (&net.Dialer{}).DialContext(ctx, network, address)
+				if err != nil {
+					return nil, err
+				}
+				gate := &codexInterruptWriteGate{Conn: raw, entered: make(chan struct{}), release: make(chan struct{})}
+				gates <- gate
+				return gate, nil
+			}}
+			target := codexWebsocketTarget{channelID: 1, url: upstream.URL}
+			dial := func() (*websocket.Conn, *websocket.Conn, *codexInterruptWriteGate) {
+				t.Helper()
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.URL, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				conn, resp, err := session.dial(ctx, dialer, target, req, codexWebsocketTimeouts{idle: time.Minute, ping: time.Minute})
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				peer, gate := <-peers, <-gates
+				session.setStreamingConn(conn)
+				return conn, peer, gate
+			}
+			read := func(conn *websocket.Conn) codexWebsocketRead {
+				t.Helper()
+				// Bound the test even if a regression holds the state lock in Write.
+				reads := make(chan codexWebsocketRead, 1)
+				go func() {
+					event, err := session.nextRead(ctx, conn)
+					if err != nil {
+						event.err = err
+					}
+					reads <- event
+				}()
+				select {
+				case event := <-reads:
+					return event
+				case <-ctx.Done():
+					t.Fatal("session reader blocked behind interrupt write")
+					return codexWebsocketRead{}
+				}
+			}
+			conn, peer, gate := dial()
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+			t.Cleanup(release)
+			if err := peer.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp-active"}}`)); err != nil {
+				t.Fatal(err)
+			}
+			if event := read(conn); event.err != nil {
+				t.Fatal(event.err)
+			}
+			gate.armed.Store(true)
+			forwarded := make(chan bool, 1)
+			go func() {
+				forwarded <- session.forwardInterrupt([]byte(`{"type":"response.interrupt","response_id":"resp-active"}`))
+			}()
+			select {
+			case <-gate.entered:
+			case <-ctx.Done():
+				t.Fatal("interrupt did not reach write barrier")
+			}
+			switch outcome {
+			case "terminal":
+				if err := peer.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-active","output":[]}}`)); err != nil {
+					t.Fatal(err)
+				}
+				if event := read(conn); event.err != nil || !event.terminal {
+					t.Fatalf("terminal did not progress during blocked interrupt: %+v", event)
+				}
+				release()
+				if !<-forwarded {
+					t.Fatal("interrupt accepted by live snapshot was not written")
+				}
+				_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+				var interrupt map[string]any
+				if err := peer.ReadJSON(&interrupt); err != nil || interrupt["response_id"] != "resp-active" {
+					t.Fatalf("accepted interrupt=%v err=%v", interrupt, err)
+				}
+				if session.forwardInterrupt([]byte(`{"type":"response.interrupt","response_id":"resp-active"}`)) {
+					t.Fatal("terminal turn accepted a later interrupt")
+				}
+			case "disconnect":
+				_ = peer.Close()
+				if event := read(conn); event.err == nil {
+					t.Fatal("disconnect did not progress during blocked interrupt")
+				}
+				release()
+				if <-forwarded {
+					t.Fatal("disconnected turn reported successful interrupt")
+				}
+			case "replacement":
+				closed := make(chan struct{})
+				go func() { session.CloseTransport(); close(closed) }()
+				select {
+				case <-closed:
+				case <-ctx.Done():
+					t.Fatal("CloseTransport blocked behind interrupt write")
+				}
+				replacement, replacementPeer, _ := dial()
+				release()
+				if <-forwarded {
+					t.Fatal("closed original socket reported successful interrupt")
+				}
+				if reused, ok := session.connectionReusable(target); !ok || reused != replacement {
+					t.Fatal("failed old interrupt invalidated the replacement socket")
+				}
+				if err := replacementPeer.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp-next"}}`)); err != nil {
+					t.Fatal(err)
+				}
+				if event := read(replacement); event.err != nil {
+					t.Fatal(event.err)
+				}
+				if session.forwardInterrupt([]byte(`{"type":"response.interrupt","response_id":"resp-active"}`)) {
+					t.Fatal("old response interrupt reached the replacement turn")
+				}
+				if !session.forwardInterrupt([]byte(`{"type":"response.interrupt","response_id":"resp-next"}`)) {
+					t.Fatal("current response interrupt was not forwarded")
+				}
+				_ = replacementPeer.SetReadDeadline(time.Now().Add(time.Second))
+				var interrupt map[string]any
+				if err := replacementPeer.ReadJSON(&interrupt); err != nil || interrupt["response_id"] != "resp-next" {
+					t.Fatalf("replacement interrupt=%v err=%v", interrupt, err)
+				}
+			}
+		})
+	}
+}
+
+func TestResponsesWebsocketNativeLateInterruptDoesNotReachNextTurn(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for _, responseID := range []string{"resp-first", "resp-next"} {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				t.Error(err)
+				return
+			}
+			if request["type"] != "response.create" {
+				t.Errorf("late interrupt reached upstream: %#v", request)
+				return
+			}
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": responseID, "output": []any{}, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}})
+		}
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{name: "late-interrupt", upstreamProtocol: "codex", websockets: true, models: "gpt-test"}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "hello"}}}
+	if err := conn.WriteJSON(request); err != nil {
+		t.Fatal(err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-first"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(request); err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event["type"] != "response.completed" || event["response"].(map[string]any)["id"] != "resp-next" {
+		t.Fatalf("next turn event=%#v", event)
+	}
+}
+
+func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingModel(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","error":{"code":"turn_rate_limit_exceeded"},"headers":{"retry-after":"7"}}`))
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{name: "capacity-code-only", upstreamProtocol: "codex", websockets: true, models: "gpt-test,gpt-other"}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event["type"] != "error" {
+		t.Fatalf("capacity event=%#v", event)
+	}
+	if _, _, err := conn.ReadMessage(); !websocket.IsCloseError(err, websocket.CloseInternalServerErr) {
+		t.Fatalf("capacity close=%v", err)
+	}
+	entry := waitForProxyLog(t, env, "gpt-test")
+	if entry.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("capacity status=%d want=429", entry.StatusCode)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs=%v err=%v", configs, err)
+	}
+	until := cooldowns[configs[0].ID]["gpt-test"]
+	if until.Before(before.Add(6*time.Second)) || until.After(time.Now().Add(7*time.Second)) {
+		t.Fatalf("capacity cooldown=%v", until)
+	}
+	if _, exists := cooldowns[configs[0].ID]["gpt-other"]; exists {
+		t.Fatal("unrelated model cooled")
+	}
+	if configs[0].IsCoolingDown(time.Now()) {
+		t.Fatal("capacity cooled channel")
+	}
 }

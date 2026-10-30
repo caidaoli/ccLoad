@@ -207,15 +207,12 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			interrupt.begin(cancelTurn, executionSession.upstream)
 			releaseSlots, errSlots := s.acquireResponsesWebsocketTurnSlots(turnCtx, tokenHashString, c.GetInt64("token_id"))
 			if errSlots != nil {
-				localInterrupt := interrupt.localPayload()
 				interrupt.end()
 				cancelTurn()
 				executionSession.releaseTurn()
 				var rpmErr *tokenRPMExceededError
 				var errWrite error
-				if localInterrupt != nil {
-					_, errWrite = writeResponsesWebsocketLocalInterrupt(conn, localInterrupt, []byte("[]"))
-				} else if errors.As(errSlots, &rpmErr) {
+				if errors.As(errSlots, &rpmErr) {
 					errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, responsesWebsocketErrorBody{
 						Type: "rate_limit_error", Code: "token_rpm_exceeded", Message: rpmErr.Error(),
 						RetryAfter: rpmErr.retryAfterSeconds(),
@@ -349,24 +346,28 @@ func readResponsesWebsocketMessages(
 
 // responsesWebsocketInterrupt 把 response.interrupt 路由到当前回合。原生上游 WS
 // 回合把原帧原样写到在用的上游 socket，由上游回 response.incomplete 结束回合；
-// 其余回合（HTTP、协议转换、上游 socket 已失效）在本地取消，再由回合层合成
-// response.incomplete。
+// HTTP/协议转换回合在本地取消并合成 response.incomplete；原生上游失效时
+// 保留既有终态或 1011 完整重放路径，不能伪造取消成功。
 type responsesWebsocketInterrupt struct {
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	upstream *codexUpstreamWebsocketSession
-	local    []byte
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	upstream   *codexUpstreamWebsocketSession
+	local      []byte
+	responseID string
+	native     bool
 }
 
 func (i *responsesWebsocketInterrupt) begin(cancel context.CancelFunc, upstream *codexUpstreamWebsocketSession) {
 	i.mu.Lock()
 	i.cancel, i.upstream, i.local = cancel, upstream, nil
+	i.responseID, i.native = "", false
 	i.mu.Unlock()
 }
 
 func (i *responsesWebsocketInterrupt) end() {
 	i.mu.Lock()
 	i.cancel, i.upstream, i.local = nil, nil, nil
+	i.responseID = ""
 	i.mu.Unlock()
 }
 
@@ -382,12 +383,44 @@ func (i *responsesWebsocketInterrupt) deliver(payload []byte) bool {
 	if i.cancel == nil {
 		return false
 	}
-	if i.local != nil || i.upstream.forwardInterrupt(payload) {
+	if i.responseID == "" || i.responseID != responsesWebsocketInterruptResponseID(payload) {
+		return true
+	}
+	if i.local != nil {
+		return true
+	}
+	if i.native {
+		// 已终结或断开的原生回合由原终态/1011重放路径收尾。
+		i.upstream.forwardInterrupt(payload)
 		return true
 	}
 	i.local = bytes.Clone(payload)
 	i.cancel()
 	return true
+}
+
+// observe binds cancellation to the response actually emitted by this turn and
+// retires ownership before a terminal payload becomes visible downstream.
+func (i *responsesWebsocketInterrupt) observe(payload []byte) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	switch gjson.GetBytes(payload, "type").String() {
+	case "response.completed", "response.done", "response.incomplete", "response.failed", "error":
+		i.responseID = ""
+	default:
+		if id := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String()); id != "" {
+			i.responseID = id
+		}
+	}
+}
+
+func (i *responsesWebsocketInterrupt) setNative(native bool) {
+	i.mu.Lock()
+	i.native = native
+	i.mu.Unlock()
 }
 
 // localPayload 返回本地取消当前回合的中断帧；未本地中断时为 nil。
@@ -675,6 +708,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 			s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, firstByteTime)
 		},
 		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
+			interrupt.setNative(upstreamWebsocket)
 			s.activeRequests.SetUpstreamWebsocket(reqCtx.activeReqID, upstreamWebsocket)
 		},
 		OnDebugCapture: func(dc *debugCapture) {
@@ -691,6 +725,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}()
 
 	bridgeWriter := newResponsesWebsocketBridgeWriter(conn, s.bodyLimits.maxForPath("/v1/responses"))
+	bridgeWriter.interrupt = interrupt
 	clientReplay := false
 	stopBeforeNativeWebsocket := func(current, next *model.Config, result *proxyResult) bool {
 		// 管理员中断要继续切渠道，不在此处收口。
@@ -931,6 +966,7 @@ func responsesWebsocketUpstreamHeaders(source http.Header) http.Header {
 }
 
 type responsesWebsocketBridgeWriter struct {
+	interrupt              *responsesWebsocketInterrupt
 	conn                   *websocket.Conn
 	header                 http.Header
 	status                 int
@@ -989,6 +1025,7 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 			return 0, errors.New("invalid JSON in upstream SSE event")
 		}
 		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		w.interrupt.observe(payload)
 		if err := w.collectOutputItem(eventType, payload); err != nil {
 			return 0, err
 		}

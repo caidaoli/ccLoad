@@ -124,3 +124,37 @@ func TestRegistryCodexAnthropicStream(t *testing.T) {
 		}
 	})
 }
+
+func TestRegistryCodexCommentaryKeepsFinalAnswer(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	var state any
+	var thinking, text strings.Builder
+	var marker string
+	for _, raw := range []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_c","type":"message","role":"assistant","phase":"commentary","content":[]}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_c","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"On it."}]}}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"id":"msg_f","type":"message","role":"assistant","phase":"final_answer","content":[]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_f","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done."}]}}`,
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`,
+	} {
+		chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "gpt-6.1-sol", nil, nil, []byte("data: "+raw+"\n\n"), &state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range registryToolInputEvents(t, chunks) {
+			switch event.Get("delta.type").String() {
+			case "thinking_delta":
+				thinking.WriteString(event.Get("delta.thinking").String())
+			case "text_delta":
+				text.WriteString(event.Get("delta.text").String())
+			case "signature_delta":
+				marker = event.Get("delta.signature").String()
+			}
+		}
+	}
+	if thinking.String() != "On it." || text.String() != "Done." || marker != "cpa:commentary:v1" {
+		t.Fatalf("commentary=%q final=%q marker=%q", thinking.String(), text.String(), marker)
+	}
+}

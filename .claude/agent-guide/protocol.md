@@ -25,3 +25,7 @@
 - Gemini 原生搜索仅查询静态模型能力；响应转换以实际发出的 googleSearch 请求判断搜索模式，不引入动态模型注册或探测。
 - Codex 客户端 `tool_search_call`/`tool_search_output` 只由 OpenAI Chat 与 Gemini 桥接往返；Anthropic 桥接仍拒绝（Claude 开关保持关闭）。Registry 层的 `compaction` 条目只有 OpenAI 桥接接受。
 - Gemini 转 Anthropic 遇到无工具调用的 `MALFORMED_FUNCTION_CALL` 时，流式发 `error` 事件，非流返回转换错误；不得把错误体当 2xx 成功响应输出。
+
+- Codex commentary 转 Claude 为携带内部 `cpa:commentary:v1` 标记的 thinking 块，最终答案按独立消息输出；回到 Codex 恢复 commentary phase，其他目标恢复普通 assistant 文本。该标记不是提供商签名，不得发送上游；原生 Anthropic 最终化与 OpenCode vendor-reasoning 特殊入口同样恢复。
+- Vertex `functionCall.partialArgs` 在 Claude/Chat/Responses 三方向按调用身份组装 JSONPath 与字符串续片；无效/未完成参数通过既有 ToolInputError/FinalizeToolInput 报错，Responses 至多一个 response.failed，不伪造成功工具终态。未完成调用中插入非空 text/thought 时统一报错，不再打开普通内容块；调用 ID 与续片匹配按 id/call_id/callId 优先级识别。参数清理前的临时 JSON 同样限制为 4 MiB，包含稀疏数组 null 空洞与转义后的字节数。
+- Gemini/Antigravity 转 Responses 的 tool_search item 使用 tsc_；Codex HTTP/WS 出站同时规范旧 ts_ 和无前缀 ID，处理碰撞并保留 call_id。Claude thinking 用量细分接受 output_tokens_details.thinking_tokens，保留总输出用量与旧别名。

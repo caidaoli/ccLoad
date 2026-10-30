@@ -23,6 +23,9 @@ func registryToolInputEvents(t *testing.T, chunks [][]byte) []gjson.Result {
 				continue
 			}
 			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if bytes.Equal(payload, []byte("[DONE]")) {
+				continue
+			}
 			if !json.Valid(payload) {
 				t.Fatalf("invalid translated SSE data %q", payload)
 			}
@@ -30,6 +33,168 @@ func registryToolInputEvents(t *testing.T, chunks [][]byte) []gjson.Result {
 		}
 	}
 	return events
+}
+
+func TestRegistryVertexPartialArgs(t *testing.T) {
+	t.Parallel()
+	for _, target := range []protocol.Protocol{protocol.OpenAI, protocol.Anthropic, protocol.Codex} {
+		for _, tc := range []struct {
+			name, identity, continuationIdentity string
+			incomplete, signatureCarrier         bool
+		}{
+			{name: "id", identity: `"id":"call_1",`},
+			{name: "incomplete", identity: `"id":"call_1",`, incomplete: true},
+			{name: "call_id", identity: `"call_id":"call_1",`, continuationIdentity: `"call_id":"call_1",`},
+			{name: "callId", identity: `"callId":"call_1",`, continuationIdentity: `"callId":"call_1",`},
+			{name: "id_precedence", identity: `"id":"call_1","call_id":"ignored","callId":"ignored_too",`, continuationIdentity: `"id":"call_1","call_id":"different","callId":"different_too",`},
+			{name: "call_id_precedence", identity: `"id":"","call_id":"call_1","callId":"ignored",`, continuationIdentity: `"call_id":"call_1","callId":"different",`},
+			{name: "empty_signature_carrier", identity: `"id":"call_1",`, signatureCarrier: true},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", target, tc.name), func(t *testing.T) {
+				reg := protocol.NewRegistry()
+				builtin.Register(reg)
+				var state any
+				var args strings.Builder
+				var chatCallID string
+				failed, succeeded := 0, false
+				frames := []string{fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{%s"name":"weather","partialArgs":[{"jsonPath":"$.city","stringValue":"New ","willContinue":true}],"willContinue":true}}]}}],"responseId":"resp_1"}`, tc.identity)}
+				if tc.signatureCarrier {
+					frames = append(frames, `{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"","thoughtSignature":"signature"}]}}],"responseId":"resp_1"}`)
+				}
+				if !tc.incomplete {
+					frames = append(frames, fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{%s"partialArgs":[{"jsonPath":"$.city","stringValue":"York"}],"willContinue":false}}]},"finishReason":"STOP"}],"responseId":"resp_1"}`, tc.continuationIdentity), "[DONE]")
+				}
+				consume := func(chunks [][]byte) {
+					for _, event := range registryToolInputEvents(t, chunks) {
+						switch target {
+						case protocol.OpenAI:
+							for _, call := range event.Get("choices.0.delta.tool_calls").Array() {
+								if id := call.Get("id").String(); id != "" {
+									if chatCallID != "" && chatCallID != id {
+										t.Fatalf("tool call identity changed: %q -> %q", chatCallID, id)
+									}
+									chatCallID = id
+								}
+								args.WriteString(call.Get("function.arguments").String())
+							}
+							succeeded = succeeded || event.Get("choices.0.finish_reason").String() == "tool_calls"
+						case protocol.Anthropic:
+							if event.Get("delta.type").String() == "input_json_delta" {
+								args.WriteString(event.Get("delta.partial_json").String())
+							}
+							succeeded = succeeded || event.Get("type").String() == "message_stop"
+						case protocol.Codex:
+							if event.Get("type").String() == "response.function_call_arguments.delta" {
+								args.WriteString(event.Get("delta").String())
+							}
+							if event.Get("type").String() == "response.failed" {
+								failed++
+							}
+							succeeded = succeeded || event.Get("type").String() == "response.completed"
+						}
+					}
+				}
+				for _, frame := range frames {
+					chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, target, "gemini-3-pro", nil, nil, []byte("data: "+frame+"\n\n"), &state)
+					if err != nil {
+						t.Fatal(err)
+					}
+					consume(chunks)
+				}
+				chunks, err := protocol.FinalizeResponseToolInput(state)
+				consume(chunks)
+				if target == protocol.OpenAI && chatCallID != "call_1" {
+					t.Fatalf("tool call ID=%q, want call_1", chatCallID)
+				}
+				if tc.incomplete {
+					if err == nil || succeeded {
+						t.Fatalf("incomplete args reported success: err=%v success=%v args=%q", err, succeeded, args.String())
+					}
+					more, _ := protocol.FinalizeResponseToolInput(state)
+					consume(more)
+					if target == protocol.Codex && failed != 1 {
+						t.Fatalf("failure events=%d, want 1", failed)
+					}
+				} else if err != nil || !succeeded || !json.Valid([]byte(args.String())) || gjson.Get(args.String(), "city").String() != "New York" {
+					t.Fatalf("assembled args=%q success=%v error=%v", args.String(), succeeded, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRegistryVertexInvalidPartialArgsReportsError(t *testing.T) {
+	t.Parallel()
+	for _, target := range []protocol.Protocol{protocol.OpenAI, protocol.Anthropic, protocol.Codex} {
+		for _, tc := range []struct {
+			name, initialIdentity, invalidPart string
+		}{
+			{name: "invalid_path", invalidPart: `{"functionCall":{"id":"call_1","name":"weather","partialArgs":[{"jsonPath":"$.cities[999999999]","stringValue":"x"}],"willContinue":false}}`},
+			{name: "interleaved_text", initialIdentity: `"id":"call_1",`, invalidPart: `{"text":"interrupted"}`},
+			{name: "interleaved_thought", initialIdentity: `"id":"call_1",`, invalidPart: `{"thought":true,"text":"interrupted"}`},
+			{name: "changed_id", initialIdentity: `"id":"call_1",`, invalidPart: `{"functionCall":{"id":"call_2","partialArgs":[{"jsonPath":"$.city","stringValue":"wrong"}],"willContinue":false}}`},
+			{name: "changed_call_id", initialIdentity: `"call_id":"call_1",`, invalidPart: `{"functionCall":{"call_id":"call_2","partialArgs":[{"jsonPath":"$.city","stringValue":"wrong"}],"willContinue":false}}`},
+			{name: "changed_callId", initialIdentity: `"callId":"call_1",`, invalidPart: `{"functionCall":{"callId":"call_2","partialArgs":[{"jsonPath":"$.city","stringValue":"wrong"}],"willContinue":false}}`},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", target, tc.name), func(t *testing.T) {
+				reg := protocol.NewRegistry()
+				builtin.Register(reg)
+				var state any
+				var events []gjson.Result
+				translate := func(frame string) error {
+					chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, target, "gemini-3-pro", nil, nil, []byte("data: "+frame+"\n\n"), &state)
+					events = append(events, registryToolInputEvents(t, chunks)...)
+					return err
+				}
+				if tc.initialIdentity != "" {
+					initial := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{%s"name":"weather","partialArgs":[{"jsonPath":"$.city","stringValue":"New ","willContinue":true}],"willContinue":true}}]}}],"responseId":"resp_1"}`, tc.initialIdentity)
+					if err := translate(initial); err != nil {
+						t.Fatal(err)
+					}
+				}
+				invalid := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[%s]}}],"responseId":"resp_1"}`, tc.invalidPart)
+				if err := translate(invalid); err == nil {
+					t.Fatal("invalid partialArgs must propagate a conversion error")
+				}
+				for _, frame := range []string{
+					`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.city","stringValue":"York"}],"willContinue":false}}]},"finishReason":"STOP"}],"responseId":"resp_1"}`,
+					"[DONE]",
+				} {
+					if err := translate(frame); err == nil {
+						t.Fatalf("failed tool input recovered on frame %s", frame)
+					}
+				}
+				for range 2 {
+					chunks, err := protocol.FinalizeResponseToolInput(state)
+					events = append(events, registryToolInputEvents(t, chunks)...)
+					if err == nil {
+						t.Fatal("failed tool input finalized successfully")
+					}
+				}
+				failures := 0
+				for _, event := range events {
+					if event.Get("type").String() == "response.failed" {
+						failures++
+					}
+					if event.Get("type").String() == "response.completed" || event.Get("type").String() == "message_stop" || event.Get("choices.0.finish_reason").String() != "" {
+						t.Fatalf("invalid arguments reported success: %s", event.Raw)
+					}
+					if event.Get("choices.0.delta.content").String() != "" || event.Get("choices.0.delta.reasoning_content").String() != "" || event.Get("type").String() == "response.content_part.added" || event.Get("type").String() == "response.output_text.delta" || event.Get("type").String() == "response.reasoning_summary_text.delta" {
+						t.Fatalf("invalid arguments emitted interleaved content: %s", event.Raw)
+					}
+					if event.Get("type").String() == "content_block_start" && event.Get("content_block.type").String() != "tool_use" {
+						t.Fatalf("invalid arguments opened another content block: %s", event.Raw)
+					}
+					if event.Get("type").String() == "response.output_item.added" && event.Get("item.type").String() != "function_call" {
+						t.Fatalf("invalid arguments opened another output item: %s", event.Raw)
+					}
+				}
+				if target == protocol.Codex && failures != 1 {
+					t.Fatalf("failure events=%d, want 1", failures)
+				}
+			})
+		}
+	}
 }
 
 func TestRegistryApplyPatchResponsesValidateArgumentsAndCompleteConsistently(t *testing.T) {

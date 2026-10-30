@@ -22,6 +22,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zedauth"
@@ -295,6 +296,8 @@ func (s *Server) buildProxyRequest(
 	}
 	if vertexWire {
 		body = prepareVertexRequestBody(body, reqCtx != nil && reqCtx.transformPlan.ClientProtocol == protocol.Codex)
+	} else if upstreamProtocol == protocol.Gemini && !cfg.UsesAntigravityOAuth() && isGeminiAPIURL(parsedUpstreamURL) {
+		body = signature.SanitizeVertexSignaturesForNonVertex(body, "contents")
 	}
 	// 重试回放的是已改写的 wire，沿用首轮映射；只有 OAuth 模拟路径改名。
 	if reqCtx != nil && reqCtx.anthropicToolAliases == nil && cfg.UsesAnthropicOAuth() && !callerOwnsAnthropicWire &&
@@ -2251,7 +2254,7 @@ func classifySSEErrorStatus(body []byte) int {
 	if _, is1308 := util.ParseResetTimeFrom1308Error(body); is1308 {
 		return util.StatusQuotaExceeded
 	}
-	if isSSERateLimitError(body) {
+	if util.IsTransientCapacityError(body) || isSSERateLimitError(body) {
 		return http.StatusTooManyRequests
 	}
 	return util.StatusSSEError
@@ -3111,10 +3114,20 @@ func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
 func markSSEErrorForwardResult(res *fwResult) {
 	res.Body = res.SSEErrorEvent
 	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
-	if upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent); upstreamStatus != 0 {
+	upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent)
+	if upstreamStatus != 0 {
 		res.UpstreamStatus = upstreamStatus
-		res.Header = headers
-	} else if res.Header != nil && looksLikeJSON(res.Body) {
+	}
+	if len(headers) > 0 {
+		res.Header = res.Header.Clone()
+		if res.Header == nil {
+			res.Header = make(http.Header)
+		}
+		for name, values := range headers {
+			res.Header[name] = values
+		}
+	}
+	if res.Header != nil && looksLikeJSON(res.Body) {
 		// 重试耗尽时 body 是错误事件的 JSON 负载，不能再沿用上游的 text/event-stream。
 		res.Header = res.Header.Clone()
 		res.Header.Set("Content-Type", "application/json")

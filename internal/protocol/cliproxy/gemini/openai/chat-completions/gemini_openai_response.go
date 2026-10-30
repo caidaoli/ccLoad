@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -23,13 +24,21 @@ import (
 
 // convertGeminiResponseToOpenAIChatParams holds parameters for response conversion.
 type convertGeminiResponseToOpenAIChatParams struct {
+	translatorcommon.ApplyPatchErrorState
 	UnixTimestamp int64
 	// FunctionIndex tracks tool call indices per candidate index to support multiple candidates.
 	FunctionIndex            map[int]int
 	SawToolCall              map[int]bool
+	SawFinishReason          map[int]bool
+	SawDone                  bool
 	UpstreamFinishReason     map[int]string
+	ModelVersion             string
+	ResponseID               string
+	PendingUsageMetadata     []byte
 	SanitizedNameMap         map[string]string
 	SanitizedNameMapResolved bool
+	ActiveToolCall           map[int]*translatorcommon.VertexStreamingToolCall
+	HasIncompleteToolCall    map[int]bool
 }
 
 // functionCallIDCounter provides a process-wide unique counter for function call identifiers.
@@ -60,6 +69,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 			UnixTimestamp:            0,
 			FunctionIndex:            make(map[int]int),
 			SawToolCall:              make(map[int]bool),
+			SawFinishReason:          make(map[int]bool),
 			UpstreamFinishReason:     make(map[int]string),
 			SanitizedNameMap:         util.SanitizedToolNameMap(originalRequestRawJSON),
 			SanitizedNameMapResolved: true,
@@ -74,8 +84,17 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 	if p.SawToolCall == nil {
 		p.SawToolCall = make(map[int]bool)
 	}
+	if p.SawFinishReason == nil {
+		p.SawFinishReason = make(map[int]bool)
+	}
 	if p.UpstreamFinishReason == nil {
 		p.UpstreamFinishReason = make(map[int]string)
+	}
+	if p.ActiveToolCall == nil {
+		p.ActiveToolCall = make(map[int]*translatorcommon.VertexStreamingToolCall)
+	}
+	if p.HasIncompleteToolCall == nil {
+		p.HasIncompleteToolCall = make(map[int]bool)
 	}
 	if !p.SanitizedNameMapResolved {
 		if p.SanitizedNameMap == nil {
@@ -84,12 +103,51 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 		p.SanitizedNameMapResolved = true
 	}
 
+	if p.ToolInputError() != nil {
+		return nil
+	}
+
 	if bytes.HasPrefix(rawJSON, []byte("data:")) {
 		rawJSON = bytes.TrimSpace(rawJSON[5:])
 	}
 
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
-		return [][]byte{[]byte("[DONE]")}
+		if p.SawDone {
+			return nil
+		}
+		p.FinalizeToolInput()
+		if p.ToolInputError() != nil {
+			return nil
+		}
+		p.SawDone = true
+		var indices []int
+		for idx, reason := range p.UpstreamFinishReason {
+			if reason != "" && !p.SawFinishReason[idx] && p.ActiveToolCall[idx] == nil && !p.HasIncompleteToolCall[idx] {
+				indices = append(indices, idx)
+			}
+		}
+		sort.Ints(indices)
+		var doneChunks [][]byte
+		for _, idx := range indices {
+			p.SawFinishReason[idx] = true
+			finishReason, nativeFinishReason := resolveGeminiOpenAIFinishReason(p.UpstreamFinishReason[idx], p.SawToolCall[idx])
+			template := []byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}`)
+			template, _ = sjson.SetBytes(template, "created", p.UnixTimestamp)
+			if p.ModelVersion != "" {
+				template, _ = sjson.SetBytes(template, "model", p.ModelVersion)
+			}
+			if p.ResponseID != "" {
+				template, _ = sjson.SetBytes(template, "id", p.ResponseID)
+			}
+			if len(p.PendingUsageMetadata) > 0 {
+				template = applyGeminiOpenAIUsageMetadata(template, gjson.ParseBytes(p.PendingUsageMetadata))
+			}
+			template, _ = sjson.SetBytes(template, "choices.0.index", idx)
+			template, _ = sjson.SetBytes(template, "choices.0.finish_reason", finishReason)
+			template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
+			doneChunks = append(doneChunks, template)
+		}
+		return append(doneChunks, []byte("[DONE]"))
 	}
 
 	// Initialize the OpenAI SSE base template.
@@ -98,9 +156,12 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 	baseTemplate, _ = sjson.SetBytes(baseTemplate, "model", modelName)
 
 	// Extract and set the model version.
-	if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelName == "" && modelVersionResult.Exists() {
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "model", modelVersionResult.String())
+	if modelName != "" {
+		p.ModelVersion = modelName
+	} else if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
+		p.ModelVersion = modelVersionResult.String()
 	}
+	baseTemplate, _ = sjson.SetBytes(baseTemplate, "model", p.ModelVersion)
 
 	// Extract and set the creation timestamp.
 	if createTimeResult := gjson.GetBytes(rawJSON, "createTime"); createTimeResult.Exists() {
@@ -115,31 +176,19 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 	// Extract and set the response ID.
 	if responseIDResult := gjson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "id", responseIDResult.String())
+		p.ResponseID = responseIDResult.String()
+		baseTemplate, _ = sjson.SetBytes(baseTemplate, "id", p.ResponseID)
+	} else if p.ResponseID != "" {
+		baseTemplate, _ = sjson.SetBytes(baseTemplate, "id", p.ResponseID)
 	}
 
 	// Extract and set usage metadata (token counts).
 	// Usage is applied to the base template so it appears in the chunks.
 	if usageResult := gjson.GetBytes(rawJSON, "usageMetadata"); usageResult.Exists() {
-		cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
-		if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
-			baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.total_tokens", totalTokenCountResult.Int())
-		}
-		promptTokenCount := usageResult.Get("promptTokenCount").Int()
-		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.prompt_tokens", promptTokenCount)
-		if thoughtsTokenCount > 0 {
-			baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
-		}
-		// Include cached token count if present (indicates prompt caching is working)
-		if cachedTokenCount > 0 {
-			var err error
-			baseTemplate, err = sjson.SetBytes(baseTemplate, "usage.prompt_tokens_details.cached_tokens", cachedTokenCount)
-			if err != nil {
-				log.Printf("gemini openai response: failed to set cached_tokens in streaming: %v", err)
-			}
-		}
+		baseTemplate = applyGeminiOpenAIUsageMetadata(baseTemplate, usageResult)
+		p.PendingUsageMetadata = nil
+	} else if pendingUsage := gjson.GetBytes(rawJSON, "cpaUsageMetadata"); pendingUsage.Exists() {
+		p.PendingUsageMetadata = append(p.PendingUsageMetadata[:0], pendingUsage.Raw...)
 	}
 
 	var responseStrings [][]byte
@@ -161,6 +210,8 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 			partsResult := candidate.Get("content.parts")
 			assistantRoleSet := false
+			sawNoopFunctionCall := false
+			sawCompleteFunctionCall := false
 			setAssistantRole := func() {
 				if assistantRoleSet {
 					return
@@ -194,6 +245,13 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 					hasThoughtSignature := thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != ""
 					hasContentPayload := partTextResult.Exists() || functionCallResult.Exists() || inlineDataResult.Exists()
 
+					if active := p.ActiveToolCall[candidateIndex]; active != nil && (partTextResult.String() != "" || (functionCallResult.Exists() && !active.CanContinueWith(functionCallResult))) {
+						p.SetToolInputError(fmt.Errorf("upstream Gemini content or call identity interrupted incomplete tool arguments"))
+						p.HasIncompleteToolCall[candidateIndex] = true
+						p.ActiveToolCall[candidateIndex] = nil
+						break
+					}
+
 					// Skip pure thoughtSignature parts but keep any actual payload in the same part.
 					if hasThoughtSignature && !hasContentPayload {
 						continue
@@ -201,6 +259,10 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 					if partTextResult.Exists() {
 						text := partTextResult.String()
+						if p.ActiveToolCall[candidateIndex] != nil {
+							sawNoopFunctionCall = true
+							continue
+						}
 						setAssistantRole()
 						// Handle text content, distinguishing between regular content and reasoning/thoughts.
 						if partResult.Get("thought").Bool() {
@@ -210,34 +272,110 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 						}
 					} else if functionCallResult.Exists() {
 						// Handle function call content.
-						p.SawToolCall[candidateIndex] = true
-						toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+						if active := p.ActiveToolCall[candidateIndex]; active != nil && active.CanContinueWith(functionCallResult) {
+							p.SawToolCall[candidateIndex] = true
+							delta, done := active.Assembler.PushFunctionCall(functionCallResult)
+							if err := active.Assembler.Err(); err != nil {
+								p.SetToolInputError(err)
+								p.HasIncompleteToolCall[candidateIndex] = true
+								p.ActiveToolCall[candidateIndex] = nil
+								sawNoopFunctionCall = true
+								break
+							}
+							if done {
+								p.ActiveToolCall[candidateIndex] = nil
+							}
+							if delta != "" {
+								toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+								if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
+									template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+								}
+								functionCallTemplate := []byte(`{"index":0,"function":{"arguments":""}}`)
+								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", active.Index)
+								functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
+								setAssistantRole()
+								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
+							} else {
+								sawNoopFunctionCall = true
+							}
+						} else if translatorcommon.IsVertexStreamingFunctionCall(functionCallResult) {
+							rawName := strings.TrimSpace(functionCallResult.Get("name").String())
+							if rawName == "" {
+								p.HasIncompleteToolCall[candidateIndex] = true
+								sawNoopFunctionCall = true
+								continue
+							}
+							fcName := util.RestoreSanitizedToolName(p.SanitizedNameMap, rawName)
+							upstreamID := translatorcommon.VertexFunctionCallID(functionCallResult)
+							fcID := upstreamID
+							if fcID == "" {
+								fcID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
+							}
+							functionCallIndex := p.FunctionIndex[candidateIndex]
+							active := translatorcommon.NewVertexStreamingToolCall(rawName, fcName, upstreamID, fcID, functionCallIndex)
+							delta, done := active.Assembler.PushFunctionCall(functionCallResult)
+							if err := active.Assembler.Err(); err != nil {
+								p.SetToolInputError(err)
+								p.HasIncompleteToolCall[candidateIndex] = true
+								sawNoopFunctionCall = true
+								break
+							}
+							p.SawToolCall[candidateIndex] = true
+							p.FunctionIndex[candidateIndex]++
+							if !done {
+								p.ActiveToolCall[candidateIndex] = active
+							}
 
-						// Retrieve the function index for this specific candidate.
-						functionCallIndex := p.FunctionIndex[candidateIndex]
-						p.FunctionIndex[candidateIndex]++
+							toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+							if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
+								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+							}
 
-						if toolCallsResult.Exists() && toolCallsResult.IsArray() {
-							functionCallIndex = len(toolCallsResult.Array())
+							functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":""}}`)
+							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "id", fcID)
+							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
+							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
+							functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
+							setAssistantRole()
+							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 						} else {
-							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
-						}
+							rawName := strings.TrimSpace(functionCallResult.Get("name").String())
+							if rawName == "" && !functionCallResult.Get("args").Exists() {
+								sawNoopFunctionCall = true
+								continue
+							}
+							p.SawToolCall[candidateIndex] = true
+							sawCompleteFunctionCall = true
+							toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
 
-						functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":""}}`)
-						fcName := util.RestoreSanitizedToolName(p.SanitizedNameMap, functionCallResult.Get("name").String())
-						functionCallID := geminiFunctionCallID(functionCallResult)
-						if functionCallID == "" {
-							functionCallID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
+							// Retrieve the function index for this specific candidate.
+							functionCallIndex := p.FunctionIndex[candidateIndex]
+							p.FunctionIndex[candidateIndex]++
+
+							if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
+								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+							}
+
+							functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":""}}`)
+							fcName := util.RestoreSanitizedToolName(p.SanitizedNameMap, rawName)
+							fcID := translatorcommon.VertexFunctionCallID(functionCallResult)
+							if fcID == "" {
+								fcID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
+							}
+							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "id", fcID)
+							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
+							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
+							if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
+								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", fcArgsResult.Raw)
+							}
+							setAssistantRole()
+							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 						}
-						functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "id", functionCallID)
-						functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
-						functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
-						if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", fcArgsResult.Raw)
-						}
-						setAssistantRole()
-						template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 					} else if inlineDataResult.Exists() {
+						if p.ActiveToolCall[candidateIndex] != nil {
+							p.HasIncompleteToolCall[candidateIndex] = true
+							p.ActiveToolCall[candidateIndex] = nil
+						}
 						data := inlineDataResult.Get("data").String()
 						if data == "" {
 							continue
@@ -264,21 +402,23 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 				}
 			}
 
+			if p.ToolInputError() != nil {
+				return false
+			}
 			upstreamFinishReason := p.UpstreamFinishReason[candidateIndex]
 			sawToolCall := p.SawToolCall[candidateIndex]
-			isFinalChunk := upstreamFinishReason != ""
+			usageExists := gjson.GetBytes(rawJSON, "usageMetadata").Exists()
+			isFinalChunk := upstreamFinishReason != "" && (usageExists || sawCompleteFunctionCall) && !p.SawFinishReason[candidateIndex] && p.ActiveToolCall[candidateIndex] == nil && !p.HasIncompleteToolCall[candidateIndex] && p.ToolInputError() == nil
 
 			if isFinalChunk {
-				var finishReason string
-				if sawToolCall {
-					finishReason = "tool_calls"
-				} else if upstreamFinishReason == "MAX_TOKENS" {
-					finishReason = "length"
-				} else {
-					finishReason = "stop"
-				}
+				p.SawFinishReason[candidateIndex] = true
+				finishReason, nativeFinishReason := resolveGeminiOpenAIFinishReason(upstreamFinishReason, sawToolCall)
 				template, _ = sjson.SetBytes(template, "choices.0.finish_reason", finishReason)
-				template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", strings.ToLower(upstreamFinishReason))
+				template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
+			}
+
+			if sawNoopFunctionCall && !assistantRoleSet && !isFinalChunk && !usageExists {
+				return true
 			}
 
 			responseStrings = append(responseStrings, template)
@@ -287,7 +427,14 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 	} else {
 		// If there are no candidates (e.g., a pure usageMetadata chunk), return the usage chunk if present.
 		if gjson.GetBytes(rawJSON, "usageMetadata").Exists() && len(responseStrings) == 0 {
-			responseStrings = append(responseStrings, append([]byte(nil), baseTemplate...))
+			chunk := append([]byte(nil), baseTemplate...)
+			if upstreamFinishReason := p.UpstreamFinishReason[0]; upstreamFinishReason != "" && !p.SawFinishReason[0] && p.ActiveToolCall[0] == nil && !p.HasIncompleteToolCall[0] {
+				p.SawFinishReason[0] = true
+				finishReason, nativeFinishReason := resolveGeminiOpenAIFinishReason(upstreamFinishReason, p.SawToolCall[0])
+				chunk, _ = sjson.SetBytes(chunk, "choices.0.finish_reason", finishReason)
+				chunk, _ = sjson.SetBytes(chunk, "choices.0.native_finish_reason", nativeFinishReason)
+			}
+			responseStrings = append(responseStrings, chunk)
 		}
 	}
 
@@ -368,7 +515,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 			// Set finish reason.
 			finishReason := "stop"
 			if finishReasonResult := candidate.Get("finishReason"); finishReasonResult.Exists() {
-				finishReason = geminiFinishReasonToOpenAI(finishReasonResult.String())
+				finishReason, _ = resolveGeminiOpenAIFinishReason(finishReasonResult.String(), false)
 				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "native_finish_reason", strings.ToLower(finishReasonResult.String()))
 			}
 			choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "finish_reason", finishReason)
@@ -414,7 +561,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 						hasFunctionCall = true
 						functionCallItemTemplate := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
 						fcName := util.RestoreSanitizedToolName(sanitizedNameMap, functionCallResult.Get("name").String())
-						functionCallID := geminiFunctionCallID(functionCallResult)
+						functionCallID := translatorcommon.VertexFunctionCallID(functionCallResult)
 						if functionCallID == "" {
 							functionCallID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
 						}
@@ -474,22 +621,71 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 	return template
 }
 
-func geminiFunctionCallID(functionCall gjson.Result) string {
-	for _, path := range []string{"id", "call_id", "callId"} {
-		if value := functionCall.Get(path); value.Exists() && value.String() != "" {
-			return value.String()
-		}
+func resolveGeminiOpenAIFinishReason(upstreamFinishReason string, sawToolCall bool) (finishReason, nativeFinishReason string) {
+	switch {
+	case sawToolCall:
+		finishReason = "tool_calls"
+	case upstreamFinishReason == "MAX_TOKENS":
+		finishReason = "length"
+	case isGeminiContentFilterFinishReason(upstreamFinishReason):
+		finishReason = "content_filter"
+	default:
+		finishReason = "stop"
 	}
-	return ""
+	nativeFinishReason = "stop"
+	if upstreamFinishReason != "" {
+		nativeFinishReason = strings.ToLower(upstreamFinishReason)
+	}
+	return finishReason, nativeFinishReason
 }
 
-func geminiFinishReasonToOpenAI(reason string) string {
-	switch strings.ToUpper(reason) {
-	case "MAX_TOKENS":
-		return "length"
-	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
-		return "content_filter"
-	default:
-		return "stop"
+func applyGeminiOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {
+	cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
+	template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
+	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 	}
+	promptTokenCount := usageResult.Get("promptTokenCount").Int()
+	thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
+	template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
+	if thoughtsTokenCount > 0 {
+		template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
+	}
+	if cachedTokenCount > 0 {
+		var err error
+		template, err = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokenCount)
+		if err != nil {
+			log.Printf("gemini openai response: failed to set cached_tokens in streaming: %v", err)
+		}
+	}
+	return template
+}
+
+func isGeminiContentFilterFinishReason(reason string) bool {
+	switch strings.ToUpper(strings.TrimSpace(reason)) {
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "MALFORMED_RESPONSE", "MALFORMED_FUNCTION_CALL":
+		return true
+	default:
+		return false
+	}
+}
+
+// FinalizeToolInput reports invalid or truncated Vertex tool arguments at EOF.
+func (p *convertGeminiResponseToOpenAIChatParams) FinalizeToolInput() [][]byte {
+	if p.ToolInputError() != nil {
+		return nil
+	}
+	for idx, active := range p.ActiveToolCall {
+		if active != nil {
+			p.SetToolInputError(fmt.Errorf("upstream Gemini function call in candidate %d ended before complete arguments", idx))
+			return nil
+		}
+	}
+	for idx, incomplete := range p.HasIncompleteToolCall {
+		if incomplete {
+			p.SetToolInputError(fmt.Errorf("upstream Gemini function call in candidate %d has invalid or incomplete arguments", idx))
+			return nil
+		}
+	}
+	return nil
 }

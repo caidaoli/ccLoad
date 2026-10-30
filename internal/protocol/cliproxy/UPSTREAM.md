@@ -2,8 +2,10 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `9d987361ea20222c6cf3124ca7a9a1f8b32e4473` (`fork/v11.8.0`)
-- Synchronized at: `2026-10-24`
+- Last synchronized commit: `90c447d3a8727d115aa7552ec93ce023736ed492` (official commit beyond the `fork/v11.8.0` baseline)
+- Snapshot target repository: `https://github.com/router-for-me/CLIProxyAPI`
+- Stable fork tag series: `fork/v` (no new fork release is claimed)
+- Synchronized at: `2026-10-30`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -21,6 +23,76 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-10-30)
+
+The core and allowlisted Antigravity adapters were reviewed together against the
+immutable official target above, using the existing local CLIProxyAPI checkout.
+The maintained fork repository remains unchanged; this target is not a newly
+published fork tag. Runtime/auth/config/routing/cache/plugin/Interactions code
+remains excluded, and the fork's pseudo-thinking/web-search revert stays local.
+
+Adopted: implicitly open tool schemas preserve arguments and streaming JSON;
+`$ref` siblings retain intersecting constraints and array placeholders are added
+after reference/allOf resolution; Codex commentary is separate from final-answer
+messages and round-trips through the internal commentary marker; Gemini tool
+indices span chunks, Antigravity preserves explicit call IDs, tool-search item
+IDs use `tsc_`, and Claude thinking-token details map to Chat reasoning usage.
+Vertex `partialArgs` now assemble nested paths and string continuations in the
+Claude, Chat and Responses converters. The catalog adds GPT 6.1 Terra, Kimi 3.1
+and xAI image/video entries. GPT 5.5 capability records stay as a local
+difference: removing them breaks existing configured channels, model manifests
+and reasoning-level clamping. Existing ccLoad catalog additions remain.
+
+Local adaptations:
+
+- Keep native non-stream wire shapes, model override, call ID aliases,
+  STOP/length handling and reasoning-token fallbacks. Gemini-to-Chat preserves
+  the local successful [DONE] marker and same-chunk ordinary tool finish_reason;
+  pending or invalid Vertex arguments cannot emit that success marker. The two Gemini terminal
+  fixes were already implemented; their upstream tests are now included.
+- Expose invalid or incomplete ordinary Vertex tool arguments through the
+  existing ToolInputError/FinalizeToolInput boundary, not only apply_patch.
+  Responses emits at most one response.failed; malformed or truncated arguments
+  cannot be finalized as a successful tool call.
+- Recognize observed-key Vertex bare-Tink signatures in the pure core. The local
+  SanitizeVertexSignaturesForNonVertex entry only removes those incompatible
+  signatures at confirmed Google Gemini API and Antigravity Gemini exits,
+  preserving unrelated native signatures. Unknown relay backends retain their
+  signatures instead of being inferred non-Vertex from an unrecognized URL.
+  Actual Vertex OAuth/publisher API-key endpoints retain them, including exact
+  full model URLs. Antigravity Claude keeps its separate CAQS/turn-level policy.
+- CAQS no longer pins the transport channel number. Gemini text-separated tool
+  groups each require their first-call signature; thought parts do not split a
+  group. This does not replace the Antigravity Claude model-turn policy.
+- The commentary marker is restored before native Anthropic passthrough too,
+  including compatible providers whose model is not a Claude family and the
+  OpenCode vendor-reasoning normalization branch.
+- Merge the new schema-ref tests into the existing schema suite. Exclude the
+  Interactions commentary test. The JSON-delete helper and its tests are excluded
+  entirely because their callers belong to excluded thinking runtime code. Pure Antigravity continuation tests
+  are imported into the existing app wire test suite, separately from its
+  runtime-dependent excluded response suite.
+
+The app-owned changes accompanying this snapshot bind WebSocket interrupts to
+current response ownership, honor transient-capacity Retry-After deadlines,
+and normalize legacy tool-search IDs on both HTTP and WebSocket Codex exits.
+Ordinary 429 responses retain policy backoff; only recognized transient capacity
+errors use exact Retry-After deadlines. The classifier also handles capacity
+errors passed directly as internal 597 by channel tests. WebSocket interrupt
+acceptance is the live/response-ID snapshot under the state lock; socket writes
+hold only the writer lock, allowing reads and disconnects to progress. Queued
+turns have no response ownership and ignore interrupts.
+
+Vertex partialArgs reject non-empty text/thought interleaving before a call ends
+without opening another content block. All three converters and continuation
+matching use id/call_id/callId in that order; existing client ID generation is
+unchanged. Cleaner input serialization shares the 4 MiB limit, including sparse
+array holes and JSON escaping. Responses tool-input failures share one payload
+builder; the native Anthropic invariant restores commentary for OpenCode too.
+
+These adaptations do not import upstream executors or change the established
+1011 client-replay and final Codex 429-to-503 contracts.
 
 ## Synchronization adaptations (2026-10-24)
 
@@ -322,18 +394,18 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 108 `_test.go` files from the same commit as the
+The core snapshot includes 112 `_test.go` files from the same commit as the
 production sources:
 
 - `applypatch`: 1
 - `claude/gemini`: 3
 - `claude/openai/chat-completions`: 7
 - `claude/openai/responses`: 16
-- `codex/claude`: 5
+- `codex/claude`: 8
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 3
 - `codex/openai/responses`: 2
-- `common`: 16
+- `common`: 17
 - `gemini/claude`: 4
 - `gemini/openai/chat-completions`: 7
 - `gemini/openai/responses`: 9

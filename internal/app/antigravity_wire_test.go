@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -11,11 +13,27 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	antigravityclaude "ccLoad/internal/protocol/cliproxy/providers/antigravity/claude"
 
 	"github.com/tidwall/gjson"
 )
 
 const antigravitySchemaTestModel = "gemini-3-pro"
+
+func TestAntigravityGeminiWireRejectsVertexSignature(t *testing.T) {
+	t.Parallel()
+	sig := base64.StdEncoding.EncodeToString(append([]byte{1, 0x8f, 0x3d, 0x6b, 0x5f}, bytes.Repeat([]byte{0x42}, 400)...))
+	body := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{}},"thoughtSignature":"` + sig + `"}]}]}`)
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	got, err := prepareAntigravityRequestBody(cfg, "gemini-3-pro", body, body, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := gjson.GetBytes(got, "request.contents.0.parts.0")
+	if part.Get("thoughtSignature").String() != "skip_thought_signature_validator" || part.Get("functionCall.name").String() != "lookup" {
+		t.Fatalf("Vertex signature reached Antigravity: %s", got)
+	}
+}
 
 func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 	t.Parallel()
@@ -360,5 +378,44 @@ func assertAntigravityClaudeUsage(t *testing.T, usage gjson.Result, wantOutput i
 	}
 	if got := usage.Get("output_tokens").Int(); got != wantOutput {
 		t.Errorf("output_tokens = %d, want %d (回退计算误把缓存输入算成输出)", got, wantOutput)
+	}
+}
+
+func TestConvertAntigravityResponseToClaude_ImplicitOpenToolContinuationOrdering(t *testing.T) {
+	origRequest := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"echo","input_schema":{"type":"object","properties":{}}}]}`)
+	translatedRequest := []byte(`{"model":"gemini-3.8-flash-high"}`)
+
+	for _, tc := range []struct {
+		name      string
+		firstArgs string
+		contArgs  string
+		want      string
+	}{
+		{"empty_then_real_args", `{}`, `{"user":"v"}`, `{"user":"v"}`},
+		{"placeholder_then_real_args", `{"reason":"thinking"}`, `{"user":"v"}`, `{"user":"v"}`},
+		{"real_args_then_empty", `{"user":"v"}`, `{}`, `{"user":"v"}`},
+		{"real_args_then_placeholder", `{"user":"v"}`, `{"reason":"done"}`, `{"user":"v"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			firstChunk := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"echo","args":` + tc.firstArgs + `}}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`)
+			continuationChunk := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":` + tc.contArgs + `}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`)
+
+			var param any
+			streamBytes := bytes.Join(antigravityclaude.ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, firstChunk, &param), nil)
+			streamBytes = append(streamBytes, bytes.Join(antigravityclaude.ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, continuationChunk, &param), nil)...)
+			streamText := string(streamBytes)
+			var deltaPartial strings.Builder
+			for _, line := range strings.Split(streamText, "\n") {
+				if strings.HasPrefix(line, "data: ") {
+					payload := strings.TrimPrefix(line, "data: ")
+					if gjson.Get(payload, "delta.type").String() == "input_json_delta" {
+						deltaPartial.WriteString(gjson.Get(payload, "delta.partial_json").String())
+					}
+				}
+			}
+			if got := deltaPartial.String(); got != tc.want {
+				t.Fatalf("expected concatenated partial_json %s, got %q (full output: %s)", tc.want, got, streamText)
+			}
+		})
 	}
 }

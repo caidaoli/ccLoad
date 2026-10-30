@@ -466,7 +466,7 @@ func appendCodexPassiveHeaderWindow(
 func cloneCodexQuotaHeaders(headers http.Header) http.Header {
 	cloned := make(http.Header)
 	for name, values := range headers {
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), codexQuotaHeaderPrefix) {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), codexQuotaHeaderPrefix) && !strings.EqualFold(strings.TrimSpace(name), "Retry-After") {
 			continue
 		}
 		cloned[name] = append([]string(nil), values...)

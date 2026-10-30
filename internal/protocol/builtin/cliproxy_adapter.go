@@ -133,7 +133,8 @@ func cliproxyGeminiResponseToAnthropicStream(ctx context.Context, model string, 
 	if bytes.Equal(payload, []byte("[DONE]")) {
 		data = payload
 	}
-	return cliproxyFrameStreamChunks(cliproxyStreamAnthropic, claudegemini.ConvertGeminiResponseToClaude(ctx, model, original, translated, data, param))
+	chunks, frameErr := cliproxyFrameStreamChunks(cliproxyStreamAnthropic, claudegemini.ConvertGeminiResponseToClaude(ctx, model, original, translated, data, param))
+	return chunks, errors.Join(frameErr, protocol.ResponseToolInputError(*param))
 }
 
 func cliproxyGeminiResponseToAnthropicNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {

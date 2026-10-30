@@ -46,7 +46,7 @@ func findMessageOutputItemDone(payloads []gjson.Result) gjson.Result {
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testing.T) {
-	capableModel := "gpt-5.5"
+	capableModel := "gpt-6.1-terra"
 	incapableModel := "unknown-search-model"
 
 	req := []byte(`{
@@ -82,7 +82,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testin
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_WebSearchAllowedDomains(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-domains",
@@ -106,7 +106,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchAllowedDomains(t *testin
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_WebSearchToolChoiceNoneSuppresses(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-suppress",
@@ -212,7 +212,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_GroundingMetadata(t *te
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearch(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-stream",
@@ -291,7 +291,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearch(t *testing.T) {
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_NoGroundingDoesNotEmitWebSearchCall(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-noground",
@@ -368,7 +368,7 @@ func TestBuildResponsesURLCitations_RuneOffsetConversion(t *testing.T) {
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_WebSearchOnlyToolChoiceRequiredNoFunctions(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-only-req",
@@ -442,7 +442,7 @@ func TestHasValidWebGrounding(t *testing.T) {
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_LateGroundingMetadataAndCJKOffsets(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-late-grounding",
@@ -645,7 +645,7 @@ func TestAllowsResponsesWebSearchToolChoice_AllowedTools(t *testing.T) {
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_WebSearchPreview20250311(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-preview-20250311",
@@ -695,7 +695,7 @@ func TestExtractResponsesWebSearchQuery_MultipleTextParts(t *testing.T) {
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_ModelAliasUsesEffectiveRequest(t *testing.T) {
 	// Upstream model is capable of web search
-	resolvedModel := "gpt-5.5"
+	resolvedModel := "gpt-6.1-terra"
 
 	// Original request uses a custom unregistered client alias
 	clientAlias := "my-unregistered-alias"
@@ -771,7 +771,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ModelAliasUsesEffectiveReq
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndFunctionCallPreservesTrailingText(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-interleaved",
@@ -871,7 +871,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndFunction
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_OutputIndexMatchesCompletedOrderWithLateGrounding(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-late-order",
@@ -1377,7 +1377,7 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_DisablesBufferingWhenSearchDisabled(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	t.Run("tool_choice none disables buffering", func(t *testing.T) {
 		req := []byte(`{
@@ -1459,7 +1459,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DisablesBufferingWhenSearc
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExplicitPartIndex(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	t.Run("citation spanning across multiple streamed chunks", func(t *testing.T) {
 		req := []byte(`{
@@ -1943,7 +1943,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	t.Run("without grounding metadata preserves text -> thought -> text order", func(t *testing.T) {
 		req := []byte(`{
@@ -2215,7 +2215,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChunksAfterClosure(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	t.Run("function call followed by multiple consecutive buffered text chunks and late-arriving grounding metadata", func(t *testing.T) {
 		req := []byte(`{
@@ -2492,7 +2492,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveFunctionCallsAdvancePartIndex(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-consecutive-fc-part-index",
@@ -2623,7 +2623,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveFunctionCallsAd
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_MultipleGroundingUpdates(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-multi-grounding-stream",
@@ -2756,7 +2756,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultipleGroundingUpdates(t
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalSupportsWithoutChunks(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-incr-supports-stream",
@@ -2838,7 +2838,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalSupportsWithout
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalGroundingQueriesSupportsChunks(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-incr-q-s-c-stream",
@@ -2961,7 +2961,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalGroundingQuerie
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_LateSourcesAfterInterleavedFinalization(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-late-sources-after-fc",
@@ -3083,7 +3083,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateSourcesAfterInterleave
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_CitationsSpanAcrossMessages(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-stream-citation-span",
@@ -3204,7 +3204,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationsSpanAcrossMessage
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_SupportsArriveFirstThenDuplicateChunksDeduplicate(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-stream-dup-chunks-dedup",
@@ -3296,7 +3296,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SupportsArriveFirstThenDup
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_SignatureBoundaryContinuationTextChunks(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-sig-boundary-continuation",
@@ -3416,7 +3416,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SignatureBoundaryContinuat
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_Frame2DuplicateChunksThenFrame3Supports(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-stream-frame2-dup-chunks-frame3-sup",
@@ -3515,7 +3515,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_Frame2DuplicateChunksThenF
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_PendingSupportResolvesToCumulativeRawChunk(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-stream-pending-support-raw-chunk",
@@ -3607,7 +3607,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_PendingSupportResolvesToCu
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedChunksResolveFrame2CumulativeSupport(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-stream-dedup-frame2-cumulative-support",
@@ -3699,7 +3699,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedChunksResolveF
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedFrame1ChunksFrame2ChunksAndSupportResolvesToFrame1(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-stream-dedup-f1-f2-support-resolves-f1",
@@ -3792,7 +3792,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedFrame1ChunksFr
 }
 
 func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallOrUsage(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-rag-test",
@@ -3939,7 +3939,7 @@ func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallO
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAdded(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	t.Run("message closed early by function call followed by late grounding metadata", func(t *testing.T) {
 		req := []byte(`{
@@ -4268,7 +4268,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatureBoundary(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-sig-boundary-buffering",
@@ -4388,7 +4388,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesStream_CitationAnnotationAddedTimings(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	assertAnnotationMatches := func(t *testing.T, eventTypes []string, byType map[string][]gjson.Result, wantURL, wantTitle string, wantStart, wantEnd int64, late bool) {
 		t.Helper()
@@ -4636,7 +4636,7 @@ func geminiRequestBody(modelName string, req []byte, stream bool) []byte {
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *testing.T) {
-	modelID := "gpt-5.5"
+	modelID := "gpt-6.1-terra"
 
 	req := []byte(`{
 		"model": "gemini-search-mixed",

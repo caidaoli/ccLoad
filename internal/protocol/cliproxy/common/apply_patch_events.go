@@ -52,9 +52,16 @@ func applyPatchEventIdentity(payload []byte, s *ApplyPatchCallState, sequence in
 
 // ApplyPatchFailure builds a terminal Responses failure without exposing upstream arguments.
 func ApplyPatchFailure(responseID string, sequence int) []byte {
-	payload := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","status":"failed","error":{"type":"server_error","code":"invalid_tool_arguments","message":"Invalid apply_patch tool arguments received from upstream.","param":null}}}`)
+	return ToolInputFailure(responseID, sequence, "Invalid apply_patch tool arguments received from upstream.")
+}
+
+// ToolInputFailure builds a terminal failure using a caller-owned public message.
+// Callers must not include upstream arguments or provider error details.
+func ToolInputFailure(responseID string, sequence int, message string) []byte {
+	payload := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","status":"failed","error":{"type":"server_error","code":"invalid_tool_arguments","message":"","param":null}}}`)
 	payload, _ = sjson.SetBytes(payload, "response.id", responseID)
 	payload, _ = sjson.SetBytes(payload, "sequence_number", sequence)
+	payload, _ = sjson.SetBytes(payload, "response.error.message", message)
 	return payload
 }
 

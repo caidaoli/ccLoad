@@ -457,11 +457,8 @@ func TestHandleChannelChatPersistsDetectionLogWithStreamStatusAndDebugData(t *te
 	}))
 	defer upstream.Close()
 
-	srv := newInMemoryServer(t)
+	srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": "true"})
 	srv.client = upstream.Client()
-	srv.configService.mu.Lock()
-	srv.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
-	srv.configService.mu.Unlock()
 
 	ctx := context.Background()
 	created, err := srv.store.CreateConfig(ctx, &model.Config{

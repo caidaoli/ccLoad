@@ -214,6 +214,7 @@ type codexUpstreamWebsocketSession struct {
 	maxAgeTimer           *time.Timer
 	maxAgeExpired         bool
 	turnTerminal          bool
+	activeResponseID      string
 	streamingConn         *websocket.Conn
 	pendingHeartbeatConn  *websocket.Conn
 	pendingHeartbeatCause error
@@ -344,6 +345,15 @@ func (s *codexUpstreamWebsocketSession) enqueueRead(event codexWebsocketRead) bo
 		if s.conn != event.conn {
 			s.mu.Unlock()
 			return false
+		}
+		if event.messageType == websocket.TextMessage {
+			if id := strings.TrimSpace(gjson.GetBytes(event.payload, "response.id").String()); id != "" {
+				s.activeResponseID = id
+			}
+			switch gjson.GetBytes(event.payload, "type").String() {
+			case "response.failed", "error":
+				s.turnTerminal = true
+			}
 		}
 		if event.terminal && !s.turnTerminal {
 			s.turnTerminal = true
@@ -682,6 +692,7 @@ func (s *codexUpstreamWebsocketSession) dial(
 	s.connectedAt = time.Now()
 	s.maxAgeExpired = false
 	s.turnTerminal = false
+	s.activeResponseID = ""
 	s.pendingHeartbeatConn = nil
 	s.pendingHeartbeatCause = nil
 	if s.maxAge > 0 {
@@ -718,19 +729,32 @@ func (s *codexUpstreamWebsocketSession) setStreamingConn(conn *websocket.Conn) {
 	s.mu.Unlock()
 }
 
-// forwardInterrupt writes response.interrupt unchanged to the socket streaming
-// the current turn. It never dials or replays: a retired or reconnecting socket,
-// or a turn that already reached its terminal event, returns false so the
-// caller cancels the turn locally instead.
+// forwardInterrupt writes only to the active response's original socket.
+// Terminal or disconnected turns retain their existing completion/replay path.
 func (s *codexUpstreamWebsocketSession) forwardInterrupt(payload []byte) bool {
 	if s == nil {
 		return false
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	conn := s.streamingConn
-	live := conn != nil && s.conn == conn && !s.turnTerminal
+	live := conn != nil && s.conn == conn && !s.turnTerminal &&
+		s.activeResponseID != "" && s.activeResponseID == responsesWebsocketInterruptResponseID(payload)
 	s.mu.Unlock()
-	return live && s.writeRequest(conn, payload) == nil
+	if !live {
+		return false
+	}
+	// The live snapshot accepts this interrupt for the captured socket. A terminal
+	// frame or disconnect may follow it while the write is blocked; neither should
+	// wait for network I/O, and a replacement socket must never receive this frame.
+	_ = conn.SetWriteDeadline(time.Now().Add(config.HTTPDialTimeout))
+	err := conn.WriteMessage(websocket.TextMessage, payload)
+	_ = conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		s.invalidate(conn)
+	}
+	return err == nil
 }
 
 func isCodexWebsocketSemanticEvent(eventType string) bool {
@@ -1010,6 +1034,14 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 		prefix = codexCustomToolCallItemIDPrefix
 	case "custom_tool_call_output":
 		prefix = codexCustomToolCallOutputItemIDPrefix
+	case "tool_search_call":
+		if id == "" || strings.HasPrefix(id, "tsc_") {
+			return id
+		}
+		if strings.HasPrefix(id, "ts_") && len(id) > len("ts_") {
+			return "tsc_" + strings.TrimPrefix(id, "ts_")
+		}
+		return "tsc_" + id
 	default:
 		return id
 	}
@@ -1507,6 +1539,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		s.mu.Lock()
 		if s.conn == conn {
 			s.turnTerminal = false
+			s.activeResponseID = ""
 		}
 		s.mu.Unlock()
 	}

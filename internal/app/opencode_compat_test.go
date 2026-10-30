@@ -23,6 +23,27 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestProxyOpenCodeAnthropicRestoresCodexCommentary(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{name: "opencode", upstreamProtocol: "anthropic", models: "deepseek-test"}}, map[int]string{0: "https://opencode.ai/zen/go"})
+	var got []byte
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		got, _ = io.ReadAll(r.Body)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "deepseek-test", "max_tokens": 100,
+		"messages": []any{map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "On it.", "signature": "cpa:commentary:v1"}, map[string]any{"type": "text", "text": "Done."}}}, map[string]any{"role": "user", "content": "continue"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	content := gjson.GetBytes(got, "messages.0.content").Array()
+	if len(content) != 2 || content[0].Get("type").String() != "text" || content[0].Get("text").String() != "On it." || content[0].Get("signature").Exists() || content[1].Get("text").String() != "Done." {
+		t.Fatalf("OpenCode lost commentary or leaked marker: %s", got)
+	}
+}
+
 func TestProxyOpenCodeResponsesNamespaceRoundTrip(t *testing.T) {
 	for _, tc := range []struct{ streaming, retry, jsonResponse bool }{{}, {streaming: true}, {retry: true}, {streaming: true, retry: true}, {streaming: true, jsonResponse: true}} {
 		t.Run(fmt.Sprintf("stream=%v/retry=%v/json=%v", tc.streaming, tc.retry, tc.jsonResponse), func(t *testing.T) {

@@ -26,6 +26,23 @@ func testAnthropicOAuthChannel() *model.Config {
 	return &model.Config{AuthType: model.AuthTypeAnthropicOAuth}
 }
 
+func TestAnthropicPassthroughRestoresCodexCommentary(t *testing.T) {
+	t.Parallel()
+	for _, modelName := range []string{"claude-sonnet-5-5", "deepseek-chat"} {
+		t.Run(modelName, func(t *testing.T) {
+			body := []byte(`{"model":"` + modelName + `","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"I will check the files.","signature":"cpa:commentary:v1"},{"type":"text","text":"Done."}]}]}`)
+			got, _, err := finishAnthropicPassthrough(body, false, &model.Config{}, mustParseURL(t, "https://relay.example/v1/messages"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := gjson.GetBytes(got, "messages.0.content").Array()
+			if len(content) != 2 || content[0].Get("type").String() != "text" || content[0].Get("text").String() != "I will check the files." || content[0].Get("signature").Exists() || content[1].Get("text").String() != "Done." {
+				t.Fatalf("commentary history lost or marker leaked upstream: %s", got)
+			}
+		})
+	}
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	parsed, err := url.Parse(raw)

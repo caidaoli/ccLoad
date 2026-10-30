@@ -9104,6 +9104,42 @@ func TestProxy_AllCooledFallback_UsesCooledKey(t *testing.T) {
 	}
 }
 
+func TestProxy_GeminiRejectsOnlyVertexBareTinkSignatures(t *testing.T) {
+	t.Parallel()
+	vertexSignature := base64.StdEncoding.EncodeToString(append([]byte{1, 0x8f, 0x3d, 0x6b, 0x5f}, bytes.Repeat([]byte{0x42}, 400)...))
+	for _, tc := range []struct {
+		name, url, wantSignature string
+	}{
+		{"Gemini API", "https://generativelanguage.googleapis.com", "skip_thought_signature_validator"},
+		{"unknown relay", "https://gemini.example", vertexSignature},
+		{"lookalike host", "https://generativelanguage.googleapis.com.example", vertexSignature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{{name: "gemini", upstreamProtocol: "gemini", models: "gemini-3-pro"}}, map[int]string{0: tc.url})
+			var got []byte
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				got, _ = io.ReadAll(r.Body)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}`))}, nil
+			})}
+			response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-pro:generateContent", map[string]any{
+				"contents": []any{map[string]any{"role": "model", "parts": []any{
+					map[string]any{"text": "native thought", "thought": true, "thoughtSignature": "native-opaque-untouched"},
+					map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}}, "thoughtSignature": vertexSignature},
+					map[string]any{"functionCall": map[string]any{"name": "other", "args": map[string]any{}}},
+				}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			parts := gjson.GetBytes(got, "contents.0.parts").Array()
+			if len(parts) != 3 || parts[0].Get("thoughtSignature").String() != "native-opaque-untouched" || parts[1].Get("thoughtSignature").String() != tc.wantSignature || parts[2].Get("thoughtSignature").Exists() {
+				t.Fatalf("endpoint signature isolation failed: %s", got)
+			}
+		})
+	}
+}
+
 func TestProxy_Success_NonStreaming_OpenAIToGeminiTransform(t *testing.T) {
 	t.Parallel()
 

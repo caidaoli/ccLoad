@@ -2088,3 +2088,57 @@ func TestClassifyAnthropicFastModeCreditsIsRequestLevel(t *testing.T) {
 		t.Fatalf("classification=%+v, want request-level client error without cooldown", got)
 	}
 }
+
+func TestClassifyHTTPResponse_CapacityRetryAfter(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, tt := range []struct {
+		name, body, retryAfter string
+		wantUntil              time.Time
+	}{
+		{"turn code only", `{"error":{"code":"turn_rate_limit_exceeded"}}`, "17", now.Add(17 * time.Second)},
+		{"nested model code", `{"response":{"error":{"code":"model_at_capacity"}}}`, now.Add(23 * time.Second).Format(http.TimeFormat), now.Add(23 * time.Second)},
+		{"capacity message", `{"error":{"type":"rate_limit_error","message":"Service is at capacity"}}`, "5", now.Add(5 * time.Second)},
+		{"generic 429 keeps exponential backoff", `{"error":{"code":"rate_limit_exceeded"}}`, "11", time.Time{}},
+		{"generic 429 ignores long hint", `{"error":{"code":"rate_limit_exceeded"}}`, "86400", time.Time{}},
+		{"invalid hint", `{"error":{"code":"turn_rate_limit_exceeded"}}`, "later", time.Time{}},
+		{"zero hint", `{"error":{"code":"turn_rate_limit_exceeded"}}`, "0", time.Time{}},
+		{"negative hint", `{"error":{"code":"turn_rate_limit_exceeded"}}`, "-3", time.Time{}},
+		{"past date", `{"error":{"code":"turn_rate_limit_exceeded"}}`, now.Add(-time.Second).Format(http.TimeFormat), time.Time{}},
+		{"overflow hint", `{"error":{"code":"turn_rate_limit_exceeded"}}`, "9223372036854775807", time.Time{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, map[string][]string{"retry-after": {tt.retryAfter}}, []byte(tt.body), now)
+			if !got.ModelScoped || got.CredentialScoped || got.HasKeyCooldownUntil || got.HasChannelCooldownUntil || got.PreventKeyFallback {
+				t.Fatalf("capacity scope=%+v", got)
+			}
+			if got.HasModelCooldownUntil != !tt.wantUntil.IsZero() || !got.ModelCooldownUntil.Equal(tt.wantUntil) {
+				t.Fatalf("deadline=%v has=%v want=%v", got.ModelCooldownUntil, got.HasModelCooldownUntil, tt.wantUntil)
+			}
+		})
+	}
+	got := classifyHTTPResponseWithMetaAt(StatusSSEError, map[string][]string{"Retry-After": {"7"}}, []byte(`{"error":{"code":"turn_rate_limit_exceeded"}}`), now)
+	if !got.ModelScoped || !got.ModelCooldownUntil.Equal(now.Add(7*time.Second)) {
+		t.Fatalf("code-only SSE classification=%+v", got)
+	}
+}
+
+func TestIsTransientCapacityError(t *testing.T) {
+	for _, tt := range []struct {
+		body string
+		want bool
+	}{
+		{`{"error":{"code":"turn_rate_limit_exceeded"}}`, true},
+		{`{"code":"model_is_at_capacity"}`, true},
+		{`{"body":{"error":{"code":"model_at_capacity"}}}`, true},
+		{`{"error":{"type":"rate_limit_error","message":"Service is at capacity"}}`, true},
+		{`{"error":{"message":"The model is at capacity"}}`, true},
+		{`{"error":{"code":"rate_limit_exceeded","type":"rate_limit_error","message":"Service is at capacity"}}`, false},
+		{`{"error":{"code":"usage_limit_reached","message":"model is at capacity"}}`, false},
+		{`{"error":{"message":"Service is at capacity"}}`, false},
+		{`{"error":{"code":"turn_rate_limit_exceeded_extra"}}`, false},
+	} {
+		if got := IsTransientCapacityError([]byte(tt.body)); got != tt.want {
+			t.Errorf("IsTransientCapacityError(%s)=%v want=%v", tt.body, got, tt.want)
+		}
+	}
+}

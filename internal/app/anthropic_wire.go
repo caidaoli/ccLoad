@@ -24,6 +24,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -410,6 +411,7 @@ func finishAnthropicPassthrough(body []byte, signCCH bool, cfg *model.Config, ta
 // constraints that are independent of CLI fingerprint and session identity.
 // Native passthrough skips fingerprint rewrite but still runs this layer.
 func applyAnthropicMessagesAPIInvariants(body []byte) []byte {
+	body, _ = cliproxysignature.RestoreCodexCommentaryMarkers(body)
 	body = sanitizeAnthropicEmptyTextBlocks(body)
 	return sanitizeAnthropicCacheControls(body)
 }
