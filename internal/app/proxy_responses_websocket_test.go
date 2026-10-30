@@ -1361,6 +1361,128 @@ func TestResponsesWebsocketInterruptForwardsToNativeUpstream(t *testing.T) {
 	readWebsocketUntilType(t, downstream, "response.completed")
 }
 
+// responsesWebsocketWriteReturnGate pauses after bytes reach the peer but before
+// Write returns, matching a client interrupt racing the end of a frame write.
+type responsesWebsocketWriteReturnGate struct {
+	net.Conn
+	armed   atomic.Bool
+	wrote   chan struct{}
+	release chan struct{}
+}
+
+func (c *responsesWebsocketWriteReturnGate) Write(payload []byte) (int, error) {
+	n, err := c.Conn.Write(payload)
+	if c.armed.CompareAndSwap(true, false) {
+		close(c.wrote)
+		<-c.release
+	}
+	return n, err
+}
+
+func TestResponsesWebsocketInterruptDuringHTTPFrameWrite(t *testing.T) {
+	t.Parallel()
+	for _, localInterrupt := range []bool{true, false} {
+		t.Run(fmt.Sprintf("local_interrupt=%v", localInterrupt), func(t *testing.T) {
+			peers := make(chan *websocket.Conn, 1)
+			stopPeer := make(chan struct{})
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				peer, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = peer.Close() }()
+				peers <- peer
+				<-stopPeer
+			}))
+			t.Cleanup(func() { close(stopPeer); server.Close() })
+			var gate *responsesWebsocketWriteReturnGate
+			dialer := websocket.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				raw, err := (&net.Dialer{}).DialContext(ctx, network, address)
+				if err != nil {
+					return nil, err
+				}
+				gate = &responsesWebsocketWriteReturnGate{Conn: raw, wrote: make(chan struct{}), release: make(chan struct{})}
+				return gate, nil
+			}}
+			conn, resp, err := dialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+			t.Cleanup(release)
+			peer := <-peers
+			_ = peer.SetReadDeadline(time.Now().Add(3 * time.Second))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			interrupt := &responsesWebsocketInterrupt{}
+			interrupt.begin(cancel, nil)
+			defer interrupt.end()
+			bridge := newResponsesWebsocketBridgeWriter(conn, 0)
+			bridge.interrupt = interrupt
+			writer, stopWriteCancel := newCancelableResponseWriter(ctx, bridge)
+			defer stopWriteCancel()
+			if _, err := writer.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n")); err != nil {
+				t.Fatal(err)
+			}
+			readWebsocketUntilType(t, peer, "response.created")
+			gate.armed.Store(true)
+			written := make(chan error, 1)
+			go func() {
+				_, err := writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"))
+				written <- err
+			}()
+			readWebsocketUntilType(t, peer, "response.output_text.delta")
+			select {
+			case <-gate.wrote:
+			case <-time.After(3 * time.Second):
+				t.Fatal("frame write did not reach return barrier")
+			}
+			payload := []byte(`{"type":"response.interrupt","response_id":"resp-1"}`)
+			if localInterrupt {
+				if !interrupt.deliver(payload) {
+					t.Fatal("active local interrupt was not accepted")
+				}
+			} else {
+				cancel()
+			}
+			// Wait for the cancellation callback while the frame write is still
+			// active, so the result cannot depend on goroutine scheduling.
+			stopWriteCancel()
+			release()
+			if err := <-written; err != nil {
+				t.Fatalf("already delivered frame write failed: %v", err)
+			}
+			_, err = writeResponsesWebsocketLocalInterrupt(conn, payload, []byte("[]"))
+			if !localInterrupt {
+				if err == nil {
+					t.Fatal("ordinary context cancellation did not close the active websocket write")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("local interrupt closed connection before incomplete: %v", err)
+			}
+			incomplete := readWebsocketUntilType(t, peer, "response.incomplete")
+			response := incomplete["response"].(map[string]any)
+			details := response["incomplete_details"].(map[string]any)
+			if response["id"] != "resp-1" || details["reason"] != "interrupted" {
+				t.Fatalf("local interrupt event=%v", incomplete)
+			}
+			if err := writeResponsesWebsocketPayload(conn, []byte(`{"type":"response.completed","response":{"id":"resp-next","output":[]}}`)); err != nil {
+				t.Fatalf("next turn could not reuse connection: %v", err)
+			}
+			readWebsocketUntilType(t, peer, "response.completed")
+		})
+	}
+}
+
 func TestResponsesWebsocketInterruptCancelsHTTPTurnLocally(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32

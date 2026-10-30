@@ -18,7 +18,7 @@
 - **生命周期**:上游每 45s 发 Ping,连续 5 min 无帧/Pong 判失活;下游全断满 5 min 后由每分钟清理器关上游物理连接(实际约 5–6 min);稳定逻辑会话与已提交 transcript 在 `responses_ws_session_ttl_minutes`(默认 15,小内存机器可设 10)到期前不因容量/预算压力被逐出
 - **超限语义**:达 `responses_ws_max_sessions` 只拒绝新会话身份;已提交 payload 超 `responses_ws_max_transcript_bytes` 后,所有新回合在触达上游前以 `429/rate_limit_error/rate_limit` 拒绝,已准入回合仍可提交,有限最坏超量 `max_sessions × max_body_bytes`
 - **连接轮换**:达到 `upstream_connection_reuse_limit_seconds` 的空闲连接立即关闭,在途 turn 完成后再关;下一轮优先原渠道/Key/URL,按需重连并重放完整 transcript——Response ID 只在原物理 WebSocket 上有效
-- **`response.interrupt`**:读协程在回合进行中直接拦截，只接受当前回合已向客户端发出的 Response ID；排队中、未知 ID、旧 ID 和已终态请求静默忽略。原生上游 WS 以状态锁内的 live/Response ID 快照作为中断受理点，之后只持写锁发送，避免网络写阻塞 reader 和断开处理；下一回合写入不得越过已受理中断。正在推流时原样透传，以上游 `response.incomplete`(`reason=interrupted`)收尾；HTTP/转换回合在本地取消，按客户端取消记 499、不冷却不换渠道，下发当前 ID 与已收集 output 的合成 `response.incomplete`，同连接可续接。原生上游已终态或不可写时保留原终态/1011 客户端重放路径，不伪造本地取消成功。`reason=interrupted` 的空 incomplete 不按 599 空流处理。缺 `response_id` 返回 `invalid_request`；无在途回合的合法中断静默忽略。
+- **`response.interrupt`**:读协程在回合进行中直接拦截，只接受当前回合已向客户端发出的 Response ID；排队中、未知 ID、旧 ID 和已终态请求静默忽略。原生上游 WS 以状态锁内的 live/Response ID 快照作为中断受理点，之后只持写锁发送，避免网络写阻塞 reader 和断开处理；下一回合写入不得越过已受理中断。正在推流时原样透传，以上游 `response.incomplete`(`reason=interrupted`)收尾；HTTP/转换回合在本地取消，按客户端取消记 499、不冷却不换渠道，下发当前 ID 与已收集 output 的合成 `response.incomplete`，同连接可续接。本地中断不得由通用取消写回调关闭下游 WebSocket；正在进行的写仍受既有写超时约束。原生上游已终态或不可写时保留原终态/1011 客户端重放路径，不伪造本地取消成功。`reason=interrupted` 的空 incomplete 不按 599 空流处理。缺 `response_id` 返回 `invalid_request`；无在途回合的合法中断静默忽略。
 - **指标**:`/admin/runtime-metrics` 的 `transcript_bytes` 只统计有效 payload,不是 Go 堆占用;另有 `ttl_expired`/`capacity_rejected`/`budget_rejected`/`previous_response_misses` 进程累计计数
 
 ## 故障切换(`util/classifier.go` + `cooldown/detection.go`)

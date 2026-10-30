@@ -38,6 +38,12 @@ func newCancelableResponseWriter(ctx context.Context, target http.ResponseWriter
 			return
 		}
 		if bridge, ok := target.(*responsesWebsocketBridgeWriter); ok {
+			// A local interrupt cancels only this turn. Keep the socket for its
+			// synthetic incomplete event and the next turn; the existing write
+			// deadline still bounds any frame already being written.
+			if bridge.interrupt.localPayload() != nil {
+				return
+			}
 			// Gorilla 的 SetWriteDeadline 不能与 WriteMessage 并发，Close 可以。
 			if w.writing.Load() {
 				_ = bridge.conn.Close()
