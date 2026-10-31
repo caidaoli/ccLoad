@@ -319,6 +319,7 @@ window.I18N_LOCALES['en'] = {
   'channels.codex.methodOAuth': 'Browser OAuth',
   'channels.codex.methodPersonalAccessToken': 'Personal Access Token',
   'channels.codex.personalAccessTokenLabel': 'Codex Personal Access Token',
+  'channels.codex.requiresReauthorization': 'Automatic renewal is unavailable. Reauthorize this account; its current token remains usable until it expires or is rejected.',
   'channels.codex.personalAccessTokenHint': 'Enter a token beginning with at-. The input is cleared immediately after submission; reauthorize if the token expires or is revoked.',
   'channels.codex.personalAccessTokenDescription': 'Enter a Codex Personal Access Token. The account identity is validated before its channel is created or updated.',
   'channels.codex.personalAccessTokenSubmit': 'Validate and create channel',

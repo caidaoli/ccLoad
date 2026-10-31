@@ -688,6 +688,7 @@ type ChannelModelStats struct {
 // ChannelWithCooldown 带冷却状态的渠道响应结构
 type ChannelWithCooldown struct {
 	*model.Config
+	CodexRequiresReauthorization  bool                   `json:"codex_requires_reauthorization,omitempty"`
 	CodexPlanType                 string                 `json:"codex_plan_type,omitempty"`
 	CodexSubscriptionActiveUntil  *time.Time             `json:"codex_subscription_active_until,omitempty"`
 	AnthropicPlanType             string                 `json:"anthropic_plan_type,omitempty"`

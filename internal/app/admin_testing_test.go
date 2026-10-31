@@ -486,7 +486,9 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 		case "rt-cleanup-rejected-empty-401":
 			statusCode = http.StatusUnauthorized
 			responseBody = ""
-		case "rt-cleanup-transient":
+		// A transient renewal outage must still verify the existing token,
+		// even when its recorded expiry has passed.
+		case "rt-cleanup-transient", "rt-cleanup-healthy-expired":
 			statusCode = http.StatusServiceUnavailable
 			responseBody = `{"error":"temporarily_unavailable"}`
 		case "rt-cleanup-expired-refreshed-rejected":

@@ -165,9 +165,13 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 	if alt, ok := ctx.Value("alt").(string); ok {
 		var chunk []byte
 		if alt == "" {
-			responseResult := gjson.GetBytes(rawJSON, "response")
+			responseResult := util.GetGJSONBytesNoCopy(rawJSON, "response")
 			if responseResult.Exists() {
-				chunk = []byte(responseResult.Raw)
+				if responseResult.Index > 0 && responseResult.Index+len(responseResult.Raw) <= len(rawJSON) {
+					chunk = rawJSON[responseResult.Index : responseResult.Index+len(responseResult.Raw)]
+				} else {
+					chunk = []byte(responseResult.Raw)
+				}
 				chunk = restoreUsageMetadata(chunk)
 				chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
 			}
@@ -204,22 +208,30 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 //   - []byte: A Gemini-compatible JSON response containing the response data.
 func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	var chunk []byte
-	responseResult := gjson.GetBytes(rawJSON, "response")
+	responseResult := util.GetGJSONBytesNoCopy(rawJSON, "response")
 	if responseResult.Exists() {
-		chunk = restoreUsageMetadata([]byte(responseResult.Raw))
+		if responseResult.Index > 0 && responseResult.Index+len(responseResult.Raw) <= len(rawJSON) {
+			chunk = rawJSON[responseResult.Index : responseResult.Index+len(responseResult.Raw)]
+		} else {
+			chunk = []byte(responseResult.Raw)
+		}
+		chunk = restoreUsageMetadata(chunk)
 		chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
 	} else {
 		chunk = restoreGeminiFunctionNames(rawJSON, originalRequestRawJSON)
 	}
-	candidates := gjson.GetBytes(chunk, "candidates")
+	candidates := util.GetGJSONBytesNoCopy(chunk, "candidates")
 	if candidates.IsArray() {
 		// Default every candidate, not just the first one, so a multi-candidate
 		// response cannot leave some of them unterminated.
-		for i, candidate := range candidates.Array() {
+		idx := 0
+		candidates.ForEach(func(_, candidate gjson.Result) bool {
 			if candidate.Get("finishReason").String() == "" {
-				chunk, _ = sjson.SetBytes(chunk, fmt.Sprintf("candidates.%d.finishReason", i), "STOP")
+				chunk, _ = sjson.SetBytes(chunk, fmt.Sprintf("candidates.%d.finishReason", idx), "STOP")
 			}
-		}
+			idx++
+			return true
+		})
 	}
 	return chunk
 }
@@ -260,7 +272,7 @@ func GeminiTokenCount(ctx context.Context, count int64) []byte {
 // to preserve usage data while hiding it from clients that don't expect it.
 // When returning standard Gemini API format, we must restore the original name.
 func restoreUsageMetadata(chunk []byte) []byte {
-	if cpaUsage := gjson.GetBytes(chunk, "cpaUsageMetadata"); cpaUsage.Exists() {
+	if cpaUsage := util.GetGJSONBytesNoCopy(chunk, "cpaUsageMetadata"); cpaUsage.Exists() {
 		chunk, _ = sjson.SetRawBytes(chunk, "usageMetadata", []byte(cpaUsage.Raw))
 		chunk, _ = sjson.DeleteBytes(chunk, "cpaUsageMetadata")
 	}

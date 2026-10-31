@@ -4775,8 +4775,9 @@ func TestCodexEarlyRefreshFailureBacksOffWhileTokenIsValid(t *testing.T) {
 		t.Fatalf("401 refresh: err=%v refreshes=%d, want forced refresh despite backoff", err, refreshCount.Load())
 	}
 	now = start.Add(3 * time.Minute)
-	if _, err = manager.credential(context.Background(), channel, false); err == nil || refreshCount.Load() != 3 {
-		t.Fatalf("expired token: err=%v refreshes=%d, want refresh despite backoff", err, refreshCount.Load())
+	got, err = manager.credential(context.Background(), channel, false)
+	if err == nil || got == nil || got.AccessToken != "at-old" || refreshCount.Load() != 3 {
+		t.Fatalf("transient refresh failure must retain the old token for inference verification: credential=%v err=%v refreshes=%d", got, err, refreshCount.Load())
 	}
 }
 
@@ -9395,5 +9396,248 @@ func TestHandleCreateCodexPersonalAccessTokenEgressesThroughProxy(t *testing.T) 
 	kept := channelOf(submit(map[string]string{"access_token": "at-secret"}))
 	if kept.ID != created.ID || kept.ProxyURL != proxy.URL || directHits.Load() != 1 {
 		t.Fatalf("reimport channel=%d proxy=%q direct hits=%d", kept.ID, kept.ProxyURL, directHits.Load())
+	}
+}
+
+func TestCodexTerminalRefreshRetainsAccessUntilRejectedOrExpired(t *testing.T) {
+	t.Parallel()
+	for _, forced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unauthorized=%v", forced), func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			start := time.Now().UTC().Truncate(time.Second)
+			credential := &codexauth.Credential{
+				Type: codexauth.ChannelType, AccessToken: "at-terminal", RefreshToken: "rt-terminal",
+				Expired: start.Add(time.Hour).Format(time.RFC3339), AccountID: "account-terminal", PlanType: "plus",
+			}
+			channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var refreshes atomic.Int32
+			tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				refreshes.Add(1)
+				http.Error(w, `{"error":{"code":"refresh_token_reused"}}`, http.StatusBadRequest)
+			}))
+			defer tokens.Close()
+			service := codexauth.NewService(tokens.Client())
+			service.TokenURL = tokens.URL
+			manager := newCodexCredentialManager(service, store, nil, func(int64) { server.InvalidateChannelListCache() })
+			server.codexCredentials = manager
+			manager.clientFor = func(*model.Config) *http.Client { return tokens.Client() }
+			now := start
+			manager.now = func() time.Time { return now }
+			got, err := manager.credential(context.Background(), channel, false)
+			if err != nil || got == nil || got.AccessToken != credential.AccessToken || !manager.requiresReauthorization(channel) {
+				t.Fatalf("first permanent failure: credential=%v err=%v", got, err)
+			}
+			for _, elapsed := range []time.Duration{time.Minute, 10 * time.Minute, 30 * time.Minute} {
+				now = start.Add(elapsed)
+				got, err = manager.credential(context.Background(), channel, false)
+				if err != nil || got == nil || got.AccessToken != credential.AccessToken || refreshes.Load() != 1 {
+					t.Fatalf("retained token after %v: credential=%v err=%v refreshes=%d", elapsed, got, err, refreshes.Load())
+				}
+			}
+			detail, _, err := server.buildChannelDetail(context.Background(), channel.ID, channel.Clone())
+			if err != nil || !detail.CodexRequiresReauthorization {
+				t.Fatalf("admin recovery state=%v err=%v", detail.CodexRequiresReauthorization, err)
+			}
+			payload, err := json.Marshal(detail)
+			if err != nil || bytes.Contains(payload, []byte("rt-terminal")) || bytes.Contains(payload, []byte("refresh_token_reused")) {
+				t.Fatalf("unsafe admin renewal projection: %s err=%v", payload, err)
+			}
+			if forced {
+				_, err = manager.credentialAfterUnauthorized(context.Background(), channel, credential.AccessToken)
+			} else {
+				now = start.Add(2 * time.Hour)
+				got, err = manager.credential(context.Background(), channel, false)
+				if got != nil {
+					t.Fatalf("expired credential returned: %v", got)
+				}
+			}
+			if err == nil || !server.disableTerminalOAuthCredential(context.Background(), channel, "Codex", err) || refreshes.Load() != 1 {
+				t.Fatalf("terminal rejection: err=%v refreshes=%d", err, refreshes.Load())
+			}
+			persisted, err := store.GetConfig(context.Background(), channel.ID)
+			if err != nil || persisted.Enabled {
+				t.Fatalf("terminal credential was not disabled: %v %v", persisted, err)
+			}
+			if !manager.requiresReauthorization(persisted) {
+				t.Fatal("disabled channel lost its reauthorization warning")
+			}
+		})
+	}
+}
+
+func TestCodexTerminalRefreshAdoptsReauthorizedGrant(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	start := time.Now().UTC()
+	credential := &codexauth.Credential{Type: "codex", AccessToken: "at-unchanged", RefreshToken: "rt-rejected",
+		Expired: start.Add(time.Hour).Format(time.RFC3339), AccountID: "account-reauth", ChatGPTUserID: "user-reauth", PlanType: "plus"}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshes atomic.Int32
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshes.Add(1)
+		if err := parseTokenRequestForm(r); err != nil {
+			t.Error(err)
+		}
+		if r.Form.Get("refresh_token") == "rt-rejected" {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"at-renewed","refresh_token":"rt-renewed","expires_in":604800}`)
+	}))
+	defer tokens.Close()
+	service := codexauth.NewService(tokens.Client())
+	service.TokenURL = tokens.URL
+	manager := newCodexCredentialManager(service, store, nil, nil)
+	if _, err := manager.credential(context.Background(), channel, false); err != nil || !manager.requiresReauthorization(channel) {
+		t.Fatalf("expected renewal warning while access remains valid: %v", err)
+	}
+	fresh := *credential
+	fresh.RefreshToken = "rt-reauthorized"
+	updated, _, err := createOrUpdateCodexChannel(context.Background(), store, &fresh, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Even before the reauthorization callback invalidates caches, an unchanged
+	// access token with a new grant must escape the old terminal state.
+	if updated.ID != channel.ID || manager.requiresReauthorization(updated) {
+		t.Fatal("reauthorization duplicated the channel or old rejection marked new grant")
+	}
+	got, err := manager.credential(context.Background(), channel, false)
+	if err != nil || got == nil || got.AccessToken != "at-renewed" || refreshes.Load() != 2 {
+		t.Fatalf("reauthorized grant: credential=%v err=%v refreshes=%d", got, err, refreshes.Load())
+	}
+	manager.invalidate(channel.ID)
+	if manager.requiresReauthorization(updated) {
+		t.Fatal("reauthorization left a stale recovery warning")
+	}
+}
+
+// Observe the public context cancellation boundary after a caller joins the
+// refresh flight, without scheduling sleeps or reaching into singleflight.
+type codexRefreshWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *codexRefreshWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+type codexRefreshReadBarrierStore struct {
+	storage.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *codexRefreshReadBarrierStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
+	close(s.entered)
+	<-s.release
+	return s.Store.GetConfig(ctx, id)
+}
+
+func TestCodexTerminalRefreshConcurrentUnauthorizedRetainsError(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	credential := &codexauth.Credential{Type: "codex", AccessToken: "at-shared", RefreshToken: "rt-shared",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), AccountID: "account-shared"}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshes atomic.Int32
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		refreshes.Add(1)
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	}))
+	defer tokens.Close()
+	service := codexauth.NewService(tokens.Client())
+	service.TokenURL = tokens.URL
+	manager := newCodexCredentialManager(service, store, nil, nil)
+	if _, err := manager.credential(context.Background(), channel, false); err != nil {
+		t.Fatal(err)
+	}
+	barrier := &codexRefreshReadBarrierStore{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	manager.store = barrier
+	earlyResult := make(chan error, 1)
+	go func() {
+		got, err := manager.credential(context.Background(), channel, false)
+		if got == nil || got.AccessToken != credential.AccessToken {
+			err = fmt.Errorf("early request lost usable access token: %v", got)
+		}
+		earlyResult <- err
+	}()
+	<-barrier.entered
+	waiting := &codexRefreshWaitContext{Context: context.Background(), waiting: make(chan struct{})}
+	forcedResult := make(chan error, 1)
+	go func() {
+		_, err := manager.credentialAfterUnauthorized(waiting, channel, credential.AccessToken)
+		forcedResult <- err
+	}()
+	<-waiting.waiting
+	close(barrier.release)
+	if err := <-earlyResult; err != nil {
+		t.Fatalf("early refresh: %v", err)
+	}
+	if err := <-forcedResult; err == nil || !oauthRefreshTokenRejected(err) {
+		t.Fatalf("real 401 lost its terminal failure: %v", err)
+	}
+	if refreshes.Load() != 1 {
+		t.Fatalf("terminal grant retried %d times", refreshes.Load())
+	}
+}
+
+func TestCodexTerminalRefreshFailureDoesNotPoisonConcurrentReauthorization(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	credential := &codexauth.Credential{Type: "codex", AccessToken: "at-before", RefreshToken: "rt-before",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), AccountID: "account-concurrent-reauth", ChatGPTUserID: "user-concurrent-reauth"}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var refreshes atomic.Int32
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		refreshes.Add(1)
+		close(entered)
+		<-release
+		http.Error(w, `{"error":"refresh_token_reused"}`, http.StatusBadRequest)
+	}))
+	defer tokens.Close()
+	service := codexauth.NewService(tokens.Client())
+	service.TokenURL = tokens.URL
+	manager := newCodexCredentialManager(service, store, nil, nil)
+	result := make(chan error, 1)
+	go func() {
+		got, err := manager.credentialAfterUnauthorized(context.Background(), channel, credential.AccessToken)
+		if got == nil || got.AccessToken != "at-after" {
+			err = fmt.Errorf("did not adopt concurrent reauthorization: %v", got)
+		}
+		result <- err
+	}()
+	<-entered
+	fresh := *credential
+	fresh.AccessToken, fresh.RefreshToken = "at-after", "rt-after"
+	updated, _, err := createOrUpdateCodexChannel(context.Background(), store, &fresh, "")
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	manager.invalidate(channel.ID)
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != channel.ID || manager.requiresReauthorization(updated) || refreshes.Load() != 1 {
+		t.Fatalf("old failure polluted reauthorization: channel=%d warning=%v refreshes=%d", updated.ID, manager.requiresReauthorization(updated), refreshes.Load())
 	}
 }

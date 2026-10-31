@@ -7858,20 +7858,30 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 		t.Fatal("upstream websocket request did not start")
 	}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
-	env.server.HandleActiveRequests(c)
-	if w.Code != http.StatusOK {
-		t.Fatalf("active requests status=%d, want %d", w.Code, http.StatusOK)
-	}
 	var activeResponse struct {
 		Data []ActiveRequest `json:"data"`
 	}
-	mustUnmarshalJSON(t, w.Body.Bytes(), &activeResponse)
-	if len(activeResponse.Data) != 1 {
-		t.Fatalf("active requests=%d, want 1", len(activeResponse.Data))
-	}
-	if !activeResponse.Data[0].UpstreamWebsocket {
-		t.Fatal("active request must expose the actual upstream websocket transport")
+	// Reading the request upstream can precede publication of its transport.
+	// Wait for the observable admin state while the response remains blocked.
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
+		env.server.HandleActiveRequests(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("active requests status=%d, want %d", w.Code, http.StatusOK)
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &activeResponse)
+		if len(activeResponse.Data) == 1 && activeResponse.Data[0].UpstreamWebsocket {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("active request did not expose upstream websocket transport: %+v", activeResponse.Data)
+		case <-ticker.C:
+		}
 	}
 	if activeResponse.Data[0].ThinkingEffort != "high" {
 		t.Fatalf("active request thinking_effort=%q, want high", activeResponse.Data[0].ThinkingEffort)

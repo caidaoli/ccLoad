@@ -185,6 +185,8 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ## 渠道管理
 
+Codex OAuth 渠道出现“自动续期已失效，请重新授权”时，请重新授权该账号。当前 access token 仍有效时可以继续处理请求，但失效的刷新凭据不会再自动重试；access token 到期或被上游拒绝后，渠道将停用并切换到其他可用渠道。重新授权成功会恢复渠道。该提示状态保存在当前进程，重启后会重新检查。
+
 渠道可通过 Web 界面或 Admin API 管理：
 
 通过 Web 界面 `/web/channels.html` 或 API 管理渠道：

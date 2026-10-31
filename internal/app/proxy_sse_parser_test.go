@@ -772,6 +772,108 @@ data: {"type":"message_delta","usage":{"cache_creation_input_tokens":80}}
 	}
 }
 
+func TestUsageParser_AnthropicCacheCreationIterations(t *testing.T) {
+	tests := []struct {
+		name       string
+		fields     string
+		iterations string
+		want5m     int
+		want1h     int
+	}{
+		{
+			name:       "recover mixed lifetimes",
+			fields:     `"cache_creation_input_tokens":8846`,
+			iterations: `[{"type":"message","cache_creation_input_tokens":3036,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":3036}},{"type":"message","cache_creation_input_tokens":5810,"cache_creation":{"ephemeral_5m_input_tokens":5810,"ephemeral_1h_input_tokens":0}}]`,
+			want5m:     5810, want1h: 3036,
+		},
+		{name: "explicit zero iteration needs no split", iterations: `[{"cache_creation_input_tokens":0},{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want1h: 80},
+		{name: "complete split needs no iteration aggregate", iterations: `[{"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":60}}]`, want5m: 20, want1h: 60},
+		{name: "non-message iterations excluded", iterations: `[{"type":"compaction","cache_creation_input_tokens":999},{"type":"message","cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want1h: 80},
+		{name: "missing iteration count is not zero", iterations: `[{}, {"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "positive iteration missing split", iterations: `[{"cache_creation_input_tokens":1},{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "partial split without iteration aggregate", iterations: `[{"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "iteration sum differs from aggregate", iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":79}}]`, want5m: 80},
+		{name: "global sum differs from aggregate", iterations: `[{"cache_creation_input_tokens":79,"cache_creation":{"ephemeral_1h_input_tokens":79}}]`, want5m: 80},
+		{name: "negative bucket is invalid", iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_5m_input_tokens":-1,"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "negative iteration aggregate is invalid", iterations: `[{"cache_creation_input_tokens":-1,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "fractional bucket is invalid", iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_5m_input_tokens":0.5,"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "overflow bucket is invalid", iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_5m_input_tokens":1e30,"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "sum cannot overflow", iterations: `[{"cache_creation":{"ephemeral_5m_input_tokens":8e18,"ephemeral_1h_input_tokens":8e18}}]`, want5m: 80},
+		{name: "unknown ttl is not a known bucket", iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80,"ephemeral_12h_input_tokens":10}}]`, want5m: 80},
+		{name: "string count is invalid", iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_5m_input_tokens":"0","ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "malformed iteration is invalid", iterations: `[null,{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "malformed zero split is invalid", iterations: `[{"cache_creation_input_tokens":0,"cache_creation":null},{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "empty iterations", iterations: `[]`, want5m: 80},
+		{name: "top split wins", fields: `"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":50}`, iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 30, want1h: 50},
+		{name: "top zero split is present", fields: `"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}`, iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+		{name: "missing aggregate prevents recovery", fields: `"output_tokens":2`, iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`},
+		{name: "zero aggregate prevents recovery", fields: `"cache_creation_input_tokens":0`, iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`},
+		{name: "invalid aggregate prevents recovery", fields: `"cache_creation_input_tokens":1e30`, iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`},
+		{name: "fractional aggregate prevents recovery", fields: `"cache_creation_input_tokens":80.5`, iterations: `[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]`, want5m: 80},
+	}
+	for _, tt := range tests {
+		for _, kind := range []string{"json", "sse"} {
+			t.Run(tt.name+"/"+kind, func(t *testing.T) {
+				fields := tt.fields
+				if fields == "" {
+					fields = `"cache_creation_input_tokens":80`
+				}
+				body := `{"usage":{"input_tokens":1,` + fields + `,"iterations":` + tt.iterations + `}}`
+				var parser usageParser = newJSONUsageParser("anthropic")
+				if kind == "sse" {
+					parser = newSSEUsageParser("anthropic")
+					body = "event: message_delta\ndata: " + body + "\n\n"
+				}
+				if err := parser.Feed([]byte(body)); err != nil {
+					t.Fatal(err)
+				}
+				input, output, cacheRead, total := parser.GetUsage()
+				cache5m, cache1h, _ := parser.GetCacheBreakdown()
+				if total != tt.want5m+tt.want1h || cache5m != tt.want5m || cache1h != tt.want1h {
+					t.Fatalf("cache total/5m/1h = %d/%d/%d, want %d/%d/%d", total, cache5m, cache1h, tt.want5m+tt.want1h, tt.want5m, tt.want1h)
+				}
+				res := &fwResult{InputTokens: input, OutputTokens: output, CacheReadInputTokens: cacheRead, Cache5mInputTokens: cache5m, Cache1hInputTokens: cache1h}
+				// 自定义输入价 $1/MTok：5m 写入 1.25 倍，1h 写入 2 倍。
+				priceValue := 1.0
+				price := &util.CustomModelPrice{InputPrice: &priceValue, OutputPrice: &priceValue}
+				wantCost := (float64(input+output) + 1.25*float64(tt.want5m) + 2*float64(tt.want1h)) / 1_000_000
+				if cost := computeRequestCostWithPrice("claude-sonnet-4-6", "", price, res); !floatEquals(cost, wantCost) {
+					t.Fatalf("cost = %g, want %g", cost, wantCost)
+				}
+			})
+		}
+	}
+}
+
+func TestSSEUsageParser_AnthropicCacheCreationIterationSnapshots(t *testing.T) {
+	parser := newSSEUsageParser("anthropic")
+	steps := []struct {
+		usage  string
+		want5m int
+		want1h int
+	}{
+		{`{"cache_creation_input_tokens":3036,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":3036}}`, 0, 3036},
+		{`{"cache_creation_input_tokens":8846,"iterations":[{"cache_creation_input_tokens":3036,"cache_creation":{"ephemeral_1h_input_tokens":3036}},{"cache_creation_input_tokens":5810,"cache_creation":{"ephemeral_5m_input_tokens":5810}}]}`, 5810, 3036},
+		{`{"cache_creation_input_tokens":8846,"iterations":[{"cache_creation_input_tokens":3036,"cache_creation":{"ephemeral_1h_input_tokens":3036}},{"cache_creation_input_tokens":5810,"cache_creation":{"ephemeral_5m_input_tokens":5810}}]}`, 5810, 3036},
+		{`{"cache_creation_input_tokens":50,"iterations":[{"cache_creation_input_tokens":50,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}]}`, 20, 30},
+		{`{"cache_creation_input_tokens":50,"iterations":[{"cache_creation_input_tokens":50,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":50}}]}`, 0, 50},
+		{`{"cache_creation_input_tokens":0,"iterations":[{"cache_creation_input_tokens":80,"cache_creation":{"ephemeral_1h_input_tokens":80}}]}`, 0, 50},
+		{`{"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}`, 0, 50},
+		{`{"cache_creation_input_tokens":50}`, 0, 50},
+	}
+	for i, step := range steps {
+		body := "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":" + step.usage + "}\n\n"
+		if err := parser.Feed([]byte(body)); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		_, _, _, total := parser.GetUsage()
+		cache5m, cache1h, _ := parser.GetCacheBreakdown()
+		if total != step.want5m+step.want1h || cache5m != step.want5m || cache1h != step.want1h {
+			t.Fatalf("step %d: total/5m/1h = %d/%d/%d, want %d/%d/%d", i, total, cache5m, cache1h, step.want5m+step.want1h, step.want5m, step.want1h)
+		}
+	}
+}
+
 func TestSSEUsageParser_AnthropicPlaceholderZerosInOversizedEvent(t *testing.T) {
 	parser := newSSEUsageParser("anthropic")
 	start := `event: message_start

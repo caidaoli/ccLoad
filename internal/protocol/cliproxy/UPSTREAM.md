@@ -2,10 +2,10 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `90c447d3a8727d115aa7552ec93ce023736ed492` (official commit beyond the `fork/v11.8.0` baseline)
+- Last synchronized commit: `dbb706215a3afd2f0ea3c96482d4233856466caa` (official `v8.0.48`)
 - Snapshot target repository: `https://github.com/router-for-me/CLIProxyAPI`
 - Stable fork tag series: `fork/v` (no new fork release is claimed)
-- Synchronized at: `2026-10-30`
+- Synchronized at: `2026-10-31`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -24,10 +24,41 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Synchronization adaptations (2026-10-31)
+
+The four-protocol core and all allowlisted Antigravity adapters share official
+`v8.0.48`, compared atomically from `90c447d3a8727d115aa7552ec93ce023736ed492`.
+The fork repository and stable tag series remain unchanged.
+
+- Preserve literal boolean Claude `tool_result.is_error` as Gemini/Antigravity
+  `functionResponse.response.error`, including structured results and images.
+- Translate mid-conversation Claude `tool_addition` into Responses
+  `additional_tools` or Chat tool declarations. Inline definitions participate
+  in shortened tool-name maps and response restoration; pending tool results
+  stay adjacent to their calls. The Registry admits these blocks only in system
+  messages targeting Chat/Responses and rejects unsupported declarations or
+  unresolved references rather than silently dropping them.
+- Adopt Antigravity Gemini response slicing and candidate iteration changes.
+  Keep the parsed `cpaUsageMetadata` replacement/deletion path: upstream's raw
+  key rename can leave a competing `usageMetadata` key and misses escaped key
+  names. Public converter tests cover both cases.
+- Import the new pure converter tests into existing suites. The former
+  `claude_tool_result_test.go` exclusion is removed because its exported
+  normalization behavior belongs to this snapshot. Its tests and the new Gemini
+  error-result tests have explicit mappings in the core manifest. Antigravity's
+  runtime-dependent Claude request suite remains excluded; its new pure error
+  cases are included in the existing provider user-turn suite.
+
+App-owned changes recover verified Anthropic cache TTL splits from iterations
+and remember terminal Codex refresh-grant rejection with an administrator
+reauthorization hint. These do not import the upstream usage SDK, authentication
+runtime, plugin host, Redis queue, or AI Studio relay. Existing local compaction,
+stream termination, cooldown, and partial-usage billing contracts remain.
+
 ## Synchronization adaptations (2026-10-30)
 
 The core and allowlisted Antigravity adapters were reviewed together against the
-immutable official target above, using the existing local CLIProxyAPI checkout.
+immutable official commit `90c447d3a8727d115aa7552ec93ce023736ed492`, using the existing local CLIProxyAPI checkout.
 The maintained fork repository remains unchanged; this target is not a newly
 published fork tag. Runtime/auth/config/routing/cache/plugin/Interactions code
 remains excluded, and the fork's pseudo-thinking/web-search revert stays local.

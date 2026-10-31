@@ -105,6 +105,52 @@ func (e *tokenEndpointError) StatusCode() int {
 	return e.statusCode
 }
 
+// IsTerminalRefreshError reports a rejected Codex refresh grant. Client
+// configuration errors such as invalid_client do not invalidate a user's grant.
+func IsTerminalRefreshError(err error) bool {
+	var endpoint *tokenEndpointError
+	if !errors.As(err, &endpoint) || endpoint == nil {
+		return false
+	}
+	if endpoint.statusCode == http.StatusUnauthorized {
+		return true
+	}
+	if endpoint.statusCode != http.StatusBadRequest && endpoint.statusCode != http.StatusForbidden {
+		return false
+	}
+	var payload struct {
+		Error json.RawMessage `json:"error"`
+		Code  string          `json:"code"`
+	}
+	if json.Unmarshal([]byte(endpoint.responseBody), &payload) != nil {
+		return false
+	}
+	code := payload.Code
+	var errorCode string
+	if json.Unmarshal(payload.Error, &errorCode) == nil {
+		code = errorCode
+	} else {
+		var detail struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(payload.Error, &detail) == nil {
+			if detail.Code != "" {
+				code = detail.Code
+			} else if code == "" {
+				code = detail.Type
+			}
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "invalid_grant", "invalid_token", "invalid_refresh_token", "refresh_token_expired",
+		"refresh_token_revoked", "expired_token", "refresh_token_reused", "refresh_token_invalidated", "token_revoked":
+		return true
+	default:
+		return false
+	}
+}
+
 // NewService returns the production Codex OAuth service.
 func NewService(client *http.Client) *Service {
 	if client == nil {

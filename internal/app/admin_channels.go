@@ -198,6 +198,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for i, cfg := range cfgs {
 		channel := ectx.enrichChannel(cfg, metadata[i])
+		channel.CodexRequiresReauthorization = s.codexCredentials.requiresReauthorization(cfg)
 		channel.ManagementAccount = s.managementAccountView(cfg)
 		out = append(out, channel)
 	}
@@ -877,6 +878,7 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 	metadata := []channelOAuthMetadata{channelOAuthMetadataFromCredential(cfg)}
 	s.attachChannelQuotaCosts(ctx, []*model.Config{cfg}, metadata, now)
 	detail := metadata[0].channelView(cfg)
+	detail.CodexRequiresReauthorization = s.codexCredentials.requiresReauthorization(cfg)
 	detail.ManagementAccount = s.managementAccountView(cfg)
 	detail.KeyStrategy = channelKeyStrategy(apiKeys)
 	detail.ModelCooldowns = activeModelCooldownInfos(allModelCooldowns[id], now)

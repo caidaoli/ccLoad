@@ -78,6 +78,10 @@ type codexCredentialManager struct {
 type codexRefreshBackoff struct {
 	accessToken string
 	until       time.Time
+	// A terminal rejection belongs to the refresh grant, independently of the
+	// access token's remaining lifetime. Never retry that same grant.
+	rejectedRefreshToken string
+	terminalError        error
 }
 
 // codexCredentialRefreshError keeps the exact persisted credential snapshot
@@ -204,9 +208,12 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 		if parseErr != nil {
 			return nil, fmt.Errorf("parse Codex credential for channel %d: %w", currentCfg.ID, parseErr)
 		}
-		if current.AccessToken != forcedAccessToken {
+		if current.AccessToken != forcedAccessToken || current.RefreshToken != credential.RefreshToken {
 			m.cache(currentCfg.ID, current)
 			return oauthCredentialRefreshRedirect{}, nil
+		}
+		if terminalErr := m.rejectedRefreshError(currentCfg.ID, current.RefreshToken); terminalErr != nil {
+			return nil, newCodexCredentialRefreshError(currentCfg, terminalErr)
 		}
 		service := *m.service
 		if m.clientFor != nil {
@@ -223,7 +230,21 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 					return cloneCodexCredential(winner), nil
 				}
 			}
-			m.backOffEarlyRefresh(currentCfg.ID, current.AccessToken)
+			if codexauth.IsTerminalRefreshError(refreshErr) {
+				m.mu.Lock()
+				if m.refreshBackoff == nil {
+					m.refreshBackoff = make(map[int64]codexRefreshBackoff)
+				}
+				m.refreshBackoff[currentCfg.ID] = codexRefreshBackoff{
+					rejectedRefreshToken: current.RefreshToken, terminalError: refreshErr,
+				}
+				m.mu.Unlock()
+				if m.invalidateConfig != nil {
+					m.invalidateConfig(currentCfg.ID)
+				}
+			} else {
+				m.backOffEarlyRefresh(currentCfg.ID, current.AccessToken)
+			}
 			return nil, newCodexCredentialRefreshError(
 				currentCfg,
 				fmt.Errorf("refresh Codex credential for channel %d: %w", currentCfg.ID, refreshErr),
@@ -250,6 +271,17 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 		}
 	}
 	if result.Err != nil {
+		// Early refresh and a real 401 may share the same singleflight result.
+		// Only the caller whose access token is still usable can ignore a
+		// terminal renewal error; a forced refresh must retain the failure.
+		if codexauth.IsTerminalRefreshError(result.Err) {
+			if expiresAt, expiryErr := credential.Expiry(); expiryErr != nil || !expiresAt.After(m.now()) {
+				return nil, result.Err
+			}
+			if !forceRefresh {
+				return cloneCodexCredential(credential), nil
+			}
+		}
 		return cloneCodexCredential(credential), result.Err
 	}
 	if _, redirected := result.Val.(oauthCredentialRefreshRedirect); redirected {
@@ -325,6 +357,29 @@ func (m *codexCredentialManager) earlyRefreshBackingOff(channelID int64, credent
 	backoff, ok := m.refreshBackoff[channelID]
 	m.mu.RUnlock()
 	return ok && backoff.accessToken == credential.AccessToken && now.Before(backoff.until)
+}
+
+func (m *codexCredentialManager) rejectedRefreshError(channelID int64, refreshToken string) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state := m.refreshBackoff[channelID]
+	if state.rejectedRefreshToken != "" && state.rejectedRefreshToken == refreshToken {
+		return state.terminalError
+	}
+	return nil
+}
+
+// requiresReauthorization projects only the state of the credential being shown;
+// a delayed failure for an older grant cannot mark a newly authorized account.
+func (m *codexCredentialManager) requiresReauthorization(cfg *model.Config) bool {
+	if m == nil || cfg == nil || !cfg.UsesCodexOAuth() {
+		return false
+	}
+	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+	return err == nil && m.rejectedRefreshError(cfg.ID, credential.RefreshToken) != nil
 }
 
 func (m *codexCredentialManager) backOffEarlyRefresh(channelID int64, accessToken string) {

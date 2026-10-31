@@ -183,6 +183,8 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ## Channel Management
 
+If a Codex OAuth channel reports that automatic renewal has failed, reauthorize the account. Its current access token can continue serving requests while valid, but the rejected refresh credential will no longer be retried. Once the access token expires or is rejected upstream, the channel is disabled and requests move to another available channel. Successful reauthorization restores the channel. This warning is held in memory and checked again after a restart.
+
 Manage channels via Web interface `/web/channels.html` or API:
 
 ```bash

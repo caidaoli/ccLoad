@@ -898,6 +898,10 @@ type oauthTokenEndpointFailure interface {
 }
 
 func oauthRefreshTokenRejected(err error) bool {
+	var codexFailure *codexCredentialRefreshError
+	if errors.As(err, &codexFailure) && codexFailure.authType == model.AuthTypeCodexOAuth && codexauth.IsTerminalRefreshError(err) {
+		return true
+	}
 	if errors.Is(err, codebuddyauth.ErrCannotRefresh) {
 		return true
 	}

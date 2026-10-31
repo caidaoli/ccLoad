@@ -17,6 +17,8 @@
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。
+- Claude `tool_result.is_error` 仅布尔 `true` 在 Gemini/Antigravity 请求中映射为 `functionResponse.response.error`，其他值仍用 `result`；保留结果 JSON 类型、图片及工具调用配对。
+- Claude 会话中 system 消息的 `tool_addition` 转 Responses 为 `additional_tools`，转 Chat 合并工具声明；内联工具参与长名称缩短及响应反向映射。工具声明与文本提醒不能拆散待完成的调用/结果配对；不因此启用 Claude `tool_search`。
 - OpenAI Chat 转 Codex 时，`service_tier` 的 `fast`/`priority` 规范为 `priority`，保留 `ultrafast`，忽略其他值；匹配时忽略大小写与首尾空白。
 - Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。
 - 跨协议 `custom apply_patch` 转函数工具时，保留补丁语法并使用唯一字符串 `input` 参数；反向转换按原始获胜声明识别工具，普通同名 function 不升级为 custom。OpenAI Chat 嵌套 `custom` 声明与 tool_choice 转 Codex 时拍平为 Responses 形状；这类工具的调用以原生 `type:"custom"` tool_calls 和原始 input 返回，扁平声明保持函数包装。补丁正文的空白、转义和 Unicode 必须在历史回放、增量、done 与最终 output 中一致。

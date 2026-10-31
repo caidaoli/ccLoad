@@ -76,7 +76,7 @@ func cliproxyAnthropicResponseToOpenAINonStream(ctx context.Context, model strin
 }
 
 func cliproxyAnthropicRequestToOpenAI(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateAnthropicRequest(raw); err != nil {
+	if err := cliproxyValidateAnthropicRequest(raw, true); err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("anthropic request to openai", model, raw, stream, claude.ConvertClaudeRequestToOpenAI)
@@ -111,7 +111,7 @@ func cliproxyCodexResponseToOpenAINonStream(ctx context.Context, model string, o
 }
 
 func cliproxyAnthropicRequestToGemini(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateAnthropicRequest(raw); err != nil {
+	if err := cliproxyValidateAnthropicRequest(raw, false); err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("anthropic request to gemini", model, raw, stream, claudegemini.ConvertClaudeRequestToGemini)
@@ -221,7 +221,7 @@ func cliproxyAnthropicResponseToCodexNonStream(ctx context.Context, model string
 }
 
 func cliproxyAnthropicRequestToCodex(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateAnthropicRequest(raw); err != nil {
+	if err := cliproxyValidateAnthropicRequest(raw, true); err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("anthropic request to codex", model, raw, stream, claudecodex.ConvertClaudeRequestToCodex)
@@ -352,14 +352,22 @@ func cliproxyValidateOpenAIRequest(raw []byte) error {
 	return nil
 }
 
-func cliproxyValidateAnthropicRequest(raw []byte) error {
+func cliproxyValidateAnthropicRequest(raw []byte, allowToolAddition bool) error {
 	var request struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
 		Messages []struct {
-			Content any `json:"content"`
+			Role    string `json:"role"`
+			Content any    `json:"content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return fmt.Errorf("decode anthropic request: %w", err)
+	}
+	declaredTools := make(map[string]bool, len(request.Tools))
+	for _, tool := range request.Tools {
+		declaredTools[tool.Name] = true
 	}
 	for _, message := range request.Messages {
 		blocks, ok := message.Content.([]any)
@@ -376,6 +384,33 @@ func cliproxyValidateAnthropicRequest(raw []byte) error {
 			}
 			blockType, _ := block["type"].(string)
 			switch blockType {
+			case "tool_addition":
+				if !allowToolAddition || message.Role != "system" {
+					return fmt.Errorf("unsupported Anthropic tool_addition in %q message for this target", message.Role)
+				}
+				tool, _ := block["tool"].(map[string]any)
+				definition, _ := tool["definition"].(map[string]any)
+				if tool["type"] == "tool_reference" && definition != nil {
+					return errors.New("unsupported Anthropic tool_addition reference with an inline definition")
+				}
+				if definition != nil {
+					name, _ := definition["name"].(string)
+					toolType, _ := definition["type"].(string)
+					if strings.TrimSpace(name) == "" || strings.HasPrefix(toolType, "web_search") {
+						return fmt.Errorf("unsupported Anthropic tool_addition definition %q", name)
+					}
+					declaredTools[name] = true
+				} else if tool["type"] == "tool_reference" {
+					name, _ := tool["name"].(string)
+					if name == "" {
+						name, _ = tool["tool_name"].(string)
+					}
+					if name == "" || !declaredTools[name] {
+						return fmt.Errorf("unknown Anthropic tool_addition reference %q", name)
+					}
+				} else {
+					return errors.New("unsupported Anthropic tool_addition specification")
+				}
 			case "text", "image", "document", "tool_use", "tool_result", "thinking", "redacted_thinking", "server_tool_use", "web_search_tool_result":
 			default:
 				return fmt.Errorf("unsupported Anthropic content block type %q", blockType)

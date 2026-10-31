@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -244,5 +245,40 @@ func TestConvertAntigravityResponseToGeminiNonStream_DefaultsMissingFinishReason
 	out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", nil, nil, input, nil)
 	if fr := gjson.GetBytes(out, "candidates.0.finishReason").String(); fr != "STOP" {
 		t.Fatalf("ConvertAntigravityResponseToGeminiNonStream finishReason = %q, want STOP", fr)
+	}
+}
+
+func TestAntigravityGeminiResponseAllowsWhitespace(t *testing.T) {
+	body := `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
+	for _, separator := range []string{"", " ", "\n\t"} {
+		t.Run(fmt.Sprintf("separator=%q", separator), func(t *testing.T) {
+			raw := []byte(`{"response":` + separator + body + `}`)
+			out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", nil, nil, raw, nil)
+			if !gjson.ValidBytes(out) || string(out) != body {
+				t.Fatalf("incorrect response slice: %s", out)
+			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToGeminiNonStream_RestoresUsageAliases(t *testing.T) {
+	for _, body := range []string{
+		`{"usageMetadata":{"promptTokenCount":1},"cpaUsageMetadata":{"promptTokenCount":2}}`,
+		`{"cpaUsageMetadata":{"promptTokenCount":2},"usageMetadata":{"promptTokenCount":1}}`,
+		`{"cpaUsage\u004detadata":{"promptTokenCount":2}}`,
+	} {
+		out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", nil, nil, []byte(`{"response":`+body+`}`), nil)
+		var response struct {
+			UsageMetadata struct {
+				PromptTokenCount int `json:"promptTokenCount"`
+			} `json:"usageMetadata"`
+			CPAUsageMetadata json.RawMessage `json:"cpaUsageMetadata"`
+		}
+		if err := json.Unmarshal(out, &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.UsageMetadata.PromptTokenCount != 2 || len(response.CPAUsageMetadata) != 0 {
+			t.Fatalf("usage alias lost or shadowed: %s", out)
+		}
 	}
 }

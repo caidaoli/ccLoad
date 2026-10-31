@@ -1813,6 +1813,13 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 		detailedCache5m = usageInt(cacheCreation, "ephemeral_5m_input_tokens")
 		detailedCache1h = usageInt(cacheCreation, "ephemeral_1h_input_tokens")
 	}
+	if _, present := usage["cache_creation"]; !present {
+		if total, valid := cacheCreationIterationCount(usage["cache_creation_input_tokens"]); valid && total > 0 {
+			if cache5m, cache1h, ok := cacheCreationFromIterations(usage["iterations"], total); ok {
+				detailedCache5m, detailedCache1h = cache5m, cache1h
+			}
+		}
+	}
 	if detailedCache5m > 0 || detailedCache1h > 0 {
 		u.setCacheCreationSnapshot(detailedCache5m, detailedCache1h)
 	} else if aggregateCacheCreation > 0 &&
@@ -1853,6 +1860,89 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	// NewAPI 等网关在 Claude 风格 usage 外包一层 billing_usage.openai_usage，
 	// 真实 reasoning_tokens 只在 completion_tokens_details 里。
 	u.applyBillingUsageOpenAIReasoning(usage)
+}
+
+// cacheCreationFromIterations 只恢复完整、与顶层累计总量一致的已知 TTL 分档。
+// 每项总量可以证明省略的 bucket 为 0；缺总量时必须显式给出两个 bucket。
+func cacheCreationFromIterations(value any, total int) (cache5m, cache1h int, ok bool) {
+	iterations, ok := value.([]any)
+	if !ok || len(iterations) == 0 {
+		return 0, 0, false
+	}
+	for _, value := range iterations {
+		iteration, valid := value.(map[string]any)
+		if !valid {
+			return 0, 0, false
+		}
+		if kind, present := iteration["type"]; present && kind != nil {
+			name, valid := kind.(string)
+			if !valid {
+				return 0, 0, false
+			}
+			if name != "" && name != "message" {
+				continue
+			}
+		}
+		aggregate, hasAggregate := iteration["cache_creation_input_tokens"]
+		iterationTotal := 0
+		if hasAggregate {
+			iterationTotal, valid = cacheCreationIterationCount(aggregate)
+			if !valid {
+				return 0, 0, false
+			}
+		}
+		rawSplit, splitPresent := iteration["cache_creation"]
+		split, hasSplit := rawSplit.(map[string]any)
+		if !hasSplit {
+			if !splitPresent && hasAggregate && iterationTotal == 0 {
+				continue
+			}
+			return 0, 0, false
+		}
+		var counts [2]int
+		var present [2]bool
+		for key, value := range split {
+			index := 0
+			switch key {
+			case "ephemeral_5m_input_tokens":
+			case "ephemeral_1h_input_tokens":
+				index = 1
+			case "mode", "ttl", "retention":
+				continue
+			default:
+				// 未知 TTL 没有本地写价，不能混进 5m 或 1h 分档。
+				return 0, 0, false
+			}
+			counts[index], valid = cacheCreationIterationCount(value)
+			if !valid {
+				return 0, 0, false
+			}
+			present[index] = true
+		}
+		if !present[0] && !present[1] || !hasAggregate && (!present[0] || !present[1]) {
+			return 0, 0, false
+		}
+		// 先与剩余总量比较，避免 bucket 求和或跨 iteration 累计溢出。
+		remaining := total - cache5m - cache1h
+		if counts[0] > remaining || counts[1] > remaining-counts[0] {
+			return 0, 0, false
+		}
+		if hasAggregate && counts[0]+counts[1] != iterationTotal {
+			return 0, 0, false
+		}
+		cache5m += counts[0]
+		cache1h += counts[1]
+	}
+	return cache5m, cache1h, cache5m+cache1h == total
+}
+
+// 与普通 usage 的无效数归零不同，恢复明细必须拒绝无效数，不能把它当显式 0。
+func cacheCreationIterationCount(value any) (int, bool) {
+	count, ok := value.(float64)
+	if !ok || count < 0 || count >= math.MaxInt || math.Trunc(count) != count {
+		return 0, false
+	}
+	return int(count), true
 }
 
 // setCacheCreationSnapshot 是缓存建立三元组的唯一写入口，保证 aggregate 恒等于 5m+1h。

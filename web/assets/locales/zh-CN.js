@@ -319,6 +319,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.codex.methodOAuth': '浏览器 OAuth',
   'channels.codex.methodPersonalAccessToken': 'Personal Access Token',
   'channels.codex.personalAccessTokenLabel': 'Codex Personal Access Token',
+  'channels.codex.requiresReauthorization': '自动续期已失效，请重新授权。当前令牌失效前仍可使用。',
   'channels.codex.personalAccessTokenHint': '输入以 at- 开头的令牌。提交后输入会立即清除；令牌到期或被撤销后需要重新授权。',
   'channels.codex.personalAccessTokenDescription': '输入 Codex Personal Access Token。系统会先校验账号身份，再创建或更新对应渠道。',
   'channels.codex.personalAccessTokenSubmit': '校验并创建渠道',

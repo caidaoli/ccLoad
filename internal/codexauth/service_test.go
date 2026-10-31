@@ -215,3 +215,40 @@ func testIDToken(t *testing.T) string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_user_id":"user-test","chatgpt_account_id":"acct-test","chatgpt_plan_type":"plus"}}`))
 	return "header." + payload + ".signature"
 }
+
+func TestServiceTerminalRefreshErrors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		status   int
+		body     string
+		terminal bool
+	}{
+		{"reused", 400, `{"error":{"type":"invalid_request_error","code":"refresh_token_reused"}}`, true},
+		{"invalidated", 400, `{"error":"refresh_token_invalidated"}`, true},
+		{"revoked", 403, `{"error":"token_revoked"}`, true},
+		{"invalid grant", 400, `{"error":"invalid_grant"}`, true},
+		{"unauthorized", 401, `unauthorized`, true},
+		{"client configuration", 400, `{"error":"invalid_client"}`, false},
+		{"server failure", 503, `{"error":"refresh_token_reused"}`, false},
+		{"unknown", 400, `{"error":"invalid_request","error_description":"refresh_token_reused"}`, false},
+		{"malformed", 400, `{`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			service := NewService(server.Client())
+			service.TokenURL = server.URL
+			_, err := service.Refresh(context.Background(), "secret-refresh-token")
+			if err == nil || IsTerminalRefreshError(err) != tc.terminal {
+				t.Fatalf("refresh error=%v terminal=%v, want %v", err, IsTerminalRefreshError(err), tc.terminal)
+			}
+			if strings.Contains(err.Error(), tc.body) || strings.Contains(err.Error(), "secret-refresh-token") {
+				t.Fatalf("refresh diagnostic exposes private data: %v", err)
+			}
+		})
+	}
+}

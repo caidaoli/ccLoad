@@ -6944,10 +6944,24 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				if tt.xaiBaseURL {
 					upstreamURL += "/v1"
 				}
+				credentialJSON := expiredProxyOAuthCredential(t, tt.authType, accessToken)
+				if tt.authType == model.AuthTypeCodexOAuth {
+					// A terminally rejected Codex grant can retain only an unexpired
+					// access token. Keep this case inside the early refresh window.
+					credential, err := codexauth.ParseCredential([]byte(credentialJSON))
+					if err != nil {
+						t.Fatal(err)
+					}
+					credential.Expired = time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+					credentialJSON, err = credential.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 				env := setupProxyTestEnv(t, []testChannel{{
 					name: tt.name + "-refresh-failure", upstreamProtocol: tt.upstreamProtocol,
 					models: tt.model, priority: 100, authType: tt.authType,
-					oauthCredential: expiredProxyOAuthCredential(t, tt.authType, accessToken),
+					oauthCredential: credentialJSON,
 				}}, map[int]string{0: upstreamURL})
 
 				var refreshAttempts atomic.Int32

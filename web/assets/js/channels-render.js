@@ -1240,6 +1240,9 @@ function buildOAuthUsageStatusHtml(channel) {
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
+  if (channel.auth_type === 'codex_oauth' && channel.codex_requires_reauthorization) {
+    return `<div class="ch-oauth-usage"><div class="ch-oauth-usage__error" role="alert">${escapeChannelRefreshText(window.t('channels.codex.requiresReauthorization'))}</div></div>`;
+  }
   const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
   const refresh = {
