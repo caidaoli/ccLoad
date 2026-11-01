@@ -16,6 +16,8 @@
 - OpenAI Chat JSON/SSE 的 DeepSeek `prompt_cache_hit_tokens` 在自有 `builtin/cliproxy_adapter.go` 边界归一化到 `prompt_tokens_details.cached_tokens`，标准数字字段含 0 优先；不修改 CLIProxyAPI 快照，同协议原文继续透传，app 计量独立识别同一字段。
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
+- Responses 并行工具结果之间的 developer/system 提醒不能拆散同一批结果；按 call_id 恢复调用顺序并保留图片附件，提醒放到结果组之后；不得跨越真实 user/assistant 回合、新工具调用或 reasoning 边界收集结果，也不得把孤立结果跨提醒搬移。
+- Gemini 工具参数转换为 JSON Schema 时，将 minLength/maxLength、minItems/maxItems、minProperties/maxProperties 的规范非负整数字符串转为 JSON 数字；仅遍历 Schema 子结构，不改 default、enum、examples 或扩展元数据中的普通字符串。普通 Gemini 同协议请求仍遵循原样透传契约。
 - Antigravity Gemini 历史含多余工具结果时，优先按调用 ID 选择当前组结果，再按名称及顺序补齐；当前待配对组已全部完成后的多余结果丢弃，不得带入后续 model turn。
 - Gemini/Antigravity 请求清理 `systemInstruction.parts` / `system_instruction.parts` 中的空对象 `{}`，保留其他 Part 及顺序；全部为空时删除该系统指令字段。清理不扩大 Vertex 思考签名的既有端点边界；未知 Gemini 中继的原生请求继续透传，Antigravity 的身份提示仍按原规则注入。
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。
@@ -23,6 +25,7 @@
 - Claude 会话中 system 消息的 `tool_addition` 转 Responses 为 `additional_tools`，转 Chat 合并工具声明；内联工具参与长名称缩短及响应反向映射。工具声明与文本提醒不能拆散待完成的调用/结果配对；不因此启用 Claude `tool_search`。
 - OpenAI Chat 转 Codex 时，`service_tier` 的 `fast`/`priority` 规范为 `priority`，保留 `ultrafast`，忽略其他值；匹配时忽略大小写与首尾空白。
 - Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。
+- Responses → Chat 保留 developer 角色、消息内容和相对位置；不降级为 user，无法表示附件的拒绝判定仍仅针对真实 user 回合。Claude → Responses 的长 MCP gateway 工具名保留可读的工具后缀并消除碰撞，声明、历史、tool_choice 与响应原名恢复使用一致映射。
 - 跨协议 `custom apply_patch` 转函数工具时，保留补丁语法并使用唯一字符串 `input` 参数；反向转换按原始获胜声明识别工具，普通同名 function 不升级为 custom。OpenAI Chat 嵌套 `custom` 声明与 tool_choice 转 Codex 时拍平为 Responses 形状；这类工具的调用以原生 `type:"custom"` tool_calls 和原始 input 返回，扁平声明保持函数包装。补丁正文的空白、转义和 Unicode 必须在历史回放、增量、done 与最终 output 中一致。
 - 上游补丁参数非法、身份冲突或流缺少源协议终态时，转换边界传播工具输入错误，不得伪造成功；已开始的 Responses 流最多发送一次 `response.failed`。EOF 时上游已有语义终态（如 OpenAI `finish_reason`）则先补终止事件，再检查转换状态；启用补丁转换且缺少语义终态的流不得用合成终态掩盖截断。传输错误、取消与上游错误事件保留原错误，不改判为工具参数错误。普通工具与同协议透传保持原契约。
 - OpenAI → Claude 接收 reasoning_content、reasoning、reasoning_details 的首个有效表示；工具流保留 length/content_filter，累计参数不是有效对象时不得标成正常 tool_use。单条 system 输入继续作为原始用户提示，不包中途提醒。流式 `finish_reason` 块不发 `message_delta`/`message_stop`，等尾部 usage 块或 `[DONE]`（含网关补喂）再用权威 usage 收尾。

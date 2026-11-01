@@ -2,10 +2,10 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `b63322b9c35af112d7eecedc5bf5aa18c0a49ebb` (official dev commit after `v8.0.49`; no release tag claimed)
+- Last synchronized commit: `7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc` (official `v8.0.51`)
 - Snapshot target repository: `https://github.com/router-for-me/CLIProxyAPI`
 - Stable fork tag series: `fork/v` (no new fork release is claimed)
-- Synchronized at: `2026-11-01`
+- Synchronized at: `2026-11-02`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -23,6 +23,40 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-11-02)
+
+The four-protocol core and all allowlisted Antigravity adapters were reviewed
+atomically from `b63322b9c35af112d7eecedc5bf5aa18c0a49ebb` to official `v8.0.51`,
+using the local CLIProxyAPI checkout. The maintained fork and its stable tag
+series remain unchanged.
+
+- Keep parallel Responses tool outputs in one Gemini result group across
+  intervening developer/system notices, ordered by call ID. Retain notices and
+  image attachments without crossing real conversation turns, new calls or
+  reasoning items. Antigravity's Responses bridge inherits the same correction,
+  including reversed results for repeated calls to the same tool.
+- Preserve developer roles, content and relative message positions when
+  translating Responses to Chat Completions. Unsupported-content refusal still
+  applies only to actual user turns.
+- Normalize canonical nonnegative integer strings on the six JSON Schema
+  length/count constraints when converting Gemini tool parameters and cleaning
+  schemas, including Antigravity's parametersJsonSchema carrier. Traverse only
+  schema containers; preserve default, enum, examples and extension data.
+- Shorten long Claude gateway MCP names to readable server/tool names while
+  retaining collision handling and consistent declaration, history, tool_choice
+  and response-name mapping.
+- Merge the new upstream tests into existing suites. Private collector and
+  name-map tests retain their upstream symbols but exercise exported converter
+  behavior. Add Registry role/schema/name-round-trip coverage and Antigravity
+  parallel-result tests for both Gemini and Claude targets.
+
+The same-protocol Gemini converter remains excluded: ccLoad preserves native
+requests instead of upgrading their protobuf Schema carriers to JSON Schema.
+Interactions, runtime executors/authentication, Meta Muse, xAI video handlers
+and plugin changes remain outside the snapshot. Existing native non-stream,
+commentary, catalog, signature and usage contracts are retained. No app-owned
+runtime changes accompany this synchronization; the license is unchanged.
 
 ## Synchronization adaptations (2026-11-01)
 

@@ -2,6 +2,8 @@ package responses
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1635,5 +1637,70 @@ func TestConvertOpenAIResponsesRequestToAntigravity_TopLevelMedia(t *testing.T) 
 	}
 	if !foundAudio {
 		t.Errorf("expected audio inline part in output: %s", out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_ParallelOutputsAcrossNotices(t *testing.T) {
+	for _, model := range []string{"gemini-3-flash", "claude-sonnet-4-6"} {
+		for _, role := range []string{"developer", "system"} {
+			for _, image := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/image=%t", model, role, image), func(t *testing.T) {
+					items := []map[string]any{{"type": "message", "role": "user", "content": "Inspect files."}}
+					for i := 0; i < 4; i++ {
+						items = append(items, map[string]any{"type": "function_call", "call_id": fmt.Sprintf("call-%d", i), "name": "view_image", "arguments": "{}"})
+					}
+					for i := 0; i < 4; i++ {
+						id := 3 - i
+						var output any = fmt.Sprintf("result-%d", id)
+						if image {
+							output = []map[string]any{{"type": "input_text", "text": output}, {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="}}
+						}
+						items = append(items, map[string]any{"type": "function_call_output", "call_id": fmt.Sprintf("call-%d", id), "output": output})
+						note := map[string]any{"role": role, "content": fmt.Sprintf("notice-%d", i)}
+						if i%2 == 0 {
+							note["type"] = "message"
+						}
+						items = append(items, note)
+					}
+					input, err := json.Marshal(map[string]any{"input": items})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := ConvertOpenAIResponsesRequestToAntigravity(model, input, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request := gjson.GetBytes(result, "request")
+					if errPair := sigcompat.ValidateGeminiFunctionCallPairing([]byte(request.Raw)); errPair != nil {
+						t.Fatalf("invalid parallel results: %v; result=%s", errPair, result)
+					}
+					contents := request.Get("contents").Array()
+					if len(contents) != 4 {
+						t.Fatalf("got %d turns, want user/calls/results/notices; result=%s", len(contents), result)
+					}
+					responses := contents[2].Get("parts").Array()
+					if len(responses) != 4 {
+						t.Fatalf("got %d responses, want 4; result=%s", len(responses), result)
+					}
+					for i, part := range responses {
+						response := part.Get("functionResponse")
+						if got := response.Get("id").String(); got != fmt.Sprintf("call-%d", i) {
+							t.Fatalf("response %d has id %q", i, got)
+						}
+						if got := response.Get("response.result").String(); got != fmt.Sprintf("result-%d", i) {
+							t.Fatalf("response %d lost its text: %q", i, got)
+						}
+						if image && response.Get("parts.0.inlineData.data").String() != "aGVsbG8=" {
+							t.Fatalf("response %d lost its image: %s", i, part.Raw)
+						}
+					}
+					for i := 0; i < 4; i++ {
+						if strings.Count(contents[3].Raw, fmt.Sprintf("notice-%d", i)) != 1 {
+							t.Fatalf("notice %d missing or duplicated: %s", i, contents[3].Raw)
+						}
+					}
+				})
+			}
+		}
 	}
 }

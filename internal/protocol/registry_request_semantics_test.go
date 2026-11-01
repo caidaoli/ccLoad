@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +12,79 @@ import (
 
 	"github.com/tidwall/gjson"
 )
+
+func TestRegistryResponsesPreservesDeveloperRoles(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	raw := []byte(`{"instructions":"system rule","input":[{"role":"developer","content":"planning rule"},{"role":"user","content":"hello"},{"role":"developer","content":[{"type":"input_text","text":"remain in planning mode"}]}]}`)
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			out, err := reg.TranslateRequest(protocol.Codex, protocol.OpenAI, "gpt-5", raw, stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content any    `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(out, &request); err != nil {
+				t.Fatal(err)
+			}
+			wantRoles := []string{"system", "developer", "user", "developer"}
+			wantText := []string{"system rule", "planning rule", "hello", "remain in planning mode"}
+			if len(request.Messages) != len(wantRoles) {
+				t.Fatalf("message count changed: %s", out)
+			}
+			for i, message := range request.Messages {
+				if message.Role != wantRoles[i] || protocolTestContentText(message.Content) != wantText[i] {
+					t.Errorf("message %d lost role or content: %s", i, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRegistryGeminiNumericSchemaConstraints(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	raw := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"check","parameters":{"type":"OBJECT","minProperties":"1","maxProperties":"10","properties":{"text":{"type":"STRING","minLength":"1","maxLength":"200","enum":["1","2"],"default":"1"},"items":{"type":"ARRAY","minItems":"1","maxItems":"5","items":{"type":"STRING","minLength":"2"}}}}}]}]}`)
+	for _, target := range []struct {
+		protocol protocol.Protocol
+		model    string
+		path     string
+	}{
+		{protocol.OpenAI, "gpt-5", "tools.0.function.parameters"},
+		{protocol.Anthropic, "claude-sonnet-4-6", "tools.0.input_schema"},
+		{protocol.Codex, "gpt-5", "tools.0.parameters"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", target.protocol, stream), func(t *testing.T) {
+				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, raw, stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				schema := gjson.GetBytes(out, target.path)
+				for path, want := range map[string]int64{
+					"minProperties": 1, "maxProperties": 10,
+					"properties.text.minLength": 1, "properties.text.maxLength": 200,
+					"properties.items.minItems": 1, "properties.items.maxItems": 5,
+					"properties.items.items.minLength": 2,
+				} {
+					if got := schema.Get(path); got.Type != gjson.Number || got.Int() != want {
+						t.Errorf("%s = %s, want JSON number %d: %s", path, got.Raw, want, out)
+					}
+				}
+				for _, path := range []string{"properties.text.enum.0", "properties.text.default"} {
+					if got := schema.Get(path); got.Type != gjson.String || got.String() != "1" {
+						t.Errorf("literal data changed at %s: %s", path, out)
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestRegistryRequestSemantics(t *testing.T) {
 	t.Run("anthropic to openai keeps assistant thinking as reasoning_content", func(t *testing.T) {

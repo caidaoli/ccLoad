@@ -179,3 +179,15 @@ func TestConvertClaudeRequestToCodexWithCompat_CommentaryMarkerRestoresTextNotRe
 		t.Fatalf("compat replay should restore a commentary message, got %s", inputs[0].Raw)
 	}
 }
+
+func TestVisibleCommentaryReplayDefaultPreservesRepeatedFinal(t *testing.T) {
+	input := []byte(`{"model":"m","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"same","signature":"cpa:commentary:v1"},{"type":"text","text":"same"}]}]}`)
+	out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := gjson.GetBytes(out, "input").Array()
+	if len(items) != 2 || items[0].Get("phase").String() != "commentary" || items[0].Get("content.0.text").String() != "same" || items[1].Get("content.0.text").String() != "same" {
+		t.Fatalf("default mode changed existing replay semantics: %s", out)
+	}
+}

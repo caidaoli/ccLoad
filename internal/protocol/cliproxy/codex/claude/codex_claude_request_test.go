@@ -1,7 +1,9 @@
 package claude
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -1508,14 +1510,94 @@ func TestConvertClaudeRequestToCodex_MidConversationToolAdditions(t *testing.T) 
 	}
 }
 
-func TestVisibleCommentaryReplayDefaultPreservesRepeatedFinal(t *testing.T) {
-	input := []byte(`{"model":"m","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"same","signature":"cpa:commentary:v1"},{"type":"text","text":"same"}]}]}`)
-	out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", input, false)
+// Gateway shortening tests exercise request and response wire behavior rather than
+// the private name-map helpers. Names remain identical to the upstream regressions.
+const gatewayPrefix = "mcp__gateway__mcp_github-12345678-9abc-def0-1234-56789abcdef0-12345678_"
+
+func TestBuildShortNameMapKeepsGatewayToolNamesDistinct(t *testing.T) {
+	names := []string{
+		gatewayPrefix + "add-comment-to-pending-review",
+		gatewayPrefix + "create-branch",
+		gatewayPrefix + "get_file_contents",
+		"mcp__gateway__mcp_playwright-browser-67892a0b_browser_click",
+		"Bash",
+	}
+	want := []string{
+		"mcp__github_add-comment-to-pending-review",
+		"mcp__github_create-branch",
+		"mcp__github_get_file_contents",
+		names[3], names[4],
+	}
+	tools := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		tools = append(tools, map[string]any{"name": name, "input_schema": map[string]any{"type": "object"}})
+	}
+	req, err := json.Marshal(map[string]any{"tools": tools, "messages": []any{map[string]any{"role": "user", "content": "hi"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := gjson.GetBytes(out, "input").Array()
-	if len(items) != 2 || items[0].Get("phase").String() != "commentary" || items[0].Get("content.0.text").String() != "same" || items[1].Get("content.0.text").String() != "same" {
-		t.Fatalf("default mode changed existing replay semantics: %s", out)
+	out, err := ConvertClaudeRequestToCodex("test-model", req, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := gjson.GetBytes(out, "tools").Array()
+	if len(got) != len(want) {
+		t.Fatalf("tool count=%d, want %d; body=%s", len(got), len(want), out)
+	}
+	for i, tool := range got {
+		if name := tool.Get("name").String(); name != want[i] {
+			t.Errorf("tool %d name=%q, want %q", i, name, want[i])
+		}
+	}
+}
+
+func TestBuildShortNameMapDisambiguatesSameToolOnTwoServers(t *testing.T) {
+	a := gatewayPrefix + "create-branch"
+	b := "mcp__gateway__mcp_github-0b9e7c1d-1111-2222-3333-444455556666-89abcdef_create-branch"
+	req := []byte(fmt.Sprintf(`{"tools":[{"name":%q,"input_schema":{"type":"object"}},{"name":%q,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`, a, b))
+	out, err := ConvertClaudeRequestToCodex("test-model", req, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := gjson.GetBytes(out, "tools.0.name").String()
+	second := gjson.GetBytes(out, "tools.1.name").String()
+	if first != "mcp__github_create-branch" {
+		t.Fatalf("first tool name=%q", first)
+	}
+	if first == second || !strings.HasPrefix(second, "mcp__github_create-branch") || len(second) > 64 {
+		t.Fatalf("second tool name lost readable uniqueness: %q", second)
+	}
+}
+
+func TestReverseMapRestoresReadableGatewayNames(t *testing.T) {
+	original := gatewayPrefix + "add-issue-comment"
+	req := []byte(fmt.Sprintf(`{"tools":[{"name":%q,"input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":%q},"messages":[{"role":"user","content":"hi"}]}`, original, original))
+	translated, err := ConvertClaudeRequestToCodex("test-model", req, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const shortened = "mcp__github_add-issue-comment"
+	if got := gjson.GetBytes(translated, "tools.0.name").String(); got != shortened {
+		t.Fatalf("tool name=%q, want %q", got, shortened)
+	}
+	if got := gjson.GetBytes(translated, "tool_choice.name").String(); got != shortened {
+		t.Fatalf("tool_choice name=%q, want %q", got, shortened)
+	}
+	response := []byte(`{"type":"response.completed","response":{"id":"resp_test","model":"test-model","output":[{"type":"function_call","call_id":"call_test","name":"mcp__github_add-issue-comment","arguments":"{}"}],"usage":{"input_tokens":1,"output_tokens":1}}}`)
+	out := ConvertCodexResponseToClaudeNonStream(context.Background(), "test-model", req, translated, response, nil)
+	if got := gjson.GetBytes(out, "content.0.name").String(); got != original {
+		t.Fatalf("restored tool name=%q, want %q; body=%s", got, original, out)
+	}
+}
+
+func TestShortenNameIfNeededFallsBackForUnknownLongNames(t *testing.T) {
+	name := "mcp__srv__" + strings.Repeat("x", 80)
+	req := []byte(fmt.Sprintf(`{"tools":[{"name":%q,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`, name))
+	out, err := ConvertClaudeRequestToCodex("test-model", req, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "mcp__"+strings.Repeat("x", 59) {
+		t.Fatalf("fallback tool name=%q", got)
 	}
 }

@@ -2,6 +2,8 @@ package responses
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -3581,5 +3583,158 @@ func TestConvertOpenAIResponsesRequestToGemini_UnsignedModelTextDoesNotSynthesiz
 	}
 	if sanitizedParts[1].Get("thoughtSignature").Exists() {
 		t.Fatalf("sanitizer left unexpected thoughtSignature on text part: %s", sanitizedParts[1].Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ParallelOutputsAcrossNotices(t *testing.T) {
+	for _, role := range []string{"developer", "system"} {
+		for _, image := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/image=%t/reverse=%t", role, image, reverse), func(t *testing.T) {
+					items := []map[string]any{{"type": "message", "role": "user", "content": "Inspect files."}}
+					for i := 0; i < 4; i++ {
+						items = append(items, map[string]any{"type": "function_call", "call_id": fmt.Sprintf("call-%d", i), "name": "view_image", "arguments": "{}"})
+					}
+					for i := 0; i < 4; i++ {
+						id := i
+						if reverse {
+							id = 3 - i
+						}
+						var output any = fmt.Sprintf("result-%d", id)
+						if image {
+							output = []map[string]any{
+								{"type": "input_text", "text": fmt.Sprintf("result-%d", id)},
+								{"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="},
+							}
+						}
+						items = append(items, map[string]any{"type": "function_call_output", "call_id": fmt.Sprintf("call-%d", id), "output": output})
+						// Codex also emits role-only messages without an explicit type.
+						note := map[string]any{"role": role, "content": fmt.Sprintf("<image_resize_notice>notice-%d</image_resize_notice>", i)}
+						if i%2 == 0 {
+							note["type"] = "message"
+						}
+						items = append(items, note)
+					}
+					input, errMarshal := json.Marshal(map[string]any{"model": "gemini-4-argon", "input": items})
+					if errMarshal != nil {
+						t.Fatal(errMarshal)
+					}
+					result, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-4-argon", input, false)
+					if errConvert != nil {
+						t.Fatal(errConvert)
+					}
+					if errValidate := internalsignature.ValidateGeminiFunctionCallPairing(result); errValidate != nil {
+						t.Fatalf("invalid parallel results: %v; result=%s", errValidate, result)
+					}
+					contents := gjson.GetBytes(result, "contents").Array()
+					if len(contents) != 4 {
+						t.Fatalf("got %d turns, want user/calls/results/notices; result=%s", len(contents), result)
+					}
+					results := contents[2].Get("parts").Array()
+					if len(results) != 4 {
+						t.Fatalf("got %d responses, want 4", len(results))
+					}
+					for i, part := range results {
+						response := part.Get("functionResponse")
+						if got := response.Get("id").String(); got != fmt.Sprintf("call-%d", i) {
+							t.Fatalf("response %d has id %q", i, got)
+						}
+						if got := response.Get("response.result").String(); got != fmt.Sprintf("result-%d", i) {
+							t.Fatalf("response %d lost its text: %q", i, got)
+						}
+						if image && response.Get("parts.0.inlineData.data").String() != "aGVsbG8=" {
+							t.Fatalf("response %d lost its image: %s", i, part.Raw)
+						}
+					}
+					for i := 0; i < 4; i++ {
+						if strings.Count(contents[3].Raw, fmt.Sprintf("notice-%d", i)) != 1 {
+							t.Fatalf("notice %d missing or duplicated: %s", i, contents[3].Raw)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCollectOpenAIResponsesFunctionCallOutputs_PreservesTurnBoundaries(t *testing.T) {
+	for _, boundary := range []string{
+		`{"type":"message","role":"user","content":"new request"}`,
+		`{"type":"message","role":"assistant","content":"next response"}`,
+		`{"type":"function_call","call_id":"new","name":"next","arguments":"{}"}`,
+		`{"type":"reasoning","summary":[{"type":"summary_text","text":"Next thought"}]}`,
+	} {
+		t.Run(boundary, func(t *testing.T) {
+			input := []byte(`{"input":[
+    {"type":"message","role":"user","content":"Run tools"},
+    {"type":"function_call","call_id":"one","name":"first","arguments":"{}"},
+    {"type":"function_call","call_id":"two","name":"second","arguments":"{}"},
+    {"type":"function_call_output","call_id":"one","output":"first result"},
+    {"type":"message","role":"developer","content":"notice"},
+    ` + boundary + `,
+    {"type":"function_call_output","call_id":"two","output":"second result"}
+   ]}`)
+			result, err := ConvertOpenAIResponsesRequestToGemini("gemini-4-argon", input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var groups [][]string
+			for _, content := range gjson.GetBytes(result, "contents").Array() {
+				var ids []string
+				for _, part := range content.Get("parts").Array() {
+					if response := part.Get("functionResponse"); response.Exists() {
+						if id := response.Get("id").String(); id == "one" || id == "two" {
+							ids = append(ids, id)
+						}
+					}
+				}
+				if len(ids) > 0 {
+					groups = append(groups, ids)
+				}
+			}
+			if len(groups) != 2 || len(groups[0]) != 1 || groups[0][0] != "one" || len(groups[1]) != 1 || groups[1][0] != "two" {
+				t.Fatalf("parallel results crossed turn boundary: groups=%v; result=%s", groups, result)
+			}
+		})
+	}
+}
+
+func TestCollectOpenAIResponsesFunctionCallOutputs_DoesNotMoveOrphansAcrossNotices(t *testing.T) {
+	for _, withCall := range []bool{false, true} {
+		t.Run(fmt.Sprintf("withCall=%t", withCall), func(t *testing.T) {
+			call := ""
+			if withCall {
+				call = `{"type":"function_call","call_id":"one","name":"first","arguments":"{}"},`
+			}
+			input := []byte(`{"input":[{"type":"message","role":"user","content":"Run tools"},` + call + `
+    {"type":"function_call_output","call_id":"one","output":"first result"},
+    {"type":"message","role":"developer","content":"notice"},
+    {"type":"function_call_output","call_id":"orphan","output":"unrelated result"}
+   ]}`)
+			result, err := ConvertOpenAIResponsesRequestToGemini("gemini-4-argon", input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var texts []string
+			var responseIDs []string
+			for _, content := range gjson.GetBytes(result, "contents").Array() {
+				for _, part := range content.Get("parts").Array() {
+					if response := part.Get("functionResponse"); response.Exists() {
+						responseIDs = append(responseIDs, response.Get("id").String())
+					}
+					if text := part.Get("text"); text.Exists() {
+						texts = append(texts, text.String())
+					}
+				}
+			}
+			if (withCall && (len(responseIDs) != 1 || responseIDs[0] != "one")) || (!withCall && len(responseIDs) != 0) {
+				t.Fatalf("orphan became a function response: ids=%v; result=%s", responseIDs, result)
+			}
+			joined := strings.Join(texts, "\n")
+			noticeIndex, orphanIndex := strings.Index(joined, "notice"), strings.Index(joined, "unrelated result")
+			if noticeIndex < 0 || orphanIndex <= noticeIndex {
+				t.Fatalf("orphan moved across notice: texts=%v", texts)
+			}
+		})
 	}
 }
