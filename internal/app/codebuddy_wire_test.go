@@ -49,7 +49,7 @@ func TestFinalizeCodeBuddyBodySkipsThinkingForHy3(t *testing.T) {
 	}
 }
 
-func TestInjectCodeBuddyHeadersRewritesCodeBuddyIssuerToWorkBuddy(t *testing.T) {
+func TestInjectCodeBuddyHeadersKeepsCodeBuddyInternationalHost(t *testing.T) {
 	t.Parallel()
 	token := jwtWithIssuer("https://www.codebuddy.ai/auth/realms/copilot")
 	credential, err := (&codebuddyauth.Credential{
@@ -69,58 +69,56 @@ func TestInjectCodeBuddyHeadersRewritesCodeBuddyIssuerToWorkBuddy(t *testing.T) 
 	if err := injectCodeBuddyHeaders(req, &model.Config{OAuthCredential: credential}, token); err != nil {
 		t.Fatal(err)
 	}
-	if req.URL.Host != "www.workbuddy.ai" {
-		t.Fatalf("host=%s, want workbuddy.ai", req.URL.Host)
+	if req.URL.Host != "www.codebuddy.ai" {
+		t.Fatalf("host=%s, want codebuddy.ai", req.URL.Host)
 	}
-	if req.Header.Get("X-Domain") != "www.workbuddy.ai" || req.Header.Get("Origin") != codebuddyauth.WorkBuddyBaseURL {
+	if req.Header.Get("X-Domain") != "www.codebuddy.ai" || req.Header.Get("Origin") != codebuddyauth.InternationalBaseURL {
 		t.Fatalf("headers=%v", req.Header)
 	}
 }
 
-func TestRewriteCodeBuddyPublicErrorURLsUsesRequestHost(t *testing.T) {
-	t.Parallel()
-	body := []byte(`visit https://www.codebuddy.ai/profile/usage`)
-	req, err := http.NewRequest(http.MethodPost, "https://www.workbuddy.ai/v2/chat/completions", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := rewriteCodeBuddyPublicErrorURLs(req, body)
-	if !strings.Contains(string(got), "https://www.workbuddy.ai/profile/usage") {
-		t.Fatalf("got %s", got)
-	}
-}
-
-func TestInjectCodeBuddyHeadersRewritesWorkBuddyIssuer(t *testing.T) {
+func TestInjectCodeBuddyHeadersPreservesConfiguredURL(t *testing.T) {
 	t.Parallel()
 	token := jwtWithIssuer("https://www.workbuddy.ai/auth/realms/copilot")
 	credential, err := (&codebuddyauth.Credential{
 		AccessToken:  token,
 		RefreshToken: "refresh",
 		UID:          "uid",
-		BaseURL:      codebuddyauth.InternationalBaseURL,
+		BaseURL:      codebuddyauth.WorkBuddyBaseURL,
 		Domain:       "www.codebuddy.ai",
 	}).JSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://www.codebuddy.ai/v2/chat/completions", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := injectCodeBuddyHeaders(req, &model.Config{OAuthCredential: credential}, token); err != nil {
-		t.Fatal(err)
-	}
-	if req.URL.Host != "www.workbuddy.ai" {
-		t.Fatalf("host=%s, want workbuddy.ai", req.URL.Host)
-	}
-	if req.Header.Get("X-Refresh-Token") != "" {
-		t.Fatal("refresh token leaked onto chat")
-	}
-	if req.Header.Get("X-Domain") != "www.workbuddy.ai" || req.Header.Get("Origin") != codebuddyauth.WorkBuddyBaseURL {
-		t.Fatalf("headers=%v", req.Header)
-	}
-	if req.Header.Get("X-CodeBuddy-Request") != "1" {
-		t.Fatal("missing X-CodeBuddy-Request")
+	for _, endpoint := range []string{
+		"https://www.workbuddy.ai/v2/chat/completions",
+		"https://www.codebuddy.ai/v2/chat/completions",
+		"http://127.0.0.1:1234/custom/chat?mode=test",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			host := req.Host
+			origin := req.URL.Scheme + "://" + req.URL.Host
+			domain := req.URL.Hostname()
+			if err := injectCodeBuddyHeaders(req, &model.Config{OAuthCredential: credential}, token); err != nil {
+				t.Fatal(err)
+			}
+			if req.URL.String() != endpoint || req.Host != host {
+				t.Fatalf("request rewritten: URL=%s Host=%s", req.URL, req.Host)
+			}
+			if req.Header.Get("X-Refresh-Token") != "" {
+				t.Fatal("refresh token leaked onto chat")
+			}
+			if req.Header.Get("X-Domain") != domain || req.Header.Get("Origin") != origin || req.Header.Get("Referer") != origin+"/" {
+				t.Fatalf("headers disagree with endpoint: %v", req.Header)
+			}
+			if req.Header.Get("X-CodeBuddy-Request") != "1" {
+				t.Fatal("missing X-CodeBuddy-Request")
+			}
+		})
 	}
 }
 

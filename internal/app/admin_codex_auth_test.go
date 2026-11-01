@@ -836,38 +836,69 @@ func codeBuddyModelCatalogTestClient() *http.Client {
 
 func TestCodeBuddyCredentialImportUsesLiveModels(t *testing.T) {
 	t.Parallel()
-	for _, unavailable := range []bool{false, true} {
-		t.Run(fmt.Sprintf("unavailable=%v", unavailable), func(t *testing.T) {
-			srv := newInMemoryServer(t)
-			srv.client = codeBuddyModelCatalogTestClient()
-			if unavailable {
+	for _, edition := range []struct {
+		name          string
+		international bool
+		baseURL       string
+		storedBaseURL string
+	}{
+		{name: "domestic", baseURL: codebuddyauth.BaseURL},
+		{name: "international", international: true, baseURL: codebuddyauth.InternationalBaseURL},
+		{name: "legacy-workbuddy", international: true, baseURL: codebuddyauth.InternationalBaseURL, storedBaseURL: codebuddyauth.WorkBuddyBaseURL},
+	} {
+		for _, unavailable := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/unavailable=%v", edition.name, unavailable), func(t *testing.T) {
+				srv := newInMemoryServer(t)
+				catalog := codeBuddyModelCatalogTestClient()
 				srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
-					return nil, errors.New("catalog unavailable")
+					if r.URL.String() != edition.baseURL+"/v3/config" {
+						return nil, fmt.Errorf("unexpected model URL: %s", r.URL)
+					}
+					if unavailable {
+						return nil, errors.New("catalog unavailable")
+					}
+					return catalog.Transport.RoundTrip(r)
 				})}
-			}
-			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/codebuddy/credentials/import", strings.NewReader(`{"auth":{"accessToken":"access"},"account":{"uid":"uid"}}`)))
-			srv.HandleImportCodeBuddyCredential(c)
-			configs, err := srv.store.ListConfigs(context.Background())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if unavailable {
-				if w.Code == http.StatusOK || len(configs) != 0 {
-					t.Fatalf("failed discovery persisted channel: status=%d count=%d", w.Code, len(configs))
+				raw := fmt.Sprintf(`{"base_url":%q,"auth":{"accessToken":"access"},"account":{"uid":"uid"}}`, edition.storedBaseURL)
+				c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/import", strings.NewReader(raw)))
+				if edition.international {
+					srv.HandleImportCodeBuddyInternationalCredential(c)
+				} else {
+					srv.HandleImportCodeBuddyCredential(c)
 				}
-				return
-			}
-			if w.Code != http.StatusOK || len(configs) != 1 {
-				t.Fatalf("import: %d %s", w.Code, w.Body.String())
-			}
-			response, err := sortOAuthFetchModels(srv.fetchCodeBuddyOAuthModels(context.Background(), configs[0], ""))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(response.Models) != 1 || response.Models[0].Model != "live-model" || !reflect.DeepEqual(configs[0].ModelEntries, response.Models) {
-				t.Fatalf("saved=%+v fetched=%+v", configs[0].ModelEntries, response.Models)
-			}
-		})
+				configs, err := srv.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unavailable {
+					if w.Code == http.StatusOK || len(configs) != 0 {
+						t.Fatalf("failed discovery persisted channel: status=%d count=%d", w.Code, len(configs))
+					}
+					return
+				}
+				if w.Code != http.StatusOK || len(configs) != 1 {
+					t.Fatalf("import: %d %s", w.Code, w.Body.String())
+				}
+				credential, err := codebuddyauth.ParseCredential([]byte(configs[0].OAuthCredential))
+				wantEndpoint := edition.baseURL
+				if edition.storedBaseURL != "" {
+					wantEndpoint = edition.storedBaseURL
+				}
+				if err != nil || credential.Endpoint() != wantEndpoint {
+					t.Fatalf("saved credential endpoint: %+v, error=%v", credential, err)
+				}
+				if len(configs[0].URLs) != 1 || !configs[0].URLs[0].Exact || configs[0].URLs[0].URL != edition.baseURL+"/v2/chat/completions" {
+					t.Fatalf("saved completion URL: %+v", configs[0].URLs)
+				}
+				response, err := sortOAuthFetchModels(srv.fetchCodeBuddyOAuthModels(context.Background(), configs[0], ""))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(response.Models) != 1 || response.Models[0].Model != "live-model" || !reflect.DeepEqual(configs[0].ModelEntries, response.Models) {
+					t.Fatalf("saved=%+v fetched=%+v", configs[0].ModelEntries, response.Models)
+				}
+			})
+		}
 	}
 }
 
@@ -993,59 +1024,83 @@ func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 
 func TestCodeBuddyOAuthSessionOwnershipAndCancellation(t *testing.T) {
 	t.Parallel()
-	srv := newInMemoryServer(t)
-	srv.codeBuddyService.Client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path == "/v2/plugin/auth/state" {
-			return jsonResponse(r, `{"code":0,"data":{"state":"upstream-state","authUrl":"https://www.codebuddy.cn/auth"}}`)
-		}
-		return jsonResponse(r, `{"code":11217}`)
-	})}
-	call := func(owner, method, path, body string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
-		c, w := newTestContext(t, httptest.NewRequest(method, path, strings.NewReader(body)))
-		c.Request.Header.Set("Content-Type", "application/json")
-		c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAdmin, SessionHash: owner})
-		handler(c)
-		return w
-	}
-	start := func() string {
-		t.Helper()
-		w := call("owner", "POST", "/start", "", srv.HandleStartCodeBuddyOAuth)
-		if w.Code != 200 {
-			t.Fatalf("start: %d %s", w.Code, w.Body.String())
-		}
-		result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes())
-		if result.Data.State == "" || result.Data.State == "upstream-state" {
-			t.Fatal("public state not isolated")
-		}
-		return result.Data.State
-	}
-	oldState := start()
-	state := start()
-	w := call("owner", "GET", "/status?state="+oldState, "", srv.HandleCodeBuddyOAuthStatus)
-	if result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes()); result.Data.Status != "cancelled" {
-		t.Fatalf("old login status %s", result.Data.Status)
-	}
-	for _, method := range []string{"GET", "POST"} {
-		handler, path, body := srv.HandleCodeBuddyOAuthStatus, "/status?state="+state, ""
-		if method == "POST" {
-			handler, path, body = srv.HandleCancelCodeBuddyOAuth, "/cancel", fmt.Sprintf(`{"state":%q}`, state)
-		}
-		if response := call("other", method, path, body, handler); response.Code != 404 {
-			t.Fatalf("other owner got %d", response.Code)
-		}
-	}
-	w = call("owner", "POST", "/cancel", fmt.Sprintf(`{"state":%q}`, state), srv.HandleCancelCodeBuddyOAuth)
-	if w.Code != 200 {
-		t.Fatalf("cancel: %d", w.Code)
-	}
-	srv.codeBuddyOAuth.close()
-	w = call("owner", "GET", "/status?state="+state, "", srv.HandleCodeBuddyOAuthStatus)
-	if result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes()); result.Data.Status != "cancelled" {
-		t.Fatalf("cancel overwritten: %s", result.Data.Status)
-	}
-	configs, err := srv.store.ListConfigs(context.Background())
-	if err != nil || len(configs) != 0 {
-		t.Fatalf("cancel created channels=%d err=%v", len(configs), err)
+	for _, edition := range []struct {
+		name          string
+		international bool
+		baseURL       string
+	}{
+		{name: "domestic", baseURL: codebuddyauth.BaseURL},
+		{name: "international", international: true, baseURL: codebuddyauth.InternationalBaseURL},
+	} {
+		t.Run(edition.name, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			srv.codeBuddyService.Client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Scheme+"://"+r.URL.Host != edition.baseURL {
+					return nil, fmt.Errorf("unexpected authorization URL: %s", r.URL)
+				}
+				if r.URL.Path == "/v2/plugin/auth/state" {
+					return jsonResponse(r, fmt.Sprintf(`{"code":0,"data":{"state":"upstream-state","authUrl":%q}}`, edition.baseURL+"/auth"))
+				}
+				return jsonResponse(r, `{"code":11217}`)
+			})}
+			call := func(owner, method, path, body string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+				c, w := newTestContext(t, httptest.NewRequest(method, path, strings.NewReader(body)))
+				c.Request.Header.Set("Content-Type", "application/json")
+				c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAdmin, SessionHash: owner})
+				handler(c)
+				return w
+			}
+			start := func() string {
+				t.Helper()
+				handler := srv.HandleStartCodeBuddyOAuth
+				if edition.international {
+					handler = srv.HandleStartCodeBuddyInternationalOAuth
+				}
+				w := call("owner", "POST", "/start", "", handler)
+				if w.Code != 200 {
+					t.Fatalf("start: %d %s", w.Code, w.Body.String())
+				}
+				result := mustParseAPIResponse[struct {
+					State string `json:"state"`
+					URL   string `json:"url"`
+				}](t, w.Body.Bytes())
+				if result.Data.URL != edition.baseURL+"/auth" {
+					t.Fatalf("authorization URL: %s", result.Data.URL)
+				}
+				if result.Data.State == "" || result.Data.State == "upstream-state" {
+					t.Fatal("public state not isolated")
+				}
+				return result.Data.State
+			}
+			oldState := start()
+			state := start()
+			w := call("owner", "GET", "/status?state="+oldState, "", srv.HandleCodeBuddyOAuthStatus)
+			if result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes()); result.Data.Status != "cancelled" {
+				t.Fatalf("old login status %s", result.Data.Status)
+			}
+			for _, method := range []string{"GET", "POST"} {
+				handler, path, body := srv.HandleCodeBuddyOAuthStatus, "/status?state="+state, ""
+				if method == "POST" {
+					handler, path, body = srv.HandleCancelCodeBuddyOAuth, "/cancel", fmt.Sprintf(`{"state":%q}`, state)
+				}
+				if response := call("other", method, path, body, handler); response.Code != 404 {
+					t.Fatalf("other owner got %d", response.Code)
+				}
+			}
+			w = call("owner", "POST", "/cancel", fmt.Sprintf(`{"state":%q}`, state), srv.HandleCancelCodeBuddyOAuth)
+			if w.Code != 200 {
+				t.Fatalf("cancel: %d", w.Code)
+			}
+			srv.codeBuddyOAuth.close()
+			w = call("owner", "GET", "/status?state="+state, "", srv.HandleCodeBuddyOAuthStatus)
+			if result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes()); result.Data.Status != "cancelled" {
+				t.Fatalf("cancel overwritten: %s", result.Data.Status)
+			}
+			configs, err := srv.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 0 {
+				t.Fatalf("cancel created channels=%d err=%v", len(configs), err)
+			}
+		})
 	}
 }
 

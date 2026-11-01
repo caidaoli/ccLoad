@@ -152,18 +152,18 @@ func ApplyCredentialHeaders(h http.Header, c *Credential) {
 }
 
 // ApplyChatHeaders is the official CLI chat fingerprint. Conversation IDs are
-// generated per request; Origin/X-Domain follow JWT iss when it disagrees
-// with the stored portal base_url.
+// generated per request; Origin/X-Domain follow the CodeBuddy endpoint
+// selected for the token's public edition.
 func ApplyChatHeaders(h http.Header, c *Credential) {
 	ApplyCredentialHeaders(h, c)
-	EnsureChatFingerprint(h, c)
+	EnsureChatFingerprint(h, &url.URL{Scheme: "https", Host: ChatHost(c)})
 }
 
-// EnsureChatFingerprint aligns chat-only headers with the token's product host
+// EnsureChatFingerprint aligns chat-only headers with the request endpoint
 // and fills conversation IDs when missing.
-func EnsureChatFingerprint(h http.Header, c *Credential) {
-	origin := ChatBaseURL(c)
-	host := ChatHost(c)
+func EnsureChatFingerprint(h http.Header, endpoint *url.URL) {
+	origin := endpoint.Scheme + "://" + endpoint.Host
+	host := endpoint.Hostname()
 	h.Set("Origin", origin)
 	h.Set("Referer", origin+"/")
 	h.Set("X-Domain", host)

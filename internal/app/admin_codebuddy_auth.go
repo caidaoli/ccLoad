@@ -28,7 +28,7 @@ func codeBuddyChannelBaseName(credential *codebuddyauth.Credential) string {
 	digest := sha256.Sum256([]byte(identity))
 	label := "CodeBuddy"
 	if credential.IsInternational() {
-		label = "WorkBuddy"
+		label = "CodeBuddy-International"
 	}
 	if credential.Nickname != "" {
 		label += "-" + credential.Nickname
@@ -167,7 +167,7 @@ func (s *Server) HandleImportCodeBuddyCredential(c *gin.Context) {
 
 // HandleImportCodeBuddyInternationalCredential imports an international CLI credential.
 func (s *Server) HandleImportCodeBuddyInternationalCredential(c *gin.Context) {
-	s.handleImportCodeBuddyCredential(c, codebuddyauth.WorkBuddyBaseURL)
+	s.handleImportCodeBuddyCredential(c, codebuddyauth.InternationalBaseURL)
 }
 
 // HandleRefreshCodeBuddyCredential refreshes and persists a channel credential.
@@ -312,7 +312,7 @@ func (s *Server) HandleStartCodeBuddyOAuth(c *gin.Context) {
 
 // HandleStartCodeBuddyInternationalOAuth starts the international authorization flow.
 func (s *Server) HandleStartCodeBuddyInternationalOAuth(c *gin.Context) {
-	s.handleStartCodeBuddyOAuth(c, codebuddyauth.WorkBuddyBaseURL)
+	s.handleStartCodeBuddyOAuth(c, codebuddyauth.InternationalBaseURL)
 }
 
 func (m *codeBuddyOAuthManager) run(

@@ -1,7 +1,6 @@
 package codebuddyauth
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -59,31 +58,54 @@ func TestFetchModelsLiveCatalog(t *testing.T) {
 	}
 }
 
-func TestInternationalFetchModelsUsesWorkBuddyFingerprint(t *testing.T) {
+func TestInternationalCredentialRequestsUseCodeBuddy(t *testing.T) {
 	t.Parallel()
-	client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "www.workbuddy.ai" {
-			return nil, fmt.Errorf("request host=%q, want www.workbuddy.ai", r.URL.Host)
-		}
-		if r.Header.Get("Origin") != WorkBuddyBaseURL || r.Header.Get("Referer") != WorkBuddyBaseURL+"/" {
-			return nil, fmt.Errorf("origin=%q referer=%q, want WorkBuddy", r.Header.Get("Origin"), r.Header.Get("Referer"))
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"code":0,"data":{"agents":[{"name":"cli","models":["work-model"]}],"models":[{"id":"work-model"}]}}`)),
-		}, nil
-	})}
-	service := NewService(client)
-	names, err := service.FetchModels(context.Background(), &Credential{
-		AccessToken: "opaque-access",
-		BaseURL:     InternationalBaseURL,
-	})
-	if err != nil {
-		t.Fatalf("FetchModels: %v", err)
-	}
-	if strings.Join(names, ",") != "work-model" {
-		t.Fatalf("models=%v, want work-model", names)
+	for _, baseURL := range []string{InternationalBaseURL, WorkBuddyBaseURL} {
+		t.Run(baseURL, func(t *testing.T) {
+			client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != "www.codebuddy.ai" || r.Header.Get("Origin") != InternationalBaseURL || r.Header.Get("Referer") != InternationalBaseURL+"/" {
+					t.Errorf("inconsistent international endpoint: URL=%s Origin=%q Referer=%q", r.URL, r.Header.Get("Origin"), r.Header.Get("Referer"))
+				}
+				var body string
+				switch r.URL.Path {
+				case "/v3/config":
+					if r.Method != http.MethodGet {
+						t.Errorf("catalog method=%s", r.Method)
+					}
+					body = `{"code":0,"data":{"agents":[{"name":"cli","models":["intl-model"]}],"models":[{"id":"intl-model"}]}}`
+				case "/v2/plugin/auth/token/refresh":
+					if r.Method != http.MethodPost || r.Header.Get("X-Refresh-Token") != "refresh" {
+						t.Error("invalid refresh request")
+					}
+					body = `{"code":0,"data":{"accessToken":"new-access","expiresIn":3600}}`
+				case "/v2/billing/meter/get-user-resource":
+					if r.Method != http.MethodPost {
+						t.Errorf("billing method=%s", r.Method)
+					}
+					body = `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":42}]}}}}`
+				default:
+					t.Fatalf("unexpected request %s", r.URL)
+				}
+				if r.URL.Path != "/v2/plugin/auth/token/refresh" && (r.Header.Get("Authorization") != "Bearer opaque-access" || r.Header.Get("X-Refresh-Token") != "") {
+					t.Error("invalid credential headers")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			service := NewService(client)
+			credential := &Credential{AccessToken: "opaque-access", RefreshToken: "refresh", BaseURL: baseURL}
+			names, err := service.FetchModels(context.Background(), credential)
+			if err != nil || strings.Join(names, ",") != "intl-model" {
+				t.Fatalf("FetchModels=%v err=%v", names, err)
+			}
+			refreshed, err := service.Refresh(context.Background(), credential)
+			if err != nil || refreshed.AccessToken != "new-access" {
+				t.Fatalf("Refresh err=%v", err)
+			}
+			usage, err := service.UserResource(context.Background(), credential)
+			if err != nil || usage.Remain != 42 {
+				t.Fatalf("UserResource=%+v err=%v", usage, err)
+			}
+		})
 	}
 }
 
@@ -270,16 +292,16 @@ func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
 	var requests []string
 	client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.URL.String())
-		if r.URL.Host != "www.workbuddy.ai" {
-			t.Fatalf("request host=%q, want workbuddy host", r.URL.Host)
+		if r.URL.Host != "www.codebuddy.ai" {
+			t.Fatalf("request host=%q, want CodeBuddy host", r.URL.Host)
 		}
-		if r.Header.Get("Origin") != WorkBuddyBaseURL {
-			t.Fatalf("origin=%q, want %q", r.Header.Get("Origin"), WorkBuddyBaseURL)
+		if r.Header.Get("Origin") != InternationalBaseURL {
+			t.Fatalf("origin=%q, want %q", r.Header.Get("Origin"), InternationalBaseURL)
 		}
 		var body string
 		switch r.URL.Path {
 		case "/v2/plugin/auth/state":
-			body = `{"code":0,"data":{"state":"intl-state","authUrl":"https://www.workbuddy.ai/login"}}`
+			body = `{"code":0,"data":{"state":"intl-state","authUrl":"https://www.codebuddy.ai/login"}}`
 		case "/v2/plugin/auth/token":
 			body = `{"code":0,"data":{"accessToken":"intl-access","refreshToken":"intl-refresh","expiresIn":3600}}`
 		case "/v2/plugin/login/account":
@@ -293,7 +315,7 @@ func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
 	})}
 	service := NewService(client)
 	service.Now = func() time.Time { return time.Unix(1000, 0) }
-	login, err := service.StartAt(context.Background(), WorkBuddyBaseURL)
+	login, err := service.StartAt(context.Background(), InternationalBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,15 +323,15 @@ func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.BaseURL != WorkBuddyBaseURL || credential.UID != "intl-user" {
-		t.Fatalf("credential=%+v, want workbuddy endpoint and identity", credential)
+	if credential.BaseURL != InternationalBaseURL || credential.UID != "intl-user" {
+		t.Fatalf("credential=%+v, want CodeBuddy endpoint and identity", credential)
 	}
 	refreshed, err := service.Refresh(context.Background(), credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.BaseURL != WorkBuddyBaseURL || refreshed.AccessToken != "intl-new-access" {
-		t.Fatalf("refreshed=%+v, want workbuddy endpoint", refreshed)
+	if refreshed.BaseURL != InternationalBaseURL || refreshed.AccessToken != "intl-new-access" {
+		t.Fatalf("refreshed=%+v, want CodeBuddy endpoint", refreshed)
 	}
 	if len(requests) != 4 {
 		t.Fatalf("requests=%v, want state/token/account/refresh", requests)
@@ -519,11 +541,11 @@ func TestChatHostFollowsJWTIssuer(t *testing.T) {
 		token, base, want string
 		intl              bool
 	}{
-		{jwtWithIssuer("https://www.workbuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.workbuddy.ai", true},
-		{jwtWithIssuer("https://www.codebuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.workbuddy.ai", true},
-		{"not-a-jwt", InternationalBaseURL, "www.workbuddy.ai", true},
+		{jwtWithIssuer("https://www.workbuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.codebuddy.ai", true},
+		{jwtWithIssuer("https://www.codebuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.codebuddy.ai", true},
+		{"not-a-jwt", InternationalBaseURL, "www.codebuddy.ai", true},
 		{"not-a-jwt", "", "copilot.tencent.com", false},
-		{"access", WorkBuddyBaseURL, "www.workbuddy.ai", true},
+		{"access", WorkBuddyBaseURL, "www.codebuddy.ai", true},
 	}
 	for _, tc := range cases {
 		c := &Credential{AccessToken: tc.token, BaseURL: tc.base}
@@ -537,27 +559,13 @@ func TestChatHostFollowsJWTIssuer(t *testing.T) {
 			t.Errorf("IsInternational()=%v want %v host=%s", c.IsInternational(), tc.intl, ChatHost(c))
 		}
 	}
-	if CompletionsURLForBaseURL(InternationalBaseURL) != WorkBuddyCompletionsURL {
-		t.Fatalf("international completions URL=%s", CompletionsURLForBaseURL(InternationalBaseURL))
+	for _, base := range []string{InternationalBaseURL, WorkBuddyBaseURL} {
+		if got := CompletionsURLForBaseURL(base); got != InternationalCompletionsURL {
+			t.Errorf("CompletionsURLForBaseURL(%q)=%q", base, got)
+		}
 	}
 	if !SameProductSite(InternationalBaseURL, WorkBuddyBaseURL) || SameProductSite(InternationalBaseURL, BaseURL) {
 		t.Fatal("codebuddy.ai and workbuddy.ai must be one international site")
-	}
-}
-
-func TestRewritePublicErrorURLsMapsWorkBuddyUsageLink(t *testing.T) {
-	t.Parallel()
-	body := []byte(`{"error":{"data":{"code":14018,"msg":"Please visit https://www.codebuddy.ai/profile/usage "}}}`)
-	got := RewritePublicErrorURLs(body, "www.workbuddy.ai")
-	if !bytes.Contains(got, []byte("https://www.workbuddy.ai/profile/usage")) {
-		t.Fatalf("workbuddy host: %s", got)
-	}
-	if bytes.Contains(got, []byte("codebuddy.ai")) {
-		t.Fatalf("codebuddy link leaked: %s", got)
-	}
-	same := RewritePublicErrorURLs(body, "www.codebuddy.ai")
-	if !bytes.Equal(same, body) {
-		t.Fatalf("codebuddy host must keep upstream copy, got %s", same)
 	}
 }
 
@@ -577,7 +585,7 @@ func TestApplyChatHeadersOmitsRefreshToken(t *testing.T) {
 	if h.Get("X-CodeBuddy-Request") != "1" || h.Get("X-Agent-Intent") != "craft" || h.Get("X-IDE-Type") != "CLI" {
 		t.Fatalf("missing CLI fingerprint: %v", h)
 	}
-	if h.Get("X-Domain") != "www.workbuddy.ai" || h.Get("Origin") != WorkBuddyBaseURL {
+	if h.Get("X-Domain") != "www.codebuddy.ai" || h.Get("Origin") != InternationalBaseURL {
 		t.Fatalf("host mismatch domain=%s origin=%s", h.Get("X-Domain"), h.Get("Origin"))
 	}
 	if h.Get("X-Conversation-Request-ID") == "" || h.Get("User-Agent") != "CLI/"+CLIVersion+" CodeBuddy/"+CLIVersion {
