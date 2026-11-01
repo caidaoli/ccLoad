@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -162,4 +163,43 @@ func TestAuthService_LoginLogoutAndCleanup(t *testing.T) {
 			t.Fatalf("expected expired session removed from DB")
 		}
 	})
+}
+
+func TestAdminLoginIPv6PrefixRateLimit(t *testing.T) {
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	limiter := util.NewLoginRateLimiter()
+	t.Cleanup(limiter.Stop)
+	svc := NewAuthService("pass", limiter, store)
+	t.Cleanup(svc.Close)
+	login := func(address, password string, want int) {
+		t.Helper()
+		w := runLoginHandler(t, svc, fmt.Sprintf(`{"mode":"admin","password":%q}`, password), address)
+		if w.Code != want {
+			t.Fatalf("login from %s: status=%d want=%d body=%s", address, w.Code, want, w.Body.String())
+		}
+	}
+	// Rotating addresses within one /64 must not replenish the attempt budget.
+	for i := 1; i <= 5; i++ {
+		login(fmt.Sprintf("[2001:db8:1:2::%x]:1234", i), "wrong", http.StatusUnauthorized)
+	}
+	login("[2001:db8:1:2::ffff]:1234", "wrong", http.StatusTooManyRequests)
+	login("[2001:0db8:0001:0002:0:0:0:abcd]:1234", "wrong", http.StatusTooManyRequests)
+	login("[2001:db8:1:3::1]:1234", "wrong", http.StatusUnauthorized)
+	// IPv4 addresses remain independent; mapped IPv4 has the same identity.
+	for i := 0; i < 5; i++ {
+		login("192.0.2.1:1234", "wrong", http.StatusUnauthorized)
+	}
+	login("[::ffff:192.0.2.1]:1234", "wrong", http.StatusTooManyRequests)
+	login("192.0.2.2:1234", "wrong", http.StatusUnauthorized)
+	login("[::ffff:192.0.2.3]:1234", "wrong", http.StatusUnauthorized)
+	// Successful password login clears the shared prefix's previous failures.
+	for i := 1; i <= 4; i++ {
+		login(fmt.Sprintf("[2001:db8:2:1::%x]:1234", i), "wrong", http.StatusUnauthorized)
+	}
+	login("[2001:db8:2:1::5]:1234", "pass", http.StatusOK)
+	for i := 6; i <= 10; i++ {
+		login(fmt.Sprintf("[2001:db8:2:1::%x]:1234", i), "wrong", http.StatusUnauthorized)
+	}
+	login("[2001:db8:2:1::b]:1234", "wrong", http.StatusTooManyRequests)
 }

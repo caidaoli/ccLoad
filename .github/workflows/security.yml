@@ -1,0 +1,50 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  govulncheck:
+    name: Go vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: '0'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        id: go
+        uses: ./.github/actions/setup-go
+
+      - name: Install govulncheck
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      - name: Scan Go vulnerabilities
+        run: |
+          "$RUNNER_TEMP/bin/govulncheck" -version
+          "$RUNNER_TEMP/bin/govulncheck" -tags sonic ./...
+
+      - name: Save Go build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && steps.go.outcome == 'success' }}
+        uses: ./.github/actions/save-go-cache
+        with:
+          path: ${{ steps.go.outputs.build-cache-path }}
+          key: ${{ steps.go.outputs.build-cache-key }}

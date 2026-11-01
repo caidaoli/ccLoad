@@ -1,6 +1,6 @@
 module ccLoad
 
-go 1.27.0
+go 1.27.3
 
 require (
 	connectrpc.com/connect v1.21.1

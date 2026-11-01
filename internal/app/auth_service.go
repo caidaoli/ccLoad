@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -702,6 +703,20 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 // 登录/登出处理
 // ============================================================================
 
+// adminLoginRateKey shares the login budget within an IPv6 /64 while keeping
+// IPv4 clients separate. Logging continues to use the original client IP.
+func adminLoginRateKey(clientIP string) string {
+	if addr, err := netip.ParseAddr(clientIP); err == nil {
+		addr = addr.Unmap()
+		if addr.Is6() {
+			clientIP = netip.PrefixFrom(addr.WithZone(""), 64).Masked().String()
+		} else {
+			clientIP = addr.String()
+		}
+	}
+	return "admin:" + clientIP
+}
+
 // HandleLogin 处理登录请求
 // 集成登录速率限制，防暴力破解
 func (s *AuthService) HandleLogin(c *gin.Context) {
@@ -721,7 +736,7 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	var session model.WebSession
 	switch req.Mode {
 	case model.WebRoleAdmin:
-		adminRateKey := "admin:" + clientIP
+		adminRateKey := adminLoginRateKey(clientIP)
 		if !s.loginRateLimiter.AllowAttempt(adminRateKey) {
 			lockoutTime := s.loginRateLimiter.GetLockoutTime(adminRateKey)
 			RespondErrorWithData(c, http.StatusTooManyRequests, "Too many failed login attempts", gin.H{
