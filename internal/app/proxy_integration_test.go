@@ -3888,6 +3888,114 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravitySystemInstructionDropsEmptyParts(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"gemini-3-flash", "claude-opus-5-5-high"} {
+		for _, key := range []string{"systemInstruction", "system_instruction"} {
+			t.Run(target+"/"+key, func(t *testing.T) {
+				t.Parallel()
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					wire, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read Antigravity request: %v", err)
+					}
+					parts := gjson.GetBytes(wire, "request.systemInstruction.parts").Array()
+					if len(parts) != 3 || !strings.Contains(parts[0].Get("text").String(), "You are Antigravity") ||
+						parts[1].Get("text").String() != "Keep this instruction." || !parts[2].Get("text").Exists() || parts[2].Get("text").String() != "" {
+						t.Errorf("empty system Part survived or nonempty Part changed: %s", wire)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}}`)
+				}))
+				t.Cleanup(upstream.Close)
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: "antigravity-system-parts", upstreamProtocol: "gemini", models: target,
+					authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-system-parts"),
+					// Body rules run after translation; the finalizer must also clean parts introduced here.
+					customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+						Action: model.RuleActionOverride, Path: "request.systemInstruction.parts",
+						Value: json.RawMessage(`[{},{"text":"Keep this instruction."},{},{"text":""}]`),
+					}}},
+				}}, map[int]string{0: upstream.URL})
+				response := doProxyRequest(t, env.engine, "/v1beta/models/"+target+":generateContent", map[string]any{
+					key:        map[string]any{"parts": []any{map[string]any{}, map[string]any{"text": "Keep this instruction."}, map[string]any{}, map[string]any{"text": ""}}},
+					"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+				}, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestProxy_AntigravityClaude55ThinkingLevel(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"claude-opus-5-5-high", "claude-sonnet-5-5-high"} {
+		for _, stream := range []bool{false, true} {
+			for _, automatic := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/automatic=%t", target, stream, automatic), func(t *testing.T) {
+					t.Parallel()
+					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						wire, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Errorf("read Antigravity request: %v", err)
+						}
+						if gjson.GetBytes(wire, "model").String() != target || gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").String() != "medium" {
+							t.Errorf("Claude 5.5 thinking level was lost: %s", wire)
+						}
+						if gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingBudget").Exists() {
+							t.Errorf("budget overrode the requested thinking level: %s", wire)
+						}
+						response := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"thinking level ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`
+						if stream {
+							if r.URL.Path != "/v1internal:streamGenerateContent" {
+								t.Errorf("stream path=%s", r.URL.Path)
+							}
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = fmt.Fprintf(w, "data: %s\n\n", response)
+						} else {
+							if r.URL.Path != "/v1internal:generateContent" {
+								t.Errorf("non-stream path=%s", r.URL.Path)
+							}
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, response)
+						}
+					}))
+					t.Cleanup(upstream.Close)
+					channel := testChannel{name: "claude-55-thinking", upstreamProtocol: "gemini", models: target,
+						authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-claude-55-thinking")}
+					body := map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Explain the scheduler."}}}}}
+					var env *proxyTestEnv
+					if automatic {
+						judge := newReasoningAutoJudge(t, "medium")
+						env = setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{channel}, []string{upstream.URL})
+						env.server.reasoningAuto.BusinessModels = []string{target}
+					} else {
+						env = setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
+						body["generationConfig"] = map[string]any{"thinkingConfig": map[string]any{"thinkingLevel": "medium", "includeThoughts": true}}
+					}
+					action := "generateContent"
+					if stream {
+						action = "streamGenerateContent?alt=sse"
+					}
+					response := doProxyRequest(t, env.engine, "/v1beta/models/"+target+":"+action, body, nil)
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					payload := response.Body.Bytes()
+					if stream {
+						_, payload = parseSSEEventChunk(payload)
+					}
+					if gjson.GetBytes(payload, "candidates.0.content.parts.0.text").String() != "thinking level ok" {
+						t.Fatalf("response lost content: %s", response.Body.String())
+					}
+				})
+			}
+		}
+	}
+}
+
 func antigravityCatalogMaxOutputTokens(t testing.TB, modelName string) int64 {
 	t.Helper()
 	info := cliproxyregistry.LookupModelInfo(modelName, "antigravity")
@@ -9318,6 +9426,7 @@ func TestProxy_GeminiRejectsOnlyVertexBareTinkSignatures(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}`))}, nil
 			})}
 			response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-pro:generateContent", map[string]any{
+				"systemInstruction": map[string]any{"parts": []any{map[string]any{}, map[string]any{"text": "Keep this instruction."}, map[string]any{}, map[string]any{"text": ""}}},
 				"contents": []any{map[string]any{"role": "model", "parts": []any{
 					map[string]any{"text": "native thought", "thought": true, "thoughtSignature": "native-opaque-untouched"},
 					map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}}, "thoughtSignature": vertexSignature},
@@ -9330,6 +9439,14 @@ func TestProxy_GeminiRejectsOnlyVertexBareTinkSignatures(t *testing.T) {
 			parts := gjson.GetBytes(got, "contents.0.parts").Array()
 			if len(parts) != 3 || parts[0].Get("thoughtSignature").String() != "native-opaque-untouched" || parts[1].Get("thoughtSignature").String() != tc.wantSignature || parts[2].Get("thoughtSignature").Exists() {
 				t.Fatalf("endpoint signature isolation failed: %s", got)
+			}
+			systemParts := gjson.GetBytes(got, "systemInstruction.parts").Array()
+			if tc.name == "Gemini API" {
+				if len(systemParts) != 2 || systemParts[0].Get("text").String() != "Keep this instruction." || !systemParts[1].Get("text").Exists() || systemParts[1].Get("text").String() != "" {
+					t.Fatalf("Gemini API empty system Part survived or nonempty Part changed: %s", got)
+				}
+			} else if len(systemParts) != 4 {
+				t.Fatalf("unknown Gemini relay request changed: %s", got)
 			}
 		})
 	}

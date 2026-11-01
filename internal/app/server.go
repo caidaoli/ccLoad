@@ -76,7 +76,6 @@ type Server struct {
 	client                        *http.Client // HTTP客户端（全局默认）
 	antigravityClient             *http.Client // Antigravity 专用标准 HTTP/1.1 客户端
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
-	proxyTransports               sync.Map     // upstreamHTTPClientCacheKey → *http.Client（渠道级代理缓存）
 	credentialTransports          *credentialHTTPClientCache
 	credentialTransportMu         sync.Mutex
 	protocolCapabilities          protocolCapabilityCache
@@ -1156,13 +1155,16 @@ var errCredentialHTTPClientCacheClosed = errors.New("credential HTTP client cach
 
 type credentialCacheClosedTransport struct{}
 
-func (credentialCacheClosedTransport) RoundTrip(*http.Request) (*http.Response, error) {
+func (credentialCacheClosedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
 	return nil, errCredentialHTTPClientCacheClosed
 }
 
 var closedCredentialHTTPClient = &http.Client{Transport: credentialCacheClosedTransport{}}
 
-// credentialHTTPClientCache is a bounded LRU of OAuth clients. A client
+// credentialHTTPClientCache is a bounded LRU of OAuth and shared proxy clients. A client
 // owns a transport and therefore a physical connection pool; evicting it must
 // close idle connections or credential/proxy churn would retain sockets forever.
 type credentialHTTPClientCache struct {
@@ -1494,6 +1496,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	}
 	client, err := s.proxyHTTPClient(cfg.ProxyURL, antigravityHTTP11Only)
 	if err != nil {
+		if errors.Is(err, errCredentialHTTPClientCacheClosed) {
+			return closedCredentialHTTPClient
+		}
 		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
 		return defaultClient
 	}
@@ -1506,25 +1511,18 @@ func (s *Server) proxyHTTPClient(proxyURL string, antigravityHTTP11Only bool) (*
 		proxyURL:              proxyURL,
 		antigravityHTTP11Only: antigravityHTTP11Only,
 	}
-	if v, ok := s.proxyTransports.Load(cacheKey); ok {
-		return v.(*http.Client), nil
-	}
-
-	t, err := buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
-	if err != nil {
-		return nil, err
-	}
-	clientFactory := newUpstreamHTTPClient
-	if antigravityHTTP11Only {
-		clientFactory = newAntigravityHTTPClient
-	}
-	c := clientFactory(t, s.upstreamConnectionMaxAge)
-	if actual, loaded := s.proxyTransports.LoadOrStore(cacheKey, c); loaded {
-		closeUpstreamHTTPClient(c)
-		return actual.(*http.Client), nil
-	}
-	log.Printf("[INFO] 使用独立代理: %s", proxyURL)
-	return c, nil
+	return s.getCredentialHTTPClientCache().getOrCreate(cacheKey, func() (*http.Client, error) {
+		t, err := buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
+		if err != nil {
+			return nil, err
+		}
+		clientFactory := newUpstreamHTTPClient
+		if antigravityHTTP11Only {
+			clientFactory = newAntigravityHTTPClient
+		}
+		log.Printf("[INFO] 使用独立代理: %s", proxyURL)
+		return clientFactory(t, s.upstreamConnectionMaxAge), nil
+	})
 }
 
 // buildChannelProxyTransport 构建带代理的 Transport（HTTP/HTTPS 直连，SOCKS5 用自定义 Dialer）。
@@ -2203,16 +2201,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	closeUpstreamHTTPClient(s.client)
 	closeUpstreamHTTPClient(s.antigravityClient)
 	closeUpstreamHTTPClient(s.xaiSSOClient)
-	s.credentialTransportMu.Lock()
-	credentialTransports := s.credentialTransports
-	s.credentialTransportMu.Unlock()
-	if credentialTransports != nil {
-		credentialTransports.closeAll()
-	}
-	s.proxyTransports.Range(func(_, v any) bool {
-		closeUpstreamHTTPClient(v.(*http.Client))
-		return true
-	})
+	s.getCredentialHTTPClientCache().closeAll()
 
 	// 无论成功还是超时，都要关闭数据库连接
 	if closer, ok := s.store.(interface{ Close() error }); ok {

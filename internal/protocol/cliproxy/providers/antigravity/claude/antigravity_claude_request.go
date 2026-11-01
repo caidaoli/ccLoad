@@ -856,6 +856,8 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out = sigcompat.SanitizeGeminiRequestThoughtSignatures(out, "request.contents")
 	case sigcompat.SignatureProviderClaude:
 		out = antigravitygemini.SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, out)
+	default:
+		out = sigcompat.SanitizeGeminiSystemInstruction(out, "request.contents")
 	}
 
 	return out, drops.Err()

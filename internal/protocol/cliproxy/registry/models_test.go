@@ -11,6 +11,8 @@ func TestLookupThinkingLevels(t *testing.T) {
 		want  []string
 	}{
 		{"claude-sonnet-5-5", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"claude-opus-5-5-high", []string{"low", "medium", "high"}},
+		{"claude-sonnet-5-5-high", []string{"low", "medium", "high"}},
 		// Catalogs Lookup leaves out still provide levels.
 		{"kimi-k3", []string{"low", "high", "max"}},
 		{"grok-4.7", []string{"low", "medium", "high", "xhigh"}},

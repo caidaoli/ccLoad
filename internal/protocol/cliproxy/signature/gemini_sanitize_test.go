@@ -402,3 +402,42 @@ func TestSanitizeVertexSignaturesForNonVertexPreservesOtherSignatureContracts(t 
 		t.Fatalf("payload without bare-Tink signatures changed: %s", out)
 	}
 }
+
+func TestSanitizeGeminiRequestThoughtSignatures_StripsEmptySystemInstructionParts(t *testing.T) {
+	t.Run("drops_systemInstruction_when_all_parts_are_empty_objects", func(t *testing.T) {
+		input := []byte(`{"request":{"systemInstruction":{"parts":[{}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "request.contents")
+		if gjson.GetBytes(out, "request.systemInstruction").Exists() {
+			t.Fatalf("expected request.systemInstruction to be removed, got %s", out)
+		}
+	})
+
+	t.Run("retains_non_empty_systemInstruction_parts", func(t *testing.T) {
+		input := []byte(`{"systemInstruction":{"parts":[{},{"text":"keep rule"},{}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+		parts := gjson.GetBytes(out, "systemInstruction.parts").Array()
+		if len(parts) != 1 || parts[0].Get("text").String() != "keep rule" {
+			t.Fatalf("unexpected systemInstruction.parts: %s", out)
+		}
+	})
+
+	t.Run("handles_snake_case_without_contents", func(t *testing.T) {
+		input := []byte(`{"request":{"system_instruction":{"role":"system","parts":[{}, {"text":"keep"}, {}]}}}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "request.contents")
+		sys := gjson.GetBytes(out, "request.system_instruction")
+		parts := sys.Get("parts").Array()
+		if sys.Get("role").String() != "system" || len(parts) != 1 || parts[0].Get("text").String() != "keep" {
+			t.Fatalf("unexpected request.system_instruction: %s", out)
+		}
+	})
+
+	t.Run("keeps_empty_text_field_and_valid_part_order", func(t *testing.T) {
+		input := []byte(`{"systemInstruction":{"parts":[{"text":"first"},{},{"text":""},{},{"text":"last"}]}}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "")
+		parts := gjson.GetBytes(out, "systemInstruction.parts").Array()
+		if len(parts) != 3 || parts[0].Get("text").String() != "first" || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[2].Get("text").String() != "last" {
+			t.Fatalf("non-empty Part objects changed or reordered: %s", out)
+		}
+	})
+
+}

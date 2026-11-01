@@ -70,10 +70,9 @@ func newHTTPClientWithRoundTripperFactory(
 	maxAge time.Duration,
 	factory upstreamRoundTripperFactory,
 ) *http.Client {
-	var roundTripper http.RoundTripper = factory(base)
-	if maxAge > 0 {
-		roundTripper = newUpstreamConnectionAgeTransportWithFactory(base, maxAge, factory)
-	}
+	// Keep the retirement gate even when connection-age rotation is disabled:
+	// an evicted client may still be held by a caller, but must not rebuild a pool.
+	roundTripper := newUpstreamConnectionAgeTransportWithFactory(base, maxAge, factory)
 	return &http.Client{Transport: roundTripper, Timeout: 0, CheckRedirect: refuseCrossOriginRedirect}
 }
 
@@ -156,6 +155,9 @@ func (t *upstreamConnectionAgeTransport) acquire() (*upstreamHTTPTransportGenera
 func (t *upstreamConnectionAgeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	generation, err := t.acquire()
 	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	resp, err := generation.transport.RoundTrip(req)

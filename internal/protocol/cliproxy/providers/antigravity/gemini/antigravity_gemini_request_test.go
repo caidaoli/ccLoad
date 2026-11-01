@@ -1309,3 +1309,208 @@ func TestConvertGeminiRequestToAntigravity_PreservesExistingResponseSchema(t *te
 		t.Fatalf("request.generationConfig.responseJsonSchema should have been removed. Output: %s", out)
 	}
 }
+
+func TestFixCLIToolResponse_MoreResponsesThanCallsDoesNotCorruptNextTurn(t *testing.T) {
+	input := `{
+		"model": "gemini-3.8-flash",
+		"request": {
+			"contents": [
+				{
+					"role": "user",
+					"parts": [{"text": "Inspect the project structure"}]
+				},
+				{
+					"role": "model",
+					"parts": [
+						{"functionCall": {"id": "call_210083", "name": "glob", "args": {"pattern": "src/**"}}},
+						{"functionCall": {"id": "call_210092", "name": "grep_search", "args": {"query": "header"}}},
+						{"functionCall": {"id": "call_210101", "name": "web_fetch", "args": {"url": "https://example.com"}}}
+					]
+				},
+				{
+					"role": "user",
+					"parts": [
+						{"functionResponse": {"id": "call_210083", "name": "glob", "response": {"output": "a"}}},
+						{"functionResponse": {"id": "call_210092", "name": "grep_search", "response": {"output": "b"}}},
+						{"functionResponse": {"id": "call_210101", "name": "web_fetch", "response": {"output": "c"}}},
+						{"functionResponse": {"id": "call_203720", "name": "glob", "response": {"output": "orphan"}}}
+					]
+				},
+				{
+					"role": "model",
+					"parts": [
+						{"functionCall": {"id": "call_153280", "name": "glob", "args": {"pattern": "src/components/**"}}},
+						{"functionCall": {"id": "call_153283", "name": "glob", "args": {"pattern": "src/i18n/**"}}}
+					]
+				},
+				{
+					"role": "user",
+					"parts": [
+						{"functionResponse": {"id": "call_153280", "name": "glob", "response": {"output": "d"}}},
+						{"functionResponse": {"id": "call_153283", "name": "glob", "response": {"output": "e"}}}
+					]
+				}
+			]
+		}
+	}`
+
+	result, err := ConvertGeminiRequestToAntigravity("gemini-3.8-flash", []byte(gjson.Get(input, "request").Raw), false)
+	if err != nil {
+		t.Fatalf("ConvertGeminiRequestToAntigravity failed: %v", err)
+	}
+
+	if errValidate := signature.ValidateGeminiFunctionCallPairing(result); errValidate != nil {
+		t.Fatalf("expected valid function call pairing after fixCLIToolResponse, got error: %v\noutput: %s", errValidate, result)
+	}
+
+	gotID0 := gjson.GetBytes(result, "request.contents.4.parts.0.functionResponse.id").String()
+	gotID1 := gjson.GetBytes(result, "request.contents.4.parts.1.functionResponse.id").String()
+	if gotID0 != "call_153280" || gotID1 != "call_153283" {
+		t.Fatalf("contents[4] response IDs = [%q, %q], want [call_153280, call_153283]", gotID0, gotID1)
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_RemovesEmptySystemInstructionParts(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputJSON string
+		wantParts []string
+		wantRole  string
+	}{
+		{
+			name: "camelCase systemInstruction with single empty part removes systemInstruction",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+				"systemInstruction": {"parts": [{}]},
+				"generationConfig": {"temperature": 1}
+			}`,
+		},
+		{
+			name: "snake_case system_instruction with single empty part removes systemInstruction",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+				"system_instruction": {"parts": [{}]},
+				"generationConfig": {"temperature": 1}
+			}`,
+		},
+		{
+			name: "mixed empty and non-empty parts preserves valid parts and role",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+				"systemInstruction": {
+					"role": "user",
+					"parts": [{}, {"text": "Be concise"}, {}]
+				}
+			}`,
+			wantParts: []string{"Be concise"},
+			wantRole:  "user",
+		},
+	}
+
+	for _, modelName := range []string{"gemini-3.8-flash", "claude-sonnet-5-5-high"} {
+		for _, tt := range tests {
+			t.Run(modelName+"/"+tt.name, func(t *testing.T) {
+				out, err := ConvertGeminiRequestToAntigravity(modelName, []byte(tt.inputJSON), true)
+				if err != nil {
+					t.Fatalf("ConvertGeminiRequestToAntigravity returned error: %v", err)
+				}
+				if gjson.GetBytes(out, "request.system_instruction").Exists() {
+					t.Fatalf("request.system_instruction should not exist. Output: %s", out)
+				}
+				sys := gjson.GetBytes(out, "request.systemInstruction")
+				if len(tt.wantParts) == 0 {
+					if sys.Exists() {
+						t.Fatalf("request.systemInstruction should be removed when all parts are empty, got: %s", sys.Raw)
+					}
+					return
+				}
+				if !sys.Exists() {
+					t.Fatalf("request.systemInstruction should exist. Output: %s", out)
+				}
+				if gotRole := sys.Get("role").String(); gotRole != tt.wantRole {
+					t.Fatalf("request.systemInstruction.role = %q, want %q. Output: %s", gotRole, tt.wantRole, out)
+				}
+				parts := sys.Get("parts").Array()
+				if len(parts) != len(tt.wantParts) {
+					t.Fatalf("len(request.systemInstruction.parts) = %d, want %d. Output: %s", len(parts), len(tt.wantParts), out)
+				}
+				for i, wantText := range tt.wantParts {
+					if gotText := parts[i].Get("text").String(); gotText != wantText {
+						t.Fatalf("request.systemInstruction.parts[%d].text = %q, want %q. Output: %s", i, gotText, wantText, out)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_ExcessToolResponsesMatchCalls(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		calls     string
+		responses string
+		wantIDs   []string
+		wantNames []string
+		wantText  []string
+		wantImage bool
+	}{
+		{
+			name:      "IDs select reversed same-name results before orphan",
+			calls:     `{"functionCall":{"id":"a","name":"run","args":{}}},{"functionCall":{"id":"b","name":"run","args":{}}}`,
+			responses: `{"functionResponse":{"id":"old","name":"run","response":{"output":"orphan"}}},{"functionResponse":{"id":"b","name":"run","response":{"output":"B"}}},{"inline_data":{"mime_type":"image/png","data":"aW1hZ2U="}},{"functionResponse":{"id":"a","name":"run","response":{"output":"A"}}}`,
+			wantIDs:   []string{"a", "b"},
+			wantNames: []string{"run", "run"},
+			wantText:  []string{"A", "B"},
+			wantImage: true,
+		},
+		{
+			name:      "name fallback after exact ID matches",
+			calls:     `{"functionCall":{"id":"a","name":"alpha","args":{}}},{"functionCall":{"id":"b","name":"beta","args":{}}}`,
+			responses: `{"functionResponse":{"name":"other","response":{"output":"orphan"}}},{"functionResponse":{"id":"b","name":"beta","response":{"output":"B"}}},{"functionResponse":{"name":"alpha","response":{"output":"A"}}}`,
+			wantIDs:   []string{"", "b"},
+			wantNames: []string{"alpha", "beta"},
+			wantText:  []string{"A", "B"},
+		},
+		{
+			name:      "empty names are backfilled after name matching",
+			calls:     `{"functionCall":{"id":"a","name":"alpha","args":{}}},{"functionCall":{"id":"b","name":"beta","args":{}}}`,
+			responses: `{"functionResponse":{"name":"other","response":{"output":"orphan"}}},{"functionResponse":{"response":{"output":"A"}}},{"functionResponse":{"name":"beta","response":{"output":"B"}}}`,
+			wantIDs:   []string{"", ""},
+			wantNames: []string{"alpha", "beta"},
+			wantText:  []string{"A", "B"},
+		},
+		{
+			name:      "calls without IDs keep FIFO order",
+			calls:     `{"functionCall":{"name":"run","args":{}}},{"functionCall":{"name":"run","args":{}}}`,
+			responses: `{"functionResponse":{"name":"run","response":{"output":"A"}}},{"functionResponse":{"name":"run","response":{"output":"B"}}},{"functionResponse":{"name":"run","response":{"output":"orphan"}}}`,
+			wantIDs:   []string{"", ""},
+			wantNames: []string{"run", "run"},
+			wantText:  []string{"A", "B"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"contents":[{"role":"model","parts":[` + tc.calls + `]},{"role":"user","parts":[` + tc.responses + `]}]}`
+			out, err := ConvertGeminiRequestToAntigravity("gemini-3.8-flash", []byte(input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents := gjson.GetBytes(out, "request.contents").Array()
+			if len(contents) != 2 {
+				t.Fatalf("expected one call turn and one response turn: %s", out)
+			}
+			parts := contents[1].Get("parts").Array()
+			if len(parts) != len(tc.wantIDs) {
+				t.Fatalf("response count = %d, want %d: %s", len(parts), len(tc.wantIDs), out)
+			}
+			for i, part := range parts {
+				response := part.Get("functionResponse")
+				if response.Get("id").String() != tc.wantIDs[i] || response.Get("name").String() != tc.wantNames[i] || response.Get("response.output").String() != tc.wantText[i] {
+					t.Fatalf("response %d = %s, want id=%q name=%q output=%q", i, response.Raw, tc.wantIDs[i], tc.wantNames[i], tc.wantText[i])
+				}
+			}
+			if tc.wantImage && parts[1].Get("functionResponse.parts.0.inlineData.data").String() != "aW1hZ2U=" {
+				t.Fatalf("the selected response lost its sibling image: %s", out)
+			}
+		})
+	}
+}

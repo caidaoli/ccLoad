@@ -296,6 +296,7 @@ func prepareAntigravityRequestBody(
 	}
 
 	request = injectAntigravityIdentityPrompt(request)
+	request = cliproxysignature.SanitizeGeminiSystemInstruction(request, "contents")
 	request = deleteJSONPath(request, "safetySettings")
 	request = normalizeAntigravityContentsRoles(request)
 	request = restoreAntigravityAnthropicToolIDs(request, sourceBody)

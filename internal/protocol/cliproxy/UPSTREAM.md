@@ -2,10 +2,10 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `dbb706215a3afd2f0ea3c96482d4233856466caa` (official `v8.0.48`)
+- Last synchronized commit: `b63322b9c35af112d7eecedc5bf5aa18c0a49ebb` (official dev commit after `v8.0.49`; no release tag claimed)
 - Snapshot target repository: `https://github.com/router-for-me/CLIProxyAPI`
 - Stable fork tag series: `fork/v` (no new fork release is claimed)
-- Synchronized at: `2026-10-31`
+- Synchronized at: `2026-11-01`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -23,6 +23,40 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-11-01)
+
+The four-protocol core and all allowlisted Antigravity adapters were reviewed
+atomically from `dbb706215a3afd2f0ea3c96482d4233856466caa` to the immutable official
+commit above, using the local CLIProxyAPI checkout. This includes `v8.0.49` and
+the subsequent Antigravity Claude 5.5 capability correction.
+
+- Drop empty object Parts from camelCase and snake_case Gemini system
+  instructions; remove the instruction when all Parts are empty. Preserve
+  nonempty Parts, including explicit empty text, and their order. Antigravity's
+  shared app finalizer also cleans Parts introduced by body rules after
+  conversion. Existing Vertex signature endpoint scoping remains unchanged.
+- When Antigravity Gemini history contains excess tool results, match the
+  current group by call ID first, then name and positional fallback, using the
+  upstream linear-time implementation. Discard leftover results after pending
+  groups are satisfied so they cannot contaminate later turns. Selected image
+  attachments remain with their tool result. Call the shared system-instruction
+  sanitizer directly instead of importing its redundant one-line wrapper.
+- Add low/medium/high thinking levels for the Antigravity Opus/Sonnet 5.5 High
+  entries. Preserve the remaining local model catalog differences.
+- Keep the existing Codex commentary carrier and native non-stream behavior.
+  The new visible-commentary mirror/replay policy is not enabled: its runtime
+  environment/context helper is excluded, and the six opt-in tests are recorded
+  as skips. Import the default replay regression into the existing request suite
+  to ensure repeated final text remains intact. Merge the new sanitizer and
+  tool-result regressions into existing suites, testing exported conversion
+  behavior without allocation/address assertions.
+
+App-owned pool changes reuse the bounded OAuth LRU for shared proxy clients and
+retain the existing transport retirement/draining gate even when connection-age
+rotation is disabled. They do not import upstream pool configuration, executors,
+runtime-generation fences, or per-API-key isolation. Authentication, plugins,
+Interactions and other excluded runtime modules remain outside this snapshot.
 
 ## Synchronization adaptations (2026-10-31)
 

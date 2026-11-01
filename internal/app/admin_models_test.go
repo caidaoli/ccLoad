@@ -510,10 +510,9 @@ func TestAdminModels_FetchModelsUsesChannelProxy(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	t.Cleanup(func() {
-		server.proxyTransports.Range(func(_, value any) bool {
-			closeUpstreamHTTPClient(value.(*http.Client))
-			return true
-		})
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
 	})
 
 	t.Run("preview", func(t *testing.T) {

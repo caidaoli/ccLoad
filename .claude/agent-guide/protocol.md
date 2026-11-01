@@ -16,6 +16,8 @@
 - OpenAI Chat JSON/SSE 的 DeepSeek `prompt_cache_hit_tokens` 在自有 `builtin/cliproxy_adapter.go` 边界归一化到 `prompt_tokens_details.cached_tokens`，标准数字字段含 0 优先；不修改 CLIProxyAPI 快照，同协议原文继续透传，app 计量独立识别同一字段。
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
+- Antigravity Gemini 历史含多余工具结果时，优先按调用 ID 选择当前组结果，再按名称及顺序补齐；当前待配对组已全部完成后的多余结果丢弃，不得带入后续 model turn。
+- Gemini/Antigravity 请求清理 `systemInstruction.parts` / `system_instruction.parts` 中的空对象 `{}`，保留其他 Part 及顺序；全部为空时删除该系统指令字段。清理不扩大 Vertex 思考签名的既有端点边界；未知 Gemini 中继的原生请求继续透传，Antigravity 的身份提示仍按原规则注入。
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。
 - Claude `tool_result.is_error` 仅布尔 `true` 在 Gemini/Antigravity 请求中映射为 `functionResponse.response.error`，其他值仍用 `result`；保留结果 JSON 类型、图片及工具调用配对。
 - Claude 会话中 system 消息的 `tool_addition` 转 Responses 为 `additional_tools`，转 Chat 合并工具声明；内联工具参与长名称缩短及响应反向映射。工具声明与文本提醒不能拆散待完成的调用/结果配对；不因此启用 Claude `tool_search`。

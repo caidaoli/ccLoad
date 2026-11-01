@@ -434,10 +434,6 @@ func TestServerIsolatesOtherOAuthConnectionsByAccountAndProxy(t *testing.T) {
 					if server.credentialTransports != nil {
 						server.credentialTransports.closeAll()
 					}
-					server.proxyTransports.Range(func(_, value any) bool {
-						closeUpstreamHTTPClient(value.(*http.Client))
-						return true
-					})
 				})
 				first := &model.Config{ID: 1, AuthType: authType, OAuthCredential: credential(authType, "account-a", "access-a")}
 				rotated := first.Clone()
@@ -504,10 +500,6 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		closeUpstreamHTTPClient(server.antigravityClient)
-		server.proxyTransports.Range(func(_, value any) bool {
-			closeUpstreamHTTPClient(value.(*http.Client))
-			return true
-		})
 	})
 	server.credentialTransports.closeAll()
 
@@ -517,6 +509,7 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 		credential string
 		proxyURL   string
 	}{
+		{name: "API Key proxy", authType: model.AuthTypeAPIKey, proxyURL: proxy.URL},
 		{name: "Anthropic direct", authType: model.AuthTypeAnthropicOAuth,
 			credential: `{"type":"anthropic","account_uuid":"account-a","access_token":"access","expired":"2099-01-01T00:00:00Z"}`},
 		{name: "Anthropic proxy", authType: model.AuthTypeAnthropicOAuth, proxyURL: proxy.URL,
@@ -542,7 +535,9 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &model.Config{ID: 1, AuthType: tt.authType, OAuthCredential: tt.credential, ProxyURL: tt.proxyURL}
-			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+			body := newDataThenBlockReadCloser(nil, 0)
+			t.Cleanup(func() { _ = body.Close() })
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL, body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -552,6 +547,11 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 			}
 			if !errors.Is(err, errCredentialHTTPClientCacheClosed) {
 				t.Fatalf("request after credential cache close: response=%v err=%v", resp, err)
+			}
+			select {
+			case <-body.closed:
+			default:
+				t.Error("closed cache client did not close the rejected request body")
 			}
 		})
 	}
@@ -715,20 +715,17 @@ func TestCredentialHTTPClientCacheIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agingTransport, ok := agingClient.Transport.(*upstreamConnectionAgeTransport)
-	if !ok {
-		t.Fatalf("aging transport type=%T", agingClient.Transport)
-	}
 	if _, err = agingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "evict-aging"}, func() (*http.Client, error) {
 		return &http.Client{Transport: &closeIdleTrackingRoundTripper{}}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	agingTransport.mu.Lock()
-	agingClosed := agingTransport.closed
-	agingTransport.mu.Unlock()
-	if !agingClosed {
-		t.Fatal("LRU eviction did not stop the connection-age transport lifecycle")
+	response, err := agingClient.Get("http://upstream.invalid/retired")
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if !errors.Is(err, errUpstreamConnectionAgeTransportClosed) {
+		t.Fatalf("evicted aging client accepted a request: %v", err)
 	}
 	agingCache.closeAll()
 	cache.closeAll()
@@ -762,6 +759,161 @@ func TestCredentialHTTPClientCacheIsBounded(t *testing.T) {
 	}
 }
 
+func TestServerBoundsSharedProxyHTTPClients(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "proxied")
+	}))
+	t.Cleanup(proxy.Close)
+	server := &Server{credentialTransports: newCredentialHTTPClientCache(2)}
+	t.Cleanup(server.credentialTransports.closeAll)
+	// Proxy credentials distinguish three pools at the same local endpoint.
+	proxyURL := func(identity string) string {
+		return strings.Replace(proxy.URL, "http://", "http://"+identity+"@", 1)
+	}
+	request := func(client *http.Client) httptrace.GotConnInfo {
+		t.Helper()
+		gotConn := make(chan httptrace.GotConnInfo, 1)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://upstream.invalid/resource", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+		}))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return <-gotConn
+	}
+	firstConfig := &model.Config{ID: 1, ProxyURL: proxyURL("first")}
+	firstClient := server.getClientForChannel(firstConfig)
+	firstConn := request(firstClient)
+	secondClient := server.getClientForChannel(&model.Config{ID: 2, ProxyURL: proxyURL("second")})
+	request(secondClient)
+	// API Key channels on the same proxy keep sharing the existing pool and
+	// refresh its LRU position, so the second pool must be the next eviction.
+	sharedConn := request(server.getClientForChannel(&model.Config{ID: 3, ProxyURL: firstConfig.ProxyURL}))
+	if !sharedConn.Reused || sharedConn.Conn != firstConn.Conn {
+		t.Fatal("API Key channels with the same proxy stopped sharing connections")
+	}
+	request(server.getClientForChannel(&model.Config{ID: 4, ProxyURL: proxyURL("third")}))
+	resp, err := secondClient.Get("http://upstream.invalid/retired")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, errUpstreamConnectionAgeTransportClosed) {
+		t.Fatalf("least-recently-used proxy client accepted a request after eviction: %v", err)
+	}
+	if got := request(firstClient); !got.Reused || got.Conn != firstConn.Conn {
+		t.Fatal("proxy eviction closed the recently used shared connection")
+	}
+}
+
+func TestUpstreamHTTPClientRetirementDrainsActiveResponses(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		factory     func(*http.Transport, time.Duration) *http.Client
+		enableHTTP2 bool
+	}{
+		{name: "default-http1", factory: newUpstreamHTTPClient},
+		{name: "default-http2", factory: newUpstreamHTTPClient, enableHTTP2: true},
+		{name: "antigravity-http1", factory: newAntigravityHTTPClient},
+	} {
+		for _, maxAge := range []time.Duration{0, time.Hour} {
+			for _, retirement := range []string{"eviction", "close"} {
+				t.Run(fmt.Sprintf("%s/max-age-%s/%s", tt.name, maxAge, retirement), func(t *testing.T) {
+					releaseResponse := make(chan struct{})
+					var releaseOnce sync.Once
+					closed := make(chan struct{}, 1)
+					upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == "/active" {
+							_, _ = io.WriteString(w, "before retirement;")
+							w.(http.Flusher).Flush()
+							<-releaseResponse
+						}
+						_, _ = io.WriteString(w, "after retirement")
+					}))
+					upstream.EnableHTTP2 = tt.enableHTTP2
+					upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+						if state == http.StateClosed {
+							select {
+							case closed <- struct{}{}:
+							default:
+							}
+						}
+					}
+					upstream.StartTLS()
+					t.Cleanup(upstream.Close)
+					t.Cleanup(func() { releaseOnce.Do(func() { close(releaseResponse) }) })
+					cache := newCredentialHTTPClientCache(1)
+					t.Cleanup(cache.closeAll)
+					client, err := cache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "first"}, func() (*http.Client, error) {
+						return tt.factory(buildHTTPTransport(true, 1), maxAge), nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					active, err := client.Get(upstream.URL + "/active")
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = active.Body.Close() })
+					wantProtocol := 1
+					if tt.enableHTTP2 {
+						wantProtocol = 2
+					}
+					if active.ProtoMajor != wantProtocol {
+						t.Fatalf("active response protocol=HTTP/%d, want HTTP/%d", active.ProtoMajor, wantProtocol)
+					}
+					if retirement == "close" {
+						cache.closeAll()
+					} else if _, err = cache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "second"}, func() (*http.Client, error) {
+						return tt.factory(buildHTTPTransport(true, 1), maxAge), nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					lateBody := newDataThenBlockReadCloser(nil, 0)
+					t.Cleanup(func() { _ = lateBody.Close() })
+					lateRequest, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/late", lateBody)
+					if err != nil {
+						t.Fatal(err)
+					}
+					late, lateErr := client.Do(lateRequest)
+					if late != nil {
+						_, _ = io.Copy(io.Discard, late.Body)
+						_ = late.Body.Close()
+					}
+					if !errors.Is(lateErr, errUpstreamConnectionAgeTransportClosed) {
+						t.Errorf("retired client accepted a new request: %v", lateErr)
+					}
+					select {
+					case <-lateBody.closed:
+					default:
+						t.Error("retired client did not close the rejected request body")
+					}
+					releaseOnce.Do(func() { close(releaseResponse) })
+					body, readErr := io.ReadAll(active.Body)
+					_ = active.Body.Close()
+					if readErr != nil || string(body) != "before retirement;after retirement" {
+						t.Fatalf("retirement interrupted the active response: body=%q err=%v", body, readErr)
+					}
+					select {
+					case <-closed:
+					case <-time.After(2 * time.Second):
+						t.Fatal("retired connection remained open after the response drained")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAntigravityPoolMatchesSharedTransportPolicy(t *testing.T) {
 	base := &http.Transport{
 		MaxIdleConns:        1000,
@@ -770,7 +922,7 @@ func TestAntigravityPoolMatchesSharedTransportPolicy(t *testing.T) {
 	}
 	client := newAntigravityHTTPClient(base, 0)
 	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
-	transport, ok := client.Transport.(*http.Transport)
+	transport, ok := client.Transport.(*upstreamConnectionAgeTransport).current.transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
 	}
@@ -875,10 +1027,9 @@ func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *te
 
 	server := &Server{skipTLSVerify: true}
 	t.Cleanup(func() {
-		server.proxyTransports.Range(func(_, value any) bool {
-			closeUpstreamHTTPClient(value.(*http.Client))
-			return true
-		})
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
 	})
 	proxyURL := strings.Replace(proxy.URL, "http://", "http://proxy:secret@", 1)
 	request := func(config *model.Config, path string) {
@@ -1201,10 +1352,9 @@ func TestServerAppliesUpstreamConnectionMaxAgeToChannelProxy(t *testing.T) {
 	config := &model.Config{ID: 1, ProxyURL: proxy.URL}
 	client := server.getClientForChannel(config)
 	t.Cleanup(func() {
-		server.proxyTransports.Range(func(_, value any) bool {
-			closeUpstreamHTTPClient(value.(*http.Client))
-			return true
-		})
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
 	})
 
 	resp, err := client.Get("http://upstream.invalid/test")
