@@ -278,6 +278,27 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "guardian"}}
 		return
 	}
+	// Claude Code's background forks replay the session with its parameters to
+	// share the prompt cache. They read the session's level without judging and
+	// neither move it nor count toward its downgrade.
+	if r.clientProtocol == protocol.Anthropic && claudeCodeAuxiliaryRequest(original) {
+		t := &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{
+			Status: "skipped", Trigger: "auxiliary", ClientEffort: r.thinkingEffort}}
+		if explicit {
+			t.metadata.Reason = "client_explicit"
+		} else {
+			state := s.reasoningStateFor(r)
+			state.mu.Lock()
+			t.effort = state.effort
+			state.mu.Unlock()
+			t.metadata.PreviousEffort = t.effort
+			if t.effort != "" {
+				t.metadata.Status = "reused"
+			}
+		}
+		r.reasoning = t
+		return
+	}
 	state := s.reasoningStateFor(r)
 	state.mu.Lock()
 	state.version++

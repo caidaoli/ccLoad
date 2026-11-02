@@ -668,6 +668,56 @@ func TestReasoningAutoCodexGuardianSkipsDecision(t *testing.T) {
 	}
 }
 
+// Claude Code forks the session for background requests (next-prompt
+// suggestion, away recap, ...) and replays it with the session's parameters to
+// share the prompt cache. They reuse the session's level without judging and
+// must neither move it nor count toward its downgrade.
+func TestReasoningAutoClaudeCodeAuxiliaryRequestsLeaveSessionState(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "high", "low")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "claude-code-auxiliary", upstreamProtocol: "anthropic", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	session := func(id string) map[string]string { return map[string]string{"X-Claude-Code-Session-Id": id} }
+	main := session("0b6f6a4e-3f0e-4a59-9a0d-6f2b8c1d2e31")
+	text := func(value string) map[string]any { return map[string]any{"type": "text", "text": value} }
+	request := func(headers map[string]string, messages ...any) {
+		reasoningAutoRequest(t, env, "/v1/messages", map[string]any{"model": "gpt-5.6-sol", "max_tokens": 1024, "messages": messages}, headers)
+	}
+	task := map[string]any{"role": "user", "content": []any{text("Make the ledger migration safe under concurrent writers.")}}
+	answer := map[string]any{"role": "assistant", "content": []any{text("Added row versioning; the migration tests pass.")}}
+	// With an advisor configured, the fork appends a meta note to its prompt.
+	recap := map[string]any{"role": "user", "content": []any{
+		text("The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown."),
+		text("Never consult the advisor tool.")}}
+	request(main, task)
+	request(main, task, answer, map[string]any{"role": "user",
+		"content": "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]\n\nFIRST: Look at the user's recent messages and original request."})
+	request(main, task, answer, recap)
+	request(main, task, answer, map[string]any{"role": "user", "content": []any{text("Now add a rollback path.")}})
+	// Without an established session level the client's own setting stays.
+	request(session("5d2c9e17-8a43-4f6b-b0e2-7c1a9f3d4b58"), task, answer, recap)
+	assertReasoningAutoEfforts(t, business.snapshot(), "high", "high", "high", "high", "")
+	if previous := reasoningAutoJudgedPreviousEfforts(t, env, 2); !slices.Equal(previous, []string{"", "high"}) {
+		t.Fatalf("judged previous efforts=%v, want only the session's own turns judged", previous)
+	}
+	entry := waitForProxyLogMatching(t, env, func(e *model.LogEntry) bool {
+		return e.ReasoningDecision != nil && e.ReasoningDecision.Reason == "downgrade_confirmation"
+	})
+	if d := entry.ReasoningDecision; d.Trigger != "user_input" || d.SuggestedEffort != "low" || d.AppliedEffort != "high" {
+		t.Fatalf("real input after background requests=%+v, want the first downgrade confirmation", d)
+	}
+	for status, applied := range map[string]string{"reused": "high", "skipped": ""} {
+		entry = waitForProxyLogMatching(t, env, func(e *model.LogEntry) bool {
+			return e.ReasoningDecision != nil && e.ReasoningDecision.Trigger == "auxiliary" && e.ReasoningDecision.Status == status
+		})
+		if d := entry.ReasoningDecision; d.SuggestedEffort != "" || d.AppliedEffort != applied {
+			t.Fatalf("%s background request log metadata=%+v", status, d)
+		}
+	}
+}
+
 // Encrypted payloads in tool calls and their outputs are unreadable noise; the
 // judge sees a placeholder while the readable arguments stay.
 func TestReasoningAutoDropsEncryptedPayloads(t *testing.T) {

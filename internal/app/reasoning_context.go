@@ -506,6 +506,53 @@ func claudeCodeReminderOnly(item gjson.Result) bool {
 	return reminder
 }
 
+// Claude Code forks the session for one-shot background requests, appending a
+// fixed prompt to the replayed conversation (Claude Code 2.1.316): next-prompt
+// suggestion, away recap, session naming, subagent progress label and /btw
+// side questions. They are not turns of the session.
+var claudeCodeAuxiliaryPrompts = []string{
+	"[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]",
+	"The user stepped away and is coming back. Recap ",
+	"Generate a short kebab-case name (2-4 words) that captures the main topic of this conversation.",
+	"Describe your most recent action in 3-5 words",
+	"<system-reminder>This is a side question from the user.",
+}
+
+func claudeCodeAuxiliaryRequest(body []byte) bool {
+	array := gjson.GetBytes(body, "messages").Array()
+	for i := len(array) - 1; i >= 0; i-- {
+		message := array[i]
+		switch message.Get("role").String() {
+		case "system":
+			continue
+		case "user":
+		default:
+			return false
+		}
+		content := message.Get("content")
+		if content.Type == gjson.String {
+			return claudeCodeAuxiliaryPrompt(content.String())
+		}
+		auxiliary := false
+		content.ForEach(func(_, block gjson.Result) bool {
+			auxiliary = block.Get("type").String() == "text" && claudeCodeAuxiliaryPrompt(block.Get("text").String())
+			return !auxiliary
+		})
+		return auxiliary
+	}
+	return false
+}
+
+func claudeCodeAuxiliaryPrompt(text string) bool {
+	text = strings.TrimSpace(text)
+	for _, prefix := range claudeCodeAuxiliaryPrompts {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func truncateUTF8(text string, limit int) string {
 	if len(text) <= limit {
 		return text
