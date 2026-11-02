@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -132,6 +134,58 @@ func rewriteCodexAgentMessageContent(payload []byte) []byte {
 		}
 	}
 	return updated
+}
+
+// codexRelayMessageCarrierPrefix marks an agent_message "encrypted_content"
+// part forged by a third-party relay: base64 plaintext instead of an
+// OpenAI-encrypted token. A multi-agent session whose sub-agent turn went
+// through such a relay replays it to the official upstream, which rejects it
+// with invalid_encrypted_content.
+const codexRelayMessageCarrierPrefix = "c2a-msg-v1:"
+
+// codexBodyWithRelayMessagesDecoded turns relay-forged agent_message parts
+// back into the input_text part Codex sends for unencrypted messages. Genuine
+// encrypted parts stay untouched; the rewrite never moves input indexes.
+func codexBodyWithRelayMessagesDecoded(body []byte, input gjson.Result) ([]byte, bool) {
+	updated := body
+	rewritten := false
+	for itemIndex, item := range input.Array() {
+		if item.Get("type").String() != "agent_message" || !item.Get("content").IsArray() {
+			continue
+		}
+		for partIndex, part := range item.Get("content").Array() {
+			text, ok := decodeCodexRelayMessageCarrier(part)
+			if !ok {
+				continue
+			}
+			next, err := sjson.SetBytes(updated, fmt.Sprintf("input.%d.content.%d", itemIndex, partIndex), struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{Type: "input_text", Text: text})
+			if err != nil {
+				return body, false
+			}
+			updated = next
+			rewritten = true
+		}
+	}
+	return updated, rewritten
+}
+
+func decodeCodexRelayMessageCarrier(part gjson.Result) (string, bool) {
+	value := part.Get("encrypted_content")
+	if part.Get("type").String() != "encrypted_content" || value.Type != gjson.String {
+		return "", false
+	}
+	encoded, ok := strings.CutPrefix(value.String(), codexRelayMessageCarrierPrefix)
+	if !ok {
+		return "", false
+	}
+	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(encoded, "="))
+	if err != nil || !utf8.Valid(decoded) {
+		return "", false
+	}
+	return string(decoded), true
 }
 
 func codexSpawnAgentToolPaths(payload []byte) []string {

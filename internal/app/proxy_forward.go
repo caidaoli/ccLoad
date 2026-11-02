@@ -3885,28 +3885,32 @@ func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 	if !input.IsArray() {
 		return nil, false
 	}
+	updated, decoded := codexBodyWithRelayMessagesDecoded(body, input)
 	// Only encrypted reasoning is provider-private retry metadata. Keep
 	// compaction and tool call/output items so the replay retains its history.
 	removed := false
 	retainedHistory := false
 	for _, item := range input.Array() {
-		if item.IsObject() &&
-			item.Get("type").Type == gjson.String &&
-			item.Get("type").String() == "reasoning" &&
-			item.Get("encrypted_content").Exists() {
+		if isCodexEncryptedReasoningItem(item) {
 			removed = true
 			continue
 		}
 		retainedHistory = true
 	}
-	if !removed || !retainedHistory {
+	if removed && retainedHistory {
+		return deleteCodexInputItems(updated, isCodexEncryptedReasoningItem)
+	}
+	if !decoded {
 		return nil, false
 	}
-	return deleteCodexInputItems(body, func(item gjson.Result) bool {
-		return item.Get("type").Type == gjson.String &&
-			item.Get("type").String() == "reasoning" &&
-			item.Get("encrypted_content").Exists()
-	})
+	return updated, true
+}
+
+func isCodexEncryptedReasoningItem(item gjson.Result) bool {
+	return item.IsObject() &&
+		item.Get("type").Type == gjson.String &&
+		item.Get("type").String() == "reasoning" &&
+		item.Get("encrypted_content").Exists()
 }
 
 func codexBodyHasEncryptedInputItems(body []byte) bool {

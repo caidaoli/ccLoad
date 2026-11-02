@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1590,6 +1591,44 @@ func TestCodexBodyWithoutEncryptedInputItemsOnlyRemovesEncryptedReasoning(t *tes
 
 	if got, ok := codexBodyWithoutEncryptedInputItems(body); ok || got != nil {
 		t.Fatalf("plain reasoning must not be stripped by encrypted-content retry: ok=%v body=%s", ok, got)
+	}
+}
+
+func TestCodexBodyWithoutEncryptedInputItemsDecodesRelayAgentMessages(t *testing.T) {
+	t.Parallel()
+
+	const payload = "收到任务\n继续"
+	body := []byte(`{"model":"gpt-5.5","input":[
+		{"type":"agent_message","id":"amsg_relay","author":"/root/worker","recipient":"/root","content":[
+			{"type":"input_text","text":"Message Type: MESSAGE\nPayload:\n"},
+			{"type":"encrypted_content","encrypted_content":"c2a-msg-v1:` + base64.StdEncoding.EncodeToString([]byte(payload)) + `"}
+		]},
+		{"type":"agent_message","id":"amsg_genuine","content":[{"type":"encrypted_content","encrypted_content":"gAAAAABgenuine"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+
+	got, ok := codexBodyWithoutEncryptedInputItems(body)
+	if !ok {
+		t.Fatal("relay-forged agent_message content should produce a retry body")
+	}
+	if n := len(gjson.GetBytes(got, "input").Array()); n != 3 {
+		t.Fatalf("retry input items=%d, want 3: %s", n, got)
+	}
+	decoded := gjson.GetBytes(got, "input.0.content.1")
+	if decoded.Get("type").String() != "input_text" || decoded.Get("text").String() != payload || decoded.Get("encrypted_content").Exists() {
+		t.Fatalf("relay carrier should become plaintext input_text, got %s", decoded.Raw)
+	}
+	if header := gjson.GetBytes(got, "input.0.content.0.text").String(); header != "Message Type: MESSAGE\nPayload:\n" {
+		t.Fatalf("agent_message header changed: %q", header)
+	}
+	if genuine := gjson.GetBytes(got, "input.1.content.0"); genuine.Get("type").String() != "encrypted_content" ||
+		genuine.Get("encrypted_content").String() != "gAAAAABgenuine" {
+		t.Fatalf("genuine encrypted agent_message content must stay intact, got %s", genuine.Raw)
+	}
+
+	undecodable := []byte(`{"input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"c2a-msg-v1:%%%"}]}]}`)
+	if got, ok := codexBodyWithoutEncryptedInputItems(undecodable); ok || got != nil {
+		t.Fatalf("undecodable carrier must not produce a retry body: ok=%v body=%s", ok, got)
 	}
 }
 

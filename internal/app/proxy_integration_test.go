@@ -12536,6 +12536,71 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	}
 }
 
+// A multi-agent sub-agent turn served by a relay leaves a forged
+// "c2a-msg-v1:" agent_message part that the official upstream cannot verify.
+func TestProxy_CodexInvalidEncryptedContentRetriesWithDecodedRelayAgentMessage(t *testing.T) {
+	t.Parallel()
+
+	const rejection = `{"error":{"message":"The encrypted content for item amsg_relay could not be verified. Reason: encrypted content hydration failed: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":null,"code":"invalid_encrypted_content"}}`
+	const payload = "收到任务\n继续"
+
+	var attempts atomic.Int32
+	var bodies [][]byte
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, body)
+			if attempts.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(rejection)),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
+				)),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.5",
+		"input": []map[string]any{
+			{"type": "agent_message", "id": "amsg_relay", "author": "/root/worker", "recipient": "/root", "content": []map[string]any{
+				{"type": "input_text", "text": "Message Type: MESSAGE\nPayload:\n"},
+				{"type": "encrypted_content", "encrypted_content": "c2a-msg-v1:" + base64.StdEncoding.EncodeToString([]byte(payload))},
+			}},
+			{"type": "agent_message", "id": "amsg_genuine", "content": []map[string]any{
+				{"type": "encrypted_content", "encrypted_content": "gAAAAABgenuine"},
+			}},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("upstream sends=%d, want 2", len(bodies))
+	}
+	if got := gjson.GetBytes(bodies[0], "input.0.content.1.type").String(); got != "encrypted_content" {
+		t.Fatalf("first send should forward the client body unchanged, part type=%q", got)
+	}
+	retried := gjson.GetBytes(bodies[1], "input.0.content.1")
+	if retried.Get("type").String() != "input_text" || retried.Get("text").String() != payload || retried.Get("encrypted_content").Exists() {
+		t.Fatalf("retry should send the relay payload as plaintext, got %s", retried.Raw)
+	}
+	if got := gjson.GetBytes(bodies[1], "input.1.content.0.encrypted_content").String(); got != "gAAAAABgenuine" {
+		t.Fatalf("retry must keep genuine encrypted agent_message content, got %q", got)
+	}
+}
+
 func TestProxy_CodexSSEInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *testing.T) {
 	t.Parallel()
 
