@@ -5742,6 +5742,14 @@ html[data-resolved-theme="dark"] .upstream-pre {
   background: var(--code-hover-bg);
 }
 
+/* 隐私脱敏占位符：原文代码块与合并视图共用，与 Debug 弹窗顶部的脱敏统计同色 */
+mark.privacy-placeholder {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--primary-100);
+  color: var(--primary-700);
+}
+
 .upstream-pre .code-line--foldable {
   padding-left: 0;
 }

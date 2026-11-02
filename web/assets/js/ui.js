@@ -2675,11 +2675,60 @@ window.WebAuth = window.WebAuth || {
     }
   }
 
+  // 与 internal/privacy/engine.go 的占位符格式一致：{{CCLOAD_<KIND>_<16 位十六进制>}}
+  const PRIVACY_PLACEHOLDER_RE = /\{\{CCLOAD_([A-Z][A-Z0-9_]{0,23})_[a-f0-9]{16}\}\}/g;
+
+  // 占位符只含 {}、大写字母、数字和下划线，转义后原样保留且不会跨越标签，
+  // 可直接在渲染后的 HTML 上包裹；被 SSE 分片拆开的占位符不再完整，不高亮。
+  function markPrivacyPlaceholders(html) {
+    return html.replace(PRIVACY_PLACEHOLDER_RE, '<mark class="privacy-placeholder">$&</mark>');
+  }
+
+  // 在已渲染的 DOM（如 Markdown 合并视图）中高亮占位符。只改文本节点，
+  // 链接地址等属性里的占位符保持原样；被语法高亮拆成多个节点的不再高亮。
+  function highlightPrivacyPlaceholders(root) {
+    if (!root || typeof document.createTreeWalker !== 'function') return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeValue.search(PRIVACY_PLACEHOLDER_RE) !== -1) nodes.push(node);
+    }
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      const fragment = document.createDocumentFragment();
+      let last = 0;
+      for (const match of text.matchAll(PRIVACY_PLACEHOLDER_RE)) {
+        if (match.index > last) fragment.append(text.slice(last, match.index));
+        const mark = document.createElement('mark');
+        mark.className = 'privacy-placeholder';
+        mark.textContent = match[0];
+        fragment.append(mark);
+        last = match.index + match[0].length;
+      }
+      if (last < text.length) fragment.append(text.slice(last));
+      node.replaceWith(fragment);
+    }
+  }
+
+  // 统计文本中的脱敏占位符：同一原值在会话内映射到同一占位符，按去重后的占位符计“值”。
+  function privacyPlaceholderStats(text) {
+    const seen = new Set();
+    const kinds = new Map();
+    let occurrences = 0;
+    for (const [placeholder, kind] of String(text || '').matchAll(PRIVACY_PLACEHOLDER_RE)) {
+      occurrences++;
+      if (seen.has(placeholder)) continue;
+      seen.add(placeholder);
+      kinds.set(kind, (kinds.get(kind) || 0) + 1);
+    }
+    return { values: seen.size, occurrences, kinds: Array.from(kinds) };
+  }
+
   function setHighlightedCodeContent(target, text, mode = 'text') {
     const el = typeof target === 'string' ? document.getElementById(target) : target;
     if (!el) return;
     el._rawText = text || '';
-    el.innerHTML = renderUpstreamCodeBlock(text || '', mode);
+    el.innerHTML = markPrivacyPlaceholders(renderUpstreamCodeBlock(text || '', mode));
   }
 
   // 全局折叠按钮事件委托（仅绑定一次）。
@@ -2815,6 +2864,8 @@ window.WebAuth = window.WebAuth || {
   window.copyToClipboard = copyToClipboard;
   window.renderUpstreamCodeBlock = renderUpstreamCodeBlock;
   window.setHighlightedCodeContent = setHighlightedCodeContent;
+  window.privacyPlaceholderStats = privacyPlaceholderStats;
+  window.highlightPrivacyPlaceholders = highlightPrivacyPlaceholders;
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;
   window.bindTimeRangeSelector = bindTimeRangeSelector;
@@ -2822,7 +2873,8 @@ window.WebAuth = window.WebAuth || {
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       renderUpstreamCodeBlock,
-      setHighlightedCodeContent
+      setHighlightedCodeContent,
+      privacyPlaceholderStats
     };
   }
 })();

@@ -22,7 +22,7 @@ const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
 const modelMultimodalFallbackSettingKey = 'model_multimodal_fallback';
 const modelCustomPricingSettingKey = 'model_custom_pricing';
 // 与后端 hotReloadedSettingKeys 保持一致：保存内容全是这些项时热生效，含其他设置则保存后进程重启。
-const hotReloadSettingKeys = new Set([modelMultimodalFallbackSettingKey, modelCustomPricingSettingKey, 'reasoning_auto']);
+const hotReloadSettingKeys = new Set([modelMultimodalFallbackSettingKey, modelCustomPricingSettingKey, 'reasoning_auto', 'privacy_redaction']);
 const maxMultimodalFallbackMappings = 64;
 const maxCustomPricingBytes = 1024 * 1024;
 const maxCustomPricingModels = 512;
@@ -128,6 +128,7 @@ function settingValueForDisplay(key, value) {
   const normalizedValue = String(value ?? '');
   // 持久化 JSON 的格式与编辑器序列化不同，统一成编辑器形式避免误判为已修改。
   if (key === 'reasoning_auto' && !validateReasoningAuto(normalizedValue)) return formatReasoningAuto(parseReasoningAuto(normalizedValue));
+  if (key === 'privacy_redaction' && !validatePrivacyRedaction(normalizedValue)) return formatPrivacyRedaction(parsePrivacyRedaction(normalizedValue));
   if (!byteSettingKeys.has(key)) return normalizedValue;
 
   const bytes = Number(normalizedValue);
@@ -204,6 +205,7 @@ function validateSettingInput(setting, value) {
   }
 
   if (setting.key === 'reasoning_auto') return validateReasoningAuto(normalizedValue);
+  if (setting.key === 'privacy_redaction') return validatePrivacyRedaction(normalizedValue);
 
   if (setting.key === modelCustomPricingSettingKey) {
     return validateCustomPricingInput(normalizedValue);
@@ -538,6 +540,343 @@ function bindReasoningAutoModal() {
   });
 }
 
+const privacyRedactionDefaults = {
+  enabled: false, secrets: true, personal: false,
+  kinds: { ssn: true, passport: true, iban: true, birthday: true, mac: true, serial: true, home: false, userhost: false, ip: false, bucket: false },
+  words: [], words_any_case: false, words_whole: false, rules: [], allow: []
+};
+let privacyRedactionDraft = null;
+let privacyRedactionLocked = false;
+let privacyRedactionPreviousFocus = null;
+let privacyTestSample = ''; // 只在编辑弹窗打开期间保留，不进入草稿或设置
+let privacyTestSeq = 0;
+let privacyTestPreviousFocus = null;
+
+function validatePrivacyRedaction(value) {
+  const invalid = key => t('settings.privacyRedaction.' + key);
+  const object = item => item && typeof item === 'object' && !Array.isArray(item);
+  if (new TextEncoder().encode(value).length > 2 * 1024 * 1024) return invalid('invalid');
+  let config;
+  try { config = JSON.parse(value); } catch (_) { return invalid('invalid'); }
+  if (!object(config) || Object.keys(config).some(key => !Object.hasOwn(privacyRedactionDefaults, key))) return invalid('invalid');
+  config = { ...privacyRedactionDefaults, ...config };
+  if (['enabled', 'secrets', 'personal', 'words_any_case', 'words_whole'].some(key => typeof config[key] !== 'boolean')
+    || !object(config.kinds)
+    || Object.entries(config.kinds).some(([key, value]) => !Object.hasOwn(privacyRedactionDefaults.kinds, key) || typeof value !== 'boolean')) return invalid('invalid');
+  for (const field of ['words', 'allow']) {
+    if (!Array.isArray(config[field]) || config[field].length > 256
+      || config[field].some(item => typeof item !== 'string' || !item.trim() || [...item].length > 512 || /[\r\n]/.test(item))) return invalid('invalidList');
+  }
+  if (!Array.isArray(config.rules) || config.rules.length > 32) return invalid('invalidRules');
+  for (const rule of config.rules) {
+    const kind = rule?.kind === undefined ? 'CUSTOM' : rule.kind;
+    if (!object(rule) || Object.keys(rule).some(key => !['kind', 'prefix', 'regex'].includes(key))
+      || typeof kind !== 'string' || !/^[A-Z][A-Z0-9_]{0,23}$/.test(kind)
+      || (rule.prefix !== undefined && typeof rule.prefix !== 'string')
+      || (rule.regex !== undefined && typeof rule.regex !== 'string')) return invalid('invalidRules');
+    const prefix = rule.prefix || '';
+    const regex = rule.regex || '';
+    if (Boolean(prefix) === Boolean(regex) || (prefix && ([...prefix].length < 3 || [...prefix].length > 64))
+      || (regex && [...regex].length > 300)) return invalid('invalidRules');
+  }
+  return '';
+}
+
+function parsePrivacyRedaction(value) {
+  const config = validatePrivacyRedaction(value) ? {} : JSON.parse(value);
+  return {
+    ...privacyRedactionDefaults, ...config,
+    kinds: { ...privacyRedactionDefaults.kinds, ...config.kinds },
+    words: [...(config.words || [])], allow: [...(config.allow || [])],
+    rules: (config.rules || []).map(rule => ({ ...rule, kind: rule.kind === undefined ? 'CUSTOM' : rule.kind }))
+  };
+}
+
+function formatPrivacyRedaction(config) {
+  return JSON.stringify({ ...config, rules: config.rules.map(rule => {
+    const result = { kind: rule.kind };
+    if (rule.prefix) result.prefix = rule.prefix;
+    if (rule.regex) result.regex = rule.regex;
+    return result;
+  }) });
+}
+
+function privacyRedactionLabel(key) {
+  return `<span data-i18n="settings.privacyRedaction.${key}">${escapeHtml(t('settings.privacyRedaction.' + key))}</span>`;
+}
+
+function renderPrivacyRedactionEditor(value) {
+  privacyRedactionLocked = Boolean(validatePrivacyRedaction(value));
+  privacyRedactionDraft = parsePrivacyRedaction(value);
+  const config = privacyRedactionDraft;
+  const disabled = privacyRedactionLocked ? ' disabled' : '';
+  const checkbox = (field, checked, label, help) => `<label class="privacy-redaction-checkbox"><input type="checkbox" data-privacy-field="${field}"${checked ? ' checked' : ''}${help ? ` aria-describedby="${help}"` : ''}${disabled}>${privacyRedactionLabel(label || field)}</label>`;
+  // 选项说明挂在勾选框文字下方；子选项（扩展规则）缩进进同一组，层级一眼可辨。
+  const option = (field, checked, children = '') => `<div class="privacy-redaction-option">
+        ${checkbox(field, checked, field, `privacyHelp-${field}`)}
+        <p class="privacy-redaction-help" id="privacyHelp-${field}">${privacyRedactionLabel(field + 'Help')}</p>${children}
+      </div>`;
+  const heading = (id, title, ...helps) => `<div class="privacy-redaction-heading">
+        <h3 class="settings-dialog-section-title" id="${id}">${privacyRedactionLabel(title)}</h3>
+        ${helps.map(([helpID, key]) => `<p class="privacy-redaction-help"${helpID ? ` id="${helpID}"` : ''}>${privacyRedactionLabel(key)}</p>`).join('')}
+      </div>`;
+  document.getElementById('privacyRedactionContent').innerHTML = `<div id="privacyRedactionEditor">
+    ${privacyRedactionLocked ? `<p class="custom-rules-error" role="alert">${privacyRedactionLabel('locked')} <code>${escapeHtml(value)}</code></p>` : ''}
+    <label class="channel-editor-switch privacy-redaction-enable">
+      <input type="checkbox" data-privacy-field="enabled"${config.enabled ? ' checked' : ''}${disabled}>
+      <span class="channel-editor-switch__track" aria-hidden="true"></span>${privacyRedactionLabel('enabled')}
+    </label>
+    <section class="privacy-redaction-section" aria-labelledby="privacyBuiltinsTitle">
+      ${heading('privacyBuiltinsTitle', 'builtins')}
+      ${option('secrets', config.secrets)}
+      ${option('personal', config.personal, `
+        <div class="privacy-redaction-kinds" role="group" aria-label="${escapeHtml(t('settings.privacyRedaction.personal'))}" aria-describedby="privacyKindsHelp">
+          ${Object.entries(config.kinds).map(([kind, checked]) => checkbox('kinds.' + kind, checked, 'kind.' + kind)).join('')}
+          <p class="privacy-redaction-help" id="privacyKindsHelp">${privacyRedactionLabel('kindsHelp')}</p>
+        </div>`)}
+    </section>
+    <section class="privacy-redaction-section" aria-labelledby="privacyWordsTitle">
+      ${heading('privacyWordsTitle', 'wordsTitle', ['privacyWordsHelp', 'wordsHelp'])}
+      <textarea id="privacyWords" class="form-input" rows="4" data-privacy-field="words" aria-labelledby="privacyWordsTitle" aria-describedby="privacyWordsHelp"
+        placeholder="${escapeHtml(t('settings.privacyRedaction.words'))}" data-i18n-placeholder="settings.privacyRedaction.words" spellcheck="false"${disabled}>${escapeHtml(config.words.join('\n'))}</textarea>
+      <div class="privacy-redaction-inline">${checkbox('words_any_case', config.words_any_case)}${checkbox('words_whole', config.words_whole)}</div>
+    </section>
+    <section class="privacy-redaction-section" aria-labelledby="privacyRulesTitle">
+      <div class="settings-dialog-toolbar privacy-redaction-toolbar">
+        ${heading('privacyRulesTitle', 'rules', ['privacyRulesHelp', 'rulesHelp'], ['', 'ruleMatchingHelp'])}
+        <button type="button" id="privacyAddRule" class="btn btn-secondary" data-action="add-privacy-rule"${disabled}>${privacyRedactionLabel('addRule')}</button>
+      </div>
+      <div class="table-container privacy-redaction-rules-container"><table class="modern-table privacy-redaction-rules" aria-labelledby="privacyRulesTitle" aria-describedby="privacyRulesHelp">
+        <thead><tr><th>${privacyRedactionLabel('ruleKind')}</th><th>${privacyRedactionLabel('rulePrefix')}</th><th>${privacyRedactionLabel('ruleRegex')}</th><th>${privacyRedactionLabel('ruleActions')}</th></tr></thead>
+        <tbody id="privacyRuleRows"></tbody>
+      </table></div>
+    </section>
+    <section class="privacy-redaction-section" aria-labelledby="privacyAllowTitle">
+      ${heading('privacyAllowTitle', 'allow', ['privacyAllowHelp', 'allowHelp'])}
+      <textarea id="privacyAllow" class="form-input" rows="4" data-privacy-field="allow" aria-labelledby="privacyAllowTitle" aria-describedby="privacyAllowHelp" spellcheck="false"${disabled}>${escapeHtml(config.allow.join('\n'))}</textarea>
+    </section>
+    <p class="settings-dialog-note">${privacyRedactionLabel('note')}</p>
+  </div>`;
+  renderPrivacyRedactionRules();
+  const testButton = document.getElementById('privacyTestOpen');
+  if (testButton) testButton.disabled = privacyRedactionLocked;
+}
+
+// 测试弹窗叠在编辑弹窗之上，编辑弹窗此时 inert，草稿不会变化；每次打开按最新草稿重跑。
+// 样例在编辑弹窗打开期间保留；改样例或关闭测试弹窗让旧结果失效，迟到的响应按序号丢弃。
+function openPrivacyTestModal() {
+  const modal = document.getElementById('privacyTestModal');
+  const input = document.getElementById('privacyTestInput');
+  if (!modal || !input || !privacyRedactionDraft || privacyRedactionLocked) return;
+  privacyTestPreviousFocus = document.activeElement;
+  input.value = privacyTestSample;
+  clearPrivacyRedactionTest();
+  syncPrivacyRedactionTestButton();
+  document.getElementById('privacyRedactionModal')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  input.focus();
+  if (privacyTestSample) runPrivacyRedactionTest();
+}
+
+function closePrivacyTestModal() {
+  const modal = document.getElementById('privacyTestModal');
+  if (!modal) return;
+  clearPrivacyRedactionTest();
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.getElementById('privacyRedactionModal')?.removeAttribute('inert');
+  if (privacyTestPreviousFocus?.isConnected) privacyTestPreviousFocus.focus();
+  privacyTestPreviousFocus = null;
+}
+
+function clearPrivacyRedactionTest() {
+  privacyTestSeq++;
+  setPrivacyRedactionTestStatus('');
+  const result = document.getElementById('privacyTestResult');
+  if (result) {
+    result.hidden = true;
+    result.innerHTML = '';
+  }
+}
+
+function setPrivacyRedactionTestStatus(message, isError = false) {
+  const status = document.getElementById('privacyTestStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('is-error', isError);
+}
+
+function syncPrivacyRedactionTestButton(busy = false) {
+  const button = document.getElementById('privacyTestRun');
+  if (!button) return;
+  button.disabled = busy || privacyRedactionLocked || !privacyTestSample;
+  if (busy) button.setAttribute('aria-busy', 'true');
+  else button.removeAttribute('aria-busy');
+}
+
+function renderPrivacyRedactionTestResult({ masked = '', hits = [] }) {
+  const result = document.getElementById('privacyTestResult');
+  if (!hits.length) {
+    setPrivacyRedactionTestStatus(t('settings.privacyRedaction.testNoHits'));
+    return;
+  }
+  setPrivacyRedactionTestStatus(t('settings.privacyRedaction.testHits', { count: hits.length }));
+  // 占位符只含 {}、大写字母、数字、下划线和十六进制，转义前后相同，可直接在转义后的文本里定位。
+  let output = escapeHtml(masked);
+  for (const hit of hits) output = output.split(hit.placeholder).join(`<mark title="${escapeHtml(hit.value)}">${hit.placeholder}</mark>`);
+  result.innerHTML = `<pre class="privacy-redaction-test-output" tabindex="0" aria-label="${escapeHtml(t('settings.privacyRedaction.testOutput'))}">${output}</pre>
+    <ul class="privacy-redaction-test-hits" aria-label="${escapeHtml(t('settings.privacyRedaction.testHitList'))}">
+      ${hits.map(hit => `<li><span class="privacy-redaction-test-kind">${escapeHtml(hit.kind)}</span><code>${escapeHtml(hit.value)}</code></li>`).join('')}
+    </ul>`;
+  result.hidden = false;
+}
+
+async function runPrivacyRedactionTest() {
+  if (!privacyRedactionDraft || privacyRedactionLocked || !privacyTestSample) return;
+  clearPrivacyRedactionTest();
+  const config = formatPrivacyRedaction(privacyRedactionDraft);
+  const invalid = validatePrivacyRedaction(config);
+  if (invalid) {
+    setPrivacyRedactionTestStatus(invalid, true);
+    return;
+  }
+  if (new TextEncoder().encode(privacyTestSample).length > 64 * 1024) {
+    setPrivacyRedactionTestStatus(t('settings.privacyRedaction.testTooLong'), true);
+    return;
+  }
+  const seq = privacyTestSeq;
+  syncPrivacyRedactionTestButton(true);
+  try {
+    const result = await fetchDataWithAuth('/admin/privacy-redaction/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, text: privacyTestSample })
+    });
+    if (seq === privacyTestSeq) renderPrivacyRedactionTestResult(result || {});
+  } catch (err) {
+    if (seq === privacyTestSeq) setPrivacyRedactionTestStatus(t('settings.privacyRedaction.testFailed') + ': ' + err.message, true);
+  } finally {
+    syncPrivacyRedactionTestButton();
+  }
+}
+
+function renderPrivacyRedactionRules() {
+  const disabled = privacyRedactionLocked ? ' disabled' : '';
+  document.getElementById('privacyRuleRows').innerHTML = privacyRedactionDraft.rules.map((rule, index) => `<tr>
+    ${['kind', 'prefix', 'regex'].map(field => `<td><input class="form-input" type="text" data-privacy-rule="${field}" data-privacy-index="${index}" value="${escapeHtml(rule[field] || '')}" aria-label="${escapeHtml(t('settings.privacyRedaction.rule' + field[0].toUpperCase() + field.slice(1)))}" spellcheck="false"${disabled}></td>`).join('')}
+    <td><button type="button" class="btn-icon privacy-redaction-remove" data-action="remove-privacy-rule" data-privacy-index="${index}" aria-label="${escapeHtml(t('settings.privacyRedaction.removeRule'))}"${disabled}>&times;</button></td>
+  </tr>`).join('');
+  const addButton = document.getElementById('privacyAddRule');
+  if (addButton) addButton.disabled = privacyRedactionLocked || privacyRedactionDraft.rules.length >= 32;
+}
+
+function showPrivacyRedactionError(message) {
+  const error = document.getElementById('privacyRedactionError');
+  error.textContent = message || '';
+  error.hidden = !message;
+}
+
+function openPrivacyRedactionModal(trigger) {
+  const modal = document.getElementById('privacyRedactionModal');
+  const input = document.getElementById('privacy_redaction');
+  if (!modal || !input || !settingDefinitions.has('privacy_redaction')) return;
+  privacyRedactionPreviousFocus = trigger || document.activeElement;
+  renderPrivacyRedactionEditor(input.value);
+  const body = modal.querySelector('.settings-dialog-body');
+  if (body) body.scrollTop = 0;
+  showPrivacyRedactionError(null);
+  document.querySelector('.app-container')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  modal.querySelector('.close-btn')?.focus();
+}
+
+function closePrivacyRedactionModal() {
+  const modal = document.getElementById('privacyRedactionModal');
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.querySelector('.app-container')?.removeAttribute('inert');
+  if (privacyRedactionPreviousFocus?.isConnected) privacyRedactionPreviousFocus.focus();
+  privacyRedactionPreviousFocus = null;
+  privacyRedactionDraft = null;
+  privacyTestSample = '';
+}
+
+function applyPrivacyRedaction() {
+  if (!privacyRedactionDraft || privacyRedactionLocked) return;
+  const value = formatPrivacyRedaction(privacyRedactionDraft);
+  const error = validatePrivacyRedaction(value);
+  if (error) { showPrivacyRedactionError(error); return; }
+  document.getElementById('privacy_redaction').value = value;
+  setSettingInvalid('privacy_redaction', false);
+  updateDirtyStatus();
+  closePrivacyRedactionModal();
+}
+
+function bindPrivacyRedactionModal() {
+  const modal = document.getElementById('privacyRedactionModal');
+  if (!modal || modal.dataset.bound) return;
+  modal.dataset.bound = '1';
+  modal.addEventListener('click', event => {
+    const button = event.target.closest('[data-action]');
+    const action = button?.dataset.action;
+    if (event.target === modal || action === 'close-privacy-redaction') closePrivacyRedactionModal();
+    else if (action === 'apply-privacy-redaction') applyPrivacyRedaction();
+    else if (action === 'open-privacy-test') openPrivacyTestModal();
+    else if (action === 'reset-privacy-redaction') {
+      renderPrivacyRedactionEditor(formatPrivacyRedaction(privacyRedactionDefaults));
+      showPrivacyRedactionError(null);
+    } else if (privacyRedactionDraft && !privacyRedactionLocked) {
+      if (action === 'add-privacy-rule' && privacyRedactionDraft.rules.length < 32) {
+        privacyRedactionDraft.rules.push({ kind: '', prefix: '', regex: '' });
+        renderPrivacyRedactionRules();
+        document.getElementById('privacyRuleRows').querySelector('tr:last-child input')?.focus();
+      } else if (action === 'remove-privacy-rule') {
+        privacyRedactionDraft.rules.splice(Number(button.dataset.privacyIndex), 1);
+        renderPrivacyRedactionRules();
+      }
+    }
+  });
+  const updateDraft = event => {
+    if (!privacyRedactionDraft || privacyRedactionLocked) return;
+    const input = event.target;
+    const field = input.dataset.privacyField;
+    const ruleField = input.dataset.privacyRule;
+    if (ruleField) {
+      privacyRedactionDraft.rules[Number(input.dataset.privacyIndex)][ruleField] = input.value;
+    } else if (field === 'words' || field === 'allow') {
+      privacyRedactionDraft[field] = input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+    } else if (field?.startsWith('kinds.')) {
+      privacyRedactionDraft.kinds[field.slice(6)] = input.checked;
+    } else if (field && typeof privacyRedactionDraft[field] === 'boolean') {
+      privacyRedactionDraft[field] = input.checked;
+    }
+  };
+  modal.addEventListener('input', updateDraft);
+  modal.addEventListener('change', updateDraft);
+  modal.addEventListener('keydown', event => {
+    if (event.key === 'Tab') trapModalFocus(modal, event);
+  });
+
+  const testModal = document.getElementById('privacyTestModal');
+  if (!testModal) return;
+  testModal.addEventListener('click', event => {
+    const action = event.target.closest('[data-action]')?.dataset.action;
+    if (event.target === testModal || action === 'close-privacy-test') closePrivacyTestModal();
+    else if (action === 'test-privacy-redaction') runPrivacyRedactionTest();
+  });
+  testModal.addEventListener('input', event => {
+    if (event.target.id !== 'privacyTestInput') return;
+    privacyTestSample = event.target.value;
+    clearPrivacyRedactionTest();
+    syncPrivacyRedactionTestButton();
+  });
+  testModal.addEventListener('keydown', event => {
+    if (event.key === 'Tab') trapModalFocus(testModal, event);
+  });
+}
+
 const runtimeMetricDomains = [
   {
     sourceKey: 'process',
@@ -673,6 +1012,12 @@ function bindSettingsPageActions() {
     reasoningAutoBtn.dataset.bound = '1';
   }
 
+  const privacyRedactionBtn = document.getElementById('privacy-redaction-btn');
+  if (privacyRedactionBtn && !privacyRedactionBtn.dataset.bound) {
+    privacyRedactionBtn.addEventListener('click', event => openPrivacyRedactionModal(event.currentTarget));
+    privacyRedactionBtn.dataset.bound = '1';
+  }
+
   const multimodalFallbackBtn = document.getElementById('model-multimodal-fallback-btn');
   if (multimodalFallbackBtn && !multimodalFallbackBtn.dataset.bound) {
     multimodalFallbackBtn.addEventListener('click', (event) => openMultimodalFallbackModal(event.currentTarget));
@@ -716,14 +1061,17 @@ function bindSettingsPageActions() {
   });
 
   bindReasoningAutoModal();
+  bindPrivacyRedactionModal();
   bindGlobalCooldownRulesModal();
   bindMultimodalFallbackModal();
   bindCustomPricingModal();
 }
 
 const settingsModalClosers = [
+  ['privacyTestModal', closePrivacyTestModal], // 叠在隐私脱敏弹窗之上，须先于它匹配
   ['runtimeMetricsModal', closeRuntimeMetricsModal],
   ['reasoningAutoModal', closeReasoningAutoModal],
+  ['privacyRedactionModal', closePrivacyRedactionModal],
   ['customRulesModal', closeGlobalCooldownRulesModal],
   ['multimodalFallbackModal', closeMultimodalFallbackModal],
   ['customPricingModal', closeCustomPricingModal]
@@ -1798,7 +2146,7 @@ function getSettingGroupInfo(key) {
 
   const defs = [
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
-    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' || k === 'reasoning_auto' },
+    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' || k === 'reasoning_auto' || k === 'privacy_redaction' },
 
     { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
@@ -2179,16 +2527,17 @@ function markChanged(input) {
   updateDirtyStatus();
 }
 
-// reasoning_auto 的值存放在 hidden input，错误标记与聚焦需落到可见的编辑器控件上。
-function reasoningAutoEditorControls() {
-  const editor = document.getElementById('reasoningAutoEditor');
-  return editor ? Array.from(editor.querySelectorAll('input, select')) : [];
+// 弹窗设置的值存放在 hidden input，错误标记与聚焦需落到可见的编辑器控件上。
+function modalSettingEditorControls(key) {
+  const editorID = key === 'reasoning_auto' ? 'reasoningAutoEditor' : key === 'privacy_redaction' ? 'privacyRedactionEditor' : '';
+  const editor = editorID ? document.getElementById(editorID) : null;
+  return editor ? Array.from(editor.querySelectorAll('input, select, textarea')) : [];
 }
 
 function setSettingInvalid(key, invalid) {
   const control = getSettingControl(key);
   if (!control) return;
-  const editorControls = key === 'reasoning_auto' ? reasoningAutoEditorControls() : [];
+  const editorControls = modalSettingEditorControls(key);
   const inputs = control.radios ? Array.from(control.radios) : [control.input, ...editorControls.filter(item => item !== control.input)];
   for (const input of inputs) {
     if (invalid) input.setAttribute?.('aria-invalid', 'true');
@@ -2202,7 +2551,8 @@ function focusSettingControl(key) {
   if (!control?.input) return;
   control.row?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   if (key === 'reasoning_auto') openReasoningAutoModal(document.getElementById('reasoning-auto-btn'));
-  const target = key === 'reasoning_auto' ? reasoningAutoEditorControls().find(item => item.type !== 'hidden' && !item.disabled) : null;
+  if (key === 'privacy_redaction') openPrivacyRedactionModal(document.getElementById('privacy-redaction-btn'));
+  const target = modalSettingEditorControls(key).find(item => item.type !== 'hidden' && !item.disabled);
   (target || control.input).focus?.({ preventScroll: true });
 }
 
@@ -2341,7 +2691,7 @@ async function saveAllSettings() {
   const restartLabels = savedKeys.filter((key) => settingEffectMode(key) === 'restart').map(settingLabel);
   const confirmed = await window.showConfirm({
     title: t('settings.saveAll'),
-    message: t('settings.msg.confirmSave'),
+    message: t(restartLabels.length > 0 ? 'settings.msg.confirmSave' : 'settings.msg.confirmSaveHot'),
     confirmText: t('settings.saveAll')
   });
   if (!confirmed) return;

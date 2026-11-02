@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
@@ -264,6 +265,12 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, mode
 	result.baseURL = baseURL
 	// The effective level is not sent: it anchors the judge toward the current
 	// level, and downgrade confirmation already provides the hysteresis.
+	if session, _ := ctx.Value(privacyContextKey{}).(*privacy.Session); session != nil {
+		transcript, err = session.MaskText(transcript)
+		if err != nil {
+			return result, errors.New("privacy masking failed; decision request was not sent")
+		}
+	}
 	state, _ := json.Marshal(map[string]string{"conversation": transcript})
 	questions := struct {
 		Effort systemOneQuestion  `json:"effort"`
@@ -285,6 +292,10 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, mode
 	req.Header.Set("Authorization", "Bearer "+key)
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	body = applyBodyRules("application/json", body, cfg.BodyRules())
+	body, err = maskPrivacyBodyFromContext(ctx, body, "application/json")
+	if err != nil {
+		return result, err
+	}
 	req = cloneRequestWithBody(req, body)
 	// Same capture as proxy attempts: the request actually sent and the raw
 	// upstream response, so a decision can be inspected like any other call.

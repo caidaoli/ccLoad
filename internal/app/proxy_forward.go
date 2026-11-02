@@ -339,6 +339,14 @@ func (s *Server) buildProxyRequest(
 		// Complete replay and incremental WS bodies must share the same aliases.
 		body, reqCtx.openCodeResponses = prepareOpenCodeResponsesRequest(parsedUpstreamURL, upstreamProtocol, requestPath, body, reqCtx.openCodeResponses)
 	}
+	// Channel rules and wire repairs may introduce new text. Mask their final
+	// result before signing, compression, debug capture or either transport.
+	if reqCtx != nil {
+		body, err = maskPrivacyBodyFromContext(reqCtx.ctx, body, hdr.Get("Content-Type"))
+		if err != nil {
+			return nil, err
+		}
+	}
 	body, err = refreshAnthropicCallerCCH(body, callerBody, callerWire)
 	if err != nil {
 		return nil, err
@@ -3400,6 +3408,10 @@ func (s *Server) forwardAttempt(
 		translatedRequestOverride,
 		false, upstreamWireAliases{},
 	)
+	if errors.Is(err, errPrivacyMasking) {
+		result := &proxyResult{status: http.StatusBadRequest, body: []byte(errPrivacyMasking.Error()), nextAction: cooldown.ActionReturnClient}
+		return result, result.nextAction, nil
+	}
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
 	if res != nil && res.DebugData != nil {
 		reqCtx.debugData = res.DebugData

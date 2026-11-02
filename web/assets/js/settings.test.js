@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const confirmMessage = '保存任意设置后,服务会在约 2 秒后自动重启以生效，是否继续';
+const confirmHotMessage = '这些设置保存后立即生效，无需重启服务，是否继续？';
 
 function flushAsyncWork() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -267,6 +268,82 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
   elements.set('reasoningAutoModal', reasoningModal);
   elements.set('reasoningAutoContent', reasoningContent);
   elements.set('reasoningAutoError', reasoningError);
+  const privacyListeners = new Map();
+  const privacyClasses = new Set();
+  let privacyFields = [];
+  let privacyRuleFields = [];
+  const privacyButton = {
+    dataset: {}, isConnected: true,
+    addEventListener(type, listener) { if (type === 'click') this.listener = listener; },
+    click() { this.listener?.({ currentTarget: this }); },
+    focus() { global.document.activeElement = this; }
+  };
+  const privacyCloseButton = { focus() { global.document.activeElement = this; } };
+  const privacyModal = {
+    dataset: {}, attributes: new Map(),
+    classList: {
+      add: name => privacyClasses.add(name), remove: name => privacyClasses.delete(name),
+      contains: name => privacyClasses.has(name)
+    },
+    addEventListener: (type, listener) => privacyListeners.set(type, listener),
+    setAttribute(name, value) { this.attributes.set(name, String(value)); },
+    removeAttribute(name) { this.attributes.delete(name); },
+    querySelector: selector => selector === '.close-btn' ? privacyCloseButton : null
+  };
+  const classSet = () => {
+    const classes = new Set();
+    return {
+      add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
+      toggle: (name, on) => on ? classes.add(name) : classes.delete(name)
+    };
+  };
+  const privacyTestListeners = new Map();
+  const privacyTestModal = {
+    attributes: new Map(), classList: classSet(),
+    addEventListener: (type, listener) => privacyTestListeners.set(type, listener),
+    setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  };
+  const privacyTestStub = extra => ({
+    textContent: '', innerHTML: '', hidden: false, disabled: false, value: '', isConnected: true, attributes: new Map(),
+    classList: classSet(),
+    setAttribute(name, value) { this.attributes.set(name, String(value)); },
+    removeAttribute(name) { this.attributes.delete(name); },
+    focus() { global.document.activeElement = this; },
+    ...extra
+  });
+  elements.set('privacyTestModal', privacyTestModal);
+  elements.set('privacyTestOpen', privacyTestStub());
+  elements.set('privacyTestInput', privacyTestStub({ id: 'privacyTestInput' }));
+  elements.set('privacyTestRun', privacyTestStub({ disabled: true }));
+  elements.set('privacyTestStatus', privacyTestStub());
+  elements.set('privacyTestResult', privacyTestStub({ hidden: true }));
+  function privacyControls(html) {
+    return [...html.matchAll(/<(input|button)\b([^>]*)>|<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g)].map(match => {
+      const tag = match[2] || match[3];
+      const field = reasoningControl(tag);
+      for (const name of ['privacy-field', 'privacy-rule', 'privacy-index']) {
+        const key = name.replace(/-([a-z])/g, (_match, char) => char.toUpperCase());
+        field.dataset[key] = tag.match(new RegExp(`data-${name}="([^"]*)"`))?.[1];
+      }
+      if (match[3] !== undefined) field.value = match[4] || '';
+      return field;
+    });
+  }
+  elements.set('privacy-redaction-btn', privacyButton);
+  elements.set('privacyRedactionModal', privacyModal);
+  elements.set('privacyRedactionContent', {
+    set innerHTML(html) {
+      privacyFields = privacyControls(html);
+      for (const field of privacyFields) if (field.id) elements.set(field.id, field);
+      elements.set('privacyRedactionEditor', { querySelectorAll: () => [...privacyFields, ...privacyRuleFields] });
+      elements.set('privacyRuleRows', {
+        set innerHTML(rows) { privacyRuleFields = privacyControls(rows); },
+        querySelector: () => privacyRuleFields.find(field => field.dataset.privacyRule)
+      });
+    }
+  });
+  const privacyError = { textContent: '', hidden: true };
+  elements.set('privacyRedactionError', privacyError);
   const definitions = new Map(settings.map((setting) => [setting.key, setting]));
   for (const [key, value] of Object.entries(inputValues)) {
     const row = {
@@ -330,10 +407,12 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
   let nextUpdateError = null;
   let nextUpdateResult = { has_update: false, latest_version: 'v1.0.0' };
   let resolveModelPricingRequest = null;
+  const privacyPreviews = [];
 
   global.window = {
     t(key, params = {}) {
       if (key === 'settings.msg.confirmSave') return confirmMessage;
+      if (key === 'settings.msg.confirmSaveHot') return confirmHotMessage;
       if (key === 'settings.msg.invalidValue') return `请检查 ${params.name}：${params.reason}`;
       if (key === 'settings.msg.invalidValues') return `${params.count} 项无效：${params.details}`;
       if (key === 'settings.msg.savedRestart') return `需重启：${params.names}`;
@@ -406,6 +485,9 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
       }
       return settings;
     }
+    if (url === '/admin/privacy-redaction/preview') {
+      return new Promise((resolve, reject) => privacyPreviews.push({ body: JSON.parse(options.body), resolve, reject }));
+    }
     if (url === '/admin/update/check') {
       if (nextUpdateError) {
         const error = nextUpdateError;
@@ -464,6 +546,42 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
     reasoningError,
     reasoningModels: () => reasoningModels,
     reasoningField: id => elements.get(id),
+    privacyModal,
+    privacyError,
+    privacyButton,
+    privacyField: field => privacyFields.find(input => input.dataset.privacyField === field),
+    openPrivacy() { privacyButton.click(); },
+    privacyAction(action, index) {
+      const button = { dataset: { action, privacyIndex: String(index) }, closest: () => button };
+      privacyListeners.get('click')?.({ target: button });
+    },
+    editPrivacyField(field, value) {
+      const target = privacyFields.find(input => input.dataset.privacyField === field);
+      assert.ok(target, field);
+      if (target.disabled) return;
+      if (target.type === 'checkbox') target.checked = value;
+      else target.value = value;
+      privacyListeners.get(target.type === 'checkbox' ? 'change' : 'input')?.({ target });
+    },
+    privacyPreviews,
+    privacyTestModal,
+    privacyTest: id => elements.get(id),
+    privacyTestAction(action) {
+      const button = { dataset: { action }, closest: () => button };
+      privacyTestListeners.get('click')?.({ target: button });
+    },
+    editPrivacyTest(value) {
+      const target = elements.get('privacyTestInput');
+      target.value = value;
+      privacyTestListeners.get('input')?.({ target });
+    },
+    editPrivacyRule(index, field, value) {
+      const target = privacyRuleFields.find(input => input.dataset.privacyIndex === String(index) && input.dataset.privacyRule === field);
+      assert.ok(target, `${index}:${field}`);
+      if (target.disabled) return;
+      target.value = value;
+      privacyListeners.get('input')?.({ target });
+    },
     async openReasoning() {
       reasoningButton.click();
       await flushAsyncWork();
@@ -1073,16 +1191,19 @@ test('一次保存报告全部无效设置的可读名称并标记每个输入',
   assert.equal(page.inputs.max_concurrency.getAttribute('aria-invalid'), 'true');
 });
 
-test('保存成功后汇总需重启生效的设置', async (t) => {
+test('混合保存时确认并汇总需重启生效的设置', async (t) => {
   const page = await loadSettingsPage(t, [
-    { key: 'max_concurrency', value: '10', value_type: 'int', description: '最大并发请求数' }
-  ], { max_concurrency: '20' });
+    { key: 'max_concurrency', value: '10', value_type: 'int', description: '最大并发请求数' },
+    { key: 'privacy_redaction', value: '{}', value_type: 'json' }
+  ], { max_concurrency: '20', privacy_redaction: '{}' });
+  page.editInput('privacy_redaction', JSON.stringify({ ...privacyDefaults, enabled: true }));
   page.setAllowSave(true);
 
   page.saveButton.click();
   await flushAsyncWork();
 
   assert.equal(saveRequests(page).length, 1);
+  assert.deepEqual(page.prompts, [confirmMessage]);
   assert.deepEqual(page.successes, ['需重启：最大并发请求数']);
 });
 
@@ -1126,7 +1247,7 @@ test('dynamic reasoning setting validates and saves its JSON contract without a 
   await flushAsyncWork();
   assert.equal(saveRequests(page).length, 1);
   assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto), JSON.parse(value));
-  assert.equal(page.prompts.length, 1);
+  assert.deepEqual(page.prompts, [confirmHotMessage]);
   assert.deepEqual(page.successes, ['settings.msg.savedHot']);
   page.inputs.reasoning_auto.value = JSON.stringify({...JSON.parse(value), timeout_ms: 99});
   page.saveButton.click();
@@ -1197,6 +1318,295 @@ test('reasoning business models reject only parseable thinking suffixes and wild
 });
 
 const reasoningDefaults = { enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 };
+const privacyDefaults = {
+  enabled: false, secrets: true, personal: false,
+  kinds: { ssn: true, passport: true, iban: true, birthday: true, mac: true, serial: true, home: false, userhost: false, ip: false, bucket: false },
+  words: [], words_any_case: false, words_whole: false, rules: [], allow: []
+};
+
+function loadPrivacyPage(t, config = {}) {
+  const value = typeof config === 'string' ? config : JSON.stringify(config);
+  return loadSettingsPage(t, [{ key: 'privacy_redaction', value, value_type: 'json' }], { privacy_redaction: value });
+}
+
+test('privacy defaults are disabled and formatting alone does not create changes', async (t) => {
+  const page = await loadPrivacyPage(t);
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.openPrivacy();
+  assert.equal(page.privacyField('enabled').checked, false);
+  assert.equal(page.privacyField('secrets').checked, true);
+  assert.equal(page.privacyField('personal').checked, false);
+  for (const [kind, checked] of Object.entries(privacyDefaults.kinds)) {
+    assert.equal(page.privacyField('kinds.' + kind).checked, checked, kind);
+  }
+  page.privacyAction('apply-privacy-redaction');
+  assert.equal(page.hasUnsavedChanges(), false);
+  assert.equal(saveRequests(page).length, 0);
+});
+
+test('privacy rules with an omitted kind retain the server default without creating changes', async (t) => {
+  const page = await loadPrivacyPage(t, { rules: [{ prefix: 'internal-' }] });
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.openPrivacy();
+  assert.equal(page.privacyField('enabled').disabled, false);
+  page.privacyAction('apply-privacy-redaction');
+  assert.equal(page.hasUnsavedChanges(), false);
+  assert.deepEqual(JSON.parse(page.inputs.privacy_redaction.value).rules, [{ prefix: 'internal-', kind: 'CUSTOM' }]);
+});
+
+test('privacy modal applies word lists and rules to the batch save payload with hot reload', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  page.editPrivacyField('enabled', true);
+  page.editPrivacyField('personal', true);
+  page.editPrivacyField('kinds.ip', true);
+  page.editPrivacyField('words', ' internal-project \n\n user@example.com ');
+  page.editPrivacyField('words_any_case', true);
+  page.editPrivacyField('words_whole', true);
+  page.editPrivacyField('allow', ' allowed@example.com \n');
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(0, 'kind', 'INTERNAL_KEY');
+  page.editPrivacyRule(0, 'prefix', 'project-secret-');
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(1, 'kind', 'ACCOUNT');
+  page.editPrivacyRule(1, 'regex', '(?P<account>ACC[0-9]+)');
+  page.privacyAction('add-privacy-rule');
+  page.privacyAction('remove-privacy-rule', 2);
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.privacyAction('apply-privacy-redaction');
+  assert.equal(page.hasUnsavedChanges(), true);
+  assert.equal(saveRequests(page).length, 0);
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+  assert.deepEqual(page.prompts, [confirmHotMessage]);
+  assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).privacy_redaction), {
+    ...privacyDefaults, enabled: true, personal: true, kinds: { ...privacyDefaults.kinds, ip: true },
+    words: ['internal-project', 'user@example.com'], words_any_case: true, words_whole: true,
+    rules: [{ kind: 'INTERNAL_KEY', prefix: 'project-secret-' }, { kind: 'ACCOUNT', regex: '(?P<account>ACC[0-9]+)' }],
+    allow: ['allowed@example.com']
+  });
+  assert.ok(!page.successes.some(message => message.startsWith('需重启：')));
+});
+
+test('privacy cancel and Escape discard draft edits and restore trigger focus', async (t) => {
+  const page = await loadPrivacyPage(t);
+  const original = page.inputs.privacy_redaction.value;
+  for (const cancel of [() => page.privacyAction('close-privacy-redaction'), () => page.pressDocumentKey('Escape')]) {
+    page.openPrivacy();
+    page.editPrivacyField('enabled', true);
+    page.editPrivacyField('words', 'discard-me');
+    cancel();
+    assert.equal(page.privacyModal.attributes.get('aria-hidden'), 'true');
+    assert.equal(global.document.activeElement, page.privacyButton);
+    assert.equal(page.inputs.privacy_redaction.value, original);
+    assert.equal(page.hasUnsavedChanges(), false);
+    page.openPrivacy();
+    assert.equal(page.privacyField('words').value, '');
+    page.privacyAction('close-privacy-redaction');
+  }
+});
+
+test('invalid stored privacy remains locked and unchanged until reset is applied', async (t) => {
+  const invalid = '{"enabled":true,"kinds":{"unknown":true}}';
+  const page = await loadPrivacyPage(t, invalid);
+  page.openPrivacy();
+  assert.equal(page.privacyField('enabled').disabled, true);
+  page.editPrivacyField('enabled', false);
+  page.privacyAction('add-privacy-rule');
+  page.privacyAction('apply-privacy-redaction');
+  assert.equal(page.inputs.privacy_redaction.value, invalid);
+  page.privacyAction('reset-privacy-redaction');
+  assert.equal(page.privacyField('enabled').disabled, false);
+  page.privacyAction('close-privacy-redaction');
+  assert.equal(page.inputs.privacy_redaction.value, invalid);
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.openPrivacy();
+  assert.equal(page.privacyField('enabled').disabled, true);
+  page.privacyAction('reset-privacy-redaction');
+  page.privacyAction('apply-privacy-redaction');
+  assert.deepEqual(JSON.parse(page.inputs.privacy_redaction.value), privacyDefaults);
+  assert.equal(page.hasUnsavedChanges(), true);
+});
+
+test('saving unrelated settings does not overwrite invalid stored privacy', async (t) => {
+  const invalid = '{invalid';
+  const page = await loadSettingsPage(t, [
+    { key: 'privacy_redaction', value: invalid, value_type: 'json' },
+    { key: 'max_concurrency', value: '10', value_type: 'int' }
+  ], { privacy_redaction: invalid, max_concurrency: '10' });
+  page.setAllowSave(true);
+  page.editInput('max_concurrency', '11');
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(saveRequests(page)[0].options.body), { max_concurrency: '11' });
+  assert.equal(page.inputs.privacy_redaction.value, invalid);
+});
+
+test('server RE2 validation errors preserve the pending privacy configuration for repair', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(0, 'kind', 'CUSTOM');
+  page.editPrivacyRule(0, 'regex', '[');
+  page.privacyAction('apply-privacy-redaction');
+  page.setAllowSave(true);
+  page.failNextSave('invalid RE2 expression');
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+  assert.ok(page.errors.some(error => error.includes('invalid RE2 expression')));
+  assert.equal(page.hasUnsavedChanges(), true);
+  page.openPrivacy();
+  page.editPrivacyRule(0, 'regex', 'account-[0-9]+');
+  page.privacyAction('apply-privacy-redaction');
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 2);
+  assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[1].options.body).privacy_redaction).rules,
+    [{ kind: 'CUSTOM', regex: 'account-[0-9]+' }]);
+  assert.equal(page.hasUnsavedChanges(), false);
+});
+
+test('privacy rule validation blocks invalid drafts and preserves the pending setting', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  const original = page.inputs.privacy_redaction.value;
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(0, 'kind', 'TOKEN');
+  for (const [prefix, regex] of [['ab', ''], ['x'.repeat(65), ''], ['', 'x'.repeat(301)], ['abc', 'abc'], ['', '']]) {
+    page.editPrivacyRule(0, 'prefix', prefix);
+    page.editPrivacyRule(0, 'regex', regex);
+    page.privacyAction('apply-privacy-redaction');
+    assert.equal(page.inputs.privacy_redaction.value, original);
+    assert.equal(page.privacyError.hidden, false);
+  }
+  page.editPrivacyRule(0, 'prefix', 'valid-prefix');
+  for (const kind of ['lowercase', '1TOKEN', 'X'.repeat(25), 'WITH-HYPHEN']) {
+    page.editPrivacyRule(0, 'kind', kind);
+    page.privacyAction('apply-privacy-redaction');
+    assert.equal(page.inputs.privacy_redaction.value, original);
+  }
+  page.editPrivacyRule(0, 'kind', 'TOKEN');
+  page.privacyAction('apply-privacy-redaction');
+  assert.deepEqual(JSON.parse(page.inputs.privacy_redaction.value).rules, [{ kind: 'TOKEN', prefix: 'valid-prefix' }]);
+});
+
+test('privacy test dialog previews the unapplied draft and reruns it on reopen', async (t) => {
+  const page = await loadPrivacyPage(t);
+  const original = page.inputs.privacy_redaction.value;
+  const testShown = () => page.privacyTestModal.classList.contains('show');
+  page.openPrivacy();
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(0, 'kind', 'RELAY');
+  page.editPrivacyRule(0, 'prefix', 'relay_');
+  page.privacyAction('open-privacy-test');
+  assert.equal(testShown(), true);
+  assert.equal(page.privacyModal.attributes.get('inert'), '');
+  assert.equal(page.privacyTest('privacyTestRun').disabled, true);
+  assert.equal(page.privacyPreviews.length, 0);
+
+  page.editPrivacyTest('key relay_ABCDEF123456');
+  assert.equal(page.privacyTest('privacyTestRun').disabled, false);
+  page.privacyTestAction('test-privacy-redaction');
+  assert.equal(page.privacyPreviews.length, 1);
+  assert.equal(page.privacyPreviews[0].body.text, 'key relay_ABCDEF123456');
+  assert.deepEqual(JSON.parse(page.privacyPreviews[0].body.config), { ...privacyDefaults, rules: [{ kind: 'RELAY', prefix: 'relay_' }] });
+  const placeholder = '{{CCLOAD_RELAY_0123456789abcdef}}';
+  page.privacyPreviews[0].resolve({ masked: 'key ' + placeholder, hits: [{ kind: 'RELAY', value: 'relay_ABCDEF123456', placeholder }] });
+  await flushAsyncWork();
+  const result = page.privacyTest('privacyTestResult');
+  assert.equal(result.hidden, false);
+  assert.ok(result.innerHTML.includes(placeholder));
+  assert.equal(page.privacyTest('privacyTestStatus').textContent, 'settings.privacyRedaction.testHits');
+
+  // 改样例让旧结果失效；改之前发出的请求晚到也不显示。
+  page.privacyTestAction('test-privacy-redaction');
+  page.editPrivacyTest('key other_ABCDEF123456');
+  assert.equal(result.hidden, true);
+  page.privacyPreviews[1].resolve({ masked: 'stale', hits: [{ kind: 'RELAY', value: 'stale', placeholder: 'stale' }] });
+  await flushAsyncWork();
+  assert.equal(result.hidden, true);
+  assert.equal(page.privacyTest('privacyTestRun').disabled, false);
+
+  // Esc 只关测试弹窗；回到编辑弹窗改规则后重新打开，保留样例并按新草稿自动重跑。
+  page.pressDocumentKey('Escape');
+  assert.equal(testShown(), false);
+  assert.equal(page.privacyModal.attributes.get('aria-hidden'), 'false');
+  assert.equal(page.privacyModal.attributes.has('inert'), false);
+  page.editPrivacyRule(0, 'prefix', 'other_');
+  page.privacyAction('open-privacy-test');
+  assert.equal(page.privacyTest('privacyTestInput').value, 'key other_ABCDEF123456');
+  assert.equal(page.privacyPreviews.length, 3);
+  assert.deepEqual(JSON.parse(page.privacyPreviews[2].body.config).rules, [{ kind: 'RELAY', prefix: 'other_' }]);
+
+  page.privacyTestAction('close-privacy-test');
+  page.privacyAction('close-privacy-redaction');
+  assert.equal(page.inputs.privacy_redaction.value, original);
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.openPrivacy();
+  page.privacyAction('open-privacy-test');
+  assert.equal(page.privacyTest('privacyTestInput').value, '');
+  assert.equal(page.privacyPreviews.length, 3);
+});
+
+test('privacy test reports invalid drafts and server errors without sending or saving', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(0, 'kind', 'lowercase');
+  page.editPrivacyRule(0, 'prefix', 'valid-prefix');
+  page.privacyAction('open-privacy-test');
+  page.editPrivacyTest('sample');
+  page.privacyTestAction('test-privacy-redaction');
+  const status = page.privacyTest('privacyTestStatus');
+  assert.equal(page.privacyPreviews.length, 0);
+  assert.ok(status.textContent);
+  assert.equal(status.classList.contains('is-error'), true);
+
+  page.privacyTestAction('close-privacy-test');
+  page.editPrivacyRule(0, 'kind', 'TOKEN');
+  page.privacyAction('open-privacy-test');
+  page.privacyPreviews[0].reject(new Error('privacy text exceeds limit'));
+  await flushAsyncWork();
+  assert.ok(status.textContent.includes('privacy text exceeds limit'));
+  assert.equal(status.classList.contains('is-error'), true);
+  assert.equal(page.privacyTest('privacyTestResult').hidden, true);
+  assert.equal(page.requests.filter(({ url }) => url === '/admin/settings/batch').length, 0);
+});
+
+test('locked privacy settings disable the test dialog', async (t) => {
+  const page = await loadPrivacyPage(t, '{"enabled":true,"kinds":{"unknown":true}}');
+  page.openPrivacy();
+  assert.equal(page.privacyTest('privacyTestOpen').disabled, true);
+  page.privacyAction('open-privacy-test');
+  assert.equal(page.privacyTestModal.classList.contains('show'), false);
+  page.privacyAction('reset-privacy-redaction');
+  assert.equal(page.privacyTest('privacyTestOpen').disabled, false);
+});
+
+test('privacy save validates list and rule boundaries even when disabled', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.setAllowSave(true);
+  const invalidConfigs = [
+    { words: Array(257).fill('word') }, { allow: Array(257).fill('allowed') },
+    { words: ['x'.repeat(513)] }, { allow: ['x'.repeat(513)] }, { words: ['two\nlines'] },
+    { rules: Array(33).fill({ kind: 'TOKEN', prefix: 'abc' }) }, { enabled: null }, { kinds: null }
+  ];
+  for (const config of invalidConfigs) {
+    page.editInput('privacy_redaction', JSON.stringify(config));
+    page.saveButton.click();
+    await flushAsyncWork();
+    assert.equal(saveRequests(page).length, 0);
+    assert.equal(page.inputs.privacy_redaction.getAttribute('aria-invalid'), 'true');
+  }
+  page.editInput('privacy_redaction', JSON.stringify({ words: Array(256).fill('😀'.repeat(512)), allow: ['allowed'] }));
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+});
+
 const reasoningConfigured = { ...reasoningDefaults, enabled: true, decision_channel_id: 7, decision_model: 'judge', business_models: ['gpt-5'], timeout_ms: 1500 };
 
 async function loadReasoningPage(t, config = reasoningConfigured, options = {}) {

@@ -535,7 +535,14 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// reach a first-party account either, so it gets the local estimate too.
 	if countTokensRequest {
 		if !s.tokenModelAllowed(tokenHashStr, incoming.authorizationModel()) {
-			s.handleLocalCountTokens(c, all, localCountTokensLog("model restricted"))
+			// This exit precedes the shared masking below; mask here too so the local
+			// estimate and its debug record match the other count_tokens fallbacks.
+			masked, errMask := maskPrivacyBody(s.privacySession(c), all, c.Request.Header.Get("Content-Type"))
+			if errMask != nil {
+				writeLocalProxyError(c, http.StatusBadRequest, errPrivacyMasking.Error())
+				return
+			}
+			s.handleLocalCountTokens(c, masked, localCountTokensLog("model restricted"))
 			return
 		}
 	} else if !s.enforceTokenLimits(c, tokenHashStr, incoming.authorizationModel()) {
@@ -595,6 +602,29 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 
+	privacySession := s.privacySession(c)
+	if privacySession != nil {
+		all, err = maskPrivacyBody(privacySession, all, c.Request.Header.Get("Content-Type"))
+		if err == nil && len(nativeRequestBody) > 0 {
+			nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
+		}
+		if err == nil {
+			originalReasoningBody, err = maskPrivacyBody(privacySession, originalReasoningBody, c.Request.Header.Get("Content-Type"))
+		}
+		if err != nil {
+			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
+			return
+		}
+		output := newPrivacyResponseWriter(c.Writer, privacySession)
+		c.Writer = &privacyGinWriter{ResponseWriter: c.Writer, output: output}
+		defer func() {
+			if finishErr := output.Finish(); finishErr != nil {
+				log.Print("[WARN] privacy response restoration failed")
+			}
+		}()
+	}
+
+	ctx = withPrivacySession(ctx, privacySession)
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
 	if err == nil && requestMethod == http.MethodPost && requestFamily != protocol.RequestFamilyAlphaSearch {
 		cands = s.appendAntigravityCreditsCandidates(ctx, cands, originalModel, string(clientProtocol), all)
@@ -715,6 +745,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		reqCtx.routingSession = routingSession
 	}
 	reqCtx.responsesReplayBody = executionSessionRequestBody
+	if privacySession != nil && len(reqCtx.responsesReplayBody) > 0 {
+		reqCtx.responsesReplayBody, err = privacySession.MaskJSON(reqCtx.responsesReplayBody)
+		if err != nil {
+			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
+			return
+		}
+	}
 	if executionSession != nil && nativeRequestBody != nil {
 		reqCtx.nativeCodexWS = executionSession.upstream
 		reqCtx.nativeCodexBody = nativeRequestBody
@@ -723,7 +760,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		reasoningExplicit := hasExplicitThinkingSuffix(reasoningModel)
 		transcript := all
 		if len(executionSessionRequestBody) > 0 {
-			transcript = executionSessionRequestBody
+			transcript = reqCtx.responsesReplayBody
 		} else if !reasoningExplicit {
 			if local := s.localReasoningTranscript(reqCtx); local != nil {
 				transcript = local
@@ -758,6 +795,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
+			if privacySession != nil && len(lastResult.responsesTurn.completedOutput) > 0 {
+				if restored, restoreErr := privacySession.RestoreJSON(lastResult.responsesTurn.completedOutput); restoreErr == nil {
+					lastResult.responsesTurn.completedOutput = restored
+				}
+			}
 			s.responsesExecutionSessions.commit(executionSession, executionSessionRequestBody, lastResult.responsesTurn)
 		}
 		return

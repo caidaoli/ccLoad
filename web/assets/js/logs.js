@@ -2591,6 +2591,7 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
   error.textContent = '';
   content.style.display = 'none';
   setDebugLogStatus(null);
+  renderDebugPrivacySummary(null);
   currentDebugLogData = null;
   modal.classList.add('show');
 
@@ -2619,6 +2620,7 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
     content.style.display = 'flex';
 
     configureDebugProtocolTabs(data);
+    renderDebugPrivacySummary(data);
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
     window.setHighlightedCodeContent('debugTranslatedReqRaw', composeDebugTranslatedRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
@@ -2653,6 +2655,30 @@ function setDebugLogStatus(kind) {
     el.classList.add('debug-log-status--finished');
     el.textContent = (typeof t === 'function' ? t('logs.debugRequestFinished') : '请求已结束') || '请求已结束';
   }
+  el.hidden = false;
+}
+
+// 统计实际发往上游的请求体（req_body）里的脱敏占位符；没有占位符时整栏隐藏。
+function renderDebugPrivacySummary(data) {
+  const el = document.getElementById('debugPrivacySummary');
+  if (!el) return;
+  const stats = data ? window.privacyPlaceholderStats(data.req_body) : null;
+  if (!stats || stats.values === 0) {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
+  const text = document.createElement('span');
+  text.textContent = t('logs.debugPrivacySummary', { values: stats.values, count: stats.occurrences });
+  const kinds = document.createElement('span');
+  kinds.className = 'debug-privacy-summary__kinds';
+  for (const [kind, count] of stats.kinds) {
+    const chip = document.createElement('span');
+    chip.className = 'debug-privacy-summary__kind';
+    chip.textContent = `${kind} ×${count}`;
+    kinds.append(chip);
+  }
+  el.replaceChildren(text, kinds);
   el.hidden = false;
 }
 
@@ -2706,6 +2732,7 @@ async function refreshActiveDebugLogOnce(activeRequestId) {
 
 function updateDebugLogContentPreserveScroll(data) {
   configureDebugProtocolTabs(data);
+  renderDebugPrivacySummary(data);
   updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
   updateDebugPanePreserveScroll('debugTranslatedReqRaw', composeDebugTranslatedRequest(data), 'request');
   updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');

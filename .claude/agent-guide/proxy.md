@@ -75,3 +75,11 @@
 - 渠道高级设置 → OAuth 凭证的 `oauth_quota_passthrough`（输出额度信息）默认关闭，旧渠道迁移同样为关闭。仅 Codex、Anthropic 返回账号额度，界面只对二者展示该开关，过滤也只对二者生效；其他 OAuth 渠道隐藏开关并保持原样透传；开启后保留原有透传行为，后台额度查询不受影响；API Key 渠道不受此开关影响。
 - 关闭时，在下游输出边界过滤账号额度响应头（Anthropic/Codex/rate-limit）、额度 SSE/WS 事件和协议 JSON 中的额度字段，包括最终错误响应；保留请求 ID、Codex turn-state、正常错误和模型输出。用户自定义 metadata 与 token usage 不作为账号额度删除。
 - 原始响应仍先用于内部额度采样、计费、冷却和故障切换，过滤只作用于客户端输出。HTTP、SSE 与 Responses WebSocket 共用该边界；不能在 usage parser 前删事件。
+
+## 隐私脱敏
+
+- `privacy.go` 为 HTTP/Responses WS turn 创建按调用方隔离的 Session，在入口协议转换和动态思考判断前遮蔽正文；完整重放体、原生 WS 增量体同时处理。`buildProxyRequest` 在渠道 BodyRules 与 wire 修复后、CCH 重签/压缩/Debug capture 前再处理最终正文，防止注入或重试解码引入明文。System One 判断调用的 transcript 与规则处理后正文同样受本次 Session 约束。count_tokens 本地估算的所有出口（含早于共享遮蔽块的令牌模型白名单拒绝）都使用遮蔽后正文，Debug 记录与其他回退路径一致。鉴权头仍为真实凭证，不改模型名、协议 ID、工具名/Schema 结构、签名密文及图片文件数据。
+- `privacy_output.go` 位于下游输出边界，在协议转换和 usage 统计之后还原；HTTP 通过 Gin 适配器接入，Responses WS 在 SSE bridge 前接入。非流式按 JSON 字符串值还原；SSE 按 choice/tool/block/item/candidate 内容通道拼接跨帧占位符，保留事件顺序、元数据和终态，工具参数做双层 JSON 转义。HTTP 最终错误也经过还原；WS 在判断 bridge.completed 前必须 Finish，执行历史存储还原后的输出。
+- 已签名的 Anthropic thinking / Gemini part 不能新检测或改写未知正文，只把本请求开始前字典已知原值换回原占位符；还原后的签名块再次发送时可保持厂商签名有效。尚未见过的签名正文与 opaque encrypted_content 原样保留。普通文本、工具输入输出和工具描述可扫描，Schema枚举/默认值等契约数据不替换。
+- Debug 日志弹窗由 `ui.js:setHighlightedCodeContent` 按 `internal/privacy` 占位符格式高亮（两处正则须同步），顶部统计只取实际外发的 `req_body`，按去重占位符计值、按出现次数计处；原文中被 SSE 分片拆开的占位符不高亮也不计入，合并视图（`markdown-renderer.js:renderResponse`）拼接后按文本节点高亮。
+- 该能力处理代理文本，不做 OCR、图片/音频/文件内容识别，也不对 HTTP Header/URL 做隐私改写；multipart只处理 prompt/text/input 文本字段，文件字节保留。不替代 Debug 日志访问控制，也不清洗已有日志、渠道配置或本地辅助请求日志。容量/格式错误时阻止外发，不得失败后透传明文。

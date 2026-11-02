@@ -298,6 +298,9 @@
       }
     }
     renderToolCalls(bubble, parts.tools);
+    // 合并视图由各段增量拼成完整文本，原文里被分片拆开的脱敏占位符在这里可以完整高亮。
+    // 思考、正文、工具调用每次整块重绘，不会重复包裹。
+    window.highlightPrivacyPlaceholders?.(el);
     el._rawText = rawText;
     if (bubble) bubble._rawText = rawText;
   }

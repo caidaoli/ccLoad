@@ -12,6 +12,7 @@
   <script src="/web/assets/js/theme-init.js?v=__VERSION__"></script>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <link rel="stylesheet" href="/web/assets/css/channels.css?v=__VERSION__">
+  <link rel="stylesheet" href="/web/assets/css/settings.css?v=__VERSION__">
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
@@ -53,6 +54,10 @@
               动态思考等级
             </button>
             <input type="hidden" id="reasoning_auto" value="{}">
+            <button id="privacy-redaction-btn" type="button" class="btn btn-secondary" data-i18n="settings.privacyRedaction.title">
+              隐私脱敏
+            </button>
+            <input type="hidden" id="privacy_redaction" value="{}">
             <button id="model-multimodal-fallback-btn" type="button" class="btn btn-secondary settings-multimodal-fallback-btn" data-i18n="settings.multimodalFallback.edit">
               多模态回退
             </button>
@@ -184,6 +189,63 @@
           data-i18n="common.cancel">取消</button>
         <button type="button" class="btn btn-primary" data-action="apply-reasoning-auto"
           data-i18n="settings.reasoningAuto.apply">应用到设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 隐私脱敏 -->
+  <div id="privacyRedactionModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="privacyRedactionTitle" aria-describedby="privacyRedactionDescription" aria-hidden="true">
+    <div class="modal-content settings-dialog settings-dialog--md">
+      <div class="modal-header settings-dialog-header">
+        <div>
+          <h2 id="privacyRedactionTitle" class="modal-title" data-i18n="settings.privacyRedaction.title">隐私脱敏</h2>
+          <p id="privacyRedactionDescription" class="modal-description" data-i18n="settings.privacyRedaction.description">在本地将请求中的敏感文本替换为占位符，回复返回后还原。默认关闭。应用后请点击“保存所有更改”，保存后立即生效。</p>
+        </div>
+        <button type="button" class="close-btn" data-action="close-privacy-redaction"
+          data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+      </div>
+      <section class="settings-dialog-body" role="region" aria-labelledby="privacyRedactionTitle">
+        <div id="privacyRedactionContent"></div>
+        <div id="privacyRedactionError" class="custom-rules-error" role="alert" hidden></div>
+      </section>
+      <div class="settings-dialog-footer">
+        <button type="button" class="btn btn-secondary" data-action="reset-privacy-redaction"
+          data-i18n="settings.privacyRedaction.reset">恢复默认值</button>
+        <button type="button" id="privacyTestOpen" class="btn btn-secondary settings-dialog-footer-start" data-action="open-privacy-test"
+          data-i18n="settings.privacyRedaction.testOpen">测试</button>
+        <button type="button" class="btn btn-secondary" data-action="close-privacy-redaction"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="apply-privacy-redaction"
+          data-i18n="settings.privacyRedaction.apply">应用到设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 隐私脱敏测试：叠在隐私脱敏弹窗之上，使用其未应用的草稿 -->
+  <div id="privacyTestModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="privacyTestTitle" aria-describedby="privacyTestHelp" aria-hidden="true">
+    <div class="modal-content settings-dialog settings-dialog--md">
+      <div class="modal-header settings-dialog-header">
+        <div>
+          <h2 id="privacyTestTitle" class="modal-title" data-i18n="settings.privacyRedaction.testTitle">测试隐私脱敏</h2>
+          <p id="privacyTestHelp" class="modal-description" data-i18n="settings.privacyRedaction.testHelp">按隐私脱敏弹窗当前的设置（含未应用的修改）检查样例文本，按已启用处理。样例不会保存或发往上游，也不进入正式还原映射。</p>
+        </div>
+        <button type="button" class="close-btn" data-action="close-privacy-test"
+          data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+      </div>
+      <section class="settings-dialog-body privacy-redaction-test" role="region" aria-labelledby="privacyTestTitle">
+        <textarea id="privacyTestInput" class="form-input" rows="6" spellcheck="false"
+          data-i18n-aria-label="settings.privacyRedaction.testInput" aria-label="样例文本"
+          data-i18n-placeholder="settings.privacyRedaction.testPlaceholder" placeholder="粘贴要检查的文本，例如包含密钥、邮箱或自定义词的片段"></textarea>
+        <p id="privacyTestStatus" class="privacy-redaction-help" role="status"></p>
+        <div id="privacyTestResult" class="privacy-redaction-test-result" hidden></div>
+      </section>
+      <div class="settings-dialog-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-privacy-test"
+          data-i18n="common.close">关闭</button>
+        <button type="button" id="privacyTestRun" class="btn btn-primary" data-action="test-privacy-redaction"
+          data-i18n="settings.privacyRedaction.testRun" disabled>运行测试</button>
       </div>
     </div>
   </div>

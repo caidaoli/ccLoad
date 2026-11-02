@@ -4,7 +4,7 @@
 
 ## 系统设置与连接生命周期
 
-- **系统设置与热更新**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读取配置；唯一写入口 `POST /admin/settings/batch` 由 `settingsUpdateMu` 串行化保存。`model_multimodal_fallback`、`model_custom_pricing` 和 `reasoning_auto` 由 `commitSettingUpdates` 在持久化成功后发布运行态快照，避免数据库终值与运行态错序；一次提交只含这些键时免重启，同时包含其他键则调用 `go s.triggerRestart()`，2 秒后重启生效。后端 `hotReloadedSettingKeys` 与前端 `hotReloadSettingKeys` 必须同步。其余设置继续使用启动缓存，不能在保存时顺手刷新。重启回调属于 `Server` 实例并由锁保护，禁止恢复为包级可变全局。
+- **系统设置与热更新**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读取配置；唯一写入口 `POST /admin/settings/batch` 由 `settingsUpdateMu` 串行化保存。`model_multimodal_fallback`、`model_custom_pricing`、`reasoning_auto` 和 `privacy_redaction` 由 `commitSettingUpdates` 在持久化成功后发布运行态快照，避免数据库终值与运行态错序；一次提交只含这些键时免重启，同时包含其他键则调用 `go s.triggerRestart()`，2 秒后重启生效。后端 `hotReloadedSettingKeys` 与前端 `hotReloadSettingKeys` 必须同步。其余设置继续使用启动缓存，不能在保存时顺手刷新。重启回调属于 `Server` 实例并由锁保护，禁止恢复为包级可变全局。
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全属这一类,保持环境变量;运行期策略才进系统设置
 - **全局限额与冷却时长**(`server.go:loadServerRuntimeConfig`):均为系统设置,启动读一次,改后重启生效。`max_concurrency`(全局并发信号量;三层同名警告见渠道级限流条)、`max_body_bytes`/`max_image_body_bytes`(Images 路径独立上限,同时约束 Responses WS 帧与 transcript,注入见 `newRequestBodyLimits`)、`cooldown_{auth,server,timeout,rate_limit,min,max}_seconds`(`loadCooldownSettings` 读出 `util.CooldownSettings`,经 `Store.ConfigureCooldown` 注入;下限>上限时整对回退默认)。旧 `CCLOAD_MAX_CONCURRENCY`/`CCLOAD_MAX_BODY_BYTES`/`CCLOAD_COOLDOWN_*` 已废弃,仍设置时启动打 WARN
 - **下游请求读取超时**(`config/defaults.go`+`server.go:loadHTTPReadTimeout`+`main.go`):系统设置 `http_read_timeout_seconds`(秒,0=内建默认 120 秒,负数回退默认),启动读一次注入 `http.Server.ReadTimeout`,改后重启生效。它覆盖**请求头+请求体的整段读取**,和 `max_body_bytes` 是两件事:体积超限立即 413(`errBodyTooLarge`),读取超时是 408(`errBodyReadTimeout`),两条错误文案分别点名对应设置,别再互相误判——注意调大体积上限反而会让原本快速 413 的请求改为等到读取超时才失败
@@ -22,6 +22,13 @@
 - 系统设置 `reasoning_auto` 使用 JSON：`enabled`、`decision_channel_id`、`decision_model`、`business_models`、`timeout_ms`。默认关闭，空业务模型名单不启用任何模型；名单按去除思考后缀后的逻辑模型精确匹配，不支持通配符。超时范围 100–10000 ms，默认 2000 ms。保存后热生效（`Server.reasoningAuto` 原子快照，`commitSettingUpdates` 发布）：下一个请求按新名单判定是否走动态等级，一次判断只读一份快照；已有会话状态不清空，按 TTL 过期。热生效键集合为后端 `hotReloadedSettingKeys` 与前端 `hotReloadSettingKeys`，两处须同步；批量保存含其他设置时仍重启。
 - 判断服务沿用渠道管理，判断渠道只能是 System One 渠道。System One 是认证类型 `auth_type=system_one`（由“添加 → 决策渠道”入口新建，中文界面统称“决策渠道”，之后不可改），URL 不声明协议，凭证与存储口径同 API Key（`model.UsesAPIKeyCredentials`），不可带 OAuth 凭证或管理账户。它是独立上游决策能力，不增加聊天协议转换，下游只经 `POST /v1/systemone` 透传使用；模型发现走 `GET /v1/models`（取 `models[].name`），定时聊天检测跳过它；手动测试发送原生 `POST /v1/systemone`，测试请求不带 `client_protocol`（带了返回 400），普通渠道仍必填。
 - 日志可空 `reasoning_decision` JSON 是持久化和管理 API 契约，决策调用日志以请求协议 `system_one` 区分（无独立来源）；开启 Debug 日志时，判断调用与手动测试同代理尝试一样保存实际发送的 System One 请求（凭证脱敏）及上游原始响应，未形成响应时记录传输错误；三种数据库及混合存储读写均需保留。旧日志元数据为空时行为不变。TypeSafe 旧错误分析设置与 `jev` 日志来源继续退役。
+
+## 隐私脱敏
+
+- `privacy_redaction` 为 JSON 设置，默认 `{}`（总开关关闭、密钥密码规则预选、个人信息关闭）。保存成功后在 `settingsUpdateMu` 内发布 `Server.privacyConfig` 原子快照；一次请求/WS turn 沿用同一配置。设置页在“动态思考等级”旁打开弹窗，包含内置规则分类、词表、大小写/整词选项、RE2 前缀/正则规则和允许名单。弹窗页脚“恢复默认值”旁的“测试”按钮打开叠加的测试弹窗（父弹窗 `inert`，Esc 只关测试弹窗；样例在编辑弹窗打开期间保留、重开时按最新草稿自动重跑），调用 `POST /admin/privacy-redaction/preview`（`admin_privacy_preview.go`），以未应用草稿强制启用、用一次性 `privacy.Preview` 引擎处理≤64KiB样例，不读写线上字典、不持久化、不外发。自定义词表、规则独立于密钥/个人信息开关。热更新键须同时维护前后端集合。
+- `internal/privacy` 的规则参考 magpie `c74b932c8288e8aa103d0a231b57f3d71bd75b6d`，来源许可证为 `LICENSE.magpie`。HMAC 占位符及还原字典按调用方 Token hash 隔离，只保存在本进程内；空身份使用请求独立引擎。字典空闲 24h 过期，总计最多 4096 个 scope / 65536 个值 / 32MiB 原值与占位符，单 scope 4096 值；容量不足拒绝发送，不退回明文。重启或过期后无法还原仅存在于上游隐藏历史中的旧占位符；需要客户端完整重放明文历史。
+- 文本正文上限 64MiB、JSON 深度 128、单文本 65536 个命中；配置上限 2MiB，words/allow 各256项、单项512 Unicode字符且不含换行，rules最多32条（kind最长24大写字母/数字/下划线，以字母开头；prefix 3–64字符或RE2 regex最多300字符二选一；有捕获组取首个参与匹配组）。API 无效配置拒绝持久化和发布；错误消息不回显原值。
+- 接线、协议与恢复边界见 [代理契约](proxy.md#隐私脱敏)。开关关闭后，已有字典仍用于还原上游历史占位符，不对新正文做常规脱敏；已有签名块仅恢复其原有占位符形式以保留签名。
 
 ## 已下线设置
 

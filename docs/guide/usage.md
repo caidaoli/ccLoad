@@ -153,6 +153,20 @@ The suffix is not a model identity: routing, auth, cooldown, logging, and the up
 
 System setting `model_multimodal_fallback` maps non-vision models to fallback models as a JSON object `{"text-model":"fallback-model"}` (max 64 mappings / 8 KB; keys are normalized to the lower-cased base name, values may carry a thinking suffix). When a request contains non-text content — images, files — ccLoad rewrites the incoming model to the fallback **before** thinking-suffix handling and token, channel, and Key filtering, so routing, cooldowns, and logs all follow the fallback model. HTTP entries inspect the client-protocol body; Responses WebSocket turns inspect the complete conversation transcript, so an image that entered the history keeps every later turn on the fallback deterministically. Open **Multimodal Fallback Models** on the settings page to edit the mapping. Unlike every other system setting, saving only this mapping takes effect immediately; a commit that touches any other setting still restarts the process about two seconds later.
 
+## Privacy masking
+
+Open **Settings → Privacy masking**, next to **Dynamic reasoning effort**. Masking is off by default. Enable it, apply the dialog, then save all changes; the setting takes effect immediately without restarting.
+
+Click **Test** next to **Reset to default** at the bottom of the dialog to open a test dialog, paste sample text, and see what the upstream would receive under the dialog's current settings (including unapplied changes, treated as enabled), plus each replaced value. The sample is not saved or sent upstream.
+
+The dialog contains built-in secret/password detection, optional personal-data categories, custom words (case-insensitive or whole-word matching), prefix/RE2 rules, and an allow list. Custom words and rules work independently of the secret and personal-data switches. Common API keys, private keys, JWTs, connection-string passwords, emails, Chinese mobile/identity numbers, bank cards, and optional identity/network categories are supported.
+
+Matched text becomes a stable placeholder before being sent upstream and is restored in HTTP, SSE, and Responses WebSocket replies. Reversible mappings are isolated by caller API token and held only in this process. Existing mappings continue restoring replies after masking is disabled; they expire after 24 idle hours or a process restart. A client must replay full history if hidden upstream history still references expired placeholders.
+
+With debug logging enabled, logs contain only placeholders, never the replaced values. The debug log dialog highlights placeholders and summarizes, at the top, how many values were masked in the upstream request, how often they occur, and their types.
+
+Masking covers recognized text, not image/audio/file content, authentication headers, protocol identifiers, or newly discovered values inside signed thinking blocks. Rules can miss values or produce false positives; custom rules and allowed values can refine them. Existing logs are not scrubbed. Capacity or processing failures reject the request rather than sending it unmasked.
+
 ## Local Token Counting
 
 Quickly estimate request token consumption (no upstream API call needed):

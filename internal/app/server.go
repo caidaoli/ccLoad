@@ -30,6 +30,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	protocolbuiltin "ccLoad/internal/protocol/builtin"
 	"ccLoad/internal/storage"
@@ -163,7 +164,9 @@ type Server struct {
 	multimodalFallbackUpdateMu sync.Mutex
 	modelPricingUpdateMu       sync.Mutex
 	settingsUpdateMu           sync.Mutex
-	// 动态思考等级配置同样整份替换发布，代理路径每次读取当前快照。
+	// 动态思考等级与隐私配置整份替换发布，代理路径每次读取当前快照。
+	privacyConfig          atomic.Pointer[privacy.Config]
+	privacyEngine          *privacy.Engine
 	reasoningAuto          atomic.Pointer[model.ReasoningAutoConfig]
 	reasoningStates        reasoningStateStore
 	reasoningDecisionSlots chan struct{}
@@ -238,6 +241,10 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	reasoningAuto, reasoningErr := ParseReasoningAutoConfig(configService.GetString(reasoningAutoSettingKey, "{}"))
 	if reasoningErr != nil {
 		log.Fatalf("[FATAL] 无效的 reasoning_auto: %v", reasoningErr)
+	}
+	privacyConfig, privacyErr := privacy.ParseConfig(configService.GetString(privacySettingKey, "{}"))
+	if privacyErr != nil {
+		log.Fatalf("[FATAL] 无效的 privacy_redaction: %v", privacyErr)
 	}
 	warnMigratedEnvSettings()
 
@@ -336,6 +343,8 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	}
 	s.setMultimodalFallbackModels(runtimeCfg.MultimodalFallbackModels)
 	s.reasoningAuto.Store(&reasoningAuto)
+	s.privacyConfig.Store(&privacyConfig)
+	s.privacyEngine = privacy.NewEngine()
 
 	reg := protocol.NewRegistry()
 	protocolbuiltin.Register(reg)
@@ -1928,6 +1937,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/settings", s.AdminListSettings)
 		admin.GET("/settings/:key", s.AdminGetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
+		admin.POST("/privacy-redaction/preview", s.HandlePrivacyRedactionPreview)
 
 		// 手动触发完整更新流程（检查、下载、校验、替换、空闲后重启）
 		admin.POST("/update/check", s.HandleManualUpdate)

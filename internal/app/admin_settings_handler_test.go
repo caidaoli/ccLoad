@@ -918,3 +918,75 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 		t.Fatalf("chat decision status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestPrivacySettingsHotReloadAndValidation(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	if cfg := server.privacyConfig.Load(); cfg == nil || cfg.Enabled {
+		t.Fatalf("privacy must default off: %+v", cfg)
+	}
+	restarted := make(chan struct{}, 1)
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
+	const policy = `{"enabled":true,"personal":true,"words":["private-project"]}`
+	w := batchUpdateSetting(t, server, privacySettingKey, policy)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "重启") {
+		t.Fatalf("save: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if cfg := server.privacyConfig.Load(); cfg == nil || !cfg.Enabled || !cfg.Personal || len(cfg.Words) != 1 {
+		t.Fatalf("policy not applied: %+v", cfg)
+	}
+	for _, invalid := range []string{`null`, `{"enabled":null}`, `{"rules":[{"kind":"CUSTOM","regex":"("}]}`, `{"kinds":{"unknown":true}}`} {
+		w = batchUpdateSetting(t, server, privacySettingKey, invalid)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid policy accepted: status=%d body=%s", w.Code, w.Body.String())
+		}
+		setting, err := server.store.GetSetting(t.Context(), privacySettingKey)
+		if err != nil || setting.Value != policy || !server.privacyConfig.Load().Enabled {
+			t.Fatalf("rejected update changed policy: %+v err=%v", setting, err)
+		}
+	}
+	w = batchUpdateSetting(t, server, privacySettingKey, "{}")
+	if w.Code != http.StatusOK || server.privacyConfig.Load().Enabled {
+		t.Fatalf("reset failed: status=%d body=%s", w.Code, w.Body.String())
+	}
+	assertNoRestart(t, restarted)
+}
+
+func TestPrivacyRedactionPreview(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	preview := func(body any) *httptest.ResponseRecorder {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/privacy-redaction/preview", body))
+		server.HandlePrivacyRedactionPreview(c)
+		return w
+	}
+
+	// An unsaved, disabled draft still previews; the live setting stays off.
+	draft := `{"enabled":false,"secrets":false,"rules":[{"kind":"RELAY","prefix":"relay_"}]}`
+	w := preview(map[string]string{"config": draft, "text": "token relay_ABCDEF123456 here"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[privacyPreviewResponse](t, w.Body.Bytes())
+	if len(resp.Data.Hits) != 1 || resp.Data.Hits[0].Kind != "RELAY" || resp.Data.Hits[0].Value != "relay_ABCDEF123456" {
+		t.Fatalf("unexpected hits: %+v", resp.Data.Hits)
+	}
+	if want := "token " + resp.Data.Hits[0].Placeholder + " here"; resp.Data.Masked != want {
+		t.Fatalf("masked = %q, want %q", resp.Data.Masked, want)
+	}
+	if cfg := server.privacyConfig.Load(); cfg == nil || cfg.Enabled {
+		t.Fatalf("preview changed the live policy: %+v", cfg)
+	}
+
+	const secretRegex = "relay_[A-Z(" // invalid RE2; the error must not echo it
+	for name, body := range map[string]any{
+		"invalid config": map[string]string{"config": `{"rules":[{"kind":"RELAY","regex":"` + secretRegex + `"}]}`, "text": "x"},
+		"oversized text": map[string]string{"config": "{}", "text": strings.Repeat("a", maxPrivacyPreviewTextBytes+1)},
+		"malformed body": "not an object",
+	} {
+		w = preview(body)
+		if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), secretRegex) {
+			t.Fatalf("%s: status=%d body=%s", name, w.Code, w.Body.String())
+		}
+	}
+}

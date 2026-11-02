@@ -15,6 +15,7 @@ import (
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/util"
 	"ccLoad/internal/version"
 
@@ -128,6 +129,7 @@ var hotReloadedSettingKeys = map[string]bool{
 	modelMultimodalFallbackSettingKey: true,
 	modelCustomPricingSettingKey:      true,
 	reasoningAutoSettingKey:           true,
+	privacySettingKey:                 true,
 }
 
 func settingsRequireRestart(updates map[string]string) bool {
@@ -173,6 +175,15 @@ func (s *Server) commitSettingUpdates(updates map[string]string, persist func() 
 		reasoningAuto = &parsed
 	}
 
+	var privacyConfig *privacy.Config
+	if value, ok := updates[privacySettingKey]; ok {
+		parsed, err := privacy.ParseConfig(value)
+		if err != nil {
+			return false, fmt.Errorf("parse validated privacy setting: %w", err)
+		}
+		privacyConfig = &parsed
+	}
+
 	if err := persist(); err != nil {
 		return false, err
 	}
@@ -186,6 +197,9 @@ func (s *Server) commitSettingUpdates(updates map[string]string, persist func() 
 	}
 	if reasoningAuto != nil {
 		s.reasoningAuto.Store(reasoningAuto)
+	}
+	if privacyConfig != nil {
+		s.privacyConfig.Store(privacyConfig)
 	}
 	return settingsRequireRestart(updates), nil
 }
@@ -457,6 +471,9 @@ func validateSettingValue(key, valueType, value string) error {
 
 	case "json":
 		switch key {
+		case privacySettingKey:
+			_, err := privacy.ParseConfig(value)
+			return err
 		case reasoningAutoSettingKey:
 			_, err := ParseReasoningAutoConfig(value)
 			return err

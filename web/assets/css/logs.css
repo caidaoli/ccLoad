@@ -600,6 +600,41 @@
       border: 1px solid var(--neutral-200);
     }
 
+    /* 隐私脱敏统计：与代码块中占位符高亮同色，提示两者对应 */
+    .debug-privacy-summary {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+      margin-bottom: 12px;
+      padding: 8px 12px;
+      border: 1px solid var(--primary-100);
+      border-radius: 8px;
+      background: var(--primary-50);
+      color: var(--color-text);
+      font-size: var(--text-sm);
+      line-height: 1.5;
+    }
+
+    .debug-privacy-summary[hidden] {
+      display: none;
+    }
+
+    .debug-privacy-summary__kinds {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .debug-privacy-summary__kind {
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--primary-100);
+      color: var(--primary-700);
+      font-family: var(--font-family-mono);
+      font-size: var(--text-xs);
+    }
+
     .debug-log-unavailable {
       padding: var(--space-4);
       border: 1px solid var(--surface-border);

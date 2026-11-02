@@ -2522,9 +2522,13 @@ func TestProxy_AnthropicCountTokensTokenRestrictionsUseLocalEstimate(t *testing.
 		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			env := setupProxyTestEnv(t, []testChannel{{
+			// Both restrictions answer locally, at different points of the handler;
+			// their debug records must hold the same masked body.
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
 				name: "official-anthropic", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-test",
-			}}, map[int]string{0: "https://api.anthropic.com"})
+			}}, map[int]string{0: "https://api.anthropic.com"}, map[string]string{
+				"debug_log_enabled": "true", privacySettingKey: `{"enabled":true}`,
+			})
 			configs, err := env.store.ListConfigs(context.Background())
 			if err != nil || len(configs) != 1 {
 				t.Fatalf("configs=%d err=%v", len(configs), err)
@@ -2537,12 +2541,22 @@ func TestProxy_AnthropicCountTokensTokenRestrictionsUseLocalEstimate(t *testing.
 				upstreamCalls.Add(1)
 				return nil, errors.New("restricted count_tokens should stay local")
 			})}
+			const secret = "sk-proj-counttokens1234567890abcdef"
 			response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
-				"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+				"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "use " + secret}},
 			}, nil)
 			if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() <= 0 ||
 				upstreamCalls.Load() != 0 {
 				t.Fatalf("status=%d upstreamCalls=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+			}
+			entry := waitForCountTokensLogs(t, env, 1)[0]
+			debug, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+			if err != nil || debug == nil {
+				t.Fatalf("debug=%+v err=%v", debug, err)
+			}
+			if content := gjson.GetBytes(debug.ReqBody, "messages.0.content").String(); strings.Contains(content, secret) ||
+				!strings.Contains(content, "{{CCLOAD_") {
+				t.Fatalf("local count_tokens debug body not masked: %s", debug.ReqBody)
 			}
 		})
 	}

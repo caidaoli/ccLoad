@@ -667,6 +667,20 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return writeResponsesWebsocketSyntheticPrewarm(conn, requestBody)
 	}
 
+	privacySession := s.privacySession(c)
+	if privacySession != nil {
+		requestBody, err = privacySession.MaskJSON(requestBody)
+		if err == nil {
+			nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
+		}
+		if err == nil {
+			clientPayload, err = privacySession.MaskJSON(clientPayload)
+		}
+		if err != nil {
+			return responsesWebsocketTurnResult{}, errors.New("privacy masking failed; request was not sent")
+		}
+	}
+	ctx = withPrivacySession(ctx, privacySession)
 	startTime := time.Now()
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
@@ -726,6 +740,12 @@ func (s *Server) executeResponsesWebsocketTurn(
 
 	bridgeWriter := newResponsesWebsocketBridgeWriter(conn, s.bodyLimits.maxForPath("/v1/responses"))
 	bridgeWriter.interrupt = interrupt
+	var outputWriter http.ResponseWriter = bridgeWriter
+	var privacyOutput *privacyResponseWriter
+	if privacySession != nil {
+		privacyOutput = newPrivacyResponseWriter(bridgeWriter, privacySession)
+		outputWriter = privacyOutput
+	}
 	clientReplay := false
 	stopBeforeNativeWebsocket := func(current, next *model.Config, result *proxyResult) bool {
 		// 管理员中断要继续切渠道，不在此处收口。
@@ -742,8 +762,20 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return true
 	}
 	lastResult, succeeded := s.runProxyAttemptLoopWithFailureBoundary(
-		ctx, candidates, reqCtx, bridgeWriter, stopBeforeNativeWebsocket,
+		ctx, candidates, reqCtx, outputWriter, stopBeforeNativeWebsocket,
 	)
+	if privacyOutput != nil {
+		if finishErr := privacyOutput.Finish(); finishErr != nil {
+			return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{
+				code: responsesWebsocketInterruptedCode, message: "privacy response restoration failed",
+			}
+		}
+		if lastResult != nil && len(lastResult.body) > 0 {
+			if restored, restoreErr := privacySession.RestoreJSON(lastResult.body); restoreErr == nil {
+				lastResult.body = restored
+			}
+		}
+	}
 	if bridgeWriter.closedForMessageTooBig {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
 	}

@@ -1,0 +1,269 @@
+/* ===== 隐私脱敏 =====
+ * 字号只用两级：控件与标题 text-sm，说明 text-xs。
+ * 间距三级：分组之间 16px，组内块之间 12px，标题与说明之间 4px。
+ * 说明与子选项统一缩进到勾选框文字起点（16px 勾选框 + 8px 间距）。
+ */
+#privacyRedactionEditor {
+  --privacy-indent: 24px;
+  display: grid;
+  gap: 16px;
+  line-height: 1.5;
+}
+
+#privacyRedactionEditor .settings-dialog-section-title,
+#privacyRedactionEditor .privacy-redaction-help,
+#privacyRedactionEditor .settings-dialog-note,
+#privacyRedactionEditor .custom-rules-error {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.privacy-redaction-enable {
+  min-height: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.privacy-redaction-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--surface-border);
+}
+
+.privacy-redaction-heading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+#privacyRedactionEditor .privacy-redaction-toolbar {
+  align-items: flex-start;
+  margin: 0;
+}
+
+.privacy-redaction-toolbar > .btn {
+  flex: 0 0 auto;
+}
+
+.privacy-redaction-help {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.privacy-redaction-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.privacy-redaction-option {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+.privacy-redaction-option > .privacy-redaction-help {
+  padding-left: var(--privacy-indent);
+}
+
+.privacy-redaction-kinds {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px 12px;
+  justify-self: stretch;
+  margin: 8px 0 0 var(--privacy-indent);
+  padding: 12px 14px;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+}
+
+.privacy-redaction-kinds > .privacy-redaction-help {
+  grid-column: 1 / -1;
+  padding-top: 10px;
+  border-top: 1px solid var(--surface-border);
+}
+
+.privacy-redaction-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.privacy-redaction-section textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+/* 自定义规则：无规则时只留标题和“添加规则”，不显示空表头 */
+.privacy-redaction-rules-container {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.privacy-redaction-rules-container:has(tbody:empty) {
+  display: none;
+}
+
+.privacy-redaction-rules {
+  min-width: 600px;
+  table-layout: fixed;
+}
+
+/* 表头文字与下方输入框左边缘对齐；列窄时表头换行而不是压到相邻列 */
+.settings-dialog .privacy-redaction-rules th {
+  padding: 9px 6px;
+  white-space: normal;
+}
+
+.privacy-redaction-rules td {
+  padding: 6px;
+  vertical-align: middle;
+}
+
+/* 前缀通常很短、正则最长 300 字符：类型与前缀各 24%，剩余宽度全给正则 */
+.settings-dialog .privacy-redaction-rules th:first-child,
+.privacy-redaction-rules td:first-child {
+  width: 24%;
+  padding-left: 12px;
+}
+
+.settings-dialog .privacy-redaction-rules th:nth-child(2) {
+  width: 24%;
+}
+
+.settings-dialog .privacy-redaction-rules th:last-child,
+.privacy-redaction-rules td:last-child {
+  width: 56px;
+  padding-right: 12px;
+  text-align: center;
+}
+
+.privacy-redaction-rules tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.privacy-redaction-rules .form-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.privacy-redaction-remove {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  line-height: 1;
+}
+
+#privacyRedactionEditor code {
+  overflow-wrap: anywhere;
+}
+
+/* 测试弹窗：样例、状态、结果纵向排列；结果区高亮占位符，下方列出被替换的原值 */
+.privacy-redaction-test {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.privacy-redaction-test textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.privacy-redaction-test .privacy-redaction-help {
+  margin: 0;
+}
+
+#privacyTestStatus:empty {
+  display: none;
+}
+
+#privacyTestStatus.is-error {
+  color: var(--error-600);
+}
+
+/* 未输入样例时的禁用不是“处理中”，不沿用页脚的等待光标 */
+#privacyTestRun:disabled:not([aria-busy]) {
+  cursor: not-allowed;
+}
+
+.privacy-redaction-test-result {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.privacy-redaction-test-result[hidden] {
+  display: none;
+}
+
+.privacy-redaction-test-output {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-family: var(--font-family-mono);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.privacy-redaction-test-output mark {
+  padding: 1px 3px;
+  border-radius: 4px;
+  background: var(--primary-100);
+  color: var(--primary-700);
+}
+
+.privacy-redaction-test-hits {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.privacy-redaction-test-hits li {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  font-size: var(--text-xs);
+}
+
+.privacy-redaction-test-kind {
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-mono);
+}
+
+/* 密钥等长值没有空格，窄屏下须强制折行，否则撑出横向滚动 */
+.privacy-redaction-test-hits code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .privacy-redaction-kinds {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  #privacyRedactionEditor {
+    --privacy-indent: 0px;
+  }
+
+  .privacy-redaction-kinds {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
