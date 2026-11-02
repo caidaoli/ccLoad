@@ -72,8 +72,8 @@ func (s *sessionAffinityStore) cleanupExpired(now time.Time) {
 	}
 }
 
-// anthropicSessionAffinityKey 按令牌隔离 Claude Code 会话；没有会话标识时不绑定，
-// 不用消息内容哈希去猜会话。
+// anthropicSessionAffinityKey 按令牌隔离 Claude Code 会话，显式子代理各自维护绑定。
+// 没有会话标识时不绑定，不用消息内容哈希去猜会话。
 func anthropicSessionAffinityKey(tokenHash string, headers http.Header, body []byte) string {
 	if tokenHash == "" {
 		return ""
@@ -85,7 +85,11 @@ func anthropicSessionAffinityKey(tokenHash string, headers http.Header, body []b
 	if sessionID == "" {
 		return ""
 	}
-	return tokenHash + "\x00" + sessionID
+	key := tokenHash + "\x00" + sessionID
+	if agentID := strings.TrimSpace(anthropicHeaderValue(headers, "X-Claude-Code-Agent-Id")); agentID != "" && agentID != "main" {
+		key += "\x00agent\x00" + agentID
+	}
+	return key
 }
 
 // codexSessionAffinityKey 按令牌隔离 Codex 线程：要求有 Session-Id，键取 Thread-Id

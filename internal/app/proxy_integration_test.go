@@ -18446,6 +18446,102 @@ func TestProxy_CodexGuardianInheritsParentThreadAffinity(t *testing.T) {
 	}
 }
 
+func TestProxy_AnthropicSessionAffinityIsolatesAgents(t *testing.T) {
+	t.Parallel()
+	for _, sessionSource := range []string{"header", "metadata_json", "metadata_legacy"} {
+		t.Run(sessionSource, func(t *testing.T) {
+			t.Parallel()
+			type upstreamHit struct{ channel, key string }
+			hits := make(chan upstreamHit, 16)
+			upstreams := make(map[int]string, 2)
+			for index, name := range []string{"account-a", "account-b"} {
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					key := r.Header.Get("X-Api-Key")
+					if key == "" {
+						key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					}
+					hits <- upstreamHit{channel: name, key: key}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+				}))
+				defer upstream.Close()
+				upstreams[index] = upstream.URL
+			}
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "account-a", upstreamProtocol: "anthropic", models: "claude-test,claude-main,claude-agent", apiKey: "sk-ant-main", priority: 100},
+				{name: "account-b", upstreamProtocol: "anthropic", models: "claude-test", apiKey: "sk-ant-agent-b", priority: 100},
+			}, upstreams)
+			ctx := context.Background()
+			channelID := proxyTestChannelID(t, env, "account-a")
+			if err := env.store.UpdateAPIKeyModelScopes(ctx, channelID, map[int]model.APIKeyModelScope{
+				0: {AllowedModels: []string{"claude-test", "claude-main"}},
+			}); err != nil {
+				t.Fatalf("UpdateAPIKeyModelScopes: %v", err)
+			}
+			if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+				ChannelID: channelID, KeyIndex: 1, APIKey: "sk-ant-agent-a", AllowedModels: []string{"claude-test", "claude-agent"},
+			}}); err != nil {
+				t.Fatalf("CreateAPIKeysBatch: %v", err)
+			}
+			env.server.InvalidateAPIKeysCache(channelID)
+
+			sessionID := uuid.NewString()
+			mainHit := upstreamHit{channel: "account-a", key: "sk-ant-main"}
+			agentAHit := upstreamHit{channel: "account-a", key: "sk-ant-agent-a"}
+			agentBHit := upstreamHit{channel: "account-b", key: "sk-ant-agent-b"}
+			for _, step := range []struct {
+				name, agentID, model, channel string
+				want                          upstreamHit
+			}{
+				{name: "bind main", model: "claude-main", want: mainHit},
+				{name: "bind agent a", agentID: "agent-a", model: "claude-agent", want: agentAHit},
+				{name: "bind agent b", agentID: "agent-b", model: "claude-test", channel: "account-b", want: agentBHit},
+				{name: "main retained", model: "claude-test", want: mainHit},
+				{name: "explicit main retained", agentID: "main", model: "claude-test", want: mainHit},
+				{name: "padded main retained", agentID: " main ", model: "claude-test", want: mainHit},
+				{name: "agent a retained", agentID: "agent-a", model: "claude-test", want: agentAHit},
+				{name: "padded agent a retained", agentID: " agent-a ", model: "claude-test", want: agentAHit},
+				{name: "agent b retained", agentID: "agent-b", model: "claude-test", want: agentBHit},
+				{name: "rebind explicit main", agentID: "main", model: "claude-test", channel: "account-b", want: agentBHit},
+				{name: "missing agent follows main", model: "claude-test", want: agentBHit},
+				{name: "main rebind leaves agent a", agentID: "agent-a", model: "claude-test", want: agentAHit},
+			} {
+				body := map[string]any{
+					"model": step.model, "max_tokens": 16,
+					"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+				}
+				headers := map[string]string{}
+				if step.agentID != "" {
+					headers["X-Claude-Code-Agent-Id"] = step.agentID
+				}
+				switch sessionSource {
+				case "header":
+					headers["X-Claude-Code-Session-Id"] = sessionID
+				case "metadata_json":
+					body["metadata"] = map[string]any{"user_id": fmt.Sprintf(`{"session_id":%q}`, sessionID)}
+				case "metadata_legacy":
+					body["metadata"] = map[string]any{"user_id": "user_test_account__session_" + sessionID}
+				}
+				if step.channel != "" {
+					headers["X-CCLoad-Channel"] = step.channel
+				}
+				response := doProxyRequest(t, env.engine, "/v1/messages", body, headers)
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s: status=%d body=%s", step.name, response.Code, response.Body.String())
+				}
+				select {
+				case got := <-hits:
+					if got != step.want {
+						t.Fatalf("%s: upstream=%+v, want %+v", step.name, got, step.want)
+					}
+				default:
+					t.Fatalf("%s: request succeeded without reaching an upstream", step.name)
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_AnthropicSessionAffinityPinsKey(t *testing.T) {
 	t.Parallel()
 	servedKeys := make(chan string, 16)
