@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,32 +39,67 @@ func reasoningExecutorEnv(t *testing.T, judge testChannel, handler http.HandlerF
 
 func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 	t.Parallel()
+	const usage = `,"usage":{"input_tokens":12,"output_tokens":6}}`
 	for _, tc := range []struct {
 		name, modelName, response string
 		status                    int
 		valid                     bool
+		effort                    string
+		levels                    []string
 	}{
-		{"typesafe", "jev-latest", `{"model":"jev-1.13.0","answers":{"effort":{"type":"choice","choice":"high","confidence":1,"probabilities":{"low":0,"medium":0,"high":1,"xhigh":0}}},"usage":{"input_tokens":12,"output_tokens":6}}`, 200, true},
-		{"nace", "drex-latest", `{"model":"drex-v1.5","answers":{"effort":{"type":"choice","choice":"high","confidence":0.97,"probabilities":{"low":0,"medium":0.01,"high":0.98,"xhigh":0.01}}},"usage":{"input_tokens":12,"output_tokens":6}}`, 200, true},
-		{"missing answer", "jev-latest", `{"answers":{}}`, 200, false},
-		{"unknown choice", "drex-latest", `{"answers":{"effort":{"type":"choice","choice":"max"}}}`, 200, false},
-		{"invalid confidence", "jev-latest", `{"answers":{"effort":{"type":"choice","choice":"high","confidence":2}}}`, 200, false},
-		{"wrong confidence type", "drex-latest", `{"answers":{"effort":{"type":"choice","choice":"high","confidence":"0.9"}}}`, 200, false},
-		{"authentication", "jev-latest", `{"error":{"type":"authentication_error"}}`, 401, false},
-		{"billing", "drex-latest", `{"error":{"type":"billing_error"}}`, 402, false},
-		{"rate limit", "drex-latest", `{"error":{"type":"rate_limit_error"}}`, 429, false},
-		{"overloaded", "drex-latest", `{"error":{"type":"overloaded_error"}}`, 529, false},
-		{"non JSON", "jev-latest", `upstream unavailable`, 200, false},
-		{"oversize", "drex-latest", strings.Repeat("x", reasoningResponseMaxBytes+1), 200, false},
+		// A judge that answers only the effort question keeps high.
+		{name: "typesafe", modelName: "jev-latest", response: `{"model":"jev-1.13.0","answers":{"effort":{"type":"choice","choice":"high","confidence":1,"probabilities":{"low":0,"medium":0,"high":1,"xhigh":0}}}` + usage, status: 200, valid: true},
+		{name: "nace", modelName: "drex-latest", response: `{"model":"drex-v1.5","answers":{"effort":{"type":"choice","choice":"high","confidence":0.97,"probabilities":{"low":0,"medium":0.01,"high":0.98,"xhigh":0.01}}}` + usage, status: 200, valid: true},
+		// Depth refines high; a max answer stops one level below max.
+		{name: "depth max capped at xhigh", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"high","confidence":0.6},"depth":{"type":"choice","choice":"max","confidence":0.2}}` + usage, status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"}},
+		{name: "no xhigh skips depth and caps max", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"max","confidence":0.6},"depth":{"type":"choice","choice":"max"}}` + usage, status: 200, valid: true, levels: []string{"low", "medium", "high", "max"}},
+		{name: "depth below high ignored", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.6},"depth":{"type":"choice","choice":"xhigh"}}` + usage, status: 200, valid: true, effort: "medium"},
+		{name: "no depth above high", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"high"},"depth":{"type":"choice","choice":"xhigh"}}` + usage, status: 200, valid: true, levels: []string{"low", "medium", "high"}},
+		{name: "missing answer", modelName: "jev-latest", response: `{"answers":{}}`, status: 200},
+		{name: "unknown choice", modelName: "drex-latest", response: `{"answers":{"effort":{"type":"choice","choice":"max"}}}`, status: 200},
+		{name: "unknown depth choice", modelName: "jev-latest", response: `{"answers":{"effort":{"type":"choice","choice":"high"},"depth":{"type":"choice","choice":"max"}}}`, status: 200},
+		{name: "invalid confidence", modelName: "jev-latest", response: `{"answers":{"effort":{"type":"choice","choice":"high","confidence":2}}}`, status: 200},
+		{name: "wrong confidence type", modelName: "drex-latest", response: `{"answers":{"effort":{"type":"choice","choice":"high","confidence":"0.9"}}}`, status: 200},
+		{name: "authentication", modelName: "jev-latest", response: `{"error":{"type":"authentication_error"}}`, status: 401},
+		{name: "billing", modelName: "drex-latest", response: `{"error":{"type":"billing_error"}}`, status: 402},
+		{name: "rate limit", modelName: "drex-latest", response: `{"error":{"type":"rate_limit_error"}}`, status: 429},
+		{name: "overloaded", modelName: "drex-latest", response: `{"error":{"type":"overloaded_error"}}`, status: 529},
+		{name: "non JSON", modelName: "jev-latest", response: `upstream unavailable`, status: 200},
+		{name: "oversize", modelName: "drex-latest", response: strings.Repeat("x", reasoningResponseMaxBytes+1), status: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			levels, effort := tc.levels, tc.effort
+			if levels == nil {
+				levels = reasoningDefaultLevels
+			}
+			if effort == "" {
+				effort = "high"
+			}
+			// Both questions list their levels in ascending order; depth asks only
+			// for the levels from high upward and is omitted without xhigh.
+			var depthLevels []string
+			if i := slices.Index(levels, "high"); slices.Contains(levels[i:], "xhigh") {
+				depthLevels = levels[i:]
+			}
 			env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: tc.modelName, apiKey: "judge-key", authType: model.AuthTypeSystemOne}, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/v1/systemone" || r.Header.Get("Authorization") != "Bearer judge-key" {
 					t.Errorf("wire=%s auth=%s", r.URL.Path, r.Header.Get("Authorization"))
 				}
 				body, _ := io.ReadAll(r.Body)
-				if gjson.GetBytes(body, "questions.effort.type").String() != "choice" || len(gjson.GetBytes(body, "questions.effort.criteria").Map()) != 4 {
-					t.Errorf("invalid question=%s", body)
+				keys := func(path string) []string {
+					var out []string
+					gjson.GetBytes(body, path).ForEach(func(key, _ gjson.Result) bool {
+						out = append(out, key.String())
+						return true
+					})
+					return out
+				}
+				if gjson.GetBytes(body, "questions.effort.type").String() != "choice" || !slices.Equal(keys("questions.effort.criteria"), levels) {
+					t.Errorf("invalid effort question=%s", body)
+				}
+				depth := gjson.GetBytes(body, "questions.depth")
+				if depthLevels == nil && depth.Exists() || depthLevels != nil && (depth.Get("type").String() != "choice" || depth.Get("instructions").String() == "" || !slices.Equal(keys("questions.depth.criteria"), depthLevels)) {
+					t.Errorf("invalid depth question=%s", body)
 				}
 				if !strings.Contains(gjson.GetBytes(body, "state").String(), "task data") {
 					t.Error("context missing")
@@ -72,12 +108,16 @@ func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = io.WriteString(w, tc.response)
 			})
-			result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
+			result, err := env.server.executeReasoningDecision(context.Background(), "task data", levels)
 			if (err == nil) != tc.valid {
 				t.Fatalf("decision=%+v, error=%v", result, err)
 			}
-			if tc.valid && (result.effort != "high" || result.costUnknown || result.usage.InputTokens != 12 || result.usage.OutputTokens != 6) {
+			if tc.valid && (result.effort != effort || result.costUnknown || result.usage.InputTokens != 12 || result.usage.OutputTokens != 6) {
 				t.Fatalf("decision=%+v", result)
+			}
+			// The confidence gate reads the effort answer, never the depth answer.
+			if want := gjson.Get(tc.response, "answers.effort.confidence"); tc.valid && want.Exists() && (result.confidence == nil || *result.confidence != want.Float()) {
+				t.Fatalf("confidence=%v, want effort confidence %v", result.confidence, want.Float())
 			}
 			if calls.Load() != 1 {
 				t.Fatalf("decision calls=%d", calls.Load())

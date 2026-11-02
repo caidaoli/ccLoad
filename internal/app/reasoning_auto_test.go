@@ -300,17 +300,18 @@ func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 }
 
 // The judge chooses among the business model's own catalog levels, listed in
-// ascending order, so a model with max can be sent max. Catalogs ccLoad has no
-// executor for (kimi, xai) still supply levels for generic channels.
+// ascending order. A max answer is sent one level below max: automatic decisions
+// never pick max. Catalogs ccLoad has no executor for (kimi, xai) still supply
+// levels for generic channels.
 func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		model, choice string
-		levels        []string
+		model, choice, sent string
+		levels              []string
 	}{
-		{"gpt-5.6-sol", "max", []string{"low", "medium", "high", "xhigh", "max"}},
-		{"kimi-k3", "max", []string{"low", "high", "max"}},
-		{"grok-4.7", "xhigh", []string{"low", "medium", "high", "xhigh"}},
+		{"gpt-5.6-sol", "max", "xhigh", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"kimi-k3", "max", "high", []string{"low", "high", "max"}},
+		{"grok-4.7", "xhigh", "xhigh", []string{"low", "medium", "high", "xhigh"}},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			t.Parallel()
@@ -322,7 +323,7 @@ func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 			body := reasoningAutoChatBody("Prove the scheduler never deadlocks under any interleaving.")
 			body["model"] = tc.model
 			reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
-			assertReasoningAutoEfforts(t, business.snapshot(), tc.choice)
+			assertReasoningAutoEfforts(t, business.snapshot(), tc.sent)
 			decisions := judge.snapshot()
 			if len(decisions) != 1 || !slices.Equal(decisions[0].Levels, tc.levels) {
 				t.Fatalf("decision levels=%v, want the %s catalog in ascending order", decisions, tc.model)
