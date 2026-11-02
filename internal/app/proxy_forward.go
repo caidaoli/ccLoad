@@ -2700,9 +2700,10 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// 2.5 发送请求。原生 Codex WS 会在持锁后决定发送增量请求还是完整回放请求。
 	var resp *http.Response
 	var sentBody []byte
+	var wsReplayBody []byte
 	usedNativeWebsocket := false
 	if native != nil && native.session != nil {
-		wsReplayBody := stripInjectedCodexOAuthInstructionsForWebsocket(
+		wsReplayBody = stripInjectedCodexOAuthInstructionsForWebsocket(
 			cfg, replaySourceBody, replayBody,
 		)
 		replayReq := cloneRequestWithBody(httpReq, wsReplayBody)
@@ -2886,6 +2887,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
 		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
+		if usedNativeWebsocket {
+			res.upstreamReplayBody = bytes.Clone(wsReplayBody)
+		}
 		res.wireAliases = upstreamWireAliases{openCode: reqCtx.openCodeResponses, xaiTools: reqCtx.xaiTools, anthropicTools: reqCtx.anthropicToolAliases}
 	}
 	if usedNativeWebsocket {
@@ -3436,9 +3440,24 @@ func (s *Server) forwardAttempt(
 			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
 			retryBodyRulesApplied = true
 		}
+		// An encrypted-content error closes the native WS connection. Repair the
+		// finalized full replay: the last send may only contain new input and a
+		// response ID scoped to the old socket. Keep other repairs on the actual
+		// wire body, since an input[N] error refers to its indexes.
+		if res != nil && res.UpstreamWebsocket && len(res.upstreamReplayBody) > 0 &&
+			shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, cfg, retrySourcePlan, res) {
+			retrySourcePlan.TranslatedBody = res.upstreamReplayBody
+			retryBodyRulesApplied = true
+		}
 		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retryTarget, retrySourcePlan, res)
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
 			break
+		}
+		if res.UpstreamWebsocket && len(res.upstreamReplayBody) > 0 && retryStrategy == stripUnknownInputParameterStrategy {
+			// Status is stripped from every item, so preserve the complete replay
+			// for this reconnect and any subsequent encrypted-content repair.
+			retryBody = stripResponsesInputItemStatus(res.upstreamReplayBody)
+			retryBodyRulesApplied = true
 		}
 		if strings.HasPrefix(retryStrategy, stripMissingStoredInputItemStrategy+":") {
 			if missingStoredItemRetries >= responsesMissingStoredItemRetryLimit {

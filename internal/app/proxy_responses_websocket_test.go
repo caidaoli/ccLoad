@@ -6545,6 +6545,261 @@ func TestNativeCodexWebsocketInvalidEncryptedContentReconnectsWithStrippedReplay
 	}
 }
 
+func TestNativeCodexWebsocketInvalidEncryptedContentContinuationReplaysTranscript(t *testing.T) {
+	t.Parallel()
+	const firstResponseID = "resp-encrypted-continuation-first"
+	const recoveredResponseID = "resp-encrypted-continuation-recovered"
+	const relayContent = "c2a-msg-v1:d29ya2VyIHJlc3VsdA=="
+	for _, tc := range []struct {
+		name         string
+		input        []any
+		wantType     string
+		wantTextPath string
+		wantText     string
+		rejectStatus bool
+	}{
+		{
+			name: "relay_agent_message",
+			input: []any{map[string]any{
+				"type": "agent_message", "id": "amsg_encrypted_continuation",
+				"author": "/root/worker", "recipient": "/root",
+				"content": []any{map[string]any{"type": "encrypted_content", "encrypted_content": relayContent}},
+			}},
+			wantType: "agent_message", wantTextPath: "content.0.text", wantText: "worker result",
+		},
+		{
+			name: "encrypted_reasoning",
+			input: []any{
+				map[string]any{"type": "reasoning", "id": "rs_encrypted_continuation", "encrypted_content": "opaque", "summary": []any{}},
+				map[string]any{"type": "message", "role": "user", "content": "continue task"},
+			},
+			wantType: "message", wantTextPath: "content", wantText: "continue task",
+		},
+		{
+			name: "status_then_encrypted_reasoning", rejectStatus: true,
+			input: []any{
+				map[string]any{"type": "reasoning", "id": "rs_encrypted_continuation", "status": "completed", "encrypted_content": "opaque", "summary": []any{}},
+				map[string]any{"type": "message", "role": "user", "status": "completed", "content": "continue task"},
+			},
+			wantType: "message", wantTextPath: "content", wantText: "continue task",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var handshakes atomic.Int32
+			validateRequest := func(body []byte, stage string) error {
+				request := gjson.ParseBytes(body)
+				if !request.IsObject() || request.Get("type").String() != "response.create" || request.Get("model").String() != "gpt-test" {
+					return fmt.Errorf("invalid response.create request: %s", body)
+				}
+				// Removing tools.0 twice would also delete keep_history. Both
+				// the incremental attempt and the full replay must retain it.
+				tools := request.Get("tools").Array()
+				if len(tools) != 1 || tools[0].Get("name").String() != "keep_history" {
+					return fmt.Errorf("body rule was skipped or reapplied: %s", body)
+				}
+				items := request.Get("input").Array()
+				if stage == "incremental" {
+					if request.Get("previous_response_id").String() != firstResponseID || len(items) != len(tc.input) {
+						return fmt.Errorf("continuation did not reuse the first connection incrementally: %s", body)
+					}
+					if tc.wantType == "agent_message" && items[0].Get("content.0.encrypted_content").String() != relayContent ||
+						tc.wantType == "message" && items[0].Get("encrypted_content").String() != "opaque" {
+						return fmt.Errorf("encrypted input was repaired before the upstream rejected it: %s", body)
+					}
+					if tc.rejectStatus && (items[0].Get("status").String() != "completed" || items[1].Get("status").String() != "completed") {
+						return fmt.Errorf("input status was removed before the upstream rejected it: %s", body)
+					}
+					return nil
+				}
+				if request.Get("previous_response_id").Exists() {
+					return fmt.Errorf("new connection received a previous_response_id from the old connection: %s", body)
+				}
+				wantItems := 1
+				switch stage {
+				case "replay":
+					wantItems = 3
+				case "status_replay":
+					wantItems = 2 + len(tc.input)
+				}
+				if len(items) != wantItems || items[0].Get("role").String() != "user" || items[0].Get("content").String() != "original task" {
+					return fmt.Errorf("request lost the original task or replay history: %s", body)
+				}
+				if stage == "first" {
+					if tc.rejectStatus && items[0].Get("status").String() != "completed" {
+						return fmt.Errorf("first input status was not preserved: %s", body)
+					}
+					return nil
+				}
+				if items[1].Get("role").String() != "assistant" || items[1].Get("content.0.text").String() != "first answer" {
+					return fmt.Errorf("replay lost the prior assistant output: %s", body)
+				}
+				last := items[len(items)-1]
+				if last.Get("type").String() != tc.wantType || last.Get(tc.wantTextPath).String() != tc.wantText {
+					return fmt.Errorf("replay lost or failed to repair the continuation: %s", body)
+				}
+				if tc.rejectStatus {
+					for _, item := range items {
+						if item.Get("status").Exists() {
+							return fmt.Errorf("replay retained rejected input status: %s", body)
+						}
+					}
+				}
+				if stage == "status_replay" {
+					if items[2].Get("type").String() != "reasoning" || items[2].Get("encrypted_content").String() != "opaque" {
+						return fmt.Errorf("status repair removed encrypted reasoning before it was rejected: %s", body)
+					}
+					return nil
+				}
+				for _, item := range items {
+					if item.Get("type").String() == "reasoning" || item.Get("encrypted_content").Exists() {
+						return fmt.Errorf("replay retained rejected encrypted reasoning: %s", body)
+					}
+				}
+				if tc.wantType == "agent_message" && (last.Get("id").String() != "amsg_encrypted_continuation" ||
+					last.Get("author").String() != "/root/worker" || last.Get("recipient").String() != "/root" ||
+					last.Get("content.0.type").String() != "input_text" || last.Get("content.0.encrypted_content").Exists()) {
+					return fmt.Errorf("replay changed the relay message identity or left its carrier encrypted: %s", body)
+				}
+				return nil
+			}
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("upgrade continuation websocket: %v", err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+					t.Errorf("set upstream read deadline: %v", err)
+					return
+				}
+				connection := handshakes.Add(1)
+				readRequest := func(stage string) bool {
+					_, body, err := conn.ReadMessage()
+					if err != nil {
+						t.Errorf("read %s request: %v", stage, err)
+						return false
+					}
+					if err := validateRequest(body, stage); err != nil {
+						t.Errorf("%s: %v", stage, err)
+						// Reject a bad replay instead of allowing a successful
+						// completion to hide an invalid upstream request.
+						_ = conn.WriteJSON(map[string]any{
+							"type": "error", "status": http.StatusBadRequest,
+							"error": map[string]any{"type": "invalid_request_error", "code": "invalid_replay", "message": "The replay does not contain the complete conversation."},
+						})
+						return false
+					}
+					return true
+				}
+				rejectEncryptedContent := func() {
+					_ = conn.WriteJSON(map[string]any{
+						"type": "error", "status": http.StatusBadRequest,
+						"error": map[string]any{
+							"type": "invalid_request_error", "code": "invalid_encrypted_content",
+							"message": "The encrypted content could not be verified.",
+						},
+					})
+				}
+				if connection == 1 {
+					if !readRequest("first") {
+						return
+					}
+					if err := conn.WriteJSON(map[string]any{
+						"type": "response.completed", "response": map[string]any{
+							"id": firstResponseID,
+							"output": []any{map[string]any{
+								"type": "message", "role": "assistant",
+								"content": []any{map[string]any{"type": "output_text", "text": "first answer"}},
+							}},
+							"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+						},
+					}); err != nil {
+						t.Errorf("complete first turn: %v", err)
+						return
+					}
+					if !readRequest("incremental") {
+						return
+					}
+					if tc.rejectStatus {
+						_ = conn.WriteJSON(map[string]any{
+							"type": "error", "status": http.StatusBadRequest,
+							"error": map[string]any{
+								"type": "invalid_request_error", "code": "unknown_parameter", "param": "input[0].status",
+								"message": "Unknown parameter: 'input[0].status'.",
+							},
+						})
+					} else {
+						rejectEncryptedContent()
+					}
+					return
+				}
+				if tc.rejectStatus && connection == 2 {
+					if readRequest("status_replay") {
+						rejectEncryptedContent()
+					}
+					return
+				}
+				if !readRequest("replay") {
+					return
+				}
+				if err := conn.WriteJSON(map[string]any{
+					"type": "response.completed", "response": map[string]any{
+						"id": recoveredResponseID, "output": []any{},
+						"usage": map[string]any{"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+					},
+				}); err != nil {
+					t.Errorf("complete recovered turn: %v", err)
+				}
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "encrypted-continuation-replay", upstreamProtocol: "codex", websockets: true,
+				models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+				oauthCredential:    codexProxyTestCredential(t, "at-continuation", "rt-continuation", "account-continuation"),
+				customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionRemove, Path: "tools.0"}}},
+			}}, map[int]string{0: upstream.URL})
+			downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "encrypted-continuation")
+			if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatalf("set downstream read deadline: %v", err)
+			}
+			tools := []any{
+				map[string]any{"type": "function", "name": "drop_by_rule", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}},
+				map[string]any{"type": "function", "name": "keep_history", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}},
+			}
+			firstInput := map[string]any{"type": "message", "role": "user", "content": "original task"}
+			if tc.rejectStatus {
+				firstInput["status"] = "completed"
+			}
+			if err := downstream.WriteJSON(map[string]any{
+				"type": "response.create", "model": "gpt-test",
+				"input": []any{firstInput},
+				"tools": tools,
+			}); err != nil {
+				t.Fatalf("write first turn: %v", err)
+			}
+			readWebsocketUntilType(t, downstream, "response.completed")
+			if err := downstream.WriteJSON(map[string]any{
+				"type": "response.create", "previous_response_id": firstResponseID, "input": tc.input, "tools": tools,
+			}); err != nil {
+				t.Fatalf("write continuation: %v", err)
+			}
+			completed := readWebsocketUntilType(t, downstream, "response.completed")
+			response, _ := completed["response"].(map[string]any)
+			wantHandshakes := int32(2)
+			if tc.rejectStatus {
+				wantHandshakes++
+			}
+			if response["id"] != recoveredResponseID || handshakes.Load() != wantHandshakes {
+				t.Fatalf("completion=%#v handshakes=%d, want recovered response on a new connection", completed, handshakes.Load())
+			}
+		})
+	}
+}
+
 func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(t *testing.T) {
 	t.Parallel()
 	var primaryHandshakes atomic.Int32

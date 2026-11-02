@@ -226,6 +226,7 @@ type fwResult struct {
 	Header              http.Header
 	Body                []byte              // filled for non-2xx or when needed
 	upstreamRequestBody []byte              // 实际发送的 provider wire body，仅用于同请求内安全降级重试
+	upstreamReplayBody  []byte              // 原生 WS 已应用渠道规则的完整回放体，重连修复不能使用增量体
 	wireAliases         upstreamWireAliases // 同请求重试保留 wire 工具身份映射
 	FirstByteTime       float64             // 首字节响应时间（秒）
 
