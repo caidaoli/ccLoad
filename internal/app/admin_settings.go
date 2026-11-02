@@ -123,14 +123,20 @@ func respondSettingCombinationError(c *gin.Context, err error) bool {
 	return true
 }
 
+// hotReloadedSettingKeys 保存后由 commitSettingUpdates 直接发布到运行态；其余设置需重启。
+var hotReloadedSettingKeys = map[string]bool{
+	modelMultimodalFallbackSettingKey: true,
+	modelCustomPricingSettingKey:      true,
+	reasoningAutoSettingKey:           true,
+}
+
 func settingsRequireRestart(updates map[string]string) bool {
-	if len(updates) != 1 {
-		return true
+	for key := range updates {
+		if !hotReloadedSettingKeys[key] {
+			return true
+		}
 	}
-	_, hotReloadedMultimodal := updates[modelMultimodalFallbackSettingKey]
-	_, hotReloadedPricing := updates[modelCustomPricingSettingKey]
-	hotReloaded := hotReloadedMultimodal || hotReloadedPricing
-	return !hotReloaded
+	return false
 }
 
 // commitSettingUpdates 将持久化与运行态发布绑定成同一个有序操作。
@@ -158,6 +164,14 @@ func (s *Server) commitSettingUpdates(updates map[string]string, persist func() 
 		s.modelPricingUpdateMu.Lock()
 		defer s.modelPricingUpdateMu.Unlock()
 	}
+	var reasoningAuto *model.ReasoningAutoConfig
+	if value, ok := updates[reasoningAutoSettingKey]; ok {
+		parsed, err := ParseReasoningAutoConfig(value)
+		if err != nil {
+			return false, fmt.Errorf("parse validated reasoning auto setting: %w", err)
+		}
+		reasoningAuto = &parsed
+	}
 
 	if err := persist(); err != nil {
 		return false, err
@@ -169,6 +183,9 @@ func (s *Server) commitSettingUpdates(updates map[string]string, persist func() 
 		if err := util.InstallCustomModelPricing(customPricing); err != nil {
 			return false, fmt.Errorf("install custom pricing setting: %w", err)
 		}
+	}
+	if reasoningAuto != nil {
+		s.reasoningAuto.Store(reasoningAuto)
 	}
 	return settingsRequireRestart(updates), nil
 }

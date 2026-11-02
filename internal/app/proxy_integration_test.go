@@ -3970,7 +3970,7 @@ func TestProxy_AntigravityClaude55ThinkingLevel(t *testing.T) {
 					if automatic {
 						judge := newReasoningAutoJudge(t, "medium")
 						env = setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{channel}, []string{upstream.URL})
-						env.server.reasoningAuto.BusinessModels = []string{target}
+						editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.BusinessModels = []string{target} })
 					} else {
 						env = setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
 						body["generationConfig"] = map[string]any{"thinkingConfig": map[string]any{"thinkingLevel": "medium", "includeThoughts": true}}

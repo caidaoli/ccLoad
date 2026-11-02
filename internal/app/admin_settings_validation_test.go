@@ -152,7 +152,4 @@ func TestReasoningAutoSettingValidation(t *testing.T) {
 	if err != nil || cfg.TimeoutMS != 2000 || cfg.BusinessModels == nil || len(cfg.BusinessModels) != 0 {
 		t.Fatalf("default = %+v, error = %v", cfg, err)
 	}
-	if !settingsRequireRestart(map[string]string{reasoningAutoSettingKey: `{"enabled":false}`}) {
-		t.Fatal("reasoning settings must require restart")
-	}
 }

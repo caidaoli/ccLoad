@@ -303,6 +303,43 @@ func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 // ascending order. A max answer is sent one level below max: automatic decisions
 // never pick max. Catalogs ccLoad has no executor for (kimi, xai) still supply
 // levels for generic channels.
+func TestReasoningAutoSettingAppliesWithoutRestart(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "high")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	restarted := make(chan struct{}, 2)
+	env.server.SetRestartFunc(func() { restarted <- struct{}{} })
+	save := func(cfg model.ReasoningAutoConfig) {
+		t.Helper()
+		policy, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := batchUpdateSetting(t, env.server, reasoningAutoSettingKey, string(policy))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "重启") {
+			t.Fatalf("save status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	policy := model.ReasoningAutoConfig{Enabled: false, DecisionChannelID: 1, DecisionModel: "judge",
+		BusinessModels: []string{"gpt-5.6-sol"}, TimeoutMS: 2000}
+	headers := map[string]string{"Session-Id": "hot-reload"}
+
+	save(policy)
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Prove the scheduler never deadlocks."), headers)
+	policy.Enabled = true
+	save(policy)
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Prove the scheduler never deadlocks."), headers)
+
+	assertReasoningAutoEfforts(t, business.snapshot(), "", "high")
+	if calls := len(judge.snapshot()); calls != 1 {
+		t.Fatalf("decision calls=%d, want 1", calls)
+	}
+	assertNoRestart(t, restarted)
+}
+
 func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

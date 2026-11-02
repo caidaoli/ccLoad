@@ -163,9 +163,10 @@ type Server struct {
 	multimodalFallbackUpdateMu sync.Mutex
 	modelPricingUpdateMu       sync.Mutex
 	settingsUpdateMu           sync.Mutex
-	reasoningAuto              model.ReasoningAutoConfig
-	reasoningStates            reasoningStateStore
-	reasoningDecisionSlots     chan struct{}
+	// 动态思考等级配置同样整份替换发布，代理路径每次读取当前快照。
+	reasoningAuto          atomic.Pointer[model.ReasoningAutoConfig]
+	reasoningStates        reasoningStateStore
+	reasoningDecisionSlots chan struct{}
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -272,7 +273,6 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		startedAt:              startedAt,
 		store:                  store,
 		configService:          configService,
-		reasoningAuto:          reasoningAuto,
 		reasoningDecisionSlots: make(chan struct{}, 16),
 		loginRateLimiter:       util.NewLoginRateLimiter(),
 
@@ -335,6 +335,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		sessionAffinity:           newSessionAffinityStore(),
 	}
 	s.setMultimodalFallbackModels(runtimeCfg.MultimodalFallbackModels)
+	s.reasoningAuto.Store(&reasoningAuto)
 
 	reg := protocol.NewRegistry()
 	protocolbuiltin.Register(reg)

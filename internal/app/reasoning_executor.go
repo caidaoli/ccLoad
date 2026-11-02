@@ -89,7 +89,8 @@ type reasoningCallResult struct {
 
 func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (result reasoningCallResult, err error) {
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(reasoningDecisionContext(parent), time.Duration(s.reasoningAuto.TimeoutMS)*time.Millisecond)
+	cfg := s.reasoningAuto.Load() // one snapshot per decision, even if the setting is saved meanwhile
+	ctx, cancel := context.WithTimeout(reasoningDecisionContext(parent), time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	result.reason = "decision_unavailable"
 	defer func() {
@@ -112,7 +113,7 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 		result.reason = "queue_full"
 		return result, errors.New("reasoning decision capacity reached")
 	}
-	channel, err := s.store.GetConfig(ctx, s.reasoningAuto.DecisionChannelID)
+	channel, err := s.store.GetConfig(ctx, cfg.DecisionChannelID)
 	if err != nil || channel == nil || !channel.Enabled || channel.IsCoolingDown(time.Now()) {
 		return result, errors.New("reasoning decision channel unavailable")
 	}
@@ -122,7 +123,7 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 	if !channel.IsSystemOne() {
 		return result, errors.New("reasoning decision channel must be a System One channel")
 	}
-	modelName := s.reasoningAuto.DecisionModel
+	modelName := cfg.DecisionModel
 	if !channel.SupportsModel(modelName) {
 		return result, errors.New("reasoning decision model unavailable")
 	}

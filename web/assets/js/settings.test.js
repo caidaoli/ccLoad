@@ -1116,7 +1116,7 @@ test('设置加载失败时提供重试入口并重新加载', async (t) => {
   assert.equal(page.requests.filter(({ url }) => url === '/admin/settings').length, loadsBefore + 1);
 });
 
-test('dynamic reasoning setting validates and saves its JSON contract through the restart workflow', async (t) => {
+test('dynamic reasoning setting validates and saves its JSON contract without a restart', async (t) => {
   const initial = JSON.stringify({ enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 });
   const value = JSON.stringify({ enabled: true, decision_channel_id: 7, decision_model: 'jev-latest', business_models: ['gpt-5'], timeout_ms: 1500 });
   const page = await loadSettingsPage(t, [{key: 'reasoning_auto', value: initial, value_type: 'string'}], {reasoning_auto: initial});
@@ -1127,6 +1127,7 @@ test('dynamic reasoning setting validates and saves its JSON contract through th
   assert.equal(saveRequests(page).length, 1);
   assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto), JSON.parse(value));
   assert.equal(page.prompts.length, 1);
+  assert.deepEqual(page.successes, ['settings.msg.savedHot']);
   page.inputs.reasoning_auto.value = JSON.stringify({...JSON.parse(value), timeout_ms: 99});
   page.saveButton.click();
   await flushAsyncWork();

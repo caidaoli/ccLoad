@@ -21,8 +21,8 @@ const customPricingTieredModels = new Set();
 const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
 const modelMultimodalFallbackSettingKey = 'model_multimodal_fallback';
 const modelCustomPricingSettingKey = 'model_custom_pricing';
-// 与后端 settingsRequireRestart 保持一致：仅这两项单独保存时热生效，其余设置保存后进程重启。
-const hotReloadSettingKeys = new Set([modelMultimodalFallbackSettingKey, modelCustomPricingSettingKey]);
+// 与后端 hotReloadedSettingKeys 保持一致：保存内容全是这些项时热生效，含其他设置则保存后进程重启。
+const hotReloadSettingKeys = new Set([modelMultimodalFallbackSettingKey, modelCustomPricingSettingKey, 'reasoning_auto']);
 const maxMultimodalFallbackMappings = 64;
 const maxCustomPricingBytes = 1024 * 1024;
 const maxCustomPricingModels = 512;

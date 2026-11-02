@@ -577,6 +577,41 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		assertNoRestart(t, restartCh)
 	})
 
+	t.Run("AdminBatchUpdateSettings_restarts_only_when_batch_has_restart_setting", func(t *testing.T) {
+		t.Parallel()
+		server, _, restartCh := newAdminSettingsTestServer(t)
+		save := func(updates map[string]string) string {
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", updates))
+			server.AdminBatchUpdateSettings(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			return w.Body.String()
+		}
+
+		hot := save(map[string]string{
+			modelMultimodalFallbackSettingKey: `{"gpt-text":"gpt-vision"}`,
+			reasoningAutoSettingKey:           `{"enabled":false}`,
+		})
+		if strings.Contains(hot, "重启") {
+			t.Fatalf("hot-only batch claimed restart: %s", hot)
+		}
+		if got := server.multimodalFallbackModel("gpt-text", true); got != "gpt-vision" {
+			t.Fatalf("runtime fallback=%q, want gpt-vision", got)
+		}
+		assertNoRestart(t, restartCh)
+
+		mixed := save(map[string]string{reasoningAutoSettingKey: `{"enabled":false}`, "max_concurrency": "20"})
+		if !strings.Contains(mixed, "重启") {
+			t.Fatalf("mixed batch must announce restart: %s", mixed)
+		}
+		select {
+		case <-restartCh:
+		case <-time.After(time.Second):
+			t.Fatal("mixed batch must restart")
+		}
+	})
+
 	t.Run("AdminBatchUpdateSettings_empty_body_reject", func(t *testing.T) {
 		t.Parallel()
 		server, _, _ := newAdminSettingsTestServer(t)
@@ -846,17 +881,12 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 	restarted := make(chan struct{}, 1)
 	server.SetRestartFunc(func() { restarted <- struct{}{} })
 	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "重启") {
 		t.Fatalf("valid policy status=%d body=%s", w.Code, w.Body.String())
 	}
 	setting, err := server.store.GetSetting(ctx, reasoningAutoSettingKey)
 	if err != nil || setting.Value != policy {
 		t.Fatalf("persisted policy = %+v, error = %v", setting, err)
-	}
-	select {
-	case <-restarted:
-	case <-time.After(time.Second):
-		t.Fatal("settings update must request restart")
 	}
 	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, strings.Replace(policy, `"gpt-5"`, `"missing-model"`, 1))
 	if w.Code != http.StatusBadRequest {

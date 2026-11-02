@@ -254,8 +254,11 @@ func reasoningTurnEndpoint(path string) bool {
 		strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")
 }
 
+// reasoningTarget reads the live policy: saving the setting takes effect on the
+// next request. A Server built without one (zero value) has the feature off.
 func (s *Server) reasoningTarget(r *proxyRequestContext) bool {
-	return s.reasoningAuto.Enabled && containsExact(s.reasoningAuto.BusinessModels, r.originalModel)
+	cfg := s.reasoningAuto.Load()
+	return cfg != nil && cfg.Enabled && containsExact(cfg.BusinessModels, r.originalModel)
 }
 
 func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContext, transcript, original []byte, explicit bool) {

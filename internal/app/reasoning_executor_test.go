@@ -33,8 +33,15 @@ func reasoningExecutorEnv(t *testing.T, judge testChannel, handler http.HandlerF
 	}))
 	t.Cleanup(business.Close)
 	env := setupProxyTestEnv(t, []testChannel{{name: "business", models: "gpt-5.6", apiKey: "business-key"}, judge}, map[int]string{0: business.URL, 1: upstream.URL})
-	env.server.reasoningAuto = model.ReasoningAutoConfig{Enabled: true, DecisionChannelID: 2, DecisionModel: strings.Split(judge.models, ",")[0], BusinessModels: []string{"gpt-5.6"}, TimeoutMS: 1000}
+	env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionChannelID: 2, DecisionModel: strings.Split(judge.models, ",")[0], BusinessModels: []string{"gpt-5.6"}, TimeoutMS: 1000})
 	return env, calls
+}
+
+// editReasoningAuto publishes a modified copy, as saving the setting does.
+func editReasoningAuto(s *Server, edit func(*model.ReasoningAutoConfig)) {
+	cfg := *s.reasoningAuto.Load()
+	edit(&cfg)
+	s.reasoningAuto.Store(&cfg)
 }
 
 func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
@@ -180,7 +187,7 @@ func TestReasoningDecisionDebugLog(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, answer)
 			})
-			env.server.reasoningAuto.TimeoutMS = 200
+			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.TimeoutMS = 200 })
 			if tc.debug {
 				env.server.configService.mu.Lock()
 				env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
@@ -231,7 +238,7 @@ func TestReasoningDecisionTimeoutCancellationAndCapacity(t *testing.T) {
 		case <-time.After(500 * time.Millisecond):
 		}
 	})
-	env.server.reasoningAuto.TimeoutMS = 100
+	editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.TimeoutMS = 100 })
 	start := time.Now()
 	result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 	if err == nil || result.reason != "timeout" || time.Since(start) > time.Second {
@@ -344,7 +351,7 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
 	}}, []string{business.server.URL})
-	env.server.reasoningAuto.TimeoutMS = 100
+	editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.TimeoutMS = 100 })
 	env.server.cooldownManager = cooldown.NewManager(slowReasoningCooldownStore{env.store}, env.server)
 	start := time.Now()
 	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("simple task"), nil)
