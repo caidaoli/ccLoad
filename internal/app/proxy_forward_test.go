@@ -1334,6 +1334,21 @@ func TestClassifySSEErrorStatus_ContextLengthExceeded(t *testing.T) {
 	}
 }
 
+// 加密内容失效是请求语义错误：真实 SSE 事件不带 status，也必须按 400 分类，
+// 才能触发同渠道修复并只冷却当前模型。
+func TestClassifySSEErrorStatus_InvalidEncryptedContent(t *testing.T) {
+	for name, body := range map[string]string{
+		"error_event":     `{"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"Encrypted function output content could not be decrypted or decoded.","param":null},"sequence_number":1}`,
+		"response_failed": `{"type":"response.failed","response":{"status":"failed","error":{"code":"invalid_encrypted_content","message":"Encrypted function output content could not be decrypted or decoded."}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := classifySSEErrorStatus([]byte(body)); got != http.StatusBadRequest {
+				t.Fatalf("classifySSEErrorStatus()=%d, want %d", got, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 // TestHandleSuccessResponse_StreamDiagMsg_AnthropicMissingMessageStop
 // Anthropic 上游干净 EOF 但没有 message_stop：视为断流，必须产生诊断。
 func TestHandleSuccessResponse_StreamDiagMsg_AnthropicMissingMessageStop(t *testing.T) {
@@ -1521,6 +1536,16 @@ func TestIsInvalidEncryptedContentErrorRecognizesPackyMessage(t *testing.T) {
 		{
 			name: "legacy Codex response",
 			body: `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`,
+			want: true,
+		},
+		{
+			name: "response.failed nests the code",
+			body: `{"type":"response.failed","response":{"status":"failed","error":{"code":"invalid_encrypted_content","message":"Encrypted function output content could not be decrypted or decoded."}}}`,
+			want: true,
+		},
+		{
+			name: "response.failed nests the message",
+			body: `{"type":"response.failed","response":{"status":"failed","error":{"message":"The encrypted content for item fc_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed."}}}`,
 			want: true,
 		},
 		{
@@ -2353,6 +2378,54 @@ func TestCodexRetryBodyFor400_UsesSSEErrorStatusForEncryptedContent(t *testing.T
 		items[0].Get("encrypted_content").String() != "keep-compaction" ||
 		items[1].Get("type").String() != "message" {
 		t.Fatalf("retry body should preserve compaction and keep the message, got %s", got)
+	}
+}
+
+// 去掉加密推理后仍报加密失效（或本就没有可删的推理）时，把工具输出和消息里的
+// 加密片段换成文字占位：条目数量、call_id 配对和 compaction 都保持不变。
+func TestCodexRetryBodyFor400_ReplacesEncryptedPartsWhenNoReasoningLeft(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"gpt-5.5","input":[
+		{"type":"compaction","encrypted_content":"keep-compaction"},
+		{"type":"function_call","call_id":"call-1","name":"view_image","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call-1","output":[
+			{"type":"input_text","text":"before"},
+			{"type":"encrypted_content","encrypted_content":"gAAAAABfunction-output"}
+		]},
+		{"type":"agent_message","id":"amsg_1","content":[{"type":"encrypted_content","encrypted_content":"gAAAAABagent"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+	res := &fwResult{
+		Status:        http.StatusOK,
+		SSEErrorEvent: []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"Encrypted function output content could not be decrypted or decoded.","param":null},"sequence_number":1}`),
+	}
+
+	got, strategy, ok := codexRetryBodyFor400(protocol.Codex, nil, protocol.TransformPlan{TranslatedBody: body}, res)
+	if !ok || strategy != "replace_codex_encrypted_parts" {
+		t.Fatalf("ok=%v strategy=%q, want replace_codex_encrypted_parts", ok, strategy)
+	}
+	if n := len(gjson.GetBytes(got, "input").Array()); n != 5 {
+		t.Fatalf("retry input items=%d, want 5: %s", n, got)
+	}
+	if got := gjson.GetBytes(got, "input.0.encrypted_content").String(); got != "keep-compaction" {
+		t.Fatalf("compaction encrypted_content changed: %q", got)
+	}
+	if callID := gjson.GetBytes(got, "input.2.call_id").String(); callID != "call-1" {
+		t.Fatalf("function_call_output call_id=%q, want call-1", callID)
+	}
+	if text := gjson.GetBytes(got, "input.2.output.0.text").String(); text != "before" {
+		t.Fatalf("plain tool output part changed: %q", text)
+	}
+	for _, path := range []string{"input.2.output.1", "input.3.content.0"} {
+		part := gjson.GetBytes(got, path)
+		if part.Get("type").String() != "input_text" || part.Get("text").String() == "" || part.Get("encrypted_content").Exists() {
+			t.Fatalf("%s should become an input_text placeholder, got %s", path, part.Raw)
+		}
+	}
+
+	if _, _, ok := codexRetryBodyFor400(protocol.Codex, nil, protocol.TransformPlan{TranslatedBody: got}, res); ok {
+		t.Fatal("a body without encrypted parts must not produce another retry")
 	}
 }
 

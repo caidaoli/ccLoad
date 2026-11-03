@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"ccLoad/internal/util"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestNativeImagesUsageAndCompletion(t *testing.T) {
@@ -457,6 +459,29 @@ func TestSSEUsageParser_ResponseFailedEvent(t *testing.T) {
 	}
 	if !strings.Contains(string(lastErr), "rate_limit_exceeded") {
 		t.Fatalf("lastError should preserve nested rate_limit payload, got: %s", lastErr)
+	}
+}
+
+// 中转站会在带错误码的 error 事件前后补发不带 error 的 response.failed（字段按字母序、
+// null 被省略）。无论顺序如何，记录的错误都必须保留错误码。
+func TestSSEUsageParser_DetailLessResponseFailedKeepsErrorDetail(t *testing.T) {
+	const (
+		failed   = "event: response.failed\n" + `data: {"response":{"id":"resp_relay","model":"gpt-5.5","object":"response","output":[],"status":"failed"},"type":"response.failed"}` + "\n\n"
+		detailed = "event: error\n" + `data: {"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"Encrypted function output content could not be decrypted or decoded.","param":null},"sequence_number":1}` + "\n\n"
+	)
+	for name, stream := range map[string]string{
+		"failed_before_error": failed + detailed,
+		"failed_after_error":  detailed + failed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			parser := newSSEUsageParser("codex")
+			if err := parser.Feed([]byte(stream)); err != nil {
+				t.Fatalf("Feed失败: %v", err)
+			}
+			if got := gjson.GetBytes(parser.GetLastError(), "error.code").String(); got != "invalid_encrypted_content" {
+				t.Fatalf("lastError lost the error code: %s", parser.GetLastError())
+			}
+		})
 	}
 }
 

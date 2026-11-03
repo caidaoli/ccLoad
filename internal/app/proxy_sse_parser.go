@@ -555,7 +555,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if err != nil {
 		if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
 			log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
-			p.lastError = []byte(data)
+			p.recordError([]byte(data))
 			return nil
 		}
 		markSSETerminalFromRaw(p, eventType, data)
@@ -589,7 +589,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 兼容不带 event 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
 	if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
-		p.lastError = []byte(data)
+		p.recordError([]byte(data))
 		return nil // 不解析usage，避免误判
 	}
 
@@ -704,6 +704,28 @@ func (u *usageAccumulator) normalizedUsage(upstreamProtocol string) (inputTokens
 // [INFO] GetLastError 返回SSE流中检测到的最后一个error事件
 func (p *sseUsageParser) GetLastError() []byte {
 	return p.lastError
+}
+
+// recordError 记录流内错误事件。部分中转站会在带详情的 error 事件前后补发
+// 不含 error 的 response.failed；不能让它覆盖已记录的详情，否则错误码丢失、
+// 无法分类和修复。
+func (p *sseUsageParser) recordError(data []byte) {
+	if sseErrorHasDetail(p.lastError) && !sseErrorHasDetail(data) {
+		return
+	}
+	p.lastError = data
+}
+
+// sseErrorHasDetail 判断错误事件是否带有可分类的错误详情：顶层 error/code/message，
+// 或 response.error（OpenAI Responses 的 response.failed）。
+func sseErrorHasDetail(data []byte) bool {
+	for _, path := range []string{"error", "response.error"} {
+		v := gjson.GetBytes(data, path)
+		if (v.IsObject() && len(v.Map()) > 0) || (v.Type == gjson.String && v.String() != "") {
+			return true
+		}
+	}
+	return gjson.GetBytes(data, "code").String() != "" || gjson.GetBytes(data, "message").String() != ""
 }
 
 // IsStreamComplete 返回上游是否已给出语义终态。

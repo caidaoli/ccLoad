@@ -12678,6 +12678,104 @@ func TestProxy_CodexSSEInvalidEncryptedContentRetriesWithoutEncryptedInputItems(
 	}
 }
 
+// 中转站先发不带 error 的 response.failed，再发带错误码的 error（真实事件没有 status）。
+const codexRelayOrderedInvalidEncryptedContentSSE = "event: response.created\n" +
+	`data: {"type":"response.created","response":{"id":"resp_relay","status":"in_progress"}}` + "\n\n" +
+	"event: response.failed\n" +
+	`data: {"response":{"id":"resp_relay","model":"gpt-5.5","object":"response","output":[],"status":"failed"},"type":"response.failed"}` + "\n\n" +
+	"event: error\n" +
+	`data: {"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"Encrypted function output content could not be decrypted or decoded.","param":null},"sequence_number":2}` + "\n\n"
+
+// 代理必须读到 response.failed 之后的错误码并按 400 修复重试：先去掉加密推理，
+// 仍失败再把工具输出里的加密片段换成占位文字；失败事件不能漏给客户端。
+func TestProxy_CodexSSERelayOrderedInvalidEncryptedContentRepairsInTiers(t *testing.T) {
+	t.Parallel()
+
+	var bodies [][]byte
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-relay-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-relay.example.com"})
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, body)
+			stream := codexRelayOrderedInvalidEncryptedContentSSE
+			if len(bodies) == 3 {
+				stream = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-ok\",\"status\":\"completed\"}}\n\n"
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(stream)),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-5.5",
+		"stream": true,
+		"input": []map[string]any{
+			{"type": "reasoning", "summary": []any{}, "encrypted_content": "gAAAAABreasoning"},
+			{"type": "function_call", "call_id": "call-1", "name": "view_image", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call-1", "output": []map[string]any{
+				{"type": "encrypted_content", "encrypted_content": "gAAAAABfunction-output"},
+			}},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "continue"}}},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"delta":"ok"`) || strings.Contains(w.Body.String(), "resp_relay") {
+		t.Fatalf("expected only the repaired response, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("upstream requests=%d, want 3", len(bodies))
+	}
+	if gjson.GetBytes(bodies[1], `input.#(type=="reasoning")`).Exists() ||
+		gjson.GetBytes(bodies[1], `input.#(type=="function_call_output").output.0.type`).String() != "encrypted_content" {
+		t.Fatalf("first repair should only drop encrypted reasoning, got %s", bodies[1])
+	}
+	output := gjson.GetBytes(bodies[2], `input.#(type=="function_call_output")`)
+	if output.Get("call_id").String() != "call-1" || output.Get("output.0.type").String() != "input_text" ||
+		output.Get("output.0.encrypted_content").Exists() {
+		t.Fatalf("second repair should replace the encrypted tool output part, got %s", bodies[2])
+	}
+	if entry := waitForProxyLog(t, env, "gpt-5.5"); entry.StatusCode != http.StatusOK {
+		t.Fatalf("log status=%d, want 200", entry.StatusCode)
+	}
+}
+
+// 无可修复内容时，同一错误按 HTTP 400 处理，而不是 597 流内错误。
+func TestProxy_CodexSSERelayOrderedInvalidEncryptedContentIsRequestError(t *testing.T) {
+	t.Parallel()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-relay-unrepairable", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-relay.example.com"})
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(codexRelayOrderedInvalidEncryptedContentSSE)),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-5.5",
+		"stream": true,
+		"input":  []map[string]any{{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}}},
+	}, nil)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_encrypted_content") {
+		t.Fatalf("expected 400 with the upstream error code, got %d: %s", w.Code, w.Body.String())
+	}
+	if entry := waitForProxyLog(t, env, "gpt-5.5"); entry.StatusCode != http.StatusBadRequest {
+		t.Fatalf("log status=%d, want 400", entry.StatusCode)
+	}
+}
+
 func TestProxy_Codex400RetriesWithoutThinkingAndLogsStrategy(t *testing.T) {
 	t.Parallel()
 

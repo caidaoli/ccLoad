@@ -1527,8 +1527,15 @@ func (s *Server) handleSuccessResponse(
 			if shouldMarkUpstreamFirstByte(parser) {
 				markFirstStreamResponse(reqCtx, readStats)
 			}
-			if reqCtx.isStreaming && parser.GetLastError() != nil {
-				return errAbortStreamBeforeWrite
+			if reqCtx.isStreaming {
+				if lastErr := parser.GetLastError(); lastErr != nil {
+					// 中转站可能先发不带详情的 response.failed、再发带错误码的 error：
+					// 未提交时继续缓冲读取，拿到详情才能分类和修复重试。
+					if sseErrorHasDetail(lastErr) || parser.HasStreamOutput() {
+						return errAbortStreamBeforeWrite
+					}
+					return nil
+				}
 			}
 			if reqCtx.isStreaming && parser.HasStreamOutput() {
 				if err := deferredWriter.Commit(); err != nil {
@@ -1539,7 +1546,8 @@ func (s *Server) handleSuccessResponse(
 			return nil
 		},
 	)
-	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
+	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite) ||
+		(reqCtx.isStreaming && !deferredWriter.Committed() && parser.GetLastError() != nil)
 	if reqCtx.isStreaming {
 		if abortedBeforeCommit {
 			streamErr = nil
@@ -2237,9 +2245,11 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamP
 }
 
 // classifySSEErrorStatus 根据响应体内容判定 SSE 错误的状态码：
-// 上下文超限 → 400；上游流中断 → 599；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
+// 上下文超限、加密内容失效 → 400；上游流中断 → 599；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
 func classifySSEErrorStatus(body []byte) int {
-	if util.IsContextLengthExceededError(body) {
+	// 加密内容失效与 HTTP 400 同属请求语义错误：按 400 才能触发同渠道修复重试，
+	// 冷却也只限当前模型，而不是冷却整个 Key。
+	if util.IsContextLengthExceededError(body) || isInvalidEncryptedContentError(body) {
 		return http.StatusBadRequest
 	}
 	if gjson.GetBytes(body, "error.code").String() == responsesWebsocketInterruptedCode {
@@ -3731,9 +3741,12 @@ func isInvalidEncryptedContentError(body []byte) bool {
 		return false
 	}
 	root := gjson.ParseBytes(body)
-	code := strings.ToLower(strings.TrimSpace(root.Get("error.code").String()))
-	if code == "" {
-		code = strings.ToLower(strings.TrimSpace(root.Get("code").String()))
+	// OpenAI Responses 的 response.failed 把错误放在 response.error。
+	code := ""
+	for _, path := range []string{"error.code", "response.error.code", "code"} {
+		if code = strings.ToLower(strings.TrimSpace(root.Get(path).String())); code != "" {
+			break
+		}
 	}
 	if code == "invalid_encrypted_content" {
 		return true
@@ -3741,6 +3754,9 @@ func isInvalidEncryptedContentError(body []byte) bool {
 	message := strings.TrimSpace(root.Get("error.message").String())
 	if message == "" && root.Get("error").Type == gjson.String {
 		message = root.Get("error").String()
+	}
+	if message == "" {
+		message = root.Get("response.error.message").String()
 	}
 	if message == "" {
 		message = root.Get("message").String()
@@ -3833,6 +3849,10 @@ func codexRetryBodyFor400(
 	if shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, cfg, plan, res) {
 		if retryBody, ok := codexBodyWithoutEncryptedInputItems(plan.TranslatedBody); ok {
 			return retryBody, "strip_codex_encrypted_input", true
+		}
+		// 上一级修复后仍被拒（或无可删的加密推理）时，加密片段本身无法解密。
+		if retryBody, ok := codexBodyWithEncryptedContentPartsReplaced(plan.TranslatedBody); ok {
+			return retryBody, "replace_codex_encrypted_parts", true
 		}
 	}
 	if shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol, cfg, res) {
@@ -3944,6 +3964,44 @@ func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return updated, true
+}
+
+const codexEncryptedContentPlaceholder = "[encrypted content omitted: the upstream could not decrypt it]"
+
+// codexBodyWithEncryptedContentPartsReplaced replaces every encrypted_content
+// part of a tool output or message with an input_text placeholder. Items and
+// their call_id pairing stay in place, so the conversation can continue; the
+// replaced content itself is lost.
+func codexBodyWithEncryptedContentPartsReplaced(body []byte) ([]byte, bool) {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return nil, false
+	}
+	updated := body
+	replaced := false
+	for itemIndex, item := range input.Array() {
+		for _, field := range []string{"output", "content"} {
+			parts := item.Get(field)
+			if !parts.IsArray() {
+				continue
+			}
+			for partIndex, part := range parts.Array() {
+				if part.Get("type").String() != "encrypted_content" {
+					continue
+				}
+				next, err := sjson.SetBytes(updated, fmt.Sprintf("input.%d.%s.%d", itemIndex, field, partIndex), struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{Type: "input_text", Text: codexEncryptedContentPlaceholder})
+				if err != nil {
+					return nil, false
+				}
+				updated = next
+				replaced = true
+			}
+		}
+	}
+	return updated, replaced
 }
 
 func isCodexEncryptedReasoningItem(item gjson.Result) bool {
