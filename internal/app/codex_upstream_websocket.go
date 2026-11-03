@@ -548,6 +548,14 @@ func (s *codexUpstreamWebsocketSession) startReader(
 				s.detachReadFailure(conn, err, isCodexWebsocketHeartbeatFailure(err))
 				return
 			}
+			// An interrupt can race the response's terminal event. Its rejection
+			// acknowledges the control request, not a failed generation. Drop it
+			// before the turn queue, including when the next turn already started.
+			if messageType == websocket.TextMessage &&
+				gjson.GetBytes(payload, "type").String() == "response.interrupt.failed" &&
+				gjson.GetBytes(payload, "error.code").String() == "response_not_in_progress" {
+				continue
+			}
 			// A nested gateway reports its broken upstream socket as a structured
 			// retry event. Restore the transport provenance before retry/cooldown.
 			if interruptedErr := codexWebsocketInterruptedEventError(messageType, payload); interruptedErr != nil {

@@ -9220,6 +9220,130 @@ func TestResponsesWebsocketNativeLateInterruptDoesNotReachNextTurn(t *testing.T)
 	}
 }
 
+func TestResponsesWebsocketNativeInterruptFailureDoesNotPoisonTurns(t *testing.T) {
+	for _, timing := range []string{"before_terminal", "between_turns", "next_turn"} {
+		t.Run(timing, func(t *testing.T) {
+			var connections atomic.Int32
+			idleFrameConsumed := make(chan struct{})
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				if connections.Add(1) != 1 {
+					t.Error("interrupt acknowledgement caused an upstream reconnect")
+					return
+				}
+				conn.SetPongHandler(func(data string) error {
+					if data == "interrupt-read" {
+						close(idleFrameConsumed)
+					}
+					return nil
+				})
+				write := func(payload string) bool {
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+						t.Error(err)
+						return false
+					}
+					return true
+				}
+				read := func(want string) bool {
+					var request map[string]any
+					if err := conn.ReadJSON(&request); err != nil {
+						t.Error(err)
+						return false
+					}
+					if request["type"] != want {
+						t.Errorf("upstream request=%v, want %s", request, want)
+						return false
+					}
+					return true
+				}
+				if !read("response.create") ||
+					!write(`{"type":"response.created","response":{"id":"resp-first"}}`) ||
+					!write(`{"type":"response.output_text.delta","delta":"partial"}`) ||
+					!read("response.interrupt") {
+					return
+				}
+				const interruptFailed = `{"type":"response.interrupt.failed","response_id":"resp-first","error":{"type":"invalid_request_error","code":"response_not_in_progress","message":"This response is no longer in progress.","param":"response_id"},"sequence_number":10}`
+				if timing == "before_terminal" && !write(interruptFailed) {
+					return
+				}
+				if !write(`{"type":"response.completed","response":{"id":"resp-first","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`) {
+					return
+				}
+				if timing == "between_turns" {
+					if !write(interruptFailed) {
+						return
+					}
+					// Pong proves the reader consumed the preceding error before reuse.
+					if err := conn.WriteControl(websocket.PingMessage, []byte("interrupt-read"), time.Now().Add(time.Second)); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				if !read("response.create") {
+					return
+				}
+				// Delay the old acknowledgement until after the next reuse check.
+				if timing == "next_turn" && !write(interruptFailed) {
+					return
+				}
+				if !write(`{"type":"response.completed","response":{"id":"resp-next","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`) {
+					return
+				}
+				_, _, _ = conn.ReadMessage()
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
+				name: "interrupt-failure", upstreamProtocol: "codex", websockets: true, models: "gpt-test",
+			}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			request := map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "work"}}}
+			if err := conn.WriteJSON(request); err != nil {
+				t.Fatal(err)
+			}
+			readWebsocketUntilType(t, conn, "response.output_text.delta")
+			if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-first"}); err != nil {
+				t.Fatal(err)
+			}
+			readCompleted := func(wantID string) {
+				t.Helper()
+				var event map[string]any
+				if err := conn.ReadJSON(&event); err != nil {
+					t.Fatal(err)
+				}
+				response, _ := event["response"].(map[string]any)
+				if event["type"] != "response.completed" || response["id"] != wantID {
+					t.Fatalf("received=%v, want completed %s", event, wantID)
+				}
+			}
+			readCompleted("resp-first")
+			if timing == "between_turns" {
+				select {
+				case <-idleFrameConsumed:
+				case <-time.After(3 * time.Second):
+					t.Fatal("upstream reader did not consume the interrupt acknowledgement")
+				}
+			}
+			request["previous_response_id"] = "resp-first"
+			if err := conn.WriteJSON(request); err != nil {
+				t.Fatal(err)
+			}
+			readCompleted("resp-next")
+			if got := connections.Load(); got != 1 {
+				t.Fatalf("upstream connections=%d, want 1", got)
+			}
+		})
+	}
+}
+
 func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingModel(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
