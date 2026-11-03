@@ -256,7 +256,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.config.runtime.title">Runtime Settings in the Admin Console</h2>
-          <p data-i18n-html="www.config.runtime.desc">These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. Saving either <code>model_multimodal_fallback</code> or <code>model_custom_pricing</code> on its own applies immediately without a restart. Saving multiple settings together still restarts the process. In-flight requests finish before the process exits.</p>
+          <p data-i18n-html="www.config.runtime.desc">These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. A save that touches only <code>model_multimodal_fallback</code>, <code>model_custom_pricing</code>, <code>reasoning_auto</code> or <code>privacy_redaction</code> applies immediately without a restart; including any other setting in the same save still restarts the process. In-flight requests finish before the process exits.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
@@ -309,6 +309,16 @@
             <span class="www-doc-icon" data-icon="image"></span>
             <h3 data-i18n-html="www.config.runtime.multimodal.title">Multimodal fallback</h3>
             <p data-i18n-html="www.config.runtime.multimodal.desc"><code>model_multimodal_fallback</code> maps a text model to a fallback model for requests that carry non-text content. Keys are normalized by base name with thinking suffixes stripped; up to 64 mappings within 8 KB. It rewrites the incoming model before thinking suffixes, token allowlists, channel filtering and cooldown checks, so routing, logging and cooldown all follow the fallback model. Detection uses the full client-protocol body on HTTP and the complete transcript on Responses WebSocket. Saving this setting on its own applies without a restart.</p>
+          </article>
+          <article class="www-doc-card">
+            <span class="www-doc-icon" data-icon="lightbulb"></span>
+            <h3 data-i18n-html="www.config.runtime.reasoningAuto.title">Dynamic reasoning effort</h3>
+            <p data-i18n-html="www.config.runtime.reasoningAuto.desc"><code>reasoning_auto</code> is off by default. It names a System One decision channel and model, the exact base names of covered models, and a decision timeout of 0.1–10 seconds (default 2). For covered models, requests without a suffix or with <code>(auto)</code> get a reasoning effort chosen from the model's own levels; explicit suffixes skip the judge. An empty model list enables nothing. Saving this setting on its own applies without a restart.</p>
+          </article>
+          <article class="www-doc-card">
+            <span class="www-doc-icon" data-icon="lock"></span>
+            <h3 data-i18n-html="www.config.runtime.privacy.title">Privacy redaction</h3>
+            <p data-i18n-html="www.config.runtime.privacy.desc"><code>privacy_redaction</code> is off by default. When enabled, secrets and passwords, opt-in personal data, custom words and prefix or RE2 rules are replaced with placeholders before forwarding and restored in HTTP, SSE and Responses WebSocket replies; exact values on the allow list stay unchanged. Mappings are isolated per API token, kept only in memory, expire after 24 hours idle and are cleared on restart. If the mapping store stays full after evicting values idle for over an hour, the request is rejected rather than sent in clear. Signed reasoning is passed through without restoration. Redaction covers recognizable text only and does not replace access control. Saving this setting on its own applies without a restart.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="book"></span>

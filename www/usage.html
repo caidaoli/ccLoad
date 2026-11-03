@@ -227,13 +227,13 @@ supports_websockets = true</code></pre>
           <p data-i18n-html="www.usage.thinking.desc">Append a thinking level to any model name. ccLoad strips it for routing, then writes the matching thinking fields for the protocol actually forwarded upstream.</p>
         </div>
 
-        <div class="www-doc-grid">
+        <div class="www-doc-grid www-doc-grid-3">
           <article class="www-info-card">
             <h3 data-i18n-html="www.usage.thinking.accepted.title">Accepted suffixes</h3>
             <ul class="www-check-list">
               <li data-i18n-html="www.usage.thinking.accepted.levels">Levels: <code>(minimal)</code> <code>(low)</code> <code>(medium)</code> <code>(high)</code> <code>(xhigh)</code> <code>(max)</code>. A level beyond the upstream model clamps to the nearest supported tier.</li>
               <li data-i18n-html="www.usage.thinking.accepted.disable">Disable: <code>(none)</code> or <code>(0)</code>.</li>
-              <li data-i18n-html="www.usage.thinking.accepted.auto">Auto: <code>(auto)</code> defers to the upstream default.</li>
+              <li data-i18n-html="www.usage.thinking.accepted.auto">Auto: <code>(auto)</code> defers to the upstream default, unless dynamic reasoning effort covers the model.</li>
               <li data-i18n-html="www.usage.thinking.accepted.budget">Numeric budget: <code>(16384)</code> becomes Anthropic <code>budget_tokens</code> or Gemini <code>thinkingBudget</code>.</li>
             </ul>
           </article>
@@ -243,6 +243,14 @@ supports_websockets = true</code></pre>
               <li data-i18n-html="www.usage.thinking.identity.item1">Request <code>claude-sonnet-4-6(high)</code>, <code>gpt-5.2(xhigh)</code>, or <code>gemini-3.1-pro(8192)</code>.</li>
               <li data-i18n-html="www.usage.thinking.identity.item2">Routing, auth, cooldown, logging, and the upstream model name always use the base name. Channel model lists do not need suffixed entries.</li>
               <li data-i18n-html="www.usage.thinking.identity.item3">HTTP proxy, Responses WebSocket, and admin channel tests all honor the suffix. Channel custom request rules run later and can override the fields it writes.</li>
+            </ul>
+          </article>
+          <article class="www-info-card">
+            <h3 data-i18n-html="www.usage.thinking.dynamic.title">Dynamic reasoning effort</h3>
+            <ul class="www-check-list">
+              <li data-i18n-html="www.usage.thinking.dynamic.item1">Off by default. Create a System One channel from <strong>Channels → Add</strong>, then pick it, its model and the exact base model names to cover in <strong>Settings → Dynamic reasoning effort</strong>.</li>
+              <li data-i18n-html="www.usage.thinking.dynamic.item2">For covered models, requests with no suffix or <code>(auto)</code> are judged, and the result replaces any effort in the body. Explicit levels, <code>(none)</code> and numeric budgets skip the judge.</li>
+              <li data-i18n-html="www.usage.thinking.dynamic.item3">The judge picks only among the model's own levels and never chooses <code>max</code>. A timeout (default 2 s) or a low-confidence answer keeps the session's previous level, or sends the request unchanged when there is none.</li>
             </ul>
           </article>
         </div>
@@ -295,6 +303,14 @@ supports_websockets = true</code></pre>
               <li data-i18n-html="www.usage.oauth.zed.item1">Native app sign-in exchanges an ephemeral RSA public key on a random loopback port; the callback token is decrypted into a long-lived native credential and the private key is never persisted.</li>
               <li data-i18n-html="www.usage.oauth.zed.item2">Trial access depends on a real Zed installation <code>system_id</code>. Without one, ccLoad still allows sign-in and lets the upstream decide account eligibility.</li>
               <li data-i18n-html="www.usage.oauth.zed.item3">A fixed exact <code>/completions</code> upstream runs Codex-protocol local transforms with WebSocket disabled; quota is read from <code>/client/users/me</code>.</li>
+            </ul>
+          </article>
+          <article class="www-info-card">
+            <h3>Vertex AI</h3>
+            <ul class="www-check-list">
+              <li data-i18n-html="www.usage.oauth.vertex.item1">Import a Google Cloud service account key JSON or a CLIProxyAPI Vertex credential file. Re-importing the same service account replaces the key on its existing channel.</li>
+              <li data-i18n-html="www.usage.oauth.vertex.item2">ccLoad signs a JWT to mint access tokens and serves Gemini models through the Vertex publisher endpoint. Model fetch is supported; quota queries are not.</li>
+              <li data-i18n-html="www.usage.oauth.vertex.item3">The location is optional and defaults to <code>global</code>; <code>us</code> and <code>eu</code> use regional endpoints, and other regions such as <code>us-central1</code> use their own hosts.</li>
             </ul>
           </article>
         </div>
@@ -578,7 +594,7 @@ supports_websockets = true</code></pre>
               <p data-i18n-html="www.usage.admin.desc">The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
             </div>
             <ul class="www-check-list">
-              <li data-i18n-html="www.usage.admin.channels">Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai / Zed credentials; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules and daily scheduled checks; import or export CSV.</li>
+              <li data-i18n-html="www.usage.admin.channels">Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai / Zed credentials and Vertex AI service accounts; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules and daily scheduled checks; import or export CSV.</li>
               <li data-i18n-html="www.usage.admin.tokens">Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
               <li data-i18n-html="www.usage.admin.logs">Logs: filter requests by status code, channel, model and token to locate failures.</li>
               <li data-i18n-html="www.usage.admin.overview">Overview: compare traffic by client protocol and inspect seven-day service health.</li>

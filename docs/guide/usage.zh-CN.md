@@ -146,14 +146,28 @@ curl -X POST http://localhost:8080/v1/alpha/search \
 
 - **等级**：`minimal` / `low` / `medium` / `high` / `xhigh` / `max`；超出上游模型能力时收敛到最近可用档
 - **关闭**：`(none)` 或 `(0)` 关闭思考
-- **自动**：`(auto)` 交由上游默认思考策略
+- **自动**：`(auto)` 交由上游默认思考策略；模型启用了[动态思考等级](#动态思考等级)时改由判断结果决定
 - **数字预算**：`(16384)` 等非负整数按 token 预算下发（Anthropic `budget_tokens`、Gemini `thinkingBudget`）
 
 后缀不是模型身份：选路、鉴权、冷却、日志和发往上游的模型名一律使用基名，渠道模型列表无需登记带后缀的条目。HTTP 代理、Responses WebSocket 和管理后台的渠道测试都支持该后缀；渠道自定义请求规则晚于后缀生效，可覆盖它写入的字段。括号内容不是已知等级或非负整数的模型名（如上游真的叫 `foo(bar)`）原样透传。
 
+## 动态思考等级
+
+系统设置 `reasoning_auto` 让一个快速决策模型按轮为指定模型挑选思考强度，默认关闭。
+
+1. 在渠道管理点击 **添加 → 决策渠道**，创建 System One 渠道。普通聊天渠道判断太慢，保存设置和运行时都会拒绝。
+2. 在 **设置 → 动态思考等级** 中启用，选择决策渠道和决策模型，勾选要启用的业务模型（精确基名，不支持通配；空名单不启用任何模型），设置判断超时（0.1–10 秒，默认 2 秒）。应用到设置后点击“保存所有更改”，立即生效，无需重启。
+
+对已启用的模型：
+
+- 无思考后缀或 `(auto)` 后缀的请求会先判断，结果覆盖请求体中已有的等级；显式等级、`(none)` 和数字预算跳过判断。
+- 候选等级取自请求模型的目录（目录未知时为 low–xhigh），不会自动选 `max`；每次实际发送再像后缀一样按上游模型收敛。
+- 判断超时、出错或低置信度时沿用该会话上一次的等级；没有时按原请求发送，`(auto)` 回到模型默认行为。
+- 判断结果不改变模型名和选路；渠道自定义请求规则仍最后生效，可以覆盖它。
+
 ## 多模态回退
 
-系统设置 `model_multimodal_fallback` 以 JSON 对象 `{"文本模型":"回退模型"}` 为不支持视觉的模型配置回退模型（最多 64 条映射 / 8 KB；key 按小写基名归一，value 可带思考后缀）。请求含图片、文件等非文本内容时，ccLoad 在思考后缀处理与令牌、渠道、Key 过滤**之前**把模型整体改写为回退模型——选路、冷却与日志全部跟随回退模型。HTTP 入口检测客户端协议的请求体；Responses WebSocket 回合检测**完整 transcript**，因此历史里进入过的图片会让后续每一轮都稳定落在回退模型上。在设置页打开 **多模态回退模型** 即可编辑映射。与其他所有系统设置不同，只保存该映射时立即生效；单次提交触及其他设置仍会在约 2 秒后重启进程。
+系统设置 `model_multimodal_fallback` 以 JSON 对象 `{"文本模型":"回退模型"}` 为不支持视觉的模型配置回退模型（最多 64 条映射 / 8 KB；key 按小写基名归一，value 可带思考后缀）。请求含图片、文件等非文本内容时，ccLoad 在思考后缀处理与令牌、渠道、Key 过滤**之前**把模型整体改写为回退模型——选路、冷却与日志全部跟随回退模型。HTTP 入口检测客户端协议的请求体；Responses WebSocket 回合检测**完整 transcript**，因此历史里进入过的图片会让后续每一轮都稳定落在回退模型上。在设置页打开 **多模态回退模型** 即可编辑映射。与其他热重载设置一样，只保存该映射时立即生效；单次提交触及其他设置仍会在约 2 秒后重启进程。
 
 ## 隐私脱敏
 
@@ -287,6 +301,14 @@ SDK Agent 只开放 Cursor 的 `mcp` capability group：SDK custom tools 通过 
 在渠道管理中选择 **Zed** 并完成原生登录。这不是 OAuth code/PKCE 流程：每次登录在随机 loopback 端口生成临时 RSA-2048 密钥，把 PKCS#1 DER 公钥以 base64url 传给 `zed.dev/native_app_signin`，再用 RSA-OAEP/SHA-256 把回调的 `access_token` 解密成长期 native credential；临时私钥绝不持久化。`system_id` 是可选的 Zed 安装标识，主要用于试用权限绑定真实安装（表单值 → `CCLOAD_ZED_SYSTEM_ID` → 本机 Zed `db/0-global/db.sqlite`）；没有该值时仍可发起登录并尝试换取令牌，请求会省略 `x-zed-system-id`，由上游决定账号是否具备试用权限；禁止生成随机值或复制其他机器的固定值，同账号重授权保留已存值。
 
 数据请求先用 native credential 经 `/client/llm_tokens` 换短期 JWT（提前 60 秒单飞刷新并 CAS 持久化），再以 `Authorization: Bearer` 调 `/completions`。渠道固定 exact `/completions`、codex 协议 + local 转换、禁用 WebSocket；ccLoad 动态暴露 `/models` 中能跨 OpenAI/Anthropic/Google 提供商完成 wire 转换的模型。请求会包进 Zed `thread_id/prompt_id/intent/provider/model/provider_request` envelope；`plan` 403 只冷却当前模型并切换渠道，其他 401/403 才刷新凭证。
+
+### Vertex AI
+
+在渠道管理中点击 **添加 → Vertex**，上传或粘贴 Google Cloud 服务账号密钥 JSON（也支持 CLIProxyAPI 的 Vertex 凭证文件）。区域可选，默认 `global`；`us`、`eu` 走区域端点（REP），`us-central1` 等其他区域使用对应区域主机，区域只用于新建渠道的上游 URL。ccLoad 用服务账号自行签发 JWT 换取访问令牌，通过 Vertex publisher 端点提供 Gemini 模型；支持获取模型，不支持额度查询。同一服务账号重复导入时替换原渠道的密钥并启用渠道，不会新建渠道。
+
+### OpenCode Zen / Zen Go
+
+在渠道管理中点击 **添加 → OpenCode**，选择 Zen 或 Zen Go。地址已预填（`https://opencode.ai/zen`、`https://opencode.ai/zen/go`），只需填入 OpenCode API Key，再获取或配置模型。OpenCode 不同模型开放的协议不同，ccLoad 会自动探测并按模型记住可用协议。Zen Go 渠道卡片可刷新额度窗口。
 
 ### 管理账户（API Key 渠道）
 

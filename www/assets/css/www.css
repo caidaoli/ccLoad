@@ -1434,8 +1434,14 @@ html[data-resolved-theme="dark"] .www-logo-wordmark {
 }
 
 /* ========================================
-   账号渠道：四列小卡
+   账号渠道：三列小卡
    ======================================== */
+@media (min-width: 1024px) {
+  .www-provider-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 .www-provider-grid .www-feature-card {
   padding: var(--space-5);
 }

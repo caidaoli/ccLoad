@@ -64,7 +64,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 ## Web Admin Configuration (Database-backed, Auto Restart)
 
-These settings live in the database and are managed from `/web/settings.html`. Saving a change writes it to the database and restarts the process about two seconds later; the restart is what applies the new value, so in-flight requests finish first. `model_multimodal_fallback`, `model_custom_pricing` and `reasoning_auto` (dynamic reasoning effort) are hot-reloaded — when a save contains only these, their in-memory snapshots are swapped atomically without a restart; saving any other setting alongside them still restarts:
+These settings live in the database and are managed from `/web/settings.html`. Saving a change writes it to the database and restarts the process about two seconds later; the restart is what applies the new value, so in-flight requests finish first. `model_multimodal_fallback`, `model_custom_pricing`, `reasoning_auto` (dynamic reasoning effort) and `privacy_redaction` (privacy redaction) are hot-reloaded — when a save contains only these, their in-memory snapshots are swapped atomically without a restart; saving any other setting alongside them still restarts:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -114,6 +114,8 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `model_multimodal_fallback` | `{}` | JSON map `{"non-vision model":"fallback model"}` (max 64 mappings / 8 KB); applied immediately without a process restart |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
 | `model_custom_pricing` | `{}` | JSON object overriding model prices (USD per million tokens); takes precedence over the models.dev catalog and the embedded pricing |
+| `reasoning_auto` | `{"enabled":false,…,"timeout_ms":2000}` | Dynamic reasoning effort: `enabled`, `decision_channel_id` (must be a System One channel), `decision_model`, `business_models` (exact base names; an empty list enables nothing), `timeout_ms` (100–10000); applied immediately on save, see the [usage guide](usage.md#dynamic-reasoning-effort) |
+| `privacy_redaction` | `{}` | Privacy redaction rules (off by default); edit them in the Settings "Privacy redaction" dialog; applied immediately on save, see the [usage guide](usage.md#privacy-redaction) |
 | `responses_ws_max_connections` | `128` | Max concurrent downstream Responses WebSocket connections across the process; `0` uses the built-in default |
 | `responses_ws_max_connections_per_token` | `64` | Max concurrent downstream Responses WebSocket connections per auth token; `0` uses the built-in default |
 | `responses_ws_max_sessions` | `256` | Max retained Responses WebSocket execution sessions across the process; `0` uses the built-in default |

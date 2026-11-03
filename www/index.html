@@ -177,10 +177,10 @@
           <span class="www-feature-icon" data-icon="key"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.accounts.title">Subscription accounts, not just API keys</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.accounts.desc">
-            Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
+            Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels, or import a Vertex AI service account. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
           </p>
           <div class="www-bento-visual www-chip-cloud" aria-hidden="true">
-            <span>Codex</span><span>Claude</span><span>Antigravity</span><span>xAI</span><span>CodeBuddy</span><span>Z.ai</span><span>Cursor</span><span>Zed</span><span class="is-key">API Key</span>
+            <span>Codex</span><span>Claude</span><span>Antigravity</span><span>xAI</span><span>CodeBuddy</span><span>Z.ai</span><span>Cursor</span><span>Zed</span><span>Vertex AI</span><span class="is-key">API Key</span>
           </div>
         </div>
         <div class="www-feature-card www-bento-wide">
@@ -351,6 +351,14 @@
         </div>
 
         <div class="www-feature-card">
+          <span class="www-feature-icon" data-icon="gauge"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.reasoningAuto.title">Dynamic Reasoning Effort</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.reasoningAuto.desc">
+            For models you list, a System One channel picks the reasoning effort when a request sets no level, choosing only among the model's own levels. Explicit suffixes always win.
+          </p>
+        </div>
+
+        <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="zap"></span>
           <h3 class="www-feature-title" data-i18n="www.home.features.token.title">Local Token Count</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.token.desc">
@@ -363,6 +371,14 @@
           <h3 class="www-feature-title" data-i18n="www.home.features.keys.title">Per-Key Model Allowlists</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.keys.desc">
             Restrict which channel models each key serves. If every key declines the model, the channel is skipped with no cooldown and no failure recorded.
+          </p>
+        </div>
+
+        <div class="www-feature-card">
+          <span class="www-feature-icon" data-icon="lock"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.privacy.title">Privacy Redaction</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.privacy.desc">
+            Optionally swap secrets, personal data and custom words for placeholders before a request leaves the gateway, then restore them in responses, streams included. Mappings stay in memory, per API token.
           </p>
         </div>
 
@@ -440,6 +456,13 @@
           <h3 class="www-feature-title" data-i18n="www.home.oauth.zed.title">Zed</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.zed.desc">
             Sign in through the native Zed app flow; ccLoad stores the resulting long-lived credential and serves Zed models through the Codex protocol.
+          </p>
+        </div>
+        <div class="www-feature-card">
+          <span class="www-feature-icon" data-icon="server"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.oauth.vertex.title">Vertex AI</h3>
+          <p class="www-feature-desc" data-i18n="www.home.oauth.vertex.desc">
+            Import a Google Cloud service account key JSON. ccLoad mints access tokens itself and serves Gemini models; the location defaults to global, and us or eu use regional endpoints.
           </p>
         </div>
       </div>

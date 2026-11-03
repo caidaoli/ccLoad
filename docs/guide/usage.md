@@ -144,18 +144,32 @@ Every protocol entry point accepts a thinking suffix appended to the model name,
 
 - **Levels**: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`; a level beyond the upstream model's capability clamps to the nearest supported tier
 - **Disable**: `(none)` or `(0)` turns thinking off
-- **Auto**: `(auto)` defers to the upstream default thinking behavior
+- **Auto**: `(auto)` defers to the upstream default thinking behavior, unless the model is covered by [dynamic reasoning effort](#dynamic-reasoning-effort)
 - **Numeric budget**: a non-negative integer such as `(16384)` is forwarded as a token budget (Anthropic `budget_tokens`, Gemini `thinkingBudget`)
 
 The suffix is not a model identity: routing, auth, cooldown, logging, and the upstream model name always use the base name, so channel model lists do not need suffixed entries. The HTTP proxy, Responses WebSocket, and admin channel testing all honor the suffix; channel custom request rules run later and can override the fields it writes. A parenthesized model name whose suffix is not a known level or non-negative integer (an upstream really named `foo(bar)`) passes through unchanged.
 
+## Dynamic Reasoning Effort
+
+System setting `reasoning_auto` lets a fast decision model pick the reasoning effort turn by turn for the models you list. It is off by default.
+
+1. Create a System One channel from **Channels → Add → System One channel**. Ordinary chat channels are too slow and are rejected both when saving the setting and at runtime.
+2. Open **Settings → Dynamic reasoning effort**, enable it, pick the decision channel and model, select the request models to cover (exact base names, no wildcards; an empty list enables nothing), and set the decision timeout (0.1–10 s, default 2 s). Apply, then **Save All Changes**; it takes effect immediately without a restart.
+
+For covered models:
+
+- Requests with no thinking suffix or with `(auto)` are judged, and the result overrides any effort already in the body. Explicit levels, `(none)` and numeric budgets skip the judge.
+- Candidate levels come from the requested model's catalog (low–xhigh when unknown), and `max` is never picked automatically; each attempt is then clamped to the actual upstream model, as with suffixes.
+- A timeout, error or low-confidence answer keeps the session's previous level; when there is none, the request is sent as is and `(auto)` falls back to the model default.
+- The decision never changes the model name or routing; channel custom request rules still run last and can override it.
+
 ## Multimodal Fallback
 
-System setting `model_multimodal_fallback` maps non-vision models to fallback models as a JSON object `{"text-model":"fallback-model"}` (max 64 mappings / 8 KB; keys are normalized to the lower-cased base name, values may carry a thinking suffix). When a request contains non-text content — images, files — ccLoad rewrites the incoming model to the fallback **before** thinking-suffix handling and token, channel, and Key filtering, so routing, cooldowns, and logs all follow the fallback model. HTTP entries inspect the client-protocol body; Responses WebSocket turns inspect the complete conversation transcript, so an image that entered the history keeps every later turn on the fallback deterministically. Open **Multimodal Fallback Models** on the settings page to edit the mapping. Unlike every other system setting, saving only this mapping takes effect immediately; a commit that touches any other setting still restarts the process about two seconds later.
+System setting `model_multimodal_fallback` maps non-vision models to fallback models as a JSON object `{"text-model":"fallback-model"}` (max 64 mappings / 8 KB; keys are normalized to the lower-cased base name, values may carry a thinking suffix). When a request contains non-text content — images, files — ccLoad rewrites the incoming model to the fallback **before** thinking-suffix handling and token, channel, and Key filtering, so routing, cooldowns, and logs all follow the fallback model. HTTP entries inspect the client-protocol body; Responses WebSocket turns inspect the complete conversation transcript, so an image that entered the history keeps every later turn on the fallback deterministically. Open **Multimodal Fallback Models** on the settings page to edit the mapping. Like the other hot-reloaded settings, saving only this mapping takes effect immediately; a commit that touches any other setting still restarts the process about two seconds later.
 
-## Privacy masking
+## Privacy Redaction
 
-Open **Settings → Privacy masking**, next to **Dynamic reasoning effort**. Masking is off by default. Enable it, apply the dialog (the server validates the rules on apply and the dialog shows any error), then save all changes; the setting takes effect immediately without restarting.
+Open **Settings → Privacy redaction**, next to **Dynamic reasoning effort**. Masking is off by default. Enable it, apply the dialog (the server validates the rules on apply and the dialog shows any error), then save all changes; the setting takes effect immediately without restarting.
 
 Click **Test** next to **Reset to default** at the bottom of the dialog to open a test dialog, paste sample text, and see what the upstream would receive under the dialog's current settings (including unapplied changes, treated as enabled), plus each replaced value. The sample is not saved or sent upstream, and closing the test dialog clears the input and results.
 
@@ -281,6 +295,14 @@ The channel card can refresh included / API / Auto spend windows from `Dashboard
 In the channel manager, choose **Zed** and complete the native sign-in. This is not an OAuth code/PKCE flow: each sign-in generates a temporary RSA-2048 key on a random loopback port, passes its PKCS#1 DER public key (base64url) to `zed.dev/native_app_signin`, and decrypts the returned `access_token` with RSA-OAEP/SHA-256 into a long-lived native credential; the temporary private key is never persisted. `system_id` is an optional Zed installation identity used primarily to bind trial entitlement to a real installation (form value → `CCLOAD_ZED_SYSTEM_ID` → local Zed `db/0-global/db.sqlite`); sign-in can be attempted without it, requests omit `x-zed-system-id`, and the upstream decides whether the account has trial access. Never generate a random value or copy a fixed value from another machine; re-authorizing an account keeps the stored value.
 
 Data requests first exchange the native credential for a short-lived JWT via `/client/llm_tokens` (refreshed 60 seconds early, single-flight, CAS-persisted), then call `/completions` with `Authorization: Bearer`. Channels use a fixed exact `/completions` URL, the Codex protocol with local conversion, and WebSockets disabled. ccLoad exposes the Zed `/models` entries it can convert across the OpenAI/Anthropic/Google providers; requests are wrapped in a Zed `thread_id/prompt_id/intent/provider/model/provider_request` envelope. A `plan` 403 cools only the current model and switches channels, while other 401/403 errors refresh the credential.
+
+### Vertex AI
+
+In channel management, click **Add → Vertex** and upload or paste a Google Cloud service account key JSON (a CLIProxyAPI Vertex credential file also works). The location is optional and defaults to `global`; `us` and `eu` use regional endpoints (REP), and other regions such as `us-central1` use their regional host. The location only sets the upstream URL of a new channel. ccLoad signs a JWT with the service account to mint access tokens and serves Gemini models through the Vertex publisher endpoint. Model fetch is supported; quota queries are not. Re-importing the same service account replaces the key on its existing channel and enables it instead of creating a new channel.
+
+### OpenCode Zen / Zen Go
+
+In channel management, click **Add → OpenCode** and choose Zen or Zen Go. The URL is prefilled (`https://opencode.ai/zen` or `https://opencode.ai/zen/go`); enter an OpenCode API key, then fetch or configure models. OpenCode serves different protocols per model, so ccLoad probes them and remembers which protocol works for each model. Zen Go channel cards can refresh quota windows.
 
 ### Management Account (API-Key Channels)
 

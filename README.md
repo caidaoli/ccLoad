@@ -112,8 +112,9 @@ Open `http://localhost:8080/web/` and sign in with the `CCLOAD_PASS` from step 1
 
 Go to **Channels** and click **Add Channel**:
 
-- **API-key upstreams** (official APIs, relay services): the easiest way is **Auto-fill channel configuration**. Paste the address and key your provider gave you (for example `OPENAI_BASE_URL=https://api.example.com` and `OPENAI_API_KEY=sk-...`); ccLoad checks the connection and fetches the model list. When filling the form by hand, enter only the base URL, without `/v1` or an endpoint path.
+- **API-key upstreams** (official APIs, relay services): the easiest way is **Auto-fill channel configuration**. Paste the address and key your provider gave you (for example `OPENAI_BASE_URL=https://api.example.com` and `OPENAI_API_KEY=sk-...`); ccLoad checks the connection and fetches the model list. When filling the form by hand, enter only the base URL, without `/v1` or an endpoint path. OpenCode Zen / Zen Go have their own entry that prefills the address, so you only add the key.
 - **Subscription accounts** (Codex/ChatGPT, Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, Zed): choose the account type in Channels and follow the prompts to authorize in the browser or import credentials.
+- **Google Vertex AI**: import a Google Cloud service account key (JSON); ccLoad exchanges it for access tokens and serves Gemini models.
 
 **The model list decides whether a channel is used.** ccLoad picks channels by the model name the client requests: if the client asks for `claude-sonnet-4-6`, some channel must list `claude-sonnet-4-6`. Add models with **Fetch Models** or **Common Models**; when the upstream uses a different name, put the upstream name in **Redirect Target**.
 
@@ -219,10 +220,11 @@ The client protocol does not have to match the upstream; ccLoad converts between
 
 A reverse proxy forwards requests. ccLoad is built for coding agents that stream long responses, run for hours, and spend real money, so every design choice is about keeping the session alive and the bill predictable.
 
-- **Subscription accounts, not just API keys**: Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
+- **Subscription accounts, not just API keys**: Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts, or import Vertex AI service accounts, as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
 - **Any client on any upstream**: Anthropic Messages, OpenAI Chat, Codex Responses and Gemini clients can all use every channel that serves the model. Requests and streamed responses are converted when the protocols differ, including Codex Responses over WebSocket.
 - **Failover your client never sees**: If an upstream fails before the first byte reaches the client, ccLoad retries the next candidate. Errors disguised as HTTP 200 and rate limits inside SSE streams count as failures too.
 - **Cooldown at the right scope**: A revoked key, a rate-limited model, or a dead URL cools down on its own with exponential backoff and honors upstream reset times. The rest of the channel keeps serving.
+- **Secrets stay in the gateway**: Optionally replace keys, passwords, personal data and your own terms with placeholders before a request leaves for the upstream, then restore them in the reply so the client still sees the original text.
 - **Cost you can check and cap**: Pricing covers cache reads and writes, long-context tiers, OpenAI `service_tier` and image generation. Cap spend per channel per day and per token in total, per day or per month.
 - **Light to run**: One Go binary with embedded SQLite and a built-in admin console. Add MySQL or PostgreSQL only when you need them, or run it for free on Hugging Face Spaces.
 
@@ -243,18 +245,20 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 
 - **Four client protocols on every channel**: Anthropic, OpenAI, Codex (Responses), and Gemini. Each upstream URL declares the wire protocols it accepts, or ccLoad detects and caches them; requests are converted between protocols when client and upstream differ.
 - **Responses WebSocket**: Codex clients keep a downstream WebSocket while each candidate uses native Codex WebSocket or HTTP/SSE.
-- **Account-based channels**: Codex (ChatGPT) OAuth and personal access tokens, Anthropic (Claude), Antigravity, and xAI OAuth, Z.ai Coding Plan, Cursor, and Zed, with token refresh where supported, batch import, quota refresh, and automatic disabling of permanently rejected credentials.
+- **Account-based channels**: Codex (ChatGPT) OAuth and personal access tokens, Anthropic (Claude), Antigravity, and xAI OAuth, CodeBuddy, Z.ai Coding Plan, Cursor, Zed, and Vertex AI service accounts, with token refresh where supported, batch import, quota refresh, and automatic disabling of permanently rejected credentials.
 - **Model thinking suffix**: `model(high)` or `model(16384)` maps to the upstream protocol's thinking parameters while routing uses the base model name.
+- **Dynamic reasoning effort**: For selected models, a decision channel (System One) judges each turn and picks a reasoning level the model supports; an explicit level from the client is left alone.
 - **Multimodal fallback**: Requests with images or files are moved from non-vision models to configured fallback models before routing.
 - **Custom request rules**: Per-channel header and JSON body rewriting, with protected authentication headers.
 - **Local token counting**: `/v1/messages/count_tokens` is answered locally without an upstream call.
 
-### Cost and access control
+### Cost, access control and privacy
 
 - **API tokens**: Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps. Upstream credentials stay in the gateway.
 - **Cost accounting**: OpenAI `service_tier` multipliers, tiered long-context pricing, cache-token discounts, and image-generation tool billing.
 - **OAuth quota cost**: Per-credential weekly and monthly standard cost aligned with upstream quota windows.
 - **Read-only token login**: An API token can sign in to the web console and see only its own usage.
+- **Privacy masking**: Keys, passwords, personal data and custom word lists or rules are replaced with placeholders before the upstream sees them, and restored in HTTP, SSE and Responses WebSocket replies. Mappings are isolated per caller token and kept in memory only.
 
 ### Observability
 
@@ -284,7 +288,7 @@ A request is authenticated with a ccLoad token, matched to candidate channels by
 | Topic | Contents |
 |-------|----------|
 | [Deployment](docs/guide/deployment.md) | Docker, binary, source build, Hugging Face Spaces, databases, image tags, updates, troubleshooting |
-| [Usage Guide](docs/guide/usage.md) | API endpoints, Codex CLI and Responses WebSocket, thinking suffix, channel management, request rules, CSV import/export, admin console |
+| [Usage Guide](docs/guide/usage.md) | API endpoints, Codex CLI and Responses WebSocket, thinking suffix and dynamic reasoning effort, privacy masking, channel management, request rules, CSV import/export, admin console |
 | [Configuration](docs/guide/configuration.md) | Environment variables, storage modes, system settings, channel sorting, API tokens, authentication |
 | [Architecture](docs/guide/architecture.md) | Protocol routing, dependencies, module layout, database structure |
 
@@ -295,6 +299,7 @@ The website has the same topics as guided pages: [Install](https://ccload.xyz/in
 - Set a strong `CCLOAD_PASS`; the service does not start without one.
 - Give clients ccLoad API tokens, never upstream keys. Tokens are managed at `/web/tokens.html`.
 - Upstream API keys and account credentials are stored in the database and included in CSV exports. Protect the database and delete exported files after use.
+- To keep keys or personal data away from upstreams, turn on **Settings → Privacy redaction**. It handles recognizable text only, can miss or over-match, and does not replace access control.
 - The browser stores only a random web-session token that expires after 24 hours.
 - Put the service behind an HTTPS reverse proxy, and set `TRUSTED_PROXIES` so forwarded client addresses cannot be spoofed.
 

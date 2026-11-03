@@ -66,7 +66,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 ## Web 管理配置（数据库存储，保存后自动重启）
 
-这些配置存在数据库中，在 Web 界面 `/web/settings.html` 修改。保存会先写库，随后约 2 秒自动重启进程——重启本身就是生效机制，进行中的请求会先跑完再退出。`model_multimodal_fallback`、`model_custom_pricing` 和 `reasoning_auto`（动态思考等级）热重载——保存的内容只含这几项时原子替换内存快照、无需重启；同时保存了其他设置则仍会重启：
+这些配置存在数据库中，在 Web 界面 `/web/settings.html` 修改。保存会先写库，随后约 2 秒自动重启进程——重启本身就是生效机制，进行中的请求会先跑完再退出。`model_multimodal_fallback`、`model_custom_pricing`、`reasoning_auto`（动态思考等级）和 `privacy_redaction`（隐私脱敏）热重载——保存的内容只含这几项时原子替换内存快照、无需重启；同时保存了其他设置则仍会重启：
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -116,6 +116,8 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `model_multimodal_fallback` | `{}` | JSON 映射 `{"非视觉模型":"回退模型"}`（最多 64 条 / 8 KB）；保存后立即生效，无需重启 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
 | `model_custom_pricing` | `{}` | JSON 对象，覆盖模型价格（单位：美元/百万 Token）；优先级高于 models.dev 目录和内嵌定价 |
+| `reasoning_auto` | `{"enabled":false,…,"timeout_ms":2000}` | 动态思考等级：`enabled`、`decision_channel_id`（须为 System One 决策渠道）、`decision_model`、`business_models`（精确基名，空名单不启用）、`timeout_ms`（100–10000）；保存后立即生效，见[使用指南](usage.zh-CN.md#动态思考等级) |
+| `privacy_redaction` | `{}` | 隐私脱敏规则（默认关闭）；建议在设置页「隐私脱敏」弹窗中编辑，保存后立即生效，见[使用指南](usage.zh-CN.md#隐私脱敏) |
 | `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数；`0` 使用内建默认值 |
 | `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数；`0` 使用内建默认值 |
 | `responses_ws_max_sessions` | `256` | 整个进程保留的 Responses WebSocket 执行会话数上限；`0` 使用内建默认值 |
