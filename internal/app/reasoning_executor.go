@@ -86,6 +86,7 @@ type reasoningCallResult struct {
 	responseBody   []byte
 	responseHeader http.Header
 	debug          *model.DebugLogEntry
+	privacyMasked  privacy.Counts
 }
 
 func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (result reasoningCallResult, err error) {
@@ -214,6 +215,9 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 		if result.costUnknown {
 			entry.Cost = 0
 		}
+		if result.privacyMasked.Total() > 0 {
+			entry.PrivacyMasked = &result.privacyMasked
+		}
 		if entry.StatusCode == 0 {
 			entry.StatusCode = http.StatusBadGateway
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -265,9 +269,11 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, mode
 	result.baseURL = baseURL
 	// The effective level is not sent: it anchors the judge toward the current
 	// level, and downgrade confirmation already provides the hysteresis.
-	if session, _ := ctx.Value(privacyContextKey{}).(*privacy.Session); session != nil {
+	session := privacySessionFromContext(ctx)
+	if session != nil {
 		transcript, err = session.MaskText(transcript)
 		if err != nil {
+			s.privacyStats.blocked.Add(1)
 			return result, errors.New("privacy masking failed; decision request was not sent")
 		}
 	}
@@ -294,6 +300,7 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, mode
 	body = applyBodyRules("application/json", body, cfg.BodyRules())
 	body, err = maskPrivacyBodyFromContext(ctx, body, "application/json")
 	if err != nil {
+		s.privacyStats.blocked.Add(1)
 		return result, err
 	}
 	req = cloneRequestWithBody(req, body)
@@ -301,7 +308,12 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, mode
 	// upstream response, so a decision can be inspected like any other call.
 	debug := s.captureDebugRequest(req, body)
 	defer func() { result.debug = debug.buildEntry(nil) }()
-	resp, err := s.doUpstreamRequest(cfg, req)
+	// As with proxy attempts, a call rejected by the channel's local limits was never sent.
+	release, err := s.reserveUpstreamRequest(cfg)
+	if err == nil {
+		result.privacyMasked = session.CountSent(body)
+	}
+	resp, err := s.doReservedUpstreamRequest(cfg, req, release, err)
 	if err != nil {
 		debug.captureUpstreamError(err)
 		return result, err

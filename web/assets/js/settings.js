@@ -996,6 +996,25 @@ const runtimeMetricDomains = [
     ]
   },
   {
+    sourceKey: 'privacy',
+    titleKey: 'settings.runtimeMetrics.group.privacy',
+    descriptionKey: 'settings.runtimeMetrics.privacyNote',
+    metrics: [
+      { key: 'enabled', labelKey: 'settings.runtimeMetrics.metric.privacyEnabled', format: 'boolean' },
+      { key: 'masked_requests', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedRequests' },
+      { key: 'masked_secret', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedSecret' },
+      { key: 'masked_personal', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedPersonal' },
+      { key: 'masked_word', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedWord' },
+      { key: 'masked_custom', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedCustom' },
+      { key: 'restored_placeholders', labelKey: 'settings.runtimeMetrics.metric.privacyRestored' },
+      { key: 'unrestored_placeholders', labelKey: 'settings.runtimeMetrics.metric.privacyUnrestored' },
+      { key: 'blocked_requests', labelKey: 'settings.runtimeMetrics.metric.privacyBlocked' },
+      { key: 'dictionary_scopes', labelKey: 'settings.runtimeMetrics.metric.privacyDictionaryScopes' },
+      { key: 'dictionary_entries', labelKey: 'settings.runtimeMetrics.metric.privacyDictionaryEntries' },
+      { key: 'dictionary_bytes', labelKey: 'settings.runtimeMetrics.metric.privacyDictionaryBytes', format: 'bytes' }
+    ]
+  },
+  {
     sourceKey: 'storage',
     titleKey: 'settings.runtimeMetrics.group.storage',
     descriptionKey: 'settings.runtimeMetrics.storageNote',

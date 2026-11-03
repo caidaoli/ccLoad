@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -131,21 +130,15 @@ func (w *privacyGinWriter) WriteHeader(status int)               { w.output.Writ
 func (w *privacyGinWriter) Flush()                               { w.output.Flush() }
 func (w *privacyGinWriter) Unwrap() http.ResponseWriter          { return w.output }
 
-func maskPrivacyBodyFromContext(ctx context.Context, body []byte, contentType string) ([]byte, error) {
+func privacySessionFromContext(ctx context.Context) *privacy.Session {
 	session, _ := ctx.Value(privacyContextKey{}).(*privacy.Session)
-	masked, err := maskPrivacyBody(session, body, contentType)
+	return session
+}
+
+func maskPrivacyBodyFromContext(ctx context.Context, body []byte, contentType string) ([]byte, error) {
+	masked, err := maskPrivacyBody(privacySessionFromContext(ctx), body, contentType)
 	if err != nil {
 		return nil, errPrivacyMasking
 	}
 	return masked, nil
-}
-
-// Request diagnostics intentionally exclude token text, original values and scope.
-func (w *privacyResponseWriter) logUnrestoredTokens(requestID int64) {
-	if w.observer == nil {
-		return
-	}
-	if count := w.observer.UnrestoredTokens(); count > 0 {
-		log.Printf("[WARN] privacy response has unrestored placeholders request_id=%d count=%d", requestID, count)
-	}
 }

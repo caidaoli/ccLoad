@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
@@ -246,6 +248,23 @@ func TestPrivacyProxyChannelRulesAndDisableRestore(t *testing.T) {
 		if response.Code != 200 || gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String() != secret {
 			t.Fatalf("enabled=%t status=%d body=%s", enabled, response.Code, response.Body.String())
 		}
+		// Disabling stops masking counts; restoring remembered values still counts.
+		wantRestored := uint64(1)
+		if !enabled {
+			wantRestored = 2
+		}
+		if metrics := readPrivacyRuntime(t, env.server); metrics.MaskedRequests != 1 || metrics.MaskedSecret != 1 || metrics.RestoredPlaceholders != wantRestored {
+			t.Fatalf("enabled=%t privacy runtime metrics=%+v", enabled, metrics)
+		}
+	}
+	var masked int
+	for _, entry := range waitForProxyLogs(t, env, 2) {
+		if entry.PrivacyMasked != nil {
+			masked++
+		}
+	}
+	if masked != 1 {
+		t.Fatalf("masked logs=%d, want only the enabled round", masked)
 	}
 }
 
@@ -265,6 +284,46 @@ func TestPrivacyAutomaticReasoningRequestIsMasked(t *testing.T) {
 	requests := judge.snapshot()
 	if len(requests) != 1 || strings.Contains(requests[0].Conversation, secret) || !strings.Contains(requests[0].Conversation, "{{CCLOAD_") {
 		t.Fatalf("judge request was not masked: %+v", requests)
+	}
+	if decision := waitForDecisionLog(t, env); decision.PrivacyMasked == nil || decision.PrivacyMasked.Secret != 1 {
+		t.Fatalf("decision log privacy counts=%+v, want secret 1", decision.PrivacyMasked)
+	}
+}
+
+// A decision call rejected by the channel's local limit never leaves the
+// gateway, so its log must not claim redacted content was sent.
+func TestPrivacyLocallyLimitedReasoningDecisionCountsNothing(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t)
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{name: "private-business", models: "gpt-5.6-sol"}}, []string{business.server.URL})
+	if w := batchUpdateSetting(t, env.server, privacySettingKey, `{"enabled":true}`); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	ctx := context.Background()
+	cfg, err := env.store.GetConfig(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConcurrency = 1
+	if cfg, err = env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	release, err := env.server.reserveUpstreamRequest(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	response := privacyRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Investigate the production incident using sk-proj-judge1234567890abcdefghijkl"))
+	if response.Code != 200 {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if requests := judge.snapshot(); len(requests) != 0 {
+		t.Fatalf("judge received %d requests, want 0", len(requests))
+	}
+	if decision := waitForDecisionLog(t, env); decision.PrivacyMasked != nil {
+		t.Fatalf("locally limited decision log privacy counts=%+v, want none", decision.PrivacyMasked)
 	}
 }
 
@@ -343,6 +402,9 @@ func TestPrivacyProxyUnrestoredHTTPDiagnostics(t *testing.T) {
 				t.Fatalf("unrestored text changed: %q", got)
 			}
 			readPrivacyDiagnostic(t, capture, 3)
+			if got := readPrivacyRuntime(t, env.server).UnrestoredPlaceholders; got != 3 {
+				t.Fatalf("unrestored placeholders=%d, want 3", got)
+			}
 			select {
 			case line := <-capture:
 				t.Fatalf("duplicate request diagnostic: %s", line)
@@ -444,6 +506,9 @@ func TestPrivacyProxyUnrestoredWebsocketDiagnostics(t *testing.T) {
 					}
 				}
 				requestID := readPrivacyDiagnostic(t, capture, 2)
+				if got := readPrivacyRuntime(t, env.server).UnrestoredPlaceholders; got != uint64(2*turnIndex) {
+					t.Fatalf("unrestored placeholders=%d, want %d", got, 2*turnIndex)
+				}
 				if requestID == previousRequestID {
 					t.Fatalf("WS turns reused request_id=%d", requestID)
 				}
@@ -504,5 +569,192 @@ func TestPrivacyProxyUnrestoredWebsocketFinalErrorDiagnostics(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+func waitForProxyLogs(t *testing.T, env *proxyTestEnv, want int) []*model.LogEntry {
+	t.Helper()
+	var logs []*model.LogEntry
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var err error
+		logs, err = env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(logs) >= want {
+			break
+		}
+	}
+	if len(logs) != want {
+		t.Fatalf("proxy logs=%d, want %d", len(logs), want)
+	}
+	return logs
+}
+
+func privacyCompletionServer(t *testing.T, status func() int) *testHTTPServer {
+	t.Helper()
+	return newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if code := status(); code != http.StatusOK {
+			w.WriteHeader(code)
+			_, _ = io.WriteString(w, `{"error":{"message":"upstream failed"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-privacy","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+	}))
+}
+
+func TestPrivacyLogRecordsMaskedCounts(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+	upstream := privacyCompletionServer(t, func() int { return http.StatusOK })
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "privacy-log", upstreamProtocol: "openai", models: "gpt-test"}}, map[int]string{0: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true,"personal":true}`})
+	for _, content := range []string{"use " + secret + " and mail alice@mycompany.com", "nothing sensitive here"} {
+		if response := privacyRequest(t, env, "/v1/chat/completions", map[string]any{"model": "gpt-test", "messages": []any{map[string]any{"role": "user", "content": content}}}); response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var masked, plain int
+	for _, entry := range waitForProxyLogs(t, env, 2) {
+		switch {
+		case entry.PrivacyMasked == nil:
+			plain++
+		case *entry.PrivacyMasked == privacy.Counts{Secret: 1, Personal: 1}:
+			masked++
+		default:
+			t.Fatalf("unexpected privacy counts %+v", *entry.PrivacyMasked)
+		}
+	}
+	if masked != 1 || plain != 1 {
+		t.Fatalf("masked logs=%d plain logs=%d, want 1 and 1", masked, plain)
+	}
+}
+
+func TestPrivacyLogCountsEachAttemptWithoutInflation(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+	var calls atomic.Int32
+	upstream := privacyCompletionServer(t, func() int {
+		if calls.Add(1) == 1 {
+			return http.StatusInternalServerError
+		}
+		return http.StatusOK
+	})
+	env := setupProxyTestEnvWithSettings(t, []testChannel{
+		{name: "privacy-retry-a", upstreamProtocol: "openai", models: "gpt-test"},
+		{name: "privacy-retry-b", upstreamProtocol: "openai", models: "gpt-test"},
+	}, map[int]string{0: upstream.URL, 1: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true}`})
+	if response := privacyRequest(t, env, "/v1/chat/completions", map[string]any{"model": "gpt-test", "messages": []any{map[string]any{"role": "user", "content": "use " + secret}}}); response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	statuses := map[int]bool{}
+	for _, entry := range waitForProxyLogs(t, env, 2) {
+		statuses[entry.StatusCode] = true
+		if entry.PrivacyMasked == nil || *entry.PrivacyMasked != (privacy.Counts{Secret: 1}) {
+			t.Fatalf("status %d privacy counts=%+v, want secret 1", entry.StatusCode, entry.PrivacyMasked)
+		}
+	}
+	if !statuses[http.StatusInternalServerError] || !statuses[http.StatusOK] {
+		t.Fatalf("attempt statuses=%v, want 500 and 200", statuses)
+	}
+	metrics := readPrivacyRuntime(t, env.server)
+	if !metrics.Enabled || metrics.MaskedRequests != 1 || metrics.MaskedSecret != 1 || metrics.BlockedRequests != 0 ||
+		metrics.DictionaryScopes != 1 || metrics.DictionaryEntries != 1 || metrics.DictionaryBytes <= 0 {
+		t.Fatalf("privacy runtime metrics=%+v, want one masked request with one secret", metrics)
+	}
+}
+
+func TestPrivacyLogNativeWebsocketCountsOnlyIncrement(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for turn := 1; turn <= 2; turn++ {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp-private-%d", turn), "status": "completed", "output": []any{}, "usage": map[string]int{"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}}}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	t.Cleanup(upstream.Close)
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "privacy-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", apiKey: "sk-upstream"}}, map[int]string{0: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true,"personal":true}`})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []map[string]any{
+		{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "use " + secret}}},
+		{"type": "response.create", "previous_response_id": "resp-private-1", "input": []any{map[string]any{"role": "user", "content": "mail alice@mycompany.com"}}},
+	} {
+		if err := conn.WriteJSON(turn); err != nil {
+			t.Fatal(err)
+		}
+		readWebsocketUntilType(t, conn, "response.completed")
+	}
+	got := map[privacy.Counts]int{}
+	for _, entry := range waitForProxyLogs(t, env, 2) {
+		if entry.PrivacyMasked == nil {
+			t.Fatalf("log without privacy counts: %+v", entry)
+		}
+		got[*entry.PrivacyMasked]++
+	}
+	if got[privacy.Counts{Secret: 1}] != 1 || got[privacy.Counts{Personal: 1}] != 1 {
+		t.Fatalf("privacy counts per turn=%v, want one secret turn and one personal increment", got)
+	}
+}
+
+func readPrivacyRuntime(t *testing.T, srv *Server) privacyRuntimeMetrics {
+	t.Helper()
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
+	srv.HandleRuntimeMetrics(c)
+	raw := mustParseAPIResponse[map[string]json.RawMessage](t, w.Body.Bytes()).Data["privacy"]
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("privacy runtime metrics: %v: %s", err, raw)
+	}
+	for _, key := range []string{"enabled", "masked_requests", "masked_secret", "masked_personal", "masked_word", "masked_custom", "restored_placeholders", "unrestored_placeholders", "blocked_requests", "dictionary_scopes", "dictionary_entries", "dictionary_bytes"} {
+		if _, ok := keys[key]; !ok {
+			t.Fatalf("privacy runtime metrics missing %q: %s", key, raw)
+		}
+		delete(keys, key)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("unexpected privacy runtime metrics keys: %s", raw)
+	}
+	var metrics privacyRuntimeMetrics
+	if err := json.Unmarshal(raw, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	return metrics
+}
+
+func TestPrivacyRuntimeCountsBlockedRequests(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	upstream := privacyCompletionServer(t, func() int {
+		calls.Add(1)
+		return http.StatusOK
+	})
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "privacy-blocked", upstreamProtocol: "openai", models: "gpt-test"}}, map[int]string{0: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true}`})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	req.Header.Set("Content-Type", "application/octet-stream")
+	response := httptest.NewRecorder()
+	env.engine.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest || calls.Load() != 0 {
+		t.Fatalf("status=%d upstream calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+	}
+	if metrics := readPrivacyRuntime(t, env.server); metrics.BlockedRequests != 1 || metrics.MaskedRequests != 0 {
+		t.Fatalf("privacy runtime metrics=%+v, want one blocked and no masked request", metrics)
 	}
 }

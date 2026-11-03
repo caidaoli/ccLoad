@@ -270,7 +270,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 					}
 					var terminalErr *responsesWebsocketTerminalError
 					if errors.As(errTurn, &terminalErr) && terminalErr.forwarded {
-						turnResult.logPrivacy()
+						turnResult.finishPrivacy()
 						return false
 					}
 					if errWrite := turnResult.writeError(conn, errTurn); errWrite != nil {
@@ -279,7 +279,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 					return false
 				}
 				s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
-				turnResult.logPrivacy()
+				turnResult.finishPrivacy()
 				return false
 			}(); shouldClose {
 				return
@@ -511,18 +511,19 @@ type responsesWebsocketTurnResult struct {
 	interrupted         bool
 	privacyOutput       *privacyResponseWriter
 	privacyRequestID    int64
+	privacyStats        *privacyStats
 }
 
-func (r responsesWebsocketTurnResult) logPrivacy() {
+func (r responsesWebsocketTurnResult) finishPrivacy() {
 	if r.privacyOutput != nil {
-		r.privacyOutput.logUnrestoredTokens(r.privacyRequestID)
+		r.privacyStats.finish(r.privacyOutput, r.privacyRequestID)
 	}
 }
 
 // Final errors are emitted after execution returns, so include them in the
 // same turn diagnostic.
 func (r responsesWebsocketTurnResult) writeError(conn *websocket.Conn, turnErr error) error {
-	defer r.logPrivacy()
+	defer r.finishPrivacy()
 	var payload []byte
 	var terminalErr *responsesWebsocketTerminalError
 	if errors.As(turnErr, &terminalErr) {
@@ -708,6 +709,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 			clientPayload, err = privacySession.MaskJSON(clientPayload)
 		}
 		if err != nil {
+			s.privacyStats.blocked.Add(1)
 			return responsesWebsocketTurnResult{}, errors.New("privacy masking failed; request was not sent")
 		}
 	}
@@ -779,6 +781,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		defer func() {
 			turnResult.privacyOutput = privacyOutput
 			turnResult.privacyRequestID = reqCtx.activeReqID
+			turnResult.privacyStats = &s.privacyStats
 		}()
 	}
 	clientReplay := false

@@ -144,6 +144,10 @@ func cloneLogEntryForSync(e *model.LogEntry) *model.LogEntry {
 		decision := *e.ReasoningDecision
 		clone.ReasoningDecision = &decision
 	}
+	if e.PrivacyMasked != nil {
+		counts := *e.PrivacyMasked
+		clone.PrivacyMasked = &counts
+	}
 	// 同步到主库时丢弃 DebugData：调试原始请求/响应体仅保留在 SQLite，
 	// 避免膨胀主库；但 logs 表主数据仍需正常同步
 	clone.DebugData = nil

@@ -172,6 +172,16 @@ func TestMySQL(t *testing.T) {
 		verifyReasoningDecisionMigrationAndRoundTrip(t, env.db, store, DialectMySQL)
 	})
 
+	t.Run("PrivacyMaskedMigrationAndRoundTrip", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		verifyPrivacyMaskedMigrationAndRoundTrip(t, env.db, store, DialectMySQL)
+	})
+
 	t.Run("FullMigration", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 
@@ -432,7 +442,7 @@ func TestMySQL(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		// 验证 logs 表的新列存在
-		expectedColumns := []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "response_model", "reasoning_decision", "log_source"}
+		expectedColumns := []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "response_model", "reasoning_decision", "privacy_masked", "log_source"}
 		for _, col := range expectedColumns {
 			var columnName string
 			err := env.db.QueryRow(

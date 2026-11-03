@@ -16,6 +16,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/privacy"
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
@@ -914,19 +915,24 @@ func TestHybridStoreDecisionMetadataReplicated(t *testing.T) {
 	t.Cleanup(func() { _ = hybrid.Close() })
 	ctx := context.Background()
 	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", ClientEffort: "xhigh", CostUnknown: true}
+	masked := &privacy.Counts{Word: 3}
 	entry := &model.LogEntry{Time: model.JSONTime{Time: time.Now()}, ClientProtocol: "system_one", ReasoningDecision: metadata,
-		Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20}
+		PrivacyMasked: masked, Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20}
 	if err := hybrid.AddLog(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
+	replicated := func(logs []*model.LogEntry) bool {
+		return len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata &&
+			logs[0].PrivacyMasked != nil && *logs[0].PrivacyMasked == *masked
+	}
 	filter := &model.LogFilter{ClientProtocol: "system_one"}
 	logs, err := hybrid.ListLogs(ctx, time.Time{}, 10, 0, filter)
-	if err != nil || len(logs) != 1 || logs[0].ReasoningDecision == nil || *logs[0].ReasoningDecision != *metadata {
+	if err != nil || !replicated(logs) {
 		t.Fatalf("SQLite metadata = %+v, error = %v", logs, err)
 	}
 	waitForCondition(t, time.Second, func() bool {
 		logs, err := primary.ListLogs(ctx, time.Time{}, 10, 0, filter)
-		return err == nil && len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata
+		return err == nil && replicated(logs)
 	})
 }
 

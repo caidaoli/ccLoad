@@ -599,6 +599,25 @@ function renderLogSourceBadge(logSource) {
   }
 }
 
+const LOG_PRIVACY_GROUPS = [
+  ['secret', 'settings.privacyRedaction.secrets'],
+  ['personal', 'settings.privacyRedaction.personal'],
+  ['word', 'settings.privacyRedaction.wordsTitle'],
+  ['custom', 'settings.privacyRedaction.rules']
+];
+
+function renderLogPrivacyBadge(entry) {
+  // privacy_masked and its group counts are omitted when zero.
+  const masked = entry.privacy_masked;
+  if (!masked) return '';
+  const groups = LOG_PRIVACY_GROUPS
+    .map(([key, labelKey]) => [t(labelKey), masked[key] || 0])
+    .filter(([, count]) => count > 0);
+  const total = groups.reduce((sum, [, count]) => sum + count, 0);
+  const title = t('logs.privacyMaskedTitle', {groups: groups.map(([label, count]) => `${label} ${count}`).join(' · ')});
+  return `<span class="log-privacy-badge" title="${escapeHtml(title)}">🛡 ${total}</span>`;
+}
+
 function canInspectDebugLog(entry) {
   const isTokenSession = typeof window.isAPITokenRole === 'function' && window.isAPITokenRole();
   // count_tokens 本地估算没有渠道，但同样可能带 debug 记录。
@@ -628,10 +647,11 @@ function reasoningDecisionDescription(entry) {
 }
 
 function buildLogMessageContent(entry) {
-  const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
+  const badgeHtml = renderLogSourceBadge(entry.log_source || 'proxy') + renderLogPrivacyBadge(entry);
+  const badges = badgeHtml ? `<span class="log-badges">${badgeHtml}</span>` : '';
   const decisionText = reasoningDecisionDescription(entry);
   const messageText = escapeHtml([entry.message, decisionText].filter(Boolean).join(' · '));
-  if (!sourceBadge && !messageText) {
+  if (!badges && !messageText) {
     return '';
   }
 
@@ -645,7 +665,7 @@ function buildLogMessageContent(entry) {
     const logIdAttr = Number.isFinite(logId) && logId > 0 ? ` data-log-id="${logId}"` : '';
     inner = `<span class="logs-message-text debug-log-link has-upstream-detail"${logIdAttr}${titleAttr}>${messageText}</span>`;
   }
-  return `${sourceBadge}${inner}`;
+  return `${badges}${inner}`;
 }
 
 function getLogCostInfo(entry) {

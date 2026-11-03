@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
@@ -860,5 +861,29 @@ func TestForwardCursorResponsesKeepsOriginalSDKErrorAfterPing(t *testing.T) {
 				t.Errorf("original SDK error missing from client stream: %s", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestForwardCursorAgentRecordsPrivacyCounts(t *testing.T) {
+	t.Parallel()
+	session := privacyOutputTestSession(t)
+	body, err := session.MaskJSON([]byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"use sk-proj-abcdefghijklmnopqrstuvwxyz123456"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newInMemoryServer(t)
+	srv.cursorRunner = &fakeCursorRunner{text: "ok"}
+	cfg := &model.Config{ID: 9, Name: "Cursor-privacy", AuthType: model.AuthTypeCursorOAuth}
+	reqCtx := &proxyRequestContext{
+		originalModel: "claude-sonnet-5", clientProtocol: protocol.OpenAI,
+		requestPath: "/v1/chat/completions", body: body,
+	}
+	result, err := srv.forwardCursorAgent(withPrivacySession(context.Background(), session), cfg, &cursorauth.Credential{AccessToken: "tok"}, reqCtx, httptest.NewRecorder())
+	if err != nil || result == nil || !result.succeeded {
+		t.Fatalf("result = %+v err = %v", result, err)
+	}
+	entry := buildProxyLogEntry(reqCtx, cfg, "claude-sonnet-5", "", http.StatusOK, 0, nil, "")
+	if entry.PrivacyMasked == nil || *entry.PrivacyMasked != (privacy.Counts{Secret: 1}) {
+		t.Fatalf("privacy counts = %+v, want secret 1", entry.PrivacyMasked)
 	}
 }

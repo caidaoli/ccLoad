@@ -14,6 +14,7 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
@@ -279,6 +280,8 @@ type fwResult struct {
 
 	// Debug日志数据（debug开启时填充，传递到日志写入管道）
 	DebugData *model.DebugLogEntry
+	// 本次尝试实际发出正文中的脱敏占位符计数（与 Debug 捕获同源）
+	PrivacyMasked privacy.Counts
 
 	ResponsesTurnResult    responsesWebsocketTurnResult
 	HasResponsesTurnResult bool
@@ -329,6 +332,7 @@ type proxyRequestContext struct {
 	attemptModelPrice       *util.CustomModelPrice // 当前渠道此模型的价格（nil 按全局价格计费）
 	attemptModel            modelRoutingSelection  // 本次渠道尝试固定的配置行
 	debugData               *model.DebugLogEntry   // Debug日志数据（debug开启时填充）
+	privacyMasked           privacy.Counts         // 当前尝试实际外发的脱敏占位符计数
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort          string
 	reasoning               *reasoningTurn

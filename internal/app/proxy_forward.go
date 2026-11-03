@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/util"
@@ -2839,6 +2840,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if err != nil && (errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded)) {
 		return nil, reqCtx.Duration().Seconds(), err
 	}
+	privacyMasked := privacySessionFromContext(ctx).CountSent(sentBody)
 
 	// [INFO] 修复（2025-12）：客户端取消时主动关闭 response body，立即中断上游传输
 	// 问题：streamCopy 中的 Read 阻塞时，无法立即响应 context 取消，上游继续生成完整响应
@@ -2868,7 +2870,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		errRes, errDur, errErr := s.handleRequestError(reqCtx, cfg, err)
 		dc.captureUpstreamError(errErr)
 		if errRes != nil {
-			errRes.DebugData = dc.buildEntry(resp)
+			errRes.DebugData, errRes.PrivacyMasked = dc.buildEntry(resp), privacyMasked
 			if usedNativeWebsocket {
 				annotateNativeWebsocketDebug(errRes.DebugData, websocketDebug)
 			}
@@ -2961,7 +2963,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
 	dc.captureUpstreamError(err)
 	if res != nil {
-		res.DebugData = dc.buildEntry(resp)
+		res.DebugData, res.PrivacyMasked = dc.buildEntry(resp), privacyMasked
 		if usedNativeWebsocket {
 			annotateNativeWebsocketDebug(res.DebugData, websocketDebug)
 		}
@@ -3253,7 +3255,7 @@ func (s *Server) forwardAttempt(
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
 	reqCtx.upstreamProtocol = upstreamProtocol
-	reqCtx.debugData = nil
+	reqCtx.debugData, reqCtx.privacyMasked = nil, privacy.Counts{}
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
 	if cfg.UsesAntigravityOAuth() && (wantsAntigravityWebSearch(reqCtx.body) || wantsAntigravityWebSearch(bodyToSend)) {
 		actualModel = antigravityWebSearchModel(actualModel)
@@ -3409,12 +3411,16 @@ func (s *Server) forwardAttempt(
 		false, upstreamWireAliases{},
 	)
 	if errors.Is(err, errPrivacyMasking) {
+		s.privacyStats.blocked.Add(1)
 		result := &proxyResult{status: http.StatusBadRequest, body: []byte(errPrivacyMasking.Error()), nextAction: cooldown.ActionReturnClient}
 		return result, result.nextAction, nil
 	}
-	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
-	if res != nil && res.DebugData != nil {
-		reqCtx.debugData = res.DebugData
+	// 传递 debug 数据与脱敏计数到 proxyRequestContext（用于日志记录）
+	if res != nil {
+		reqCtx.privacyMasked = res.PrivacyMasked
+		if res.DebugData != nil {
+			reqCtx.debugData = res.DebugData
+		}
 	}
 
 	if err == nil && cfg.UsesAntigravityOAuth() && !cfg.AntigravityCredits && res != nil && !res.ResponseCommitted && res.Status == http.StatusTooManyRequests {
@@ -3510,8 +3516,11 @@ func (s *Server) forwardAttempt(
 		)
 		bodyRepaired = true
 		plan = retryPlan
-		if res != nil && res.DebugData != nil {
-			reqCtx.debugData = res.DebugData
+		if res != nil {
+			reqCtx.privacyMasked = res.PrivacyMasked
+			if res.DebugData != nil {
+				reqCtx.debugData = res.DebugData
+			}
 		}
 		if err == nil && res != nil && res.Status >= 200 && res.Status < 300 {
 			if len(res.SSEErrorEvent) == 0 {

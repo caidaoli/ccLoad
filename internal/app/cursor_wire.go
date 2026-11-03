@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
@@ -131,7 +132,7 @@ func (s *Server) forwardCursorAgent(
 	}
 	modelID := s.resolveFinalUpstreamModel(cfg, selected, string(reqCtx.clientProtocol))
 	started := time.Now()
-	reqCtx.attemptStartTime = started
+	reqCtx.attemptStartTime, reqCtx.privacyMasked = started, privacy.Counts{}
 	if s.activeRequests != nil {
 		reqCtx.activeReqID = s.activeRequests.BeginAttempt(reqCtx.activeReqID, activeRequestAttempt{
 			StartTime:        started,
@@ -194,6 +195,10 @@ func (s *Server) forwardCursorAgent(
 	runCtx, cancelRun := context.WithCancel(runBaseCtx)
 	defer cancelRun()
 	request.Model = modelID
+	if session := privacySessionFromContext(ctx); session != nil && session.Enabled() {
+		sent, _ := json.Marshal(request)
+		reqCtx.privacyMasked = session.CountSent(sent)
+	}
 	events, err := runner.Run(runCtx, credential, request)
 	if err != nil {
 		status := http.StatusBadGateway

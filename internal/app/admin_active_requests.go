@@ -96,6 +96,7 @@ func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
 		"process":             s.processRuntimeMetrics(time.Now()),
 		"http_proxy":          s.httpRuntime.stats(),
 		"responses_websocket": stats,
+		"privacy":             s.privacyRuntimeMetrics(),
 	}
 	if provider, ok := s.store.(storage.HybridRuntimeMetricsProvider); ok {
 		data["storage"] = provider.RuntimeMetrics()

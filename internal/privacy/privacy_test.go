@@ -79,6 +79,7 @@ func TestBuiltinRules(t *testing.T) {
 		{"private", "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", "-----BEGIN"},
 		{"openai", "sk-proj-ABcDef012345678901234567890123456", "sk-proj-"},
 		{"relay", "oc_sk_ABcDef012345678901234567890123456", "oc_sk_"},
+		{"relay-letters", "oc_sk_AbCDefGHijKLmnOPqrSTuvWX", "oc_sk_"},
 		{"ark", "ark-ABcDef012345678901234567890123456", "ark-"},
 		{"github", "ghp_" + strings.Repeat("A9", 20), "ghp_"},
 		{"aws", "AKIAIOSFODNN7EXAMPLE", "AKIA"},
@@ -87,6 +88,7 @@ func TestBuiltinRules(t *testing.T) {
 		{"assignment", "API_KEY=AbC123dEf456GhI789", "AbC123"},
 		{"header", "Authorization: Bearer opaque-token-value", "opaque-token-value"},
 		{"cookie", "Cookie: session=opaquevalue123", "opaquevalue123"},
+		{"letters", "secret: CorrectHorseBatteryStaple", "CorrectHorseBatteryStaple"},
 		{"chinese", "我的密码是 786kih", "786kih"},
 		{"traditional", "密碼：hunter2", "hunter2"},
 		{"japanese", "パスワードは abc12345", "abc12345"},
@@ -126,6 +128,7 @@ func TestFalsePositives(t *testing.T) {
 		"123-45-6789", "999-00-0000", "4111111111111112", "110105194912310021",
 		"DOB: 1990-02-30", "release 1990-05-12", "00:00:00:00:00:00", "aa:bb:cc:dd:ee:ff",
 		"DE89370400440532013001", "user@package.notarealtld", "sk-this-is-a-public-documentation-example",
+		"{ key: 'blocked_requests', format: 'number' }", "labelKey: 'settings.runtimeMetrics.metric.privacyEnabled',", `"key": "dictionaryEntriesTotal"`,
 	} {
 		s := newSession(t, privacy.NewEngine(), "test", enabled())
 		out, err := s.MaskText(text)
@@ -1192,5 +1195,90 @@ func TestPreviewForcesEnabledAndListsDistinctHits(t *testing.T) {
 	}
 	if _, err := privacy.Preview(privacy.Config{Rules: []privacy.Rule{{Kind: "bad"}}}, "x"); err == nil {
 		t.Fatal("invalid config previewed")
+	}
+}
+
+func TestCountSentGroupsDistinctSentPlaceholders(t *testing.T) {
+	e := privacy.NewEngine()
+	cfg := enabled()
+	cfg.Words = []string{"Orion"}
+	cfg.Rules = []privacy.Rule{{Kind: "EMAIL", Regex: "ticket#[a-z]+"}}
+	s := newSession(t, e, "scope", cfg)
+	masked, err := s.MaskText("sk-proj-ABcDef012345678901234567890123456 alice@company.com 00:1A:2B:3C:4D:5E Orion ticket#alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := newSession(t, e, "other", cfg).MaskText("alice@mycompany.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(masked + masked + foreign + "{{CCLOAD_EMAIL_0123456789abcdef}}")
+	want := privacy.Counts{Secret: 1, Personal: 2, Word: 1, Custom: 1}
+	if got := s.CountSent(body); got != want || got.Total() != 5 {
+		t.Fatalf("CountSent = %+v total %d, want %+v; masked %q", got, got.Total(), want, masked)
+	}
+	if got := s.CountSent([]byte(masked)); got != want {
+		t.Fatalf("repeated CountSent = %+v, want %+v", got, want)
+	}
+	if got := s.SentCounts(); got != want {
+		t.Fatalf("SentCounts after repeat = %+v, want %+v", got, want)
+	}
+	extra, err := s.MaskText("alice@mycompany.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.CountSent([]byte(extra)); got != (privacy.Counts{Personal: 1}) {
+		t.Fatalf("CountSent(extra) = %+v", got)
+	}
+	if got, want := s.SentCounts(), (privacy.Counts{Secret: 1, Personal: 3, Word: 1, Custom: 1}); got != want {
+		t.Fatalf("SentCounts union = %+v, want %+v", got, want)
+	}
+
+	cfg.Enabled = false
+	disabled := newSession(t, e, "scope", cfg)
+	if got := disabled.CountSent(body); got != (privacy.Counts{}) || disabled.SentCounts() != (privacy.Counts{}) {
+		t.Fatalf("disabled session counted %+v / %+v", got, disabled.SentCounts())
+	}
+	var nilSession *privacy.Session
+	if got := nilSession.CountSent(body); got != (privacy.Counts{}) || nilSession.SentCounts() != (privacy.Counts{}) {
+		t.Fatalf("nil session counted %+v", got)
+	}
+}
+
+func TestRestoredTokensCountsObservedOccurrences(t *testing.T) {
+	s := newSession(t, privacy.NewEngine(), "scope", enabled())
+	p, err := s.MaskText("alice@company.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := s.ObserveRestoration()
+	observer.RestoreText(p + " " + p + " {{CCLOAD_broken")
+	if observer.RestoredTokens() != 2 || observer.UnrestoredTokens() != 1 {
+		t.Fatalf("restored %d unrestored %d, want 2 and 1", observer.RestoredTokens(), observer.UnrestoredTokens())
+	}
+	s.RestoreText(p)
+	if s.RestoredTokens() != 0 {
+		t.Fatalf("internal restore counted %d", s.RestoredTokens())
+	}
+}
+
+func TestEngineStatsReportsLiveDictionary(t *testing.T) {
+	e := privacy.NewEngine()
+	now := time.Now()
+	privacy.SetClock(e, func() time.Time { return now })
+	if scopes, entries, size := e.Stats(); scopes != 0 || entries != 0 || size != 0 {
+		t.Fatalf("new engine Stats = %d %d %d", scopes, entries, size)
+	}
+	for _, scope := range []string{"a", "b"} {
+		if _, err := newSession(t, e, scope, enabled()).MaskText("alice@company.com"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if scopes, entries, size := e.Stats(); scopes != 2 || entries != 2 || size <= 0 {
+		t.Fatalf("Stats = %d %d %d, want 2 2 >0", scopes, entries, size)
+	}
+	privacy.SetClock(e, func() time.Time { return now.Add(25 * time.Hour) })
+	if scopes, entries, size := e.Stats(); scopes != 0 || entries != 0 || size != 0 {
+		t.Fatalf("expired Stats = %d %d %d", scopes, entries, size)
 	}
 }

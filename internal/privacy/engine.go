@@ -96,8 +96,10 @@ type Session struct {
 	mu        sync.RWMutex
 	known     knownIndex
 
-	observe    bool
-	unrestored atomic.Uint64
+	sent map[string]string // placeholder → category sent upstream, guarded by mu
+
+	observe              bool
+	restored, unrestored atomic.Uint64
 }
 
 // Session returns a request session. policy must not be nil; it stays fixed
@@ -483,6 +485,68 @@ func (s *Session) ObserveRestoration() *Session {
 // could not be restored, including damaged and truncated placeholders.
 func (s *Session) UnrestoredTokens() uint64 { return s.unrestored.Load() }
 
+// RestoredTokens counts observed placeholder occurrences that were restored.
+func (s *Session) RestoredTokens() uint64 { return s.restored.Load() }
+
+// Counts groups distinct placeholders by settings category.
+type Counts struct {
+	Secret   int `json:"secret,omitempty"`
+	Personal int `json:"personal,omitempty"`
+	Word     int `json:"word,omitempty"`
+	Custom   int `json:"custom,omitempty"`
+}
+
+// Total returns the number of counted placeholders.
+func (c Counts) Total() int { return c.Secret + c.Personal + c.Word + c.Custom }
+
+func (c *Counts) add(category string) {
+	switch category {
+	case "":
+		c.Secret++
+	case "word":
+		c.Word++
+	case "custom":
+		c.Custom++
+	default: // personal and the optional personal kinds
+		c.Personal++
+	}
+}
+
+// CountSent counts the distinct live placeholders of this scope in a body sent
+// upstream and adds them to the request's sent set. A disabled policy counts
+// nothing: placeholders it passes through were masked by an earlier policy.
+func (s *Session) CountSent(body []byte) Counts {
+	if s == nil || !s.policy.Enabled() || !bytes.Contains(body, []byte("{{CCLOAD_")) {
+		return Counts{}
+	}
+	found := s.engine.categories(s.scope, body)
+	var counts Counts
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sent == nil {
+		s.sent = make(map[string]string, len(found))
+	}
+	for placeholder, category := range found {
+		counts.add(category)
+		s.sent[placeholder] = category
+	}
+	return counts
+}
+
+// SentCounts returns the union of all bodies passed to CountSent.
+func (s *Session) SentCounts() Counts {
+	var counts Counts
+	if s == nil {
+		return counts
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, category := range s.sent {
+		counts.add(category)
+	}
+	return counts
+}
+
 // RestoreText restores only placeholders owned by this authenticated scope.
 func (s *Session) RestoreText(text string) string {
 	return s.restore(text, false)
@@ -505,13 +569,14 @@ func (s *Session) restoreMode(text string, escaped, syntaxOnly bool) string {
 	spans := placeholderPattern.FindAllStringIndex(text, -1)
 	values := s.engine.resolve(s.scope, text, spans, syntaxOnly)
 	if s.observe && !syntaxOnly {
-		missing := strings.Count(text, "{{CCLOAD_")
+		resolved := 0
 		for _, span := range spans {
 			if _, ok := values[text[span[0]:span[1]]]; ok {
-				missing--
+				resolved++
 			}
 		}
-		s.unrestored.Add(uint64(missing))
+		s.restored.Add(uint64(resolved))
+		s.unrestored.Add(uint64(strings.Count(text, "{{CCLOAD_") - resolved))
 	}
 	if len(values) == 0 {
 		return text
@@ -558,6 +623,35 @@ func (e *Engine) resolve(scope [32]byte, text string, spans [][]int, syntaxOnly 
 		held.used = now
 	}
 	return out
+}
+
+// categories maps this scope's live placeholders in body to their category
+// without extending their lifetime.
+func (e *Engine) categories(scope [32]byte, body []byte) map[string]string {
+	spans := placeholderPattern.FindAllIndex(body, -1)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	held := e.scopes[scope]
+	if held == nil {
+		return nil
+	}
+	now := e.now()
+	out := make(map[string]string)
+	for _, span := range spans {
+		placeholder := body[span[0]:span[1]]
+		if item := held.placeholders[string(placeholder)]; item != nil && now.Sub(item.used) < mappingTTL {
+			out[item.placeholder] = item.category
+		}
+	}
+	return out
+}
+
+// Stats reports the live dictionary: scopes, values and their held bytes.
+func (e *Engine) Stats() (scopes, entries, size int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.prune(e.now())
+	return len(e.scopes), e.entries, e.bytes
 }
 
 // jsonQuote encodes s as a JSON string without HTML escaping.

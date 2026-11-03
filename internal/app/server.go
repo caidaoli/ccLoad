@@ -167,6 +167,7 @@ type Server struct {
 	// 动态思考等级与隐私配置整份替换发布，代理路径每次读取当前快照。
 	privacyPolicy          atomic.Pointer[privacy.Policy]
 	privacyEngine          *privacy.Engine
+	privacyStats           privacyStats
 	reasoningAuto          atomic.Pointer[model.ReasoningAutoConfig]
 	reasoningStates        reasoningStateStore
 	reasoningDecisionSlots chan struct{}

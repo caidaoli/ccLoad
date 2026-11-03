@@ -539,6 +539,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			// estimate and its debug record match the other count_tokens fallbacks.
 			masked, errMask := maskPrivacyBody(s.privacySession(c), all, c.Request.Header.Get("Content-Type"))
 			if errMask != nil {
+				s.privacyStats.blocked.Add(1)
 				writeLocalProxyError(c, http.StatusBadRequest, errPrivacyMasking.Error())
 				return
 			}
@@ -612,6 +613,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		// originalReasoningBody only feeds local turn classification and never
 		// leaves the process, so it is not masked.
 		if err != nil {
+			s.privacyStats.blocked.Add(1)
 			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
 			return
 		}
@@ -625,7 +627,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			if reqCtx != nil {
 				requestID = reqCtx.activeReqID
 			}
-			output.logUnrestoredTokens(requestID)
+			s.privacyStats.finish(output, requestID)
 		}()
 	}
 
@@ -753,6 +755,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if privacySession != nil && len(reqCtx.responsesReplayBody) > 0 {
 		reqCtx.responsesReplayBody, err = privacySession.MaskJSON(reqCtx.responsesReplayBody)
 		if err != nil {
+			s.privacyStats.blocked.Add(1)
 			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
 			return
 		}

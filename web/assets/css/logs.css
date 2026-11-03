@@ -474,10 +474,18 @@
       max-width: 90px;
     }
 
-    .log-source-badge {
+    .log-badges {
       position: absolute;
       top: 2px;
       right: 4px;
+      display: inline-flex;
+      gap: 3px;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .log-source-badge,
+    .log-privacy-badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -488,8 +496,18 @@
       font-weight: 700;
       letter-spacing: 0.01em;
       box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
-      pointer-events: none;
-      z-index: 1;
+    }
+
+    .log-privacy-badge {
+      color: #6d28d9;
+      background: #ede9fe;
+      pointer-events: auto;
+      cursor: help;
+    }
+
+    html[data-resolved-theme="dark"] .log-privacy-badge {
+      color: #c4b5fd;
+      background: rgba(139, 92, 246, 0.2);
     }
 
     .logs-table .logs-col-message {

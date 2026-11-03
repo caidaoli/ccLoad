@@ -278,6 +278,10 @@ func buildProxyLogEntry(
 		entry.Message += " [credits]"
 	}
 	entry.ReasoningDecision = reqCtx.reasoningLogMetadata()
+	if reqCtx.privacyMasked.Total() > 0 {
+		masked := reqCtx.privacyMasked
+		entry.PrivacyMasked = &masked
+	}
 	if reqCtx.countTokens() {
 		entry.LogSource = model.LogSourceCountTokens
 		entry.Cost = 0

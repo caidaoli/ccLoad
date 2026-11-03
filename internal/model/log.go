@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/privacy"
 )
 
 // LogSource* constants define persisted log sources plus special filter aliases.
@@ -95,6 +97,7 @@ type LogEntry struct {
 	ServiceTier          string             `json:"service_tier,omitempty"`       // 上游 service_tier/speed；Codex ultrafast 按模型计10倍
 	CodexHasCredits      bool               `json:"codex_has_credits,omitempty"`  // 窗口耗尽且使用购买额度，排除窗口成本对账
 	ReasoningDecision    *ReasoningDecision `json:"reasoning_decision,omitempty"`
+	PrivacyMasked        *privacy.Counts    `json:"privacy_masked,omitempty"` // 本次尝试实际外发的脱敏占位符按组计数
 	ThinkingEffort       string             `json:"thinking_effort,omitempty"`
 
 	// Token统计（2025-11新增，支持Claude API usage字段）

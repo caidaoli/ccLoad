@@ -219,6 +219,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("service_tier VARCHAR(20) NOT NULL DEFAULT ''"). // OpenAI service_tier: priority/flex
 		Column("thinking_effort VARCHAR(32) NOT NULL DEFAULT ''").
 		Column("reasoning_decision TEXT NULL").
+		Column("privacy_masked TEXT NULL").
 		Column("input_tokens INT NOT NULL DEFAULT 0").
 		Column("output_tokens INT NOT NULL DEFAULT 0").
 		Column("reasoning_tokens INT NOT NULL DEFAULT 0").

@@ -173,12 +173,29 @@ func namesCode(v string) bool {
 	if len(words) < 2 {
 		return false
 	}
+	// Word-shaped names such as i18n keys and snake_case fields are code, not credentials.
+	if wordShaped(v) {
+		return true
+	}
 	for _, w := range words {
 		if strings.Contains(" token tokens secret secrets password passwd pwd key keys apikey credential credentials ", " "+strings.TrimRight(w, "0123456789")+" ") {
 			return true
 		}
 	}
 	return false
+}
+
+var wordSegment = regexp.MustCompile(`^[a-z]+(?:[A-Z][a-z]+)*$`)
+
+// wordShaped reports whether every _/. segment is a lowercase or lowerCamel
+// word run; random tokens almost always contain uppercase runs or digits.
+func wordShaped(v string) bool {
+	for _, seg := range strings.FieldsFunc(v, func(r rune) bool { return r == '_' || r == '.' }) {
+		if !wordSegment.MatchString(seg) {
+			return false
+		}
+	}
+	return true
 }
 
 func pathValue(v string) bool {

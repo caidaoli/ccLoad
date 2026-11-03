@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/storage/schema"
 	sqlstore "ccLoad/internal/storage/sql"
 
@@ -2186,7 +2187,7 @@ func TestEnsureLogsNewColumns_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqliteExistingColumns: %v", err)
 	}
-	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model", "response_model", "reasoning_decision", "log_source"} {
+	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model", "response_model", "reasoning_decision", "privacy_masked", "log_source"} {
 		if !cols[col] {
 			t.Errorf("column %s not found in logs", col)
 		}
@@ -2549,6 +2550,51 @@ func TestReasoningDecisionMigrationAndRoundTripSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyReasoningDecisionMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+func TestPrivacyMaskedMigrationAndRoundTripSQLite(t *testing.T) {
+	db := openTestDB(t)
+	if err := migrate(context.Background(), db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	verifyPrivacyMaskedMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+func verifyPrivacyMaskedMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "legacy", StatusCode: 200, Message: "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE logs DROP COLUMN privacy_masked"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := migrate(ctx, db, dialect); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts := &privacy.Counts{Secret: 2, Personal: 1}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, Model: "masked", StatusCode: 200, Message: "masked", PrivacyMasked: counts},
+		{Time: model.JSONTime{Time: now}, Model: "plain", StatusCode: 200, Message: "plain"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]*privacy.Counts{"legacy": nil, "masked": counts, "plain": nil} {
+		logs, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{Model: name})
+		if err != nil || len(logs) != 1 {
+			t.Fatalf("%s logs: %+v, error = %v", name, logs, err)
+		}
+		if got := logs[0].PrivacyMasked; (got == nil) != (want == nil) || got != nil && *got != *want {
+			t.Fatalf("%s privacy_masked = %+v, want %+v", name, got, want)
+		}
+	}
+	var raw sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT privacy_masked FROM logs WHERE model = 'plain'").Scan(&raw); err != nil || raw.Valid {
+		t.Fatalf("plain privacy_masked = %+v, error = %v", raw, err)
+	}
 }
 
 func verifyReasoningDecisionMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {

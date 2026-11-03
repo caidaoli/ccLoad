@@ -169,6 +169,16 @@ func TestPostgres(t *testing.T) {
 		verifyReasoningDecisionMigrationAndRoundTrip(t, env.db, store, DialectPostgres)
 	})
 
+	t.Run("PrivacyMaskedMigrationAndRoundTrip", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		verifyPrivacyMaskedMigrationAndRoundTrip(t, env.db, store, DialectPostgres)
+	})
+
 	t.Run("FullMigration", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 
@@ -294,7 +304,7 @@ func TestPostgres(t *testing.T) {
 			t.Logf("列 %s.%s 存在", table, col)
 		}
 
-		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "response_model", "reasoning_decision", "log_source", "upstream_websocket"} {
+		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "response_model", "reasoning_decision", "privacy_masked", "log_source", "upstream_websocket"} {
 			checkCol("logs", col)
 		}
 		for _, col := range []string{

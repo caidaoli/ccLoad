@@ -190,6 +190,9 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 	if err := ensureColumn(ctx, db, dialect, "logs", "reasoning_decision", "TEXT NULL", "TEXT NULL"); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, dialect, "logs", "privacy_masked", "TEXT NULL", "TEXT NULL"); err != nil {
+		return err
+	}
 	switch dialect {
 	case DialectMySQL:
 		if err := ensureLogsMinuteBucketMySQL(ctx, db); err != nil {

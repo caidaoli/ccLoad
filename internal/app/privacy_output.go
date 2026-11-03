@@ -23,6 +23,7 @@ import (
 // original order even when independent content channels are interleaved.
 type privacyResponseWriter struct {
 	http.ResponseWriter
+	session     *privacy.Session // masking session: what this request sent upstream
 	observer    *privacy.Session
 	pending     []byte
 	frames      []*privacyOutputFrame
@@ -38,7 +39,7 @@ type privacyResponseWriter struct {
 func newPrivacyResponseWriter(w http.ResponseWriter, session *privacy.Session) *privacyResponseWriter {
 	output := &privacyResponseWriter{ResponseWriter: w, channels: make(map[string]*privacyOutputChannel)}
 	if session != nil {
-		output.observer = session.ObserveRestoration()
+		output.session, output.observer = session, session.ObserveRestoration()
 	}
 	return output
 }
