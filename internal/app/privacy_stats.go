@@ -10,6 +10,7 @@ import (
 type privacyStats struct {
 	maskedRequests, maskedSecret, maskedPersonal, maskedWord, maskedCustom atomic.Uint64
 	restored, unrestored, blocked                                          atomic.Uint64
+	scanned, maskNanos                                                     atomic.Uint64
 }
 
 // finish records one HTTP request or Responses WebSocket turn. The masked
@@ -19,6 +20,10 @@ func (p *privacyStats) finish(output *privacyResponseWriter, requestID int64) {
 	count := output.observer.UnrestoredTokens()
 	p.restored.Add(output.observer.RestoredTokens())
 	p.unrestored.Add(count)
+	if d := output.session.MaskDuration(); d > 0 {
+		p.scanned.Add(1)
+		p.maskNanos.Add(uint64(d))
+	}
 	if sent := output.session.SentCounts(); sent.Total() > 0 {
 		p.maskedRequests.Add(1)
 		p.maskedSecret.Add(uint64(sent.Secret))
@@ -42,6 +47,9 @@ type privacyRuntimeMetrics struct {
 	RestoredPlaceholders   uint64 `json:"restored_placeholders"`
 	UnrestoredPlaceholders uint64 `json:"unrestored_placeholders"`
 	BlockedRequests        uint64 `json:"blocked_requests"`
+	// MaskAvgNs is the mean masking time per scanned HTTP request or WS turn,
+	// summed over its attempts and including turns with nothing replaced.
+	MaskAvgNs uint64 `json:"mask_avg_ns"`
 	// The dictionary excludes one-off engines used by requests without identity.
 	DictionaryScopes  int `json:"dictionary_scopes"`
 	DictionaryEntries int `json:"dictionary_entries"`
@@ -51,6 +59,10 @@ type privacyRuntimeMetrics struct {
 func (s *Server) privacyRuntimeMetrics() privacyRuntimeMetrics {
 	scopes, entries, size := s.privacyEngine.Stats()
 	p := &s.privacyStats
+	var maskAvg uint64
+	if scanned := p.scanned.Load(); scanned > 0 {
+		maskAvg = p.maskNanos.Load() / scanned
+	}
 	return privacyRuntimeMetrics{
 		Enabled:                s.privacyPolicy.Load().Enabled(),
 		MaskedRequests:         p.maskedRequests.Load(),
@@ -61,6 +73,7 @@ func (s *Server) privacyRuntimeMetrics() privacyRuntimeMetrics {
 		RestoredPlaceholders:   p.restored.Load(),
 		UnrestoredPlaceholders: p.unrestored.Load(),
 		BlockedRequests:        p.blocked.Load(),
+		MaskAvgNs:              maskAvg,
 		DictionaryScopes:       scopes,
 		DictionaryEntries:      entries,
 		DictionaryBytes:        size,

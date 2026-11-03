@@ -100,6 +100,7 @@ type Session struct {
 
 	observe              bool
 	restored, unrestored atomic.Uint64
+	masking              atomic.Int64 // nanoseconds spent in MaskText and MaskJSON
 }
 
 // Session returns a request session. policy must not be nil; it stays fixed
@@ -140,6 +141,16 @@ func (s *Session) MaskText(text string) (string, error) {
 	if !s.Enabled() {
 		return text, nil
 	}
+	defer s.addMaskTime(time.Now())
+	return s.maskText(text)
+}
+
+// MaskDuration returns the total time this session spent in MaskText and MaskJSON.
+func (s *Session) MaskDuration() time.Duration { return time.Duration(s.masking.Load()) }
+
+func (s *Session) addMaskTime(start time.Time) { s.masking.Add(int64(time.Since(start))) }
+
+func (s *Session) maskText(text string) (string, error) {
 	if len(text) > maxTextBytes {
 		return "", errors.New("privacy text exceeds 64 MiB")
 	}

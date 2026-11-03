@@ -1002,6 +1002,7 @@ const runtimeMetricDomains = [
     metrics: [
       { key: 'enabled', labelKey: 'settings.runtimeMetrics.metric.privacyEnabled', format: 'boolean' },
       { key: 'masked_requests', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedRequests' },
+      { key: 'mask_avg_ns', labelKey: 'settings.runtimeMetrics.metric.privacyMaskAvg', format: 'durationNs', zeroUnavailable: true },
       { key: 'masked_secret', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedSecret' },
       { key: 'masked_personal', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedPersonal' },
       { key: 'masked_word', labelKey: 'settings.runtimeMetrics.metric.privacyMaskedWord' },
@@ -2032,6 +2033,7 @@ function formatRuntimeSeconds(value) {
 function formatRuntimeDurationNs(value) {
   const numeric = normalizeRuntimeMetric(value);
   if (numeric === null) return '—';
+  if (numeric < 1e6) return `${formatRuntimeDecimal(numeric / 1e3, 1)} µs`;
   if (numeric < 1e9) return `${formatRuntimeDecimal(numeric / 1e6, 1)} ms`;
   return formatRuntimeDuration(numeric / 1e9);
 }

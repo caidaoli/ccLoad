@@ -658,7 +658,7 @@ func TestPrivacyLogCountsEachAttemptWithoutInflation(t *testing.T) {
 		t.Fatalf("attempt statuses=%v, want 500 and 200", statuses)
 	}
 	metrics := readPrivacyRuntime(t, env.server)
-	if !metrics.Enabled || metrics.MaskedRequests != 1 || metrics.MaskedSecret != 1 || metrics.BlockedRequests != 0 ||
+	if !metrics.Enabled || metrics.MaskedRequests != 1 || metrics.MaskedSecret != 1 || metrics.BlockedRequests != 0 || metrics.MaskAvgNs == 0 ||
 		metrics.DictionaryScopes != 1 || metrics.DictionaryEntries != 1 || metrics.DictionaryBytes <= 0 {
 		t.Fatalf("privacy runtime metrics=%+v, want one masked request with one secret", metrics)
 	}
@@ -722,7 +722,7 @@ func readPrivacyRuntime(t *testing.T, srv *Server) privacyRuntimeMetrics {
 	if err := json.Unmarshal(raw, &keys); err != nil {
 		t.Fatalf("privacy runtime metrics: %v: %s", err, raw)
 	}
-	for _, key := range []string{"enabled", "masked_requests", "masked_secret", "masked_personal", "masked_word", "masked_custom", "restored_placeholders", "unrestored_placeholders", "blocked_requests", "dictionary_scopes", "dictionary_entries", "dictionary_bytes"} {
+	for _, key := range []string{"enabled", "masked_requests", "masked_secret", "masked_personal", "masked_word", "masked_custom", "restored_placeholders", "unrestored_placeholders", "blocked_requests", "mask_avg_ns", "dictionary_scopes", "dictionary_entries", "dictionary_bytes"} {
 		if _, ok := keys[key]; !ok {
 			t.Fatalf("privacy runtime metrics missing %q: %s", key, raw)
 		}
@@ -754,7 +754,7 @@ func TestPrivacyRuntimeCountsBlockedRequests(t *testing.T) {
 	if response.Code != http.StatusBadRequest || calls.Load() != 0 {
 		t.Fatalf("status=%d upstream calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
 	}
-	if metrics := readPrivacyRuntime(t, env.server); metrics.BlockedRequests != 1 || metrics.MaskedRequests != 0 {
-		t.Fatalf("privacy runtime metrics=%+v, want one blocked and no masked request", metrics)
+	if metrics := readPrivacyRuntime(t, env.server); metrics.BlockedRequests != 1 || metrics.MaskedRequests != 0 || metrics.MaskAvgNs != 0 {
+		t.Fatalf("privacy runtime metrics=%+v, want one blocked and no masked or timed request", metrics)
 	}
 }

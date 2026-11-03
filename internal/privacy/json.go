@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -54,6 +55,7 @@ func (s *Session) MaskJSON(body []byte) ([]byte, error) {
 	if !s.Enabled() {
 		return body, nil
 	}
+	defer s.addMaskTime(time.Now())
 	return s.transformJSON(body, false)
 }
 
@@ -312,7 +314,7 @@ func (s *Session) walkString(value gjson.Result, restore bool, ctx jsonContext, 
 	case ctx.data && s.policy.config.Secrets && len(item) >= 8 && secretName(ctx.key) && realValue(item) && !s.policy.allowed(item):
 		out, err = s.apply(item, []match{{0, len(item), "SECRET", ""}})
 	default:
-		out, err = s.MaskText(item)
+		out, err = s.maskText(item)
 	}
 	if err != nil || out == value.Str {
 		return err
