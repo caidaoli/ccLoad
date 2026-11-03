@@ -820,6 +820,60 @@ func TestKnownPhoneRespectsIdentifierContext(t *testing.T) {
 	}
 }
 
+// gjson pairs an unpaired surrogate escape with the next \u escape, dropping
+// that character; upstream decoders keep it.
+func TestMessageTextDecodesUnpairedSurrogatesLikeEncodingJSON(t *testing.T) {
+	for _, tc := range []struct{ name, wire, want string }{
+		{"lone word", `x \ud800\u0073ecret`, "x �{{WORD}}"},
+		{"with another hit", `password=hello123world \udc00\u0073ecret`, "password={{SECRET}} �{{WORD}}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := enabled()
+			cfg.Words = []string{"secret"}
+			s := newSession(t, privacy.NewEngine(), "surrogate", cfg)
+			body := []byte(`{"messages":[{"role":"user","content":"` + tc.wire + `"}]}`)
+			masked, err := s.MaskJSON(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Messages []struct{ Content string } `json:"messages"`
+			}
+			if err := json.Unmarshal(masked, &got); err != nil {
+				t.Fatal(err)
+			}
+			content := got.Messages[0].Content
+			if shape := regexp.MustCompile(`\{\{CCLOAD_([A-Z]+)_[a-f0-9]{16}\}\}`).ReplaceAllString(content, "{{$1}}"); shape != tc.want {
+				t.Fatalf("upstream content = %q, want %q", content, tc.want)
+			}
+			var original string
+			if err := json.Unmarshal([]byte(`"`+tc.wire+`"`), &original); err != nil {
+				t.Fatal(err)
+			}
+			if restored := s.RestoreText(content); restored != original {
+				t.Fatalf("restored %q, want %q", restored, original)
+			}
+		})
+	}
+}
+
+// A known value displaced by an overlapping detection must not hide a later
+// known value that overlaps it.
+func TestKnownValuesKeepOverlappingCandidates(t *testing.T) {
+	s := newSession(t, privacy.NewEngine(), "overlap", enabled())
+	learn := `{"messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"password\":\"alpha bravo\",\"token\":\"bravo charlie\"}"}}]}]}`
+	if _, err := s.MaskJSON([]byte(learn)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.MaskText("password=Z9pQ7mV3-alpha bravo charlie")
+	if err != nil || strings.Contains(out, "bravo") || strings.Contains(out, "charlie") {
+		t.Fatalf("known value left in clear: %q %v", out, err)
+	}
+	if restored := s.RestoreText(out); restored != "password=Z9pQ7mV3-alpha bravo charlie" {
+		t.Fatalf("restored %q", restored)
+	}
+}
+
 func TestCustomRulesIndependentAndRemovedRulesDoNotRemask(t *testing.T) {
 	e := privacy.NewEngine()
 	cfg := privacy.DefaultConfig()

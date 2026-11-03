@@ -245,12 +245,15 @@ func (w *privacyResponseWriter) addFrame(wire []byte) error {
 	return w.drainFrames()
 }
 
-// collectField reports whether the frame continues channel with new text.
-func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gjson.Result, channel string, arguments bool) bool {
+// A held placeholder prefix stays with its channel until the text resumes or
+// the channel ends: clients concatenate a choice's or candidate's text around
+// tool calls, so even "{" may continue after one. Releasing it on a switch
+// would trade a rare delay for a placeholder leaked to the client.
+func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gjson.Result, channel string, arguments bool) {
 	if value.Type != gjson.String {
-		return false
+		return
 	}
-	field := &privacyOutputField{frame: frame, index: value.Index, value: value.String()}
+	field := &privacyOutputField{frame: frame, index: value.Index, value: privacy.JSONString(value)}
 	frame.fields = append(frame.fields, field)
 	state := w.channels[channel]
 	if state == nil {
@@ -258,7 +261,6 @@ func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gj
 		w.channels[channel] = state
 	}
 	state.feed(field)
-	return field.value != ""
 }
 
 func privacyOutputIndex(value gjson.Result, fallback int) string {
@@ -274,11 +276,8 @@ func (w *privacyResponseWriter) collectFields(frame *privacyOutputFrame, root gj
 	for index, choice := range root.Get("choices").Array() {
 		channel := "chat/" + privacyOutputIndex(choice.Get("index"), index) + "/"
 		delta := choice.Get("delta")
-		var active []string
 		collect := func(value gjson.Result, key string, arguments bool) {
-			if w.collectField(frame, value, channel+key, arguments) {
-				active = append(active, channel+key)
-			}
+			w.collectField(frame, value, channel+key, arguments)
 		}
 		for _, key := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
 			collect(delta.Get(key), key, false)
@@ -290,19 +289,14 @@ func (w *privacyResponseWriter) collectFields(frame *privacyOutputFrame, root gj
 			collect(tool.Get("function.arguments"), "tool/"+privacyOutputIndex(tool.Get("index"), toolIndex), true)
 		}
 		collect(delta.Get("function_call.arguments"), "function", true)
-		if len(active) > 0 {
-			w.releaseSwitchedChannels(channel, active)
-		}
 	}
 	for candidateIndex, candidate := range root.Get("candidates").Array() {
 		// Clients concatenate a candidate's answer parts, so a placeholder may
-		// continue in the next part; a thought or call part ends the text.
+		// continue in a later text part, even after a call part.
 		channel := "gemini/" + privacyOutputIndex(candidate.Get("index"), candidateIndex) + "/text"
 		for _, part := range candidate.Get("content.parts").Array() {
-			if text := part.Get("text"); text.Type == gjson.String && !part.Get("thought").Bool() {
-				w.collectField(frame, text, channel, false)
-			} else {
-				w.releaseChannels(channel)
+			if !part.Get("thought").Bool() {
+				w.collectField(frame, part.Get("text"), channel, false)
 			}
 		}
 	}
@@ -350,19 +344,6 @@ func (w *privacyResponseWriter) releaseTerminalChannels(event string, root gjson
 			item = root.Get("item.id").String()
 		}
 		w.releaseChannels("responses/" + item + "/")
-	}
-}
-
-// releaseSwitchedChannels ends a choice's text channels once the model writes
-// elsewhere: a held placeholder prefix there can no longer be completed, and
-// would otherwise delay every later event until the choice finishes. Tool
-// arguments end with their call.
-func (w *privacyResponseWriter) releaseSwitchedChannels(prefix string, active []string) {
-	for key, channel := range w.channels {
-		if strings.HasPrefix(key, prefix) && !channel.arguments && !slices.Contains(active, key) {
-			channel.release()
-			delete(w.channels, key)
-		}
 	}
 }
 
@@ -463,13 +444,15 @@ func privacyOutputReplace(pieces []privacyOutputPiece, start, end int, restored 
 	}
 }
 
+const privacyPlaceholderPrefix = "{{CCLOAD_"
+
 // Return a complete token's length, or whether the entire input could still
 // become a token. The bounded grammar avoids holding arbitrary model prose.
 func privacyOutputPlaceholder(text string) (int, bool) {
 	if len(text) == 0 || text[0] != '{' {
 		return 0, false
 	}
-	const prefix = "{{CCLOAD_"
+	const prefix = privacyPlaceholderPrefix
 	incomplete := false
 	for kindLength := 1; kindLength <= 24; kindLength++ {
 		length := len(prefix) + kindLength + 1 + 16 + 2
@@ -522,7 +505,7 @@ func (w *privacyResponseWriter) drainFrames() error {
 }
 
 func (f *privacyOutputFrame) restore(observer *privacy.Session) ([]byte, error) {
-	if !bytes.Contains(f.data, []byte("{{CCLOAD_")) && !slices.ContainsFunc(f.fields, func(field *privacyOutputField) bool {
+	if !bytes.Contains(f.data, []byte(privacyPlaceholderPrefix)) && !slices.ContainsFunc(f.fields, func(field *privacyOutputField) bool {
 		return len(field.edits) > 0
 	}) {
 		return f.wire, nil

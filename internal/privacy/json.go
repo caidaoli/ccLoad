@@ -243,22 +243,42 @@ func (s *Session) walkObject(members []jsonMember, restore bool, parent jsonCont
 	return nil
 }
 
+// JSONString decodes a string value from a valid document as encoding/json
+// does. gjson keeps invalid UTF-8 bytes and pairs an unpaired surrogate escape
+// with the next \u escape, dropping that character, so matching or rewriting
+// its result would miss text that upstream decoders still see.
+func JSONString(value gjson.Result) string {
+	text := value.Str
+	if utf8.ValidString(text) && !surrogateEscape(value.Raw) {
+		return text
+	}
+	_ = json.Unmarshal([]byte(value.Raw), &text) // the document was validated
+	return text
+}
+
+// surrogateEscape reports a \uD800-\uDFFF escape. An escaped backslash before
+// "ud8" only costs a redundant decode.
+func surrogateEscape(raw string) bool {
+	for {
+		i := strings.Index(raw, `\u`)
+		if i < 0 || i+3 >= len(raw) {
+			return false
+		}
+		if c := raw[i+3] | 0x20; raw[i+2]|0x20 == 'd' && (c == '8' || c == '9' || c >= 'a' && c <= 'f') {
+			return true
+		}
+		raw = raw[i+2:]
+	}
+}
+
 func (s *Session) walkString(value gjson.Result, restore bool, ctx jsonContext, p *jsonPatcher) error {
+	item := JSONString(value)
+	value.Str = item
 	if replacement, ok := p.replacements[value.Index]; ok {
-		if replacement == value.Str {
+		if replacement == item {
 			return nil
 		}
 		return p.replace(value, jsonQuote(replacement))
-	}
-	item := value.Str
-	if p.decoded != nil || ctx.textKeys {
-		// Match encoding/json's treatment of unpaired UTF-16 surrogates.
-		if strings.ContainsRune(value.Raw, '\\') || !utf8.ValidString(item) {
-			if err := json.Unmarshal([]byte(value.Raw), &item); err != nil {
-				return err
-			}
-		}
-		value.Str = item
 	}
 	if strings.HasPrefix(item, "data:") || ctx.definition && ctx.key != "description" {
 		return nil
@@ -594,8 +614,7 @@ func (s *Session) normalizeRawMatches(value gjson.Result, p *jsonPatcher) {
 			m.start, spans[point.index][0] = value.Index+raw, decoded
 		}
 	}
-	var text string
-	_ = json.Unmarshal([]byte(value.Raw), &text) // the document was validated
+	text := JSONString(value)
 	for i, index := range indices {
 		m := &p.rawMatches[index]
 		m.value = text[spans[i][0]:spans[i][1]]

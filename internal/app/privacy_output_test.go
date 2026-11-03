@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -384,7 +385,7 @@ func TestPrivacyResponseWriterReasoningKeepsPlaceholders(t *testing.T) {
 	}
 }
 
-func TestPrivacyResponseWriterChannelSwitchReleasesHeldText(t *testing.T) {
+func TestPrivacyResponseWriterChannelSwitchKeepsUnmatchedPrefix(t *testing.T) {
 	chat := func(delta map[string]any) string {
 		return "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta}}}) + "\n\n"
 	}
@@ -401,13 +402,84 @@ func TestPrivacyResponseWriterChannelSwitchReleasesHeldText(t *testing.T) {
 			writer := newPrivacyResponseWriter(recorder, privacyOutputTestSession(t))
 			writer.Header().Set("Content-Type", "text/event-stream")
 			privacyOutputTestWrite(t, writer, wire, 9)
-			// The trailing "{" could start a placeholder, but the model moved
-			// on; the rest of the stream must not wait for the finish event.
-			if recorder.Body.String() != wire {
-				t.Fatalf("stream held after channel switch: %q", recorder.Body.String())
-			}
+			// The trailing "{" could still start a placeholder; once the stream
+			// ends without one, every event leaves unchanged and in order.
 			if err := writer.Finish(); err != nil || recorder.Body.String() != wire {
-				t.Fatalf("Finish changed output: %q, %v", recorder.Body.String(), err)
+				t.Fatalf("Finish output = %q, %v", recorder.Body.String(), err)
+			}
+		})
+	}
+}
+
+// Clients concatenate a choice's text around tool calls, so a held prefix that
+// is already a placeholder must survive the switch and join its continuation.
+func TestPrivacyResponseWriterPlaceholderResumesAfterToolCall(t *testing.T) {
+	const secret = "owner@example.com"
+	chat := func(t *testing.T, delta map[string]any, finish any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}) + "\n\n"
+	}
+	gemini := func(t *testing.T, part map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"candidates": []any{map[string]any{"index": 0, "content": map[string]any{"parts": []any{part}}}}}) + "\n\n"
+	}
+	for _, test := range []struct {
+		name  string
+		wire  func(t *testing.T, head, rest string) string
+		text  func(events []gjson.Result) string
+		calls string
+	}{
+		{
+			name: "chat",
+			wire: func(t *testing.T, head, rest string) string {
+				return chat(t, map[string]any{"content": "mail " + head}, nil) +
+					chat(t, map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": `{"q":1}`}}}}, nil) +
+					chat(t, map[string]any{"content": rest}, nil) + chat(t, map[string]any{}, "stop") + "data: [DONE]\n\n"
+			},
+			text: func(events []gjson.Result) string {
+				var text strings.Builder
+				for _, event := range events {
+					text.WriteString(event.Get("choices.0.delta.content").String())
+				}
+				return text.String()
+			},
+			calls: "choices.0.delta.tool_calls",
+		},
+		{
+			name: "gemini",
+			wire: func(t *testing.T, head, rest string) string {
+				return gemini(t, map[string]any{"text": "mail " + head}) +
+					gemini(t, map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}}}) +
+					gemini(t, map[string]any{"text": rest})
+			},
+			text: func(events []gjson.Result) string {
+				var text strings.Builder
+				for _, event := range events {
+					text.WriteString(event.Get("candidates.0.content.parts.0.text").String())
+				}
+				return text.String()
+			},
+			calls: "candidates.0.content.parts.0.functionCall",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session := privacyOutputTestSession(t)
+			token := privacyOutputTestToken(t, session, secret)
+			// Every cut matters: a short head such as "{" or "{{CC" is as much
+			// a placeholder prefix as one already reading "{{CCLOAD_".
+			for cut := 1; cut < len(token); cut++ {
+				recorder := httptest.NewRecorder()
+				writer := newPrivacyResponseWriter(recorder, session)
+				writer.Header().Set("Content-Type", "text/event-stream")
+				privacyOutputTestWrite(t, writer, test.wire(t, token[:cut], token[cut:]), 7)
+				if err := writer.Finish(); err != nil {
+					t.Fatal(err)
+				}
+				events := privacyOutputTestEvents(t, recorder.Body.String())
+				if got := test.text(events); got != "mail "+secret {
+					t.Fatalf("cut %d: client text = %q", cut, got)
+				}
+				if !slices.ContainsFunc(events, func(event gjson.Result) bool { return event.Get(test.calls).Exists() }) {
+					t.Fatalf("cut %d: tool call lost: %q", cut, recorder.Body.String())
+				}
 			}
 		})
 	}

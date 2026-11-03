@@ -359,7 +359,9 @@ func (e *Engine) snapshot(scope [32]byte) []*entry {
 // knownIndex finds a scope's earlier values in one pass over the text. Every
 // match must be a whole word, so only positions after a non-word rune are tried.
 // Values share a bucket by their first two bytes and a group by length, so
-// each position costs one lookup per distinct length, longest first.
+// each position costs one lookup per distinct length, longest first. Scanning
+// continues inside a hit: when another detection displaces it, an overlapping
+// later value must still be a candidate for selectMatches.
 type knownIndex struct {
 	pairs  map[uint16][]knownGroup
 	single [256]*entry
@@ -404,14 +406,10 @@ func (k *knownIndex) find(text string) []match {
 	for i := 0; i < len(text); {
 		if !afterWord {
 			if item := k.at(text, i); item != nil {
-				end := i + len(item.value)
-				out = append(out, match{i, end, item.kind, item.category})
+				out = append(out, match{i, i + len(item.value), item.kind, item.category})
 				if len(out) > maxMatches {
 					return out
 				}
-				r, _ := utf8.DecodeLastRuneInString(item.value)
-				afterWord, i = wordRune(r), end
-				continue
 			}
 		}
 		r, size := rune(text[i]), 1
