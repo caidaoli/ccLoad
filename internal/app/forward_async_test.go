@@ -812,11 +812,11 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 	if err != nil {
 		t.Fatalf("forwardOnceAsync error = %v", err)
 	}
-	if gotSessionID == "" || !uuidPattern.MatchString(gotSessionID) {
-		t.Fatalf("Session-Id header missing or invalid: %q", gotSessionID)
+	if gotSessionID != "" {
+		t.Fatalf("cache hint became an execution session: %q", gotSessionID)
 	}
-	if key := readCodexPromptCacheKey(gotBody); key != gotSessionID {
-		t.Fatalf("prompt_cache_key = %q, want Session-Id %q; body=%s", key, gotSessionID, gotBody)
+	if key := readCodexPromptCacheKey(gotBody); !uuidPattern.MatchString(key) {
+		t.Fatalf("prompt_cache_key missing or invalid: %q; body=%s", key, gotBody)
 	}
 	assertFieldOrder(t, string(gotBody), `"model"`, `"instructions"`, `"input"`, `"prompt_cache_key"`)
 	if result.DebugData == nil {
@@ -923,7 +923,7 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		"Connection":            "",
 		"Content-Type":          "application/json",
 		"Originator":            "codex-tui",
-		"Session-Id":            "session-1",
+		"Session-Id":            "",
 		"Session_id":            "",
 		"Conversation_id":       "",
 		"User-Agent":            codexUserAgent,

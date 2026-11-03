@@ -361,22 +361,16 @@ func (s *Server) buildProxyRequest(
 	}
 
 	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
-	codexSessionID := ""
 	if !cfg.UsesXAIOAuth() {
-		codexSessionID = resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
-		if codexSessionID != "" {
-			body = injectCodexPromptCacheKey(body, codexSessionID)
+		if cacheKey := resolveCodexSessionHint(reqCtx, body, apiKey, hdr); cacheKey != "" {
+			body = injectCodexPromptCacheKey(body, cacheKey)
 		}
 	}
-	// 1.9 Codex OAuth 账号作用域身份。重试回放的 wire body 已经映射过，不能再映射；
-	// Session-Id 兜底改为跟随最终 prompt_cache_key，首轮与回放保持一致。
+	// 1.9 Codex OAuth 账号作用域身份。重试回放的 wire body 已经映射过，不能再映射。
 	codexIdentityNamespace := codexAccountIdentityNamespace(cfg)
 	if codexIdentityNamespace != "" && isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 		if reqCtx == nil || !reqCtx.replayBodyRulesApplied {
 			body = scopeCodexAccountIdentityBody(body, codexIdentityNamespace)
-		}
-		if codexSessionID != "" {
-			codexSessionID = readCodexPromptCacheKey(body)
 		}
 	}
 	if isZedResponsesRequest(cfg, upstreamProtocol) {
@@ -415,12 +409,6 @@ func (s *Server) buildProxyRequest(
 	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
 	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx))
 
-	// 5.5 Codex Responses 缓存提示：设置 Session-Id 头（仅客户端未自带时）。
-	// OpenCode 自建会话头；按上游 Key 派生的值会压过按调用方区分的执行身份。
-	if !isOpenCodeAPIKeyEndpoint(cfg, parsedUpstreamURL.String()) {
-		ensureCodexSessionHeader(req.Header, codexSessionID)
-	}
-
 	// 5.6 Codex OAuth 路由提示与 responses-lite 头：由最终 body 派生，早于自定义规则以便
 	// 运维覆盖或删除。WS 客户端的 lite 信号在 client_metadata 里，HTTP 上游只认请求头。
 	if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
@@ -454,7 +442,7 @@ func (s *Server) buildProxyRequest(
 		if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 			upstreamStreaming = true
 		}
-		injectCodexHeaders(req, cfg, apiKey, upstreamStreaming)
+		injectCodexHeaders(req, cfg, apiKey, body, upstreamStreaming)
 	} else if cfg.UsesAntigravityOAuth() {
 		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfg, s.antigravityUserAgent())
@@ -691,13 +679,6 @@ func applyFinalAnthropicBetaBodyPolicy(req *http.Request, body []byte) ([]byte, 
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(sanitized)), nil }
 	req.ContentLength = int64(len(sanitized))
 	return sanitized, nil
-}
-
-func ensureCodexSessionHeader(headers http.Header, sessionID string) {
-	if headers == nil || sessionID == "" || headers.Get("Session_id") != "" || headers.Get("Session-Id") != "" {
-		return
-	}
-	headers.Set("Session-Id", sessionID)
 }
 
 func upstreamQueryForAttempt(reqCtx *requestContext, rawQuery string) string {
@@ -2905,6 +2886,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	reqCtx.antigravityReplay.finish(res, err)
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
+		res.Status == http.StatusBadGateway && isCodexEncryptedFunctionOutputError(res.Body) ||
 		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
 		if usedNativeWebsocket {
@@ -3456,6 +3438,7 @@ func (s *Server) forwardAttempt(
 	retryStrategies := make([]string, 0, 2)
 	missingStoredItemRetries := 0
 	bodyRepaired := false
+	unreadableAgentTask := false
 	// 只有主机名参与官方 Anthropic 判定，解析失败按非官方处理。
 	retryTarget, _ := url.Parse(strings.TrimSpace(baseURL))
 	for !cfg.AntigravityCredits && ctx.Err() == nil {
@@ -3479,6 +3462,12 @@ func (s *Server) forwardAttempt(
 		}
 		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retryTarget, retrySourcePlan, res)
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
+			// 各级修复都保留 compaction 条目，其解码失败与当前任务无关。
+			errorBody, _ := forwardResultErrorPayload(res)
+			unreadableAgentTask = err == nil &&
+				shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, cfg, retrySourcePlan, res) &&
+				!isCodexCompactionBlobMessage(codexErrorMessage(gjson.ParseBytes(errorBody))) &&
+				codexCurrentEncryptedAgentTaskIndex(gjson.GetBytes(retrySourcePlan.TranslatedBody, "input")) >= 0
 			break
 		}
 		if res.UpstreamWebsocket && len(res.upstreamReplayBody) > 0 && retryStrategy == stripUnknownInputParameterStrategy {
@@ -3542,10 +3531,29 @@ func (s *Server) forwardAttempt(
 			break
 		}
 	}
+	// 未提交的 SSE 错误先归一，才能与 HTTP 错误共用修复终态和冷却判定。
+	if err == nil && res != nil && !res.ResponseCommitted && res.SSEErrorEvent != nil {
+		markSSEErrorForwardResult(res)
+	}
+	if unreadableAgentTask {
+		// 合成体只给客户端处置建议；上游原文留在日志诊断里。SSE 归一已写入原事件。
+		if res.StreamDiagMsg == "" {
+			res.StreamDiagMsg = "upstream error: " + safeBodyToString(res.Body)
+		}
+		res.Status = http.StatusBadRequest
+		res.Body = []byte(`{"error":{"type":"invalid_request_error","code":"unreadable_encrypted_agent_task","message":"The upstream cannot decrypt the current agent task. Use the same backend as the parent agent or resend the task as plaintext."}}`)
+		res.SSEErrorEvent = nil
+		res.Header = res.Header.Clone()
+		if res.Header == nil {
+			res.Header = make(http.Header)
+		}
+		res.Header.Set("Content-Type", "application/json")
+		res.Header.Del("Content-Length")
+	}
 	// 只看最后一次修复重试的结果：仍是通用请求拒绝时换渠也只会重放坏请求，直接返回；
 	// 其余结果按正常分类冷却和换渠。Anthropic 修复失败按契约用原请求换渠。
-	forceReturnClient := bodyRepaired && err == nil && upstreamProtocol != protocol.Anthropic &&
-		s.repairedRequestStillRejected(cfg, res)
+	forceReturnClient := unreadableAgentTask || (bodyRepaired && err == nil && upstreamProtocol != protocol.Anthropic &&
+		s.repairedRequestStillRejected(cfg, res))
 	// 请求中的 priority 是 Fast 模式计费下限；上游未回显或错误回显
 	// default/standard 都不能把它降档。resolveBillingServiceTier 仍允许更贵的
 	// ultrafast 以及非 priority 请求的真实终态覆盖请求值。
@@ -3703,9 +3711,13 @@ func (s *Server) repairedRequestStillRejected(cfg *model.Config, res *fwResult) 
 	if res == nil || res.Status != http.StatusBadRequest {
 		return false
 	}
+	statusCode := res.UpstreamStatus
+	if statusCode == 0 {
+		statusCode = res.Status
+	}
 	rules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
 	detection := cooldown.EvaluateCooldownDetectionRules(rules, cooldown.DetectionInput{
-		StatusCode: res.Status,
+		StatusCode: statusCode,
 		ErrorBody:  res.Body,
 	}, time.Now())
 	if detection.Actionable {
@@ -3724,7 +3736,8 @@ func shouldRetryCodexInvalidEncryptedContent(
 		return false
 	}
 	errorBody, status := forwardResultErrorPayload(res)
-	if status != http.StatusBadRequest {
+	if status != http.StatusBadRequest &&
+		(status != http.StatusBadGateway || !isCodexEncryptedFunctionOutputError(errorBody)) {
 		return false
 	}
 	if !plan.NeedsTransform {
@@ -3736,7 +3749,29 @@ func shouldRetryCodexInvalidEncryptedContent(
 	return isInvalidEncryptedContentError(errorBody) || codexBodyHasEncryptedInputItems(plan.TranslatedBody)
 }
 
+const codexEncryptedFunctionOutputError = "Encrypted function output content could not be decrypted or decoded."
+
+func isCodexEncryptedFunctionOutputError(body []byte) bool {
+	if strings.TrimSpace(string(body)) == codexEncryptedFunctionOutputError {
+		return true
+	}
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	for _, path := range []string{"error.message", "response.error.message", "message", "error", "detail"} {
+		message := root.Get(path)
+		if message.Type == gjson.String && strings.TrimSpace(message.String()) == codexEncryptedFunctionOutputError {
+			return true
+		}
+	}
+	return false
+}
+
 func isInvalidEncryptedContentError(body []byte) bool {
+	if isCodexEncryptedFunctionOutputError(body) {
+		return true
+	}
 	if !gjson.ValidBytes(body) {
 		return false
 	}
@@ -3751,17 +3786,7 @@ func isInvalidEncryptedContentError(body []byte) bool {
 	if code == "invalid_encrypted_content" {
 		return true
 	}
-	message := strings.TrimSpace(root.Get("error.message").String())
-	if message == "" && root.Get("error").Type == gjson.String {
-		message = root.Get("error").String()
-	}
-	if message == "" {
-		message = root.Get("response.error.message").String()
-	}
-	if message == "" {
-		message = root.Get("message").String()
-	}
-	message = strings.ToLower(message)
+	message := codexErrorMessage(root)
 	if strings.Contains(message, "invalid_encrypted_content") {
 		return true
 	}
@@ -3784,6 +3809,24 @@ func isInvalidEncryptedContentError(body []byte) bool {
 			strings.Contains(message, "previous response")) {
 		return true
 	}
+	return isCodexCompactionBlobMessage(message)
+}
+
+func codexErrorMessage(root gjson.Result) string {
+	message := strings.TrimSpace(root.Get("error.message").String())
+	if message == "" && root.Get("error").Type == gjson.String {
+		message = root.Get("error").String()
+	}
+	if message == "" {
+		message = root.Get("response.error.message").String()
+	}
+	if message == "" {
+		message = root.Get("message").String()
+	}
+	return strings.ToLower(message)
+}
+
+func isCodexCompactionBlobMessage(message string) bool {
 	return strings.Contains(message, "compaction blob") &&
 		(strings.Contains(message, "could not decode") || strings.Contains(message, "unmodified from the compact response"))
 }
@@ -3968,10 +4011,28 @@ func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 
 const codexEncryptedContentPlaceholder = "[encrypted content omitted: the upstream could not decrypt it]"
 
-// codexBodyWithEncryptedContentPartsReplaced replaces every encrypted_content
-// part of a tool output or message with an input_text placeholder. Items and
-// their call_id pairing stay in place, so the conversation can continue; the
-// replaced content itself is lost.
+// 当前 agent_message 携带本轮任务，不能像历史密文一样丢弃；尾部配置项不算新输入。
+func codexCurrentEncryptedAgentTaskIndex(input gjson.Result) int {
+	items := input.Array()
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		switch item.Get("type").String() {
+		case "compaction_trigger", "additional_tools", "configuration_update":
+			continue
+		case "agent_message":
+			for _, part := range item.Get("content").Array() {
+				if part.Get("type").String() == "encrypted_content" && part.Get("encrypted_content").String() != "" {
+					return index
+				}
+			}
+		}
+		break
+	}
+	return -1
+}
+
+// codexBodyWithEncryptedContentPartsReplaced replaces historical encrypted
+// parts with placeholders, retaining the current agent task and call_id pairs.
 func codexBodyWithEncryptedContentPartsReplaced(body []byte) ([]byte, bool) {
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {
@@ -3979,7 +4040,11 @@ func codexBodyWithEncryptedContentPartsReplaced(body []byte) ([]byte, bool) {
 	}
 	updated := body
 	replaced := false
+	currentTask := codexCurrentEncryptedAgentTaskIndex(input)
 	for itemIndex, item := range input.Array() {
+		if itemIndex == currentTask {
+			continue
+		}
 		for _, field := range []string{"output", "content"} {
 			parts := item.Get(field)
 			if !parts.IsArray() {
@@ -4207,14 +4272,21 @@ func codexBodyWithoutEncryptedContent(body []byte) ([]byte, bool) {
 	// 无需按长度排序：collectJSONKeyPaths 命中目标键后不再下钻，
 	// 因此不会产出互相嵌套的路径；删除对象成员也不会移动兄弟数组下标。
 	updated := body
+	removed := false
+	currentTask := codexCurrentEncryptedAgentTaskIndex(gjson.GetBytes(body, "input"))
+	taskPath := sjsonPathJoin(sjsonObjectPathJoin("", "input"), fmt.Sprint(currentTask)) + "."
 	for _, path := range paths {
+		if currentTask >= 0 && strings.HasPrefix(path, taskPath) {
+			continue
+		}
 		var err error
 		updated, err = sjson.DeleteBytes(updated, path)
 		if err != nil {
 			return nil, false
 		}
+		removed = true
 	}
-	return updated, true
+	return updated, removed
 }
 
 func collectJSONKeyPaths(value gjson.Result, prefix, key string, depth int, paths *[]string) {

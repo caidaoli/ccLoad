@@ -132,7 +132,7 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 	copyCodexHTTPHeaders(upstreamHeaders, headers)
 	applyHeaderRules(upstreamHeaders, cfg.HeaderRules())
 	probeRequest := &http.Request{Header: upstreamHeaders}
-	injectCodexHeaders(probeRequest, cfg, probe.APIKey, true)
+	injectCodexHeaders(probeRequest, cfg, probe.APIKey, nil, true)
 	prepareCodexWebsocketInputHeaders(upstreamHeaders, headers, cfg.HeaderRules())
 	websocketURL, err := codexWebsocketURL(fullURL)
 	if err != nil {
@@ -2355,7 +2355,6 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if upstreamProtocolValue == protocol.Codex && !requestPlan.xaiOAuth {
 		sessionID := testReq.ResolveSessionID()
 		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
-		ensureCodexSessionHeader(requestPlan.headers, sessionID)
 	}
 	if cfgForBuild.UsesZedOAuth() {
 		requestPlan.requestBody, requestPlan.zedWire, err = finalizeZedResponsesBodyWithOptions(
@@ -2430,7 +2429,7 @@ func (s *Server) newTestUpstreamRequest(
 	} else if requestPlan.xaiOAuth {
 		injectXAIResponsesHeaders(req, requestPlan.apiKey, requestPlan.xaiConversationID)
 	} else if requestProtocol == protocol.Codex {
-		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
+		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
 		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())

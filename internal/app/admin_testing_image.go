@@ -659,7 +659,7 @@ func (s *Server) testChannelImageGenerationWithURL(
 	}
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	if cfg.UsesCodexOAuth() {
-		injectCodexHeaders(req, cfg, apiKey, false)
+		injectCodexHeaders(req, cfg, apiKey, body, false)
 	} else if cfg.UsesXAIOAuth() {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -816,7 +816,7 @@ func (s *Server) testResponsesImageGeneration(
 	}
 	if cfg.UsesCodexOAuth() {
 		applyHeaderRules(req.Header, cfg.HeaderRules())
-		injectCodexHeaders(req, cfg, apiKey, true)
+		injectCodexHeaders(req, cfg, apiKey, body, true)
 	} else {
 		injectXAIAPIResponsesHeaders(req, apiKey)
 	}

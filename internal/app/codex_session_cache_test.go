@@ -269,9 +269,8 @@ func TestBuildProxyRequest_CodexSessionInjection_Anthropic(t *testing.T) {
 		t.Fatalf("buildProxyRequest failed: %v", err)
 	}
 
-	sid := req.Header.Get("Session-Id")
-	if !uuidPattern.MatchString(sid) {
-		t.Fatalf("Session-Id header missing or invalid: %q", sid)
+	if sid := req.Header.Get("Session-Id"); sid != "" {
+		t.Fatalf("cache hint became an execution session: %q", sid)
 	}
 	if req.Header.Get("Session_id") != "" || req.Header.Get("Conversation_id") != "" {
 		t.Fatalf("legacy session headers were generated: %v", req.Header)
@@ -281,8 +280,8 @@ func TestBuildProxyRequest_CodexSessionInjection_Anthropic(t *testing.T) {
 	defer func() { _ = bodyReader.Close() }()
 	buf := make([]byte, 4096)
 	n, _ := bodyReader.Read(buf)
-	if key := readCodexPromptCacheKey(buf[:n]); key != sid {
-		t.Fatalf("expected body prompt_cache_key == Session-Id header, got body=%q header=%q", key, sid)
+	if key := readCodexPromptCacheKey(buf[:n]); !uuidPattern.MatchString(key) {
+		t.Fatalf("expected body prompt_cache_key, got %q", key)
 	}
 }
 

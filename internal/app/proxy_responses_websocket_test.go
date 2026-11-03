@@ -3884,11 +3884,16 @@ func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.
 
 func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 	t.Parallel()
+	type upstreamRequest struct {
+		headers http.Header
+		body    map[string]any
+	}
 	tests := []struct {
 		name         string
 		bodyHint     map[string]any
 		extraHeaders http.Header
 	}{
+		{name: "no cache hint"},
 		{
 			name:     "shared prompt_cache_key",
 			bodyHint: map[string]any{"prompt_cache_key": "shared-cache-bucket"},
@@ -3902,7 +3907,7 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			requests := make(chan map[string]any, 2)
+			requests := make(chan upstreamRequest, 2)
 			var calls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				turn := calls.Add(1)
@@ -3911,21 +3916,28 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 					t.Errorf("decode independent websocket request %d: %v", turn, err)
 					return
 				}
-				requests <- request
+				requests <- upstreamRequest{headers: r.Header.Clone(), body: request}
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-independent-%d\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer-%d\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", turn, turn)
 			}))
 			defer upstream.Close()
 
-			env := setupProxyTestEnv(t, []testChannel{{
-				name: "independent-websockets", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+			inner := setupProxyTestEnv(t, []testChannel{{
+				name: "inner-independent-websockets", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 			}}, map[int]string{0: upstream.URL})
-			env.server.client = upstream.Client()
+			inner.server.client = upstream.Client()
+			innerGateway := httptest.NewServer(inner.engine)
+			defer innerGateway.Close()
+			outer := setupProxyTestEnv(t, []testChannel{{
+				name: "outer-independent-websockets", upstreamProtocol: "codex", websockets: true,
+				models: "gpt-test", apiKey: "test-api-key", priority: 100,
+			}}, map[int]string{0: innerGateway.URL})
+			outer.server.client = innerGateway.Client()
 
 			for _, prompt := range []string{"one", "independent two"} {
 				downstream := dialResponsesWebsocketWithTokenAndHeaders(
 					t,
-					env.engine,
+					outer.engine,
 					"test-api-key",
 					tt.extraHeaders,
 				)
@@ -3946,11 +3958,24 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 				_ = downstream.Close()
 			}
 
-			<-requests
+			first := <-requests
 			second := <-requests
-			input, ok := second["input"].([]any)
+			for index, request := range []upstreamRequest{first, second} {
+				if got := request.headers.Get("Session-Id"); got != "" {
+					t.Errorf("independent websocket request %d acquired Session-Id=%q", index+1, got)
+				}
+				if got, want := request.headers.Get("Session_id"), tt.extraHeaders.Get("Session_id"); got != want {
+					t.Errorf("independent websocket request %d Session_id=%q, want %q", index+1, got, want)
+				}
+				for key, want := range tt.bodyHint {
+					if got := request.body[key]; got != want {
+						t.Errorf("independent websocket request %d %s=%#v, want %#v", index+1, key, got, want)
+					}
+				}
+			}
+			input, ok := second.body["input"].([]any)
 			if !ok || len(input) != 1 {
-				t.Fatalf("independent websocket request inherited transcript: %#v", second["input"])
+				t.Fatalf("independent websocket request inherited transcript: %#v", second.body["input"])
 			}
 			message, ok := input[0].(map[string]any)
 			if !ok || message["content"] != "independent two" {

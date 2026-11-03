@@ -12487,66 +12487,68 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	t.Parallel()
 
 	const invalidEncryptedContentBody = `{"error":{"message":"Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.","type":"packy_invalid-argument","code":"invalid-argument"}}`
+	const functionOutputMessage = "Encrypted function output content could not be decrypted or decoded."
 
-	var attempts atomic.Int32
-	var bodies [][]byte
+	for _, tt := range []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+	}{
+		{"legacy HTTP 400", http.StatusBadRequest, "application/json", invalidEncryptedContentBody},
+		{"HTTP 400 function output message", http.StatusBadRequest, "application/json", `{"error":{"message":"` + functionOutputMessage + `"}}`},
+		{"HTTP 502 error code", http.StatusBadGateway, "application/json", `{"error":{"message":"` + functionOutputMessage + `","code":"invalid_encrypted_content"}}`},
+		{"HTTP 502 function output message", http.StatusBadGateway, "application/json", `{"error":{"message":"` + functionOutputMessage + `"}}`},
+		{"HTTP 502 plain text", http.StatusBadGateway, "text/plain", functionOutputMessage},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	env := setupProxyTestEnv(t, []testChannel{
-		{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
-	}, map[int]string{0: "https://codex-upstream.example.com"})
-
-	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			body, _ := io.ReadAll(r.Body)
-			bodies = append(bodies, body)
-			if attempts.Add(1) == 1 {
-				return &http.Response{
-					StatusCode: http.StatusBadRequest,
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-					Body:       io.NopCloser(bytes.NewReader([]byte(invalidEncryptedContentBody))),
-				}, nil
+			var bodies [][]byte
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+			}, map[int]string{0: "https://codex-upstream.example.com"})
+			env.server.client = &http.Client{
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					body, _ := io.ReadAll(r.Body)
+					bodies = append(bodies, body)
+					status, contentType, response := http.StatusOK, "application/json", `{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.5","output":[]}`
+					if len(bodies) == 1 {
+						status, contentType, response = tt.status, tt.contentType, tt.body
+					}
+					return &http.Response{
+						StatusCode: status,
+						Header:     http.Header{"Content-Type": []string{contentType}},
+						Body:       io.NopCloser(strings.NewReader(response)),
+					}, nil
+				}),
 			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body: io.NopCloser(bytes.NewReader([]byte(
-					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
-				))),
-			}, nil
-		}),
-	}
 
-	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": "gpt-5.5",
-		"input": []map[string]any{
-			{"type": "compaction", "encrypted_content": "keep-compaction"},
-			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
-			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
-		},
-	}, nil)
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "gpt-5.5",
+				"input": []map[string]any{
+					{"type": "compaction", "encrypted_content": "keep-compaction"},
+					{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
+					{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+				},
+			}, nil)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
-	}
-	if attempts.Load() != 2 {
-		t.Fatalf("attempts=%d, want 2", attempts.Load())
-	}
-	if len(bodies) != 2 {
-		t.Fatalf("captured bodies=%d, want 2", len(bodies))
-	}
-	if !bytes.Contains(bodies[0], []byte(`"type":"reasoning"`)) {
-		t.Fatalf("first request should include reasoning item, got %s", bodies[0])
-	}
-	if bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) {
-		t.Fatalf("retry request should remove reasoning item, got %s", bodies[1])
-	}
-	if bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) ||
-		!bytes.Contains(bodies[1], []byte(`"type":"compaction"`)) ||
-		!bytes.Contains(bodies[1], []byte(`"encrypted_content":"keep-compaction"`)) {
-		t.Fatalf("retry request should remove encrypted reasoning while preserving compaction, got %s", bodies[1])
-	}
-	if !bytes.Contains(bodies[1], []byte(`"type":"message"`)) {
-		t.Fatalf("retry request should keep non-encrypted input items, got %s", bodies[1])
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
+			}
+			if len(bodies) != 2 {
+				t.Fatalf("upstream sends=%d, want 2", len(bodies))
+			}
+			if !gjson.GetBytes(bodies[0], `input.#(type=="reasoning")`).Exists() {
+				t.Fatalf("first request should include reasoning item, got %s", bodies[0])
+			}
+			if gjson.GetBytes(bodies[1], `input.#(type=="reasoning")`).Exists() ||
+				gjson.GetBytes(bodies[1], `input.#(type=="compaction").encrypted_content`).String() != "keep-compaction" ||
+				gjson.GetBytes(bodies[1], `input.#(type=="message").content.0.text`).String() != "hi" {
+				t.Fatalf("retry should remove encrypted reasoning and preserve other input, got %s", bodies[1])
+			}
+			assertNoProxyCooldowns(t, env)
+		})
 	}
 }
 
@@ -12612,6 +12614,128 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithDecodedRelayAgentMessage(t
 	}
 	if got := gjson.GetBytes(bodies[1], "input.1.content.0.encrypted_content").String(); got != "gAAAAABgenuine" {
 		t.Fatalf("retry must keep genuine encrypted agent_message content, got %q", got)
+	}
+}
+
+func TestProxy_CodexInvalidEncryptedContentPreservesCurrentAgentTask(t *testing.T) {
+	t.Parallel()
+
+	const taskRejection = `{"error":{"message":"Encrypted function output content could not be decrypted or decoded.","type":"invalid_request_error","code":"invalid_encrypted_content"}}`
+	const compactionRejection = `{"error":{"message":"Could not decode the compaction blob. Ensure it is unmodified from the compact response.","type":"invalid_request_error"}}`
+	currentTask := map[string]any{
+		"type": "agent_message", "id": "amsg_current", "author": "/root", "recipient": "/root/worker",
+		"content": []map[string]any{
+			{"type": "input_text", "text": "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n"},
+			{"type": "encrypted_content", "encrypted_content": "gAAAAAB-current-task"},
+		},
+	}
+	taskJSON, err := json.Marshal(currentTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyReasoning := map[string]any{"type": "reasoning", "summary": []any{}, "encrypted_content": "gAAAAAB-history-reasoning"}
+	historyAgent := map[string]any{
+		"type": "agent_message", "id": "amsg_history", "author": "/root", "recipient": "/root/worker",
+		"content": []map[string]any{{"type": "encrypted_content", "encrypted_content": "gAAAAAB-history-agent"}},
+	}
+
+	for _, tt := range []struct {
+		name         string
+		rejection    string
+		history      []map[string]any
+		trailing     []map[string]any
+		wantAttempts int
+	}{
+		{name: "current task only", wantAttempts: 1},
+		// 修复保留 compaction 条目；其解码失败不能归因到当前任务，按上游原文返回。
+		{name: "compaction blob error", rejection: compactionRejection, history: []map[string]any{
+			{"type": "compaction", "encrypted_content": "gAAAAAB-compaction"}, historyReasoning,
+		}, wantAttempts: 2},
+		{name: "configuration after task", trailing: []map[string]any{{"type": "configuration_update", "instructions": "repo rules"}}, wantAttempts: 1},
+		{name: "tools after task", trailing: []map[string]any{{"type": "additional_tools", "tools": []any{}}}, wantAttempts: 1},
+		{name: "historical reasoning", history: []map[string]any{historyReasoning}, wantAttempts: 2},
+		{name: "historical agent message", history: []map[string]any{historyAgent}, wantAttempts: 2},
+		{name: "both history repairs before metadata", history: []map[string]any{historyAgent, historyReasoning}, trailing: []map[string]any{
+			{"type": "configuration_update", "instructions": "repo rules"},
+			{"type": "additional_tools", "tools": []any{}},
+		}, wantAttempts: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rejection := tt.rejection
+			if rejection == "" {
+				rejection = taskRejection
+			}
+			var bodies [][]byte
+			var backupAttempts atomic.Int32
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "primary", upstreamProtocol: "codex", models: "gpt-5.5"},
+				{name: "backup", upstreamProtocol: "codex", models: "gpt-5.5"},
+			}, map[int]string{0: "https://primary.example.com", 1: "https://backup.example.com"})
+			env.server.client = &http.Client{
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					body, _ := io.ReadAll(r.Body)
+					status, response := http.StatusBadRequest, rejection
+					if r.URL.Host == "backup.example.com" {
+						backupAttempts.Add(1)
+						status, response = http.StatusOK, `{"id":"resp_backup","object":"response","status":"completed","output":[]}`
+					} else {
+						bodies = append(bodies, body)
+					}
+					return &http.Response{
+						StatusCode: status,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(response)),
+					}, nil
+				}),
+			}
+			input := []map[string]any{{"type": "message", "role": "user", "content": "repository instructions"}}
+			input = append(input, tt.history...)
+			if len(tt.history) != 0 {
+				input = append(input, map[string]any{"type": "message", "role": "assistant", "content": "previous task finished"})
+			}
+			input = append(input, currentTask)
+			input = append(input, tt.trailing...)
+
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-5.5", "input": input}, nil)
+
+			for i, body := range bodies {
+				if got := gjson.GetBytes(body, `input.#(id=="amsg_current")`); !reflect.DeepEqual(got.Value(), gjson.ParseBytes(taskJSON).Value()) {
+					t.Errorf("send %d changed the current encrypted task: %s", i+1, got.Raw)
+				}
+			}
+			if tt.rejection != "" {
+				if w.Code != http.StatusBadRequest || w.Body.String() != rejection {
+					t.Fatalf("expected the upstream rejection, got %d: %s", w.Code, w.Body.String())
+				}
+			} else {
+				if w.Code != http.StatusBadRequest || gjson.GetBytes(w.Body.Bytes(), "error.code").String() != "unreadable_encrypted_agent_task" {
+					t.Fatalf("expected an explicit unreadable-task error, got %d: %s", w.Code, w.Body.String())
+				}
+				// 合成体替换了客户端响应，日志仍须保留上游原文。
+				if entry := waitForProxyLog(t, env, "gpt-5.5"); !strings.Contains(entry.Message, codexEncryptedFunctionOutputError) {
+					t.Fatalf("log message lost the upstream error: %q", entry.Message)
+				}
+			}
+			if len(bodies) != tt.wantAttempts {
+				t.Fatalf("primary sends=%d, want %d", len(bodies), tt.wantAttempts)
+			}
+			if got := backupAttempts.Load(); got != 0 {
+				t.Fatalf("backup sends=%d, want 0", got)
+			}
+			last := bodies[len(bodies)-1]
+			if len(tt.history) != 0 && gjson.GetBytes(last, `input.#(type=="reasoning")`).Exists() {
+				t.Fatalf("historical encrypted reasoning must be repaired first: %s", last)
+			}
+			if gjson.GetBytes(bodies[0], `input.#(id=="amsg_history")`).Exists() {
+				history := gjson.GetBytes(last, `input.#(id=="amsg_history").content.0`)
+				if history.Get("type").String() != "input_text" || history.Get("encrypted_content").Exists() || history.Get("text").String() == "" {
+					t.Fatalf("historical encrypted agent message must be repaired first: %s", history.Raw)
+				}
+			}
+			assertNoProxyCooldowns(t, env)
+		})
 	}
 }
 
@@ -13086,6 +13210,72 @@ func TestProxy_AnyrouterCodexStripsToolSearchBeforeForwardThenRetriesEncryptedCo
 	}
 }
 
+func TestProxy_AnyrouterCodexInvalidResponsesRequestPreservesCurrentAgentTask(t *testing.T) {
+	t.Parallel()
+
+	const rejection = `{"error":{"message":"invalid_responses_request","type":"invalid_request_error","code":"invalid_responses_request"}}`
+	currentTask := map[string]any{
+		"type": "agent_message", "id": "amsg_current", "author": "/root", "recipient": "/root/worker",
+		"content": []map[string]any{{"type": "encrypted_content", "encrypted_content": "gAAAAAB-current-task"}},
+	}
+	taskJSON, err := json.Marshal(currentTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, withHistory := range []bool{false, true} {
+		t.Run(fmt.Sprintf("historical reasoning=%v", withHistory), func(t *testing.T) {
+			t.Parallel()
+
+			var bodies [][]byte
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "anyrouter-codex", upstreamProtocol: "codex", models: "gpt-5.5"},
+			}, map[int]string{0: "https://anyrouter.example.com"})
+			env.server.client = &http.Client{
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					body, _ := io.ReadAll(r.Body)
+					bodies = append(bodies, body)
+					status, response := http.StatusOK, `{"id":"resp_repaired","object":"response","status":"completed","output":[]}`
+					if len(bodies) == 1 {
+						status, response = http.StatusBadRequest, rejection
+					}
+					return &http.Response{
+						StatusCode: status,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(response)),
+					}, nil
+				}),
+			}
+			input := []map[string]any{{"type": "message", "role": "user", "content": "repository instructions"}}
+			wantStatus, wantAttempts := http.StatusBadRequest, 1
+			if withHistory {
+				input = append(input, map[string]any{"type": "reasoning", "id": "rs_history", "summary": []any{}, "encrypted_content": "gAAAAAB-history"})
+				wantStatus, wantAttempts = http.StatusOK, 2
+			}
+			input = append(input, currentTask)
+
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-5.5", "input": input}, nil)
+
+			for i, body := range bodies {
+				if got := gjson.GetBytes(body, `input.#(id=="amsg_current")`); !reflect.DeepEqual(got.Value(), gjson.ParseBytes(taskJSON).Value()) {
+					t.Errorf("send %d changed the current encrypted task: %s", i+1, got.Raw)
+				}
+			}
+			if w.Code != wantStatus || len(bodies) != wantAttempts {
+				t.Fatalf("status=%d sends=%d, want status=%d sends=%d: %s", w.Code, len(bodies), wantStatus, wantAttempts, w.Body.String())
+			}
+			if !withHistory && gjson.GetBytes(w.Body.Bytes(), "error.code").String() != "invalid_responses_request" {
+				t.Fatalf("generic rejection must retain the upstream error code: %s", w.Body.String())
+			}
+			if withHistory {
+				history := gjson.GetBytes(bodies[1], `input.#(id=="rs_history")`)
+				if !history.Exists() || history.Get("encrypted_content").Exists() {
+					t.Fatalf("retry must retain historical reasoning without its encrypted content: %s", bodies[1])
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_CodexInvalidEncryptedContentWrappedRequestErrorRetries(t *testing.T) {
 	t.Parallel()
 
@@ -13145,62 +13335,121 @@ func TestProxy_CodexInvalidEncryptedContentWrappedRequestErrorRetries(t *testing
 	}
 }
 
-func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *testing.T) {
+func TestProxy_CodexInvalidEncryptedContentRetryFailureHonorsCooldownRules(t *testing.T) {
 	t.Parallel()
 
 	const firstError = `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`
 	const secondError = `{"error":{"message":"still invalid after retry","type":"invalid_request_error","code":"invalid_encrypted_content"}}`
 
-	var attempts, backupAttempts atomic.Int32
+	for _, tt := range []struct {
+		name        string
+		status      int
+		contentType string
+		ruleStatus  int
+		wantBackup  bool
+	}{
+		{name: "HTTP 400", status: http.StatusBadRequest, contentType: "application/json"},
+		{name: "HTTP 200 SSE", status: http.StatusOK, contentType: "text/event-stream"},
+		{name: "HTTP 400 matching rule", status: http.StatusBadRequest, contentType: "application/json", ruleStatus: http.StatusBadRequest, wantBackup: true},
+		{name: "SSE original HTTP 200 rule", status: http.StatusOK, contentType: "text/event-stream", ruleStatus: http.StatusOK, wantBackup: true},
+		{name: "SSE normalized 400 does not match rule", status: http.StatusOK, contentType: "text/event-stream", ruleStatus: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	env := setupProxyTestEnv(t, []testChannel{
-		{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
-		{name: "codex-backup", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-backup"},
-	}, map[int]string{0: "https://codex-upstream.example.com", 1: "https://codex-backup.example.com"})
-
-	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			if r.URL.Host == "codex-backup.example.com" {
-				backupAttempts.Add(1)
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-					Body:       io.NopCloser(strings.NewReader(`{"id":"resp_backup","object":"response","status":"completed","output":[]}`)),
-				}, nil
+			var attempts, backupAttempts atomic.Int32
+			var rules *model.CooldownDetectionRules
+			if tt.ruleStatus != 0 {
+				rules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "original upstream status", StatusCodes: []int{tt.ruleStatus},
+					MessagePattern: "still invalid after retry", Scope: model.CooldownScopeChannel,
+					Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}}
 			}
-			body := firstError
-			if attempts.Add(1) == 2 {
-				body = secondError
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex", cooldownDetectionRules: rules},
+				{name: "codex-backup", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-backup"},
+			}, map[int]string{0: "https://codex-upstream.example.com", 1: "https://codex-backup.example.com"})
+
+			env.server.client = &http.Client{
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					if r.URL.Host == "codex-backup.example.com" {
+						backupAttempts.Add(1)
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Header:     http.Header{"Content-Type": []string{"application/json"}},
+							Body:       io.NopCloser(strings.NewReader(`{"id":"resp_backup","object":"response","status":"completed","output":[]}`)),
+						}, nil
+					}
+					body := firstError
+					if attempts.Add(1) == 2 {
+						body = secondError
+					}
+					if tt.status == http.StatusOK {
+						body = "event: error\ndata: " + body + "\n\n"
+					}
+					return &http.Response{
+						StatusCode: tt.status,
+						Header:     http.Header{"Content-Type": []string{tt.contentType}},
+						Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+					}, nil
+				}),
 			}
-			return &http.Response{
-				StatusCode: http.StatusBadRequest,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(bytes.NewReader([]byte(body))),
-			}, nil
-		}),
-	}
 
-	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": "gpt-5.5",
-		"input": []map[string]any{
-			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
-			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
-		},
-	}, nil)
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model":  "gpt-5.5",
+				"stream": tt.status == http.StatusOK,
+				"input": []map[string]any{
+					{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
+					{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+				},
+			}, nil)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected retry failure to return upstream 400, got %d: %s", w.Code, w.Body.String())
+			if attempts.Load() != 2 {
+				t.Fatalf("attempts=%d, want 2", attempts.Load())
+			}
+			if tt.wantBackup {
+				if w.Code != http.StatusOK || backupAttempts.Load() != 1 {
+					t.Fatalf("status=%d backup attempts=%d, want 200 and 1: %s", w.Code, backupAttempts.Load(), w.Body.String())
+				}
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				var primaryID int64
+				for _, cfg := range configs {
+					if cfg.Name == "codex-ch" {
+						primaryID = cfg.ID
+						break
+					}
+				}
+				cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				until, exists := cooldowns[primaryID]
+				if !exists || len(cooldowns) != 1 {
+					t.Fatalf("expected only primary channel %d to cool, got %v", primaryID, cooldowns)
+				}
+				if remaining := time.Until(until); remaining < 85*time.Second || remaining > 95*time.Second {
+					t.Fatalf("configured cooldown remaining=%v, want about 90s", remaining)
+				}
+				return
+			}
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected retry failure to return upstream 400, got %d: %s", w.Code, w.Body.String())
+			}
+			if gjson.GetBytes(w.Body.Bytes(), "error.message").String() != "still invalid after retry" ||
+				gjson.GetBytes(w.Body.Bytes(), "error.code").String() != "invalid_encrypted_content" {
+				t.Fatalf("expected second upstream error body, got %s", w.Body.String())
+			}
+			if got := backupAttempts.Load(); got != 0 {
+				t.Fatalf("backup attempts=%d, want 0: repaired request rejection must not fail over", got)
+			}
+			assertNoProxyCooldowns(t, env)
+		})
 	}
-	if attempts.Load() != 2 {
-		t.Fatalf("attempts=%d, want 2", attempts.Load())
-	}
-	if !strings.Contains(w.Body.String(), "still invalid after retry") {
-		t.Fatalf("expected second upstream error body, got %s", w.Body.String())
-	}
-	if got := backupAttempts.Load(); got != 0 {
-		t.Fatalf("backup attempts=%d, want 0: repaired request rejection must not fail over", got)
-	}
-	assertNoProxyCooldowns(t, env)
 }
 
 func TestProxy_RepairRetryNonRequestFailureFailsOver(t *testing.T) {
@@ -13249,6 +13498,16 @@ func TestProxy_RepairRetryNonRequestFailureFailsOver(t *testing.T) {
 			request:       openAIRequest,
 			primary:       []upstreamReply{{http.StatusBadRequest, maxTokensRejected}, {http.StatusServiceUnavailable, serviceUnavailable}},
 			backupBody:    `{"id":"from-backup","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+			wantModelCool: true,
+		},
+		{
+			name:          "ordinary codex 502",
+			protocol:      "codex",
+			model:         "gpt-5.5",
+			path:          "/v1/responses",
+			request:       codexRequest,
+			primary:       []upstreamReply{{http.StatusBadGateway, serviceUnavailable}},
+			backupBody:    `{"id":"from-backup","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
 			wantModelCool: true,
 		},
 		{

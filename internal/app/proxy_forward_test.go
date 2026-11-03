@@ -882,6 +882,12 @@ func TestCodexOAuthRequestScopesClientIdentityPerAccount(t *testing.T) {
 		t.Fatalf("replay re-scoped identities: first=%s replay=%s header=%v", first.body, replay.body, replay.header)
 	}
 
+	// 客户端只带 prompt_cache_key 时，执行会话跟随映射后的缓存键，逐轮稳定以复用原生 WS 连接。
+	hinted := build(t, "account-a", body, http.Header{}, false, nil)
+	if got := hinted.header.Get("Session-Id"); got != session || gjson.GetBytes(hinted.body, "prompt_cache_key").String() != session {
+		t.Fatalf("Session-Id = %q, want scoped prompt_cache_key %q; body=%s", got, session, hinted.body)
+	}
+
 	// 内部会话（guardian 等）的 prompt_cache_key / Session-Id 为 "<source>:<parent_thread_id>"：
 	// 只映射 UUID 段，映射后仍与父线程头相等。
 	const rawParent = "019a3c5e-6000-7abc-8def-0123456789ab"

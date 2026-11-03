@@ -1124,18 +1124,6 @@ func codexWebsocketHeaders(source http.Header) http.Header {
 		betaHeader = codexResponsesWebsocketBeta
 	}
 	header.Set("OpenAI-Beta", betaHeader)
-
-	// Current Codex clients use the canonical Session-Id header. Keep it intact:
-	// a downstream ccLoad instance needs Session-Id + Thread-Id to isolate parent
-	// and subagent execution sessions. Accept the legacy session header as a
-	// fallback without synthesizing legacy aliases for the upstream.
-	sessionID := strings.TrimSpace(header.Get("Session-Id"))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(header.Get("Session_id"))
-	}
-	if sessionID != "" {
-		header.Set("Session-Id", sessionID)
-	}
 	return header
 }
 

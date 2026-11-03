@@ -744,7 +744,7 @@ func applyCodexClientIdentity(h http.Header) {
 	h.Set("Originator", codexOriginator)
 }
 
-func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, streaming bool) {
+func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, body []byte, streaming bool) {
 	if req == nil || cfg == nil {
 		return
 	}
@@ -762,8 +762,14 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 		req.Header.Set("Accept", "application/json")
 	}
 	applyCodexClientIdentity(req.Header)
+	// OAuth 缺会话头时按 CPA 跟随最终 prompt_cache_key：原生 WS 握手头参与连接复用，
+	// 逐次随机会让同一会话每轮重新握手并全量回放。中转渠道不提升，见 upstream.md。
 	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
-		req.Header.Set("Session-Id", util.NewUUIDv4())
+		sessionID := readCodexPromptCacheKey(body)
+		if sessionID == "" {
+			sessionID = util.NewUUIDv4()
+		}
+		req.Header.Set("Session-Id", sessionID)
 	}
 	if cfg.UsesCodexOAuth() && cfg.CodexAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", cfg.CodexAccountID)
