@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -137,4 +138,14 @@ func maskPrivacyBodyFromContext(ctx context.Context, body []byte, contentType st
 		return nil, errPrivacyMasking
 	}
 	return masked, nil
+}
+
+// Request diagnostics intentionally exclude token text, original values and scope.
+func (w *privacyResponseWriter) logUnrestoredTokens(requestID int64) {
+	if w.observer == nil {
+		return
+	}
+	if count := w.observer.UnrestoredTokens(); count > 0 {
+		log.Printf("[WARN] privacy response has unrestored placeholders request_id=%d count=%d", requestID, count)
+	}
 }

@@ -602,6 +602,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 
+	var reqCtx *proxyRequestContext
 	privacySession := s.privacySession(c)
 	if privacySession != nil {
 		all, err = maskPrivacyBody(privacySession, all, c.Request.Header.Get("Content-Type"))
@@ -620,6 +621,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			if finishErr := output.Finish(); finishErr != nil {
 				log.Print("[WARN] privacy response restoration failed")
 			}
+			var requestID int64
+			if reqCtx != nil {
+				requestID = reqCtx.activeReqID
+			}
+			output.logUnrestoredTokens(requestID)
 		}()
 	}
 
@@ -718,7 +724,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 
-	reqCtx := &proxyRequestContext{
+	reqCtx = &proxyRequestContext{
 		clientModel:    clientModel,
 		originalModel:  originalModel,
 		requestedModel: incoming.requestedModel,

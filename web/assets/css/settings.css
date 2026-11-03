@@ -181,6 +181,17 @@
   margin: 0;
 }
 
+.privacy-redaction-warnings {
+  color: var(--warning-700);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.settings-privacy-warnings {
+  margin: 0 24px 16px;
+}
+
 #privacyTestStatus:empty {
   display: none;
 }
@@ -229,7 +240,7 @@
 
 .privacy-redaction-test-hits li {
   display: grid;
-  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  grid-template-columns: minmax(96px, 2fr) minmax(0, 3fr);
   gap: 12px;
   align-items: baseline;
   font-size: var(--text-xs);
@@ -237,7 +248,7 @@
 
 .privacy-redaction-test-kind {
   color: var(--color-text-secondary);
-  font-family: var(--font-family-mono);
+  overflow-wrap: anywhere;
 }
 
 /* 密钥等长值没有空格，窄屏下须强制折行，否则撑出横向滚动 */

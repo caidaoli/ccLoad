@@ -969,7 +969,7 @@ func TestPrivacyRedactionPreview(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("preview status=%d body=%s", w.Code, w.Body.String())
 	}
-	resp := mustParseAPIResponse[privacyPreviewResponse](t, w.Body.Bytes())
+	resp := mustParseAPIResponse[privacy.PreviewResult](t, w.Body.Bytes())
 	if len(resp.Data.Hits) != 1 || resp.Data.Hits[0].Kind != "RELAY" || resp.Data.Hits[0].Value != "relay_ABCDEF123456" {
 		t.Fatalf("unexpected hits: %+v", resp.Data.Hits)
 	}
@@ -978,6 +978,49 @@ func TestPrivacyRedactionPreview(t *testing.T) {
 	}
 	if server.privacyPolicy.Load().Enabled() {
 		t.Fatal("preview changed the live policy")
+	}
+	if hit := resp.Data.Hits[0]; hit.Source != "custom" || hit.RuleIndex == nil || *hit.RuleIndex != 0 {
+		t.Fatalf("custom rule source missing: %+v", hit)
+	}
+	if resp.Data.Warnings == nil || len(resp.Data.Warnings) != 0 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("preview warnings/cache contract: %+v %v", resp.Data.Warnings, w.Header())
+	}
+
+	// Advisory warnings are available during empty-sample validation too. They
+	// never reject a valid draft and refer to zero-based custom rule positions.
+	w = preview(map[string]string{"config": `{"secrets":false,"rules":[{"prefix":"relay_"},{"regex":".+"},{"regex":"(?s).*(123).*"}]}`, "text": ""})
+	if w.Code != http.StatusOK {
+		t.Fatalf("broad rule was rejected: %s", w.Body.String())
+	}
+	warnings := mustParseAPIResponse[privacy.PreviewResult](t, w.Body.Bytes()).Data.Warnings
+	if len(warnings) != 1 || warnings[0].RuleIndex != 1 || warnings[0].Code != "broad_pattern" {
+		t.Fatalf("unexpected broad warnings: %+v", warnings)
+	}
+
+	// Provenance follows the same longest/first selection as production masking,
+	// including capture groups, duplicate custom rules, words and allow entries.
+	w = preview(map[string]string{
+		"config": `{"enabled":false,"secrets":true,"words":["Project Falcon","relay_token123"],"allow":["relay_ALLOWED123"],"rules":[{"kind":"LABEL","regex":"label=(ABC[0-9]+)"},{"kind":"RELAY","prefix":"relay_"},{"kind":"LATER","prefix":"relay_"}]}`,
+		"text":   "sk-proj-ABcDef012345678901234567890123456 Project Falcon label=ABC123 relay_token123 relay_ALLOWED123",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("source preview failed: %s", w.Body.String())
+	}
+	hits := mustParseAPIResponse[privacy.PreviewResult](t, w.Body.Bytes()).Data.Hits
+	if len(hits) != 4 {
+		t.Fatalf("unexpected source hits: %+v", hits)
+	}
+	for i, want := range []struct {
+		source string
+		index  int
+	}{{"builtin", -1}, {"word", 0}, {"custom", 0}, {"custom", 1}} {
+		hit := hits[i]
+		if hit.Source != want.source || want.index < 0 && hit.RuleIndex != nil || want.index >= 0 && (hit.RuleIndex == nil || *hit.RuleIndex != want.index) {
+			t.Fatalf("hit %d source: %+v, want %+v", i, hit, want)
+		}
+	}
+	if hits[2].Value != "ABC123" || hits[3].Kind != "RELAY" {
+		t.Fatalf("capture/priority mismatch: %+v", hits)
 	}
 
 	const secretRegex = "relay_[A-Z(" // invalid RE2; the error must not echo it

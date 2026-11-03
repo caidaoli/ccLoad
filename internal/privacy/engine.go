@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -38,14 +39,20 @@ var placeholderPattern = regexp.MustCompile(`\{\{CCLOAD_[A-Z][A-Z0-9_]{0,23}_[a-
 // entry fields other than used are immutable once published.
 type entry struct {
 	value, placeholder, kind, category string
+	syntax                             bool      // original JSON syntax, rather than a decoded string value
 	used                               time.Time // guarded by Engine.mu
+}
+
+type valueKey struct {
+	value  string
+	syntax bool
 }
 
 // A scope is in Engine.scopes only while it holds values; drop removes it.
 type scopeValues struct {
 	key          [32]byte
-	values       map[string]*entry // original value → mapping
-	placeholders map[string]*entry // placeholder → mapping
+	values       map[valueKey]*entry // value and its JSON representation → mapping
+	placeholders map[string]*entry   // placeholder → mapping
 	used         time.Time
 }
 
@@ -88,6 +95,9 @@ type Session struct {
 	indexOnce sync.Once
 	mu        sync.RWMutex
 	known     knownIndex
+
+	observe    bool
+	unrestored atomic.Uint64
 }
 
 // Session returns a request session. policy must not be nil; it stays fixed
@@ -149,7 +159,7 @@ func (s *Session) MaskText(text string) (string, error) {
 	return s.apply(text, found)
 }
 
-func (s *Session) apply(text string, found []match) (string, error) {
+func (s *Session) selectMatches(text string, found []match) []match {
 	sort.SliceStable(found, func(i, j int) bool {
 		if found[i].start != found[j].start {
 			return found[i].start < found[j].start
@@ -169,10 +179,15 @@ func (s *Session) apply(text string, found []match) (string, error) {
 		selected = append(selected, m)
 		end = m.end
 	}
+	return selected
+}
+
+func (s *Session) apply(text string, found []match) (string, error) {
+	selected := s.selectMatches(text, found)
 	if len(selected) == 0 {
 		return text, nil
 	}
-	values, err := s.remember(text, selected)
+	values, err := s.remember(text, selected, false)
 	if err != nil {
 		return "", err
 	}
@@ -187,14 +202,14 @@ func (s *Session) apply(text string, found []match) (string, error) {
 	return out.String(), nil
 }
 
-func (s *Session) remember(text string, selected []match) (map[string]string, error) {
+func (s *Session) remember(text string, selected []match, syntax bool) (map[string]string, error) {
 	e := s.engine
 	e.mu.Lock()
 	now := e.now()
 	e.prune(now)
 	held := e.scopes[s.scope]
 	if held == nil {
-		held = &scopeValues{key: s.scope, values: make(map[string]*entry), placeholders: make(map[string]*entry)}
+		held = &scopeValues{key: s.scope, values: make(map[valueKey]*entry), placeholders: make(map[string]*entry)}
 	}
 	out := make(map[string]string, len(selected))
 	items := make([]*entry, 0, len(selected))
@@ -205,16 +220,22 @@ func (s *Session) remember(text string, selected []match) (map[string]string, er
 		if _, ok := out[value]; ok {
 			continue
 		}
-		item := held.values[value]
+		item := held.values[valueKey{value, syntax}]
 		if item == nil {
 			h := hmac.New(sha256.New, e.key[:])
 			_, _ = h.Write(s.scope[:])
+			mode := byte(0)
+			if syntax {
+				mode = 1
+			}
+			_, _ = h.Write([]byte{mode})
 			_, _ = h.Write([]byte(m.kind + "\x00" + value))
 			item = &entry{
 				value:       strings.Clone(value),
 				placeholder: "{{CCLOAD_" + m.kind + "_" + hex.EncodeToString(h.Sum(nil)[:8]) + "}}",
 				kind:        m.kind,
 				category:    m.category,
+				syntax:      syntax,
 			}
 			added = append(added, item)
 			size += len(item.value) + len(item.placeholder)
@@ -229,7 +250,7 @@ func (s *Session) remember(text string, selected []match) (map[string]string, er
 			return nil, err
 		}
 		for _, item := range added {
-			held.values[item.value] = item
+			held.values[valueKey{item.value, item.syntax}] = item
 			held.placeholders[item.placeholder] = item
 		}
 		e.entries += len(added)
@@ -257,7 +278,7 @@ func (e *Engine) prune(now time.Time) {
 }
 
 func (e *Engine) drop(held *scopeValues, item *entry) {
-	delete(held.values, item.value)
+	delete(held.values, valueKey{item.value, item.syntax})
 	delete(held.placeholders, item.placeholder)
 	e.entries--
 	e.bytes -= len(item.value) + len(item.placeholder)
@@ -448,11 +469,21 @@ func (s *Session) learn(items []*entry) {
 // Only the current word and custom rules decide those matches; values from
 // disabled categories or now on the allow list are not masked again either.
 func (s *Session) index(item *entry) {
-	if item.category == "word" || item.category == "custom" || !s.policy.covers(item.category) || s.policy.allowed(item.value) {
+	if item.syntax || item.category == "word" || item.category == "custom" || !s.policy.covers(item.category) || s.policy.allowed(item.value) {
 		return
 	}
 	s.known.add(item)
 }
+
+// ObserveRestoration returns an independent output observer sharing this scope's
+// dictionary. Internal history restoration on the original session is not counted.
+func (s *Session) ObserveRestoration() *Session {
+	return &Session{engine: s.engine, scope: s.scope, policy: s.policy, observe: true}
+}
+
+// UnrestoredTokens counts observed occurrences with the {{CCLOAD_ marker that
+// could not be restored, including damaged and truncated placeholders.
+func (s *Session) UnrestoredTokens() uint64 { return s.unrestored.Load() }
 
 // RestoreText restores only placeholders owned by this authenticated scope.
 func (s *Session) RestoreText(text string) string {
@@ -460,11 +491,30 @@ func (s *Session) RestoreText(text string) string {
 }
 
 func (s *Session) restore(text string, escaped bool) string {
+	return s.restoreMode(text, escaped, false)
+}
+
+// Rebuild tool JSON syntax before restoring its decoded string values. A raw
+// fragment and an identical decoded value have different placeholder identities.
+func (s *Session) restoreSyntax(text string) string {
+	return s.restoreMode(text, false, true)
+}
+
+func (s *Session) restoreMode(text string, escaped, syntaxOnly bool) string {
 	if !strings.Contains(text, "{{CCLOAD_") {
 		return text
 	}
 	spans := placeholderPattern.FindAllStringIndex(text, -1)
-	values := s.engine.resolve(s.scope, text, spans)
+	values := s.engine.resolve(s.scope, text, spans, syntaxOnly)
+	if s.observe && !syntaxOnly {
+		missing := strings.Count(text, "{{CCLOAD_")
+		for _, span := range spans {
+			if _, ok := values[text[span[0]:span[1]]]; ok {
+				missing--
+			}
+		}
+		s.unrestored.Add(uint64(missing))
+	}
 	if len(values) == 0 {
 		return text
 	}
@@ -487,7 +537,7 @@ func (s *Session) restore(text string, escaped bool) string {
 	return out.String()
 }
 
-func (e *Engine) resolve(scope [32]byte, text string, spans [][]int) map[string]string {
+func (e *Engine) resolve(scope [32]byte, text string, spans [][]int, syntaxOnly bool) map[string]string {
 	if len(spans) == 0 {
 		return nil
 	}
@@ -501,7 +551,7 @@ func (e *Engine) resolve(scope [32]byte, text string, spans [][]int) map[string]
 	out := make(map[string]string)
 	for _, span := range spans {
 		placeholder := text[span[0]:span[1]]
-		if item := held.placeholders[placeholder]; item != nil && now.Sub(item.used) < mappingTTL {
+		if item := held.placeholders[placeholder]; item != nil && (!syntaxOnly || item.syntax) && now.Sub(item.used) < mappingTTL {
 			item.used = now
 			out[placeholder] = item.value
 		}
@@ -519,39 +569,4 @@ func jsonQuote(s string) string {
 	encoder.SetEscapeHTML(false)
 	_ = encoder.Encode(s) // strings always encode
 	return strings.TrimSuffix(b.String(), "\n")
-}
-
-// Hit is one distinct value that masking replaced.
-type Hit struct {
-	Kind        string `json:"kind"`
-	Value       string `json:"value"`
-	Placeholder string `json:"placeholder"`
-}
-
-// Preview masks text as if config were enabled. It uses a throwaway engine, so
-// previews never add values to, or read values from, any live dictionary.
-// Hits are distinct values in order of first appearance in the masked text.
-func Preview(config Config, text string) (string, []Hit, error) {
-	config.Enabled = true
-	policy, err := NewPolicy(config)
-	if err != nil {
-		return "", nil, err
-	}
-	s := NewEngine().Session("", policy)
-	masked, err := s.MaskText(text)
-	if err != nil {
-		return "", nil, err
-	}
-	stored := make(map[string]*entry)
-	for _, item := range s.engine.snapshot(s.scope) {
-		stored[item.placeholder] = item
-	}
-	hits := make([]Hit, 0, len(stored))
-	for _, placeholder := range placeholderPattern.FindAllString(masked, -1) {
-		if item, ok := stored[placeholder]; ok {
-			hits = append(hits, Hit{Kind: item.kind, Value: item.value, Placeholder: placeholder})
-			delete(stored, placeholder)
-		}
-	}
-	return masked, hits, nil
 }

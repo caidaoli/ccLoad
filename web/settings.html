@@ -75,6 +75,7 @@
             </span>
             <input type="hidden" id="model_custom_pricing" value="{}">
           </div>
+          <div id="privacyRedactionWarnings" class="privacy-redaction-warnings settings-privacy-warnings" role="status" hidden></div>
         </section>
 
         <!-- 保存栏置于卡片之外：.glass-card 的 overflow:hidden 会让 sticky 失效 -->
@@ -239,6 +240,7 @@
           data-i18n-aria-label="settings.privacyRedaction.testInput" aria-label="样例文本"
           data-i18n-placeholder="settings.privacyRedaction.testPlaceholder" placeholder="粘贴要检查的文本，例如包含密钥、邮箱或自定义词的片段"></textarea>
         <p id="privacyTestStatus" class="privacy-redaction-help" role="status"></p>
+        <div id="privacyTestWarnings" class="privacy-redaction-warnings" role="status" hidden></div>
         <div id="privacyTestResult" class="privacy-redaction-test-result" hidden></div>
       </section>
       <div class="settings-dialog-footer">

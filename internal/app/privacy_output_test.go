@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +155,9 @@ func TestPrivacyResponseWriterChatSplitEveryPosition(t *testing.T) {
 			writer.Flush()
 			if err := writer.Finish(); err != nil {
 				t.Fatal(err)
+			}
+			if got := writer.observer.UnrestoredTokens(); got != 0 {
+				t.Fatalf("valid split placeholder counted as unrestored: %d", got)
 			}
 			events := privacyOutputTestEvents(t, recorder.Body.String())
 			if len(events) != 3 || events[0].Get("choices.0.delta.content").String()+events[1].Get("choices.0.delta.content").String() != "before "+secret+" after" {
@@ -303,14 +307,16 @@ func TestPrivacyResponseWriterFinishIncompletePrefix(t *testing.T) {
 }
 
 func TestPrivacyResponseWriterPreservesUnchangedSSE(t *testing.T) {
-	session := privacyOutputTestSession(t)
-	wire := ": keepalive\r\n\r\nid: original\r\nretry: 1500\r\nevent: response.output_text.delta\r\ndata: { \"type\": \"response.output_text.delta\",\r\ndata: \"output_index\":0,\"content_index\":0, \"delta\":\"ordinary text\", \"number\":9007199254740993 }\r\n\r\ndata: [DONE]\r\n\r\n"
-	recorder := httptest.NewRecorder()
-	writer := newPrivacyResponseWriter(recorder, session)
-	writer.Header().Set("Content-Type", "text/event-stream")
-	privacyOutputTestWrite(t, writer, wire, 5)
-	if err := writer.Finish(); err != nil || recorder.Body.String() != wire {
-		t.Fatalf("unchanged SSE was reformatted: %q, %v", recorder.Body.String(), err)
+	for _, text := range []string{"ordinary text", `ordinary \u0026 \u4f60 {{CCLOAD_EMAIL_0123456789abcdef}}`} {
+		session := privacyOutputTestSession(t)
+		wire := ": keepalive\r\n\r\nid: original\r\nretry: 1500\r\nevent: response.output_text.delta\r\ndata: { \"type\": \"response.output_text.delta\",\r\ndata: \"output_index\":0,\"content_index\":0, \"delta\":\"" + text + "\", \"number\":9007199254740993 }\r\n\r\ndata: [DONE]\r\n\r\n"
+		recorder := httptest.NewRecorder()
+		writer := newPrivacyResponseWriter(recorder, session)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		privacyOutputTestWrite(t, writer, wire, 5)
+		if err := writer.Finish(); err != nil || recorder.Body.String() != wire {
+			t.Fatalf("unchanged SSE was reformatted: %q, %v", recorder.Body.String(), err)
+		}
 	}
 }
 
@@ -414,9 +420,13 @@ func TestPrivacyResponseWriterRestoresPlainTextBody(t *testing.T) {
 	writer := newPrivacyResponseWriter(recorder, session)
 	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	writer.WriteHeader(http.StatusBadGateway)
-	privacyOutputTestWrite(t, writer, "upstream rejected "+token, 4)
-	if err := writer.Finish(); err != nil || recorder.Body.String() != "upstream rejected owner@example.com" {
+	const unknown = "{{CCLOAD_EMAIL_0123456789abcdef}}"
+	privacyOutputTestWrite(t, writer, "upstream rejected "+token+" "+unknown, 4)
+	if err := writer.Finish(); err != nil || recorder.Body.String() != "upstream rejected owner@example.com "+unknown {
 		t.Fatalf("plain-text body = %q, %v", recorder.Body.String(), err)
+	}
+	if got := writer.observer.UnrestoredTokens(); got != 1 {
+		t.Fatalf("UnrestoredTokens = %d, want 1", got)
 	}
 }
 
@@ -480,5 +490,128 @@ func TestPrivacyResponseWriterExplicitHeaderFlush(t *testing.T) {
 	writer.Flush()
 	if recorder.Code != http.StatusAccepted || !recorder.Flushed || recorder.Header().Get("Content-Length") != "" {
 		t.Fatal("explicit header/flush boundary or Content-Length changed")
+	}
+}
+
+func TestPrivacyResponseWriterUnrestoredJSON(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	known := privacyOutputTestToken(t, session, "owner@example.com")
+	unknown := "{{CCLOAD_EMAIL_0123456789abcdef}}"
+	damaged, truncated := "{{CCLOAD_EMAIL_bad!}}", "{{CCLOAD_EMAIL_0123"
+	body := privacyOutputTestJSON(t, map[string]any{
+		"id": unknown,
+		"content": []any{
+			map[string]any{"type": "text", "text": known + " " + unknown + " " + unknown + " " + damaged + " " + truncated},
+			map[string]any{"type": "thinking", "thinking": unknown},
+		},
+		"arguments": privacyOutputTestJSON(t, map[string]string{"value": unknown}),
+	})
+	// Restoring internal replay/history must not affect client output counts.
+	for range 3 {
+		if _, err := session.RestoreJSON([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	privacyOutputTestWrite(t, writer, body, 5)
+	for range 2 {
+		if err := writer.Finish(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := writer.observer.UnrestoredTokens(); got != 5 {
+		t.Fatalf("UnrestoredTokens = %d, want 5", got)
+	}
+	result := gjson.ParseBytes(recorder.Body.Bytes())
+	if got := result.Get("content.0.text").String(); got != "owner@example.com "+unknown+" "+unknown+" "+damaged+" "+truncated {
+		t.Fatalf("unexpected text: %q", got)
+	}
+	if result.Get("id").String() != unknown || result.Get("content.1.thinking").String() != unknown || gjson.Get(result.Get("arguments").String(), "value").String() != unknown {
+		t.Fatalf("opaque or unresolved content changed: %s", recorder.Body.String())
+	}
+}
+
+func TestPrivacyResponseWriterUnrestoredStream(t *testing.T) {
+	for _, text := range []string{
+		"{{CCLOAD_EMAIL_0123456789abcdef}}",
+		"{{CCLOAD_EMAIL_bad!}}",
+		"{{CCLOAD_EMAIL_0123",
+	} {
+		for split := 1; split < len(text); split++ {
+			t.Run(text+"/"+strconv.Itoa(split), func(t *testing.T) {
+				session := privacyOutputTestSession(t)
+				recorder := httptest.NewRecorder()
+				writer := newPrivacyResponseWriter(recorder, session)
+				writer.Header().Set("Content-Type", "text/event-stream")
+				for _, delta := range []string{text[:split], text[split:]} {
+					wire := "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": delta}}}}) + "\n\n"
+					privacyOutputTestWrite(t, writer, wire, 3)
+				}
+				for range 2 {
+					if err := writer.Finish(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var emitted strings.Builder
+				for _, event := range privacyOutputTestEvents(t, recorder.Body.String()) {
+					emitted.WriteString(event.Get("choices.0.delta.content").String())
+				}
+				if emitted.String() != text || writer.observer.UnrestoredTokens() != 1 {
+					t.Fatalf("output=%q count=%d, want %q count=1", emitted.String(), writer.observer.UnrestoredTokens(), text)
+				}
+			})
+		}
+	}
+}
+
+func TestPrivacyResponseWriterUnrestoredTerminalAndOtherFields(t *testing.T) {
+	const unknown = "{{CCLOAD_EMAIL_0123456789abcdef}}"
+	for _, terminal := range []string{"", "data: [DONE]\n\n", "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"} {
+		t.Run(terminal, func(t *testing.T) {
+			writer := newPrivacyResponseWriter(httptest.NewRecorder(), privacyOutputTestSession(t))
+			writer.Header().Set("Content-Type", "text/event-stream")
+			wire := "data: " + privacyOutputTestJSON(t, map[string]any{
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "{{CCLOAD_EMAIL_"}}},
+				"error":   map[string]string{"message": unknown},
+			}) + "\n\n" + terminal
+			privacyOutputTestWrite(t, writer, wire, 4)
+			for range 2 {
+				if err := writer.Finish(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := writer.observer.UnrestoredTokens(); got != 2 {
+				t.Fatalf("UnrestoredTokens = %d, want 2", got)
+			}
+		})
+	}
+}
+
+type privacyOutputFailedWriter struct {
+	http.ResponseWriter
+}
+
+func (w privacyOutputFailedWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestPrivacyResponseWriterCountsObservedFailedOutput(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(strconv.FormatBool(streaming), func(t *testing.T) {
+			writer := newPrivacyResponseWriter(privacyOutputFailedWriter{httptest.NewRecorder()}, privacyOutputTestSession(t))
+			wire := `{"content":"{{CCLOAD_EMAIL_0123456789abcdef}}"}`
+			if streaming {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				wire = "data: " + wire + "\n\n"
+			}
+			_, _ = writer.Write([]byte(wire))
+			for range 2 {
+				if err := writer.Finish(); !errors.Is(err, io.ErrClosedPipe) {
+					t.Fatalf("Finish = %v, want closed pipe", err)
+				}
+			}
+			if got := writer.observer.UnrestoredTokens(); got != 1 {
+				t.Fatalf("UnrestoredTokens = %d, want 1 for observed output", got)
+			}
+		})
 	}
 }

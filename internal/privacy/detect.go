@@ -415,8 +415,10 @@ func bucketOK(v string) bool {
 	return len(v) >= 3 && v != "my-bucket" && v != "your-bucket" && v != "example-bucket" && v != "bucket-name" && v != "mybucket" && v != "example"
 }
 
+var secretNameSeparators = strings.NewReplacer("_", "", "-", "")
+
 func secretName(key string) bool {
-	lower := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+	lower := strings.ToLower(secretNameSeparators.Replace(key))
 	for _, word := range []string{"password", "passwd", "secret", "apikey", "accesskey", "privatekey", "token", "credential", "authorization", "cookie"} {
 		if strings.Contains(lower, word) && !strings.Contains(lower, "path") && !strings.Contains(lower, "file") && !strings.Contains(lower, "max_token") && !strings.Contains(lower, "maxtoken") {
 			return true

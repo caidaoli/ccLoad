@@ -18,7 +18,8 @@ const (
 	// Every turn resends a conversation's history, so the cache must hold the
 	// active conversations of all users, or each request rescans them in full.
 	// Two generations bound it to 2×cacheEntries texts and 2×cacheMatches
-	// spans, about 35 MiB; it stores offsets and kinds, never plaintext.
+	// spans; it stores offsets and kinds, never plaintext. Tool JSON shares
+	// this same budget with ordinary text instead of adding another cache.
 	cacheEntries = 65536
 	cacheMatches = 262144
 )
@@ -91,31 +92,49 @@ func (p *Policy) allowed(value string) bool {
 // callers must copy it before reordering or appending.
 func (p *Policy) find(text string) ([]match, error) {
 	if len(text) < cacheMinBytes {
-		return p.scan(text)
+		return p.scan(text, nil)
 	}
 	key := sha256.Sum256([]byte(text))
-	if found, ok := p.cache.get(key); ok {
-		return found, nil
+	if found, ok := p.cache.get(cacheKey{hash: key}); ok {
+		return found.text, nil
 	}
-	found, err := p.scan(text)
+	found, err := p.scan(text, nil)
 	if err == nil {
-		p.cache.put(key, found)
+		p.cache.put(cacheKey{hash: key}, cachedMatches{text: found})
 	}
 	return found, err
 }
 
-func (p *Policy) scan(text string) ([]match, error) {
+// record is only used by previews to retain each rule's provenance. Production
+// detection keeps the same matches without allocating source metadata.
+func (p *Policy) scan(text string, record func(matches []match, source string, index int)) ([]match, error) {
 	// Case-insensitive literals are searched in lower; see asciiFold.
 	lower, unusualFold := asciiLower(text), strings.ContainsAny(text, "\u017F\u212A")
 	var found []match
+	customIndex := 0
 	for _, r := range p.rules {
-		found = append(found, r.find(text, lower, unusualFold)...)
+		matches := r.find(text, lower, unusualFold)
+		if record != nil {
+			if r.category == "custom" {
+				record(matches, "custom", customIndex)
+			} else {
+				record(matches, "builtin", -1)
+			}
+		}
+		if r.category == "custom" {
+			customIndex++
+		}
+		found = append(found, matches...)
 		if len(found) > maxMatches {
 			return nil, errTooManyMatches
 		}
 	}
-	for _, w := range p.words {
+	for index, w := range p.words {
+		start := len(found)
 		found = w.find(text, lower, unusualFold, p.config.WordsWhole, found)
+		if record != nil {
+			record(found[start:], "word", index)
+		}
 		if len(found) > maxMatches {
 			return nil, errTooManyMatches
 		}
@@ -370,11 +389,21 @@ func (g gate) windows(text, lower string, unusualFold bool) [][2]int {
 // Rotating generations keep recently used texts without per-entry bookkeeping.
 type matchCache struct {
 	mu                sync.Mutex
-	current, previous map[[32]byte][]match
+	current, previous map[cacheKey]cachedMatches
 	size              int
 }
 
-func (c *matchCache) get(key [32]byte) ([]match, bool) {
+type cacheKey struct {
+	hash [32]byte
+	json bool
+}
+
+type cachedMatches struct {
+	text []match
+	json []jsonMatch
+}
+
+func (c *matchCache) get(key cacheKey) (cachedMatches, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if found, ok := c.current[key]; ok {
@@ -387,16 +416,23 @@ func (c *matchCache) get(key [32]byte) ([]match, bool) {
 	return found, ok
 }
 
-func (c *matchCache) put(key [32]byte, found []match) {
+func (c *matchCache) put(key cacheKey, found cachedMatches) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.addLocked(key, found)
 }
 
-func (c *matchCache) addLocked(key [32]byte, found []match) {
-	if c.current == nil || len(c.current) >= cacheEntries || c.size+len(found) > cacheMatches {
-		c.previous, c.current, c.size = c.current, make(map[[32]byte][]match), 0
+func (c *matchCache) addLocked(key cacheKey, found cachedMatches) {
+	size := len(found.text) + len(found.json)
+	if size > cacheMatches {
+		return
+	}
+	old, exists := c.current[key]
+	previousSize := len(old.text) + len(old.json)
+	if c.current == nil || !exists && len(c.current) >= cacheEntries || c.size-previousSize+size > cacheMatches {
+		c.previous, c.current, c.size = c.current, make(map[cacheKey]cachedMatches), 0
+		previousSize = 0
 	}
 	c.current[key] = found
-	c.size += len(found)
+	c.size += size - previousSize
 }

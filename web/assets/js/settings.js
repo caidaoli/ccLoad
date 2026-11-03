@@ -698,6 +698,7 @@ function closePrivacyTestModal() {
 function clearPrivacyRedactionTest() {
   privacyTestSeq++;
   setPrivacyRedactionTestStatus('');
+  renderPrivacyRedactionWarnings('privacyTestWarnings', []);
   const result = document.getElementById('privacyTestResult');
   if (result) {
     result.hidden = true;
@@ -720,8 +721,17 @@ function syncPrivacyRedactionTestButton(busy = false) {
   else button.removeAttribute('aria-busy');
 }
 
-function renderPrivacyRedactionTestResult({ masked = '', hits = [] }) {
+function renderPrivacyRedactionWarnings(id, warnings = []) {
+  const messages = warnings.filter(warning => warning.code === 'broad_pattern')
+    .map(warning => t('settings.privacyRedaction.broadPattern', { index: warning.rule_index + 1 }));
+  const element = document.getElementById(id);
+  element.textContent = messages.length ? [t('settings.privacyRedaction.warningTitle'), ...messages].join('\n') : '';
+  element.hidden = !messages.length;
+}
+
+function renderPrivacyRedactionTestResult({ masked = '', hits = [], warnings = [] }) {
   const result = document.getElementById('privacyTestResult');
+  renderPrivacyRedactionWarnings('privacyTestWarnings', warnings);
   if (!hits.length) {
     setPrivacyRedactionTestStatus(t('settings.privacyRedaction.testNoHits'));
     return;
@@ -743,7 +753,10 @@ function renderPrivacyRedactionTestResult({ masked = '', hits = [] }) {
   list.setAttribute('aria-label', t('settings.privacyRedaction.testHitList'));
   for (const hit of hits) {
     const item = element('li');
-    item.append(element('span', 'privacy-redaction-test-kind', hit.kind), element('code', '', hit.value));
+    const source = hit.source === 'word' ? t('settings.privacyRedaction.hitWord', { index: hit.rule_index + 1 })
+      : hit.source === 'custom' ? t('settings.privacyRedaction.hitCustom', { index: hit.rule_index + 1, kind: hit.kind })
+        : t('settings.privacyRedaction.hitBuiltin', { kind: hit.kind });
+    item.append(element('span', 'privacy-redaction-test-kind', source), element('code', '', hit.value));
     list.append(item);
   }
   result.replaceChildren(output, list);
@@ -838,8 +851,9 @@ async function applyPrivacyRedaction() {
   showPrivacyRedactionError(null);
   // 请求期间关闭、重置或继续编辑过草稿，结果都已过期，不再应用也不报错。
   const current = () => privacyRedactionDraft === draft && formatPrivacyRedaction(draft) === value;
+  let preview;
   try {
-    await fetchDataWithAuth('/admin/privacy-redaction/preview', {
+    preview = await fetchDataWithAuth('/admin/privacy-redaction/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config: value, text: '' })
@@ -855,6 +869,7 @@ async function applyPrivacyRedaction() {
   }
   if (!current()) return;
   document.getElementById('privacy_redaction').value = value;
+  renderPrivacyRedactionWarnings('privacyRedactionWarnings', preview?.warnings);
   setSettingInvalid('privacy_redaction', false);
   updateDirtyStatus();
   closePrivacyRedactionModal();

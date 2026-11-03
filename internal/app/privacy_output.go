@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +23,7 @@ import (
 // original order even when independent content channels are interleaved.
 type privacyResponseWriter struct {
 	http.ResponseWriter
-	session     *privacy.Session
+	observer    *privacy.Session
 	pending     []byte
 	frames      []*privacyOutputFrame
 	channels    map[string]*privacyOutputChannel
@@ -37,13 +36,17 @@ type privacyResponseWriter struct {
 }
 
 func newPrivacyResponseWriter(w http.ResponseWriter, session *privacy.Session) *privacyResponseWriter {
-	return &privacyResponseWriter{ResponseWriter: w, session: session, channels: make(map[string]*privacyOutputChannel)}
+	output := &privacyResponseWriter{ResponseWriter: w, channels: make(map[string]*privacyOutputChannel)}
+	if session != nil {
+		output.observer = session.ObserveRestoration()
+	}
+	return output
 }
 
 func (w *privacyResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *privacyResponseWriter) WriteHeader(status int) {
-	if w.session != nil {
+	if w.observer != nil {
 		w.Header().Del("Content-Length")
 	}
 	w.ResponseWriter.WriteHeader(status)
@@ -59,7 +62,7 @@ func (w *privacyResponseWriter) Write(data []byte) (int, error) {
 	if w.finished {
 		return 0, io.ErrClosedPipe
 	}
-	if w.session == nil {
+	if w.observer == nil {
 		n, err := w.ResponseWriter.Write(data)
 		w.emitted = w.emitted || n > 0
 		return n, err
@@ -142,7 +145,7 @@ func (w *privacyResponseWriter) Finish() error {
 		return w.err
 	}
 	w.finished = true
-	if w.err != nil || w.session == nil {
+	if w.err != nil || w.observer == nil {
 		return w.err
 	}
 	w.detectMode()
@@ -150,10 +153,10 @@ func (w *privacyResponseWriter) Finish() error {
 		if len(w.pending) == 0 {
 			return nil
 		}
-		restored, err := w.session.RestoreJSON(w.pending)
+		restored, err := w.observer.RestoreJSON(w.pending)
 		if err != nil && !json.Valid(w.pending) {
 			// Plain-text and HTML error bodies are not JSON documents.
-			restored, err = []byte(w.session.RestoreText(string(w.pending))), nil
+			restored, err = []byte(w.observer.RestoreText(string(w.pending))), nil
 		}
 		w.err = err
 		if w.err == nil {
@@ -199,7 +202,6 @@ type privacyOutputFrame struct {
 type privacyOutputField struct {
 	frame *privacyOutputFrame
 	index int
-	raw   string
 	value string
 	edits []privacyOutputEdit
 }
@@ -215,8 +217,9 @@ type privacyOutputPiece struct {
 }
 
 type privacyOutputChannel struct {
-	pending []privacyOutputPiece
-	tail    string
+	pending  []privacyOutputPiece
+	observer *privacy.Session
+	tail     string
 	// These are the lexical state of the inner tool JSON before tail. They
 	// must span deltas: a fragment need not start at an opening quotation mark.
 	quoted, escaped bool
@@ -247,14 +250,14 @@ func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gj
 	if value.Type != gjson.String {
 		return false
 	}
-	field := &privacyOutputField{frame: frame, index: value.Index, raw: value.Raw, value: value.String()}
+	field := &privacyOutputField{frame: frame, index: value.Index, value: value.String()}
 	frame.fields = append(frame.fields, field)
 	state := w.channels[channel]
 	if state == nil {
-		state = &privacyOutputChannel{arguments: arguments}
+		state = &privacyOutputChannel{arguments: arguments, observer: w.observer}
 		w.channels[channel] = state
 	}
-	state.feed(field, w.session)
+	state.feed(field)
 	return field.value != ""
 }
 
@@ -373,25 +376,31 @@ func (w *privacyResponseWriter) releaseChannels(prefix string) {
 }
 
 func (c *privacyOutputChannel) release() {
+	c.observer.RestoreText(c.tail)
+	c.clearPending()
+}
+
+func (c *privacyOutputChannel) clearPending() {
 	for _, piece := range c.pending {
 		piece.field.frame.holds--
 	}
 	c.pending, c.tail = nil, ""
 }
 
-func (c *privacyOutputChannel) feed(field *privacyOutputField, session *privacy.Session) {
+func (c *privacyOutputChannel) feed(field *privacyOutputField) {
 	pieces := append(c.pending, privacyOutputPiece{field: field, end: len(field.value)})
 	text := c.tail + field.value
-	c.release()
-	position := 0
+	c.clearPending()
+	position, observed := 0, 0
 	for position < len(text) {
 		length, incomplete := privacyOutputPlaceholder(text[position:])
 		if incomplete {
 			break
 		}
 		if length > 0 {
+			c.observer.RestoreText(text[observed:position])
 			token := text[position : position+length]
-			if restored := session.RestoreText(token); restored != token {
+			if restored := c.observer.RestoreText(token); restored != token {
 				if c.arguments && c.quoted {
 					escaped, _ := json.Marshal(restored)
 					restored = string(escaped[1 : len(escaped)-1])
@@ -399,6 +408,7 @@ func (c *privacyOutputChannel) feed(field *privacyOutputField, session *privacy.
 				privacyOutputReplace(pieces, position, position+length, restored)
 			}
 			position += length
+			observed = position
 			continue
 		}
 		if c.arguments {
@@ -412,6 +422,7 @@ func (c *privacyOutputChannel) feed(field *privacyOutputField, session *privacy.
 		}
 		position++
 	}
+	c.observer.RestoreText(text[observed:position])
 	if position < len(text) {
 		c.tail = text[position:]
 		offset := 0
@@ -496,7 +507,7 @@ func privacyOutputPlaceholder(text string) (int, bool) {
 func (w *privacyResponseWriter) drainFrames() error {
 	for len(w.frames) > 0 && w.frames[0].holds == 0 {
 		frame := w.frames[0]
-		data, err := frame.restore(w.session)
+		data, err := frame.restore(w.observer)
 		if err != nil {
 			return err
 		}
@@ -510,13 +521,25 @@ func (w *privacyResponseWriter) drainFrames() error {
 	return nil
 }
 
-func (f *privacyOutputFrame) restore(session *privacy.Session) ([]byte, error) {
-	if !gjson.ValidBytes(f.data) {
+func (f *privacyOutputFrame) restore(observer *privacy.Session) ([]byte, error) {
+	if !bytes.Contains(f.data, []byte("{{CCLOAD_")) && !slices.ContainsFunc(f.fields, func(field *privacyOutputField) bool {
+		return len(field.edits) > 0
+	}) {
 		return f.wire, nil
 	}
-	var patches []privacyOutputEdit
+	if !gjson.ValidBytes(f.data) {
+		observer.RestoreText(string(f.data))
+		return f.wire, nil
+	}
+	// Channel deltas were restored and observed after concatenation. Supply
+	// their final values so the JSON pass only observes the remaining fields.
+	var fields map[int]string
+	if len(f.fields) > 0 {
+		fields = make(map[int]string, len(f.fields))
+	}
 	for _, field := range f.fields {
 		if len(field.edits) == 0 {
+			fields[field.index] = field.value
 			continue
 		}
 		var restored strings.Builder
@@ -527,22 +550,9 @@ func (f *privacyOutputFrame) restore(session *privacy.Session) ([]byte, error) {
 			offset = edit.end
 		}
 		restored.WriteString(field.value[offset:])
-		encoded, err := json.Marshal(restored.String())
-		if err != nil {
-			return nil, fmt.Errorf("encode restored privacy delta: %w", err)
-		}
-		patches = append(patches, privacyOutputEdit{start: field.index, end: field.index + len(field.raw), text: string(encoded)})
+		fields[field.index] = restored.String()
 	}
-	sort.Slice(patches, func(i, j int) bool { return patches[i].start < patches[j].start })
-	var body bytes.Buffer
-	offset := 0
-	for _, patch := range patches {
-		body.Write(f.data[offset:patch.start])
-		body.WriteString(patch.text)
-		offset = patch.end
-	}
-	body.Write(f.data[offset:])
-	updated, err := session.RestoreJSON(body.Bytes())
+	updated, err := observer.RestoreJSONWithFields(f.data, fields)
 	if err != nil {
 		return nil, fmt.Errorf("restore privacy response event: %w", err)
 	}

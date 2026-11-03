@@ -193,105 +193,97 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 					continue
 				}
 			}
-			if errAcquire := executionSession.acquireTurn(connectionCtx); errAcquire != nil {
+			if shouldClose := func() bool {
+				if errAcquire := executionSession.acquireTurn(connectionCtx); errAcquire != nil {
+					return true
+				}
+				defer executionSession.releaseTurn()
+				if errAdmit := s.responsesExecutionSessions.admitTurn(executionSession); errAdmit != nil {
+					if errWrite := writeResponsesWebsocketRateLimit(conn, errAdmit); errWrite != nil {
+						return true
+					}
+					return false
+				}
+				turnCtx, cancelTurn := context.WithCancel(connectionCtx)
+				defer cancelTurn()
+				interrupt.begin(cancelTurn, executionSession.upstream)
+				defer interrupt.end()
+				releaseSlots, errSlots := s.acquireResponsesWebsocketTurnSlots(turnCtx, tokenHashString, c.GetInt64("token_id"))
+				if errSlots != nil {
+					var rpmErr *tokenRPMExceededError
+					var errWrite error
+					if errors.As(errSlots, &rpmErr) {
+						errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, responsesWebsocketErrorBody{
+							Type: "rate_limit_error", Code: "token_rpm_exceeded", Message: rpmErr.Error(),
+							RetryAfter: rpmErr.retryAfterSeconds(),
+						})
+					} else {
+						errWrite = writeResponsesWebsocketError(conn, "upstream_error", errSlots.Error())
+					}
+					if errWrite != nil {
+						return true
+					}
+					return false
+				}
+				defer releaseSlots()
+				emptySession := len(executionSession.transcript.lastRequest) == 0
+				allowLocalPrewarm := emptySession
+				requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
+				if errNormalize != nil {
+					if errors.Is(errNormalize, errResponsesWebsocketPreviousResponseNotFound) {
+						s.responsesExecutionSessions.recordPreviousResponseMiss(
+							executionSession,
+							gjson.GetBytes(message.payload, "previous_response_id").String(),
+							emptySession,
+						)
+						if errWrite := writeResponsesWebsocketPreviousResponseNotFound(
+							conn,
+							s.responsesExecutionSessions.sessionTTL(),
+						); errWrite != nil {
+							return true
+						}
+						return false
+					}
+					if errWrite := writeResponsesWebsocketError(conn, "invalid_request", errNormalize.Error()); errWrite != nil {
+						return true
+					}
+					return false
+				}
+				turnResult, errTurn := s.executeResponsesWebsocketTurn(
+					turnCtx, c, conn, message.payload, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
+				)
+				if errTurn != nil {
+					if turnResult.interrupted {
+						s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
+					}
+					var retryErr *responsesWebsocketClientRetryError
+					clientRetry := errors.As(errTurn, &retryErr)
+					if clientRetry {
+						executionSession.transcript.requireReplacementReplay()
+					}
+					if clientRetry {
+						if errWrite := turnResult.writeError(conn, errTurn); errWrite != nil {
+							return true
+						}
+						_ = closeResponsesWebsocketForClientRetry(conn)
+						return true
+					}
+					var terminalErr *responsesWebsocketTerminalError
+					if errors.As(errTurn, &terminalErr) && terminalErr.forwarded {
+						turnResult.logPrivacy()
+						return false
+					}
+					if errWrite := turnResult.writeError(conn, errTurn); errWrite != nil {
+						return true
+					}
+					return false
+				}
+				s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
+				turnResult.logPrivacy()
+				return false
+			}(); shouldClose {
 				return
 			}
-			if errAdmit := s.responsesExecutionSessions.admitTurn(executionSession); errAdmit != nil {
-				executionSession.releaseTurn()
-				if errWrite := writeResponsesWebsocketRateLimit(conn, errAdmit); errWrite != nil {
-					return
-				}
-				continue
-			}
-			turnCtx, cancelTurn := context.WithCancel(connectionCtx)
-			interrupt.begin(cancelTurn, executionSession.upstream)
-			releaseSlots, errSlots := s.acquireResponsesWebsocketTurnSlots(turnCtx, tokenHashString, c.GetInt64("token_id"))
-			if errSlots != nil {
-				interrupt.end()
-				cancelTurn()
-				executionSession.releaseTurn()
-				var rpmErr *tokenRPMExceededError
-				var errWrite error
-				if errors.As(errSlots, &rpmErr) {
-					errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, responsesWebsocketErrorBody{
-						Type: "rate_limit_error", Code: "token_rpm_exceeded", Message: rpmErr.Error(),
-						RetryAfter: rpmErr.retryAfterSeconds(),
-					})
-				} else {
-					errWrite = writeResponsesWebsocketError(conn, "upstream_error", errSlots.Error())
-				}
-				if errWrite != nil {
-					return
-				}
-				continue
-			}
-			emptySession := len(executionSession.transcript.lastRequest) == 0
-			allowLocalPrewarm := emptySession
-			requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
-			if errNormalize != nil {
-				interrupt.end()
-				cancelTurn()
-				releaseSlots()
-				executionSession.releaseTurn()
-				if errors.Is(errNormalize, errResponsesWebsocketPreviousResponseNotFound) {
-					s.responsesExecutionSessions.recordPreviousResponseMiss(
-						executionSession,
-						gjson.GetBytes(message.payload, "previous_response_id").String(),
-						emptySession,
-					)
-					if errWrite := writeResponsesWebsocketPreviousResponseNotFound(
-						conn,
-						s.responsesExecutionSessions.sessionTTL(),
-					); errWrite != nil {
-						return
-					}
-					continue
-				}
-				if errWrite := writeResponsesWebsocketError(conn, "invalid_request", errNormalize.Error()); errWrite != nil {
-					return
-				}
-				continue
-			}
-			turnResult, errTurn := s.executeResponsesWebsocketTurn(
-				turnCtx, c, conn, message.payload, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
-			)
-			interrupt.end()
-			cancelTurn()
-			releaseSlots()
-			if errTurn != nil {
-				if turnResult.interrupted {
-					s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
-				}
-				var retryErr *responsesWebsocketClientRetryError
-				clientRetry := errors.As(errTurn, &retryErr)
-				if clientRetry {
-					executionSession.transcript.requireReplacementReplay()
-				}
-				executionSession.releaseTurn()
-				if clientRetry {
-					if errWrite := writeResponsesWebsocketClientRetryError(conn, retryErr); errWrite != nil {
-						return
-					}
-					_ = closeResponsesWebsocketForClientRetry(conn)
-					return
-				}
-				var terminalErr *responsesWebsocketTerminalError
-				if errors.As(errTurn, &terminalErr) {
-					if terminalErr.forwarded {
-						continue
-					}
-					if errWrite := writeResponsesWebsocketPayload(conn, terminalErr.payload); errWrite != nil {
-						return
-					}
-					continue
-				}
-				if errWrite := writeResponsesWebsocketError(conn, "upstream_error", errTurn.Error()); errWrite != nil {
-					return
-				}
-				continue
-			}
-			s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
-			executionSession.releaseTurn()
 		case responsesWebsocketRequestInterrupt:
 			// 进行中的回合已由读协程直接中断；到这里说明没有可中断的回合，
 			// 对应响应的终结事件已发出。此时回错误会被客户端算到它的下一个回合上。
@@ -517,6 +509,45 @@ type responsesWebsocketTurnResult struct {
 	completedResponseID string
 	pendingToolCallIDs  []string
 	interrupted         bool
+	privacyOutput       *privacyResponseWriter
+	privacyRequestID    int64
+}
+
+func (r responsesWebsocketTurnResult) logPrivacy() {
+	if r.privacyOutput != nil {
+		r.privacyOutput.logUnrestoredTokens(r.privacyRequestID)
+	}
+}
+
+// Final errors are emitted after execution returns, so include them in the
+// same turn diagnostic.
+func (r responsesWebsocketTurnResult) writeError(conn *websocket.Conn, turnErr error) error {
+	defer r.logPrivacy()
+	var payload []byte
+	var terminalErr *responsesWebsocketTerminalError
+	if errors.As(turnErr, &terminalErr) {
+		payload = terminalErr.payload
+	} else {
+		status := http.StatusBadRequest
+		body := responsesWebsocketErrorBody{Type: "invalid_request_error", Code: "upstream_error", Message: turnErr.Error()}
+		var retryErr *responsesWebsocketClientRetryError
+		if errors.As(turnErr, &retryErr) {
+			status = retryErr.responseStatus()
+			body = responsesWebsocketErrorBody{Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error()}
+		}
+		var err error
+		payload, err = json.Marshal(gin.H{"type": "error", "status": status, "error": body})
+		if err != nil {
+			return err
+		}
+		payload = append(payload, '\n') // match the existing WriteJSON framing
+	}
+	if r.privacyOutput != nil {
+		// The error body is already restored. Observe remaining placeholders
+		// without replacing tokens that may be part of an original value.
+		_, _ = r.privacyOutput.observer.RestoreJSON(payload)
+	}
+	return writeResponsesWebsocketPayload(conn, payload)
 }
 
 type responsesWebsocketTerminalError struct {
@@ -596,7 +627,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	executionSession *responsesExecutionSession,
 	allowLocalPrewarm bool,
 	interrupt *responsesWebsocketInterrupt,
-) (responsesWebsocketTurnResult, error) {
+) (turnResult responsesWebsocketTurnResult, turnErr error) {
 	nativeCodexWS := executionSession.upstream
 	requestedModel := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
 	if requestedModel == "" {
@@ -745,6 +776,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if privacySession != nil {
 		privacyOutput = newPrivacyResponseWriter(bridgeWriter, privacySession)
 		outputWriter = privacyOutput
+		defer func() {
+			turnResult.privacyOutput = privacyOutput
+			turnResult.privacyRequestID = reqCtx.activeReqID
+		}()
 	}
 	clientReplay := false
 	stopBeforeNativeWebsocket := func(current, next *model.Config, result *proxyResult) bool {
@@ -1328,15 +1363,6 @@ func writeResponsesWebsocketRateLimit(conn *websocket.Conn, limitErr error) erro
 		body.Unit = executionLimitErr.unit
 	}
 	return writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, body)
-}
-
-func writeResponsesWebsocketClientRetryError(
-	conn *websocket.Conn,
-	retryErr *responsesWebsocketClientRetryError,
-) error {
-	return writeResponsesWebsocketErrorPayload(conn, retryErr.responseStatus(), responsesWebsocketErrorBody{
-		Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error(),
-	})
 }
 
 type responsesWebsocketErrorBody struct {

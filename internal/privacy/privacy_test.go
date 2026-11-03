@@ -3,12 +3,15 @@ package privacy_test
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"ccLoad/internal/privacy"
+
+	"github.com/tidwall/gjson"
 )
 
 func enabled() privacy.Config {
@@ -389,6 +392,423 @@ func TestOtherProtocolToolPayloads(t *testing.T) {
 	}
 }
 
+func TestToolResultEmbeddedJSONDecodesSensitiveValues(t *testing.T) {
+	protocols := []struct{ name, template, path string }{
+		{"responses", `{"input":[{"type":"function_call_output","call_id":"call-1","output":%s}]}`, "input.0.output"},
+		{"responses custom", `{"input":[{"type":"custom_tool_call_output","call_id":"call-1","output":%s}]}`, "input.0.output"},
+		{"chat", `{"messages":[{"role":"tool","tool_call_id":"call-1","content":%s}]}`, "messages.0.content"},
+		{"chat text part", `{"messages":[{"role":"tool","tool_call_id":"call-1","content":[{"type":"text","text":%s}]}]}`, "messages.0.content.0.text"},
+		{"anthropic", `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":%s}]}]}`, "messages.0.content.0.content"},
+		{"anthropic text part", `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":[{"type":"text","text":%s}]}]}]}`, "messages.0.content.0.content.0.text"},
+		{"gemini", `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"result":%s}}}]}]}`, "contents.0.parts.0.functionResponse.response.result"},
+		{"gemini snake", `{"contents":[{"role":"user","parts":[{"function_response":{"name":"lookup","response":{"output":%s}}}]}]}`, "contents.0.parts.0.function_response.response.output"},
+	}
+	secrets := []struct{ name, wire, value string }{
+		{"word", `alice\u0040mycompany.com`, "alice@mycompany.com"},
+		{"api key", `\u0073k-proj-ABcDef012345678901234567890123456`, "sk-proj-ABcDef012345678901234567890123456"},
+		{"pem", `-----BEGIN PRIVATE KEY-----\nabc\"quoted\\value\n-----END PRIVATE KEY-----`, "-----BEGIN PRIVATE KEY-----\nabc\"quoted\\value\n-----END PRIVATE KEY-----"},
+		{"surrogate pair", `before\ud83d\ude3cafter`, "before😼after"},
+		{"unpaired surrogate", `\ud800\u0061lice\u0040mycompany.com`, "�alice@mycompany.com"},
+		{"escaping", `a\"b\\c\nvalue`, "a\"b\\c\nvalue"},
+	}
+	for _, protocol := range protocols {
+		for _, secret := range secrets {
+			t.Run(protocol.name+"/"+secret.name, func(t *testing.T) {
+				cfg := privacy.DefaultConfig()
+				cfg.Enabled = true
+				cfg.Secrets = secret.name == "api key" || secret.name == "pem"
+				if !cfg.Secrets {
+					if secret.name == "escaping" {
+						cfg.Rules = []privacy.Rule{{Kind: "WORD", Regex: regexp.QuoteMeta(secret.value)}}
+					} else {
+						cfg.Words = []string{secret.value}
+					}
+				}
+				s := newSession(t, privacy.NewEngine(), "tool-result", cfg)
+				payload := `{ "type": "tool_search_output", "value": "` + secret.wire + `", "number": 12345678901234567890, "safe": "café \/ <ok>" }`
+				quoted, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := []byte(fmt.Sprintf(protocol.template, quoted))
+				masked, err := s.MaskJSON(body)
+				if err != nil || !json.Valid(masked) {
+					t.Fatalf("invalid masked JSON: %s %v", masked, err)
+				}
+				inner := gjson.GetBytes(masked, protocol.path).String()
+				if !json.Valid([]byte(inner)) {
+					t.Fatalf("invalid embedded JSON: %s", inner)
+				}
+				token := gjson.Get(inner, "value").String()
+				if !strings.HasPrefix(token, "{{CCLOAD_") || s.RestoreText(token) != secret.value {
+					t.Fatalf("decoded value was not masked/restorable: %q", token)
+				}
+				reply, _ := json.Marshal(map[string]string{"content": token, "arguments": `{"value":"` + token + `"}`})
+				restoredReply, err := s.RestoreJSON(reply)
+				if err != nil || gjson.GetBytes(restoredReply, "content").String() != secret.value {
+					t.Fatalf("ordinary reply did not restore decoded value: %s %v", restoredReply, err)
+				}
+				arguments := gjson.GetBytes(restoredReply, "arguments").String()
+				if !json.Valid([]byte(arguments)) || gjson.Get(arguments, "value").String() != secret.value {
+					t.Fatalf("arguments did not restore decoded value safely: %s", restoredReply)
+				}
+				if gjson.Get(inner, "number").Raw != "12345678901234567890" || gjson.Get(inner, "safe").String() != "café / <ok>" {
+					t.Fatalf("unrelated tool data changed: %s", inner)
+				}
+				if again, err := s.MaskJSON(masked); err != nil || string(again) != string(masked) {
+					t.Fatalf("repeated masking changed placeholders: %s %v", again, err)
+				}
+				restored, err := s.RestoreJSON(masked)
+				if err != nil {
+					t.Fatal(err)
+				}
+				restoredText := gjson.GetBytes(restored, protocol.path).String()
+				if !json.Valid([]byte(restoredText)) || gjson.Get(restoredText, "value").String() != secret.value {
+					t.Fatalf("embedded value restored with wrong escaping: %s", restored)
+				}
+			})
+		}
+	}
+}
+
+func TestToolResultEmbeddedJSONRetainsRawTextRules(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, regex string
+		removed              []string
+	}{
+		{"number", `{"count":12345678,"value":"alice\u0040mycompany.com","secret":"a\"b","existing":"{{CCLOAD_WORD_0123456789abcdef}}"}`, `12345678`, []string{"12345678"}},
+		{"key", `{"private_key_name":"safe","value":"alice\u0040mycompany.com"}`, `private_key_name`, []string{"private_key_name"}},
+		{"cross syntax", `{"private":"confidential","count":123,"value":"alice\u0040mycompany.com"}`, `"private":"confidential","count":123`, []string{"confidential", `"count"`}},
+		{"cross string boundary", `{"first":"alpha","second":"beta","value":"alice\u0040mycompany.com","secret":"a\"b"}`, `alpha","second":"be`, []string{"alpha", "beta"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := privacy.DefaultConfig()
+			cfg.Enabled, cfg.Secrets = true, false
+			cfg.Words = []string{"alice@mycompany.com", `a"b`}
+			cfg.Rules = []privacy.Rule{{Kind: "RAW", Regex: tc.regex}}
+			s := newSession(t, privacy.NewEngine(), "mixed", cfg)
+			quoted, _ := json.Marshal(tc.payload)
+			body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+			masked, err := s.MaskJSON(body)
+			if err != nil || !json.Valid(masked) {
+				t.Fatalf("invalid outer JSON: %s %v", masked, err)
+			}
+			text := gjson.GetBytes(masked, "input.0.output").String()
+			if !strings.Contains(text, "{{CCLOAD_RAW_") || !strings.Contains(text, "{{CCLOAD_WORD_") || strings.Contains(text, `alice\u0040mycompany.com`) {
+				t.Fatalf("raw and decoded rules did not both mask: %s", text)
+			}
+			if again, err := s.MaskJSON(masked); err != nil || string(again) != string(masked) {
+				t.Fatalf("repeated masking changed placeholders: %s %v", again, err)
+			}
+			visible := regexp.MustCompile(`\{\{CCLOAD_[A-Z_]+_[a-f0-9]{16}\}\}`).ReplaceAllString(text, "")
+			for _, value := range tc.removed {
+				if strings.Contains(visible, value) {
+					t.Fatalf("raw match %q survived: %s", value, text)
+				}
+			}
+			restored, err := s.RestoreJSON(masked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want, got any
+			if err := json.Unmarshal([]byte(tc.payload), &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(gjson.GetBytes(restored, "input.0.output").String()), &got); err != nil {
+				t.Fatalf("mixed tool result did not restore valid JSON: %s %v", restored, err)
+			}
+			wantJSON, _ := json.Marshal(want)
+			gotJSON, _ := json.Marshal(got)
+			if string(wantJSON) != string(gotJSON) {
+				t.Fatalf("mixed tool result content changed: %s", restored)
+			}
+		})
+	}
+	t.Run("raw and decoded duplicates share match budget", func(t *testing.T) {
+		cfg := privacy.DefaultConfig()
+		cfg.Enabled, cfg.Secrets = true, false
+		cfg.Words = []string{"privatevalue"}
+		s := newSession(t, privacy.NewEngine(), "repeated", cfg)
+		payload := `[` + strings.Repeat(`"privatevalue",`, 32768) + `"privatevalue"]`
+		quoted, _ := json.Marshal(payload)
+		body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+		masked, err := s.MaskJSON(body)
+		if err != nil || strings.Contains(string(masked), "privatevalue") || strings.Count(string(masked), "{{CCLOAD_WORD_") != 32769 {
+			t.Fatalf("duplicate raw/decoded candidates exhausted match budget: %v", err)
+		}
+	})
+	t.Run("raw syntax and decoded strings stay distinguishable", func(t *testing.T) {
+		cfg := privacy.DefaultConfig()
+		cfg.Enabled, cfg.Secrets = true, false
+		cfg.Rules = []privacy.Rule{{Kind: "RAW", Regex: `alpha","second":"be`}}
+		s := newSession(t, privacy.NewEngine(), "same-scope", cfg)
+		inputs := []string{`{"first":"alpha","second":"beta"}`, `{"first":"alpha\",\"second\":\"beta"}`}
+		var previous string
+		for _, input := range inputs {
+			quoted, _ := json.Marshal(input)
+			body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+			masked, err := s.MaskJSON(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := gjson.GetBytes(masked, "input.0.output").String()
+			if text == input || text == previous {
+				t.Fatalf("distinct documents collapsed to the same masked text: %s", text)
+			}
+			previous = text
+			restored, err := s.RestoreJSON(masked)
+			if err != nil || gjson.GetBytes(restored, "input.0.output").String() != input {
+				t.Fatalf("tool result did not restore its original structure: %s %v", restored, err)
+			}
+		}
+	})
+}
+
+func TestToolResultJSONDecodingPreservesOtherProtocolFields(t *testing.T) {
+	cfg := privacy.DefaultConfig()
+	cfg.Enabled, cfg.Secrets = true, false
+	cfg.Words = []string{"alice@mycompany.com", "CCLOAD"}
+	s := newSession(t, privacy.NewEngine(), "boundaries", cfg)
+	text := `{"value":"alice\u0040mycompany.com"}`
+	quoted, _ := json.Marshal(text)
+	body := []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":%s}],"text":%s,"output":%s,"content":[{"type":"tool_result","tool_use_id":"alice@mycompany.com","content":[{"type":"image","source":{"type":"base64","data":"alice@mycompany.com"}},{"type":"text","text":%s}]}]}`, quoted, quoted, quoted, quoted))
+	masked, err := s.MaskJSON(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"messages.0.content", "text", "output"} {
+		if gjson.GetBytes(masked, path).String() != text {
+			t.Fatalf("ordinary text %s acquired JSON decoding: %s", path, masked)
+		}
+	}
+	for _, path := range []string{"content.0.tool_use_id", "content.0.content.0.source.data"} {
+		if gjson.GetBytes(masked, path).String() != "alice@mycompany.com" {
+			t.Fatalf("tool result protocol field %s changed: %s", path, masked)
+		}
+	}
+	if inner := gjson.GetBytes(masked, "content.0.content.1.text").String(); gjson.Get(inner, "value").String() == "alice@mycompany.com" || !strings.Contains(inner, "{{CCLOAD_WORD_") {
+		t.Fatalf("tool result text was not decoded: %s", inner)
+	}
+	// Even escaped existing placeholders stay protected from a custom word.
+	placeholder := `{"value":"\u007b\u007bCCLOAD_WORD_0123456789abcdef\u007d\u007d"}`
+	quoted, _ = json.Marshal(placeholder)
+	protectedBody := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	if out, err := s.MaskJSON(protectedBody); err != nil || string(out) != string(protectedBody) {
+		t.Fatalf("escaped existing placeholder changed: %s %v", out, err)
+	}
+}
+
+func TestToolResultJSONInvalidUTF8UsesDecodedOffsets(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, wire, regex, want string
+		secrets                      bool
+	}{
+		{"decoded word", "value", "\xff" + `alice\u0040mycompany.com`, "", "alice@mycompany.com", false},
+		{"raw rule after invalid bytes", "value", "\xe2\x82" + `\u0061lice\u0040mycompany.com`, `u0061lice`, "alice", false},
+		{"secret field", "api_key", "\xff" + `secret\u0040mycompany.com`, "", "�secret@mycompany.com", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := privacy.DefaultConfig()
+			cfg.Enabled, cfg.Secrets = true, tc.secrets
+			if tc.regex != "" {
+				cfg.Rules = []privacy.Rule{{Kind: "RAW", Regex: tc.regex}}
+			} else if !tc.secrets {
+				cfg.Words = []string{tc.want}
+			}
+			s := newSession(t, privacy.NewEngine(), "invalid-utf8", cfg)
+			payload := `{"` + tc.key + `":"` + tc.wire + `"}`
+			// encoding/json accepts malformed UTF-8 in otherwise valid JSON,
+			// replacing each invalid byte with U+FFFD while decoding strings.
+			quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(payload)
+			body := []byte(`{"input":[{"type":"function_call_output","output":"` + quoted + `"}]}`)
+			if !json.Valid(body) {
+				t.Fatal("fixture is not valid JSON")
+			}
+			masked, err := s.MaskJSON(body)
+			if err != nil || !json.Valid(masked) {
+				t.Fatalf("MaskJSON = %q, %v", masked, err)
+			}
+			inner := gjson.GetBytes(masked, "input.0.output").String()
+			value := gjson.Get(inner, tc.key).String()
+			token := regexp.MustCompile(`\{\{CCLOAD_[A-Z_]+_[a-f0-9]{16}\}\}`).FindString(value)
+			if token == "" || s.RestoreText(token) != tc.want {
+				t.Fatalf("decoded secret = %q, want %q (masked %q)", s.RestoreText(token), tc.want, inner)
+			}
+		})
+	}
+}
+
+func TestToolResultJSONCacheKeepsScopeValuesDynamic(t *testing.T) {
+	cfg := privacy.DefaultConfig()
+	cfg.Enabled = true
+	policy, err := privacy.NewPolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := privacy.NewEngine()
+	first, second := engine.Session("first", policy), engine.Session("second", policy)
+	secret := "PrivateValue01234567"
+	if _, err := first.MaskText("password=" + secret); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"value":"PrivateValue\u00301234567","safe":"` + strings.Repeat("ordinary ", 40) + `"}`
+	quoted, _ := json.Marshal(payload)
+	body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	assertMasked := func(s *privacy.Session, want bool) {
+		t.Helper()
+		masked, err := s.MaskJSON(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner := gjson.GetBytes(masked, "input.0.output").String()
+		value := gjson.Get(inner, "value").String()
+		if strings.HasPrefix(value, "{{CCLOAD_") != want {
+			t.Fatalf("scope-specific masking = %q, want masked %v", value, want)
+		}
+		if want && s.RestoreText(value) != secret {
+			t.Fatalf("cached hit restored %q, want %q", s.RestoreText(value), secret)
+		}
+	}
+	assertMasked(first, true)
+	assertMasked(second, false)
+	if _, err := second.MaskText("password=" + secret); err != nil {
+		t.Fatal(err)
+	}
+	assertMasked(second, true)
+}
+
+func TestToolResultJSONOverlappingRulesRetainEligibleHits(t *testing.T) {
+	cfg := privacy.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Rules = []privacy.Rule{{Kind: "CUSTOM", Regex: "bravo charlie"}, {Kind: "CUSTOM", Regex: "charlie delta"}}
+	s := newSession(t, privacy.NewEngine(), "overlap", cfg)
+	if _, err := s.MaskJSON([]byte(`{"arguments":{"api_key":"alpha bravo"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"value":"alpha bravo charlie delta","safe":"` + strings.Repeat("ordinary ", 40) + `"}`
+	quoted, _ := json.Marshal(payload)
+	body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	for range 2 { // the second pass reuses policy candidates from the cache
+		masked, err := s.MaskJSON(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner := gjson.GetBytes(masked, "input.0.output").String()
+		value := gjson.Get(inner, "value").String()
+		if strings.Count(value, "{{CCLOAD_") != 2 || strings.Contains(value, "charlie") || strings.Contains(value, "delta") {
+			t.Fatalf("eligible overlapping rule was lost: %q", value)
+		}
+		restored, err := s.RestoreJSON(masked)
+		if err != nil || gjson.Get(gjson.GetBytes(restored, "input.0.output").String(), "value").String() != "alpha bravo charlie delta" {
+			t.Fatalf("overlapping matches did not restore: %s %v", restored, err)
+		}
+	}
+}
+
+func BenchmarkToolResultJSONMask(b *testing.B) {
+	var payload strings.Builder
+	payload.WriteByte('[')
+	for i := range 4000 {
+		if i > 0 {
+			payload.WriteByte(',')
+		}
+		fmt.Fprintf(&payload, `{"name":"record-%04d","description":"%s","status":"complete"}`, i, strings.Repeat("ordinary record ", 9))
+	}
+	payload.WriteByte(']')
+	quoted, _ := json.Marshal(payload.String())
+	body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	cfg := privacy.DefaultConfig()
+	cfg.Enabled = true
+	policy, err := privacy.NewPolicy(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, known := range []bool{false, true} {
+		b.Run(fmt.Sprintf("known=%t", known), func(b *testing.B) {
+			s := privacy.NewEngine().Session("tool-benchmark", policy)
+			if known {
+				if _, err := s.MaskText("password=PrivateValue01234567"); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if _, err := s.MaskJSON(body); err != nil {
+				b.Fatal(err)
+			}
+			b.SetBytes(int64(len(body)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := s.MaskJSON(body); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+
+}
+
+func TestRestoreJSONWithFieldsSkipsAlreadyRestoredValues(t *testing.T) {
+	s := newSession(t, privacy.NewEngine(), "restored-fields", enabled()).ObserveRestoration()
+	missing := "{{CCLOAD_SECRET_0123456789abcdef}}"
+	body := []byte(`{"content":"` + missing + `","other":"` + missing + `"}`)
+	index := gjson.GetBytes(body, "content").Index
+	replacement := `already "restored" ` + missing
+	restored, err := s.RestoreJSONWithFields(body, map[int]string{index: replacement})
+	if err != nil || !json.Valid(restored) {
+		t.Fatalf("RestoreJSONWithFields = %s, %v", restored, err)
+	}
+	if gjson.GetBytes(restored, "content").String() != replacement || gjson.GetBytes(restored, "other").String() != missing || s.UnrestoredTokens() != 1 {
+		t.Fatalf("already restored value was processed twice: %s, missing %d", restored, s.UnrestoredTokens())
+	}
+	unchanged := []byte(`{ "content": "already\u0020restored" }`)
+	index = gjson.GetBytes(unchanged, "content").Index
+	if restored, err := s.RestoreJSONWithFields(unchanged, map[int]string{index: "already restored"}); err != nil || string(restored) != string(unchanged) {
+		t.Fatalf("unchanged replacement reencoded the field: %s, %v", restored, err)
+	}
+	if _, err := s.RestoreJSONWithFields([]byte(`{"broken":`), map[int]string{0: "ignored"}); err == nil {
+		t.Fatal("accepted invalid JSON")
+	}
+}
+
+func TestToolResultRawStringMatchesRespectEscapesAndAllowList(t *testing.T) {
+	for _, tc := range []struct{ name, wire, regex, value string }{
+		{"unicode", `prefix\u0040suffix`, `u0040`, "@"},
+		{"newline", `prefix\nsecret`, `nsecret`, "\nsecret"},
+		{"surrogate pair", `prefix\ud83d\ude3csuffix`, `ud83d`, "😼"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := privacy.DefaultConfig()
+			cfg.Enabled, cfg.Secrets = true, false
+			cfg.Rules = []privacy.Rule{{Kind: "RAW", Regex: tc.regex}}
+			s := newSession(t, privacy.NewEngine(), "raw-escapes", cfg)
+			quoted, _ := json.Marshal(`{"value":"` + tc.wire + `"}`)
+			body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+			masked, err := s.MaskJSON(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inner := gjson.GetBytes(masked, "input.0.output").String()
+			if !json.Valid([]byte(inner)) {
+				t.Fatalf("raw match split a JSON escape: %s", inner)
+			}
+			value := gjson.Get(inner, "value").String()
+			token := strings.TrimSuffix(strings.TrimPrefix(value, "prefix"), "suffix")
+			if !strings.HasPrefix(token, "{{CCLOAD_RAW_") || s.RestoreText(token) != tc.value {
+				t.Fatalf("raw string match did not register decoded value: %q", token)
+			}
+			cfg.Allow = []string{tc.value}
+			// Allow entries cannot contain newlines; the ordinary escaped value
+			// and surrogate cases exercise decoded allow-list handling.
+			if tc.name != "newline" {
+				allowed := newSession(t, privacy.NewEngine(), "allowed", cfg)
+				if out, err := allowed.MaskJSON(body); err != nil || string(out) != string(body) {
+					t.Fatalf("decoded allow-list value changed: %s %v", out, err)
+				}
+			}
+		})
+	}
+}
+
 func TestKnownPhoneRespectsIdentifierContext(t *testing.T) {
 	s := newSession(t, privacy.NewEngine(), "phone", enabled())
 	if _, err := s.MaskText("手机号 13800138000"); err != nil {
@@ -694,10 +1114,11 @@ func TestPreviewForcesEnabledAndListsDistinctHits(t *testing.T) {
 	cfg.Allow = []string{"relay_ALLOWED123"}
 	literal := "{{CCLOAD_RELAY_0123456789abcdef}}"
 	text := "relay_ABCDEF123456 Project Falcon relay_ABCDEF123456 relay_ALLOWED123 " + literal
-	masked, hits, err := privacy.Preview(cfg, text)
+	result, err := privacy.Preview(cfg, text)
 	if err != nil {
 		t.Fatal(err)
 	}
+	masked, hits := result.Masked, result.Hits
 	if len(hits) != 2 || hits[0].Kind != "RELAY" || hits[0].Value != "relay_ABCDEF123456" || hits[1].Kind != "WORD" || hits[1].Value != "Project Falcon" {
 		t.Fatalf("unexpected hits: %+v", hits)
 	}
@@ -707,15 +1128,15 @@ func TestPreviewForcesEnabledAndListsDistinctHits(t *testing.T) {
 	}
 
 	// Each preview uses its own engine key, so placeholders never repeat.
-	if again, _, _ := privacy.Preview(cfg, text); again == masked {
+	if again, _ := privacy.Preview(cfg, text); again.Masked == masked {
 		t.Fatal("preview reused an engine")
 	}
 
-	clean, none, err := privacy.Preview(cfg, "nothing sensitive")
-	if err != nil || clean != "nothing sensitive" || len(none) != 0 {
-		t.Fatalf("clean preview: %q %+v %v", clean, none, err)
+	clean, err := privacy.Preview(cfg, "nothing sensitive")
+	if err != nil || clean.Masked != "nothing sensitive" || len(clean.Hits) != 0 {
+		t.Fatalf("clean preview: %+v %v", clean, err)
 	}
-	if _, _, err := privacy.Preview(privacy.Config{Rules: []privacy.Rule{{Kind: "bad"}}}, "x"); err == nil {
+	if _, err := privacy.Preview(privacy.Config{Rules: []privacy.Rule{{Kind: "bad"}}}, "x"); err == nil {
 		t.Fatal("invalid config previewed")
 	}
 }

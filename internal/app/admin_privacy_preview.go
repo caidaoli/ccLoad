@@ -18,14 +18,10 @@ type privacyPreviewRequest struct {
 	Text   string `json:"text"`
 }
 
-type privacyPreviewResponse struct {
-	Masked string        `json:"masked"`
-	Hits   []privacy.Hit `json:"hits"`
-}
-
 // HandlePrivacyRedactionPreview masks sample text with an unsaved draft config.
 // It never touches the live privacy engine, the saved setting, or any upstream.
 func (s *Server) HandlePrivacyRedactionPreview(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPrivacyPreviewBodyBytes)
 	var req privacyPreviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -41,10 +37,10 @@ func (s *Server) HandlePrivacyRedactionPreview(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	masked, hits, err := privacy.Preview(config, req.Text)
+	result, err := privacy.Preview(config, req.Text)
 	if err != nil {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	RespondJSON(c, http.StatusOK, privacyPreviewResponse{Masked: masked, Hits: hits})
+	RespondJSON(c, http.StatusOK, result)
 }

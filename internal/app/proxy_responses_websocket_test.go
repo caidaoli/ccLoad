@@ -944,6 +944,70 @@ func TestResponsesWebsocketIdleConnectionsDoNotConsumeTokenConcurrency(t *testin
 	}
 }
 
+func TestResponsesWebsocketPanicReleasesTurnAndConcurrency(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+`{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"recovered"}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+`{"type":"response.completed","response":{"id":"resp-recovered","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"recovered"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\n")
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "panic-release", upstreamProtocol: "codex", models: "gpt-test",
+	}}, map[int]string{0: upstream.URL}, map[string]string{"max_concurrency": "1"})
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	env.server.authService.authTokenMaxConns[tokenHash] = 1
+	env.server.authService.authTokensMux.Unlock()
+	transport := env.server.client.Transport
+	var calls atomic.Int64
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			panic("test websocket turn panic")
+		}
+		return transport.RoundTrip(request)
+	})}
+	panicked := make(chan any, 1)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if value := recover(); value != nil {
+				panicked <- value
+			}
+		}()
+		env.engine.ServeHTTP(w, r)
+	})
+	request := map[string]any{"type": "response.create", "model": "gpt-test", "input": "hello"}
+	first := dialResponsesWebsocketWithSessionID(t, handler, "panic-release")
+	if err := first.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.WriteJSON(request); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := first.ReadMessage(); err == nil {
+		t.Fatal("panicked turn must close its websocket")
+	}
+	select {
+	case value := <-panicked:
+		if value != "test websocket turn panic" {
+			t.Fatalf("unexpected panic: %v", value)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not reach the failing transport")
+	}
+	second := dialResponsesWebsocketWithSessionID(t, handler, "panic-release")
+	if err := second.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.WriteJSON(request); err != nil {
+		t.Fatal(err)
+	}
+	completed := readWebsocketUntilType(t, second, "response.completed")
+	response, _ := completed["response"].(map[string]any)
+	if response["id"] != "resp-recovered" || calls.Load() != 2 {
+		t.Fatalf("same-session retry did not recover: response=%#v calls=%d", response, calls.Load())
+	}
+}
+
 func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
 	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -317,6 +317,8 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
   elements.set('privacyTestInput', privacyTestStub({ id: 'privacyTestInput' }));
   elements.set('privacyTestRun', privacyTestStub({ disabled: true }));
   elements.set('privacyTestStatus', privacyTestStub());
+  elements.set('privacyTestWarnings', privacyTestStub({ hidden: true }));
+  elements.set('privacyRedactionWarnings', privacyTestStub({ hidden: true }));
   // 测试结果区按 DOM 构建：最小元素桩只保留文本、子节点与按标签查询，断言读取用户可见的文本。
   const domElement = tag => ({
     tagName: tag.toUpperCase(), children: [], ownText: '',
@@ -432,6 +434,11 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
       if (key === 'settings.msg.listSeparator') return '、';
       if (key === 'settings.msg.detailSeparator') return '；';
       if (key === 'settings.validation.oauthURLDuplicatedScheme') return `协议头重复，请改为 ${params.url}。`;
+      if (key === 'settings.privacyRedaction.hitBuiltin') return `内置规则 · ${params.kind}`;
+      if (key === 'settings.privacyRedaction.hitWord') return `词表第 ${params.index} 项`;
+      if (key === 'settings.privacyRedaction.hitCustom') return `自定义规则第 ${params.index} 条 · ${params.kind}`;
+      if (key === 'settings.privacyRedaction.warningTitle') return '隐私脱敏规则提示（仍可应用和保存）：';
+      if (key === 'settings.privacyRedaction.broadPattern') return `自定义规则第 ${params.index} 条匹配范围过宽，可能遮蔽普通文本，请检查。`;
       return key;
     },
     showNotification(message, type) {
@@ -1512,6 +1519,36 @@ test('privacy apply ignores a server answer that arrives after the dialog was ca
   assert.equal(page.hasUnsavedChanges(), false);
 });
 
+test('privacy apply shows broad rule warnings from empty-sample validation without blocking save', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  page.privacyAction('add-privacy-rule');
+  page.editPrivacyRule(0, 'regex', '[a-z]+');
+  page.privacyAction('apply-privacy-redaction');
+  assert.equal(page.privacyPreviews[0].body.text, '');
+  page.privacyPreviews[0].resolve({ masked: '', hits: [], warnings: [{ rule_index: 0, code: 'broad_pattern' }] });
+  await flushAsyncWork();
+  const warnings = page.privacyTest('privacyRedactionWarnings');
+  assert.equal(warnings.hidden, false);
+  assert.equal(warnings.textContent, '隐私脱敏规则提示（仍可应用和保存）：\n自定义规则第 1 条匹配范围过宽，可能遮蔽普通文本，请检查。');
+  assert.equal(page.privacyError.hidden, true);
+  assert.equal(page.privacyModal.attributes.get('aria-hidden'), 'true');
+  assert.equal(page.hasUnsavedChanges(), true);
+  assert.deepEqual(JSON.parse(page.inputs.privacy_redaction.value).rules, [{ kind: 'CUSTOM', regex: '[a-z]+' }]);
+
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).privacy_redaction).rules,
+    [{ kind: 'CUSTOM', regex: '[a-z]+' }]);
+
+  page.openPrivacy();
+  page.editPrivacyRule(0, 'regex', 'account-[0-9]+');
+  await page.applyPrivacy();
+  assert.equal(warnings.hidden, true);
+  assert.equal(warnings.textContent, '');
+});
+
 test('server save errors preserve the pending privacy configuration for repair', async (t) => {
   const page = await loadPrivacyPage(t);
   page.openPrivacy();
@@ -1582,14 +1619,14 @@ test('privacy test dialog previews the unapplied draft and reruns it on reopen',
   assert.equal(page.privacyPreviews[0].body.text, 'key relay_ABCDEF123456');
   assert.deepEqual(JSON.parse(page.privacyPreviews[0].body.config), { ...privacyDefaults, rules: [{ kind: 'RELAY', prefix: 'relay_' }] });
   const placeholder = '{{CCLOAD_RELAY_0123456789abcdef}}';
-  page.privacyPreviews[0].resolve({ masked: 'key ' + placeholder, hits: [{ kind: 'RELAY', value: 'relay_ABCDEF123456', placeholder }] });
+  page.privacyPreviews[0].resolve({ masked: 'key ' + placeholder, hits: [{ kind: 'RELAY', source: 'custom', rule_index: 0, value: 'relay_ABCDEF123456', placeholder }] });
   await flushAsyncWork();
   const result = page.privacyTest('privacyTestResult');
   const resultText = () => result.querySelectorAll('pre').map(output => output.textContent);
   const resultHits = () => result.querySelectorAll('li').map(item => item.children.map(cell => cell.textContent));
   assert.equal(result.hidden, false);
   assert.deepEqual(resultText(), ['key ' + placeholder]);
-  assert.deepEqual(resultHits(), [['RELAY', 'relay_ABCDEF123456']]);
+  assert.deepEqual(resultHits(), [['自定义规则第 1 条 · RELAY', 'relay_ABCDEF123456']]);
   assert.equal(page.privacyTest('privacyTestStatus').textContent, 'settings.privacyRedaction.testHits');
 
   // 改样例让旧结果失效；改之前发出的请求晚到也不显示。
@@ -1612,9 +1649,9 @@ test('privacy test dialog previews the unapplied draft and reruns it on reopen',
   assert.equal(page.privacyPreviews.length, 3);
   assert.deepEqual(JSON.parse(page.privacyPreviews[2].body.config).rules, [{ kind: 'RELAY', prefix: 'other_' }]);
   const otherPlaceholder = '{{CCLOAD_RELAY_fedcba9876543210}}';
-  page.privacyPreviews[2].resolve({ masked: 'key ' + otherPlaceholder, hits: [{ kind: 'RELAY', value: 'other_ABCDEF123456', placeholder: otherPlaceholder }] });
+  page.privacyPreviews[2].resolve({ masked: 'key ' + otherPlaceholder, hits: [{ kind: 'RELAY', source: 'custom', rule_index: 0, value: 'other_ABCDEF123456', placeholder: otherPlaceholder }] });
   await flushAsyncWork();
-  assert.deepEqual(resultHits(), [['RELAY', 'other_ABCDEF123456']]);
+  assert.deepEqual(resultHits(), [['自定义规则第 1 条 · RELAY', 'other_ABCDEF123456']]);
 
   // 关闭测试弹窗后，隐藏的输入框与结果区不再保留样例或原值。
   page.privacyTestAction('close-privacy-test');
@@ -1652,6 +1689,49 @@ test('privacy test reports invalid drafts and server errors without sending or s
   assert.ok(status.textContent.includes('privacy text exceeds limit'));
   assert.equal(status.classList.contains('is-error'), true);
   assert.equal(page.privacyTest('privacyTestResult').hidden, true);
+  assert.equal(saveRequests(page).length, 0);
+});
+
+test('privacy test identifies builtin, word list and custom rule sources', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  page.privacyAction('open-privacy-test');
+  page.editPrivacyTest('key first second');
+  page.privacyTestAction('test-privacy-redaction');
+  page.privacyPreviews[0].resolve({
+    masked: 'masked',
+    hits: [
+      { kind: 'API_KEY', source: 'builtin', value: 'key', placeholder: 'key-placeholder' },
+      { kind: 'WORD', source: 'word', rule_index: 1, value: 'first', placeholder: 'word-placeholder' },
+      { kind: 'TOKEN', source: 'custom', rule_index: 2, value: 'second', placeholder: 'custom-placeholder' }
+    ],
+    warnings: []
+  });
+  await flushAsyncWork();
+  const hits = page.privacyTest('privacyTestResult').querySelectorAll('li');
+  assert.deepEqual(hits.map(item => item.children.map(cell => cell.textContent)), [
+    ['内置规则 · API_KEY', 'key'], ['词表第 2 项', 'first'], ['自定义规则第 3 条 · TOKEN', 'second']
+  ]);
+  assert.equal(page.privacyTest('privacyTestWarnings').hidden, true);
+});
+
+test('privacy test shows broad rule warnings even without hits and clears them with the sample', async (t) => {
+  const page = await loadPrivacyPage(t);
+  page.openPrivacy();
+  page.privacyAction('open-privacy-test');
+  page.editPrivacyTest('sample');
+  page.privacyTestAction('test-privacy-redaction');
+  page.privacyPreviews[0].resolve({ masked: 'sample', hits: [], warnings: [{ rule_index: 1, code: 'broad_pattern' }] });
+  await flushAsyncWork();
+  const warnings = page.privacyTest('privacyTestWarnings');
+  assert.equal(warnings.hidden, false);
+  assert.equal(warnings.textContent, '隐私脱敏规则提示（仍可应用和保存）：\n自定义规则第 2 条匹配范围过宽，可能遮蔽普通文本，请检查。');
+  assert.equal(page.privacyTest('privacyTestStatus').textContent, 'settings.privacyRedaction.testNoHits');
+  assert.equal(page.privacyTest('privacyTestResult').hidden, true);
+  page.editPrivacyTest('new sample');
+  assert.equal(warnings.hidden, true);
+  assert.equal(warnings.textContent, '');
+  assert.equal(page.hasUnsavedChanges(), false);
   assert.equal(saveRequests(page).length, 0);
 });
 

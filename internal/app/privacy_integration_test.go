@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,5 +265,244 @@ func TestPrivacyAutomaticReasoningRequestIsMasked(t *testing.T) {
 	requests := judge.snapshot()
 	if len(requests) != 1 || strings.Contains(requests[0].Conversation, secret) || !strings.Contains(requests[0].Conversation, "{{CCLOAD_") {
 		t.Fatalf("judge request was not masked: %+v", requests)
+	}
+}
+
+type privacyDiagnosticCapture chan string
+
+func (c privacyDiagnosticCapture) Write(data []byte) (int, error) {
+	if line := string(data); strings.Contains(line, "privacy response has unrestored placeholders") {
+		c <- line
+	}
+	return len(data), nil
+}
+
+func capturePrivacyDiagnostics(t *testing.T) privacyDiagnosticCapture {
+	t.Helper()
+	capture := make(privacyDiagnosticCapture, 16)
+	previous := log.Writer()
+	log.SetOutput(capture)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return capture
+}
+
+func readPrivacyDiagnostic(t *testing.T, capture privacyDiagnosticCapture, wantCount uint64) int64 {
+	t.Helper()
+	select {
+	case line := <-capture:
+		_, fields, ok := strings.Cut(line, "request_id=")
+		var requestID int64
+		var count uint64
+		if !ok {
+			t.Fatalf("missing request_id: %q", line)
+		}
+		if n, err := fmt.Sscanf(fields, "%d count=%d", &requestID, &count); err != nil || n != 2 || requestID <= 0 || count != wantCount {
+			t.Fatalf("unexpected diagnostic: %q (%v)", line, err)
+		}
+		if strings.Contains(line, "{{CCLOAD_") || strings.Contains(line, "test-api-key") || strings.Contains(line, "sk-proj-") {
+			t.Fatalf("diagnostic exposed content: %q", line)
+		}
+		return requestID
+	case <-time.After(5 * time.Second):
+		t.Fatal("missing privacy diagnostic")
+		return 0
+	}
+}
+
+func TestPrivacyProxyUnrestoredHTTPDiagnostics(t *testing.T) {
+	const text = "{{CCLOAD_EMAIL_0123456789abcdef}} {{CCLOAD_EMAIL_bad!}} {{CCLOAD_EMAIL_0123"
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
+			capture := capturePrivacyDiagnostics(t)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if streaming {
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, delta := range []string{text[:5], text[5:]} {
+						data := privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": delta}}}})
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+					}
+					_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "chatcmpl-observe", "model": "gpt-test", "choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": text}, "finish_reason": "stop"}}})
+			}))
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "privacy-observe", models: "gpt-test"}}, map[int]string{0: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true}`})
+			response := privacyRequest(t, env, "/v1/chat/completions", map[string]any{"model": "gpt-test", "stream": streaming, "messages": []any{map[string]string{"role": "user", "content": "hello"}}})
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			got := gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String()
+			if streaming {
+				got = ""
+				for _, event := range privacyOutputTestEvents(t, response.Body.String()) {
+					got += event.Get("choices.0.delta.content").String()
+				}
+			}
+			if got != text {
+				t.Fatalf("unrestored text changed: %q", got)
+			}
+			readPrivacyDiagnostic(t, capture, 3)
+			select {
+			case line := <-capture:
+				t.Fatalf("duplicate request diagnostic: %s", line)
+			default:
+			}
+		})
+	}
+}
+
+func TestPrivacyProxyUnrestoredWebsocketDiagnostics(t *testing.T) {
+	const unknown = "{{CCLOAD_EMAIL_0123456789abcdef}}"
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprint(native), func(t *testing.T) {
+			capture := capturePrivacyDiagnostics(t)
+			var turn atomic.Int64
+			respond := func(write func(any) error) {
+				index := turn.Add(1)
+				for _, delta := range []string{unknown[:5], unknown[5:]} {
+					if err := write(map[string]any{"type": "response.output_text.delta", "item_id": "msg-observe", "output_index": 0, "content_index": 0, "delta": delta}); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				if err := write(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp-observe-%d", index), "status": "completed", "output": []any{map[string]any{"id": "msg-observe", "type": "message", "role": "assistant", "content": []any{map[string]string{"type": "output_text", "text": unknown}}}}, "usage": map[string]int{"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}}); err != nil {
+					t.Error(err)
+				}
+			}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if native {
+					conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					for range 2 {
+						if _, _, err := conn.ReadMessage(); err != nil {
+							t.Error(err)
+							return
+						}
+						respond(conn.WriteJSON)
+					}
+					_, _, _ = conn.ReadMessage()
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				respond(func(event any) error {
+					data, err := json.Marshal(event)
+					if err != nil {
+						return err
+					}
+					_, err = fmt.Fprintf(w, "data: %s\n\n", data)
+					return err
+				})
+			})
+			var upstreamURL string
+			if native {
+				upstream := httptest.NewServer(handler)
+				t.Cleanup(upstream.Close)
+				upstreamURL = upstream.URL
+			} else {
+				upstreamURL = newTestHTTPServer(t, handler).URL
+			}
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "privacy-observe-ws", upstreamProtocol: "codex", websockets: native, models: "gpt-test", authType: model.AuthTypeCodexOAuth, oauthCredential: codexProxyTestCredential(t, "at-private", "rt-private", "account-private")}}, map[int]string{0: upstreamURL}, map[string]string{privacySettingKey: `{"enabled":true}`})
+			conn := dialResponsesWebsocketWithSessionID(t, env.engine, "privacy-observe")
+			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			var previousRequestID int64
+			for turnIndex := 1; turnIndex <= 2; turnIndex++ {
+				request := map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": []any{map[string]string{"type": "input_text", "text": "hello"}}}}}
+				if turnIndex == 2 {
+					request["previous_response_id"] = "resp-observe-1"
+				}
+				if err := conn.WriteJSON(request); err != nil {
+					t.Fatal(err)
+				}
+				var text strings.Builder
+				for {
+					_, payload, err := conn.ReadMessage()
+					if err != nil {
+						t.Fatal(err)
+					}
+					event := gjson.ParseBytes(payload)
+					switch event.Get("type").String() {
+					case "response.output_text.delta":
+						text.WriteString(event.Get("delta").String())
+					case "response.completed":
+						if text.String() != unknown || event.Get("response.output.0.content.0.text").String() != unknown {
+							t.Fatalf("unrestored content changed: %s", payload)
+						}
+					case "error", "response.failed":
+						t.Fatalf("unexpected failure: %s", payload)
+					default:
+						continue
+					}
+					if event.Get("type").String() == "response.completed" {
+						break
+					}
+				}
+				requestID := readPrivacyDiagnostic(t, capture, 2)
+				if requestID == previousRequestID {
+					t.Fatalf("WS turns reused request_id=%d", requestID)
+				}
+				previousRequestID = requestID
+			}
+			select {
+			case line := <-capture:
+				t.Fatalf("duplicate turn diagnostic: %s", line)
+			default:
+			}
+		})
+	}
+}
+
+func TestPrivacyProxyUnrestoredWebsocketFinalErrorDiagnostics(t *testing.T) {
+	const unknown = "{{CCLOAD_EMAIL_0123456789abcdef}}"
+	for _, test := range []struct {
+		name, response, event string
+	}{
+		{"generic", `{"error":{"message":"` + unknown + `"}}`, "error"},
+		{"terminal", `{"type":"response.failed","response":{"id":"resp-private-failed","error":{"message":"` + unknown + `"}}}`, "response.failed"},
+		{"retry", `{"type":"error","error":{"message":"` + unknown + `"}}`, "error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			capture := capturePrivacyDiagnostics(t)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, test.response)
+			}))
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "privacy-ws-error", upstreamProtocol: "codex", models: "gpt-test"}}, map[int]string{0: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true}`})
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": "hello"}); err != nil {
+				t.Fatal(err)
+			}
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := gjson.ParseBytes(payload)
+			if event.Get("type").String() != test.event {
+				t.Fatalf("event type=%q, want %q: %s", event.Get("type").String(), test.event, payload)
+			}
+			message := event.Get("error.message").String()
+			if test.event == "response.failed" {
+				message = event.Get("response.error.message").String()
+			}
+			if !strings.Contains(message, unknown) {
+				t.Fatalf("unrestored error content changed: %s", payload)
+			}
+			readPrivacyDiagnostic(t, capture, 1)
+			select {
+			case line := <-capture:
+				t.Fatalf("duplicate final error diagnostic: %s", line)
+			default:
+			}
+		})
 	}
 }
