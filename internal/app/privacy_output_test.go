@@ -20,7 +20,11 @@ func privacyOutputTestSession(t *testing.T) *privacy.Session {
 	t.Helper()
 	config := privacy.DefaultConfig()
 	config.Enabled, config.Personal = true, true
-	return privacy.NewEngine().Session(t.Name(), config)
+	policy, err := privacy.NewPolicy(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return privacy.NewEngine().Session(t.Name(), policy)
 }
 
 func privacyOutputTestToken(t *testing.T, session *privacy.Session, secret string) string {
@@ -310,25 +314,109 @@ func TestPrivacyResponseWriterPreservesUnchangedSSE(t *testing.T) {
 	}
 }
 
-func TestPrivacyResponseWriterGeminiThoughtIsSeparate(t *testing.T) {
+func TestPrivacyResponseWriterReasoningKeepsPlaceholders(t *testing.T) {
 	session := privacyOutputTestSession(t)
-	token := privacyOutputTestToken(t, session, "owner@example.com")
-	frame := func(text string, thought bool) string {
+	secret := "owner@example.com"
+	token := privacyOutputTestToken(t, session, secret)
+	gemini := func(parts ...map[string]any) string {
 		return "data: " + privacyOutputTestJSON(t, map[string]any{
-			"candidates": []any{map[string]any{"index": 0, "content": map[string]any{
-				"parts": []any{map[string]any{"text": text, "thought": thought}},
-			}}},
+			"candidates": []any{map[string]any{"index": 0, "content": map[string]any{"parts": parts}}},
 		}) + "\n\n"
 	}
-	// Gemini starts the answer at part index zero again after its thought.
-	// Two unrelated partial tokens must never be joined across that boundary.
-	wire := frame(token[:15], true) + frame(token[15:], false) + "data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}]}\n\n"
+	anthropic := func(index int, delta map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"type": "content_block_delta", "index": index, "delta": delta}) + "\n\n"
+	}
+	tests := []struct {
+		name, reasoning, answer string
+		answerText              func(events []gjson.Result) string
+	}{
+		{
+			// The answer restarts at part zero after the thought, and a
+			// placeholder may continue in the candidate's next part.
+			name:      "gemini",
+			reasoning: gemini(map[string]any{"text": "thinking " + token, "thought": true}) + gemini(map[string]any{"text": token[:15], "thought": true}),
+			answer: gemini(map[string]any{"text": "mail "}, map[string]any{"text": token[:12]}) + gemini(map[string]any{"text": token[12:]}) +
+				"data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}]}\n\n",
+			answerText: func(events []gjson.Result) string {
+				var text strings.Builder
+				for _, event := range events[2:] {
+					for _, part := range event.Get("candidates.0.content.parts").Array() {
+						text.WriteString(part.Get("text").String())
+					}
+				}
+				return text.String()
+			},
+		},
+		{
+			name: "anthropic",
+			reasoning: anthropic(0, map[string]any{"type": "thinking_delta", "thinking": "thinking " + token}) +
+				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			answer: anthropic(1, map[string]any{"type": "text_delta", "text": "mail " + token[:12]}) + anthropic(1, map[string]any{"type": "text_delta", "text": token[12:]}) +
+				"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+			answerText: func(events []gjson.Result) string {
+				return events[2].Get("delta.text").String() + events[3].Get("delta.text").String()
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writer := newPrivacyResponseWriter(recorder, session)
+			writer.Header().Set("Content-Type", "text/event-stream")
+			privacyOutputTestWrite(t, writer, test.reasoning+test.answer, 7)
+			if err := writer.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			// Clients replay reasoning to the vendor that signed it.
+			if !strings.HasPrefix(recorder.Body.String(), test.reasoning) {
+				t.Fatalf("reasoning changed: %q", recorder.Body.String())
+			}
+			if got := test.answerText(privacyOutputTestEvents(t, recorder.Body.String())); got != "mail "+secret {
+				t.Fatalf("answer = %q", got)
+			}
+		})
+	}
+}
+
+func TestPrivacyResponseWriterChannelSwitchReleasesHeldText(t *testing.T) {
+	chat := func(delta map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta}}}) + "\n\n"
+	}
+	gemini := func(part map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"candidates": []any{map[string]any{"index": 0, "content": map[string]any{"parts": []any{part}}}}}) + "\n\n"
+	}
+	for name, wire := range map[string]string{
+		"chat reasoning to content": chat(map[string]any{"reasoning_content": "write func main() {"}) + chat(map[string]any{"content": "Here it is"}),
+		"chat content to tool":      chat(map[string]any{"content": "calling {"}) + chat(map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": `{"q":1}`}}}}),
+		"gemini text to call":       gemini(map[string]any{"text": "calling {"}) + gemini(map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{}}}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writer := newPrivacyResponseWriter(recorder, privacyOutputTestSession(t))
+			writer.Header().Set("Content-Type", "text/event-stream")
+			privacyOutputTestWrite(t, writer, wire, 9)
+			// The trailing "{" could start a placeholder, but the model moved
+			// on; the rest of the stream must not wait for the finish event.
+			if recorder.Body.String() != wire {
+				t.Fatalf("stream held after channel switch: %q", recorder.Body.String())
+			}
+			if err := writer.Finish(); err != nil || recorder.Body.String() != wire {
+				t.Fatalf("Finish changed output: %q, %v", recorder.Body.String(), err)
+			}
+		})
+	}
+}
+
+func TestPrivacyResponseWriterRestoresPlainTextBody(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	token := privacyOutputTestToken(t, session, "owner@example.com")
 	recorder := httptest.NewRecorder()
 	writer := newPrivacyResponseWriter(recorder, session)
-	writer.Header().Set("Content-Type", "text/event-stream")
-	privacyOutputTestWrite(t, writer, wire, 7)
-	if err := writer.Finish(); err != nil || recorder.Body.String() != wire {
-		t.Fatalf("thought and answer channels were combined: %q, %v", recorder.Body.String(), err)
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.WriteHeader(http.StatusBadGateway)
+	privacyOutputTestWrite(t, writer, "upstream rejected "+token, 4)
+	if err := writer.Finish(); err != nil || recorder.Body.String() != "upstream rejected owner@example.com" {
+		t.Fatalf("plain-text body = %q, %v", recorder.Body.String(), err)
 	}
 }
 

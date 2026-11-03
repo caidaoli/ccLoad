@@ -175,13 +175,13 @@ func (s *Server) commitSettingUpdates(updates map[string]string, persist func() 
 		reasoningAuto = &parsed
 	}
 
-	var privacyConfig *privacy.Config
+	var privacyPolicy *privacy.Policy
 	if value, ok := updates[privacySettingKey]; ok {
-		parsed, err := privacy.ParseConfig(value)
+		parsed, err := parsePrivacyPolicy(value)
 		if err != nil {
 			return false, fmt.Errorf("parse validated privacy setting: %w", err)
 		}
-		privacyConfig = &parsed
+		privacyPolicy = parsed
 	}
 
 	if err := persist(); err != nil {
@@ -198,8 +198,8 @@ func (s *Server) commitSettingUpdates(updates map[string]string, persist func() 
 	if reasoningAuto != nil {
 		s.reasoningAuto.Store(reasoningAuto)
 	}
-	if privacyConfig != nil {
-		s.privacyConfig.Store(privacyConfig)
+	if privacyPolicy != nil {
+		s.privacyPolicy.Store(privacyPolicy)
 	}
 	return settingsRequireRestart(updates), nil
 }

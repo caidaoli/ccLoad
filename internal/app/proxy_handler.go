@@ -608,9 +608,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		if err == nil && len(nativeRequestBody) > 0 {
 			nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
 		}
-		if err == nil {
-			originalReasoningBody, err = maskPrivacyBody(privacySession, originalReasoningBody, c.Request.Header.Get("Content-Type"))
-		}
+		// originalReasoningBody only feeds local turn classification and never
+		// leaves the process, so it is not masked.
 		if err != nil {
 			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
 			return

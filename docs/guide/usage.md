@@ -155,17 +155,19 @@ System setting `model_multimodal_fallback` maps non-vision models to fallback mo
 
 ## Privacy masking
 
-Open **Settings → Privacy masking**, next to **Dynamic reasoning effort**. Masking is off by default. Enable it, apply the dialog, then save all changes; the setting takes effect immediately without restarting.
+Open **Settings → Privacy masking**, next to **Dynamic reasoning effort**. Masking is off by default. Enable it, apply the dialog (the server validates the rules on apply and the dialog shows any error), then save all changes; the setting takes effect immediately without restarting.
 
-Click **Test** next to **Reset to default** at the bottom of the dialog to open a test dialog, paste sample text, and see what the upstream would receive under the dialog's current settings (including unapplied changes, treated as enabled), plus each replaced value. The sample is not saved or sent upstream.
+Click **Test** next to **Reset to default** at the bottom of the dialog to open a test dialog, paste sample text, and see what the upstream would receive under the dialog's current settings (including unapplied changes, treated as enabled), plus each replaced value. The sample is not saved or sent upstream, and closing the test dialog clears the input and results.
 
 The dialog contains built-in secret/password detection, optional personal-data categories, custom words (case-insensitive or whole-word matching), prefix/RE2 rules, and an allow list. Custom words and rules work independently of the secret and personal-data switches. Common API keys, private keys, JWTs, connection-string passwords, emails, Chinese mobile/identity numbers, bank cards, and optional identity/network categories are supported.
 
-Matched text becomes a stable placeholder before being sent upstream and is restored in HTTP, SSE, and Responses WebSocket replies. Reversible mappings are isolated by caller API token and held only in this process. Existing mappings continue restoring replies after masking is disabled; they expire after 24 idle hours or a process restart. A client must replay full history if hidden upstream history still references expired placeholders.
+Matched text becomes a stable placeholder before being sent upstream and is restored in HTTP, SSE, and Responses WebSocket replies. Reversible mappings are isolated by caller API token and held only in this process. Existing mappings continue restoring replies after masking is disabled; they expire after 24 idle hours or a process restart. When mapping capacity is full, values unused for over an hour are evicted first; a request is rejected only if every value was used within the last hour. A client must replay full history if hidden upstream history still references placeholders that are no longer mapped.
+
+Model reasoning (Anthropic thinking, Gemini thoughts) is vendor-signed and replayed verbatim by clients, so its placeholders are not restored and are left untouched on replay, keeping the signature valid. Answers and tool calls are restored as usual.
 
 With debug logging enabled, logs contain only placeholders, never the replaced values. The debug log dialog highlights placeholders and summarizes, at the top, how many values were masked in the upstream request, how often they occur, and their types.
 
-Masking covers recognized text, not image/audio/file content, authentication headers, protocol identifiers, or newly discovered values inside signed thinking blocks. Rules can miss values or produce false positives; custom rules and allowed values can refine them. Existing logs are not scrubbed. Capacity or processing failures reject the request rather than sending it unmasked.
+Masking covers recognized text, not image/audio/file content, authentication headers, protocol identifiers, or signed reasoning. Rules can miss values or produce false positives; custom rules and allowed values can refine them. Existing logs are not scrubbed. Capacity or processing failures reject the request rather than sending it unmasked.
 
 ## Local Token Counting
 

@@ -17,10 +17,10 @@ type detector struct {
 	kind, category string
 	re             *regexp.Regexp
 	bound          string
-	whole          bool
 	check          func(string) bool
 	at             func(string, int, int) bool
 	groups         []string
+	gate           gate // set by NewPolicy
 }
 
 const (
@@ -73,9 +73,29 @@ var builtinRules = []detector{
 	pattern("BUCKET", "bucket", `(?:s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com|storage\.googleapis\.com|[a-z0-9]{3,24}\.blob\.core\.windows\.net)/([A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9])`, "", bucketOK),
 }
 
-func (r detector) find(text string) []match {
+// matches returns the rule's submatch indices in text, searching only the
+// windows its gate allows.
+func (r detector) matches(text, lower string, unusualFold bool) [][]int {
+	var out [][]int
+	for _, w := range r.gate.windows(text, lower, unusualFold) {
+		for _, indices := range r.re.FindAllStringSubmatchIndex(text[w[0]:w[1]], maxMatches+1-len(out)) {
+			for i := range indices {
+				if indices[i] >= 0 {
+					indices[i] += w[0]
+				}
+			}
+			out = append(out, indices)
+		}
+		if len(out) > maxMatches {
+			break
+		}
+	}
+	return out
+}
+
+func (r detector) find(text, lower string, unusualFold bool) []match {
 	var out []match
-	for _, indices := range r.re.FindAllStringSubmatchIndex(text, maxMatches+1) {
+	for _, indices := range r.matches(text, lower, unusualFold) {
 		if len(r.groups) != 0 {
 			for i, kind := range r.groups {
 				a, b := indices[2+i*2], indices[3+i*2]
@@ -109,7 +129,7 @@ func (r detector) find(text string) []match {
 			}
 		}
 		if a < 0 || a == b || r.bound != "" && (a > 0 && strings.IndexByte(r.bound, text[a-1]) >= 0 || b < len(text) && strings.IndexByte(r.bound, text[b]) >= 0) ||
-			r.whole && !whole(text, a, b) || r.check != nil && !r.check(text[a:b]) || r.at != nil && !r.at(text, a, b) {
+			r.check != nil && !r.check(text[a:b]) || r.at != nil && !r.at(text, a, b) {
 			continue
 		}
 		if r.kind == "PHONE" && !phoneAt(text, a, b) {

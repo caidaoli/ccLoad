@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ccLoad/internal/privacy"
 )
@@ -17,13 +18,22 @@ func enabled() privacy.Config {
 	return c
 }
 
+func newSession(t *testing.T, e *privacy.Engine, scope string, cfg privacy.Config) *privacy.Session {
+	t.Helper()
+	p, err := privacy.NewPolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e.Session(scope, p)
+}
+
 func TestDefaultAndConfig(t *testing.T) {
 	defaultConfig, err := privacy.ParseConfig("")
 	if err != nil || defaultConfig.Enabled || !defaultConfig.Secrets || defaultConfig.Personal || defaultConfig.Kinds["ip"] || !defaultConfig.Kinds["ssn"] {
 		t.Fatalf("unexpected defaults: %+v, %v", defaultConfig, err)
 	}
 	body := []byte(`{ "content": "password=hello123world", "n": 12345678901234567890 }`)
-	s := privacy.NewEngine().Session("default", defaultConfig)
+	s := newSession(t, privacy.NewEngine(), "default", defaultConfig)
 	out, err := s.MaskJSON(body)
 	if err != nil || string(out) != string(body) {
 		t.Fatalf("disabled config changed request: %s, %v", out, err)
@@ -41,6 +51,10 @@ func TestDefaultAndConfig(t *testing.T) {
 		} else if strings.Contains(err.Error(), "secretvalue") {
 			t.Error("configuration error leaked a value")
 		}
+	}
+	// Errors name the 1-based rule so the settings dialog can point at it.
+	if _, err := privacy.ParseConfig(`{"rules":[{"prefix":"abc"},{"regex":"("}]}`); err == nil || !strings.Contains(err.Error(), "rule 2 ") {
+		t.Errorf("rule error does not name the rule: %v", err)
 	}
 	c, err := privacy.ParseConfig(`{"enabled":true,"kinds":{"ip":true},"rules":[{"kind":"RELAY","prefix":"relay_"}]}`)
 	if err != nil || !c.Enabled || !c.Secrets || !c.Kinds["ssn"] || !c.Kinds["ip"] || c.Rules[0].Kind != "RELAY" {
@@ -89,7 +103,7 @@ func TestBuiltinRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := privacy.NewEngine().Session("test", enabled())
+			s := newSession(t, privacy.NewEngine(), "test", enabled())
 			out, err := s.MaskText(tc.text)
 			if err != nil || strings.Contains(out, tc.secret) || !strings.Contains(out, "{{CCLOAD_") {
 				t.Fatalf("did not mask %s: %q (%v)", tc.name, out, err)
@@ -110,7 +124,7 @@ func TestFalsePositives(t *testing.T) {
 		"DOB: 1990-02-30", "release 1990-05-12", "00:00:00:00:00:00", "aa:bb:cc:dd:ee:ff",
 		"DE89370400440532013001", "user@package.notarealtld", "sk-this-is-a-public-documentation-example",
 	} {
-		s := privacy.NewEngine().Session("test", enabled())
+		s := newSession(t, privacy.NewEngine(), "test", enabled())
 		out, err := s.MaskText(text)
 		if err != nil || out != text {
 			t.Errorf("false positive %q -> %q (%v)", text, out, err)
@@ -121,7 +135,7 @@ func TestFalsePositives(t *testing.T) {
 func TestOptionalKindsAndWords(t *testing.T) {
 	cfg := enabled()
 	text := "/Users/alicechen/project alicechen@work-machine:~$ 45.76.12.34 s3://company-prod-archive"
-	s := privacy.NewEngine().Session("test", cfg)
+	s := newSession(t, privacy.NewEngine(), "test", cfg)
 	out, err := s.MaskText(text)
 	if err != nil || out != text {
 		t.Fatalf("optional categories enabled by default: %q %v", out, err)
@@ -129,7 +143,7 @@ func TestOptionalKindsAndWords(t *testing.T) {
 	for _, kind := range []string{"home", "userhost", "ip", "bucket"} {
 		cfg.Kinds[kind] = true
 	}
-	s = privacy.NewEngine().Session("test", cfg)
+	s = newSession(t, privacy.NewEngine(), "test", cfg)
 	out, err = s.MaskText(text)
 	for _, value := range []string{"alicechen", "work-machine", "45.76.12.34", "company-prod-archive"} {
 		if err != nil || strings.Contains(out, value) {
@@ -137,7 +151,7 @@ func TestOptionalKindsAndWords(t *testing.T) {
 		}
 	}
 	for _, text := range []string{"10.0.0.1", "127.0.0.1", "203.0.113.42", "8.8.8.8", "version 45.76.12.34", "git@github.com:~/", "s3://my-bucket"} {
-		fresh := privacy.NewEngine().Session("test", cfg)
+		fresh := newSession(t, privacy.NewEngine(), "test", cfg)
 		out, err := fresh.MaskText(text)
 		if err != nil || out != text {
 			t.Errorf("optional false positive %q -> %q %v", text, out, err)
@@ -146,13 +160,13 @@ func TestOptionalKindsAndWords(t *testing.T) {
 	cfg.Words = []string{"Acme", "项目甲"}
 	cfg.WordsAnyCase, cfg.WordsWhole = true, true
 	cfg.Allow = []string{"ACME"}
-	s = privacy.NewEngine().Session("test", cfg)
+	s = newSession(t, privacy.NewEngine(), "test", cfg)
 	out, err = s.MaskText("acme acmeOther 项目甲 项目甲乙")
 	if err != nil || !strings.HasPrefix(out, "acme acmeOther {{CCLOAD_WORD_") || !strings.HasSuffix(out, " 项目甲乙") {
 		t.Fatalf("word/allow mismatch: %q %v", out, err)
 	}
 	cfg.Rules = []privacy.Rule{{Kind: "RELAY", Prefix: "relay_"}, {Kind: "LOCAL", Regex: `local=([A-Z0-9]{8})`}}
-	s = privacy.NewEngine().Session("test", cfg)
+	s = newSession(t, privacy.NewEngine(), "test", cfg)
 	out, err = s.MaskText("relay_ABCDEF123456 local=ABCD1234")
 	if err != nil || strings.Contains(out, "ABCDEF123456") || !strings.Contains(out, "local={{CCLOAD_LOCAL_") {
 		t.Fatalf("custom rules mismatch %q %v", out, err)
@@ -163,14 +177,14 @@ func TestScopeStabilitySnapshotAndConcurrentUse(t *testing.T) {
 	e := privacy.NewEngine()
 	cfg := enabled()
 	cfg.Words = []string{"ProjectSecret"}
-	s := e.Session("token-a", cfg)
+	s := newSession(t, e, "token-a", cfg)
 	cfg.Words[0] = "changed"
 	cfg.Kinds["ssn"] = false
 	first, err := s.MaskText("ProjectSecret password=S3cr3tPass123")
 	if err != nil || strings.Contains(first, "ProjectSecret") {
 		t.Fatal("session did not snapshot configuration")
 	}
-	same := e.Session("token-a", enabled())
+	same := newSession(t, e, "token-a", enabled())
 	second, _ := same.MaskText("password=S3cr3tPass123")
 	if !strings.Contains(first, strings.TrimPrefix(second, "password=")) {
 		t.Fatal("same scope changed placeholder")
@@ -178,7 +192,7 @@ func TestScopeStabilitySnapshotAndConcurrentUse(t *testing.T) {
 	if same.RestoreText(first) != "ProjectSecret password=S3cr3tPass123" {
 		t.Fatal("new session lost prior mapping")
 	}
-	other := e.Session("token-b", enabled())
+	other := newSession(t, e, "token-b", enabled())
 	third, _ := other.MaskText("password=S3cr3tPass123")
 	if third == second || other.RestoreText(first) != first {
 		t.Fatal("scope mappings leaked")
@@ -203,7 +217,7 @@ func TestScopeStabilitySnapshotAndConcurrentUse(t *testing.T) {
 func TestJSONProtocolBoundaryAndRestoreEscaping(t *testing.T) {
 	cfg := enabled()
 	cfg.Words = []string{"my_model", "my_function", "enum_value", "secretname"}
-	s := privacy.NewEngine().Session("test", cfg)
+	s := newSession(t, privacy.NewEngine(), "test", cfg)
 	body := []byte(`{"model":"my_model","messages":[{"role":"user","content":"alice@company.com my_model"},{"role":"assistant","tool_calls":[{"id":"my_function","type":"function","function":{"name":"my_function","arguments":"{\"name\":\"secretname\",\"api_key\":\"opaque-key-value\",\"mode\":\"enum_value\"}"}}]}],"tools":[{"type":"function","function":{"name":"my_function","description":"alice@company.com","parameters":{"type":"object","properties":{"secretname":{"type":"string","enum":["enum_value"],"description":"alice@company.com"}}}}}],"signature":"alice@company.com","encrypted_content":"alice@company.com","image_url":{"url":"https://img/alice@company.com"},"n":12345678901234567890}`)
 	out, err := s.MaskJSON(body)
 	if err != nil {
@@ -263,7 +277,7 @@ func TestJSONProtocolBoundaryAndRestoreEscaping(t *testing.T) {
 	secret := "a\"b\\c\nvalue"
 	cfg = enabled()
 	cfg.Rules = []privacy.Rule{{Kind: "SECRET", Regex: `(?s)secret=(.+)`}}
-	s = privacy.NewEngine().Session("escaping", cfg)
+	s = newSession(t, privacy.NewEngine(), "escaping", cfg)
 	maskedWithLabel, err := s.MaskText("secret=" + secret)
 	masked := strings.TrimPrefix(maskedWithLabel, "secret=")
 	if err != nil {
@@ -308,7 +322,7 @@ func TestJSONProtocolBoundaryAndRestoreEscaping(t *testing.T) {
 func TestCapacityFailsClosed(t *testing.T) {
 	cfg := enabled()
 	cfg.Rules = []privacy.Rule{{Kind: "CUSTOM", Prefix: "local_"}}
-	s := privacy.NewEngine().Session("limit", cfg)
+	s := newSession(t, privacy.NewEngine(), "limit", cfg)
 	var body strings.Builder
 	for i := 0; i < 4097; i++ {
 		fmt.Fprintf(&body, "local_%08d ", i)
@@ -348,7 +362,7 @@ func TestOtherProtocolToolPayloads(t *testing.T) {
 		`{"input":"password=Hello123secret","content":[{"type":"tool_use","id":"tool-1","name":"get_credential","input":{"name":"alice@company.com","password":"opaque-credential-value"}}]}`,
 		`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"get_credential","args":{"name":"alice@company.com","password":"opaque-credential-value"}}},{"functionResponse":{"name":"get_credential","response":{"password":"opaque-credential-value"}}},{"text":"alice@company.com","thoughtSignature":"alice@company.com"}]}]}`,
 	} {
-		s := privacy.NewEngine().Session("protocol", enabled())
+		s := newSession(t, privacy.NewEngine(), "protocol", enabled())
 		out, err := s.MaskJSON([]byte(body))
 		if err != nil || strings.Contains(string(out), "opaque-credential-value") || strings.Contains(string(out), "Hello123secret") {
 			t.Fatalf("tool payload leak: %s %v", out, err)
@@ -376,7 +390,7 @@ func TestOtherProtocolToolPayloads(t *testing.T) {
 }
 
 func TestKnownPhoneRespectsIdentifierContext(t *testing.T) {
-	s := privacy.NewEngine().Session("phone", enabled())
+	s := newSession(t, privacy.NewEngine(), "phone", enabled())
 	if _, err := s.MaskText("手机号 13800138000"); err != nil {
 		t.Fatal(err)
 	}
@@ -391,14 +405,15 @@ func TestCustomRulesIndependentAndRemovedRulesDoNotRemask(t *testing.T) {
 	cfg := privacy.DefaultConfig()
 	cfg.Enabled, cfg.Secrets = true, false
 	cfg.Rules = []privacy.Rule{{Kind: "RELAY", Prefix: "relay_"}}
-	first := e.Session("scope", cfg)
-	text := "relay_ABCDEF123456"
+	first := newSession(t, e, "scope", cfg)
+	// Long enough for the detection cache, which must not outlive its policy.
+	text := "relay_ABCDEF123456 " + strings.Repeat("filler ", 64)
 	masked, err := first.MaskText(text)
 	if err != nil || masked == text || !strings.Contains(masked, "{{CCLOAD_RELAY_") {
 		t.Fatalf("custom rule depended on Secrets: %q %v", masked, err)
 	}
 	cfg.Rules = []privacy.Rule{{Kind: "OTHER", Prefix: "other_"}}
-	reconfigured := e.Session("scope", cfg)
+	reconfigured := newSession(t, e, "scope", cfg)
 	out, err := reconfigured.MaskText(text)
 	if err != nil || out != text {
 		t.Fatalf("removed custom rule kept masking: %q %v", out, err)
@@ -408,83 +423,70 @@ func TestCustomRulesIndependentAndRemovedRulesDoNotRemask(t *testing.T) {
 	}
 }
 
-func TestSignedContentReplaysWithoutNewDetection(t *testing.T) {
+func TestSignedReasoningPassesThroughUnchanged(t *testing.T) {
 	for _, protocol := range []string{"anthropic", "gemini", "gemini-snake"} {
 		t.Run(protocol, func(t *testing.T) {
 			e := privacy.NewEngine()
-			s := e.Session("owner", enabled())
+			s := newSession(t, e, "owner", enabled())
 			secret := "S3cr3tSignedValue123"
 			masked, err := s.MaskText("password=" + secret)
 			if err != nil {
 				t.Fatal(err)
 			}
 			token := strings.TrimPrefix(masked, "password=")
-			signed := func(text string) []byte {
-				var body any
-				if protocol == "anthropic" {
-					body = map[string]any{"messages": []any{map[string]any{"role": "assistant", "content": []any{map[string]string{"type": "thinking", "thinking": text, "signature": "vendor-signature"}}}}}
-				} else {
-					key := "thoughtSignature"
-					if protocol == "gemini-snake" {
-						key = "thought_signature"
-					}
-					body = map[string]any{"contents": []any{map[string]any{"role": "model", "parts": []any{map[string]string{"text": text, key: "vendor-signature"}}}}}
+			reasoning := "remember " + token + " and 我的密码是 FreshSecret987"
+			var wire []byte
+			if protocol == "anthropic" {
+				wire, err = json.Marshal(map[string]any{"content": []any{
+					map[string]any{"type": "thinking", "thinking": reasoning, "signature": "vendor-signature"},
+					map[string]any{"type": "text", "text": token},
+				}})
+			} else {
+				key := "thoughtSignature"
+				if protocol == "gemini-snake" {
+					key = "thought_signature"
 				}
-				b, marshalErr := json.Marshal(body)
-				if marshalErr != nil {
-					t.Fatal(marshalErr)
-				}
-				return b
+				wire, err = json.Marshal(map[string]any{"contents": []any{map[string]any{"role": "model", "parts": []any{
+					map[string]any{"text": reasoning, "thought": true, key: "vendor-signature"},
+					map[string]any{"text": token},
+				}}}})
 			}
-			// Vendor-generated secrets were never placeholders. Discovering them
-			// while replaying a signed block would invalidate its signature.
-			unknown := signed("我的密码是 FreshSecret987")
-			out, err := s.MaskJSON(unknown)
-			if err != nil || string(out) != string(unknown) {
-				t.Fatalf("unknown signed content changed: %s %v", out, err)
+			if err != nil {
+				t.Fatal(err)
 			}
-			wire := signed("remember " + token + " and 我的密码是 FreshSecret987")
+			// The vendor signed reasoning it produced from masked input. The
+			// client must replay exactly that, so the reasoning keeps its
+			// placeholders while the answer next to it is restored.
 			local, err := s.RestoreJSON(wire)
-			if err != nil || !strings.Contains(string(local), secret) {
-				t.Fatalf("signed content not restored: %s %v", local, err)
+			if err != nil {
+				t.Fatal(err)
 			}
-			replay, err := s.MaskJSON(local)
-			if err != nil || string(replay) != string(wire) {
-				t.Fatalf("signature replay changed vendor content: %s != %s (%v)", replay, wire, err)
+			want := strings.Replace(string(wire), `"text":"`+token+`"`, `"text":"`+secret+`"`, 1)
+			if string(local) != want {
+				t.Fatalf("restore = %s, want %s", local, want)
 			}
-			// Existing placeholders also remain untouched on retries.
-			retry, err := s.MaskJSON(wire)
-			if err != nil || string(retry) != string(wire) {
-				t.Fatalf("placeholder replay changed: %s %v", retry, err)
-			}
+			// Replays reach the vendor byte-for-byte, even after a restart lost
+			// the dictionary or masking was switched off.
 			cfg := enabled()
 			cfg.Enabled = false
-			disabled := e.Session("owner", cfg)
-			if disabled.Enabled() || !s.Enabled() {
-				t.Fatal("Enabled did not reflect snapshot")
-			}
-			out, err = disabled.MaskJSON(local)
-			if err != nil || string(out) != string(wire) {
-				t.Fatalf("disabled signed replay broke signature: %s %v", out, err)
-			}
-			ordinary := []byte(`{ "content": "password=S3cr3tSignedValue123 and password=FreshSecret987" }`)
-			out, err = disabled.MaskJSON(ordinary)
-			if err != nil || string(out) != string(ordinary) {
-				t.Fatalf("disabled ordinary content changed: %s %v", out, err)
-			}
-			other := e.Session("other", cfg)
-			out, err = other.MaskJSON(local)
-			if err != nil || string(out) != string(local) {
-				t.Fatal("signed content used another scope's mapping")
+			for name, replayer := range map[string]*privacy.Session{
+				"same":      s,
+				"restarted": newSession(t, privacy.NewEngine(), "owner", enabled()),
+				"disabled":  newSession(t, e, "owner", cfg),
+			} {
+				out, err := replayer.MaskJSON(wire)
+				if err != nil || string(out) != string(wire) {
+					t.Fatalf("%s replay changed signed reasoning: %s %v", name, out, err)
+				}
 			}
 		})
 	}
 }
 
-func TestHasMappingsAndSignedDictionarySnapshot(t *testing.T) {
+func TestHasMappingsAndDisabledPassthrough(t *testing.T) {
 	e := privacy.NewEngine()
 	cfg := enabled()
-	s := e.Session("scope", cfg)
+	s := newSession(t, e, "scope", cfg)
 	if e.HasMappings("scope") || e.HasMappings("other") {
 		t.Fatal("new engine has mappings")
 	}
@@ -494,41 +496,131 @@ func TestHasMappingsAndSignedDictionarySnapshot(t *testing.T) {
 	if !e.HasMappings("scope") || e.HasMappings("other") {
 		t.Fatal("mapping scope check failed")
 	}
-	// A new unsigned value in this same body must not change what the vendor
-	// signed, regardless of the order of Go map traversal.
-	body := []byte(`{"a":"password=NewSecret456","z":{"type":"thinking","thinking":"password=NewSecret456","signature":"sig"}}`)
-	out, err := s.MaskJSON(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(out, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if doc["a"] == "password=NewSecret456" || doc["z"].(map[string]any)["thinking"] != "password=NewSecret456" {
-		t.Fatalf("signed snapshot depended on new detections: %s", out)
-	}
-	repeated, err := s.MaskJSON(out)
-	if err != nil || string(repeated) != string(out) {
-		t.Fatalf("a later masking pass changed signed content: %s (%v)", repeated, err)
-	}
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Go(func() {
-			replayed, err := s.MaskJSON(out)
-			if err != nil || string(replayed) != string(out) {
-				t.Error("concurrent masking changed the signed dictionary")
-			}
-		})
-	}
-	wg.Wait()
 	cfg.Enabled = false
-	disabled := e.Session("scope", cfg)
-	for _, body := range [][]byte{nil, []byte("not JSON"), []byte("[" + strings.Repeat("[", 150) + "0" + strings.Repeat("]", 151))} {
+	disabled := newSession(t, e, "scope", cfg)
+	if disabled.Enabled() || !s.Enabled() {
+		t.Fatal("Enabled did not reflect the policy")
+	}
+	for _, body := range [][]byte{nil, []byte("not JSON"), []byte("[" + strings.Repeat("[", 150) + "0" + strings.Repeat("]", 151)), []byte(`{ "content": "password=AnotherSecret456" }`)} {
 		out, err := disabled.MaskJSON(body)
 		if err != nil || string(out) != string(body) {
 			t.Fatal("disabled passthrough contract changed")
 		}
+	}
+}
+
+func TestMaskJSONRewritesOnlyChangedStrings(t *testing.T) {
+	s := newSession(t, privacy.NewEngine(), "bytes", enabled())
+	placeholder, err := s.MaskText("alice@company.com")
+	if err != nil || placeholder == "alice@company.com" {
+		t.Fatalf("email not masked: %q %v", placeholder, err)
+	}
+	body := `{ "z" : "mail alice@company.com", "a": 1e999, "m": {"b": 2.50, "a": "café \/ <ok>"} }`
+	out, err := s.MaskJSON([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(body, "alice@company.com", placeholder, 1); string(out) != want {
+		t.Fatalf("MaskJSON = %s, want %s", out, want)
+	}
+	if restored, err := s.RestoreJSON(out); err != nil || string(restored) != body {
+		t.Fatalf("RestoreJSON = %s %v", restored, err)
+	}
+}
+
+func TestDictionaryEvictsIdleValuesAndFailsClosedWhenFull(t *testing.T) {
+	e := privacy.NewEngine()
+	now := time.Unix(1_700_000_000, 0)
+	privacy.SetClock(e, func() time.Time { return now })
+	cfg := enabled()
+	cfg.Rules = []privacy.Rule{{Kind: "CUSTOM", Prefix: "local_"}}
+	s := newSession(t, e, "scope", cfg)
+	old, err := s.MaskText("local_oldvalue1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	for i := 0; i < 4095; i++ {
+		fmt.Fprintf(&body, "local_%08d ", i)
+	}
+	if _, err := s.MaskText(body.String()); err != nil {
+		t.Fatal(err)
+	}
+	// Every mapping may still be needed by an in-flight reply.
+	if out, err := s.MaskText("local_newvalue1"); err == nil || out != "" {
+		t.Fatalf("full dictionary returned %q %v", out, err)
+	}
+	now = now.Add(90 * time.Minute)
+	if _, err := s.MaskText(body.String()); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := s.MaskText("local_newvalue2")
+	if err != nil || !strings.HasPrefix(fresh, "{{CCLOAD_CUSTOM_") {
+		t.Fatalf("idle value was not evicted: %q %v", fresh, err)
+	}
+	if s.RestoreText(old) != old || s.RestoreText(fresh) != "local_newvalue2" {
+		t.Fatal("eviction kept the idle value or lost the new one")
+	}
+	now = now.Add(25 * time.Hour)
+	if e.HasMappings("scope") {
+		t.Fatal("expired mappings still reported")
+	}
+}
+
+func TestAnyCaseWordsFollowUnicodeFolding(t *testing.T) {
+	cfg := enabled()
+	cfg.Words = []string{"Acme", "kelvin", "Café"}
+	cfg.WordsAnyCase = true
+	s := newSession(t, privacy.NewEngine(), "words", cfg)
+	text := "ACME acme Kelvin KELVIN CAFÉ café" // the first "Kelvin" starts with U+212A KELVIN SIGN
+	out, err := s.MaskText(text)
+	if err != nil || strings.Count(out, "{{CCLOAD_WORD_") != 6 {
+		t.Fatalf("any-case words = %q %v", out, err)
+	}
+	if s.RestoreText(out) != text {
+		t.Fatal("word round trip failed")
+	}
+}
+
+// Rules only search text holding one of their required literals, and
+// line-bound rules only those lines. These cases sit where that shortcut could
+// miss a match or find an extra one.
+func TestRulesMatchOnLaterLinesFoldedLabelsAndAnchors(t *testing.T) {
+	cfg := enabled()
+	cfg.Rules = []privacy.Rule{{Kind: "START", Regex: `^start\d+`}, {Kind: "BLOCK", Regex: `(?s)BEGIN.+?END`}}
+	filler := strings.Repeat("plain line without labels\n", 50)
+	cases := []struct {
+		name, text   string
+		masked, kept []string
+	}{
+		{"later lines", filler + "api_key = AbC123dEf456GhI789\nnext\nmail bob@mycompany.com\n" + filler + "密码：hunter2x",
+			[]string{"AbC123dEf456GhI789", "bob@mycompany.com", "hunter2x"}, []string{filler + "api_key = ", "\nnext\nmail "}},
+		{"long s label", "pa\u017F\u017Fword = Hunter2Hunter2", []string{"Hunter2Hunter2"}, nil},
+		{"kelvin label", "API_\u212AEY = AbC123dEf456GhI789", []string{"AbC123dEf456GhI789"}, nil},
+		{"text start anchor", "start1 start2\nstart3", []string{"start1"}, []string{"start2", "start3"}},
+		{"multiline custom rule", "x BEGIN\nmiddle\nEND y", []string{"BEGIN\nmiddle\nEND"}, []string{"x ", " y"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession(t, privacy.NewEngine(), "rules", cfg)
+			out, err := s.MaskText(tc.text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, value := range tc.masked {
+				if strings.Contains(out, value) {
+					t.Errorf("did not mask %q: %q", value, out)
+				}
+			}
+			for _, value := range tc.kept {
+				if !strings.Contains(out, value) {
+					t.Errorf("changed %q: %q", value, out)
+				}
+			}
+			if restored := s.RestoreText(out); restored != tc.text {
+				t.Fatalf("restored %q, want %q", restored, tc.text)
+			}
+		})
 	}
 }
 
@@ -552,7 +644,7 @@ func TestToolPayloadProtocolNamedFieldsAreUserData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := privacy.NewEngine().Session("payload", enabled())
+	s := newSession(t, privacy.NewEngine(), "payload", enabled())
 	masked, err := s.MaskJSON(encoded)
 	if err != nil {
 		t.Fatal(err)

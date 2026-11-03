@@ -1,6 +1,7 @@
 package privacy
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,8 +19,12 @@ import (
 )
 
 const (
-	mappingTTL    = 24 * time.Hour
-	maxScopes     = 4096
+	mappingTTL = 24 * time.Hour
+	// At capacity, values idle for longer than this may be evicted. Newer
+	// values can still be needed by an in-flight response, so they are kept
+	// and masking fails closed instead.
+	evictionGrace = time.Hour
+	pruneInterval = time.Minute
 	maxEntries    = 65536
 	maxScopeItems = 4096
 	maxHeldBytes  = 32 << 20
@@ -29,30 +35,36 @@ const (
 var errCapacity = errors.New("privacy mapping capacity exceeded")
 var placeholderPattern = regexp.MustCompile(`\{\{CCLOAD_[A-Z][A-Z0-9_]{0,23}_[a-f0-9]{16}\}\}`)
 
-type storedValue struct {
+// entry fields other than used are immutable once published.
+type entry struct {
 	value, placeholder, kind, category string
+	used                               time.Time // guarded by Engine.mu
 }
 
+// A scope is in Engine.scopes only while it holds values; drop removes it.
 type scopeValues struct {
-	values  map[string]storedValue // original value → mapping
-	expires time.Time
-	bytes   int
+	key          [32]byte
+	values       map[string]*entry // original value → mapping
+	placeholders map[string]*entry // placeholder → mapping
+	used         time.Time
 }
 
 // Engine owns process-local mappings. Scopes and values are never persisted.
-// Idle scopes expire after 24 hours; capacity exhaustion fails closed rather
-// than evicting values another in-flight response still needs to restore.
+// A value expires 24 hours after it was last masked or restored. At capacity,
+// values idle for over an hour are evicted least recently used first.
 type Engine struct {
 	mu      sync.Mutex
 	key     [32]byte
 	scopes  map[[32]byte]*scopeValues
 	entries int
 	bytes   int
+	pruned  time.Time
+	now     func() time.Time
 }
 
 // NewEngine creates an engine with a fresh cryptographic process key.
 func NewEngine() *Engine {
-	e := &Engine{scopes: make(map[[32]byte]*scopeValues)}
+	e := &Engine{scopes: make(map[[32]byte]*scopeValues), now: time.Now}
 	_, _ = rand.Read(e.key[:]) // crypto/rand.Read never returns an error.
 	return e
 }
@@ -60,115 +72,37 @@ func NewEngine() *Engine {
 // HasMappings reports whether scope still has unexpired reversible values.
 // It does not extend their lifetime.
 func (e *Engine) HasMappings(scope string) bool {
-	return e.hasMappings(sha256.Sum256([]byte(scope)))
-}
-
-func (e *Engine) hasMappings(scope [32]byte) bool {
+	key := sha256.Sum256([]byte(scope))
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	held := e.scopes[scope]
-	return held != nil && len(held.values) > 0 && held.expires.After(time.Now())
+	held := e.scopes[key]
+	return held != nil && e.now().Sub(held.used) < mappingTTL
 }
 
-// Session keeps one configuration snapshot while sharing its scope's history.
+// Session binds one request's policy to its scope's shared dictionary.
 type Session struct {
 	engine *Engine
 	scope  [32]byte
-	config Config
-	rules  []detector
-	err    error
+	policy *Policy
 
-	signedKnownOnce sync.Once
-	signedKnown     []storedValue
+	indexOnce sync.Once
+	mu        sync.RWMutex
+	known     knownIndex
 }
 
-// Session snapshots and validates config. Invalid programmatic configurations
-// surface as an error from MaskText or MaskJSON, never as plaintext fallback.
-func (e *Engine) Session(scope string, config Config) *Session {
-	s := &Session{engine: e, scope: sha256.Sum256([]byte(scope))}
-	raw, err := json.Marshal(config)
-	if err == nil {
-		s.config, err = ParseConfig(string(raw))
-	}
-	s.err = err
-	if err == nil {
-		for _, r := range builtinRules {
-			if s.covers(r.category) {
-				s.rules = append(s.rules, r)
-			}
-		}
-		for _, r := range s.config.Rules {
-			re, _ := compileRule(r)
-			s.rules = append(s.rules, detector{kind: r.Kind, category: "custom", re: re})
-		}
-		for _, word := range s.config.Words {
-			pattern := regexp.QuoteMeta(word)
-			if s.config.WordsAnyCase {
-				pattern = "(?i)" + pattern
-			}
-			s.rules = append(s.rules, detector{kind: "WORD", category: "word", re: regexp.MustCompile(pattern), whole: s.config.WordsWhole})
-		}
-	}
-	return s
+// Session returns a request session. policy must not be nil; it stays fixed
+// for the request's retries and protocol conversions.
+func (e *Engine) Session(scope string, policy *Policy) *Session {
+	return &Session{engine: e, scope: sha256.Sum256([]byte(scope)), policy: policy}
 }
 
-// Enabled reports whether this request's snapshot masks new sensitive values.
-// Restoration and signed-history remapping can still work when it is false.
-func (s *Session) Enabled() bool { return s.config.Enabled }
-
-func (s *Session) covers(category string) bool {
-	switch category {
-	case "":
-		return s.config.Secrets
-	case "personal":
-		return s.config.Personal
-	case "word":
-		return len(s.config.Words) != 0
-	case "custom":
-		return len(s.config.Rules) != 0
-	default:
-		return s.config.Personal && s.config.Kinds[category]
-	}
-}
-
-func (e *Engine) prune(now time.Time) {
-	for scope, held := range e.scopes {
-		if !held.expires.After(now) {
-			e.entries -= len(held.values)
-			e.bytes -= held.bytes
-			delete(e.scopes, scope)
-		}
-	}
-}
-
-func (s *Session) snapshot() []storedValue {
-	e := s.engine
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	held := e.scopes[s.scope]
-	if held == nil || !held.expires.After(time.Now()) {
-		return nil
-	}
-	held.expires = time.Now().Add(mappingTTL)
-	out := make([]storedValue, 0, len(held.values))
-	for _, value := range held.values {
-		out = append(out, value)
-	}
-	return out
-}
+// Enabled reports whether this request's policy masks new sensitive values.
+// Restoration works when it is false.
+func (s *Session) Enabled() bool { return s.policy.Enabled() }
 
 type match struct {
 	start, end     int
 	kind, category string
-}
-
-func (s *Session) allowed(value string) bool {
-	for _, allowed := range s.config.Allow {
-		if strings.EqualFold(value, allowed) {
-			return true
-		}
-	}
-	return false
 }
 
 func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_' }
@@ -191,74 +125,49 @@ func whole(s string, a, b int) bool {
 
 // MaskText replaces sensitive spans with stable, scope-specific placeholders.
 func (s *Session) MaskText(text string) (string, error) {
-	if s.err != nil {
-		return "", s.err
-	}
-	if !s.config.Enabled {
+	if !s.Enabled() {
 		return text, nil
 	}
 	if len(text) > maxTextBytes {
 		return "", errors.New("privacy text exceeds 64 MiB")
 	}
-	var found []match
-	for _, r := range s.rules {
-		found = append(found, r.find(text)...)
-		if len(found) > maxMatches {
-			return "", errors.New("privacy text has too many sensitive spans")
-		}
+	detected, err := s.policy.find(text)
+	if err != nil {
+		return "", err
 	}
 	// A secret found on an earlier turn stays masked when later prose no
 	// longer has the label that originally identified it.
-	for _, value := range s.snapshot() {
-		if !s.covers(value.category) || s.allowed(value.value) {
-			continue
-		}
-		if value.category == "word" || value.category == "custom" {
-			continue // only the current word/custom rules determine matches
-		}
-		for offset := 0; offset < len(text); {
-			i := strings.Index(text[offset:], value.value)
-			if i < 0 {
-				break
-			}
-			a, b := offset+i, offset+i+len(value.value)
-			if whole(text, a, b) && (value.kind != "PHONE" || phoneAt(text, a, b)) {
-				found = append(found, match{a, b, value.kind, value.category})
-				if len(found) > maxMatches {
-					return "", errors.New("privacy text has too many sensitive spans")
-				}
-			}
-			offset = b
-		}
+	known := s.knownMatches(text)
+	if len(detected)+len(known) > maxMatches {
+		return "", errTooManyMatches
 	}
+	if len(detected)+len(known) == 0 {
+		return text, nil
+	}
+	found := make([]match, 0, len(detected)+len(known))
+	found = append(append(found, detected...), known...)
 	return s.apply(text, found)
 }
 
 func (s *Session) apply(text string, found []match) (string, error) {
-	protected := placeholderPattern.FindAllStringIndex(text, -1)
 	sort.SliceStable(found, func(i, j int) bool {
 		if found[i].start != found[j].start {
 			return found[i].start < found[j].start
 		}
 		return found[i].end > found[j].end
 	})
+	protected := placeholderPattern.FindAllStringIndex(text, -1)
 	selected := make([]match, 0, len(found))
-	end := 0
+	end, p := 0, 0
 	for _, m := range found {
-		if m.start < end || m.end <= m.start || s.allowed(text[m.start:m.end]) {
+		for p < len(protected) && protected[p][1] <= m.start {
+			p++
+		}
+		if m.start < end || m.end <= m.start || p < len(protected) && protected[p][0] < m.end || s.policy.allowed(text[m.start:m.end]) {
 			continue
 		}
-		skip := false
-		for _, p := range protected {
-			if m.start < p[1] && m.end > p[0] {
-				skip = true
-				break
-			}
-		}
-		if !skip {
-			selected = append(selected, m)
-			end = m.end
-		}
+		selected = append(selected, m)
+		end = m.end
 	}
 	if len(selected) == 0 {
 		return text, nil
@@ -281,49 +190,268 @@ func (s *Session) apply(text string, found []match) (string, error) {
 func (s *Session) remember(text string, selected []match) (map[string]string, error) {
 	e := s.engine
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	now := time.Now()
+	now := e.now()
 	e.prune(now)
 	held := e.scopes[s.scope]
 	if held == nil {
-		if len(e.scopes) >= maxScopes {
-			return nil, errCapacity
-		}
-		held = &scopeValues{values: make(map[string]storedValue)}
+		held = &scopeValues{key: s.scope, values: make(map[string]*entry), placeholders: make(map[string]*entry)}
 	}
-	added := make(map[string]storedValue)
-	out := make(map[string]string)
-	bytesAdded := 0
+	out := make(map[string]string, len(selected))
+	items := make([]*entry, 0, len(selected))
+	var added []*entry
+	size := 0
 	for _, m := range selected {
 		value := text[m.start:m.end]
-		if prior, ok := held.values[value]; ok {
-			out[value] = prior.placeholder
+		if _, ok := out[value]; ok {
 			continue
 		}
-		if _, ok := added[value]; ok {
-			continue
+		item := held.values[value]
+		if item == nil {
+			h := hmac.New(sha256.New, e.key[:])
+			_, _ = h.Write(s.scope[:])
+			_, _ = h.Write([]byte(m.kind + "\x00" + value))
+			item = &entry{
+				value:       strings.Clone(value),
+				placeholder: "{{CCLOAD_" + m.kind + "_" + hex.EncodeToString(h.Sum(nil)[:8]) + "}}",
+				kind:        m.kind,
+				category:    m.category,
+			}
+			added = append(added, item)
+			size += len(item.value) + len(item.placeholder)
 		}
-		h := hmac.New(sha256.New, e.key[:])
-		_, _ = h.Write(s.scope[:])
-		_, _ = h.Write([]byte(m.kind + "\x00" + value))
-		placeholder := "{{CCLOAD_" + m.kind + "_" + hex.EncodeToString(h.Sum(nil)[:8]) + "}}"
-		value = strings.Clone(value)
-		added[value] = storedValue{value, placeholder, m.kind, m.category}
-		out[value] = placeholder
-		bytesAdded += len(value) + len(placeholder)
+		item.used = now
+		out[item.value] = item.placeholder
+		items = append(items, item)
 	}
-	if len(held.values)+len(added) > maxScopeItems || e.entries+len(added) > maxEntries || e.bytes+bytesAdded > maxHeldBytes {
-		return nil, errCapacity
+	if len(added) > 0 {
+		if err := e.makeRoom(held, len(added), size, now); err != nil {
+			e.mu.Unlock()
+			return nil, err
+		}
+		for _, item := range added {
+			held.values[item.value] = item
+			held.placeholders[item.placeholder] = item
+		}
+		e.entries += len(added)
+		e.bytes += size
+		e.scopes[s.scope] = held
 	}
-	for value, mapping := range added {
-		held.values[value] = mapping
-	}
-	held.bytes += bytesAdded
-	held.expires = now.Add(mappingTTL)
-	e.scopes[s.scope] = held
-	e.entries += len(added)
-	e.bytes += bytesAdded
+	held.used = now
+	e.mu.Unlock()
+	s.learn(items)
 	return out, nil
+}
+
+func (e *Engine) prune(now time.Time) {
+	if now.Sub(e.pruned) < pruneInterval {
+		return
+	}
+	e.pruned = now
+	for _, held := range e.scopes {
+		for _, item := range held.values {
+			if now.Sub(item.used) >= mappingTTL {
+				e.drop(held, item)
+			}
+		}
+	}
+}
+
+func (e *Engine) drop(held *scopeValues, item *entry) {
+	delete(held.values, item.value)
+	delete(held.placeholders, item.placeholder)
+	e.entries--
+	e.bytes -= len(item.value) + len(item.placeholder)
+	if len(held.values) == 0 {
+		delete(e.scopes, held.key)
+	}
+}
+
+type heldEntry struct {
+	held *scopeValues
+	item *entry
+}
+
+// makeRoom evicts only values idle beyond evictionGrace, least recently used
+// first. The scope count needs no limit of its own: every scope holds values.
+func (e *Engine) makeRoom(held *scopeValues, items, size int, now time.Time) error {
+	if size > maxHeldBytes {
+		return errCapacity
+	}
+	idle := func(scopes ...*scopeValues) []heldEntry {
+		var out []heldEntry
+		for _, scope := range scopes {
+			for _, item := range scope.values {
+				if now.Sub(item.used) > evictionGrace {
+					out = append(out, heldEntry{scope, item})
+				}
+			}
+		}
+		slices.SortFunc(out, func(a, b heldEntry) int { return a.item.used.Compare(b.item.used) })
+		return out
+	}
+	if over := len(held.values) + items - maxScopeItems; over > 0 {
+		victims := idle(held)
+		if len(victims) < over {
+			return errCapacity
+		}
+		for _, victim := range victims[:over] {
+			e.drop(held, victim.item)
+		}
+	}
+	if e.entries+items > maxEntries || e.bytes+size > maxHeldBytes {
+		all := make([]*scopeValues, 0, len(e.scopes))
+		for _, scope := range e.scopes {
+			all = append(all, scope)
+		}
+		// Free some headroom too, so a full engine does not sort every value
+		// under the lock for each new one.
+		for _, victim := range idle(all...) {
+			if e.entries+items <= maxEntries-maxEntries/16 && e.bytes+size <= maxHeldBytes-maxHeldBytes/16 {
+				break
+			}
+			e.drop(victim.held, victim.item)
+		}
+	}
+	if e.entries+items > maxEntries || e.bytes+size > maxHeldBytes {
+		return errCapacity
+	}
+	return nil
+}
+
+func (e *Engine) snapshot(scope [32]byte) []*entry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	held := e.scopes[scope]
+	if held == nil {
+		return nil
+	}
+	now := e.now()
+	out := make([]*entry, 0, len(held.values))
+	for _, item := range held.values {
+		if now.Sub(item.used) < mappingTTL {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// knownIndex finds a scope's earlier values in one pass over the text. Every
+// match must be a whole word, so only positions after a non-word rune are tried.
+// Values share a bucket by their first two bytes and a group by length, so
+// each position costs one lookup per distinct length, longest first.
+type knownIndex struct {
+	pairs  map[uint16][]knownGroup
+	single [256]*entry
+	size   int
+}
+
+type knownGroup struct {
+	length int
+	values map[string]*entry
+}
+
+func (k *knownIndex) add(item *entry) {
+	if len(item.value) == 1 {
+		if k.single[item.value[0]] == nil {
+			k.single[item.value[0]] = item
+			k.size++
+		}
+		return
+	}
+	if k.pairs == nil {
+		k.pairs = make(map[uint16][]knownGroup)
+	}
+	key := uint16(item.value[0])<<8 | uint16(item.value[1])
+	groups := k.pairs[key]
+	i, found := slices.BinarySearchFunc(groups, len(item.value), func(g knownGroup, length int) int { return length - g.length })
+	if !found {
+		groups = slices.Insert(groups, i, knownGroup{length: len(item.value), values: make(map[string]*entry)})
+		k.pairs[key] = groups
+	}
+	if groups[i].values[item.value] == nil {
+		groups[i].values[item.value] = item
+		k.size++
+	}
+}
+
+func (k *knownIndex) find(text string) []match {
+	if k.size == 0 {
+		return nil
+	}
+	var out []match
+	afterWord := false
+	for i := 0; i < len(text); {
+		if !afterWord {
+			if item := k.at(text, i); item != nil {
+				end := i + len(item.value)
+				out = append(out, match{i, end, item.kind, item.category})
+				if len(out) > maxMatches {
+					return out
+				}
+				r, _ := utf8.DecodeLastRuneInString(item.value)
+				afterWord, i = wordRune(r), end
+				continue
+			}
+		}
+		r, size := rune(text[i]), 1
+		if r >= utf8.RuneSelf {
+			r, size = utf8.DecodeRuneInString(text[i:])
+		}
+		afterWord = wordRune(r)
+		i += size
+	}
+	return out
+}
+
+func (k *knownIndex) at(text string, i int) *entry {
+	accept := func(item *entry) bool {
+		end := i + len(item.value)
+		return whole(text, i, end) && (item.kind != "PHONE" || phoneAt(text, i, end))
+	}
+	if i+1 < len(text) {
+		for _, g := range k.pairs[uint16(text[i])<<8|uint16(text[i+1])] {
+			if end := i + g.length; end <= len(text) {
+				if item := g.values[text[i:end]]; item != nil && accept(item) {
+					return item
+				}
+			}
+		}
+	}
+	if item := k.single[text[i]]; item != nil && accept(item) {
+		return item
+	}
+	return nil
+}
+
+func (s *Session) knownMatches(text string) []match {
+	s.indexOnce.Do(s.buildIndex)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.known.find(text)
+}
+
+func (s *Session) buildIndex() {
+	for _, item := range s.engine.snapshot(s.scope) {
+		s.index(item)
+	}
+}
+
+func (s *Session) learn(items []*entry) {
+	s.indexOnce.Do(s.buildIndex)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range items {
+		s.index(item)
+	}
+}
+
+// Only the current word and custom rules decide those matches; values from
+// disabled categories or now on the allow list are not masked again either.
+func (s *Session) index(item *entry) {
+	if item.category == "word" || item.category == "custom" || !s.policy.covers(item.category) || s.policy.allowed(item.value) {
+		return
+	}
+	s.known.add(item)
 }
 
 // RestoreText restores only placeholders owned by this authenticated scope.
@@ -335,57 +463,62 @@ func (s *Session) restore(text string, escaped bool) string {
 	if !strings.Contains(text, "{{CCLOAD_") {
 		return text
 	}
-	values := make(map[string]string)
-	for _, v := range s.snapshot() {
-		value := v.value
-		if escaped {
-			b, _ := json.Marshal(value)
-			value = string(b[1 : len(b)-1])
-		}
-		values[v.placeholder] = value
-	}
-	return placeholderPattern.ReplaceAllStringFunc(text, func(placeholder string) string {
-		if v, ok := values[placeholder]; ok {
-			return v
-		}
-		return placeholder
-	})
-}
-
-// signedDictionary is fixed for the request session. Final wire preparation
-// can mask the same body again after its unsigned fields discovered new values;
-// those discoveries must never change the vendor's signed content on a retry.
-func (s *Session) signedDictionary() []storedValue {
-	s.signedKnownOnce.Do(func() {
-		s.signedKnown = s.snapshot()
-		sort.Slice(s.signedKnown, func(i, j int) bool {
-			return len(s.signedKnown[i].value) > len(s.signedKnown[j].value)
-		})
-	})
-	return s.signedKnown
-}
-
-// remaskKnown reconstructs what the vendor signed without discovering any new
-// values or changing the dictionary. Longest values win; existing placeholders
-// are protected from custom words that happen to match part of their spelling.
-func remaskKnown(text string, known []storedValue) string {
-	if len(known) == 0 {
+	spans := placeholderPattern.FindAllStringIndex(text, -1)
+	values := s.engine.resolve(s.scope, text, spans)
+	if len(values) == 0 {
 		return text
 	}
-	pairs := make([]string, 0, len(known)*2)
-	for _, entry := range known {
-		pairs = append(pairs, entry.value, entry.placeholder)
-	}
-	replacer := strings.NewReplacer(pairs...)
 	var out strings.Builder
 	last := 0
-	for _, span := range placeholderPattern.FindAllStringIndex(text, -1) {
-		out.WriteString(replacer.Replace(text[last:span[0]]))
-		out.WriteString(text[span[0]:span[1]])
+	for _, span := range spans {
+		value, ok := values[text[span[0]:span[1]]]
+		if !ok {
+			continue
+		}
+		if escaped {
+			value = jsonQuote(value)
+			value = value[1 : len(value)-1]
+		}
+		out.WriteString(text[last:span[0]])
+		out.WriteString(value)
 		last = span[1]
 	}
-	out.WriteString(replacer.Replace(text[last:]))
+	out.WriteString(text[last:])
 	return out.String()
+}
+
+func (e *Engine) resolve(scope [32]byte, text string, spans [][]int) map[string]string {
+	if len(spans) == 0 {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	held := e.scopes[scope]
+	if held == nil {
+		return nil
+	}
+	now := e.now()
+	out := make(map[string]string)
+	for _, span := range spans {
+		placeholder := text[span[0]:span[1]]
+		if item := held.placeholders[placeholder]; item != nil && now.Sub(item.used) < mappingTTL {
+			item.used = now
+			out[placeholder] = item.value
+		}
+	}
+	if len(out) > 0 {
+		held.used = now
+	}
+	return out
+}
+
+// jsonQuote encodes s as a JSON string without HTML escaping.
+func jsonQuote(s string) string {
+	var b bytes.Buffer
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(s) // strings always encode
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // Hit is one distinct value that masking replaced.
@@ -400,19 +533,23 @@ type Hit struct {
 // Hits are distinct values in order of first appearance in the masked text.
 func Preview(config Config, text string) (string, []Hit, error) {
 	config.Enabled = true
-	s := NewEngine().Session("", config)
+	policy, err := NewPolicy(config)
+	if err != nil {
+		return "", nil, err
+	}
+	s := NewEngine().Session("", policy)
 	masked, err := s.MaskText(text)
 	if err != nil {
 		return "", nil, err
 	}
-	stored := make(map[string]storedValue)
-	for _, v := range s.snapshot() {
-		stored[v.placeholder] = v
+	stored := make(map[string]*entry)
+	for _, item := range s.engine.snapshot(s.scope) {
+		stored[item.placeholder] = item
 	}
 	hits := make([]Hit, 0, len(stored))
 	for _, placeholder := range placeholderPattern.FindAllString(masked, -1) {
-		if v, ok := stored[placeholder]; ok {
-			hits = append(hits, Hit{Kind: v.kind, Value: v.value, Placeholder: placeholder})
+		if item, ok := stored[placeholder]; ok {
+			hits = append(hits, Hit{Kind: item.kind, Value: item.value, Placeholder: placeholder})
 			delete(stored, placeholder)
 		}
 	}

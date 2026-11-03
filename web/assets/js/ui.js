@@ -2678,14 +2678,8 @@ window.WebAuth = window.WebAuth || {
   // 与 internal/privacy/engine.go 的占位符格式一致：{{CCLOAD_<KIND>_<16 位十六进制>}}
   const PRIVACY_PLACEHOLDER_RE = /\{\{CCLOAD_([A-Z][A-Z0-9_]{0,23})_[a-f0-9]{16}\}\}/g;
 
-  // 占位符只含 {}、大写字母、数字和下划线，转义后原样保留且不会跨越标签，
-  // 可直接在渲染后的 HTML 上包裹；被 SSE 分片拆开的占位符不再完整，不高亮。
-  function markPrivacyPlaceholders(html) {
-    return html.replace(PRIVACY_PLACEHOLDER_RE, '<mark class="privacy-placeholder">$&</mark>');
-  }
-
-  // 在已渲染的 DOM（如 Markdown 合并视图）中高亮占位符。只改文本节点，
-  // 链接地址等属性里的占位符保持原样；被语法高亮拆成多个节点的不再高亮。
+  // 前端唯一的占位符高亮入口：内容先按文本/DOM 渲染，再只改其中的文本节点，
+  // 链接地址等属性里的占位符保持原样；被语法高亮或 SSE 分片拆成多个节点的不再完整，不高亮。
   function highlightPrivacyPlaceholders(root) {
     if (!root || typeof document.createTreeWalker !== 'function') return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -2728,7 +2722,9 @@ window.WebAuth = window.WebAuth || {
     const el = typeof target === 'string' ? document.getElementById(target) : target;
     if (!el) return;
     el._rawText = text || '';
-    el.innerHTML = markPrivacyPlaceholders(renderUpstreamCodeBlock(text || '', mode));
+    el.innerHTML = renderUpstreamCodeBlock(text || '', mode);
+    // 隐私脱敏默认关闭，大多数日志不含占位符；先查原文，免得遍历大段代码块的全部文本节点。
+    if ((text || '').search(PRIVACY_PLACEHOLDER_RE) !== -1) highlightPrivacyPlaceholders(el);
   }
 
   // 全局折叠按钮事件委托（仅绑定一次）。

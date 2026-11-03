@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
@@ -922,8 +923,8 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 func TestPrivacySettingsHotReloadAndValidation(t *testing.T) {
 	t.Parallel()
 	server := newInMemoryServer(t)
-	if cfg := server.privacyConfig.Load(); cfg == nil || cfg.Enabled {
-		t.Fatalf("privacy must default off: %+v", cfg)
+	if server.privacyPolicy.Load().Enabled() {
+		t.Fatal("privacy must default off")
 	}
 	restarted := make(chan struct{}, 1)
 	server.SetRestartFunc(func() { restarted <- struct{}{} })
@@ -932,8 +933,9 @@ func TestPrivacySettingsHotReloadAndValidation(t *testing.T) {
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "重启") {
 		t.Fatalf("save: status=%d body=%s", w.Code, w.Body.String())
 	}
-	if cfg := server.privacyConfig.Load(); cfg == nil || !cfg.Enabled || !cfg.Personal || len(cfg.Words) != 1 {
-		t.Fatalf("policy not applied: %+v", cfg)
+	masked, err := privacy.NewEngine().Session("", server.privacyPolicy.Load()).MaskText("private-project mail alice@company.com")
+	if err != nil || strings.Contains(masked, "private-project") || strings.Contains(masked, "alice@company.com") {
+		t.Fatalf("policy not applied: %q, %v", masked, err)
 	}
 	for _, invalid := range []string{`null`, `{"enabled":null}`, `{"rules":[{"kind":"CUSTOM","regex":"("}]}`, `{"kinds":{"unknown":true}}`} {
 		w = batchUpdateSetting(t, server, privacySettingKey, invalid)
@@ -941,12 +943,12 @@ func TestPrivacySettingsHotReloadAndValidation(t *testing.T) {
 			t.Fatalf("invalid policy accepted: status=%d body=%s", w.Code, w.Body.String())
 		}
 		setting, err := server.store.GetSetting(t.Context(), privacySettingKey)
-		if err != nil || setting.Value != policy || !server.privacyConfig.Load().Enabled {
+		if err != nil || setting.Value != policy || !server.privacyPolicy.Load().Enabled() {
 			t.Fatalf("rejected update changed policy: %+v err=%v", setting, err)
 		}
 	}
 	w = batchUpdateSetting(t, server, privacySettingKey, "{}")
-	if w.Code != http.StatusOK || server.privacyConfig.Load().Enabled {
+	if w.Code != http.StatusOK || server.privacyPolicy.Load().Enabled() {
 		t.Fatalf("reset failed: status=%d body=%s", w.Code, w.Body.String())
 	}
 	assertNoRestart(t, restarted)
@@ -974,8 +976,8 @@ func TestPrivacyRedactionPreview(t *testing.T) {
 	if want := "token " + resp.Data.Hits[0].Placeholder + " here"; resp.Data.Masked != want {
 		t.Fatalf("masked = %q, want %q", resp.Data.Masked, want)
 	}
-	if cfg := server.privacyConfig.Load(); cfg == nil || cfg.Enabled {
-		t.Fatalf("preview changed the live policy: %+v", cfg)
+	if server.privacyPolicy.Load().Enabled() {
+		t.Fatal("preview changed the live policy")
 	}
 
 	const secretRegex = "relay_[A-Z(" // invalid RE2; the error must not echo it

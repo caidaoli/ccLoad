@@ -2355,7 +2355,7 @@ window.I18N_LOCALES['en'] = {
   'settings.privacyRedaction.words_whole': 'Match whole words only',
   'settings.privacyRedaction.rules': 'Custom rules',
   'settings.privacyRedaction.addRule': '+ Add rule',
-  'settings.privacyRedaction.rulesHelp': 'Up to 32 rules. Types must start with an uppercase letter and contain only uppercase letters, digits and underscores, up to 24 characters. Fill either a prefix (3–64 characters) or an RE2 expression (up to 300 characters). The server validates expressions when saving.',
+  'settings.privacyRedaction.rulesHelp': 'Up to 32 rules. Types must start with an uppercase letter and contain only uppercase letters, digits and underscores, up to 24 characters; leave empty for CUSTOM. Fill either a prefix (3–64 characters) or an RE2 expression (up to 300 characters). The server validates expressions when you apply.',
   'settings.privacyRedaction.ruleMatchingHelp': 'Prefix rules match the prefix followed by at least 8 letters, digits, underscores or hyphens. Expressions replace the first participating capture group, or the entire match when there are no groups. Expressions must not match empty text.',
   'settings.privacyRedaction.ruleKind': 'Type (e.g. INTERNAL_KEY)',
   'settings.privacyRedaction.rulePrefix': 'Prefix',

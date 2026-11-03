@@ -552,6 +552,9 @@ let privacyTestSample = ''; // 只在编辑弹窗打开期间保留，不进入�
 let privacyTestSeq = 0;
 let privacyTestPreviousFocus = null;
 
+// 与服务端 privacy.ParseConfig 一致：类型去掉首尾空白，留空即 CUSTOM。调用方先确认是字符串或未填。
+const privacyRuleKind = kind => (kind ?? '').trim() || 'CUSTOM';
+
 function validatePrivacyRedaction(value) {
   const invalid = key => t('settings.privacyRedaction.' + key);
   const object = item => item && typeof item === 'object' && !Array.isArray(item);
@@ -568,12 +571,11 @@ function validatePrivacyRedaction(value) {
       || config[field].some(item => typeof item !== 'string' || !item.trim() || [...item].length > 512 || /[\r\n]/.test(item))) return invalid('invalidList');
   }
   if (!Array.isArray(config.rules) || config.rules.length > 32) return invalid('invalidRules');
+  const ruleFields = ['kind', 'prefix', 'regex'];
   for (const rule of config.rules) {
-    const kind = rule?.kind === undefined ? 'CUSTOM' : rule.kind;
-    if (!object(rule) || Object.keys(rule).some(key => !['kind', 'prefix', 'regex'].includes(key))
-      || typeof kind !== 'string' || !/^[A-Z][A-Z0-9_]{0,23}$/.test(kind)
-      || (rule.prefix !== undefined && typeof rule.prefix !== 'string')
-      || (rule.regex !== undefined && typeof rule.regex !== 'string')) return invalid('invalidRules');
+    if (!object(rule) || Object.keys(rule).some(key => !ruleFields.includes(key))
+      || ruleFields.some(key => rule[key] !== undefined && typeof rule[key] !== 'string')
+      || !/^[A-Z][A-Z0-9_]{0,23}$/.test(privacyRuleKind(rule.kind))) return invalid('invalidRules');
     const prefix = rule.prefix || '';
     const regex = rule.regex || '';
     if (Boolean(prefix) === Boolean(regex) || (prefix && ([...prefix].length < 3 || [...prefix].length > 64))
@@ -588,13 +590,13 @@ function parsePrivacyRedaction(value) {
     ...privacyRedactionDefaults, ...config,
     kinds: { ...privacyRedactionDefaults.kinds, ...config.kinds },
     words: [...(config.words || [])], allow: [...(config.allow || [])],
-    rules: (config.rules || []).map(rule => ({ ...rule, kind: rule.kind === undefined ? 'CUSTOM' : rule.kind }))
+    rules: (config.rules || []).map(rule => ({ ...rule, kind: privacyRuleKind(rule.kind) }))
   };
 }
 
 function formatPrivacyRedaction(config) {
   return JSON.stringify({ ...config, rules: config.rules.map(rule => {
-    const result = { kind: rule.kind };
+    const result = { kind: privacyRuleKind(rule.kind) };
     if (rule.prefix) result.prefix = rule.prefix;
     if (rule.regex) result.regex = rule.regex;
     return result;
@@ -663,7 +665,8 @@ function renderPrivacyRedactionEditor(value) {
 }
 
 // 测试弹窗叠在编辑弹窗之上，编辑弹窗此时 inert，草稿不会变化；每次打开按最新草稿重跑。
-// 样例在编辑弹窗打开期间保留；改样例或关闭测试弹窗让旧结果失效，迟到的响应按序号丢弃。
+// 样例只在编辑弹窗打开期间留在内存里，重开测试弹窗时回填；管理员会粘贴真实密钥，
+// 关闭测试弹窗即清空输入框与结果，隐藏的 DOM 不留副本。改样例或关闭让旧结果失效，迟到的响应按序号丢弃。
 function openPrivacyTestModal() {
   const modal = document.getElementById('privacyTestModal');
   const input = document.getElementById('privacyTestInput');
@@ -683,6 +686,8 @@ function closePrivacyTestModal() {
   const modal = document.getElementById('privacyTestModal');
   if (!modal) return;
   clearPrivacyRedactionTest();
+  const input = document.getElementById('privacyTestInput');
+  if (input) input.value = '';
   modal.classList.remove('show');
   modal.setAttribute('aria-hidden', 'true');
   document.getElementById('privacyRedactionModal')?.removeAttribute('inert');
@@ -696,7 +701,7 @@ function clearPrivacyRedactionTest() {
   const result = document.getElementById('privacyTestResult');
   if (result) {
     result.hidden = true;
-    result.innerHTML = '';
+    result.replaceChildren();
   }
 }
 
@@ -722,13 +727,26 @@ function renderPrivacyRedactionTestResult({ masked = '', hits = [] }) {
     return;
   }
   setPrivacyRedactionTestStatus(t('settings.privacyRedaction.testHits', { count: hits.length }));
-  // 占位符只含 {}、大写字母、数字、下划线和十六进制，转义前后相同，可直接在转义后的文本里定位。
-  let output = escapeHtml(masked);
-  for (const hit of hits) output = output.split(hit.placeholder).join(`<mark title="${escapeHtml(hit.value)}">${hit.placeholder}</mark>`);
-  result.innerHTML = `<pre class="privacy-redaction-test-output" tabindex="0" aria-label="${escapeHtml(t('settings.privacyRedaction.testOutput'))}">${output}</pre>
-    <ul class="privacy-redaction-test-hits" aria-label="${escapeHtml(t('settings.privacyRedaction.testHitList'))}">
-      ${hits.map(hit => `<li><span class="privacy-redaction-test-kind">${escapeHtml(hit.kind)}</span><code>${escapeHtml(hit.value)}</code></li>`).join('')}
-    </ul>`;
+  const element = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const output = element('pre', 'privacy-redaction-test-output', masked);
+  output.tabIndex = 0;
+  output.setAttribute('aria-label', t('settings.privacyRedaction.testOutput'));
+  window.highlightPrivacyPlaceholders(output);
+  const values = new Map(hits.map(hit => [hit.placeholder, hit.value]));
+  for (const mark of output.querySelectorAll('mark')) mark.title = values.get(mark.textContent) || '';
+  const list = element('ul', 'privacy-redaction-test-hits');
+  list.setAttribute('aria-label', t('settings.privacyRedaction.testHitList'));
+  for (const hit of hits) {
+    const item = element('li');
+    item.append(element('span', 'privacy-redaction-test-kind', hit.kind), element('code', '', hit.value));
+    list.append(item);
+  }
+  result.replaceChildren(output, list);
   result.hidden = false;
 }
 
@@ -803,11 +821,39 @@ function closePrivacyRedactionModal() {
   privacyTestSample = '';
 }
 
-function applyPrivacyRedaction() {
-  if (!privacyRedactionDraft || privacyRedactionLocked) return;
-  const value = formatPrivacyRedaction(privacyRedactionDraft);
+// 本地校验通过后再交服务端按保存时的同一 ParseConfig 校验（RE2 语法、匹配空串等前端无法复现的规则），
+// 失败时弹窗保持打开并显示服务端原因，避免拖到“保存所有更改”才收到不指明规则的批量 400。
+async function applyPrivacyRedaction() {
+  const draft = privacyRedactionDraft;
+  if (!draft || privacyRedactionLocked) return;
+  const value = formatPrivacyRedaction(draft);
   const error = validatePrivacyRedaction(value);
   if (error) { showPrivacyRedactionError(error); return; }
+  const applyButton = document.getElementById('privacyRedactionModal')?.querySelector('[data-action="apply-privacy-redaction"]');
+  if (applyButton?.disabled) return;
+  if (applyButton) {
+    applyButton.disabled = true;
+    applyButton.setAttribute('aria-busy', 'true');
+  }
+  showPrivacyRedactionError(null);
+  // 请求期间关闭、重置或继续编辑过草稿，结果都已过期，不再应用也不报错。
+  const current = () => privacyRedactionDraft === draft && formatPrivacyRedaction(draft) === value;
+  try {
+    await fetchDataWithAuth('/admin/privacy-redaction/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: value, text: '' })
+    });
+  } catch (err) {
+    if (current()) showPrivacyRedactionError(err.message);
+    return;
+  } finally {
+    if (applyButton) {
+      applyButton.disabled = false;
+      applyButton.removeAttribute('aria-busy');
+    }
+  }
+  if (!current()) return;
   document.getElementById('privacy_redaction').value = value;
   setSettingInvalid('privacy_redaction', false);
   updateDirtyStatus();

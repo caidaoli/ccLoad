@@ -2355,7 +2355,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.privacyRedaction.words_whole': '词表仅匹配完整单词',
   'settings.privacyRedaction.rules': '自定义规则',
   'settings.privacyRedaction.addRule': '+ 添加规则',
-  'settings.privacyRedaction.rulesHelp': '最多 32 条。类型使用大写字母开头，仅含大写字母、数字和下划线，最长 24 个字符。每条仅填前缀或正则：前缀 3～64 个字符，正则最长 300 个字符。正则采用 RE2 语法，保存时由服务端校验。',
+  'settings.privacyRedaction.rulesHelp': '最多 32 条。类型使用大写字母开头，仅含大写字母、数字和下划线，最长 24 个字符，留空即 CUSTOM。每条仅填前缀或正则：前缀 3～64 个字符，正则最长 300 个字符。正则采用 RE2 语法，应用时由服务端校验。',
   'settings.privacyRedaction.ruleMatchingHelp': '前缀规则匹配前缀及其后至少 8 位字母、数字、下划线或连字符。正则含捕获组时仅替换第一个实际命中的捕获组，否则替换整个匹配；不能匹配空串。',
   'settings.privacyRedaction.ruleKind': '类型（如 INTERNAL_KEY）',
   'settings.privacyRedaction.rulePrefix': '前缀',

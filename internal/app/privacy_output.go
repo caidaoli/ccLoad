@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -149,8 +150,12 @@ func (w *privacyResponseWriter) Finish() error {
 		if len(w.pending) == 0 {
 			return nil
 		}
-		var restored []byte
-		restored, w.err = w.session.RestoreJSON(w.pending)
+		restored, err := w.session.RestoreJSON(w.pending)
+		if err != nil && !json.Valid(w.pending) {
+			// Plain-text and HTML error bodies are not JSON documents.
+			restored, err = []byte(w.session.RestoreText(string(w.pending))), nil
+		}
+		w.err = err
 		if w.err == nil {
 			w.err = w.writeOutput(restored)
 		}
@@ -237,9 +242,10 @@ func (w *privacyResponseWriter) addFrame(wire []byte) error {
 	return w.drainFrames()
 }
 
-func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gjson.Result, channel string, arguments bool) {
+// collectField reports whether the frame continues channel with new text.
+func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gjson.Result, channel string, arguments bool) bool {
 	if value.Type != gjson.String {
-		return
+		return false
 	}
 	field := &privacyOutputField{frame: frame, index: value.Index, raw: value.Raw, value: value.String()}
 	frame.fields = append(frame.fields, field)
@@ -249,6 +255,7 @@ func (w *privacyResponseWriter) collectField(frame *privacyOutputFrame, value gj
 		w.channels[channel] = state
 	}
 	state.feed(field, w.session)
+	return field.value != ""
 }
 
 func privacyOutputIndex(value gjson.Result, fallback int) string {
@@ -258,29 +265,50 @@ func privacyOutputIndex(value gjson.Result, fallback int) string {
 	return strconv.Itoa(fallback)
 }
 
+// Signed reasoning (Anthropic thinking, Gemini thought parts) keeps its
+// placeholders, matching RestoreJSON, so it is not collected.
 func (w *privacyResponseWriter) collectFields(frame *privacyOutputFrame, root gjson.Result) {
 	for index, choice := range root.Get("choices").Array() {
 		channel := "chat/" + privacyOutputIndex(choice.Get("index"), index) + "/"
 		delta := choice.Get("delta")
+		var active []string
+		collect := func(value gjson.Result, key string, arguments bool) {
+			if w.collectField(frame, value, channel+key, arguments) {
+				active = append(active, channel+key)
+			}
+		}
 		for _, key := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
-			w.collectField(frame, delta.Get(key), channel+key, false)
+			collect(delta.Get(key), key, false)
 		}
 		for partIndex, part := range delta.Get("content").Array() {
-			w.collectField(frame, part.Get("text"), channel+"content/"+strconv.Itoa(partIndex), false)
+			collect(part.Get("text"), "content/"+strconv.Itoa(partIndex), false)
 		}
 		for toolIndex, tool := range delta.Get("tool_calls").Array() {
-			key := channel + "tool/" + privacyOutputIndex(tool.Get("index"), toolIndex)
-			w.collectField(frame, tool.Get("function.arguments"), key, true)
+			collect(tool.Get("function.arguments"), "tool/"+privacyOutputIndex(tool.Get("index"), toolIndex), true)
 		}
-		w.collectField(frame, delta.Get("function_call.arguments"), channel+"function", true)
+		collect(delta.Get("function_call.arguments"), "function", true)
+		if len(active) > 0 {
+			w.releaseSwitchedChannels(channel, active)
+		}
+	}
+	for candidateIndex, candidate := range root.Get("candidates").Array() {
+		// Clients concatenate a candidate's answer parts, so a placeholder may
+		// continue in the next part; a thought or call part ends the text.
+		channel := "gemini/" + privacyOutputIndex(candidate.Get("index"), candidateIndex) + "/text"
+		for _, part := range candidate.Get("content.parts").Array() {
+			if text := part.Get("text"); text.Type == gjson.String && !part.Get("thought").Bool() {
+				w.collectField(frame, text, channel, false)
+			} else {
+				w.releaseChannels(channel)
+			}
+		}
 	}
 	index := privacyOutputIndex(root.Get("index"), 0)
 	switch root.Get("type").String() {
 	case "content_block_start":
 		w.collectField(frame, root.Get("content_block.text"), "anthropic/"+index+"/text", false)
-		w.collectField(frame, root.Get("content_block.thinking"), "anthropic/"+index+"/thinking", false)
 	case "content_block_delta":
-		for _, key := range []string{"text", "thinking", "partial_json"} {
+		for _, key := range []string{"text", "partial_json"} {
 			w.collectField(frame, root.Get("delta."+key), "anthropic/"+index+"/"+key, key == "partial_json")
 		}
 	case "response.output_text.delta", "response.refusal.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
@@ -291,13 +319,6 @@ func (w *privacyResponseWriter) collectFields(frame *privacyOutputFrame, root gj
 		}
 		channel := "responses/" + item + "/" + root.Get("content_index").String() + "/" + root.Get("summary_index").String() + "/" + event
 		w.collectField(frame, root.Get("delta"), channel, event == "response.function_call_arguments.delta")
-	}
-	for candidateIndex, candidate := range root.Get("candidates").Array() {
-		channel := "gemini/" + privacyOutputIndex(candidate.Get("index"), candidateIndex) + "/"
-		for partIndex, part := range candidate.Get("content.parts").Array() {
-			key := channel + strconv.Itoa(partIndex) + "/" + strconv.FormatBool(part.Get("thought").Bool())
-			w.collectField(frame, part.Get("text"), key, false)
-		}
 	}
 }
 
@@ -326,6 +347,19 @@ func (w *privacyResponseWriter) releaseTerminalChannels(event string, root gjson
 			item = root.Get("item.id").String()
 		}
 		w.releaseChannels("responses/" + item + "/")
+	}
+}
+
+// releaseSwitchedChannels ends a choice's text channels once the model writes
+// elsewhere: a held placeholder prefix there can no longer be completed, and
+// would otherwise delay every later event until the choice finishes. Tool
+// arguments end with their call.
+func (w *privacyResponseWriter) releaseSwitchedChannels(prefix string, active []string) {
+	for key, channel := range w.channels {
+		if strings.HasPrefix(key, prefix) && !channel.arguments && !slices.Contains(active, key) {
+			channel.release()
+			delete(w.channels, key)
+		}
 	}
 }
 

@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -20,7 +23,7 @@ type Rule struct {
 	Regex  string `json:"regex,omitempty"`
 }
 
-// Config is a request's immutable masking policy. Personal must be enabled for
+// Config is the user-editable masking configuration; NewPolicy compiles it. Personal must be enabled for
 // any of Kinds to take effect. Words and Rules are independent of Secrets and Personal.
 type Config struct {
 	Enabled      bool            `json:"enabled"`
@@ -87,8 +90,9 @@ func ParseConfig(raw string) (Config, error) {
 			if err := json.Unmarshal(value, &kinds); err != nil {
 				return Config{}, errors.New("privacy kinds must be an object of booleans")
 			}
-			for kind, v := range kinds {
-				if _, ok := c.Kinds[kind]; !ok || string(v) != "true" && string(v) != "false" {
+			// Unknown categories are rejected by validate.
+			for _, v := range kinds {
+				if string(v) != "true" && string(v) != "false" {
 					return Config{}, errors.New("privacy kinds contain an unknown category or non-boolean value")
 				}
 			}
@@ -102,16 +106,28 @@ func ParseConfig(raw string) (Config, error) {
 	if err := d.Decode(new(any)); err != io.EOF {
 		return Config{}, errors.New("privacy configuration must contain one JSON object")
 	}
-	if len(c.Words) > 256 || len(c.Allow) > 256 || len(c.Rules) > 32 {
-		return Config{}, errors.New("privacy configuration has too many words, allow entries, or rules")
+	if err := c.validate(); err != nil {
+		return Config{}, err
 	}
-	for _, list := range []struct {
-		values []string
-		limit  int
-	}{{c.Words, 512}, {c.Allow, 512}} {
-		for _, v := range list.values {
-			if strings.TrimSpace(v) == "" || strings.ContainsAny(v, "\r\n") || utf8.RuneCountInString(v) > list.limit {
-				return Config{}, errors.New("privacy word or allow entry is empty, multiline, or too long")
+	return c, nil
+}
+
+// validate normalizes rule kinds and enforces the limits shared by stored and
+// programmatic configurations. Callers must pass a private copy.
+func (c *Config) validate() error {
+	defaults := DefaultConfig().Kinds
+	for kind := range c.Kinds {
+		if _, ok := defaults[kind]; !ok {
+			return errors.New("privacy kinds contain an unknown category or non-boolean value")
+		}
+	}
+	if len(c.Words) > 256 || len(c.Allow) > 256 || len(c.Rules) > 32 {
+		return errors.New("privacy configuration has too many words, allow entries, or rules")
+	}
+	for _, list := range [][]string{c.Words, c.Allow} {
+		for _, v := range list {
+			if strings.TrimSpace(v) == "" || strings.ContainsAny(v, "\r\n") || utf8.RuneCountInString(v) > 512 {
+				return errors.New("privacy word or allow entry is empty, multiline, or too long")
 			}
 		}
 	}
@@ -123,14 +139,22 @@ func ParseConfig(raw string) (Config, error) {
 		}
 		if !kindPattern.MatchString(r.Kind) || (r.Prefix == "") == (r.Regex == "") ||
 			r.Prefix != "" && (utf8.RuneCountInString(r.Prefix) < 3 || utf8.RuneCountInString(r.Prefix) > 64) || utf8.RuneCountInString(r.Regex) > 300 {
-			return Config{}, errors.New("invalid privacy rule kind, prefix, or pattern")
+			return fmt.Errorf("privacy rule %d has an invalid kind, prefix, or pattern", i+1)
 		}
 		re, err := compileRule(*r)
 		if err != nil || re.MatchString("") {
-			return Config{}, errors.New("privacy rule has an invalid or empty-matching regular expression")
+			return fmt.Errorf("privacy rule %d has an invalid or empty-matching regular expression", i+1)
 		}
 	}
-	return c, nil
+	return nil
+}
+
+func (c Config) clone() Config {
+	c.Kinds = maps.Clone(c.Kinds)
+	c.Words = slices.Clone(c.Words)
+	c.Rules = slices.Clone(c.Rules)
+	c.Allow = slices.Clone(c.Allow)
+	return c
 }
 
 func compileRule(r Rule) (*regexp.Regexp, error) {

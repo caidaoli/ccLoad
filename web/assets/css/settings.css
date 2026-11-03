@@ -219,13 +219,6 @@
   overflow-wrap: anywhere;
 }
 
-.privacy-redaction-test-output mark {
-  padding: 1px 3px;
-  border-radius: 4px;
-  background: var(--primary-100);
-  color: var(--primary-700);
-}
-
 .privacy-redaction-test-hits {
   display: grid;
   gap: 4px;

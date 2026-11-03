@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -29,22 +28,30 @@ func withPrivacySession(ctx context.Context, session *privacy.Session) context.C
 	return context.WithValue(ctx, privacyContextKey{}, session)
 }
 
-// A request keeps its configuration snapshot through retries and protocol changes.
+func parsePrivacyPolicy(raw string) (*privacy.Policy, error) {
+	config, err := privacy.ParseConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	return privacy.NewPolicy(config)
+}
+
+// A request keeps its policy through retries and protocol changes.
 // Token hashes isolate reversible mappings between gateway users.
 func (s *Server) privacySession(c *gin.Context) *privacy.Session {
-	cfg := s.privacyConfig.Load()
-	if cfg == nil || s.privacyEngine == nil {
+	policy := s.privacyPolicy.Load()
+	if policy == nil || s.privacyEngine == nil {
 		return nil
 	}
 	scope := c.GetString("token_hash")
-	if !cfg.Enabled && (scope == "" || !s.privacyEngine.HasMappings(scope)) {
+	if !policy.Enabled() && (scope == "" || !s.privacyEngine.HasMappings(scope)) {
 		return nil
 	}
 	if scope == "" {
 		// No authenticated identity must never share a reversible dictionary.
-		return privacy.NewEngine().Session("", *cfg)
+		return privacy.NewEngine().Session("", policy)
 	}
-	return s.privacyEngine.Session(scope, *cfg)
+	return s.privacyEngine.Session(scope, policy)
 }
 
 func maskPrivacyBody(session *privacy.Session, body []byte, contentType string) ([]byte, error) {
@@ -52,9 +59,7 @@ func maskPrivacyBody(session *privacy.Session, body []byte, contentType string) 
 		return body, nil
 	}
 	if !session.Enabled() {
-		if json.Valid(body) {
-			return session.MaskJSON(body)
-		}
+		// Disabled sessions only restore replies; requests pass through as sent.
 		return body, nil
 	}
 	mediaType, params, err := mime.ParseMediaType(contentType)
