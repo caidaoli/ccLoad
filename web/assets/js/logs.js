@@ -615,7 +615,7 @@ function renderLogPrivacyBadge(entry) {
     .filter(([, count]) => count > 0);
   const total = groups.reduce((sum, [, count]) => sum + count, 0);
   const title = t('logs.privacyMaskedTitle', {groups: groups.map(([label, count]) => `${label} ${count}`).join(' · ')});
-  return `<span class="log-privacy-badge" title="${escapeHtml(title)}">🛡 ${total}</span>`;
+  return `<span class="log-privacy-badge" title="${escapeHtml(title)}">🛡️ ${total}</span>`;
 }
 
 function canInspectDebugLog(entry) {

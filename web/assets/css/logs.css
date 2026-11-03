@@ -500,14 +500,13 @@
 
     .log-privacy-badge {
       color: #6d28d9;
-      background: #ede9fe;
+      box-shadow: none;
       pointer-events: auto;
       cursor: help;
     }
 
     html[data-resolved-theme="dark"] .log-privacy-badge {
       color: #c4b5fd;
-      background: rgba(139, 92, 246, 0.2);
     }
 
     .logs-table .logs-col-message {
