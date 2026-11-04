@@ -51,7 +51,6 @@ var codexHTTPForwardHeaders = []string{
 	"X-OpenAI-Memgen-Request",
 	codexResponsesLiteHeader,
 	"User-Agent",
-	"Session_id",
 	"Session-Id",
 	"Thread-Id",
 	"Originator",
@@ -764,7 +763,7 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, bod
 	applyCodexClientIdentity(req.Header)
 	// OAuth 缺会话头时按 CPA 跟随最终 prompt_cache_key：原生 WS 握手头参与连接复用，
 	// 逐次随机会让同一会话每轮重新握手并全量回放。中转渠道不提升，见 upstream.md。
-	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
+	if cfg.UsesCodexOAuth() && req.Header.Get("Session-Id") == "" {
 		sessionID := readCodexPromptCacheKey(body)
 		if sessionID == "" {
 			sessionID = util.NewUUIDv4()

@@ -2795,7 +2795,7 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 			t.Errorf("Accept-Encoding = %q, want none like the official Codex client", got)
 		}
 		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" ||
-			(r.Header.Get("Session_id") == "" && r.Header.Get("Session-Id") == "") {
+			r.Header.Get("Session-Id") == "" {
 			t.Errorf("incomplete Codex OAuth headers: %v", r.Header)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")

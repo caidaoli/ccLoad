@@ -59,7 +59,6 @@ var codexWebsocketForwardHeaders = []string{
 	"Version",
 	"User-Agent",
 	"OpenAI-Beta",
-	"Session_id",
 	"Session-Id",
 	"Thread-Id",
 	"Originator",

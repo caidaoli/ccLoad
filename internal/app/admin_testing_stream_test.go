@@ -1672,7 +1672,7 @@ func TestHandleChannelChat_CodexOAuthWithoutAPIKeyOrSSEContentType(t *testing.T)
 			t.Errorf("ChatGPT-Account-ID = %q", got)
 		}
 		if r.Header.Get("X-Api-Key") != "" || r.Header.Get("Originator") != "codex-tui" ||
-			(r.Header.Get("Session_id") == "" && r.Header.Get("Session-Id") == "") {
+			r.Header.Get("Session-Id") == "" {
 			t.Errorf("incomplete Codex OAuth stream headers: %v", r.Header)
 		}
 		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")

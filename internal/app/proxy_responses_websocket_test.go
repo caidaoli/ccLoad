@@ -3964,8 +3964,8 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 				if got := request.headers.Get("Session-Id"); got != "" {
 					t.Errorf("independent websocket request %d acquired Session-Id=%q", index+1, got)
 				}
-				if got, want := request.headers.Get("Session_id"), tt.extraHeaders.Get("Session_id"); got != want {
-					t.Errorf("independent websocket request %d Session_id=%q, want %q", index+1, got, want)
+				if got := request.headers.Get("Session_id"); got != "" {
+					t.Errorf("independent websocket request %d forwarded legacy Session_id=%q", index+1, got)
 				}
 				for key, want := range tt.bodyHint {
 					if got := request.body[key]; got != want {

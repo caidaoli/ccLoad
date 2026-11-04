@@ -351,7 +351,8 @@ func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *t
 		[]byte(`{"prompt_cache_key":"client-supplied","model":"gpt-5-codex"}`),
 		http.Header{
 			"Content-Type": []string{"application/json"},
-			"Session_id":   []string{"client-session"},
+			"Session-Id":   []string{"client-session"},
+			"Session_id":   []string{"legacy-session"},
 		},
 		"",
 		"/v1/responses",
@@ -361,8 +362,12 @@ func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *t
 		t.Fatalf("buildProxyRequest failed: %v", err)
 	}
 
-	if got := req.Header.Get("Session_id"); got != "client-session" {
-		t.Fatalf("expected client Session_id preserved, got %q", got)
+	if got := req.Header.Get("Session-Id"); got != "client-session" {
+		t.Fatalf("expected client Session-Id preserved, got %q", got)
+	}
+	// 官方 Codex 只发 session-id/thread-id；下划线旧头不转发。
+	if got := req.Header.Get("Session_id"); got != "" {
+		t.Fatalf("legacy Session_id forwarded: %q", got)
 	}
 }
 
