@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	stripMissingRequiredInputStrategy    = "strip_missing_required_input"
-	stripMissingStoredInputItemStrategy  = "strip_missing_stored_input_item"
-	stripUnknownInputParameterStrategy   = "strip_unknown_input_parameter"
-	responsesMissingStoredItemRetryLimit = 1
+	stripMissingRequiredInputStrategy     = "strip_missing_required_input"
+	stripMissingStoredInputItemStrategy   = "strip_missing_stored_input_item"
+	stripUnknownInputParameterStrategy    = "strip_unknown_input_parameter"
+	stripResponsesResourceItemIDsStrategy = "strip_responses_resource_item_ids"
+	responsesMissingStoredItemRetryLimit  = 1
 )
 
 // responsesRetryBodyForMissingRequiredParameter 在上游 HTTP 400 且
@@ -202,7 +203,7 @@ func responsesBodyWithoutInputIndex(body []byte, index int) ([]byte, bool) {
 // （store=false 的典型 404，也可能落在 SSE/WS 的 HTTP 200 错误事件里），
 // 仅当该项没有有效加密内容时，一次清理所有带 ID 的不可移植 reasoning，供同渠道重试。
 // 有效加密 reasoning 必须保留。assistant message 和工具项的
-// id 是完整 replay 的 wire contract，不能删除。响应已提交则不能换 body。
+// id 在此策略中保持原样；跨资源拒绝由独立策略处理。响应已提交则不能换 body。
 func responsesRetryBodyForMissingStoredInputItem(
 	plan protocol.TransformPlan,
 	res *fwResult,
@@ -242,6 +243,62 @@ func isNonPortableResponsesReasoning(item gjson.Result) bool {
 	return item.Get("type").String() == "reasoning" && id.Type == gjson.String &&
 		strings.TrimSpace(id.String()) != "" &&
 		(encrypted.Type != gjson.String || strings.TrimSpace(encrypted.String()) == "")
+}
+
+func shouldRetryResponsesForeignResource(upstreamProtocol protocol.Protocol, res *fwResult) bool {
+	if upstreamProtocol != protocol.Codex || res == nil || res.ResponseCommitted {
+		return false
+	}
+	body, status := forwardResultErrorPayload(res)
+	return status == http.StatusBadRequest && isResponsesForeignResourceError(body)
+}
+
+func isResponsesForeignResourceError(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	message := codexErrorMessage(gjson.ParseBytes(body))
+	// Some relays redact "Azure" as "***" while retaining the resource error.
+	return strings.Contains(message, "the requested item was created under a different ") &&
+		strings.Contains(message, "openai resource")
+}
+
+func responsesRetryBodyForForeignResource(
+	upstreamProtocol protocol.Protocol,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if !shouldRetryResponsesForeignResource(upstreamProtocol, res) {
+		return nil, "", false
+	}
+	input := gjson.GetBytes(plan.TranslatedBody, "input")
+	if !input.IsArray() {
+		return nil, "", false
+	}
+	body := plan.TranslatedBody
+	var ranges [][2]int
+	for _, item := range input.Array() {
+		// These replay items carry their content independently of the optional
+		// resource ID. References, reasoning and hosted-tool state keep their IDs.
+		switch item.Get("type").String() {
+		case "message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output":
+		default:
+			continue
+		}
+		id := item.Get("id")
+		if !id.Exists() {
+			continue
+		}
+		start, end, ok := jsonObjectMemberDeletionRange(body, id.Index, len(id.Raw), "id")
+		if !ok {
+			return nil, "", false
+		}
+		ranges = append(ranges, [2]int{start, end})
+	}
+	if len(ranges) == 0 {
+		return nil, "", false
+	}
+	return deleteJSONRanges(body, ranges), stripResponsesResourceItemIDsStrategy, true
 }
 
 func forwardResultErrorPayload(res *fwResult) ([]byte, int) {

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -6894,6 +6895,148 @@ func TestNativeCodexWebsocketInvalidEncryptedContentContinuationReplaysTranscrip
 				t.Fatalf("completion=%#v handshakes=%d, want recovered response on a new connection", completed, handshakes.Load())
 			}
 		})
+	}
+}
+
+func TestNativeCodexWebsocketForeignResourceContinuationReplaysTranscript(t *testing.T) {
+	t.Parallel()
+	const firstResponseID = "resp-foreign-resource-first"
+	const recoveredResponseID = "resp-foreign-resource-recovered"
+	firstInput := map[string]any{
+		"type": "message", "id": "msg_foreign_original", "role": "user", "content": "original task", "status": "completed",
+	}
+	functionCall := map[string]any{
+		"type": "function_call", "id": "fc_foreign_history", "call_id": "call_history",
+		"name": "keep_history", "arguments": `{"value":42}`, "status": "completed",
+	}
+	continuation := []any{
+		map[string]any{
+			"type": "function_call_output", "id": "fco_foreign_result", "call_id": "call_history",
+			"output": "42", "status": "completed",
+		},
+		map[string]any{
+			"type": "message", "id": "msg_foreign_continue", "role": "user", "content": "explain the result", "status": "completed",
+		},
+	}
+	requests := make(chan []byte, 3)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade foreign-resource websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Errorf("set foreign-resource upstream deadline: %v", err)
+			return
+		}
+		readRequest := func() bool {
+			_, body, err := conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read foreign-resource request: %v", err)
+				return false
+			}
+			requests <- bytes.Clone(body)
+			return true
+		}
+		connection := handshakes.Add(1)
+		if !readRequest() {
+			return
+		}
+		if connection == 1 {
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed", "response": map[string]any{
+					"id": firstResponseID, "output": []any{functionCall},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				t.Errorf("complete foreign-resource first turn: %v", err)
+				return
+			}
+			if readRequest() {
+				_ = conn.WriteJSON(map[string]any{
+					"type": "error", "status": http.StatusBadRequest,
+					"error": map[string]any{
+						"type":    "invalid_request_error",
+						"message": "The requested item was created under a different Azure OpenAI resource.",
+					},
+				})
+			}
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed", "response": map[string]any{
+				"id": recoveredResponseID, "output": []any{},
+				"usage": map[string]any{"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "foreign-resource-continuation", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+		oauthCredential:    codexProxyTestCredential(t, "at-foreign-resource", "rt-foreign-resource", "account-foreign-resource"),
+		customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionRemove, Path: "tools.0"}}},
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "foreign-resource-continuation")
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set foreign-resource downstream deadline: %v", err)
+	}
+	tools := []any{
+		map[string]any{"type": "function", "name": "drop_by_rule", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}},
+		map[string]any{"type": "function", "name": "keep_history", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}},
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "input": []any{firstInput}, "tools": tools,
+	}); err != nil {
+		t.Fatalf("write foreign-resource first turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": firstResponseID, "input": continuation, "tools": tools,
+	}); err != nil {
+		t.Fatalf("write foreign-resource continuation: %v", err)
+	}
+	completed := readWebsocketUntilType(t, downstream, "response.completed")
+	response, _ := completed["response"].(map[string]any)
+	if response["id"] != recoveredResponseID || handshakes.Load() != 2 {
+		t.Fatalf("completion=%#v handshakes=%d, want recovered response on a new connection", completed, handshakes.Load())
+	}
+
+	first, incremental, replay := <-requests, <-requests, <-requests
+	for _, body := range [][]byte{first, incremental, replay} {
+		request := gjson.ParseBytes(body)
+		if request.Get("type").String() != "response.create" || request.Get("model").String() != "gpt-test" {
+			t.Fatalf("invalid foreign-resource response.create request: %s", body)
+		}
+		if request.Get("tools.#").Int() != 1 || request.Get("tools.0.name").String() != "keep_history" {
+			t.Fatalf("body rule was skipped or reapplied: %s", body)
+		}
+	}
+	if !reflect.DeepEqual(gjson.GetBytes(first, "input").Value(), []any{firstInput}) {
+		t.Fatalf("first request changed the original input: %s", first)
+	}
+	if gjson.GetBytes(incremental, "previous_response_id").String() != firstResponseID ||
+		!reflect.DeepEqual(gjson.GetBytes(incremental, "input").Value(), continuation) {
+		t.Fatalf("continuation was not sent incrementally before the resource rejection: %s", incremental)
+	}
+	if gjson.GetBytes(replay, "previous_response_id").Exists() {
+		t.Fatalf("new connection retained the previous response ID: %s", replay)
+	}
+	wantReplay := []any{
+		map[string]any{"type": "message", "role": "user", "content": "original task", "status": "completed"},
+		map[string]any{
+			"type": "function_call", "call_id": "call_history", "name": "keep_history",
+			"arguments": `{"value":42}`, "status": "completed",
+		},
+		map[string]any{"type": "function_call_output", "call_id": "call_history", "output": "42", "status": "completed"},
+		map[string]any{"type": "message", "role": "user", "content": "explain the result", "status": "completed"},
+	}
+	if !reflect.DeepEqual(gjson.GetBytes(replay, "input").Value(), wantReplay) {
+		t.Fatalf("resource repair changed more than item IDs or lost conversation history: %s", replay)
 	}
 }
 

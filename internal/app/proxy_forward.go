@@ -2228,7 +2228,7 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamP
 }
 
 // classifySSEErrorStatus 根据响应体内容判定 SSE 错误的状态码：
-// 上下文超限、加密内容失效 → 400；上游流中断 → 599；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
+// 上下文超限、加密内容失效、跨资源条目 → 400；上游流中断 → 599；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
 func classifySSEErrorStatus(body []byte) int {
 	// 加密内容失效与 HTTP 400 同属请求语义错误：按 400 才能触发同渠道修复重试，
 	// 冷却也只限当前模型，而不是冷却整个 Key。
@@ -2240,6 +2240,9 @@ func classifySSEErrorStatus(body []byte) int {
 	}
 	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
 		return status
+	}
+	if isResponsesForeignResourceError(body) {
+		return http.StatusBadRequest
 	}
 	// Google 风格错误帧（Gemini / Antigravity）用数字 error.code 携带 HTTP 状态，
 	// 以字符串 error.status 为结构特征；其他上游的数字 code 不可信，交给后面的分类。
@@ -3007,35 +3010,37 @@ func stripResponsesInputItemStatus(body []byte) []byte {
 		return body
 	}
 
-	type deletionRange struct {
-		start int
-		end   int
-	}
-	ranges := make([]deletionRange, 0, len(values))
-	deletedBytes := 0
+	ranges := make([][2]int, 0, len(values))
 	previousEnd := 0
 	for i, value := range values {
-		start, end, ok := jsonObjectMemberDeletionRange(body, statuses.Indexes[i], len(value.Raw))
+		start, end, ok := jsonObjectMemberDeletionRange(body, statuses.Indexes[i], len(value.Raw), "status")
 		if !ok || start < previousEnd {
 			return body
 		}
-		ranges = append(ranges, deletionRange{start: start, end: end})
-		deletedBytes += end - start
+		ranges = append(ranges, [2]int{start, end})
 		previousEnd = end
 	}
+	return deleteJSONRanges(body, ranges)
+}
 
-	stripped := make([]byte, 0, len(body)-deletedBytes)
-	previousEnd = 0
+// deleteJSONRanges 删除按升序排列、互不重叠的字节区间，一次复制剩余内容。
+func deleteJSONRanges(body []byte, ranges [][2]int) []byte {
+	deletedBytes := 0
 	for _, deletion := range ranges {
-		stripped = append(stripped, body[previousEnd:deletion.start]...)
-		previousEnd = deletion.end
+		deletedBytes += deletion[1] - deletion[0]
 	}
-	return append(stripped, body[previousEnd:]...)
+	updated := make([]byte, 0, len(body)-deletedBytes)
+	previousEnd := 0
+	for _, deletion := range ranges {
+		updated = append(updated, body[previousEnd:deletion[0]]...)
+		previousEnd = deletion[1]
+	}
+	return append(updated, body[previousEnd:]...)
 }
 
 // jsonObjectMemberDeletionRange 根据 gjson 给出的字段值位置，返回包含对象逗号的
 // 完整成员删除区间。调用方按升序一次复制未删除区间，避免反复移动整个 JSON body。
-func jsonObjectMemberDeletionRange(body []byte, valueStart, valueLength int) (int, int, bool) {
+func jsonObjectMemberDeletionRange(body []byte, valueStart, valueLength int, memberName string) (int, int, bool) {
 	valueEnd := valueStart + valueLength
 	if valueStart <= 0 || valueLength <= 0 || valueEnd > len(body) {
 		return 0, 0, false
@@ -3049,9 +3054,8 @@ func jsonObjectMemberDeletionRange(body []byte, valueStart, valueLength int) (in
 	if keyEnd < 0 || body[keyEnd] != '"' {
 		return 0, 0, false
 	}
-	const statusKey = `"status"`
-	keyStart := keyEnd + 1 - len(statusKey)
-	if keyStart < 0 || !bytes.Equal(body[keyStart:keyEnd+1], []byte(statusKey)) {
+	keyStart := bytes.LastIndexByte(body[:keyEnd], '"')
+	if keyStart < 0 || gjson.ParseBytes(body[keyStart:keyEnd+1]).String() != memberName {
 		return 0, 0, false
 	}
 
@@ -3451,12 +3455,13 @@ func (s *Server) forwardAttempt(
 			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
 			retryBodyRulesApplied = true
 		}
-		// An encrypted-content error closes the native WS connection. Repair the
+		// A state rejection closes the native WS connection. Repair the
 		// finalized full replay: the last send may only contain new input and a
 		// response ID scoped to the old socket. Keep other repairs on the actual
 		// wire body, since an input[N] error refers to its indexes.
 		if res != nil && res.UpstreamWebsocket && len(res.upstreamReplayBody) > 0 &&
-			shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, cfg, retrySourcePlan, res) {
+			(shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, cfg, retrySourcePlan, res) ||
+				shouldRetryResponsesForeignResource(upstreamProtocol, res)) {
 			retrySourcePlan.TranslatedBody = res.upstreamReplayBody
 			retryBodyRulesApplied = true
 		}
@@ -3875,6 +3880,9 @@ func retryBodyForRejectedRequest(
 		return retryBody, strategy, true
 	}
 	if retryBody, strategy, ok := responsesRetryBodyForMissingStoredInputItem(plan, res); ok {
+		return retryBody, strategy, true
+	}
+	if retryBody, strategy, ok := responsesRetryBodyForForeignResource(upstreamProtocol, plan, res); ok {
 		return retryBody, strategy, true
 	}
 	return codexRetryBodyFor400(upstreamProtocol, cfg, plan, res)

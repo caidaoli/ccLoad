@@ -4746,3 +4746,20 @@ func TestAnthropicOAuthSoftwareProfileSurvivesReplayAndAccountSwitch(t *testing.
 		}
 	}
 }
+
+func BenchmarkResponsesForeignResourceRetry(b *testing.B) {
+	for _, count := range []int{1000, 2000} {
+		payload := []byte(`{"input":[` + strings.TrimSuffix(strings.Repeat(`{"id":"msg_history","type":"message","role":"user","content":"`+strings.Repeat("x", 1024)+`"},`, count), ",") + `]}`)
+		plan := protocol.TransformPlan{TranslatedBody: payload}
+		res := &fwResult{Status: http.StatusBadRequest, Body: []byte(`{"error":{"message":"The requested item was created under a different Azure OpenAI resource."}}`)}
+		b.Run(fmt.Sprintf("items_%d", count), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			for b.Loop() {
+				if _, _, ok := responsesRetryBodyForForeignResource(protocol.Codex, plan, res); !ok {
+					b.Fatal("resource IDs were not removed")
+				}
+			}
+		})
+	}
+}

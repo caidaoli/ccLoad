@@ -12483,6 +12483,139 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_ResponsesForeignResourceRepairsOptionalItemIDs(t *testing.T) {
+	t.Parallel()
+	const message = "The requested item was created under a different Azure OpenAI resource. Use the same resource that created the item to access it."
+	const rejection = `{"error":{"type":"invalid_request_error","code":null,"message":"` + message + `"}}`
+	for _, tc := range []struct {
+		name          string
+		status        int
+		errorBody     string
+		stream        bool
+		rejectAgain   bool
+		wantRetry     bool
+		noOptionalIDs bool
+		committed     bool
+	}{
+		{name: "HTTP", status: 400, errorBody: rejection, wantRetry: true},
+		{name: "redacted relay", status: 400, errorBody: strings.ReplaceAll(rejection, "Azure", "***"), wantRetry: true},
+		{name: "SSE error without status", status: 200, stream: true, errorBody: `{"type":"error","error":{"message":"` + message + `"}}`, wantRetry: true},
+		{name: "SSE failed without status", status: 200, stream: true, errorBody: `{"type":"response.failed","response":{"status":"failed","error":{"message":"` + message + `"}}}`, wantRetry: true},
+		{name: "rejected again", status: 400, errorBody: rejection, rejectAgain: true, wantRetry: true},
+		{name: "generic 400", status: 400, errorBody: `{"error":{"type":"upstream_error","message":"bad response status code 400"}}`},
+		{name: "HTTP 502", status: 502, errorBody: rejection},
+		{name: "no optional IDs", status: 400, errorBody: rejection, noOptionalIDs: true},
+		{name: "committed SSE", status: 200, stream: true, errorBody: `{"type":"error","error":{"message":"` + message + `"}}`, committed: true},
+		{name: "SSE explicit 429", status: 200, stream: true, errorBody: `{"type":"error","status":429,"error":{"message":"` + message + `"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var requests [][]byte
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "resource-recovery", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-resource",
+				customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{
+					{Action: model.RuleActionRemove, Path: "tools.0"},
+				}},
+			}}, map[int]string{0: "https://resource.example.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				requests = append(requests, body)
+				if r.Header.Get("Authorization") != "Bearer sk-resource" || r.URL.Host != "resource.example.com" {
+					t.Errorf("repair changed credential or target")
+				}
+				status, contentType := http.StatusOK, "application/json"
+				response := `{"id":"resp_recovered","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"42"}]}]}`
+				if len(requests) == 1 || tc.rejectAgain {
+					status, response = tc.status, tc.errorBody
+				} else if tc.stream {
+					response = `{"type":"response.completed","response":` + response + `}`
+				}
+				if tc.stream {
+					contentType = "text/event-stream"
+					response = "data: " + response + "\n\n"
+					if tc.committed {
+						response = "data: " + `{"type":"response.output_text.delta","delta":"already sent","output_index":0,"content_index":0}` + "\n\n" + response
+					}
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(response))}, nil
+			})}
+			request := map[string]any{
+				"model": "gpt-test", "stream": tc.stream, "store": false, "previous_response_id": "resp_keep",
+				"tools": []any{
+					map[string]any{"type": "function", "name": "remove_once", "parameters": map[string]any{"type": "object"}},
+					map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}},
+				},
+				"input": []map[string]any{
+					{"type": "message", "id": "msg_user", "role": "user", "content": "look up 42"},
+					{"type": "function_call", "id": "fc_history", "call_id": "call_history", "name": "lookup", "arguments": "{}", "status": "completed"},
+					{"type": "function_call_output", "id": "fco_history", "call_id": "call_history", "output": "42"},
+					{"type": "custom_tool_call", "id": "ctc_history", "call_id": "call_custom", "name": "lookup", "input": "42"},
+					{"type": "custom_tool_call_output", "id": "ctco_history", "call_id": "call_custom", "output": "42"},
+					{"type": "message", "id": "msg_answer", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": "42", "annotations": []any{}}}},
+					{"type": "reasoning", "id": "rs_keep", "summary": []any{}, "encrypted_content": "keep-reasoning"},
+					{"type": "compaction", "id": "cmp_keep", "encrypted_content": "keep-compaction"},
+					{"type": "item_reference", "id": "msg_reference"},
+					{"type": "web_search_call", "id": "ws_keep", "status": "completed", "action": map[string]any{"type": "search", "query": "keep"}},
+					{"type": "agent_message", "id": "amsg_keep", "author": "/root", "recipient": "/root/worker", "content": []any{map[string]any{"type": "encrypted_content", "encrypted_content": "keep-task"}}},
+				},
+			}
+			if tc.noOptionalIDs {
+				request["input"] = request["input"].([]map[string]any)[6:]
+			}
+			w := doProxyRequest(t, env.engine, "/v1/responses", request, nil)
+			wantCalls := 1
+			if tc.wantRetry {
+				wantCalls = 2
+			}
+			if len(requests) != wantCalls {
+				t.Fatalf("upstream calls=%d, want %d: %s", len(requests), wantCalls, w.Body.String())
+			}
+			if !tc.noOptionalIDs && gjson.GetBytes(requests[0], "input.1.id").String() != "fc_history" {
+				t.Fatalf("initial request changed resource ID: %s", requests[0])
+			}
+			if tc.wantRetry {
+				var before, after map[string]any
+				if err := json.Unmarshal(requests[0], &before); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(requests[1], &after); err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range before["input"].([]any)[:6] {
+					delete(item.(map[string]any), "id")
+				}
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("repair changed more than optional resource IDs: %s", requests[1])
+				}
+				if gjson.GetBytes(requests[1], "tools.#").Int() != 1 || gjson.GetBytes(requests[1], "tools.0.name").String() != "lookup" {
+					t.Fatalf("channel rules reapplied on repair: %s", requests[1])
+				}
+				entry := waitForProxyLog(t, env, "gpt-test")
+				if !strings.Contains(entry.Message, "strip_responses_resource_item_ids") {
+					t.Fatalf("repair strategy missing: %s", entry.Message)
+				}
+				assertNoProxyCooldowns(t, env)
+			}
+			if tc.wantRetry && !tc.rejectAgain {
+				body := w.Body.Bytes()
+				path := "status"
+				if tc.stream {
+					_, body = parseSSEEventChunk(body)
+					path = "response.status"
+				}
+				if w.Code != http.StatusOK || gjson.GetBytes(body, path).String() != "completed" {
+					t.Fatalf("repair failed: %d %s", w.Code, w.Body.String())
+				}
+			} else if tc.rejectAgain && w.Code != http.StatusBadRequest {
+				t.Fatalf("second rejection not returned: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *testing.T) {
 	t.Parallel()
 
