@@ -889,7 +889,7 @@ func anthropicOverageOnlyRejection(headers map[string][]string, status5h, status
 	case allowed(status5h) && allowed(status7d):
 		return true
 	case allowed(status7d) && status5h == "":
-		return healthy("5h")
+		return len(headerValuesFold(headers, "Anthropic-Ratelimit-Unified-5h-Utilization")) == 0 || healthy("5h")
 	case allowed(status5h) && status7d == "":
 		return healthy("7d")
 	case status5h == "" && status7d == "" && strings.Contains(claim, "overage"):

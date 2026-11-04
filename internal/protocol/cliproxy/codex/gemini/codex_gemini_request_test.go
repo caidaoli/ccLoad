@@ -10,6 +10,80 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestConvertGeminiRequestToCodex_MaxOutputTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int64
+	}{
+		{"generation config", `{"generationConfig":{"maxOutputTokens":2048}}`, 2048},
+		{"snake token field", `{"generationConfig":{"max_output_tokens":2048}}`, 2048},
+		{"snake config", `{"generation_config":{"maxOutputTokens":2048}}`, 2048},
+		{"snake config and field", `{"generation_config":{"max_output_tokens":2048}}`, 2048},
+		{"top level camel", `{"maxOutputTokens":1024}`, 1024},
+		{"top level snake", `{"max_output_tokens":1024}`, 1024},
+		{"legacy", `{"max_tokens":512}`, 512},
+		{"nested wins", `{"generationConfig":{"maxOutputTokens":2048,"max_output_tokens":1024},"maxOutputTokens":512,"max_output_tokens":256,"max_tokens":128}`, 2048},
+		{"top camel wins", `{"maxOutputTokens":512,"max_output_tokens":256,"max_tokens":128}`, 512},
+		{"skip nonnumeric", `{"generationConfig":{"maxOutputTokens":"2048"},"max_tokens":512}`, 512},
+		{"zero", `{"generationConfig":{"maxOutputTokens":0}}`, 0},
+		{"absent", `{}`, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertGeminiRequestToCodex("gpt-5.1-codex", []byte(tt.input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := gjson.GetBytes(out, "max_output_tokens")
+			if tt.want < 0 {
+				if got.Exists() {
+					t.Fatalf("unexpected max_output_tokens: %s", out)
+				}
+			} else if got.Type != gjson.Number || got.Int() != tt.want {
+				t.Fatalf("max_output_tokens = %s, want %d; output=%s", got.Raw, tt.want, out)
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToCodex_OmittedRolesAndToolAliases(t *testing.T) {
+	for _, fields := range [][2]string{{"functionCall", "functionResponse"}, {"function_call", "function_response"}} {
+		t.Run(fields[0], func(t *testing.T) {
+			input := fmt.Sprintf(`{"contents":[
+				{"parts":[{"text":"first"}]},
+				{"parts":[{"text":"second"}]},
+				{"parts":[{"text":"checking"},{%q:{"id":"call_lookup","name":"lookup","args":{"query":"status"}}}]},
+				{"parts":[{%q:{"name":"lookup","response":{"result":"ok"}}}]},
+				{"parts":[{"text":"followup"}]}
+			]}`, fields[0], fields[1])
+			out, err := ConvertGeminiRequestToCodex("gpt-5.1-codex", []byte(input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			items := gjson.GetBytes(out, "input").Array()
+			if len(items) != 6 {
+				t.Fatalf("want six input items, got %s", out)
+			}
+			for _, index := range []int{0, 1, 5} {
+				if items[index].Get("role").String() != "user" {
+					t.Fatalf("plain text without role must stay user: %s", out)
+				}
+			}
+			if items[2].Get("role").String() != "assistant" || items[2].Get("content.0.type").String() != "output_text" {
+				t.Fatalf("function call turn must use assistant text: %s", out)
+			}
+			if items[3].Get("type").String() != "function_call" || items[3].Get("call_id").String() != "call_lookup" ||
+				gjson.Parse(items[3].Get("arguments").String()).Get("query").String() != "status" {
+				t.Fatalf("function call not preserved: %s", out)
+			}
+			if items[4].Get("type").String() != "function_call_output" || items[4].Get("call_id").String() != "call_lookup" || items[4].Get("output").String() != "ok" {
+				t.Fatalf("function response not paired: %s", out)
+			}
+		})
+	}
+}
+
 func TestConvertGeminiRequestToCodex_PreservesCustomCallIDs(t *testing.T) {
 	tests := []struct {
 		name          string

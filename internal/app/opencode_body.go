@@ -26,12 +26,6 @@ func prepareOpenCodeRequestBody(body []byte, upstream protocol.Protocol, path st
 		return nil, errors.New("invalid OpenCode inference request body")
 	}
 	if upstream == protocol.Codex {
-		if _, budget := root.objectMember("max_output_tokens"); budget != nil {
-			value := gjson.Parse(budget.raw)
-			if value.Type == gjson.Number && value.Num > 0 && value.Num < 16 {
-				root.overridePath([]string{"max_output_tokens"}, &orderedJSONNode{raw: "16"})
-			}
-		}
 		return root.render(), nil
 	}
 	modelName := openCodeBodyString(root, "model")

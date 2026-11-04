@@ -355,13 +355,66 @@ func TestConvertClaudeRequestToGemini_StructuredToolResult(t *testing.T) {
 	if got := fr.Get("response.result.text").String(); got != "alpha" {
 		t.Fatalf("expected structured result text 'alpha', got result=%s", fr.Get("response.result").Raw)
 	}
-	// The image block must be emitted as a separate inline_data part, not embedded in result.
-	img := gjson.GetBytes(output, "contents.1.parts.1.inline_data")
-	if got := img.Get("mime_type").String(); got != "image/png" {
+	if parts := gjson.GetBytes(output, "contents.1.parts").Array(); len(parts) != 1 {
+		t.Fatalf("expected one functionResponse part, got %s", gjson.GetBytes(output, "contents.1.parts").Raw)
+	}
+	img := fr.Get("parts.0.inlineData")
+	if got := img.Get("mimeType").String(); got != "image/png" {
 		t.Fatalf("expected image mime type 'image/png', got '%s'", got)
 	}
 	if got := img.Get("data").String(); got != "aGVsbG8=" {
 		t.Fatalf("expected image data 'aGVsbG8=', got '%s'", got)
+	}
+}
+
+func TestConvertClaudeRequestToGemini_ToolResultImagesStayWithParallelCalls(t *testing.T) {
+	input := []byte(`{"messages":[
+		{"role":"assistant","content":[
+			{"type":"tool_use","id":"call_a","name":"Read","input":{}},
+			{"type":"tool_use","id":"call_b","name":"Read","input":{}}
+		]},
+		{"role":"user","content":[
+			{"type":"tool_result","tool_use_id":"call_b","content":[
+				{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"DATA_B1"}},
+				{"type":"image","source":{"type":"base64","media_type":"image/webp","data":"DATA_B2"}}
+			]},
+			{"type":"tool_result","tool_use_id":"call_a","content":[
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"DATA_A"}}
+			]}
+		]}
+	]}`)
+	output, err := ConvertClaudeRequestToGemini("gemini-3.8-flash-high", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := gjson.GetBytes(output, "contents.1.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("expected two functionResponse parts, got %s", gjson.GetBytes(output, "contents.1.parts").Raw)
+	}
+	for i, want := range []struct {
+		id     string
+		images string
+	}{
+		{id: "call_a", images: `[{"inlineData":{"mimeType":"image/png","data":"DATA_A"}}]`},
+		{id: "call_b", images: `[{"inlineData":{"mimeType":"image/jpeg","data":"DATA_B1"}},{"inlineData":{"mimeType":"image/webp","data":"DATA_B2"}}]`},
+	} {
+		response := parts[i].Get("functionResponse")
+		if response.Get("id").String() != want.id || response.Get("name").String() != "Read" {
+			t.Fatalf("tool result lost its call identity: %s", response.Raw)
+		}
+		if got := response.Get("response.result"); got.Type != gjson.String || got.String() != "" {
+			t.Fatalf("image-only result = %s, want empty string", got.Raw)
+		}
+		images := response.Get("parts").Array()
+		wantImages := gjson.Parse(want.images).Array()
+		if len(images) != len(wantImages) {
+			t.Fatalf("%s images = %s, want %s", want.id, response.Get("parts").Raw, want.images)
+		}
+		for j, image := range images {
+			if image.Get("inlineData.mimeType").String() != wantImages[j].Get("inlineData.mimeType").String() || image.Get("inlineData.data").String() != wantImages[j].Get("inlineData.data").String() {
+				t.Fatalf("%s image %d = %s, want %s", want.id, j, image.Raw, wantImages[j].Raw)
+			}
+		}
 	}
 }
 
@@ -962,15 +1015,15 @@ func TestConvertClaudeRequestToGemini_PreservesToolResultErrors(t *testing.T) {
 						t.Fatalf("functionResponse.response = %s, want %s", got, tt.wantResponse)
 					}
 					parts := gjson.GetBytes(output, "contents.1.parts").Array()
-					wantParts := 1
-					if tt.wantImage {
-						wantParts++
-						if got := gjson.GetBytes(output, "contents.1.parts.1.inline_data").Raw; got != `{"mime_type":"image/png","data":"aGVsbG8="}` {
-							t.Fatalf("tool image changed: %s", got)
-						}
+					if len(parts) != 1 {
+						t.Fatalf("tool result parts = %d, want 1: %s", len(parts), gjson.GetBytes(output, "contents.1").Raw)
 					}
-					if len(parts) != wantParts {
-						t.Fatalf("tool result parts = %d, want %d", len(parts), wantParts)
+					if tt.wantImage {
+						if got := response.Get("parts.0.inlineData"); got.Get("mimeType").String() != "image/png" || got.Get("data").String() != "aGVsbG8=" {
+							t.Fatalf("functionResponse.parts[0].inlineData = %s", got.Raw)
+						}
+					} else if response.Get("parts").Exists() {
+						t.Fatalf("unexpected functionResponse.parts: %s", response.Get("parts").Raw)
 					}
 				})
 			}

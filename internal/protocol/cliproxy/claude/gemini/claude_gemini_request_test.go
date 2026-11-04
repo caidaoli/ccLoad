@@ -8,6 +8,43 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertGeminiRequestToClaude_OmittedRolesAndToolAliases(t *testing.T) {
+	for _, fields := range [][2]string{{"functionCall", "functionResponse"}, {"function_call", "function_response"}} {
+		t.Run(fields[0], func(t *testing.T) {
+			input := fmt.Sprintf(`{"contents":[
+				{"parts":[{"text":"first"}]},
+				{"parts":[{"text":"second"}]},
+				{"parts":[{"text":"checking"},{%q:{"id":"call_lookup","name":"lookup","args":{"query":"status"}}}]},
+				{"parts":[{%q:{"name":"lookup","response":{"result":"ok"}}}]},
+				{"parts":[{"text":"followup"}]}
+			]}`, fields[0], fields[1])
+			out, err := ConvertGeminiRequestToClaude("claude-test", []byte(input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := gjson.GetBytes(out, "messages").Array()
+			if len(messages) != 3 {
+				t.Fatalf("want three role groups, got %s", out)
+			}
+			if messages[0].Get("role").String() != "user" || messages[0].Get("content.0.text").String() != "first" || messages[0].Get("content.1.text").String() != "second" {
+				t.Fatalf("plain text without role must stay user: %s", out)
+			}
+			toolUse := messages[1].Get("content.1")
+			if messages[1].Get("role").String() != "assistant" || messages[1].Get("content.0.text").String() != "checking" ||
+				toolUse.Get("type").String() != "tool_use" || toolUse.Get("id").String() != "call_lookup" ||
+				toolUse.Get("name").String() != "lookup" || toolUse.Get("input.query").String() != "status" {
+				t.Fatalf("function call turn not preserved as assistant: %s", out)
+			}
+			toolResult := messages[2].Get("content.0")
+			if messages[2].Get("role").String() != "user" || toolResult.Get("type").String() != "tool_result" ||
+				toolResult.Get("tool_use_id").String() != "call_lookup" || toolResult.Get("content").String() != "ok" ||
+				messages[2].Get("content.1.text").String() != "followup" {
+				t.Fatalf("function response not paired before user followup: %s", out)
+			}
+		})
+	}
+}
+
 func TestConvertGeminiRequestToClaude_PreservesCustomToolIDs(t *testing.T) {
 	tests := []struct {
 		name          string

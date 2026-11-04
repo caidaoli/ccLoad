@@ -13,12 +13,18 @@ func IsGeminiThoughtPart(part gjson.Result) bool {
 }
 
 // GeminiMessageRole maps Gemini content roles to roles accepted by the other
-// supported wire protocols. Missing roles are user content, never empty output.
-func GeminiMessageRole(role string) string {
+// supported wire protocols. Missing roles are user content unless the turn
+// contains a function call from the model.
+func GeminiMessageRole(role string, parts gjson.Result) string {
 	switch role {
 	case "model":
 		return "assistant"
-	case "", "function", "tool":
+	case "":
+		if geminiPartsHaveFunctionCall(parts) {
+			return "assistant"
+		}
+		return "user"
+	case "function", "tool":
 		return "user"
 	default:
 		return role
@@ -73,9 +79,13 @@ func MergeAdjacentGeminiContents(contents [][]byte) [][]byte {
 
 // ContentHasGeminiFunctionCall reports whether a Gemini content turn contains any functionCall part.
 func ContentHasGeminiFunctionCall(content []byte) bool {
+	return geminiPartsHaveFunctionCall(gjson.GetBytes(content, "parts"))
+}
+
+func geminiPartsHaveFunctionCall(parts gjson.Result) bool {
 	hasFC := false
-	gjson.GetBytes(content, "parts").ForEach(func(_, part gjson.Result) bool {
-		if part.Get("functionCall").Exists() || part.Get("function_call").Exists() {
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if GeminiPartFunctionCall(part).Exists() {
 			hasFC = true
 			return false
 		}
@@ -88,13 +98,29 @@ func ContentHasGeminiFunctionCall(content []byte) bool {
 func ContentHasGeminiFunctionResponse(content []byte) bool {
 	hasFR := false
 	gjson.GetBytes(content, "parts").ForEach(func(_, part gjson.Result) bool {
-		if part.Get("functionResponse").Exists() || part.Get("function_response").Exists() {
+		if GeminiPartFunctionResponse(part).Exists() {
 			hasFR = true
 			return false
 		}
 		return true
 	})
 	return hasFR
+}
+
+// GeminiPartFunctionCall returns the functionCall or function_call field.
+func GeminiPartFunctionCall(part gjson.Result) gjson.Result {
+	if fc := part.Get("functionCall"); fc.Exists() {
+		return fc
+	}
+	return part.Get("function_call")
+}
+
+// GeminiPartFunctionResponse returns the functionResponse or function_response field.
+func GeminiPartFunctionResponse(part gjson.Result) gjson.Result {
+	if fr := part.Get("functionResponse"); fr.Exists() {
+		return fr
+	}
+	return part.Get("function_response")
 }
 
 // ReorderGeminiUserParts reorders parts within a Gemini user turn so that
@@ -191,7 +217,7 @@ func SplitGeminiFunctionResponseTurns(contents [][]byte) [][]byte {
 		responseParts := make([][]byte, 0, len(parts))
 		otherParts := make([][]byte, 0, len(parts))
 		for _, part := range parts {
-			if part.Get("functionResponse").Exists() || part.Get("function_response").Exists() {
+			if GeminiPartFunctionResponse(part).Exists() {
 				responseParts = append(responseParts, []byte(part.Raw))
 			} else {
 				otherParts = append(otherParts, []byte(part.Raw))

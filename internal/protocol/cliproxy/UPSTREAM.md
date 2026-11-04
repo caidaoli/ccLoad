@@ -24,6 +24,38 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-04)
+
+The synchronized baseline above remains official `v8.0.51`. The following
+targeted fixes were adapted from the immutable official `v8.0.53` commit
+`01b24f1f95dc9b309765212c52b25b25e005ff01`; this is not a full snapshot update.
+The JSON/Base64 library migration and excluded runtime modules were not imported.
+
+- Preserve output token limits when converting Chat, Claude and Gemini requests
+  to Responses. Codex OAuth normalization preserves `max_output_tokens`, fills
+  it from legacy token limits when absent/null, then removes the legacy fields.
+- On Responses-to-Claude replay, remove web-search citations from an assistant
+  turn whose search results are empty, while retaining text and other citations.
+  No runtime search-result cache or context lookup is introduced.
+- Nest Claude tool-result images inside Gemini `functionResponse.parts`, keeping
+  the images associated with the originating tool result.
+- Accept snake_case Gemini tool parts, infer assistant roles for unlabelled tool
+  calls, and omit the extra empty Chat message after tool-result-only turns.
+  Unlabelled ordinary text remains user content; upstream's alternating role
+  inference is not adopted.
+- Map Antigravity safety/filter termination to Claude refusal, and retain the
+  last nonempty finish reason across empty trailing chunks. Tool-use precedence,
+  local malformed-function-call handling and usage semantics remain unchanged.
+  Unlike upstream, `MALFORMED_FUNCTION_CALL` is not mapped to refusal, matching
+  the Gemini-to-Claude list; Claude clients report refusal as a policy violation.
+
+The app-owned Anthropic 429 classifier also adopts `0130d6f38`'s distinction
+between absent and invalid 5h utilization headers for Fable/overage-only limits.
+Its existing model-scoped reset policy is retained. Because output limits now
+reach Codex, the app layer raises a positive `max_output_tokens` below the
+Responses minimum of 16 to 16 for every Codex Responses upstream. Snapshot review hashes are
+refreshed against the existing synchronization delta; the license is unchanged.
+
 ## Synchronization adaptations (2026-11-02)
 
 The four-protocol core and all allowlisted Antigravity adapters were reviewed

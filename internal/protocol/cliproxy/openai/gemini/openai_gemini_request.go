@@ -175,8 +175,8 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	if contents := root.Get("contents"); contents.Exists() && contents.IsArray() {
 		msgIdx := 0
 		contents.ForEach(func(_, content gjson.Result) bool {
-			role := translatorcommon.GeminiMessageRole(content.Get("role").String())
 			parts := content.Get("parts")
+			role := translatorcommon.GeminiMessageRole(content.Get("role").String(), parts)
 
 			msg := []byte(`{"role":"","content":""}`)
 			msg, _ = sjson.SetBytes(msg, "role", role)
@@ -186,6 +186,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			onlyTextContent := true
 			toolCallItems := make([][]byte, 0, 2)
 			droppedThought := false
+			hasFunctionResponse := false
 
 			if parts.Exists() && parts.IsArray() {
 				partIdx := 0
@@ -218,7 +219,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					}
 
 					// Handle function calls (Gemini) -> tool calls (OpenAI)
-					if functionCall := part.Get("functionCall"); functionCall.Exists() {
+					if functionCall := translatorcommon.GeminiPartFunctionCall(part); functionCall.Exists() {
 						funcName := functionCall.Get("name").String()
 						argsRaw := ""
 						if args := functionCall.Get("args"); args.Exists() {
@@ -240,7 +241,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						} else {
 							toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", "{}")
 						}
-						if thoughtSig := geminiFunctionCallThoughtSignature(part); thoughtSig != "" {
+						if thoughtSig := geminiFunctionCallThoughtSignature(part, functionCall); thoughtSig != "" {
 							toolCall, _ = sjson.SetBytes(toolCall, "extra_content.google.thought_signature", thoughtSig)
 						}
 
@@ -248,7 +249,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					}
 
 					// Handle function responses (Gemini) -> tool role messages (OpenAI)
-					if functionResponse := part.Get("functionResponse"); functionResponse.Exists() {
+					if functionResponse := translatorcommon.GeminiPartFunctionResponse(part); functionResponse.Exists() {
 						funcName := functionResponse.Get("name").String()
 						// Create tool message for function response
 						toolMsg := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
@@ -285,6 +286,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						}
 
 						messageItems = append(messageItems, toolMsg)
+						hasFunctionResponse = true
 					}
 
 					return true
@@ -305,7 +307,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				msg, _ = sjson.SetRawBytes(msg, "tool_calls", translatorcommon.JoinRawArray(toolCallItems))
 			}
 
-			if droppedThought && len(contentItems) == 0 && len(toolCallItems) == 0 {
+			if (droppedThought || hasFunctionResponse) && len(contentItems) == 0 && len(toolCallItems) == 0 {
 				msgIdx++
 				return true
 			}
@@ -378,15 +380,15 @@ func deterministicToolCallID(kind string, msgIdx, partIdx int, name, payload str
 	return "call_" + hex.EncodeToString(sum[:12])
 }
 
-func geminiFunctionCallThoughtSignature(part gjson.Result) string {
-	for _, path := range []string{
-		"thoughtSignature",
-		"thought_signature",
-		"functionCall.thoughtSignature",
-		"functionCall.thought_signature",
-		"extra_content.google.thought_signature",
+func geminiFunctionCallThoughtSignature(part, functionCall gjson.Result) string {
+	for _, sig := range []gjson.Result{
+		part.Get("thoughtSignature"),
+		part.Get("thought_signature"),
+		functionCall.Get("thoughtSignature"),
+		functionCall.Get("thought_signature"),
+		part.Get("extra_content.google.thought_signature"),
 	} {
-		if sig := part.Get(path); sig.Exists() && sig.String() != "" {
+		if sig.Exists() && sig.String() != "" {
 			return sig.String()
 		}
 	}

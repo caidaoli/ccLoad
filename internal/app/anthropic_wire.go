@@ -33,7 +33,7 @@ import (
 
 const (
 	// anthropicCLIVersion 与下方 SDK/Node 常量来自同一份 Claude Code 2.1.314 抓包。
-	anthropicCLIVersion  = "2.1.316"
+	anthropicCLIVersion  = "2.1.317"
 	anthropicBillingSalt = "59cf53e54c78"
 
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。

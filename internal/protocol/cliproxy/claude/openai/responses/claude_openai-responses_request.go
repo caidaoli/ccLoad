@@ -224,6 +224,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	var pendingRole string
 	var pendingParts [][]byte
 	var pendingToolUseParts [][]byte
+	var turnHasEmptyWebSearchResult bool
 	appendMessage := func(msg []byte) {
 		messageBlocks = append(messageBlocks, msg)
 	}
@@ -241,6 +242,9 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			}
 			combined = append(combined, pendingToolUseParts...)
 			parts = combined
+		}
+		if pendingRole == "assistant" && turnHasEmptyWebSearchResult {
+			stripClaudeWebSearchCitationsFromParts(parts)
 		}
 		if len(parts) > 0 {
 			msg := []byte(`{"role":"","content":[]}`)
@@ -493,12 +497,18 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					partsJSON[lastIdx] = common.AttachCacheControl(partsJSON[lastIdx], item)
 				}
 				appendParts(role, partsJSON...)
+				if role == "user" {
+					turnHasEmptyWebSearchResult = false
+				}
 			}
 
 		case "web_search_call":
 			// Rebuild the Claude server-side search pair so the replayed turn
 			// still shows the search and its hits.
 			if blocks := webSearchHistory.claudeBlocks(itemIndex, item); len(blocks) > 0 {
+				if claudeBlocksHaveEmptyWebSearchResult(blocks) {
+					turnHasEmptyWebSearchResult = true
+				}
 				appendParts("assistant", blocks...)
 			}
 
@@ -565,6 +575,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			// same Claude id are not mistaken for the same call.
 			if _, paired := emittedRawToolUses[rawID]; rawID == "" || !paired {
 				appendParts("user", convertResponsesStandaloneToolOutputToClaudeText(output)...)
+				turnHasEmptyWebSearchResult = false
 				continue
 			}
 			callID := util.SanitizeClaudeToolID(rawID)
@@ -606,6 +617,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				text := []byte(`{"type":"text","text":""}`)
 				text, _ = sjson.SetBytes(text, "text", responsesToolSearchOutputText(item, names))
 				appendParts("user", text)
+				turnHasEmptyWebSearchResult = false
 				continue
 			}
 			toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":""}`)

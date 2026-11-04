@@ -69,7 +69,7 @@ func TestRegistry_TranslateRequest_Gemini_DefaultsMissingRoleToUser(t *testing.T
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`)
+	raw := []byte(`{"contents":[{"parts":[{"text":"hello"}]},{"parts":[{"text":"another user turn"}]}]}`)
 	tests := []struct {
 		name     string
 		target   protocol.Protocol
@@ -87,6 +87,11 @@ func TestRegistry_TranslateRequest_Gemini_DefaultsMissingRoleToUser(t *testing.T
 			}
 			if role := gjson.GetBytes(got, tt.rolePath).String(); role != "user" {
 				t.Fatalf("missing Gemini role translated to %s role %q, want user: %s", tt.target, role, got)
+			}
+			for _, message := range gjson.GetBytes(got, strings.Split(tt.rolePath, ".")[0]).Array() {
+				if role := message.Get("role").String(); role != "user" {
+					t.Fatalf("consecutive missing Gemini roles must remain user turns: %s", got)
+				}
 			}
 		})
 	}

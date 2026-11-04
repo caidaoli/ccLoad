@@ -800,8 +800,11 @@ func TestOpenCodeRequestBodyAndHeadersEndpointScope(t *testing.T) {
 					t.Fatal(err)
 				}
 				if !strings.HasPrefix(target, "https://opencode.ai/zen") {
-					if gjson.GetBytes(wire, "max_output_tokens").Int() != 1 || strings.HasPrefix(req.Header.Get("User-Agent"), "opencode/") || req.Header.Get("X-Opencode-Session-Id") != "" || req.Header.Get("X-Opencode-Project") != "" {
+					if strings.HasPrefix(req.Header.Get("User-Agent"), "opencode/") || req.Header.Get("X-Opencode-Session-Id") != "" || req.Header.Get("X-Opencode-Project") != "" {
 						t.Fatalf("OpenCode wire leaked into other selected URL: headers=%v body=%s", req.Header, wire)
+					}
+					if gjson.GetBytes(wire, "max_output_tokens").Int() != 16 {
+						t.Fatalf("Codex Responses budget floor missing on API-key channel: %s", wire)
 					}
 					continue
 				}

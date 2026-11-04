@@ -12,6 +12,37 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestConvertClaudeRequestToCodex_MaxOutputTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int64
+	}{
+		{"max tokens", `{"max_tokens":2048}`, 2048},
+		{"responses alias", `{"max_output_tokens":1024}`, 1024},
+		{"max tokens wins", `{"max_tokens":2048,"max_output_tokens":1024}`, 2048},
+		{"zero", `{"max_tokens":0}`, 0},
+		{"absent", `{}`, -1},
+		{"nonnumeric", `{"max_tokens":"2048"}`, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertClaudeRequestToCodex("gpt-5.1-codex", []byte(tt.input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := gjson.GetBytes(out, "max_output_tokens")
+			if tt.want < 0 {
+				if got.Exists() {
+					t.Fatalf("unexpected max_output_tokens: %s", out)
+				}
+			} else if got.Type != gjson.Number || got.Int() != tt.want {
+				t.Fatalf("max_output_tokens = %s, want %d; output=%s", got.Raw, tt.want, out)
+			}
+		})
+	}
+}
+
 func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 	tests := []struct {
 		name             string

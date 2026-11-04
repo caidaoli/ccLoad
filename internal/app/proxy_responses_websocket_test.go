@@ -3219,6 +3219,7 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 
 	if err := downstream.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test", "parallel_tool_calls": true,
+		"max_output_tokens": 128,
 		"client_metadata": map[string]any{
 			"ws_request_header_x_openai_internal_codex_responses_lite": "true",
 		},
@@ -3240,6 +3241,9 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 	}
 	first := <-requests
 	second := <-requests
+	if first["max_output_tokens"] != float64(128) {
+		t.Fatalf("API key output token limit changed: %#v", first)
+	}
 	if first["type"] != "response.create" || second["type"] != "response.create" {
 		t.Fatalf("native request types first=%#v second=%#v", first["type"], second["type"])
 	}
@@ -3332,7 +3336,8 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	})
 	if err := downstream.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test",
-		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+		"max_tokens": 8,
+		"input":      []any{map[string]any{"role": "user", "content": "hello"}},
 	}); err != nil {
 		t.Fatalf("write downstream request: %v", err)
 	}
@@ -3343,6 +3348,12 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	}
 	request := <-requestBody
 	_, hasInstructions := request["instructions"]
+	if request["max_output_tokens"] != float64(16) {
+		t.Fatalf("upstream output token limit = %#v", request)
+	}
+	if _, exists := request["max_tokens"]; exists {
+		t.Fatalf("legacy token limit reached upstream: %#v", request)
+	}
 	if request["stream"] != true || request["store"] != false || hasInstructions {
 		t.Fatalf("upstream Codex request = %#v", request)
 	}

@@ -86,6 +86,38 @@ func TestRegistryGeminiNumericSchemaConstraints(t *testing.T) {
 	}
 }
 
+func TestRegistryRequestOutputTokenLimits(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name   string
+		source protocol.Protocol
+		body   string
+	}{
+		{"chat", protocol.OpenAI, `{"messages":[{"role":"user","content":"hello"}],"max_completion_tokens":32,"max_tokens":64}`},
+		{"claude", protocol.Anthropic, `{"messages":[{"role":"user","content":"hello"}],"max_tokens":32}`},
+		{"gemini", protocol.Gemini, `{"contents":[{"parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":32}}`},
+		{"responses passthrough", protocol.Codex, `{"input":"hello","max_output_tokens":32}`},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				out, err := reg.TranslateRequest(tc.source, protocol.Codex, "gpt-5.6-sol", []byte(tc.body), stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if limit := gjson.GetBytes(out, "max_output_tokens"); limit.Type != gjson.Number || limit.Int() != 32 {
+					t.Fatalf("output token limit was lost: %s", out)
+				}
+				for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+					if gjson.GetBytes(out, field).Exists() {
+						t.Fatalf("legacy limit %s reached Responses request: %s", field, out)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestRegistryRequestSemantics(t *testing.T) {
 	t.Run("anthropic to openai keeps assistant thinking as reasoning_content", func(t *testing.T) {
 		reg := protocol.NewRegistry()

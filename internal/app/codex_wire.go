@@ -100,6 +100,9 @@ func prepareCodexOAuthResponsesBody(
 	body, _ = codexresponses.ConvertOpenAIResponsesRequestToCodex(
 		gjson.GetBytes(body, "model").String(), body, true,
 	)
+	// The normalizer fills max_output_tokens from legacy fields, after the
+	// shared Codex clamp has already run.
+	body = clampCodexMaxOutputTokens(body)
 	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Type == gjson.String &&
 		strings.EqualFold(strings.TrimSpace(effort.String()), "minimal") {
 		body, _ = sjson.SetBytes(body, "reasoning.effort", "low")

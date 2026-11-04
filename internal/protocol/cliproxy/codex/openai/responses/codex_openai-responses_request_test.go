@@ -9,6 +9,42 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertOpenAIResponsesRequestToCodex_MaxOutputTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"preserve", `{"max_output_tokens":2048}`, "2048"},
+		{"existing wins", `{"max_output_tokens":2048,"max_completion_tokens":1024,"max_tokens":512}`, "2048"},
+		{"completion alias", `{"max_completion_tokens":1024}`, "1024"},
+		{"legacy alias", `{"max_tokens":512}`, "512"},
+		{"completion wins", `{"max_completion_tokens":1024,"max_tokens":512}`, "1024"},
+		{"null falls back", `{"max_output_tokens":null,"max_tokens":512}`, "512"},
+		{"skip nonnumeric alias", `{"max_completion_tokens":"1024","max_tokens":512}`, "512"},
+		{"preserve invalid canonical", `{"max_output_tokens":"2048","max_tokens":512}`, `"2048"`},
+		{"preserve null without alias", `{"max_output_tokens":null}`, "null"},
+		{"zero", `{"max_output_tokens":0,"max_tokens":512}`, "0"},
+		{"absent", `{}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertOpenAIResponsesRequestToCodex("gpt-5.1-codex", []byte(tt.input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(out, "max_output_tokens"); got.Raw != tt.want {
+				t.Fatalf("max_output_tokens = %s, want %s; output=%s", got.Raw, tt.want, out)
+			}
+			for _, path := range []string{"max_completion_tokens", "max_tokens"} {
+				if gjson.GetBytes(out, path).Exists() {
+					t.Fatalf("legacy token limit %s remains: %s", path, out)
+				}
+			}
+		})
+	}
+}
+
 // TestConvertSystemRoleToDeveloper_BasicConversion tests the basic system -> developer role conversion
 func TestConvertSystemRoleToDeveloper_BasicConversion(t *testing.T) {
 	inputJSON := []byte(`{
@@ -270,8 +306,10 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 	if role := gjson.GetBytes(output, "input.0.role").String(); role != "developer" {
 		t.Fatalf("input.0.role = %q, want developer", role)
 	}
+	if got := gjson.GetBytes(output, "max_output_tokens"); got.Type != gjson.Number || got.Int() != 4096 {
+		t.Fatalf("max_output_tokens = %s, want 4096", got.Raw)
+	}
 	for _, path := range []string{
-		"max_output_tokens",
 		"max_completion_tokens",
 		"temperature",
 		"top_p",

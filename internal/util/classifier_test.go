@@ -1972,6 +1972,54 @@ func TestClassifyAnthropicOverageOnlyRejectionStaysModelScoped(t *testing.T) {
 	}
 }
 
+func TestClassifyAnthropicFableRejectionWithOmitted5hHeaders(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	reset := strconv.FormatInt(now.Add(6*24*time.Hour).Unix(), 10)
+	for _, tc := range []struct {
+		name           string
+		setUtilization bool
+		utilization    string
+		wantCredential bool
+	}{
+		{name: "omitted"},
+		{name: "zero", setUtilization: true, utilization: "0.00"},
+		{name: "healthy", setUtilization: true, utilization: "0.50"},
+		{name: "empty", setUtilization: true, wantCredential: true},
+		{name: "whitespace", setUtilization: true, utilization: " \t ", wantCredential: true},
+		{name: "invalid", setUtilization: true, utilization: "invalid", wantCredential: true},
+		{name: "NaN", setUtilization: true, utilization: "NaN", wantCredential: true},
+		{name: "positive infinity", setUtilization: true, utilization: "+Inf", wantCredential: true},
+		{name: "negative infinity", setUtilization: true, utilization: "-Inf", wantCredential: true},
+		{name: "negative", setUtilization: true, utilization: "-0.1", wantCredential: true},
+		{name: "exhausted", setUtilization: true, utilization: "1.0", wantCredential: true},
+		{name: "exceeded", setUtilization: true, utilization: "1.05", wantCredential: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := map[string][]string{
+				"Retry-After":                                         {"518400"},
+				"Anthropic-Ratelimit-Unified-Status":                  {"rejected"},
+				"Anthropic-Ratelimit-Unified-Representative-Claim":    {"seven_day_overage_included"},
+				"Anthropic-Ratelimit-Unified-7d-Status":               {"allowed"},
+				"Anthropic-Ratelimit-Unified-7d-Utilization":          {"0.62"},
+				"Anthropic-Ratelimit-Unified-7d-Reset":                {reset},
+				"Anthropic-Ratelimit-Unified-7d_oi-Status":            {"rejected"},
+				"Anthropic-Ratelimit-Unified-7d_oi-Utilization":       {"1.0"},
+				"Anthropic-Ratelimit-Unified-7d_oi-Reset":             {reset},
+				"Anthropic-Ratelimit-Unified-Overage-Status":          {"rejected"},
+				"Anthropic-Ratelimit-Unified-Overage-Disabled-Reason": {"out_of_credits"},
+				"Anthropic-Ratelimit-Unified-Reset":                   {reset},
+			}
+			if tc.setUtilization {
+				headers["aNtHrOpIc-RaTeLiMiT-uNiFiEd-5h-UtIlIzAtIoN"] = []string{tc.utilization}
+			}
+			got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, headers, nil, now)
+			if got.CredentialScoped != tc.wantCredential || got.ModelScoped == tc.wantCredential {
+				t.Fatalf("classification=%+v, want credential scoped=%v", got, tc.wantCredential)
+			}
+		})
+	}
+}
+
 func TestClassifyAnthropicRateLimitIgnoresBillingBoundaryResets(t *testing.T) {
 	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	unix := func(d time.Duration) string { return strconv.FormatInt(now.Add(d).Unix(), 10) }

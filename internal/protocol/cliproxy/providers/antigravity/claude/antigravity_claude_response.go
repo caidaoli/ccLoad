@@ -465,8 +465,8 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	if finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason"); finishReasonResult.Exists() {
 		params.HasFinishReason = true
-		params.FinishReason = finishReasonResult.String()
-		if params.FinishReason != "" {
+		if finishReason := strings.TrimSpace(finishReasonResult.String()); finishReason != "" {
+			params.FinishReason = finishReason
 			flushPendingToolInput()
 		}
 	}
@@ -552,7 +552,7 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 		params.ResponseType = 0
 	}
 
-	stopReason := resolveStopReason(params)
+	stopReason := resolveStopReason(params.FinishReason, params.HasToolUse)
 	usageOutputTokens := params.CandidatesTokenCount + params.ThoughtsTokenCount
 	if usageOutputTokens == 0 && params.TotalTokenCount > 0 {
 		// PromptTokenCount excludes cached tokens for input_tokens, while
@@ -577,16 +577,16 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 	params.HasSentFinalEvents = true
 }
 
-func resolveStopReason(params *Params) string {
-	if params.HasToolUse {
+func resolveStopReason(finishReason string, hasToolUse bool) string {
+	if hasToolUse {
 		return "tool_use"
 	}
 
-	switch params.FinishReason {
+	switch strings.ToUpper(strings.TrimSpace(finishReason)) {
 	case "MAX_TOKENS":
 		return "max_tokens"
-	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
-		return "end_turn"
+	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "IMAGE_SAFETY", "MALFORMED_RESPONSE":
+		return "refusal"
 	}
 
 	return "end_turn"
@@ -644,7 +644,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		if groundingMetadata := antigravityGroundingMetadata(root); groundingMetadata.Exists() {
 			toolUseID := newClaudeWebSearchToolUseID()
 			responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", buildClaudeWebSearchContent(toolUseID, antigravityTextContent(root), groundingMetadata))
-			responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", "end_turn")
+			responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", resolveStopReason(root.Get("response.candidates.0.finishReason").String(), false))
 			responseJSON, _ = sjson.SetBytes(responseJSON, "usage.server_tool_use.web_search_requests", 1)
 			return responseJSON
 		}
@@ -812,21 +812,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
 	}
 
-	stopReason := "end_turn"
-	if hasToolCall {
-		stopReason = "tool_use"
-	} else {
-		if finish := root.Get("response.candidates.0.finishReason"); finish.Exists() {
-			switch finish.String() {
-			case "MAX_TOKENS":
-				stopReason = "max_tokens"
-			case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
-				stopReason = "end_turn"
-			default:
-				stopReason = "end_turn"
-			}
-		}
-	}
+	stopReason := resolveStopReason(root.Get("response.candidates.0.finishReason").String(), hasToolCall)
 	responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", stopReason)
 
 	if promptTokens == 0 && outputTokens == 0 {

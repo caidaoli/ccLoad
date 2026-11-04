@@ -1,11 +1,67 @@
 package gemini
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func TestConvertGeminiRequestToOpenAI_OmittedRolesAndToolAliases(t *testing.T) {
+	for _, fields := range [][2]string{{"functionCall", "functionResponse"}, {"function_call", "function_response"}} {
+		t.Run(fields[0], func(t *testing.T) {
+			input := fmt.Sprintf(`{"contents":[
+				{"parts":[{"text":"first"}]},
+				{"parts":[{"text":"second"}]},
+				{"parts":[{"text":"checking"},{%q:{"id":"call_lookup","name":"lookup","args":{"query":"status"}}}]},
+				{"parts":[{%q:{"name":"lookup","response":{"result":"ok"}}}]},
+				{"parts":[{"text":"followup"}]}
+			]}`, fields[0], fields[1])
+			out, err := ConvertGeminiRequestToOpenAI("test-model", []byte(input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := gjson.GetBytes(out, "messages").Array()
+			if len(messages) != 5 {
+				t.Fatalf("want five messages without an empty user turn after the tool result, got %s", out)
+			}
+			for _, index := range []int{0, 1, 4} {
+				if messages[index].Get("role").String() != "user" {
+					t.Fatalf("plain text without role must stay user: %s", out)
+				}
+			}
+			toolCall := messages[2].Get("tool_calls.0")
+			if messages[2].Get("role").String() != "assistant" || messages[2].Get("content").String() != "checking" ||
+				toolCall.Get("id").String() != "call_lookup" || toolCall.Get("function.name").String() != "lookup" ||
+				gjson.Parse(toolCall.Get("function.arguments").String()).Get("query").String() != "status" {
+				t.Fatalf("function call turn not preserved as assistant: %s", out)
+			}
+			if messages[3].Get("role").String() != "tool" || messages[3].Get("tool_call_id").String() != "call_lookup" ||
+				gjson.Parse(messages[3].Get("content").String()).Get("result").String() != "ok" {
+				t.Fatalf("function response not paired: %s", out)
+			}
+			if messages[4].Get("content").String() != "followup" {
+				t.Fatalf("followup text changed: %s", out)
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToOpenAI_FunctionResponseWithTextPreservesUserContent(t *testing.T) {
+	out, err := ConvertGeminiRequestToOpenAI("test-model", []byte(`{"contents":[{"parts":[
+		{"function_response":{"id":"call_lookup","name":"lookup","response":{"result":"ok"}}},
+		{"text":"followup"}
+	]}]}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 || messages[0].Get("role").String() != "tool" ||
+		messages[1].Get("role").String() != "user" || messages[1].Get("content").String() != "followup" {
+		t.Fatalf("function response must retain accompanying user text: %s", out)
+	}
+}
 
 func TestConvertGeminiRequestToOpenAI_FunctionResponsesConsumeToolCallIDsFIFO(t *testing.T) {
 	inputJSON := []byte(`{
@@ -378,5 +434,25 @@ func TestConvertGeminiRequestToOpenAI_PreservesFunctionCallThoughtSignature(t *t
 	}
 	if gjson.GetBytes(out, "messages.1.tool_calls.1.extra_content").Exists() {
 		t.Fatalf("expected unsigned sibling tool call not to have extra_content; out=%s", string(out))
+	}
+	for _, functionField := range []string{"functionCall", "function_call"} {
+		for _, signatureField := range []string{"thoughtSignature", "thought_signature"} {
+			t.Run(functionField+"/"+signatureField, func(t *testing.T) {
+				input := fmt.Sprintf(`{"contents":[{"parts":[
+					{%q:{"name":"get_weather","args":{"city":"Paris"},%q:"SIG_PARIS"}},
+					{%q:{"name":"get_weather","args":{"city":"London"}}}
+				]}]}`, functionField, signatureField, functionField)
+				output, err := ConvertGeminiRequestToOpenAI("google/gemini-3-pro", []byte(input), false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := gjson.GetBytes(output, "messages.0.tool_calls.0.extra_content.google.thought_signature").String(); got != "SIG_PARIS" {
+					t.Fatalf("nested thought signature = %q, want SIG_PARIS; out=%s", got, output)
+				}
+				if gjson.GetBytes(output, "messages.0.tool_calls.1.extra_content").Exists() {
+					t.Fatalf("unsigned sibling acquired a thought signature: %s", output)
+				}
+			})
+		}
 	}
 }

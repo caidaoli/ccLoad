@@ -267,12 +267,13 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Contents conversion to messages with proper role mapping
 	if contents := root.Get("contents"); contents.Exists() && contents.IsArray() {
 		contents.ForEach(func(_, content gjson.Result) bool {
-			role := translatorcommon.GeminiMessageRole(content.Get("role").String())
+			parts := content.Get("parts")
+			role := translatorcommon.GeminiMessageRole(content.Get("role").String(), parts)
 
 			contentItems := make([][]byte, 0, 4)
 			// Counts what this turn sends; whitespace-only text is forwarded but never sendable.
 			sendable := 0
-			if parts := content.Get("parts"); parts.Exists() && parts.IsArray() {
+			if parts.Exists() && parts.IsArray() {
 				parts.ForEach(func(_, part gjson.Result) bool {
 					if translatorcommon.IsGeminiThoughtPart(part) {
 						return true
@@ -290,7 +291,7 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					}
 
 					// Function call (from model/assistant) conversion to tool use
-					if fc := part.Get("functionCall"); fc.Exists() && role == "assistant" {
+					if fc := translatorcommon.GeminiPartFunctionCall(part); fc.Exists() && role == "assistant" {
 						toolUse := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
 
 						// Reuse gateway-provided IDs when present, otherwise generate one for pairing.
@@ -314,7 +315,7 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					}
 
 					// Function response (from user) conversion to tool result
-					if fr := part.Get("functionResponse"); fr.Exists() {
+					if fr := translatorcommon.GeminiPartFunctionResponse(part); fr.Exists() {
 						toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":""}`)
 
 						// Attach the oldest queued tool_id to pair the response

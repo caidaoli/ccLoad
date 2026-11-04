@@ -22,6 +22,11 @@
 - Gemini/Antigravity 请求清理 `systemInstruction.parts` / `system_instruction.parts` 中的空对象 `{}`，保留其他 Part 及顺序；全部为空时删除该系统指令字段。清理不扩大 Vertex 思考签名的既有端点边界；未知 Gemini 中继的原生请求继续透传，Antigravity 的身份提示仍按原规则注入。
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。
 - Claude `tool_result.is_error` 仅布尔 `true` 在 Gemini/Antigravity 请求中映射为 `functionResponse.response.error`，其他值仍用 `result`；保留结果 JSON 类型、图片及工具调用配对。
+- Claude 工具结果中的图片在 Gemini/Antigravity 请求中嵌入所属 `functionResponse.parts[].inlineData`，不作为外层独立 Part；并行工具各自保留图片、调用 ID 与错误结果。
+- Gemini 跨协议入口接受 `functionCall/functionResponse` 及蛇形别名；缺少 role 且包含工具调用时按 assistant 处理，普通缺省 role 始终为 user，不按上一回合交替推断。纯工具结果转 Chat 不额外生成空 user 消息。
+- Chat/Claude/Gemini 转 Responses 保留输出 token 上限为 `max_output_tokens`；Chat 优先 `max_completion_tokens` 再 `max_tokens`，Claude 使用 `max_tokens`，Gemini 接受 generationConfig 及蛇形字段。普通同协议请求仍原样透传。
+- Responses 转 Claude 回放时，同一 assistant 回合存在空搜索结果则移除其文本的 `web_search_result_location` 引用，保留正文、其他引用和完整结果对应回合的引用；不引入运行时搜索缓存。
+- Antigravity 转 Claude 将安全/过滤终止原因映射为 `refusal`，工具调用仍优先 `tool_use`；流尾部空 `finishReason` 不覆盖先前非空原因，但仍触发待发搜索内容的排空。`MALFORMED_FUNCTION_CALL` 与 Gemini 转 Claude 一致不映射为 `refusal`（Claude Code 会将其报为违规），非流仍由应用层转为错误。
 - Claude 会话中 system 消息的 `tool_addition` 转 Responses 为 `additional_tools`，转 Chat 合并工具声明；内联工具参与长名称缩短及响应反向映射。工具声明与文本提醒不能拆散待完成的调用/结果配对；不因此启用 Claude `tool_search`。
 - OpenAI Chat 转 Codex 时，`service_tier` 的 `fast`/`priority` 规范为 `priority`，保留 `ultrafast`，忽略其他值；匹配时忽略大小写与首尾空白。
 - Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。

@@ -258,3 +258,40 @@ func attachClaudeCitations(textBlock []byte, annotations gjson.Result) []byte {
 	}
 	return updated
 }
+
+func claudeBlocksHaveEmptyWebSearchResult(blocks [][]byte) bool {
+	for _, raw := range blocks {
+		block := gjson.ParseBytes(raw)
+		content := block.Get("content")
+		if block.Get("type").String() == "web_search_tool_result" && content.IsArray() && len(content.Array()) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func stripClaudeWebSearchCitationsFromParts(parts [][]byte) {
+	for index, raw := range parts {
+		part := gjson.ParseBytes(raw)
+		if part.Get("type").String() != "text" {
+			continue
+		}
+		var kept [][]byte
+		dropped := false
+		for _, citation := range part.Get("citations").Array() {
+			if citation.Get("type").String() == "web_search_result_location" {
+				dropped = true
+				continue
+			}
+			kept = append(kept, []byte(citation.Raw))
+		}
+		if !dropped {
+			continue
+		}
+		if len(kept) == 0 {
+			parts[index], _ = sjson.DeleteBytes(raw, "citations")
+		} else {
+			parts[index], _ = sjson.SetRawBytes(raw, "citations", translatorcommon.JoinRawArray(kept))
+		}
+	}
+}

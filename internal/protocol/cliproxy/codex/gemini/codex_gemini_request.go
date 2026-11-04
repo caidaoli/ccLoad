@@ -130,12 +130,11 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		items := contents.Array()
 		for i := 0; i < len(items); i++ {
 			item := items[i]
-			role := translatorcommon.GeminiMessageRole(item.Get("role").String())
-
 			parts := item.Get("parts")
 			if !parts.IsArray() {
 				continue
 			}
+			role := translatorcommon.GeminiMessageRole(item.Get("role").String(), parts)
 			parr := parts.Array()
 			var pendingThoughtSummaryParts [][]byte
 			for j := 0; j < len(parr); j++ {
@@ -208,7 +207,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				}
 
 				// function call from model
-				if fc := p.Get("functionCall"); fc.Exists() {
+				if fc := translatorcommon.GeminiPartFunctionCall(p); fc.Exists() {
 					fn := []byte(`{"type":"function_call"}`)
 					if name := fc.Get("name"); name.Exists() {
 						n := name.String()
@@ -235,7 +234,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				}
 
 				// function response from user
-				if fr := p.Get("functionResponse"); fr.Exists() {
+				if fr := translatorcommon.GeminiPartFunctionResponse(p); fr.Exists() {
 					fno := []byte(`{"type":"function_call_output"}`)
 					// Prefer a string result if present; otherwise embed the raw response as a string
 					if res := fr.Get("response.result"); res.Exists() {
@@ -314,11 +313,27 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	// Fixed flags aligning with Codex expectations
 	out, _ = sjson.SetBytes(out, "parallel_tool_calls", true)
 	out = setCodexToolChoiceFromGeminiToolConfig(out, root.Get("toolConfig.functionCallingConfig"))
+	genConfig := root.Get("generationConfig")
+	if !genConfig.Exists() {
+		genConfig = root.Get("generation_config")
+	}
+	for _, v := range []gjson.Result{
+		genConfig.Get("maxOutputTokens"),
+		genConfig.Get("max_output_tokens"),
+		root.Get("maxOutputTokens"),
+		root.Get("max_output_tokens"),
+		root.Get("max_tokens"),
+	} {
+		if v.Type == gjson.Number {
+			out, _ = sjson.SetBytes(out, "max_output_tokens", v.Int())
+			break
+		}
+	}
 
 	// Convert Gemini thinkingConfig to Codex reasoning.effort.
 	// Note: Google official Python SDK sends snake_case fields (thinking_level/thinking_budget).
 	effortSet := false
-	if genConfig := root.Get("generationConfig"); genConfig.Exists() {
+	if genConfig.Exists() {
 		thinkingLevel := genConfig.Get("thinkingLevel")
 		if !thinkingLevel.Exists() {
 			thinkingLevel = genConfig.Get("thinking_level")

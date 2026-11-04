@@ -9,6 +9,41 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertOpenAIRequestToCodex_MaxOutputTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int64
+	}{
+		{"completion", `{"max_completion_tokens":2048}`, 2048},
+		{"legacy", `{"max_tokens":1024}`, 1024},
+		{"responses", `{"max_output_tokens":512}`, 512},
+		{"completion wins", `{"max_completion_tokens":2048,"max_tokens":1024,"max_output_tokens":512}`, 2048},
+		{"legacy wins", `{"max_tokens":1024,"max_output_tokens":512}`, 1024},
+		{"skip nonnumeric", `{"max_completion_tokens":"2048","max_tokens":1024}`, 1024},
+		{"skip null", `{"max_completion_tokens":null,"max_tokens":1024}`, 1024},
+		{"absent", `{}`, -1},
+		{"nonnumeric", `{"max_tokens":"1024"}`, -1},
+		{"zero", `{"max_tokens":0}`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertOpenAIRequestToCodex("gpt-5.1-codex", []byte(tt.input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := gjson.GetBytes(out, "max_output_tokens")
+			if tt.want < 0 {
+				if got.Exists() {
+					t.Fatalf("unexpected max_output_tokens: %s", out)
+				}
+			} else if got.Type != gjson.Number || got.Int() != tt.want {
+				t.Fatalf("max_output_tokens = %s, want %d; output=%s", got.Raw, tt.want, out)
+			}
+		})
+	}
+}
+
 // Basic tool-call: system + user + assistant(tool_calls, no content) + tool result.
 // Expects top-level instructions + user msg + function_call + function_call_output.
 // No empty assistant message should appear between user and function_call.

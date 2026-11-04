@@ -319,3 +319,100 @@ func TestTextSearchTextOrderPreservedInStreamingAndReplay(t *testing.T) {
 		t.Fatalf("unexpected output order: %s", completed.Get("response.output").Raw)
 	}
 }
+
+func TestWebSearchReplayDropsUnbackedCitations(t *testing.T) {
+	const user = `{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}`
+	const answer = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Cited answer.","annotations":[{"type":"web_search_result_location","url":"https://example.com/a","encrypted_index":"IDX_A"},{"type":"page_location","document_index":0,"encrypted_index":"IDX_DOC"}]}]}`
+	const validSearch = `{"type":"web_search_call","id":"ws_srvtoolu_valid","status":"completed","action":{"type":"search","query":"q"},"results":[{"title":"A","url":"https://example.com/a","encrypted_content":"ENC_A"}]}`
+	for _, tc := range []struct {
+		name         string
+		searches     []string
+		endUserTurn  bool
+		wantWeb      bool
+		wantResult   string
+		wantUseCount int
+	}{
+		{name: "missing results", searches: []string{`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed"}`}, endUserTurn: true, wantUseCount: 1},
+		{name: "empty results", searches: []string{`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","results":[]}`}, endUserTurn: true, wantUseCount: 1},
+		{name: "unencrypted results", searches: []string{`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","results":[{"url":"https://example.com/a","title":"A"}]}`}, endUserTurn: true, wantUseCount: 1},
+		{name: "valid results", searches: []string{validSearch}, endUserTurn: true, wantWeb: true, wantResult: "ENC_A", wantUseCount: 1},
+		{name: "one of multiple searches missing results", searches: []string{validSearch, `{"type":"web_search_call","id":"ws_srvtoolu_missing","status":"completed"}`}, endUserTurn: true, wantResult: "ENC_A", wantUseCount: 2},
+		{name: "paused search remains open", searches: []string{`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"in_progress"}`}, wantWeb: true, wantUseCount: 1},
+		{name: "no search result in this history", wantWeb: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			items := append([]string{user}, tc.searches...)
+			items = append(items, answer)
+			if tc.endUserTurn {
+				items = append(items, user)
+			}
+			out, err := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(items...), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var webCitations, documentCitations, useCount, emptyResults int
+			var text, encryptedResult string
+			for _, block := range gjson.GetBytes(out, "messages.1.content").Array() {
+				switch block.Get("type").String() {
+				case "server_tool_use":
+					useCount++
+				case "web_search_tool_result":
+					if len(block.Get("content").Array()) == 0 {
+						emptyResults++
+					}
+					if value := block.Get("content.0.encrypted_content").String(); value != "" {
+						encryptedResult = value
+					}
+				case "text":
+					text = block.Get("text").String()
+					for _, citation := range block.Get("citations").Array() {
+						switch citation.Get("type").String() {
+						case "web_search_result_location":
+							webCitations++
+						case "page_location":
+							if citation.Get("encrypted_index").String() != "IDX_DOC" {
+								t.Fatalf("document citation changed: %s", citation.Raw)
+							}
+							documentCitations++
+						}
+					}
+				}
+			}
+			if text != "Cited answer." || documentCitations != 1 || (webCitations == 1) != tc.wantWeb {
+				t.Fatalf("text=%q document citations=%d web citations=%d, want web=%v: %s", text, documentCitations, webCitations, tc.wantWeb, out)
+			}
+			if useCount != tc.wantUseCount || encryptedResult != tc.wantResult {
+				t.Fatalf("search uses=%d result=%q: %s", useCount, encryptedResult, out)
+			}
+			if tc.name == "paused search remains open" && emptyResults != 0 {
+				t.Fatalf("paused search gained an empty result: %s", out)
+			}
+		})
+	}
+}
+
+func TestWebSearchReplayCitationStateFollowsAssistantTurn(t *testing.T) {
+	const user = `{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}`
+	const answer = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer.","annotations":[{"type":"web_search_result_location","encrypted_index":"IDX_A"}]}]}`
+	const missingSearch = `{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed"}`
+	const validSearch = `{"type":"web_search_call","id":"ws_srvtoolu_2","status":"completed","results":[{"url":"https://example.com/a","encrypted_content":"ENC_A"}]}`
+	raw := responsesRequestFromItems(user, missingSearch,
+		`{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"}`,
+		`{"type":"function_call_output","call_id":"call_1","output":"ok"}`, answer,
+		user, validSearch, answer, user)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := gjson.GetBytes(out, "messages.3.content")
+	text := first.String()
+	if first.IsArray() {
+		text = first.Get("0.text").String()
+	}
+	if text != "Answer." || first.Get("0.citations").Exists() {
+		t.Fatalf("interleaved tool result lost empty-search state: %s", out)
+	}
+	if got := gjson.GetBytes(out, "messages.5.content.2.citations.0.encrypted_index").String(); got != "IDX_A" {
+		t.Fatalf("next user turn inherited empty-search state: %s", out)
+	}
+}

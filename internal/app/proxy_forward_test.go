@@ -721,7 +721,10 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		}
 	}
 	wireBody := reqCtx.translatedBody
-	for _, field := range []string{"max_output_tokens", "temperature", "truncation", "context_management", "user"} {
+	if got := gjson.GetBytes(wireBody, "max_output_tokens"); got.Type != gjson.Number || got.Int() != 16 {
+		t.Fatalf("output token limit was not raised to the Responses minimum: %s", wireBody)
+	}
+	for _, field := range []string{"temperature", "truncation", "context_management", "user"} {
 		if gjson.GetBytes(wireBody, field).Exists() {
 			t.Fatalf("unsupported field %s leaked: %s", field, wireBody)
 		}

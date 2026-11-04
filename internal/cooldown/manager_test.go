@@ -349,6 +349,50 @@ func TestHandleError_Generic429CoolsOnlyCurrentModel(t *testing.T) {
 	}
 }
 
+func TestHandleError_FableLimitWithout5hHeadersKeepsSiblingModelAvailable(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "fable-limit", URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}}, Enabled: true,
+		AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: `{"access_token":"test-access-token"}`,
+		ModelEntries: []model.ModelEntry{{Model: "claude-fable-5"}, {Model: "claude-opus-5"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetAt := time.Now().Add(6 * 24 * time.Hour).Truncate(time.Second)
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID: cfg.ID, KeyIndex: NoKeyIndex, Model: "claude-fable-5", StatusCode: http.StatusTooManyRequests,
+		ErrorBody: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`),
+		Headers: map[string][]string{
+			"Anthropic-Ratelimit-Unified-Status":               {"rejected"},
+			"Anthropic-Ratelimit-Unified-7d-Status":            {"allowed"},
+			"Anthropic-Ratelimit-Unified-7d_oi-Status":         {"rejected"},
+			"Anthropic-Ratelimit-Unified-Representative-Claim": {"seven_day_overage_included"},
+			"Anthropic-Ratelimit-Unified-Reset":                {strconv.FormatInt(resetAt.Unix(), 10)},
+		},
+	})
+	if action != ActionRetryModel {
+		t.Fatalf("action=%v, want ActionRetryModel", action)
+	}
+	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "claude-fable-5")
+	if !exists || !until.Equal(resetAt) {
+		t.Fatalf("Fable cooldown=%v exists=%v, want %v", until, exists, resetAt)
+	}
+	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "claude-opus-5"); exists {
+		t.Fatal("Fable limit must not cool the sibling model")
+	}
+	current, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.IsCoolingDown(time.Now()) {
+		t.Fatal("Fable limit must not cool the OAuth channel")
+	}
+}
+
 func TestHandleError_XAIFreeUsageExhaustedCoolsModelFor24Hours(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

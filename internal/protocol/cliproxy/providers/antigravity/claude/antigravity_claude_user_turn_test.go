@@ -1,8 +1,11 @@
 package claude
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
@@ -11,6 +14,137 @@ import (
 )
 
 const userTurnUpload = `{"type":"container_upload","file_id":"file-1"}`
+
+func TestConvertAntigravityResponseToClaude_FinishReasons(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"echo","input_schema":{"type":"object","properties":{"x":{"type":"string"}}}}]}`)
+	const usage = `{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":7,"thoughtsTokenCount":3,"totalTokenCount":110}`
+	for _, tt := range []struct {
+		reason string
+		want   string
+		parts  string
+	}{
+		{reason: "SAFETY", want: "refusal", parts: `[]`},
+		{reason: "RECITATION", want: "refusal", parts: `[]`},
+		{reason: "PROHIBITED_CONTENT", want: "refusal", parts: `[]`},
+		{reason: "SPII", want: "refusal", parts: `[]`},
+		{reason: "BLOCKLIST", want: "refusal", parts: `[]`},
+		{reason: "IMAGE_SAFETY", want: "refusal", parts: `[]`},
+		{reason: "MALFORMED_RESPONSE", want: "refusal", parts: `[]`},
+		{reason: "MALFORMED_FUNCTION_CALL", want: "end_turn", parts: `[]`},
+		{reason: " safety ", want: "refusal", parts: `[]`},
+		{reason: "MAX_TOKENS", want: "max_tokens", parts: `[{"text":"partial answer"}]`},
+		{reason: "STOP", want: "end_turn", parts: `[]`},
+		{reason: "SAFETY", want: "tool_use", parts: `[{"functionCall":{"name":"echo","args":{"x":"1"}}}]`},
+	} {
+		t.Run(tt.reason+"/"+tt.want, func(t *testing.T) {
+			candidate := fmt.Sprintf(`[{"content":{"role":"model","parts":%s},"finishReason":%q}]`, tt.parts, tt.reason)
+			raw := []byte(fmt.Sprintf(`{"response":{"candidates":%s,"usageMetadata":%s}}`, candidate, usage))
+			response := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", request, request, raw, nil)
+			if got := gjson.GetBytes(response, "stop_reason").String(); got != tt.want {
+				t.Fatalf("non-stream stop_reason = %q, want %q: %s", got, tt.want, response)
+			}
+			if got := gjson.GetBytes(response, "usage"); got.Get("input_tokens").Int() != 10 || got.Get("output_tokens").Int() != 10 || got.Get("cache_read_input_tokens").Int() != 90 {
+				t.Fatalf("non-stream usage changed: %s", got.Raw)
+			}
+
+			for _, trailingReason := range []string{"", " "} {
+				t.Run(fmt.Sprintf("stream/trailing=%q", trailingReason), func(t *testing.T) {
+					var state any
+					finish := []byte(fmt.Sprintf(`{"response":{"candidates":%s}}`, candidate))
+					tail := []byte(fmt.Sprintf(`{"response":{"candidates":[{"finishReason":%q}],"usageMetadata":%s}}`, trailingReason, usage))
+					var output []byte
+					for _, chunk := range [][]byte{finish, tail, []byte("[DONE]")} {
+						output = append(output, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", request, request, chunk, &state), nil)...)
+					}
+					events := antigravityClaudeStreamEvents(t, output)
+					if len(events) < 2 || events[0].Get("type").String() != "message_start" || events[len(events)-2].Get("type").String() != "message_delta" || events[len(events)-1].Get("type").String() != "message_stop" {
+						t.Fatalf("stream did not close in order: %s", output)
+					}
+					var delta gjson.Result
+					deltaCount, stopCount := 0, 0
+					for _, event := range events {
+						switch event.Get("type").String() {
+						case "message_delta":
+							delta, deltaCount = event, deltaCount+1
+						case "message_stop":
+							stopCount++
+						}
+					}
+					if deltaCount != 1 || stopCount != 1 {
+						t.Fatalf("stream emitted %d deltas and %d stops, want one each: %s", deltaCount, stopCount, output)
+					}
+					if got := delta.Get("delta.stop_reason").String(); got != tt.want {
+						t.Fatalf("stream stop_reason = %q, want %q: %s", got, tt.want, delta.Raw)
+					}
+					if got := delta.Get("usage"); got.Get("input_tokens").Int() != 10 || got.Get("output_tokens").Int() != 10 || got.Get("cache_read_input_tokens").Int() != 90 {
+						t.Fatalf("stream usage changed: %s", got.Raw)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToClaudeNonStream_WebSearchFinishReasons(t *testing.T) {
+	request := []byte(`{"model":"gemini-3.8-flash-high","tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
+	translated := []byte(`{"model":"gemini-3.8-flash-high","request":{"tools":[{"googleSearch":{}}]}}`)
+	for _, tt := range []struct{ reason, want string }{
+		{reason: "SAFETY", want: "refusal"},
+		{reason: "MAX_TOKENS", want: "max_tokens"},
+		{reason: "STOP", want: "end_turn"},
+	} {
+		t.Run(tt.reason, func(t *testing.T) {
+			raw := []byte(fmt.Sprintf(`{"response":{"candidates":[{"content":{"parts":[{"text":"Partial grounded answer."}]},"groundingMetadata":{"webSearchQueries":["query"],"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example"}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4,"totalTokenCount":14}}}`, tt.reason))
+			response := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3.8-flash-high", request, translated, raw, nil)
+			if got := gjson.GetBytes(response, "stop_reason").String(); got != tt.want {
+				t.Fatalf("grounded stop_reason = %q, want %q: %s", got, tt.want, response)
+			}
+			if got := gjson.GetBytes(response, "usage.server_tool_use.web_search_requests").Int(); got != 1 {
+				t.Fatalf("web_search_requests = %d, want 1: %s", got, response)
+			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToClaudeStream_WebSearchBufferDrainsOnEmptyFinishReason(t *testing.T) {
+	request := []byte(`{"model":"gemini-3.8-flash-high","tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
+	translated := []byte(`{"model":"gemini-3.8-flash-high","request":{"tools":[{"googleSearch":{}}]}}`)
+	raw := []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Direct answer without grounding."}]},"finishReason":""}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4,"totalTokenCount":14}}}`)
+	var state any
+	output := bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "gemini-3.8-flash-high", request, translated, raw, &state), nil)
+	output = append(output, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "gemini-3.8-flash-high", request, translated, []byte("[DONE]"), &state), nil)...)
+	var text strings.Builder
+	var stopReason string
+	for _, event := range antigravityClaudeStreamEvents(t, output) {
+		if event.Get("delta.type").String() == "text_delta" {
+			text.WriteString(event.Get("delta.text").String())
+		}
+		if event.Get("type").String() == "message_delta" {
+			stopReason = event.Get("delta.stop_reason").String()
+		}
+	}
+	if text.String() != "Direct answer without grounding." || stopReason != "end_turn" {
+		t.Fatalf("buffered response lost: text=%q, stop_reason=%q: %s", text.String(), stopReason, output)
+	}
+}
+
+func antigravityClaudeStreamEvents(t *testing.T, output []byte) []gjson.Result {
+	t.Helper()
+	var events []gjson.Result
+	for _, frame := range bytes.Split(output, []byte("\n\n")) {
+		for _, line := range bytes.Split(frame, []byte("\n")) {
+			if !bytes.HasPrefix(line, []byte("data: ")) {
+				continue
+			}
+			payload := bytes.TrimPrefix(line, []byte("data: "))
+			if !gjson.ValidBytes(payload) {
+				t.Fatalf("invalid SSE JSON: %s", payload)
+			}
+			events = append(events, gjson.ParseBytes(payload))
+		}
+	}
+	return events
+}
 
 func TestConvertClaudeRequestToAntigravity_RefusesAnyEmptiedUserTurn(t *testing.T) {
 	cases := []struct {

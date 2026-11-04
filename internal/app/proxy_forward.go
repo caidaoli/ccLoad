@@ -4139,6 +4139,7 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 		protocol.DetectRequestFamily(requestPath) != protocol.RequestFamilyResponses {
 		return body
 	}
+	body = clampCodexMaxOutputTokens(body)
 	body = sanitizeCodexInputItemIDs(body)
 	body = normalizeCodexToolSchemas(body)
 	// Anyrouter rejects Codex's per-content classification metadata.
@@ -4160,6 +4161,15 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 		if stripped, ok := codexBodyWithoutToolSearchOnlyInputItems(body); ok {
 			return stripped
 		}
+	}
+	return body
+}
+
+// clampCodexMaxOutputTokens raises a positive max_output_tokens below the
+// Responses minimum of 16; the upstream 400 would otherwise cool the model.
+func clampCodexMaxOutputTokens(body []byte) []byte {
+	if budget := gjson.GetBytes(body, "max_output_tokens"); budget.Type == gjson.Number && budget.Num > 0 && budget.Num < 16 {
+		body, _ = sjson.SetBytes(body, "max_output_tokens", 16)
 	}
 	return body
 }
