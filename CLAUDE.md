@@ -30,7 +30,7 @@ golangci-lint run ./...        # Go 改动提交前零警告
 ## 通用代码约束
 
 - 用 `any`；配置错误 fail-fast；`defer cancel()` 无条件调用，取消监听用 `context.AfterFunc`。
-- lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose，gosec 已禁。
+- lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose/modernize，gosec 已禁；modernize 不检查 `internal/protocol/cliproxy/` 快照。
 - JSON 重复 key 按 `encoding/json` 后者胜出，不加检测、拒绝或兼容兜底，审查也不作为问题；只有改写与渲染不一致时才就地收敛（见 `ordered_json.go`）。
 - Web 单选下拉必须可搜索：统一由 `searchable-select.js` 增强并复用 `createSearchableCombobox`；原生 `<select>` 仅作隐藏的表单/业务值载体。保留动态选项、禁用态、`input/change`、表单提交、键盘/ARIA 与 `<dialog>` 顶层菜单；多选控件未提供可搜索实现前禁止新增。
 

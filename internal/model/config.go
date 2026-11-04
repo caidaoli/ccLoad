@@ -1196,7 +1196,7 @@ func compareModelVersion(a, b string) int {
 	verA := extractVersionNumbers(a)
 	verB := extractVersionNumbers(b)
 	maxLen := max(len(verB), len(verA))
-	for i := 0; i < maxLen; i++ {
+	for i := range maxLen {
 		va, vb := 0, 0
 		if i < len(verA) {
 			va = verA[i]

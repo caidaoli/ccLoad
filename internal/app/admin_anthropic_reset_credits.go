@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -208,7 +209,7 @@ func (s *Server) HandleAnthropicResetCredits(c *gin.Context) {
 	if urls := cfg.GetURLs(); len(urls) > 0 {
 		baseURL = urls[0]
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		credits, queryErr := requestAnthropicResetCredits(requestCtx, client, credential, baseURL)
 		if queryErr == nil {
 			RespondJSON(c, http.StatusOK, credits)
@@ -233,10 +234,5 @@ func (s *Server) HandleAnthropicResetCredits(c *gin.Context) {
 }
 
 func anthropicResetHasProfileScope(scope string) bool {
-	for _, item := range strings.Fields(scope) {
-		if item == "user:profile" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Fields(scope), "user:profile")
 }

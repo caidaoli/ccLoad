@@ -1388,10 +1388,8 @@ func TestInjectAnthropicBetaFlagUsesExactTokensAndDropsEmptyValues(t *testing.T)
 	if got != "foo-"+flag+"-bar,oauth-2025-04-20,"+flag {
 		t.Fatalf("anthropic-beta = %q, want exact token append without empty values", got)
 	}
-	for _, token := range strings.Split(got, ",") {
-		if token == flag {
-			return
-		}
+	if slices.Contains(strings.Split(got, ","), flag) {
+		return
 	}
 	t.Fatalf("anthropic-beta = %q, exact flag token missing", got)
 }

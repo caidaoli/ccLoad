@@ -170,16 +170,16 @@ func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs [
 	}
 
 	seen := make(map[int64]struct{})
-	slices := make([]int64, 0, len(keys))
+	ledgerSlices := make([]int64, 0, len(keys))
 	for _, key := range keys {
 		start := key.bucketAt - key.bucketAt%OAuthQuotaLedgerReplicationSlice
 		if _, ok := seen[start]; !ok {
 			seen[start] = struct{}{}
-			slices = append(slices, start)
+			ledgerSlices = append(ledgerSlices, start)
 		}
 	}
-	sort.Slice(slices, func(i, j int) bool { return slices[i] < slices[j] })
-	return slices, nil
+	slices.Sort(ledgerSlices)
+	return ledgerSlices, nil
 }
 
 func (s *SQLStore) oauthQuotaLedgerAccumulateClause() string {

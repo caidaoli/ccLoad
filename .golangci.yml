@@ -16,7 +16,12 @@ linters:
     # - gosec        # 安全审计
     - revive       # 代码风格检查
     - bodyclose    # 确保 HTTP body 已关闭（防止连接泄漏）
+    - modernize    # 使用当前 Go 版本的标准写法
   settings:
+    modernize:
+      disable:
+        # 把短循环里的 += 改成 Builder 后只是在 WriteString 里拼接，可读性更差
+        - stringsbuilder
     revive:
       rules:
         # 禁用类型名称重叠检查（如 sql.SQLStore），重命名会破坏 API
@@ -26,6 +31,12 @@ linters:
         # 禁用包名检查（util 等通用包名在 internal 中是合理的）
         - name: var-naming
           disabled: true
+  exclusions:
+    rules:
+      # CLIProxyAPI 快照须与同步清单逐字节一致，只随同步改动
+      - path: internal/protocol/cliproxy/
+        linters:
+          - modernize
 
 formatters:
   enable:
