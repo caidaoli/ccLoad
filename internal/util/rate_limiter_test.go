@@ -194,12 +194,12 @@ func TestConcurrentAccess(t *testing.T) {
 	attemptsPerGoroutine := 5
 
 	// 并发执行多个尝试
-	for i := 0; i < concurrency; i++ {
+	for range concurrency {
 		wg.Add(1)
 		ip := "192.168.1.20" // 同一个IP
 		go func() {
 			defer wg.Done()
-			for j := 0; j < attemptsPerGoroutine; j++ {
+			for range attemptsPerGoroutine {
 				limiter.AllowAttempt(ip)
 				limiter.GetAttemptCount(ip)
 				limiter.GetLockoutTime(ip)

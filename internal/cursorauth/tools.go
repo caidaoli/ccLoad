@@ -2,6 +2,7 @@ package cursorauth
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -243,8 +244,8 @@ func formatMessage(message map[string]any) string {
 func parseToolResults(raw map[string]any) []ToolResult {
 	messages := requestMessages(raw)
 	var trailing []ToolResult
-	for index := len(messages) - 1; index >= 0; index-- {
-		message, _ := messages[index].(map[string]any)
+	for _, message := range slices.Backward(messages) {
+		message, _ := message.(map[string]any)
 		batch := toolResultsFromMessage(message)
 		if len(batch) == 0 {
 			// Cursor clients may append a system context block after the tool

@@ -109,10 +109,7 @@ func (s *Service) ConvertSSO(ctx context.Context, cookie string) (*Credential, e
 		if remaining <= 0 {
 			return nil, ssoPollDeadlineError(pollCtx, deviceOwnsDeadline)
 		}
-		wait := interval
-		if wait > remaining {
-			wait = remaining
-		}
+		wait := min(interval, remaining)
 		if err := sleepContext(pollCtx, wait); err != nil {
 			return nil, ssoPollDeadlineError(pollCtx, deviceOwnsDeadline)
 		}
@@ -284,7 +281,7 @@ func normalizeSSOCookie(value string) string {
 	if strings.HasPrefix(strings.ToLower(value), "cookie:") {
 		value = strings.TrimSpace(value[len("cookie:"):])
 	}
-	for _, part := range strings.Split(value, ";") {
+	for part := range strings.SplitSeq(value, ";") {
 		name, token, found := strings.Cut(strings.TrimSpace(part), "=")
 		if found && (strings.EqualFold(strings.TrimSpace(name), "sso") || strings.EqualFold(strings.TrimSpace(name), "sso-rw")) {
 			return strings.TrimSpace(token)

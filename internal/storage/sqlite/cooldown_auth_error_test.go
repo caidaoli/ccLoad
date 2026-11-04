@@ -288,12 +288,10 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 	// 并发触发10次401错误（足以验证并发安全性）
 	const concurrency = 10
 	var wg sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range concurrency {
+		wg.Go(func() {
 			_, _ = store.BumpChannelCooldown(ctx, created.ID, time.Now(), 401)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -358,8 +356,8 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	var successCount int32
 
 	// 每个Key更新3次，共9次操作
-	for keyIndex := 0; keyIndex < 3; keyIndex++ {
-		for i := 0; i < 3; i++ {
+	for keyIndex := range 3 {
+		for range 3 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -378,7 +376,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	t.Logf("[INFO] 并发更新完成: 成功次数=%d/9", successCount)
 
 	// 验证每个Key的冷却状态
-	for keyIndex := 0; keyIndex < 3; keyIndex++ {
+	for keyIndex := range 3 {
 		until, exists := getKeyCooldownUntil(ctx, store, created.ID, keyIndex)
 		if !exists {
 			t.Errorf("Key %d 冷却记录不存在", keyIndex)
@@ -426,7 +424,7 @@ func TestRaceConditionDetection(t *testing.T) {
 
 	// 并发场景：同时读写冷却状态（降低并发度）
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		wg.Add(3)
 
 		// 写操作：更新渠道冷却

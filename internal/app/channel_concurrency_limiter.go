@@ -144,8 +144,7 @@ func (rc *releaseOnCloseReadCloser) Close() error {
 }
 
 func channelConcurrencyLimit(err error) (active, limit int, ok bool) {
-	var concurrencyErr *channelConcurrencyExceededError
-	if errors.As(err, &concurrencyErr) {
+	if concurrencyErr, ok := errors.AsType[*channelConcurrencyExceededError](err); ok {
 		return concurrencyErr.active, concurrencyErr.limit, true
 	}
 	return 0, 0, false

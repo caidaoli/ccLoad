@@ -1368,7 +1368,7 @@ func TestOAuthDetectionPersistsUsageAndCost(t *testing.T) {
 			srv := newInMemoryServer(t)
 			cfg := createAnthropicOAuthChannelForAdminTest(t, srv, upstream.URL)
 			var previousCost int64
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				if mode == "scheduled" {
 					srv.runScheduledChannelCheck(context.Background(), cfg, nil, "hello")
 				} else {

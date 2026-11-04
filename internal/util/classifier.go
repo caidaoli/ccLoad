@@ -1753,8 +1753,7 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 	}
 
 	// 快速路径4：检测net.Error的超时场景
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		if netErr.Timeout() {
 			return 504, ErrorLevelChannel, true // Gateway Timeout，可重试
 		}

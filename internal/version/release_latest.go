@@ -300,11 +300,11 @@ func releaseTagFromURL(rawURL string) (string, error) {
 		return "", fmt.Errorf("parse latest release URL: %w", err)
 	}
 	path := strings.TrimRight(u.EscapedPath(), "/")
-	idx := strings.LastIndex(path, releaseTagPathMarker)
-	if idx < 0 {
+	_, after, ok := strings.CutLast(path, releaseTagPathMarker)
+	if !ok {
 		return "", fmt.Errorf("latest release URL %q missing %s", rawURL, releaseTagPathMarker)
 	}
-	escapedTag := strings.Trim(path[idx+len(releaseTagPathMarker):], "/")
+	escapedTag := strings.Trim(after, "/")
 	if escapedTag == "" {
 		return "", fmt.Errorf("latest release URL %q missing tag", rawURL)
 	}

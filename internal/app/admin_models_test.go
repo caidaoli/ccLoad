@@ -1471,7 +1471,7 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name: "Codex models", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
 		URLs:         model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
-		ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra", RedirectModel: "gpt-6-astra", Pricing: &util.CustomModelPrice{InputPrice: float64PtrForModelsTest(3), OutputPrice: float64PtrForModelsTest(5)}}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra", RedirectModel: "gpt-6-astra", Pricing: &util.CustomModelPrice{InputPrice: new(3.0), OutputPrice: new(5.0)}}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1528,8 +1528,6 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 		t.Fatalf("manifest not persisted: credential=%+v, error=%v", storedCredential, err)
 	}
 }
-
-func float64PtrForModelsTest(value float64) *float64 { return &value }
 
 func TestAdminModels_CodexManifestRefreshBoundaries(t *testing.T) {
 	for _, scenario := range []string{"refresh401", "unavailable", "invalid", "redirect", "expandedCredential", "oldEpoch", "baseURLOverride", "multipleURLs", "manualQuotaReset"} {

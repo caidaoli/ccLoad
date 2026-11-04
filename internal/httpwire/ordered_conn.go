@@ -186,7 +186,7 @@ func requestUsesChunkedEncoding(lines [][]byte) bool {
 			continue
 		}
 		colon := bytes.IndexByte(line, ':')
-		for _, encoding := range strings.Split(string(line[colon+1:]), ",") {
+		for encoding := range strings.SplitSeq(string(line[colon+1:]), ",") {
 			if strings.EqualFold(strings.TrimSpace(encoding), "chunked") {
 				return true
 			}

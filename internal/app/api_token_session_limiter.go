@@ -42,10 +42,7 @@ func (l *apiTokenSessionLimiter) allow(tokenID int64) (bool, time.Duration) {
 	events := retainRecentSessionIssues(l.issued[tokenID], cutoff)
 	if len(events) >= apiTokenSessionIssueLimit {
 		l.issued[tokenID] = events
-		retryAfter := events[0].Add(apiTokenSessionIssueWindow).Sub(now)
-		if retryAfter < 0 {
-			retryAfter = 0
-		}
+		retryAfter := max(events[0].Add(apiTokenSessionIssueWindow).Sub(now), 0)
 		return false, retryAfter
 	}
 

@@ -1105,7 +1105,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}}
 
-		for i := 0; i < 30; i++ {
+		for range 30 {
 			recorder := newRecorder()
 			_, _, _ = srv.forwardOnceAsync(
 				context.Background(),
@@ -1141,7 +1141,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}}
 
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			ctx, cancel := context.WithCancel(context.Background())
 			recorder := newRecorder()
 
@@ -1177,7 +1177,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 		cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}}
 
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			recorder := newRecorder()
 			_, _, _ = srv.forwardOnceAsync(
 				context.Background(),

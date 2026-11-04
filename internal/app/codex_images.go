@@ -60,8 +60,8 @@ func codexImagesURL(baseURL, imagePath, rawQuery string) string {
 		return buildUpstreamURL(baseURL, imagePath, rawQuery)
 	}
 	for _, suffix := range []string{"/responses", "/images/generations", "/images/edits"} {
-		if strings.HasSuffix(parsed.Path, suffix) {
-			parsed.Path = strings.TrimSuffix(parsed.Path, suffix)
+		if before, ok := strings.CutSuffix(parsed.Path, suffix); ok {
+			parsed.Path = before
 			break
 		}
 	}

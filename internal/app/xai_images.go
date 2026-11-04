@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,7 +75,7 @@ func (s *xaiImagesStreamState) outputs() []xaiImageGenerationOutput {
 	for index := range s.outputByIndex {
 		indexes = append(indexes, index)
 	}
-	sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
+	slices.Sort(indexes)
 	outputs := make([]xaiImageGenerationOutput, 0, len(indexes)+len(s.fallback))
 	for _, index := range indexes {
 		outputs = append(outputs, s.outputByIndex[index])

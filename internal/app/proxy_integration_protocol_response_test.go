@@ -30,7 +30,7 @@ func TestProxy_XAIOAuthStreamsThroughAllClientProtocols(t *testing.T) {
 			name: "Codex", path: "/v1/responses",
 			body: map[string]any{"model": "grok-4.5", "stream": true, "input": "hello"},
 			text: func(body []byte) string {
-				for _, block := range bytes.Split(body, []byte("\n\n")) {
+				for block := range bytes.SplitSeq(body, []byte("\n\n")) {
 					eventType, data := parseSSEEventChunk(block)
 					payload, ok := decodeSSEPayload(data)
 					if ok && eventType == "response.output_text.delta" {
@@ -45,7 +45,7 @@ func TestProxy_XAIOAuthStreamsThroughAllClientProtocols(t *testing.T) {
 			name: "OpenAI", path: "/v1/chat/completions",
 			body: map[string]any{"model": "grok-4.5", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
 			text: func(body []byte) string {
-				for _, block := range bytes.Split(body, []byte("\n\n")) {
+				for block := range bytes.SplitSeq(body, []byte("\n\n")) {
 					_, data := parseSSEEventChunk(block)
 					payload, ok := decodeSSEPayload(data)
 					if !ok {
@@ -69,7 +69,7 @@ func TestProxy_XAIOAuthStreamsThroughAllClientProtocols(t *testing.T) {
 			body:    map[string]any{"model": "grok-4.5", "stream": true, "max_tokens": 64, "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
 			headers: map[string]string{"anthropic-version": "2023-06-01"},
 			text: func(body []byte) string {
-				for _, block := range bytes.Split(body, []byte("\n\n")) {
+				for block := range bytes.SplitSeq(body, []byte("\n\n")) {
 					eventType, data := parseSSEEventChunk(block)
 					payload, ok := decodeSSEPayload(data)
 					if !ok || eventType != "content_block_delta" {
@@ -87,7 +87,7 @@ func TestProxy_XAIOAuthStreamsThroughAllClientProtocols(t *testing.T) {
 			name: "Gemini", path: "/v1beta/models/grok-4.5:streamGenerateContent?alt=sse",
 			body: map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}},
 			text: func(body []byte) string {
-				for _, block := range bytes.Split(body, []byte("\n\n")) {
+				for block := range bytes.SplitSeq(body, []byte("\n\n")) {
 					_, data := parseSSEEventChunk(block)
 					payload, ok := decodeSSEPayload(data)
 					if !ok {
@@ -233,7 +233,7 @@ func TestProxy_CodexCompactionSummarizesAcrossProtocols(t *testing.T) {
 				usageBody := response.Body.Bytes()
 				if stream {
 					var eventTypes []string
-					for _, block := range strings.Split(response.Body.String(), "\n\n") {
+					for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 						eventType, data := parseSSEEventChunk([]byte(block))
 						payload, ok := decodeSSEPayload(data)
 						if !ok {
@@ -406,7 +406,7 @@ func TestProxy_CodexCompactionReplaysFullSessionAcrossRetry(t *testing.T) {
 		t.Fatalf("initial generation status=%d body=%s", initial.Code, initial.Body.String())
 	}
 	var previousResponseID string
-	for _, block := range strings.Split(initial.Body.String(), "\n\n") {
+	for block := range strings.SplitSeq(initial.Body.String(), "\n\n") {
 		eventType, data := parseSSEEventChunk([]byte(block))
 		payload, ok := decodeSSEPayload(data)
 		if ok && eventType == "response.completed" {
@@ -429,7 +429,7 @@ func TestProxy_CodexCompactionReplaysFullSessionAcrossRetry(t *testing.T) {
 	}
 	compactionItemDone := 0
 	completedOutputCount := 0
-	for _, block := range strings.Split(compacted.Body.String(), "\n\n") {
+	for block := range strings.SplitSeq(compacted.Body.String(), "\n\n") {
 		eventType, data := parseSSEEventChunk([]byte(block))
 		payload, ok := decodeSSEPayload(data)
 		if !ok {
@@ -497,7 +497,7 @@ func TestProxy_CodexCompactionHistoryReplaysToNativeCodex(t *testing.T) {
 		t.Fatalf("OpenAI compaction status=%d body=%s", compacted.Code, compacted.Body.String())
 	}
 	var compactResponseID string
-	for _, block := range strings.Split(compacted.Body.String(), "\n\n") {
+	for block := range strings.SplitSeq(compacted.Body.String(), "\n\n") {
 		eventType, data := parseSSEEventChunk([]byte(block))
 		payload, ok := decodeSSEPayload(data)
 		if ok && eventType == "response.completed" {
@@ -1003,7 +1003,7 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 	var partialJSON []string
 	var stopReason string
 	messageStopped := false
-	for _, block := range strings.Split(body, "\n\n") {
+	for block := range strings.SplitSeq(body, "\n\n") {
 		eventType, data := parseSSEEventChunk([]byte(block))
 		payload, ok := decodeSSEPayload(data)
 		if !ok {
@@ -1107,7 +1107,7 @@ func TestProxy_StreamingGeminiResponseToCodexTransform_MultipleToolCallsAcrossCh
 	}
 	var calls []functionCall
 	var completed map[string]any
-	for _, block := range strings.Split(body, "\n\n") {
+	for block := range strings.SplitSeq(body, "\n\n") {
 		eventType, data := parseSSEEventChunk([]byte(block))
 		payload, ok := decodeSSEPayload(data)
 		if !ok {

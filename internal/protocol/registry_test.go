@@ -701,16 +701,14 @@ func TestRegistry_TranslateRequestToAnthropicDerivesDeterministicIdentity(t *tes
 			errors := make(chan error, requests)
 			var wg sync.WaitGroup
 			for range requests {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+				wg.Go(func() {
 					out, err := reg.TranslateRequest(test.from, protocol.Anthropic, "claude-3-5-sonnet", test.body, false)
 					if err != nil {
 						errors <- err
 						return
 					}
 					results <- out
-				}()
+				})
 			}
 			wg.Wait()
 			close(results)

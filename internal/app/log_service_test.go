@@ -240,7 +240,7 @@ func TestAddLogAsync_DropCountAccumulates(t *testing.T) {
 		StatusCode: 200,
 	}
 
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		svc.AddLogAsync(entry)
 	}
 

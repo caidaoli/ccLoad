@@ -30,7 +30,7 @@ func TestChannelRPMLimiterZeroLimitIsUnlimited(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
 	limiter := newRPMLimiter(clock.Now)
 
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		if !limiter.reserve(42, 0).allowed {
 			t.Fatalf("request %d rejected for zero RPM limit", i+1)
 		}
@@ -165,7 +165,7 @@ func TestDeleteChannelByIDRemovesChannelRPMState(t *testing.T) {
 func TestRPMLimiterDynamicLimitKeepsRollingWindow(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
 	limiter := newRPMLimiter(clock.Now)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if !limiter.reserve(7, 10).allowed {
 			t.Fatal("initial request rejected")
 		}
@@ -202,7 +202,7 @@ func TestRPMLimiterConcurrentAdmission(t *testing.T) {
 	var mu sync.Mutex
 	var accepted int
 	var workers sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		workers.Go(func() {
 			if limiter.reserve(7, 10).allowed {
 				mu.Lock()

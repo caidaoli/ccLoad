@@ -335,7 +335,7 @@ func assertProxyToolSearchClientFunctionCall(t *testing.T, body []byte, streamin
 		return
 	}
 
-	for _, block := range bytes.Split(body, []byte("\n\n")) {
+	for block := range bytes.SplitSeq(body, []byte("\n\n")) {
 		eventType, data := parseSSEEventChunk(block)
 		payload, ok := decodeSSEPayload(data)
 		if !ok || eventType != "response.output_item.done" {
@@ -383,7 +383,7 @@ func assertProxyToolSearchCompletedResponse(t *testing.T, body []byte, streaming
 	}
 
 	var marker, status string
-	for _, block := range bytes.Split(body, []byte("\n\n")) {
+	for block := range bytes.SplitSeq(body, []byte("\n\n")) {
 		eventType, data := parseSSEEventChunk(block)
 		payload, ok := decodeSSEPayload(data)
 		if !ok {

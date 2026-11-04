@@ -106,7 +106,7 @@ func TestPrivacyProxySSESplitPlaceholder(t *testing.T) {
 	var text strings.Builder
 	var total int64
 	done := false
-	for _, line := range strings.Split(response.Body.String(), "\n") {
+	for line := range strings.SplitSeq(response.Body.String(), "\n") {
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}

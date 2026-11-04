@@ -293,8 +293,8 @@ func replaceCodexSpawnAgentModels(description, modelList string) string {
 	}
 	cleaned, indent := removeCodexSpawnAgentModelSections(description)
 	section := indent + codexSpawnAgentModelsHeading + "\n" + modelList + "\n"
-	if markerIndex := strings.Index(cleaned, codexSpawnAgentDescriptionMarker); markerIndex >= 0 {
-		lineStart := strings.LastIndex(cleaned[:markerIndex], "\n") + 1
+	if before, _, ok := strings.Cut(cleaned, codexSpawnAgentDescriptionMarker); ok {
+		lineStart := strings.LastIndex(before, "\n") + 1
 		return cleaned[:lineStart] + section + cleaned[lineStart:]
 	}
 	separator := ""

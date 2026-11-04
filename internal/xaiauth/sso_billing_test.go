@@ -180,7 +180,6 @@ func TestConvertSSOPollDeadlineBoundsLongInterval(t *testing.T) {
 func TestConvertSSORejectsInvalidDeviceExpiresIn(t *testing.T) {
 	t.Parallel()
 	for _, expiresIn := range []int{0, -1} {
-		expiresIn := expiresIn
 		t.Run(fmt.Sprintf("expires_in_%d", expiresIn), func(t *testing.T) {
 			requests := 0
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

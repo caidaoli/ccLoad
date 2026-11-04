@@ -52,7 +52,7 @@ data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_xa
 	var translated bytes.Buffer
 	counts := make(map[string]int)
 	var nextSequence int64
-	for _, frame := range strings.Split(string(normalized), "\n\n") {
+	for frame := range strings.SplitSeq(string(normalized), "\n\n") {
 		if frame == "" {
 			continue
 		}
@@ -181,7 +181,7 @@ data: {"type":"response.completed","response":{"id":"resp_xai","status":"complet
 			}
 			var events []string
 			var payloads []gjson.Result
-			for _, frame := range strings.Split(gotStream, "\n\n") {
+			for frame := range strings.SplitSeq(gotStream, "\n\n") {
 				if frame == "" {
 					continue
 				}
@@ -452,10 +452,7 @@ func (w *streamStatsResponseWriter) WriteHeader(status int) {
 func (w *streamStatsResponseWriter) Write(p []byte) (int, error) {
 	w.writeCalls++
 	if w.writeErr != nil {
-		n := w.writeBytes
-		if n > len(p) {
-			n = len(p)
-		}
+		n := min(w.writeBytes, len(p))
 		return n, w.writeErr
 	}
 	return w.body.Write(p)

@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -3123,9 +3125,7 @@ func markSSEErrorForwardResult(res *fwResult) {
 		if res.Header == nil {
 			res.Header = make(http.Header)
 		}
-		for name, values := range headers {
-			res.Header[name] = values
-		}
+		maps.Copy(res.Header, headers)
 	}
 	if res.Header != nil && looksLikeJSON(res.Body) {
 		// 重试耗尽时 body 是错误事件的 JSON 负载，不能再沿用上游的 text/event-stream。
@@ -3594,8 +3594,7 @@ func (s *Server) forwardAttempt(
 		if errors.Is(err, errAntigravityCreditsUnavailable) {
 			return nil, cooldown.ActionRetryChannel, nil
 		}
-		var validationErr *requestValidationError
-		if errors.As(err, &validationErr) {
+		if validationErr, ok := errors.AsType[*requestValidationError](err); ok {
 			return &proxyResult{
 				status:     http.StatusBadRequest,
 				body:       []byte(validationErr.Error()),
@@ -3604,8 +3603,7 @@ func (s *Server) forwardAttempt(
 				nextAction: cooldown.ActionReturnClient,
 			}, cooldown.ActionReturnClient, nil
 		}
-		var targetCooldownErr *codexWebsocketTargetCooldownError
-		if errors.As(err, &targetCooldownErr) {
+		if targetCooldownErr, ok := errors.AsType[*codexWebsocketTargetCooldownError](err); ok {
 			return &proxyResult{
 				status:                 util.StatusStreamIncomplete,
 				body:                   []byte(targetCooldownErr.Error()),
@@ -3615,8 +3613,7 @@ func (s *Server) forwardAttempt(
 				websocketTargetCooling: true,
 			}, cooldown.ActionRetryChannel, nil
 		}
-		var translationErr *protocol.RequestTranslationError
-		if errors.As(err, &translationErr) {
+		if _, ok := errors.AsType[*protocol.RequestTranslationError](err); ok {
 			// 无法表示当前请求不是上游故障，也不该当成最终客户端错误。
 			// auto/local 都要继续探下一个协议或渠道；否则 Codex compaction
 			// 这类专用状态会把整个请求钉死在第一个 Anthropic 候选上。
@@ -3927,12 +3924,7 @@ func appendSendStrategy(strategies []string, res *fwResult) []string {
 }
 
 func hasRetryStrategy(strategies []string, strategy string) bool {
-	for _, existing := range strategies {
-		if existing == strategy {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strategies, strategy)
 }
 
 func shouldRetryCodexUnsupportedThinking(upstreamProtocol protocol.Protocol, res *fwResult) bool {
@@ -4014,8 +4006,7 @@ const codexEncryptedContentPlaceholder = "[encrypted content omitted: the upstre
 // 当前 agent_message 携带本轮任务，不能像历史密文一样丢弃；尾部配置项不算新输入。
 func codexCurrentEncryptedAgentTaskIndex(input gjson.Result) int {
 	items := input.Array()
-	for index := len(items) - 1; index >= 0; index-- {
-		item := items[index]
+	for index, item := range slices.Backward(items) {
 		switch item.Get("type").String() {
 		case "compaction_trigger", "additional_tools", "configuration_update":
 			continue
@@ -4110,9 +4101,9 @@ func codexBodyWithoutThinking(body []byte) ([]byte, bool) {
 				indices = append(indices, index)
 			}
 		}
-		for index := len(indices) - 1; index >= 0; index-- {
+		for _, indice := range slices.Backward(indices) {
 			var err error
-			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("include.%d", indices[index]))
+			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("include.%d", indice))
 			if err != nil {
 				return nil, false
 			}
@@ -4226,9 +4217,9 @@ func normalizeCodexToolSearchInputItems(body []byte) ([]byte, bool) {
 	if !changed {
 		return nil, false
 	}
-	for index := len(deleteIndexes) - 1; index >= 0; index-- {
+	for _, deleteIndexe := range slices.Backward(deleteIndexes) {
 		var err error
-		updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d", deleteIndexes[index]))
+		updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d", deleteIndexe))
 		if err != nil {
 			return nil, false
 		}
@@ -4260,9 +4251,9 @@ func deleteCodexInputItems(body []byte, shouldDrop func(gjson.Result) bool) ([]b
 		return nil, false
 	}
 	updated := body
-	for index := len(indices) - 1; index >= 0; index-- {
+	for _, indice := range slices.Backward(indices) {
 		var err error
-		updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d", indices[index]))
+		updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d", indice))
 		if err != nil {
 			return nil, false
 		}
@@ -4957,7 +4948,7 @@ func (s *Server) tryOAuthChannel(
 
 	var rejectedAccessToken string
 	var rejectedResult *proxyResult
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		runtimeCfg, accessToken, credentialErr := loadCredential(attempt == 1, rejectedAccessToken)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			// 中断优先于取消：ctx.Err() 只给 context.Canceled，管理员信号只在 cause 里。

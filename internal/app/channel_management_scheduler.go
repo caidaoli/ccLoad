@@ -298,10 +298,7 @@ func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) er
 	for _, channelID := range channelIDs {
 		jobs <- channelID
 	}
-	workers := channelManagementScheduleWorkers
-	if len(channelIDs) < workers {
-		workers = len(channelIDs)
-	}
+	workers := min(len(channelIDs), channelManagementScheduleWorkers)
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	for range workers {
@@ -333,7 +330,7 @@ func (s *Server) claimManagementCheckinDay(
 	// A failed CAS is re-read and re-evaluated. Two attempts are enough to
 	// observe the winner of a concurrent claim while avoiding a retry loop on a
 	// permanently failing store.
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		envelope, err := model.ParseChannelManagementEnvelope(current.OAuthCredential)
 		if err != nil || !supportsChannelManagement(current) || !isManagementCheckinDue(envelope, now) {
 			return false, nil

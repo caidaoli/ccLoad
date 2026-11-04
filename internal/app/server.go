@@ -550,9 +550,7 @@ func (s *Server) StartCursorSDKBridge() {
 			log.Print("[WARN] Cursor SDK Bridge 后台初始化不可用")
 			return
 		}
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.wg.Go(func() {
 			ctx, cancel := context.WithTimeout(s.baseCtx, cursorBridgeInitializationTimeout)
 			defer cancel()
 			if err := s.initializeCursorSDKBridge(ctx); err != nil {
@@ -560,7 +558,7 @@ func (s *Server) StartCursorSDKBridge() {
 					log.Printf("[WARN] Cursor SDK Bridge 后台初始化失败: %v", err)
 				}
 			}
-		}()
+		})
 	})
 }
 
@@ -1718,10 +1716,7 @@ func (s *Server) GetReadTimeout() time.Duration {
 // 基于请求总超时动态计算，确保传输层不会早于业务层截断响应
 func (s *Server) GetWriteTimeout() time.Duration {
 	const minWriteTimeout = 120 * time.Second
-	maxTimeout := s.nonStreamTimeout
-	if s.streamTimeout > maxTimeout {
-		maxTimeout = s.streamTimeout
-	}
+	maxTimeout := max(s.streamTimeout, s.nonStreamTimeout)
 	for _, timeouts := range s.protocolTimeouts {
 		if timeouts.NonStreamTimeout > maxTimeout {
 			maxTimeout = timeouts.NonStreamTimeout

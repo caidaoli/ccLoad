@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	neturl "net/url"
@@ -82,9 +83,7 @@ func (s *Server) completeCooldownBoundUpdates(ctx context.Context, requested map
 			finalValues[setting.Key] = setting.Value
 		}
 	}
-	for key, value := range requested {
-		finalValues[key] = value
-	}
+	maps.Copy(finalValues, requested)
 
 	minSeconds, err := strconv.Atoi(finalValues[cooldownMinSecondsSettingKey])
 	if err != nil {
@@ -104,9 +103,7 @@ func (s *Server) completeCooldownBoundUpdates(ctx context.Context, requested map
 	}
 
 	updates := make(map[string]string, len(requested)+1)
-	for key, value := range requested {
-		updates[key] = value
-	}
+	maps.Copy(updates, requested)
 	updates[cooldownMinSecondsSettingKey] = strconv.Itoa(minSeconds)
 	updates[cooldownMaxSecondsSettingKey] = strconv.Itoa(maxSeconds)
 	return updates, nil

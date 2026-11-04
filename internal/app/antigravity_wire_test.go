@@ -355,7 +355,7 @@ func TestTranslateAntigravityResponseStreamUsageMatchesNonStream(t *testing.T) {
 
 	stream := string(bytes.Join(chunks, nil))
 	delta := ""
-	for _, line := range strings.Split(stream, "\n") {
+	for line := range strings.SplitSeq(stream, "\n") {
 		payload, ok := strings.CutPrefix(line, "data: ")
 		if ok && gjson.Get(payload, "type").String() == "message_delta" {
 			delta = payload
@@ -405,9 +405,9 @@ func TestConvertAntigravityResponseToClaude_ImplicitOpenToolContinuationOrdering
 			streamBytes = append(streamBytes, bytes.Join(antigravityclaude.ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, continuationChunk, &param), nil)...)
 			streamText := string(streamBytes)
 			var deltaPartial strings.Builder
-			for _, line := range strings.Split(streamText, "\n") {
-				if strings.HasPrefix(line, "data: ") {
-					payload := strings.TrimPrefix(line, "data: ")
+			for line := range strings.SplitSeq(streamText, "\n") {
+				if after, ok := strings.CutPrefix(line, "data: "); ok {
+					payload := after
 					if gjson.Get(payload, "delta.type").String() == "input_json_delta" {
 						deltaPartial.WriteString(gjson.Get(payload, "delta.partial_json").String())
 					}

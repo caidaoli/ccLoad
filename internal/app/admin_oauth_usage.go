@@ -9,7 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,8 +96,7 @@ type oauthUsageUpstreamResponseError interface {
 }
 
 func oauthUsageCredentialRefreshError(err error, fallback string) error {
-	var upstreamErr oauthUsageUpstreamResponseError
-	if errors.As(err, &upstreamErr) {
+	if upstreamErr, ok := errors.AsType[oauthUsageUpstreamResponseError](err); ok {
 		if body := upstreamErr.UpstreamResponseBody(); body != "" {
 			return errors.New(body)
 		}
@@ -1494,7 +1493,7 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			channelIDs = append(channelIDs, cfg.ID)
 		}
 	}
-	sort.Slice(channelIDs, func(i, j int) bool { return channelIDs[i] < channelIDs[j] })
+	slices.Sort(channelIDs)
 	return channelIDs, nil
 }
 
@@ -1996,7 +1995,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			baseURL = cfg.URLs[0].URL
 		}
 		client := s.getClientForChannel(cfg)
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := range 2 {
 			summary, usageErr := requestXAIUsage(ctx, client, credential, baseURL)
 			if !errors.Is(usageErr, errXAIBillingBadCredential) {
 				return summary, usageErr
@@ -2028,7 +2027,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Cursor credential refresh failed")
 		}
 		service := s.cursorUsageService(cfg)
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := range 2 {
 			summary, usageErr := requestCursorUsage(ctx, service, credential.AccessToken)
 			if !errors.Is(usageErr, cursorauth.ErrSessionRejected) {
 				return summary, usageErr

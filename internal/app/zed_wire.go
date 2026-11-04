@@ -864,8 +864,8 @@ func relayZedResponsesEvents(ctx context.Context, upstream io.ReadCloser, output
 		line, readErr := reader.ReadBytes('\n')
 		line = bytes.TrimSpace(line)
 		if len(line) > 0 {
-			if bytes.HasPrefix(line, []byte("data:")) {
-				line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if after, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+				line = bytes.TrimSpace(after)
 			}
 			ended, writeErr := writeZedResponsesEvent(ctx, output, line, plan, registry, state)
 			if writeErr != nil {

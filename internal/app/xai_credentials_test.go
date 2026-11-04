@@ -603,16 +603,14 @@ func TestXAICredentialManagerCoalescesConcurrentRefresh(t *testing.T) {
 	errs := make(chan error, callers)
 	var wg sync.WaitGroup
 	for range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			credential, err := manager.credential(context.Background(), cfg, false)
 			if err == nil && credential.AccessToken != "shared-access" {
 				err = fmt.Errorf("access token = %q", credential.AccessToken)
 			}
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

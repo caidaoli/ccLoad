@@ -183,8 +183,7 @@ func ensureBridgeInStateRoots(
 }
 
 func isBridgeStorageError(err error) bool {
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*os.PathError](err); ok {
 		return true
 	}
 	var linkErr *os.LinkError
@@ -465,7 +464,7 @@ func bridgeArchiveForPlatform(goos, goarch string) (bridgeArchiveSpec, error) {
 
 func parseBridgeReleaseManifest(raw string) (bridgeReleaseManifest, error) {
 	values := make(map[string]string)
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

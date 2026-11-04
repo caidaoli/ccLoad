@@ -94,7 +94,7 @@ func prepareOpenCodeResponsesRequest(target *url.URL, upstream protocol.Protocol
 			if _, taken := p.identities[name]; name != "" && !taken {
 				break
 			}
-			digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", id.namespace, id.name, attempt)))
+			digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%d", id.namespace, id.name, attempt))
 			name = fmt.Sprintf("ns_%x", digest[:24])
 		}
 		p.names[id], p.identities[name] = name, id

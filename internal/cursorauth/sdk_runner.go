@@ -1029,9 +1029,7 @@ func (c *runCanceller) issueLocked() {
 	}
 	c.issued = true
 	runID := c.runID
-	c.active.Add(1)
-	go func() {
-		defer c.active.Done()
+	c.active.Go(func() {
 		cancelCtx, cancel := context.WithTimeout(context.Background(), BridgeCleanupTimeout)
 		defer cancel()
 		_, err := c.client.CancelRun(cancelCtx, connect.NewRequest(&sdkv1.CancelRunRequest{
@@ -1040,7 +1038,7 @@ func (c *runCanceller) issueLocked() {
 		if err != nil {
 			log.Printf("[WARN] 取消 Cursor SDK Run %s 失败: %v", runID, classifyBridgeError(err))
 		}
-	}()
+	})
 }
 
 func (c *runCanceller) Wait() {

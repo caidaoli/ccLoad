@@ -180,11 +180,9 @@ func (s *Server) HandleStats(c *gin.Context) {
 	}()
 	if withTimeline {
 		timelineParams = healthTimelineParams(startTime, endTime, &lf, params.Range == "today" || params.Range == "")
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			timeline, timelineErr = s.statsCache.GetHealthTimeline(ctx, timelineParams)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -514,10 +512,7 @@ func healthTimelineParams(startTime, endTime time.Time, filter *model.LogFilter,
 	} else {
 		// 其他时间范围：按总时长/48计算
 		duration := endTime.Sub(startTime)
-		bucketSeconds = int64(duration.Seconds() / healthTimelineBuckets)
-		if bucketSeconds < 1 {
-			bucketSeconds = 1
-		}
+		bucketSeconds = max(int64(duration.Seconds()/healthTimelineBuckets), 1)
 		healthStart = startTime
 	}
 
@@ -561,7 +556,7 @@ func fillHealthTimeline(stats []model.StatsEntry, params model.HealthTimelinePar
 	// 为每个渠道初始化48个空时间点
 	for key := range statsMap {
 		points := make([]model.HealthPoint, healthTimelineBuckets)
-		for i := 0; i < healthTimelineBuckets; i++ {
+		for i := range healthTimelineBuckets {
 			points[i] = model.HealthPoint{
 				Ts:          time.Unix(sinceUnix+int64(i)*bucketSeconds, 0),
 				SuccessRate: -1, // -1 表示无数据

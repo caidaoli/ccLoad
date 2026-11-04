@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -161,7 +162,7 @@ func normalizeAnthropicSampling(body []byte) []byte {
 // with the final upstream header, including channel Header rules.
 func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
 	activeBetas := make(map[string]bool)
-	for _, part := range strings.Split(betaHeader, ",") {
+	for part := range strings.SplitSeq(betaHeader, ",") {
 		if token := strings.TrimSpace(part); token != "" {
 			activeBetas[token] = true
 		}
@@ -298,8 +299,8 @@ func ensureAnthropicMessageCacheControl(body []byte) []byte {
 		return setJSONRaw(body, target+".content", "["+block+"]")
 	case content.IsArray():
 		blocks := content.Array()
-		for index := len(blocks) - 1; index >= 0; index-- {
-			if blocks[index].IsObject() {
+		for index, block := range slices.Backward(blocks) {
+			if block.IsObject() {
 				return setJSONRaw(body, target+".content."+strconv.Itoa(index)+".cache_control",
 					anthropicEphemeralCacheControl())
 			}

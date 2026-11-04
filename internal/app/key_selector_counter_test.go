@@ -68,16 +68,14 @@ func TestKeySelector_ModelRowsConcurrentBalance(t *testing.T) {
 	selected := make(chan int, requests)
 	var workers sync.WaitGroup
 	for range requests {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			index, ok := selector.SelectModelRow(8, "auto", []bool{true, true, true})
 			if !ok {
 				selected <- -1
 				return
 			}
 			selected <- index
-		}()
+		})
 	}
 	workers.Wait()
 	close(selected)

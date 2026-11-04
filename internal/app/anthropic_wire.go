@@ -631,7 +631,7 @@ func matchesAnthropicStructuredHaikuHelperObjectOrder(body []byte) bool {
 	if raw, ok := anthropicJSONRawAtPath(body, "temperature"); !ok || string(raw) != "1" {
 		return false
 	}
-	for index := 0; index < 3; index++ {
+	for index := range 3 {
 		block, ok := anthropicJSONRawAtPath(body, "system", strconv.Itoa(index))
 		if !ok || !anthropicJSONObjectHasOrderedKeys(block, []string{"type", "text"}) {
 			return false
@@ -769,7 +769,7 @@ func normalizedAnthropicBetaHeader(headers http.Header) string {
 	}
 	values := make([]string, 0, 12)
 	for _, rawValue := range rawValues {
-		for _, raw := range strings.Split(rawValue, ",") {
+		for raw := range strings.SplitSeq(rawValue, ",") {
 			if value := strings.TrimSpace(raw); value != "" {
 				values = append(values, value)
 			}
@@ -1350,8 +1350,7 @@ func anthropicMessageEligibleForRollingCache(message gjson.Result, role string) 
 // 空白 text 块 Anthropic 拒收 cache_control，出站前还会被删掉，跳过它往前找（对齐
 // CLIProxyAPI df07b1e5）；assistant 以 thinking 收尾时断点无处可挂，原生选择器跳过整条消息。
 func anthropicRollingCacheBlockIndex(blocks []gjson.Result, role string) int {
-	for index := len(blocks) - 1; index >= 0; index-- {
-		block := blocks[index]
+	for index, block := range slices.Backward(blocks) {
 		if !block.IsObject() || isBlankAnthropicTextBlock(block) {
 			continue
 		}
@@ -1696,7 +1695,7 @@ func anthropicCLIVersionGTE(version, min string) bool {
 	if !vok || !mok {
 		return false
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if v[i] != m[i] {
 			return v[i] > m[i]
 		}
@@ -1891,7 +1890,7 @@ func (s *Server) persistAnthropicOAuthPlatform(ctx context.Context, cfg *model.C
 		return proposed, nil
 	}
 	currentCfg := cfg
-	for attempts := 0; attempts < 3; attempts++ {
+	for range 3 {
 		if err := ctx.Err(); err != nil {
 			return proposed, err
 		}
@@ -2048,7 +2047,7 @@ func injectAnthropicCountTokensHeadersWithFingerprint(req *http.Request, cfg *mo
 				delete(req.Header, name)
 			}
 			betas := anthropicClaudeCodeMimicBetas(body, true)
-			for _, beta := range strings.Split(normalizedAnthropicBetaHeader(incoming), ",") {
+			for beta := range strings.SplitSeq(normalizedAnthropicBetaHeader(incoming), ",") {
 				betas = appendAnthropicBeta(betas, beta)
 			}
 			applyAnthropicClaudeCodeHeaders(req, appendAnthropicBeta(betas, "token-counting-2024-11-01"),
@@ -2545,8 +2544,8 @@ func anthropicSessionIDFromBody(body []byte) string {
 			return parsed.String()
 		}
 	}
-	if marker := strings.LastIndex(userID, "_session_"); marker >= 0 {
-		if parsed, err := uuid.Parse(strings.TrimSpace(userID[marker+len("_session_"):])); err == nil {
+	if _, after, ok := strings.CutLast(userID, "_session_"); ok {
+		if parsed, err := uuid.Parse(strings.TrimSpace(after)); err == nil {
 			return parsed.String()
 		}
 	}

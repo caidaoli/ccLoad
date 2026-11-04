@@ -158,8 +158,7 @@ func (s *Server) waitForUpstreamRequest(ctx context.Context, cfg *model.Config) 
 }
 
 func channelRPMRetryAfter(err error) time.Duration {
-	var rpmErr *channelRPMExceededError
-	if errors.As(err, &rpmErr) {
+	if rpmErr, ok := errors.AsType[*channelRPMExceededError](err); ok {
 		return rpmErr.retryAfter
 	}
 	return 0

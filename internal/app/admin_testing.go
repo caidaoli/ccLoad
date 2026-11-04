@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"maps"
 	"mime"
 	"net/http"
 	"net/http/httptest"
@@ -1660,9 +1661,7 @@ func (s *Server) testCursorOAuthChannel(
 			return result
 		}
 		parsed := clientTester.Parse(status, bodyBytes)
-		for k, v := range parsed {
-			result[k] = v
-		}
+		maps.Copy(result, parsed)
 		if _, ok := result["api_response"]; !ok {
 			result["success"] = false
 			result["error"] = summarizeUnexpectedTestResponse("application/json", bodyBytes)
@@ -2141,9 +2140,7 @@ func (s *Server) parseTestNonStreamResponse(
 		}
 
 		parsed := requestPlan.clientTester.Parse(resp.StatusCode, parseBody)
-		for k, v := range parsed {
-			result[k] = v
-		}
+		maps.Copy(result, parsed)
 
 		if success, ok := result["success"].(bool); !ok || success {
 			if _, ok := result["api_response"]; !ok {

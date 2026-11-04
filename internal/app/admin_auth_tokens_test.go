@@ -417,7 +417,7 @@ func TestHandleListAuthTokens_StatsAggregation(t *testing.T) {
 	}
 
 	// tokenA: 2 条成功日志
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		entry := &model.LogEntry{
 			Time:         model.JSONTime{Time: now.Add(-time.Duration(i) * time.Minute)},
 			Model:        "test-model",

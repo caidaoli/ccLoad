@@ -5,6 +5,7 @@ package privacy
 import (
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -360,10 +361,8 @@ func birthdayOK(v string) bool {
 
 func macOK(v string) bool {
 	v = strings.ToLower(strings.ReplaceAll(v, "-", ":"))
-	for _, sample := range []string{"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "00:11:22:33:44:55", "aa:bb:cc:dd:ee:ff", "01:23:45:67:89:ab", "12:34:56:78:9a:bc"} {
-		if v == sample {
-			return false
-		}
+	if slices.Contains([]string{"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "00:11:22:33:44:55", "aa:bb:cc:dd:ee:ff", "01:23:45:67:89:ab", "12:34:56:78:9a:bc"}, v) {
+		return false
 	}
 	return strings.ContainsAny(v, "abcdef")
 }
@@ -372,10 +371,8 @@ func serialOK(v string) bool {
 }
 func userOK(v string) bool {
 	v = strings.ToLower(v)
-	for _, sample := range []string{"root", "git", "ubuntu", "admin", "shared", "public", "guest", "default", "user", "username", "yourname", "example", "runner", "node", "vscode", "codespace"} {
-		if v == sample {
-			return false
-		}
+	if slices.Contains([]string{"root", "git", "ubuntu", "admin", "shared", "public", "guest", "default", "user", "username", "yourname", "example", "runner", "node", "vscode", "codespace"}, v) {
+		return false
 	}
 	return v != "" && !strings.HasPrefix(v, ".")
 }
@@ -384,10 +381,8 @@ func hostOK(v string) bool {
 	if _, err := netip.ParseAddr(v); err == nil {
 		return false
 	}
-	for _, host := range []string{"github.com", "gitlab.com", "bitbucket.org", "localhost", "host", "hostname", "example.com", "example.net", "example.org", "example", "server"} {
-		if v == host {
-			return false
-		}
+	if slices.Contains([]string{"github.com", "gitlab.com", "bitbucket.org", "localhost", "host", "hostname", "example.com", "example.net", "example.org", "example", "server"}, v) {
+		return false
 	}
 	return len(v) >= 2 && !versionPattern.MatchString(v) && !strings.HasSuffix(v, ".test") && !strings.HasSuffix(v, ".invalid") && !strings.HasSuffix(v, ".example")
 }
@@ -411,12 +406,7 @@ func publicIP(v string) bool {
 			return false
 		}
 	}
-	for _, dns := range []string{"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "208.67.222.222", "208.67.220.220", "223.5.5.5", "223.6.6.6", "114.114.114.114", "2606:4700:4700::1111", "2001:4860:4860::8888"} {
-		if v == dns {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains([]string{"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "208.67.222.222", "208.67.220.220", "223.5.5.5", "223.6.6.6", "114.114.114.114", "2606:4700:4700::1111", "2001:4860:4860::8888"}, v)
 }
 func ipAt(text string, a, _ int) bool {
 	before := strings.ToLower(strings.TrimRight(text[max(0, a-24):a], " \t:=/"))

@@ -879,7 +879,7 @@ func setupProxyTestEnvWithSettings(
 
 		// 构建模型列表
 		var modelEntries []model.ModelEntry
-		for _, m := range strings.Split(ch.models, ",") {
+		for m := range strings.SplitSeq(ch.models, ",") {
 			m = strings.TrimSpace(m)
 			if m != "" {
 				modelEntries = append(modelEntries, model.ModelEntry{Model: m})
@@ -1545,7 +1545,7 @@ func TestProxy_AnthropicOAuthAliasesClientToolNames(t *testing.T) {
 			t.Fatalf("alias leaked to client stream: %s", response.Body.String())
 		}
 		restored := false
-		for _, frame := range strings.Split(response.Body.String(), "\n\n") {
+		for frame := range strings.SplitSeq(response.Body.String(), "\n\n") {
 			_, data := parseSSEEventChunk([]byte(frame))
 			if block := gjson.GetBytes(data, "content_block"); block.Get("type").String() == "tool_use" {
 				restored = block.Get("name").String() == "read_file"
@@ -4667,7 +4667,7 @@ func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 
 			found := false
 			complete := testCase.name != "Claude"
-			for _, block := range strings.Split(response.Body.String(), "\n\n") {
+			for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 				event, data := parseSSEEventChunk([]byte(block))
 				if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 					continue
@@ -4783,7 +4783,7 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 
 				var texts []string
 				var errorEvents int
-				for _, block := range strings.Split(response.Body.String(), "\n\n") {
+				for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 					event, data := parseSSEEventChunk([]byte(block))
 					if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 						continue
@@ -5294,7 +5294,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 			}
 			if tc.streaming {
 				found := false
-				for _, block := range strings.Split(response.Body.String(), "\n\n") {
+				for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 					_, data := parseSSEEventChunk([]byte(block))
 					if gjson.ValidBytes(data) && gjson.GetBytes(data, "candidates.0.content.parts.0.text").String() == "sandbox ok" {
 						found = true
@@ -6221,7 +6221,7 @@ func TestProxy_CodexOAuthImage25Snapshots(t *testing.T) {
 					continue
 				}
 				completed := false
-				for _, block := range strings.Split(response.Body.String(), "\n\n") {
+				for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 					_, data := parseSSEEventChunk([]byte(block + "\n\n"))
 					if gjson.GetBytes(data, "type").String() == "image_generation.completed" {
 						completed = gjson.GetBytes(data, "b64_json").String() == "aW1hZ2U="
@@ -8565,7 +8565,7 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToNextChannel(t *testing.T) {
 			"query": "codegraph",
 		}, nil)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		w := request()
 		if w.Code != http.StatusOK {
 			t.Fatalf("request %d status=%d, want 200: %s", i+1, w.Code, w.Body.String())
@@ -10338,7 +10338,7 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 				protocolTransformMode: model.ProtocolTransformModeAuto, models: modelName,
 			}}, map[int]string{0: upstream.URL})
 
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				w := doProxyRequest(t, env.engine, tc.clientPath, tc.requestBody, tc.headers)
 				if w.Code != http.StatusOK {
 					t.Fatalf("request %d status=%d body=%s", i+1, w.Code, w.Body.String())
@@ -13993,7 +13993,7 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 			}
 			if testCase.wantStop != "" {
 				var stopReason string
-				for _, frame := range strings.Split(body, "\n\n") {
+				for frame := range strings.SplitSeq(body, "\n\n") {
 					_, data := parseSSEEventChunk([]byte(frame))
 					if gjson.GetBytes(data, "type").String() == "message_delta" {
 						stopReason = gjson.GetBytes(data, "delta.stop_reason").String()
@@ -17910,7 +17910,7 @@ func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {
 			}
 			result := gjson.Parse(response.Body.String())
 			if tc.stream {
-				for _, event := range strings.Split(response.Body.String(), "\n\n") {
+				for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
 					data := gjson.ParseBytes(sseEventData([]byte(event)))
 					if data.Get("type").String() == "response.completed" {
 						result = data.Get("response")
@@ -17962,7 +17962,7 @@ func TestProxy_AntigravityResponsesSignatureRecovery(t *testing.T) {
 			}
 			result := gjson.Parse(response.Body.String())
 			if streaming {
-				for _, event := range strings.Split(response.Body.String(), "\n\n") {
+				for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
 					data := gjson.ParseBytes(sseEventData([]byte(event)))
 					if data.Get("type").String() == "response.completed" {
 						result = data.Get("response")

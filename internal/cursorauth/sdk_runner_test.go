@@ -699,7 +699,7 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 		result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Hello!")
 		result.GetResult().GetResult().Usage = &sdkv1.TokenUsage{
 			InputTokens: 11, OutputTokens: 7, CacheReadTokens: 5, CacheWriteTokens: 3,
-			TotalTokens: 26, ReasoningTokens: int64Pointer(2),
+			TotalTokens: 26, ReasoningTokens: new(int64(2)),
 		}
 		if err := stream.Send(result); err != nil {
 			return err
@@ -797,7 +797,7 @@ func TestSDKRunnerKeepsInterimAssistantAndLoadsMissingUsageFromSnapshot(t *testi
 		Status:  sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED,
 		Usage: &sdkv1.TokenUsage{
 			InputTokens: 13, OutputTokens: 8, CacheReadTokens: 5, CacheWriteTokens: 3,
-			TotalTokens: 29, ReasoningTokens: int64Pointer(2),
+			TotalTokens: 29, ReasoningTokens: new(int64(2)),
 		},
 	}}
 	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
@@ -1189,8 +1189,4 @@ func runDone(agentID, runID string) *sdkv1.RunStreamMessage {
 	return &sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Done{
 		Done: &sdkv1.RunStreamDone{AgentId: agentID, RunId: runID},
 	}}
-}
-
-func int64Pointer(value int64) *int64 {
-	return &value
 }

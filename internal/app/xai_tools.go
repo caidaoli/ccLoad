@@ -225,7 +225,7 @@ func (p *xaiResponsesToolsPlan) register(id xaiResponsesToolIdentity) {
 		if _, taken := p.identities[name]; valid && !taken {
 			break
 		}
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", id.kind, id.namespace, id.name, attempt)))
+		digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%d", id.kind, id.namespace, id.name, attempt))
 		name, valid = fmt.Sprintf("tool_%x", digest[:24]), true
 	}
 	p.names[id], p.identities[name] = name, id
@@ -315,8 +315,8 @@ func xaiToolSearchArguments(value gjson.Result) (string, error) {
 func xaiRetypeToolItemID(body []byte, path, prefix string) []byte {
 	id := gjson.GetBytes(body, path).String()
 	for _, old := range []string{"fc_", "ctc_", "tsc_"} {
-		if strings.HasPrefix(id, old) {
-			return setJSONValue(body, path, prefix+strings.TrimPrefix(id, old))
+		if after, ok := strings.CutPrefix(id, old); ok {
+			return setJSONValue(body, path, prefix+after)
 		}
 	}
 	return body
@@ -504,11 +504,11 @@ func (r *xaiResponsesToolsRestorer) rewrite(raw []byte) ([][]byte, error) {
 // it lets encoding/json handle escapes; incomplete escapes and surrogate pairs
 // stay buffered until the next argument delta.
 func xaiCustomInputPrefix(arguments string) string {
-	key := strings.Index(arguments, `"input"`)
-	if key < 0 {
+	_, after, ok := strings.Cut(arguments, `"input"`)
+	if !ok {
 		return ""
 	}
-	value := strings.TrimSpace(arguments[key+len(`"input"`):])
+	value := strings.TrimSpace(after)
 	if !strings.HasPrefix(value, ":") {
 		return ""
 	}

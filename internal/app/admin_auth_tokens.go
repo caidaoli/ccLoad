@@ -93,12 +93,10 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 			rpmErr   error
 			wg       sync.WaitGroup
 		)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			// 获取全局RPM统计（峰值、平均、最近一分钟）
 			rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, nil, isToday)
-		}()
+		})
 
 		// 从logs表聚合时间范围内每个token的统计与RPM（峰值、平均、最近）
 		rangeStats, err := s.statsCache.GetAuthTokenRangeStats(ctx, startTime, endTime, isToday)

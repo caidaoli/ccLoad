@@ -3,6 +3,7 @@ package util_test
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"math"
 	"reflect"
 	"testing"
@@ -270,9 +271,7 @@ func validModelsDevFixture(t *testing.T, targetProvider, targetID string, overri
 	providers := validModelsDevProviders()
 	if targetProvider != "" {
 		model := validModelsDevModel(targetProvider+"/"+targetID, 1, 2)
-		for key, value := range override {
-			model[key] = value
-		}
+		maps.Copy(model, override)
 		providers[targetProvider] = modelsDevProvider(targetProvider, map[string]any{targetID: model})
 	}
 	return marshalModelsDevDocument(t, providers)

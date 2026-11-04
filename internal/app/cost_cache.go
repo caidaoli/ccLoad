@@ -1,6 +1,7 @@
 package app
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -69,9 +70,7 @@ func (c *CostCache) GetAll() map[int64]float64 {
 
 	// 返回副本，避免并发问题
 	result := make(map[int64]float64, len(c.costs))
-	for k, v := range c.costs {
-		result[k] = v
-	}
+	maps.Copy(result, c.costs)
 	return result
 }
 
@@ -83,9 +82,7 @@ func (c *CostCache) Load(costs map[int64]float64) {
 	now := time.Now()
 	c.dayStart = todayStart(now)
 	c.costs = make(map[int64]float64, len(costs))
-	for k, v := range costs {
-		c.costs[k] = v
-	}
+	maps.Copy(c.costs, costs)
 }
 
 // DayStart 返回当前统计周期的0点时间（用于查询数据库）

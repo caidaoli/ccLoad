@@ -7,14 +7,12 @@ import (
 	"ccLoad/internal/util"
 )
 
-func priceOf(value float64) *float64 { return &value }
-
 func TestCalculateCostWithPriceReplacesGlobalPricing(t *testing.T) {
 	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
 	if err := util.InstallCustomModelPricingJSON(`{"gpt-4o": {"input_price": 7, "output_price": 11}}`); err != nil {
 		t.Fatal(err)
 	}
-	channelPrice := &util.CustomModelPrice{InputPrice: priceOf(1), OutputPrice: priceOf(2)}
+	channelPrice := &util.CustomModelPrice{InputPrice: new(1.0), OutputPrice: new(2.0)}
 
 	for _, tc := range []struct {
 		name  string
@@ -26,7 +24,7 @@ func TestCalculateCostWithPriceReplacesGlobalPricing(t *testing.T) {
 		{"nil keeps global custom", "gpt-4o", nil, 18},
 		{"unknown model priced by channel", "relay-private-model", channelPrice, 3},
 		// 绕过校验的脏价格回退全局价格，而不是按负数或 0 计费。
-		{"invalid falls back", "gpt-4o", &util.CustomModelPrice{InputPrice: priceOf(-1), OutputPrice: priceOf(2)}, 18},
+		{"invalid falls back", "gpt-4o", &util.CustomModelPrice{InputPrice: new(-1.0), OutputPrice: new(2.0)}, 18},
 	} {
 		if got := util.CalculateCostDetailedWithPrice(tc.model, tc.price, 1_000_000, 1_000_000, 0, 0, 0); math.Abs(got-tc.want) > 1e-12 {
 			t.Errorf("%s: cost=%v, want %v", tc.name, got, tc.want)
@@ -37,7 +35,7 @@ func TestCalculateCostWithPriceReplacesGlobalPricing(t *testing.T) {
 func TestCalculateCostWithPriceKeepsSystemTierSemantics(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	price := &util.CustomModelPrice{
-		InputPrice: priceOf(1), OutputPrice: priceOf(1), InputPriceHigh: priceOf(2), OutputPriceHigh: priceOf(2),
+		InputPrice: new(1.0), OutputPrice: new(1.0), InputPriceHigh: new(2.0), OutputPriceHigh: new(2.0),
 	}
 	// gpt-5.6 的缓存读计入 272K 分档：200K 输入 + 100K 缓存读必须走高档价。
 	got := util.CalculateCostDetailedWithPrice("gpt-5.6", price, 200_000, 0, 100_000, 0, 0)
@@ -47,7 +45,7 @@ func TestCalculateCostWithPriceKeepsSystemTierSemantics(t *testing.T) {
 }
 
 func TestCalculateStandardCostBreakdownWithPriceAppliesFastMode(t *testing.T) {
-	price := &util.CustomModelPrice{InputPrice: priceOf(2), OutputPrice: priceOf(10)}
+	price := &util.CustomModelPrice{InputPrice: new(2.0), OutputPrice: new(10.0)}
 	// 渠道输入、输出及缓存读写均叠加 fast 倍率。
 	fast := util.CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", util.OpenAIRateCardAPI, price, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
 	if math.Abs(fast.Total-37.4) > 1e-12 || fast.ServiceTierMultiplier != 2 {
@@ -56,8 +54,8 @@ func TestCalculateStandardCostBreakdownWithPriceAppliesFastMode(t *testing.T) {
 }
 
 func TestCustomModelPriceDistinguishesExplicitZero(t *testing.T) {
-	withZero := &util.CustomModelPrice{InputPrice: priceOf(1), CacheReadPrice: priceOf(0)}
-	if withZero.Equal(&util.CustomModelPrice{InputPrice: priceOf(1)}) {
+	withZero := &util.CustomModelPrice{InputPrice: new(1.0), CacheReadPrice: new(0.0)}
+	if withZero.Equal(&util.CustomModelPrice{InputPrice: new(1.0)}) {
 		t.Fatal("explicit zero cache price must differ from an unset one")
 	}
 	clone := withZero.Clone()
@@ -73,18 +71,18 @@ func TestCustomModelPriceRequiresInputAndOutput(t *testing.T) {
 		price util.CustomModelPrice
 		ok    bool
 	}{
-		{"input and output", util.CustomModelPrice{InputPrice: priceOf(1), OutputPrice: priceOf(0)}, true},
-		{"cache only", util.CustomModelPrice{CacheReadPrice: priceOf(0.1)}, false},
-		{"missing output", util.CustomModelPrice{InputPrice: priceOf(1), CacheWritePrice: priceOf(1.25)}, false},
+		{"input and output", util.CustomModelPrice{InputPrice: new(1.0), OutputPrice: new(0.0)}, true},
+		{"cache only", util.CustomModelPrice{CacheReadPrice: new(0.1)}, false},
+		{"missing output", util.CustomModelPrice{InputPrice: new(1.0), CacheWritePrice: new(1.25)}, false},
 		{"full high context", util.CustomModelPrice{
-			InputPrice: priceOf(1), OutputPrice: priceOf(2), InputPriceHigh: priceOf(2), OutputPriceHigh: priceOf(4),
+			InputPrice: new(1.0), OutputPrice: new(2.0), InputPriceHigh: new(2.0), OutputPriceHigh: new(4.0),
 		}, true},
 		// 任一高上下文价格都要求高上下文输入/输出成对填写，与渠道价格编辑器一致。
 		{"high cache only", util.CustomModelPrice{
-			InputPrice: priceOf(1), OutputPrice: priceOf(2), CacheReadPriceHigh: priceOf(0.2),
+			InputPrice: new(1.0), OutputPrice: new(2.0), CacheReadPriceHigh: new(0.2),
 		}, false},
 		{"missing high output", util.CustomModelPrice{
-			InputPrice: priceOf(1), OutputPrice: priceOf(2), InputPriceHigh: priceOf(2),
+			InputPrice: new(1.0), OutputPrice: new(2.0), InputPriceHigh: new(2.0),
 		}, false},
 	} {
 		if _, err := tc.price.ModelPricing(); (err == nil) != tc.ok {

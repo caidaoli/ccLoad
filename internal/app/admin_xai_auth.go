@@ -241,9 +241,7 @@ func (s *Server) runXAICredentialImport(
 	results := make(chan xaiCredentialBatchItem, concurrency)
 	var workers sync.WaitGroup
 	for range concurrency {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			for index := range jobs {
 				itemCtx, itemCancel := context.WithTimeout(batchCtx, itemTimeout)
 				credential, itemErr := acquireXAICredential(itemCtx, service, ssoService, batch.Method, batch.Values[index])
@@ -257,7 +255,7 @@ func (s *Server) runXAICredentialImport(
 					return
 				}
 			}
-		}()
+		})
 	}
 	go func() {
 		defer close(jobs)

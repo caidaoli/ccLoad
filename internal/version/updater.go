@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -294,12 +295,7 @@ func isRetryableUpdateError(err error) bool {
 	case *updateTransportError:
 		return !errors.Is(typed.err, context.Canceled)
 	case interface{ Unwrap() []error }:
-		for _, nested := range typed.Unwrap() {
-			if isRetryableUpdateError(nested) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(typed.Unwrap(), isRetryableUpdateError)
 	case interface{ Unwrap() error }:
 		return isRetryableUpdateError(typed.Unwrap())
 	default:

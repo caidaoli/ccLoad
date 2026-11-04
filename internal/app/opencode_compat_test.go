@@ -152,7 +152,7 @@ func TestProxyOpenCodeResponsesNamespaceRoundTrip(t *testing.T) {
 				return
 			}
 			completed := false
-			for _, frame := range bytes.Split(got.Body.Bytes(), []byte("\n\n")) {
+			for frame := range bytes.SplitSeq(got.Body.Bytes(), []byte("\n\n")) {
 				_, data := parseSSEEventChunk(frame)
 				event := gjson.ParseBytes(data)
 				switch event.Get("type").String() {
@@ -193,7 +193,7 @@ func TestProxyOpenCodeResponsesPreservesInvalidArgumentsWithDiagnostic(t *testin
 		t.Fatalf("status=%d: %s", got.Code, got.Body.String())
 	}
 	found := false
-	for _, frame := range bytes.Split(got.Body.Bytes(), []byte("\n\n")) {
+	for frame := range bytes.SplitSeq(got.Body.Bytes(), []byte("\n\n")) {
 		_, data := parseSSEEventChunk(frame)
 		event := gjson.ParseBytes(data)
 		if event.Get("type").String() == "response.output_item.done" {
@@ -787,7 +787,7 @@ func TestOpenCodeRequestBodyAndHeadersEndpointScope(t *testing.T) {
 				transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Codex, RequestFamily: protocol.RequestFamilyResponses, OriginalBody: body, TranslatedBody: body, ActualModel: "gpt-test"}}
 			source := http.Header{"X-Session-Id": {"stable-source"}, "User-Agent": {"foreign-client/1"}, "X-Opencode-Request": {"must-not-leak"}, "X-Opencode-Project": {"project-signal"}}
 			var sessions []string
-			for attempt := 0; attempt < 2; attempt++ {
+			for range 2 {
 				req, err := srv.buildProxyRequest(reqCtx, cfg, "test-key", http.MethodPost, body, source, "", "/v1/responses", target)
 				if err != nil {
 					t.Fatal(err)
@@ -1341,7 +1341,7 @@ func TestProxyOpenCodeAutoNegotiatesProtocolPerModel(t *testing.T) {
 					}
 					if streaming {
 						tool, usage, done := false, false, false
-						for _, line := range strings.Split(got.Body.String(), "\n") {
+						for line := range strings.SplitSeq(got.Body.String(), "\n") {
 							if !strings.HasPrefix(line, "data:") {
 								continue
 							}

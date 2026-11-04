@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"ccLoad/internal/codexauth"
@@ -181,12 +182,7 @@ func codexResponsesTextModel(modelID string) bool {
 		return false
 	}
 	if modalities, known := util.ModelOutputModalities(modelID); known {
-		for _, modality := range modalities {
-			if modality == "text" {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(modalities, "text")
 	}
 	// Unknown custom aliases keep the administrator's configured route semantics.
 	return true
@@ -218,7 +214,7 @@ func handleListCodexModels(c *gin.Context, modelIDs []string, multiAgent bool, s
 }
 
 func matchesCodexModelsETag(header, etag string) bool {
-	for _, candidate := range strings.Split(header, ",") {
+	for candidate := range strings.SplitSeq(header, ",") {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
 			return true
@@ -247,11 +243,8 @@ func codexModelDescriptor(modelID string, multiAgent bool, serviceTiers json.Raw
 	}
 	supportsImage := preset.supportsImage
 	if info != nil {
-		for _, modality := range info.InputModalities {
-			if modality == "image" {
-				supportsImage = true
-				break
-			}
+		if slices.Contains(info.InputModalities, "image") {
+			supportsImage = true
 		}
 	}
 	inputModalities := []string{"text"}

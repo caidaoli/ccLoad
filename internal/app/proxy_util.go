@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -506,7 +507,7 @@ var hopByHopHeaders = map[string]struct{}{
 func connectionHeaderTokens(h http.Header) map[string]struct{} {
 	var tokens map[string]struct{}
 	for _, v := range h.Values("Connection") {
-		for _, t := range strings.Split(v, ",") {
+		for t := range strings.SplitSeq(v, ",") {
 			t = strings.ToLower(strings.TrimSpace(t))
 			if t == "" {
 				continue
@@ -635,7 +636,7 @@ func injectAnthropicBetaFlag(req *http.Request, flag string) {
 	tokens := make([]string, 0, len(h[key])+1)
 	found := false
 	for _, value := range h[key] {
-		for _, token := range strings.Split(value, ",") {
+		for token := range strings.SplitSeq(value, ",") {
 			token = strings.TrimSpace(token)
 			if token == "" {
 				continue
@@ -1028,9 +1029,9 @@ func stripAnthropicBillingHeaders(body []byte) []byte {
 		return body
 	}
 	result := body
-	for index := len(indices) - 1; index >= 0; index-- {
+	for _, indice := range slices.Backward(indices) {
 		var err error
-		result, err = sjson.DeleteBytes(result, fmt.Sprintf("system.%d", indices[index]))
+		result, err = sjson.DeleteBytes(result, fmt.Sprintf("system.%d", indice))
 		if err != nil {
 			return body
 		}

@@ -371,10 +371,7 @@ func (s *URLSelector) CooldownURL(channelID int64, url string) {
 
 	// 指数退避: base * 2^(fails-1), 上限 max
 	multiplier := math.Pow(2, float64(cd.consecutiveFails-1))
-	duration := time.Duration(float64(s.cooldownBase) * multiplier)
-	if duration > s.cooldownMax {
-		duration = s.cooldownMax
-	}
+	duration := min(time.Duration(float64(s.cooldownBase)*multiplier), s.cooldownMax)
 
 	cd.until = now.Add(duration)
 	s.cooldowns[key] = cd

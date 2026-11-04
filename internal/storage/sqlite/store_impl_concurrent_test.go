@@ -27,7 +27,7 @@ func TestConcurrentConfigCreate(t *testing.T) {
 	var successCount atomic.Int32
 	var errorCount atomic.Int32
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -98,11 +98,11 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 	var writeCount atomic.Int32
 
 	// 启动读协程
-	for i := 0; i < numReaders; i++ {
+	for i := range numReaders {
 		wg.Add(1)
 		go func(_ int) {
 			defer wg.Done()
-			for j := 0; j < 10; j++ {
+			for range 10 {
 				_, err := store.GetConfig(ctx, created.ID)
 				if err == nil {
 					readCount.Add(1)
@@ -113,11 +113,11 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 	}
 
 	// 启动写协程
-	for i := 0; i < numWriters; i++ {
+	for i := range numWriters {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			for j := 0; j < 5; j++ {
+			for j := range 5 {
 				updates := created.Clone()
 				updates.Priority = idx*10 + j
 				_, err := store.UpdateConfig(ctx, created.ID, updates)
@@ -158,12 +158,12 @@ func TestConcurrentLogAdd(t *testing.T) {
 
 	startTime := time.Now()
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 
-			for j := 0; j < logsPerGoroutine; j++ {
+			for range logsPerGoroutine {
 				channelID := int64(idx + 1)
 				entry := &model.LogEntry{
 					ChannelID:  channelID,
@@ -217,14 +217,14 @@ func TestConcurrentBatchLogAdd(t *testing.T) {
 
 	startTime := time.Now()
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 
 			batch := make([]*model.LogEntry, batchSize)
 			channelID := int64(idx + 1)
-			for j := 0; j < batchSize; j++ {
+			for j := range batchSize {
 				batch[j] = &model.LogEntry{
 					ChannelID:  channelID,
 					StatusCode: 200,
@@ -279,7 +279,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 	var readSuccess atomic.Int32
 
 	// 并发创建API Keys（使用批量接口，每个goroutine创建单个key）
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -303,7 +303,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 	wg.Wait()
 
 	// 并发读取API Keys
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

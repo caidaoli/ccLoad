@@ -351,7 +351,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 
 		// 每个渠道创建2个Key，使 KeyCount 生效
 		keys := make([]*model.APIKey, 2)
-		for keyIndex := 0; keyIndex < 2; keyIndex++ {
+		for keyIndex := range 2 {
 			keys[keyIndex] = &model.APIKey{
 				ChannelID:   created.ID,
 				KeyIndex:    keyIndex,
@@ -367,7 +367,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 	}
 
 	// 让两个渠道都“全Key冷却”，但解禁时间不同
-	for keyIndex := 0; keyIndex < 2; keyIndex++ {
+	for keyIndex := range 2 {
 		if err := store.SetKeyCooldown(ctx, ids[0], keyIndex, now.Add(2*time.Minute)); err != nil {
 			t.Fatalf("设置Key冷却失败: %v", err)
 		}
@@ -411,7 +411,7 @@ func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t
 		ids = append(ids, created.ID)
 
 		keys := make([]*model.APIKey, 2)
-		for keyIndex := 0; keyIndex < 2; keyIndex++ {
+		for keyIndex := range 2 {
 			keys[keyIndex] = &model.APIKey{
 				ChannelID:   created.ID,
 				KeyIndex:    keyIndex,
@@ -430,14 +430,14 @@ func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t
 	if err := store.SetChannelCooldown(ctx, ids[0], now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
-	for keyIndex := 0; keyIndex < 2; keyIndex++ {
+	for keyIndex := range 2 {
 		if err := store.SetKeyCooldown(ctx, ids[0], keyIndex, now.Add(10*time.Second)); err != nil {
 			t.Fatalf("设置Key冷却失败: %v", err)
 		}
 	}
 
 	// 渠道2：仅Key全冷却，较早解禁（应被选中）
-	for keyIndex := 0; keyIndex < 2; keyIndex++ {
+	for keyIndex := range 2 {
 		if err := store.SetKeyCooldown(ctx, ids[1], keyIndex, now.Add(30*time.Second)); err != nil {
 			t.Fatalf("设置Key冷却失败: %v", err)
 		}
@@ -1016,7 +1016,7 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 	iterations := 100
 	firstPositionCount := make(map[string]int)
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "qwen-3-32b", "codex")
 		if err != nil {
 			t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
@@ -1070,7 +1070,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 	iterations := 1000
 	firstPositionCount := make(map[string]int)
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		channels := []*model.Config{
 			{ID: 1, Name: "channel-A", Priority: 10, KeyCount: 10},
 			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
@@ -1134,7 +1134,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 	iterations := 1000
 	firstPositionCount := make(map[string]int)
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		channels := []*model.Config{
 			{ID: 1, Name: "channel-A", Priority: 10, KeyCount: 10},
 			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},

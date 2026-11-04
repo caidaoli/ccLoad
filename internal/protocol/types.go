@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -114,12 +115,7 @@ func SupportsTransform(client, upstream Protocol) bool {
 // SupportsTransformFamily reports whether the runtime has a documented transform path for
 // the given client/upstream protocol pair on the current request family.
 func SupportsTransformFamily(client, upstream Protocol, family RequestFamily) bool {
-	for _, supportedFamily := range supportedTransformFamiliesByClientAndUpstream[client][upstream] {
-		if supportedFamily == family {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(supportedTransformFamiliesByClientAndUpstream[client][upstream], family)
 }
 
 func matchesCanonicalEndpoint(path, endpoint string) bool {

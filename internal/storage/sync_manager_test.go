@@ -329,7 +329,7 @@ func TestSyncManager_RestoreLogsSnapshot(t *testing.T) {
 
 	// 在 MySQL 中添加日志
 	now := time.Now()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		entry := &model.LogEntry{
 			Time:       model.JSONTime{Time: now.Add(-time.Duration(i) * time.Hour)},
 			ChannelID:  1,
@@ -383,7 +383,7 @@ func TestSyncManager_RestoreLogs_DoesNotDuplicateSameLogWithDifferentIDs(t *test
 	now := time.Now()
 
 	// 先推进 MySQL 自增序列，模拟两库独立分配日志 ID。
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := mysql.AddLog(ctx, &model.LogEntry{
 			Time:       model.JSONTime{Time: now.AddDate(0, 0, -8).Add(time.Duration(i) * time.Minute)},
 			ChannelID:  99,
@@ -435,7 +435,7 @@ func TestSyncManager_RestoreLogs_RestoresRowsWhenSQLiteIDIsAhead(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Now()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := sqlite.AddLog(ctx, &model.LogEntry{
 			Time:       model.JSONTime{Time: now.AddDate(0, 0, -8).Add(time.Duration(i) * time.Minute)},
 			ChannelID:  99,
@@ -547,7 +547,7 @@ func TestSyncManager_RestoreLogsOnStartupImportsTailWithoutReplacingLocalData(t 
 	now := time.Now()
 
 	// 第一步：在 MySQL 中添加 3 条日志
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		entry := &model.LogEntry{
 			Time:       model.JSONTime{Time: now.Add(-time.Duration(i) * time.Hour)},
 			ChannelID:  1,
@@ -611,7 +611,7 @@ func TestSyncManager_RestoreLogsOnStartupImportsTailWithoutReplacingLocalData(t 
 	}
 
 	// 第三步：在 MySQL 中再添加 2 条新日志
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		entry := &model.LogEntry{
 			Time:       model.JSONTime{Time: now.Add(time.Duration(i+1) * time.Minute)}, // 新增时间更晚
 			ChannelID:  2,

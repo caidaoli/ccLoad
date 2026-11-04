@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -103,7 +104,7 @@ func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs [
 	for id := range candidates {
 		channelIDs = append(channelIDs, id)
 	}
-	sort.Slice(channelIDs, func(i, j int) bool { return channelIDs[i] < channelIDs[j] })
+	slices.Sort(channelIDs)
 	authTypes, err := s.loadChannelAuthTypesTx(ctx, tx, channelIDs)
 	if err != nil {
 		return nil, err
@@ -350,7 +351,7 @@ func oauthQuotaLedgerSegmentBounds(windows []*oauthcost.Window) []int64 {
 			bounds = append(bounds, counted.From, counted.Until)
 		}
 	}
-	sort.Slice(bounds, func(i, j int) bool { return bounds[i] < bounds[j] })
+	slices.Sort(bounds)
 	unique := bounds[:0]
 	for _, bound := range bounds {
 		if len(unique) == 0 || unique[len(unique)-1] != bound {

@@ -787,8 +787,8 @@ func TestCursorAnthropicStreamFinishEmitsEmptyObjectForInvalidToolArguments(t *t
 	raw := cursorAnthropicStreamFinish(calls, nil)
 
 	var partialJSON string
-	for _, event := range strings.Split(string(raw), "\n\n") {
-		for _, line := range strings.Split(event, "\n") {
+	for event := range strings.SplitSeq(string(raw), "\n\n") {
+		for line := range strings.SplitSeq(event, "\n") {
 			if !strings.HasPrefix(line, "data: ") {
 				continue
 			}
@@ -834,7 +834,7 @@ func TestForwardCursorResponsesKeepsOriginalSDKErrorAfterPing(t *testing.T) {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 			seenOriginal := false
-			for _, line := range strings.Split(rec.Body.String(), "\n") {
+			for line := range strings.SplitSeq(rec.Body.String(), "\n") {
 				if !strings.HasPrefix(line, "data: ") {
 					continue
 				}

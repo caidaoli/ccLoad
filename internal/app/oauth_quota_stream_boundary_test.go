@@ -29,7 +29,7 @@ func TestOAuthQuotaLargeSSEOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var found, completed bool
-	for _, frame := range strings.Split(rec.Body.String(), "\n\n") {
+	for frame := range strings.SplitSeq(rec.Body.String(), "\n\n") {
 		_, data := parseSSEEventChunk([]byte(frame))
 		if len(data) == 0 {
 			continue

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -107,13 +108,7 @@ func TestAnthropicModelsFetcher(t *testing.T) {
 	}
 
 	for _, expected := range expectedModels {
-		found := false
-		for _, model := range models {
-			if model == expected {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(models, expected)
 		if !found {
 			t.Errorf("未找到期望的模型: %s", expected)
 		}

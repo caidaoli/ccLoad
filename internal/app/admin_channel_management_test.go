@@ -650,7 +650,7 @@ func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *test
 	}
 	seen := make(map[int64]oauthUsageBatchResult)
 	var complete oauthUsageBatchEvent
-	for _, block := range strings.Split(response.Body.String(), "\n\n") {
+	for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 		if strings.TrimSpace(block) == "" {
 			continue
 		}

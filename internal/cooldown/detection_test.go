@@ -143,7 +143,7 @@ func TestEvaluateCooldownDetectionRules_ParsesConfiguredResetTimeFormats(t *test
 
 			evaluation := EvaluateCooldownDetectionRules(rules, DetectionInput{
 				StatusCode: 429,
-				ErrorBody:  []byte(fmt.Sprintf(`{"error":{"message":"reset %s"}}`, tt.capture)),
+				ErrorBody:  fmt.Appendf(nil, `{"error":{"message":"reset %s"}}`, tt.capture),
 			}, now)
 			if !evaluation.Actionable {
 				t.Fatalf("evaluation = %+v, want actionable", evaluation)

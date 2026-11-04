@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -855,11 +856,9 @@ func codexOAuthModelAllowed(name, planType string) bool {
 	// Only explicitly restricted plans alter the fallback catalog. Preserve SKU
 	// identity: an unknown or newly introduced plan is not a Pro subscription.
 	excluded := codexOAuthExcludedModelsByPlan[strings.ToLower(strings.TrimSpace(planType))]
-	for _, supported := range codexOAuthDefaultModels {
-		if name == supported {
-			_, blocked := excluded[name]
-			return !blocked
-		}
+	if slices.Contains(codexOAuthDefaultModels, name) {
+		_, blocked := excluded[name]
+		return !blocked
 	}
 	return false
 }

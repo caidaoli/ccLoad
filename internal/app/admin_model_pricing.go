@@ -36,20 +36,20 @@ func modelPricingForAdmin(pricing util.ModelPricing) adminModelPricing {
 		OutputPrice: pricing.OutputPrice,
 	}
 	if pricing.HasCacheReadPrice {
-		response.CacheReadPrice = pricePointer(pricing.CacheReadPrice)
+		response.CacheReadPrice = new(pricing.CacheReadPrice)
 	}
 	if pricing.HasCacheReadPriceHigh || pricing.CacheReadPriceHigh > 0 {
-		response.CacheReadPriceHigh = pricePointer(pricing.CacheReadPriceHigh)
+		response.CacheReadPriceHigh = new(pricing.CacheReadPriceHigh)
 	}
 	if pricing.HasCacheWritePrice {
-		response.CacheWritePrice = pricePointer(pricing.CacheWritePrice)
+		response.CacheWritePrice = new(pricing.CacheWritePrice)
 	}
 	if pricing.HasCacheWritePriceHigh || pricing.CacheWritePriceHigh > 0 {
-		response.CacheWritePriceHigh = pricePointer(pricing.CacheWritePriceHigh)
+		response.CacheWritePriceHigh = new(pricing.CacheWritePriceHigh)
 	}
 	if pricing.InputPriceHigh > 0 || pricing.OutputPriceHigh > 0 {
-		response.InputPriceHigh = pricePointer(pricing.InputPriceHigh)
-		response.OutputPriceHigh = pricePointer(pricing.OutputPriceHigh)
+		response.InputPriceHigh = new(pricing.InputPriceHigh)
+		response.OutputPriceHigh = new(pricing.OutputPriceHigh)
 	}
 	if len(pricing.TokenPricingTiers) > 0 {
 		response.TokenPricingTiers = make([]adminTokenPricingTier, 0, len(pricing.TokenPricingTiers))
@@ -60,15 +60,13 @@ func modelPricingForAdmin(pricing util.ModelPricing) adminModelPricing {
 				OutputPrice:    tier.OutputPrice,
 			}
 			if tier.HasCacheReadPrice {
-				entry.CacheReadPrice = pricePointer(tier.CacheReadPrice)
+				entry.CacheReadPrice = new(tier.CacheReadPrice)
 			}
 			response.TokenPricingTiers = append(response.TokenPricingTiers, entry)
 		}
 	}
 	return response
 }
-
-func pricePointer(value float64) *float64 { return &value }
 
 // HandleGetModelPricing 返回系统内置/远端目录中的模型价格，不包含自定义覆盖。
 // effective=1 时返回当前实际计费价格（含全局自定义覆盖），供渠道模型价格预填。

@@ -143,9 +143,9 @@ func TestModelEntry_Validate(t *testing.T) {
 			t.Fatalf("empty pricing must normalize to nil: err=%v pricing=%#v", err, empty.Pricing)
 		}
 		for _, entry := range []*ModelEntry{
-			{Model: "gpt-4", Pricing: &util.CustomModelPrice{InputPrice: testPrice(-1), OutputPrice: testPrice(1)}},
-			{Model: "gpt-4", Pricing: &util.CustomModelPrice{CacheReadPrice: testPrice(0.1)}},
-			{Model: "*", Pricing: &util.CustomModelPrice{InputPrice: testPrice(1), OutputPrice: testPrice(1)}},
+			{Model: "gpt-4", Pricing: &util.CustomModelPrice{InputPrice: new(-1.0), OutputPrice: new(1.0)}},
+			{Model: "gpt-4", Pricing: &util.CustomModelPrice{CacheReadPrice: new(0.1)}},
+			{Model: "*", Pricing: &util.CustomModelPrice{InputPrice: new(1.0), OutputPrice: new(1.0)}},
 		} {
 			if err := entry.Validate(); err == nil {
 				t.Fatalf("expected pricing error for %q", entry.Model)
@@ -154,12 +154,10 @@ func TestModelEntry_Validate(t *testing.T) {
 	})
 }
 
-func testPrice(value float64) *float64 { return &value }
-
 func TestConfig_EnabledModelEntriesExposeRowPricing(t *testing.T) {
 	t.Parallel()
-	price := &util.CustomModelPrice{InputPrice: testPrice(1)}
-	suffixed := &util.CustomModelPrice{InputPrice: testPrice(3)}
+	price := &util.CustomModelPrice{InputPrice: new(1.0)}
+	suffixed := &util.CustomModelPrice{InputPrice: new(3.0)}
 	cfg := &Config{ModelEntries: []ModelEntry{
 		{Model: "claude-sonnet", RedirectModel: "upstream-sonnet", Pricing: price},
 		{Model: "gpt-5.6-luna(max)", Pricing: suffixed},
@@ -179,8 +177,8 @@ func TestConfig_EnabledModelEntriesExposeRowPricing(t *testing.T) {
 
 func TestCarryModelPricingKeepsPricesForRetainedModels(t *testing.T) {
 	t.Parallel()
-	price := &util.CustomModelPrice{InputPrice: testPrice(1)}
-	explicit := &util.CustomModelPrice{InputPrice: testPrice(9)}
+	price := &util.CustomModelPrice{InputPrice: new(1.0)}
+	explicit := &util.CustomModelPrice{InputPrice: new(9.0)}
 	got := CarryModelPricing(
 		[]ModelEntry{{Model: "GPT-5", Pricing: price}, {Model: "removed", Pricing: price}},
 		[]ModelEntry{{Model: "gpt-5"}, {Model: "added"}, {Model: "removed", Pricing: explicit}},

@@ -78,7 +78,7 @@ func TestOAuthQuotaOutputSSEPreservesAccounting(t *testing.T) {
 				t.Fatalf("internal accounting lost: %+v", result)
 			}
 			types := map[string]map[string]any{}
-			for _, frame := range strings.Split(rec.Body.String(), "\n\n") {
+			for frame := range strings.SplitSeq(rec.Body.String(), "\n\n") {
 				_, data := parseSSEEventChunk([]byte(frame))
 				if len(data) == 0 {
 					continue

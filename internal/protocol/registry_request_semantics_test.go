@@ -292,8 +292,7 @@ func TestRegistryAnthropicRejectsUnsupportedToolAdditions(t *testing.T) {
 					}
 					continue
 				}
-				var translationError *protocol.RequestTranslationError
-				if !errors.As(err, &translationError) {
+				if _, ok := errors.AsType[*protocol.RequestTranslationError](err); !ok {
 					t.Fatalf("unsupported dynamic tool target=%s role=%s: %v", target, role, err)
 				}
 			}
@@ -303,8 +302,7 @@ func TestRegistryAnthropicRejectsUnsupportedToolAdditions(t *testing.T) {
 		for _, spec := range []string{`{}`, `{"type":"tool_reference","name":"missing"}`, `{"type":"tool_definition","definition":{}}`, `{"type":"tool_reference","definition":{"name":"Finish"}}`, `{"type":"tool_definition","definition":{"name":"search","type":"web_search_20250305"}}`} {
 			raw := []byte(`{"messages":[{"role":"system","content":[{"type":"tool_addition","tool":` + spec + `}]}]}`)
 			_, err := reg.TranslateRequest(protocol.Anthropic, target, "target", raw, false)
-			var translationError *protocol.RequestTranslationError
-			if !errors.As(err, &translationError) {
+			if _, ok := errors.AsType[*protocol.RequestTranslationError](err); !ok {
 				t.Fatalf("unsupported tool specification target=%s spec=%s: %v", target, spec, err)
 			}
 		}

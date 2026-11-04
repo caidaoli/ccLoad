@@ -25,7 +25,7 @@ func TestRegistry_TranslateResponseNonStream_AnthropicTruncation(t *testing.T) {
 	} {
 		t.Run(block.name, func(t *testing.T) {
 			for _, stopReason := range []string{"end_turn", "max_tokens"} {
-				raw := []byte(fmt.Sprintf(`{"id":"msg_partial","type":"message","role":"assistant","content":[{"type":"text","text":"first"},%s],"stop_reason":%q,"usage":{"input_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":11,"output_tokens":5}}`, block.json, stopReason))
+				raw := fmt.Appendf(nil, `{"id":"msg_partial","type":"message","role":"assistant","content":[{"type":"text","text":"first"},%s],"stop_reason":%q,"usage":{"input_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":11,"output_tokens":5}}`, block.json, stopReason)
 				request := []byte(`{"instructions":"preserve me"}`)
 				got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", request, nil, raw)
 				if err != nil {

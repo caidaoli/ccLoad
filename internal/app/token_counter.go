@@ -257,10 +257,9 @@ func estimateTextTokens(text string) int {
 	// 混合: 线性插值
 	charsPerToken := 4.0 - (4.0-1.5)*chineseRatio
 
-	tokens := int(float64(runeCount) / charsPerToken)
-	if tokens < 1 {
-		tokens = 1 // 最少1个token
-	}
+	tokens := max(int(float64(runeCount)/charsPerToken),
+		// 最少1个token
+		1)
 
 	return tokens
 }

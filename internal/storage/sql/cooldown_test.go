@@ -3,7 +3,7 @@ package sql_test
 import (
 	"context"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -284,9 +284,7 @@ func TestCooldown_ConcurrentModelCooldown(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			duration, err := store.BumpModelCooldown(ctx, channelID, "upstream-model", now, 502)
 			if err != nil {
@@ -294,7 +292,7 @@ func TestCooldown_ConcurrentModelCooldown(t *testing.T) {
 				return
 			}
 			durations <- duration
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -308,7 +306,7 @@ func TestCooldown_ConcurrentModelCooldown(t *testing.T) {
 	for duration := range durations {
 		got = append(got, duration)
 	}
-	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	slices.Sort(got)
 	want := []time.Duration{2 * time.Minute, 4 * time.Minute}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("concurrent model cooldown durations=%v, want %v", got, want)

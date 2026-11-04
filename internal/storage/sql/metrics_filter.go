@@ -12,10 +12,7 @@ import (
 // filter 为 nil 时返回所有数据
 // 客户端取消不计次数与耗时，但保留已计费的 token 与成本。
 func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
-	bucketMinutes := int64(bucket / time.Minute)
-	if bucketMinutes < 1 {
-		bucketMinutes = 1
-	}
+	bucketMinutes := max(int64(bucket/time.Minute), 1)
 	sinceBucket := since.UnixMilli() / minuteMs
 	untilBucket := until.UnixMilli() / minuteMs
 

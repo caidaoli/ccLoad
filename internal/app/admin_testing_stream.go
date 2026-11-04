@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -1024,16 +1025,11 @@ func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFronten
 }
 
 func chatFrontendChunksHaveVisibleContent(chunks [][]byte) bool {
-	for _, chunk := range chunks {
-		if chatFrontendChunkHasVisibleContent(chunk) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(chunks, chatFrontendChunkHasVisibleContent)
 }
 
 func chatFrontendChunkHasVisibleContent(chunk []byte) bool {
-	for _, line := range strings.Split(string(chunk), "\n") {
+	for line := range strings.SplitSeq(string(chunk), "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data:") {
 			continue

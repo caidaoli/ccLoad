@@ -480,8 +480,7 @@ func TestXAIResponsesToolsRejectInvalidHistory(t *testing.T) {
 		`{"input":[{"type":"custom_tool_call","name":"exec","call_id":"c","input":42}]}`,
 	} {
 		_, _, err := prepareXAIResponsesToolsRequest([]byte(raw), nil)
-		var invalid *protocol.RequestTranslationError
-		if !errors.As(err, &invalid) {
+		if _, ok := errors.AsType[*protocol.RequestTranslationError](err); !ok {
 			t.Fatalf("invalid history must produce local request error, got %v: %s", err, raw)
 		}
 	}
@@ -713,7 +712,6 @@ func TestFinalizeXAIResponsesBodyDropsUnsupportedReasoning(t *testing.T) {
 	t.Parallel()
 
 	for _, modelName := range []string{"grok-composer-2.5-fast", "grok-4.20-0309-non-reasoning", "grok-build-0.1"} {
-		modelName := modelName
 		t.Run(modelName, func(t *testing.T) {
 			t.Parallel()
 			got, err := finalizeXAIResponsesBody(

@@ -201,10 +201,7 @@ func readOAuthCredentialZIPEntry(entry *zip.File, budget *oauthCredentialImportB
 		return nil, fmt.Errorf("open ZIP credential archive entry %q: %w", entry.Name, err)
 	}
 	remaining := uint64(maxOAuthCredentialExpandedBytes) - budget.expandedSize
-	maxActualSize := entry.UncompressedSize64 + remaining
-	if maxActualSize > maxOAuthCredentialImportBytes {
-		maxActualSize = maxOAuthCredentialImportBytes
-	}
+	maxActualSize := min(entry.UncompressedSize64+remaining, maxOAuthCredentialImportBytes)
 	raw, readErr := io.ReadAll(io.LimitReader(opened, int64(maxActualSize)+1))
 	closeErr := opened.Close()
 	if readErr != nil {

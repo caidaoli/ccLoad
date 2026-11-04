@@ -21,7 +21,7 @@ func TestHandleError_1308Error(t *testing.T) {
 
 	// 创建2个API Key
 	keys := make([]*model.APIKey, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		keys[i] = &model.APIKey{
 			ChannelID: cfg.ID,
 			KeyIndex:  i,

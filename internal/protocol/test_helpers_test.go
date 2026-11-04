@@ -29,7 +29,7 @@ func parseSSEEvents(t *testing.T, stream string) []sseEvent {
 		}
 
 		var event sseEvent
-		for _, line := range strings.Split(block, "\n") {
+		for line := range strings.SplitSeq(block, "\n") {
 			switch {
 			case strings.HasPrefix(line, "event: "):
 				event.Event = strings.TrimPrefix(line, "event: ")

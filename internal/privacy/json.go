@@ -152,9 +152,9 @@ type jsonMember struct {
 
 // last returns the member that encoding/json would decode for key.
 func last(members []jsonMember, key string) gjson.Result {
-	for i := len(members) - 1; i >= 0; i-- {
-		if members[i].key == key {
-			return members[i].value
+	for _, member := range slices.Backward(members) {
+		if member.key == key {
+			return member.value
 		}
 	}
 	return gjson.Result{}

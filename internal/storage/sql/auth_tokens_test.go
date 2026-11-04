@@ -343,7 +343,7 @@ func TestAuthToken_List(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建多个 Auth Tokens
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		token := &model.AuthToken{
 			Token:       "token-" + string(rune('A'+i)),
 			Description: "Token " + string(rune('A'+i)),

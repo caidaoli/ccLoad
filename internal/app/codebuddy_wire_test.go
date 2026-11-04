@@ -160,7 +160,7 @@ func TestProxyCodeBuddyResponsesCompactionRoundTrip(t *testing.T) {
 			}
 			compact := gjson.ParseBytes(response.Body.Bytes())
 			if stream {
-				for _, frame := range strings.Split(response.Body.String(), "\n\n") {
+				for frame := range strings.SplitSeq(response.Body.String(), "\n\n") {
 					data := gjson.ParseBytes(sseEventData([]byte(frame)))
 					if data.Get("type").String() == "response.completed" {
 						compact = data.Get("response")

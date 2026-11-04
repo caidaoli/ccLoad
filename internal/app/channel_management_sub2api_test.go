@@ -53,12 +53,12 @@ func TestSub2APIBalanceUsesAuthMeAndSummaryWithoutCheckin(t *testing.T) {
 		t.Fatalf("Sub2API balance representation = %#v", snapshot)
 	}
 	want := []model.ChannelManagementSubscriptionSnapshot{
-		{ID: 2, Name: "Basic", Window: "daily", UsedUSD: float64Ptr(1), ExpiresAt: "2026-09-30T00:00:00Z"},
-		{ID: 2, Name: "Basic", Window: "weekly", UsedUSD: float64Ptr(5), LimitUSD: float64Ptr(20), AvailablePercent: float64Ptr(75), ExpiresAt: "2026-09-30T00:00:00Z"},
-		{ID: 2, Name: "Basic", Window: "monthly", UsedUSD: float64Ptr(6), LimitUSD: float64Ptr(24), AvailablePercent: float64Ptr(75), ExpiresAt: "2026-09-30T00:00:00Z"},
-		{ID: 9, Name: "Pro", Window: "daily", UsedUSD: float64Ptr(2), LimitUSD: float64Ptr(10), AvailablePercent: float64Ptr(80), ExpiresAt: "2026-12-31T00:00:00Z"},
-		{ID: 9, Name: "Pro", Window: "weekly", LimitUSD: float64Ptr(70), ExpiresAt: "2026-12-31T00:00:00Z"},
-		{ID: 9, Name: "Pro", Window: "monthly", UsedUSD: float64Ptr(30), LimitUSD: float64Ptr(0), ExpiresAt: "2026-12-31T00:00:00Z"},
+		{ID: 2, Name: "Basic", Window: "daily", UsedUSD: new(1.0), ExpiresAt: "2026-09-30T00:00:00Z"},
+		{ID: 2, Name: "Basic", Window: "weekly", UsedUSD: new(5.0), LimitUSD: new(20.0), AvailablePercent: new(75.0), ExpiresAt: "2026-09-30T00:00:00Z"},
+		{ID: 2, Name: "Basic", Window: "monthly", UsedUSD: new(6.0), LimitUSD: new(24.0), AvailablePercent: new(75.0), ExpiresAt: "2026-09-30T00:00:00Z"},
+		{ID: 9, Name: "Pro", Window: "daily", UsedUSD: new(2.0), LimitUSD: new(10.0), AvailablePercent: new(80.0), ExpiresAt: "2026-12-31T00:00:00Z"},
+		{ID: 9, Name: "Pro", Window: "weekly", LimitUSD: new(70.0), ExpiresAt: "2026-12-31T00:00:00Z"},
+		{ID: 9, Name: "Pro", Window: "monthly", UsedUSD: new(30.0), LimitUSD: new(0.0), ExpiresAt: "2026-12-31T00:00:00Z"},
 	}
 	assertSub2APISubscriptions(t, snapshot.Subscriptions, want)
 	requests := script.finishedRequests()
@@ -87,7 +87,6 @@ func TestSub2APIBalanceSummaryFallbacksOnceToActive(t *testing.T) {
 		{name: "summary business failure", summaryStatus: http.StatusOK, summaryBody: `{"code":17,"message":"secret","reason":"NO_SUMMARY","data":null}`},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			steps := []sub2APIStep{
@@ -122,12 +121,12 @@ func TestSub2APIBalanceSummaryFallbacksOnceToActive(t *testing.T) {
 				t.Fatalf("fallback balance = (%#v, %d, %v)", snapshot, status, err)
 			}
 			want := []model.ChannelManagementSubscriptionSnapshot{
-				{ID: 3, Name: "Team", Window: "daily", UsedUSD: float64Ptr(1), LimitUSD: float64Ptr(4), AvailablePercent: float64Ptr(75), ExpiresAt: "2026-11-01T00:00:00Z"},
-				{ID: 3, Name: "Team", Window: "weekly", UsedUSD: float64Ptr(2), LimitUSD: float64Ptr(0), ExpiresAt: "2026-11-01T00:00:00Z"},
-				{ID: 3, Name: "Team", Window: "monthly", LimitUSD: float64Ptr(12), ExpiresAt: "2026-11-01T00:00:00Z"},
-				{ID: 8, Window: "daily", UsedUSD: float64Ptr(3), ExpiresAt: "2026-10-01T00:00:00Z"},
-				{ID: 8, Window: "weekly", UsedUSD: float64Ptr(4), ExpiresAt: "2026-10-01T00:00:00Z"},
-				{ID: 8, Window: "monthly", UsedUSD: float64Ptr(5), ExpiresAt: "2026-10-01T00:00:00Z"},
+				{ID: 3, Name: "Team", Window: "daily", UsedUSD: new(1.0), LimitUSD: new(4.0), AvailablePercent: new(75.0), ExpiresAt: "2026-11-01T00:00:00Z"},
+				{ID: 3, Name: "Team", Window: "weekly", UsedUSD: new(2.0), LimitUSD: new(0.0), ExpiresAt: "2026-11-01T00:00:00Z"},
+				{ID: 3, Name: "Team", Window: "monthly", LimitUSD: new(12.0), ExpiresAt: "2026-11-01T00:00:00Z"},
+				{ID: 8, Window: "daily", UsedUSD: new(3.0), ExpiresAt: "2026-10-01T00:00:00Z"},
+				{ID: 8, Window: "weekly", UsedUSD: new(4.0), ExpiresAt: "2026-10-01T00:00:00Z"},
+				{ID: 8, Window: "monthly", UsedUSD: new(5.0), ExpiresAt: "2026-10-01T00:00:00Z"},
 			}
 			assertSub2APISubscriptions(t, snapshot.Subscriptions, want)
 			requests := script.finishedRequests()
@@ -242,7 +241,6 @@ func TestSub2APIBalanceKeepsAuthBalanceWhenSubscriptionsFail(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			steps := append([]sub2APIStep{{
@@ -281,9 +279,9 @@ func TestSub2APIBalanceKeepsAuthBalanceWhenSubscriptionsFail(t *testing.T) {
 func TestSub2APISubscriptionPercentageRequiresFinitePair(t *testing.T) {
 	t.Parallel()
 	items := []sub2APISummaryItem{
-		{ID: 1, DailyUsedUSD: float64Ptr(math.Inf(1)), DailyLimitUSD: float64Ptr(10)},
-		{ID: 2, DailyUsedUSD: float64Ptr(1), DailyLimitUSD: float64Ptr(math.NaN())},
-		{ID: 3, DailyUsedUSD: float64Ptr(1), DailyLimitUSD: float64Ptr(-1)},
+		{ID: 1, DailyUsedUSD: new(math.Inf(1)), DailyLimitUSD: new(10.0)},
+		{ID: 2, DailyUsedUSD: new(1.0), DailyLimitUSD: new(math.NaN())},
+		{ID: 3, DailyUsedUSD: new(1.0), DailyLimitUSD: new(-1.0)},
 	}
 	got := sub2APISummarySubscriptions(items)
 	if len(got) != 9 {
@@ -314,7 +312,6 @@ func TestSub2APIBalanceRejectsUnsafeEnvelopeWithoutLeakingSecrets(t *testing.T) 
 		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"code":401,"message":"` + secret + `"}`},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := &sub2APIScript{t: t, steps: []sub2APIStep{{
@@ -682,7 +679,6 @@ func TestChannelManagementServiceSub2APIBalanceDegradationPersistsAuthBalance(t 
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			server := newInMemoryServer(t)
@@ -815,7 +811,7 @@ func TestSub2APIProCheckinStateMachine(t *testing.T) {
 				status: http.StatusOK, wrote: true,
 				body: `{"code":0,"message":"","data":{"reward_amount":2.5,"new_balance":11,"checked_in_at":"2026-08-25T09:31:02Z"}}`,
 			}}, balance...),
-			wantStatus: newAPICheckinSuccess, wantStatusCode: http.StatusOK, wantReward: float64Ptr(2.5),
+			wantStatus: newAPICheckinSuccess, wantStatusCode: http.StatusOK, wantReward: new(2.5),
 			wantCheckedAt: successTime, wantBalance: true, wantPosts: 1,
 		},
 		{
@@ -825,7 +821,7 @@ func TestSub2APIProCheckinStateMachine(t *testing.T) {
 				status: http.StatusOK, wrote: true,
 				body: `{"code":0,"message":"","data":{"reward_amount":2.5,"new_balance":11,"checked_in_at":"2026-08-25T09:31:02.123Z"}}`,
 			}}, balance...),
-			wantStatus: newAPICheckinSuccess, wantStatusCode: http.StatusOK, wantReward: float64Ptr(2.5),
+			wantStatus: newAPICheckinSuccess, wantStatusCode: http.StatusOK, wantReward: new(2.5),
 			wantCheckedAt: successFractionTime, wantBalance: true, wantPosts: 1,
 		},
 		{
@@ -936,7 +932,6 @@ func TestSub2APIProCheckinStateMachine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := &sub2APIScript{t: t, steps: tt.steps}
@@ -1010,7 +1005,6 @@ func TestSub2APIProCheckinRejectsIncompleteSuccessData(t *testing.T) {
 		{name: "overflow reward", body: `{"code":0,"message":"","data":{"reward_amount":1e309,"new_balance":11,"checked_in_at":"2026-08-25T09:31:02Z"}}`},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := &sub2APIScript{t: t, steps: []sub2APIStep{
@@ -1247,8 +1241,4 @@ func equalOptionalFloat64(left, right *float64) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
-}
-
-func float64Ptr(value float64) *float64 {
-	return &value
 }

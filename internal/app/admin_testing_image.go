@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -125,12 +126,7 @@ func validImageGenerationOption(value string) bool {
 }
 
 func oneOf(value string, allowed ...string) bool {
-	for _, candidate := range allowed {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, value)
 }
 
 // HandleChannelImageGeneration 通过指定渠道和 Key 调用显式选择的生图接口。

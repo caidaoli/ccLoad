@@ -202,7 +202,7 @@ func frameAntigravityStreamChunks(chunks [][]byte) [][]byte {
 func antigravityEventPayload(event []byte) []byte {
 	normalized := bytes.ReplaceAll(event, []byte("\r\n"), []byte("\n"))
 	var dataLines, bareLines [][]byte
-	for _, line := range bytes.Split(normalized, []byte("\n")) {
+	for line := range bytes.SplitSeq(normalized, []byte("\n")) {
 		trimmed := bytes.TrimSpace(line)
 		if data, ok := bytes.CutPrefix(trimmed, []byte("data:")); ok {
 			dataLines = append(dataLines, bytes.TrimSpace(data))
@@ -885,8 +885,8 @@ func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {
 
 func antigravityNegativeSessionID(seed string) string {
 	seed = strings.TrimSpace(seed)
-	if strings.HasPrefix(seed, "-") {
-		if _, err := strconv.ParseUint(strings.TrimPrefix(seed, "-"), 10, 63); err == nil {
+	if after, ok := strings.CutPrefix(seed, "-"); ok {
+		if _, err := strconv.ParseUint(after, 10, 63); err == nil {
 			return seed
 		}
 	}

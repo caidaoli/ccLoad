@@ -1195,10 +1195,7 @@ func compareModelVersion(a, b string) int {
 	// 2. 版本数字序列比较
 	verA := extractVersionNumbers(a)
 	verB := extractVersionNumbers(b)
-	maxLen := len(verA)
-	if len(verB) > maxLen {
-		maxLen = len(verB)
-	}
+	maxLen := max(len(verB), len(verA))
 	for i := 0; i < maxLen; i++ {
 		va, vb := 0, 0
 		if i < len(verA) {
@@ -1227,10 +1224,7 @@ func extractDateSuffix(model string) string {
 	// 查找最后一个分隔符
 	lastDash := strings.LastIndexByte(model, '-')
 	lastDot := strings.LastIndexByte(model, '.')
-	lastSep := lastDash
-	if lastDot > lastSep {
-		lastSep = lastDot
-	}
+	lastSep := max(lastDot, lastDash)
 	if lastSep < 0 {
 		return ""
 	}

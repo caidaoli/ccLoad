@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -365,12 +366,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 }
 
 func containsExact(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, value)
 }
 
 func reasoningDecisionContext(ctx context.Context) context.Context {

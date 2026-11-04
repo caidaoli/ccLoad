@@ -113,7 +113,7 @@ func TestAPITokenLoginCreatesScopedWebSession(t *testing.T) {
 func TestAPITokenLoginDoesNotResetAdminPasswordLockout(t *testing.T) {
 	svc, _ := setupAPITokenLoginService(t, "sk-rate-isolation")
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		w := runLoginHandler(t, svc, `{"mode":"admin","password":"wrong"}`, "1.2.3.4:1234")
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("admin failure %d status=%d, want 401: %s", i+1, w.Code, w.Body.String())
@@ -146,7 +146,7 @@ func TestAPITokenLoginLimitsWebSessionIssuancePerToken(t *testing.T) {
 		"10.0.0.6:1006",
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		w := runLoginHandler(t, svc, `{"mode":"api_token","token":"sk-session-limit"}`, clientAddresses[i])
 		if w.Code != http.StatusOK {
 			t.Fatalf("session issue %d status=%d, want 200: %s", i+1, w.Code, w.Body.String())

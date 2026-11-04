@@ -31,11 +31,9 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 
 	// 阻塞wg.Wait，避免Shutdown过快走到store.Close，从而与“在途请求结束后写入统计”的场景失真
 	blockCh := make(chan struct{})
-	srv.wg.Add(1)
-	go func() {
-		defer srv.wg.Done()
+	srv.wg.Go(func() {
 		<-blockCh
-	}()
+	})
 
 	shutdownErrCh := make(chan error, 1)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

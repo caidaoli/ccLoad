@@ -896,8 +896,7 @@ func sseJSONSyntaxError(raw []byte) error {
 	if err == nil {
 		return errors.New("invalid JSON object")
 	}
-	var syntaxErr *json.SyntaxError
-	if errors.As(err, &syntaxErr) {
+	if syntaxErr, ok := errors.AsType[*json.SyntaxError](err); ok {
 		return fmt.Errorf("invalid JSON object at offset %d: %w", syntaxErr.Offset, err)
 	}
 	return fmt.Errorf("invalid JSON object: %w", err)

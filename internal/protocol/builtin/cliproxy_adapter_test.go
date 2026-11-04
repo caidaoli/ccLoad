@@ -55,7 +55,7 @@ func TestRegistryOpenAIChatDeepSeekCache(t *testing.T) {
 							t.Fatal(err)
 						}
 						for _, chunk := range out {
-							for _, line := range bytes.Split(chunk, []byte{'\n'}) {
+							for line := range bytes.SplitSeq(chunk, []byte{'\n'}) {
 								if !bytes.HasPrefix(line, []byte("data: ")) {
 									continue
 								}

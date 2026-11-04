@@ -422,7 +422,7 @@ func seedProtocolStatsLogs(b *testing.B, store storage.Store, rows int) (time.Ti
 		batch = batch[:0]
 	}
 	step := 24 * time.Hour / time.Duration(rows)
-	for i := 0; i < rows; i++ {
+	for i := range rows {
 		status := 200
 		if i%17 == 0 {
 			status = 500

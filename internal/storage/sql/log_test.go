@@ -744,7 +744,7 @@ func TestLog_Pagination(t *testing.T) {
 
 	now := time.Now()
 	logs := make([]*model.LogEntry, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		logs[i] = &model.LogEntry{
 			Time:       newJSONTime(now),
 			Model:      "gpt-4",

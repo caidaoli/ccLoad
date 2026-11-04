@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,12 +48,7 @@ func isOAuthQuotaCreditLog(entry *model.LogEntry) bool {
 
 // LogsChargeOAuthCredits 报告这批日志是否会改写凭据（仅 Codex 已购额度）。
 func LogsChargeOAuthCredits(logs []*model.LogEntry) bool {
-	for _, entry := range logs {
-		if isOAuthQuotaCreditLog(entry) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(logs, isOAuthQuotaCreditLog)
 }
 
 // updateOAuthQuotaCreditsTx 仅将 Codex 已购额度成本累计进凭据；周期成本由账本承担。
@@ -78,7 +73,7 @@ func (s *SQLStore) updateOAuthQuotaCreditsTx(ctx context.Context, tx *sql.Tx, lo
 			channelIDs = append(channelIDs, channelID)
 		}
 	}
-	sort.Slice(channelIDs, func(i, j int) bool { return channelIDs[i] < channelIDs[j] })
+	slices.Sort(channelIDs)
 	updatedChannelIDs := make([]int64, 0, len(channelIDs))
 	for _, channelID := range channelIDs {
 		authType, credentialJSON, err := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)

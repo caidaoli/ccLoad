@@ -118,7 +118,7 @@ func TestValidateSettingValue(t *testing.T) {
 
 func buildManyFallbackPairs(count int) string {
 	var pairs []string
-	for i := 0; i < count; i++ {
+	for i := range count {
 		pairs = append(pairs, fmt.Sprintf("%q:%q", fmt.Sprintf("model-%d", i), "fallback"))
 	}
 	return "{" + strings.Join(pairs, ",") + "}"

@@ -650,7 +650,7 @@ func TestHybridStore_HighCardinalityDirtyStateCollapsesToFullReconcile(t *testin
 	t.Cleanup(func() { _ = hybrid.Close() })
 
 	const configCount = primaryReconcilePageSize + 5
-	for i := 0; i < configCount; i++ {
+	for i := range configCount {
 		if _, err := hybrid.CreateConfig(ctx, &model.Config{
 			Name: fmt.Sprintf("bounded-%d", i), AuthType: model.AuthTypeAPIKey,
 			URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,

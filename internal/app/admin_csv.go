@@ -43,7 +43,7 @@ func parseChannelIDsQuery(raw string) (map[int64]struct{}, error) {
 		return nil, nil
 	}
 	ids := make(map[int64]struct{})
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue

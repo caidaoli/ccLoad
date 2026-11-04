@@ -179,7 +179,7 @@ func parseCodexResponseEventTypes(t *testing.T, body string) []string {
 	got := make([]string, 0, len(frames))
 	for _, frame := range frames {
 		var eventName, dataLine string
-		for _, line := range strings.Split(frame, "\n") {
+		for line := range strings.SplitSeq(frame, "\n") {
 			switch {
 			case strings.HasPrefix(line, ":"):
 				continue
@@ -431,7 +431,7 @@ func TestHandleTranslatedStreamSuccessResponse_CodexMalformedSSEFramesEachEvent(
 		t.Fatalf("translated response missing terminal [DONE]: %q", body)
 	}
 	dataFrames := 0
-	for _, frame := range strings.Split(strings.TrimSuffix(body, "\n\n"), "\n\n") {
+	for frame := range strings.SplitSeq(strings.TrimSuffix(body, "\n\n"), "\n\n") {
 		if !strings.HasPrefix(frame, "data: ") {
 			t.Fatalf("translated output contains unframed chunk: %q", frame)
 		}
@@ -484,7 +484,7 @@ func TestTranslatedApplyPatchStreamRetainsFailureEventsAndErrors(t *testing.T) {
 			if tt.ordinaryFunction {
 				toolType = "function"
 			}
-			original := []byte(fmt.Sprintf(`{"model":"test","input":"edit","tools":[{"type":%q,"name":"apply_patch"}]}`, toolType))
+			original := fmt.Appendf(nil, `{"model":"test","input":"edit","tools":[{"type":%q,"name":"apply_patch"}]}`, toolType)
 			translated, err := reg.TranslateRequest(protocol.Codex, tt.upstream, "test", original, true)
 			if err != nil {
 				t.Fatal(err)
@@ -2045,7 +2045,6 @@ func TestResponsesRetryBodyForUnknownParameter_Guards(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			res := &fwResult{Status: tt.resStatus, Body: tt.errorBody}
@@ -2108,7 +2107,6 @@ func TestResponsesRetryBodyForUnknownParameter_RequiresCodexResponsesScope(t *te
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if _, _, ok := responsesRetryBodyForUnknownParameter(tc.upstream, tc.plan, res); ok {
@@ -3227,8 +3225,7 @@ func TestAnthropicClaude55GuardUsesCallerBody(t *testing.T) {
 				t.Fatalf("err=%v, wantErr=%v", err, testCase.wantErr)
 			}
 			if err != nil {
-				var validationErr *requestValidationError
-				if !errors.As(err, &validationErr) {
+				if _, ok := errors.AsType[*requestValidationError](err); !ok {
 					t.Fatalf("err=%T %v, want requestValidationError", err, err)
 				}
 				return
@@ -4262,10 +4259,10 @@ func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *
 		t.Fatalf("antigravity catalog missing MaxCompletionTokens for %s", modelName)
 	}
 	want := int64(info.MaxCompletionTokens)
-	body := []byte(fmt.Sprintf(
+	body := fmt.Appendf(nil,
 		`{"model":%q,"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":%d}}}`,
 		modelName, want*2,
-	))
+	)
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
 	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Gemini, "/v1internal:generateContent", modelName,

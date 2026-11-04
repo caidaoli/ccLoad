@@ -84,11 +84,9 @@ func (s *Server) startUpdateManager(interval time.Duration, channel version.Rele
 	}
 	s.updateManager = manager
 	if interval > 0 {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.wg.Go(func() {
 			manager.Run(s.baseCtx)
-		}()
+		})
 	} else {
 		log.Printf("[INFO] 版本检查已禁用（auto_update_interval_hours=0），仅支持设置页手动检测")
 		return

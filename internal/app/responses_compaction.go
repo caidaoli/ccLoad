@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"ccLoad/internal/config"
@@ -313,16 +314,12 @@ func responsesCompactionStream(response []byte) ([][]byte, error) {
 		return nil, err
 	}
 	progress := make(map[string]any, len(completed))
-	for key, value := range completed {
-		progress[key] = value
-	}
+	maps.Copy(progress, completed)
 	progress["status"] = "in_progress"
 	progress["output"] = []any{}
 	delete(progress, "completed_at")
 	addedItem := make(map[string]any, len(completedItem))
-	for key, value := range completedItem {
-		addedItem[key] = value
-	}
+	maps.Copy(addedItem, completedItem)
 	addedItem["status"] = "in_progress"
 	events := []map[string]any{
 		{"type": "response.created", "response": progress},

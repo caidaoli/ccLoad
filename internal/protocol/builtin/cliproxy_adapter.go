@@ -509,10 +509,10 @@ func cliproxyCodexCompletedResponse(raw []byte) ([]byte, error) {
 func cliproxySSEDataEvent(rawEvent []byte) ([]byte, error) {
 	var dataLines [][]byte
 	var eventType string
-	for _, line := range bytes.Split(rawEvent, []byte{'\n'}) {
+	for line := range bytes.SplitSeq(rawEvent, []byte{'\n'}) {
 		line = bytes.TrimSuffix(line, []byte{'\r'})
-		if bytes.HasPrefix(line, []byte("event:")) {
-			eventType = strings.TrimSpace(string(bytes.TrimPrefix(line, []byte("event:"))))
+		if after, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+			eventType = strings.TrimSpace(string(after))
 			continue
 		}
 		if !bytes.HasPrefix(line, []byte("data:")) {

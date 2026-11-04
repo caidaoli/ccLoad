@@ -210,9 +210,8 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				defer interrupt.end()
 				releaseSlots, errSlots := s.acquireResponsesWebsocketTurnSlots(turnCtx, tokenHashString, c.GetInt64("token_id"))
 				if errSlots != nil {
-					var rpmErr *tokenRPMExceededError
 					var errWrite error
-					if errors.As(errSlots, &rpmErr) {
+					if rpmErr, ok := errors.AsType[*tokenRPMExceededError](errSlots); ok {
 						errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, responsesWebsocketErrorBody{
 							Type: "rate_limit_error", Code: "token_rpm_exceeded", Message: rpmErr.Error(),
 							RetryAfter: rpmErr.retryAfterSeconds(),
@@ -525,14 +524,12 @@ func (r responsesWebsocketTurnResult) finishPrivacy() {
 func (r responsesWebsocketTurnResult) writeError(conn *websocket.Conn, turnErr error) error {
 	defer r.finishPrivacy()
 	var payload []byte
-	var terminalErr *responsesWebsocketTerminalError
-	if errors.As(turnErr, &terminalErr) {
+	if terminalErr, ok := errors.AsType[*responsesWebsocketTerminalError](turnErr); ok {
 		payload = terminalErr.payload
 	} else {
 		status := http.StatusBadRequest
 		body := responsesWebsocketErrorBody{Type: "invalid_request_error", Code: "upstream_error", Message: turnErr.Error()}
-		var retryErr *responsesWebsocketClientRetryError
-		if errors.As(turnErr, &retryErr) {
+		if retryErr, ok := errors.AsType[*responsesWebsocketClientRetryError](turnErr); ok {
 			status = retryErr.responseStatus()
 			body = responsesWebsocketErrorBody{Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error()}
 		}
@@ -1358,8 +1355,7 @@ func writeResponsesWebsocketRateLimit(conn *websocket.Conn, limitErr error) erro
 	body := responsesWebsocketErrorBody{
 		Type: "rate_limit_error", Code: "rate_limit", Message: limitErr.Error(),
 	}
-	var executionLimitErr *responsesExecutionLimitError
-	if errors.As(limitErr, &executionLimitErr) {
+	if executionLimitErr, ok := errors.AsType[*responsesExecutionLimitError](limitErr); ok {
 		body.Setting = executionLimitErr.setting
 		body.SettingValue = executionLimitErr.limit
 		body.Current = executionLimitErr.current

@@ -2536,7 +2536,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 
 	// 创建多个API Keys
 	keys := make([]*model.APIKey, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		keys[i] = &model.APIKey{
 			ChannelID:   created.ID,
 			KeyIndex:    i,

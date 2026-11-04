@@ -19,7 +19,7 @@ func configuredChannelTestContent(configService *ConfigService) string {
 		return config.DefaultChannelTestContent
 	}
 	configured := configService.GetString("channel_test_content", config.DefaultChannelTestContent)
-	for _, content := range strings.Split(configured, "|") {
+	for content := range strings.SplitSeq(configured, "|") {
 		if content = strings.TrimSpace(content); content != "" {
 			return content
 		}
@@ -29,9 +29,7 @@ func configuredChannelTestContent(configService *ConfigService) string {
 
 func (s *Server) startScheduledChannelCheckLoop() {
 	log.Print("[INFO] 渠道每日定时检测已启用（服务端本地时间）")
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		// Always wait for a future minute; startup never replays missed checks.
 		timer := time.NewTimer(time.Until(time.Now().Truncate(time.Minute).Add(time.Minute)))
 		defer timer.Stop()
@@ -44,17 +42,15 @@ func (s *Server) startScheduledChannelCheckLoop() {
 				timer.Reset(time.Until(time.Now().Truncate(time.Minute).Add(time.Minute)))
 			}
 		}
-	}()
+	})
 }
 
 func (s *Server) triggerScheduledChannelChecks(now time.Time) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		if err := s.runScheduledChannelChecks(s.baseCtx, now); err != nil && !isExpectedScheduledCheckStop(err) {
 			log.Printf("[WARN] 渠道每日定时检测执行失败: %v", err)
 		}
-	}()
+	})
 }
 func isExpectedScheduledCheckStop(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
@@ -97,12 +93,10 @@ func (s *Server) runScheduledChannelChecks(ctx context.Context, now time.Time) e
 		if _, loaded := s.scheduledChannelChecksRunning.LoadOrStore(cfg.ID, struct{}{}); loaded {
 			continue
 		}
-		running.Add(1)
-		go func() {
-			defer running.Done()
+		running.Go(func() {
 			defer s.scheduledChannelChecksRunning.Delete(cfg.ID)
 			s.runScheduledChannelCheck(ctx, cfg, apiKeysByChannel[cfg.ID], content)
-		}()
+		})
 	}
 
 	return nil

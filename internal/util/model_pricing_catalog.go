@@ -1,6 +1,7 @@
 package util
 
 import (
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -907,9 +908,7 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, custom map[string]
 	}
 
 	systemAliases := make(map[string]string, len(modelAliases))
-	for alias, target := range modelAliases {
-		systemAliases[alias] = target
-	}
+	maps.Copy(systemAliases, modelAliases)
 
 	metadata := make(map[string]ModelCatalogEntry)
 	remoteETag := ""
@@ -926,9 +925,7 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, custom map[string]
 	}
 	systemPrefixBuckets := buildPrefixBuckets(systemPricing, systemAliases)
 	aliases := make(map[string]string, len(systemAliases))
-	for alias, target := range systemAliases {
-		aliases[alias] = target
-	}
+	maps.Copy(aliases, systemAliases)
 	pricing := make(map[string]ModelPricing, len(systemPricing)+len(custom))
 	for id, entry := range systemPricing {
 		pricing[id] = cloneModelPricing(entry)

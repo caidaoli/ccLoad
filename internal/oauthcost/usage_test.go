@@ -32,7 +32,7 @@ func TestFixedQuotaWindowAdvancesToCurrentPeriod(t *testing.T) {
 	reset := time.Date(2026, time.September, 1, 0, 0, 1, 0, time.UTC)
 	usage := &Usage{Windows: []*Window{{
 		Key: "test|one_second", WindowSeconds: 1, StartedAt: reset.Add(-time.Second).Unix(), ResetAt: reset.Unix(),
-		CountFromAt: reset.Add(-time.Second).Unix(), SampledUpstreamUsedPercent: float64Pointer(80), Rollback: &Rollback{},
+		CountFromAt: reset.Add(-time.Second).Unix(), SampledUpstreamUsedPercent: new(80.0), Rollback: &Rollback{},
 	}}}
 	for _, tc := range []struct {
 		name string
@@ -105,14 +105,14 @@ func TestManualResetCutoffSurvivesQuotaRefresh(t *testing.T) {
 	usage := &Usage{Windows: []*Window{{
 		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 		StartedAt: periodStart.Unix(), ResetAt: periodStart.Add(7 * 24 * time.Hour).Unix(),
-		SampledUpstreamUsedPercent: float64Pointer(80),
+		SampledUpstreamUsedPercent: new(80.0),
 	}}}
 	logs := []testLog{{at: periodStart.Add(time.Hour), model: "gpt-5.6-sol", cost: 10_000_000}, {at: manualReset, model: "gpt-5.6-sol", cost: 250_000}}
 	usage = Reset(usage, manualReset)
 	upstreamReset := manualReset.Add(7 * 24 * time.Hour)
 	usage = Reconcile(usage, []Sample{{
 		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
-		ResetAt: upstreamReset, UsedPercent: float64Pointer(80), SampledAt: manualReset.Add(-time.Second),
+		ResetAt: upstreamReset, UsedPercent: new(80.0), SampledAt: manualReset.Add(-time.Second),
 	}}, manualReset.Add(time.Second))
 	if w := usage.Windows[0]; w.CountFromAt != manualReset.Unix() || costAt(usage, w.Key, manualReset.Add(time.Second), logs...) != 250_000 ||
 		w.SampledUpstreamUsedPercent != nil || w.SampledUpstreamAtUnixNano != manualReset.UnixNano() {
@@ -120,7 +120,7 @@ func TestManualResetCutoffSurvivesQuotaRefresh(t *testing.T) {
 	}
 	usage = Reconcile(usage, []Sample{{
 		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
-		ResetAt: upstreamReset, UsedPercent: float64Pointer(5), SampledAt: manualReset.Add(2 * time.Second),
+		ResetAt: upstreamReset, UsedPercent: new(5.0), SampledAt: manualReset.Add(2 * time.Second),
 	}}, manualReset.Add(2*time.Second))
 	w := usage.Windows[0]
 	if w.CountFromAt != manualReset.Unix() || costAt(usage, w.Key, manualReset.Add(2*time.Second), logs...) != 250_000 {
@@ -145,7 +145,7 @@ func TestMonthlyQuotaBoundaryCorrectionUpdatesCalendarAnchor(t *testing.T) {
 			t.Parallel()
 			at := tc.oldReset.Add(-time.Hour)
 			logs := []testLog{{at: at, model: "gpt-5.6-luna", cost: 100}}
-			sample := Sample{Key: "test|monthly", WindowSeconds: 30 * 24 * 60 * 60, ResetAt: tc.oldReset, UsedPercent: float64Pointer(40), SampledAt: at}
+			sample := Sample{Key: "test|monthly", WindowSeconds: 30 * 24 * 60 * 60, ResetAt: tc.oldReset, UsedPercent: new(40.0), SampledAt: at}
 			usage := Reconcile(nil, []Sample{sample}, at)
 			sample.ResetAt, sample.SampledAt = tc.newReset, at.Add(time.Minute)
 			usage = Reconcile(usage, []Sample{sample}, sample.SampledAt)
@@ -165,10 +165,6 @@ func TestMonthlyQuotaBoundaryCorrectionUpdatesCalendarAnchor(t *testing.T) {
 	}
 }
 
-func float64Pointer(value float64) *float64 {
-	return &value
-}
-
 func TestCodexWeeklyCostSurvivesWindowRoleChanges(t *testing.T) {
 	t.Parallel()
 	for _, partial := range []bool{false, true} {
@@ -179,8 +175,8 @@ func TestCodexWeeklyCostSurvivesWindowRoleChanges(t *testing.T) {
 			}
 			resetAt := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
 			initial := []Sample{
-				{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 18000, ResetAt: resetAt.Add(time.Hour), UsedPercent: float64Pointer(80)},
-				{Key: "codex|secondary", Family: FamilyCodex, WindowSeconds: 604800, ResetAt: resetAt.Add(2 * 24 * time.Hour), UsedPercent: float64Pointer(100)},
+				{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 18000, ResetAt: resetAt.Add(time.Hour), UsedPercent: new(80.0)},
+				{Key: "codex|secondary", Family: FamilyCodex, WindowSeconds: 604800, ResetAt: resetAt.Add(2 * 24 * time.Hour), UsedPercent: new(100.0)},
 			}
 			usage := Reconcile(nil, initial, resetAt.Add(-time.Minute))
 			usage = Reset(usage, resetAt)
@@ -192,7 +188,7 @@ func TestCodexWeeklyCostSurvivesWindowRoleChanges(t *testing.T) {
 			observedAt := resetAt.Add(33 * time.Minute)
 			weekly := Sample{
 				Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 604800,
-				ResetAt: observedAt.Add(7 * 24 * time.Hour), UsedPercent: float64Pointer(5), SampledAt: observedAt,
+				ResetAt: observedAt.Add(7 * 24 * time.Hour), UsedPercent: new(5.0), SampledAt: observedAt,
 			}
 			usage = reconcileUsage(usage, []Sample{weekly}, observedAt)
 			if len(usage.Windows) != 1 || usage.Windows[0].Key != "codex|primary" ||
@@ -218,7 +214,7 @@ func TestCodexWeeklyCostSurvivesWindowRoleChanges(t *testing.T) {
 			returnedAt := observedAt.Add(3 * time.Minute)
 			weekly.Key, weekly.SampledAt = "codex|secondary", returnedAt
 			usage = reconcileUsage(usage, []Sample{
-				{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 18000, ResetAt: returnedAt.Add(5 * time.Hour), UsedPercent: float64Pointer(0), SampledAt: returnedAt},
+				{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 18000, ResetAt: returnedAt.Add(5 * time.Hour), UsedPercent: new(0.0), SampledAt: returnedAt},
 				weekly,
 			}, returnedAt)
 			if len(usage.Windows) != 2 || costAt(usage, "codex|primary", returnedAt, logs...) != 0 ||
@@ -249,8 +245,8 @@ func TestCodexWeeklyRoleChangeStillResetsNewPeriods(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			usage := Reconcile(nil, []Sample{
-				{Key: "codex|primary", WindowSeconds: 18000, ResetAt: now.Add(4 * time.Hour), UsedPercent: float64Pointer(80)},
-				{Key: "codex|secondary", WindowSeconds: 604800, ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: float64Pointer(60)},
+				{Key: "codex|primary", WindowSeconds: 18000, ResetAt: now.Add(4 * time.Hour), UsedPercent: new(80.0)},
+				{Key: "codex|secondary", WindowSeconds: 604800, ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: new(60.0)},
 			}, now)
 			logs := []testLog{{at: now, model: "gpt-5.6-sol", cost: 900_000}}
 			usage = Reconcile(usage, []Sample{{
@@ -268,11 +264,11 @@ func TestCodexExplicitWeeklyWindowsStayIndependent(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
 	secondary := Sample{Key: "codex|secondary", Family: FamilyCodex, WindowSeconds: 604800,
-		ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: float64Pointer(50), SampledAt: now}
+		ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: new(50.0), SampledAt: now}
 	usage := Reconcile(nil, []Sample{secondary}, now)
 	logs := []testLog{{at: now, model: "gpt-5.6-sol", cost: 900_000}}
 	primary := secondary
-	primary.Key, primary.UsedPercent = "codex|primary", float64Pointer(5)
+	primary.Key, primary.UsedPercent = "codex|primary", new(5.0)
 	primary.SampledAt, secondary.SampledAt = now.Add(time.Minute), now.Add(time.Minute)
 	usage = Reconcile(usage, []Sample{primary, secondary}, now.Add(time.Minute))
 	// 两个显式周窗口保持独立生命周期；相同区间和模型族会查询到同一条历史日志。
@@ -388,12 +384,12 @@ func TestReconcileKeepsOmittedWindowsSampledAfterSnapshot(t *testing.T) {
 	base := time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC)
 	quotaAt, passiveAt, completedAt := base.Add(time.Minute), base.Add(2*time.Minute), base.Add(3*time.Minute)
 	main := Sample{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 604800,
-		ResetAt: base.Add(24 * time.Hour), UsedPercent: float64Pointer(20), SampledAt: base}
+		ResetAt: base.Add(24 * time.Hour), UsedPercent: new(20.0), SampledAt: base}
 	retired := Sample{Key: "old|weekly", WindowSeconds: 604800,
-		ResetAt: base.Add(24 * time.Hour), UsedPercent: float64Pointer(20), SampledAt: base}
+		ResetAt: base.Add(24 * time.Hour), UsedPercent: new(20.0), SampledAt: base}
 	usage := Reconcile(nil, []Sample{main, retired}, base)
 	spark := Sample{Key: "codex-spark|primary", Family: FamilySpark, WindowSeconds: 18000,
-		ResetAt: base.Add(time.Hour), UsedPercent: float64Pointer(30), SampledAt: passiveAt}
+		ResetAt: base.Add(time.Hour), UsedPercent: new(30.0), SampledAt: passiveAt}
 	usage = ReconcilePartial(usage, []Sample{spark}, passiveAt)
 	logs := []testLog{{at: passiveAt, model: "gpt-5.3-codex-spark", cost: 2_000_000}}
 	main.SampledAt = quotaAt
@@ -614,7 +610,7 @@ func TestReconcileKeepsCountersWhenSamplesCarryNoBoundary(t *testing.T) {
 	newerAt := now.Add(time.Minute)
 	usage = ReconcilePartial(usage, []Sample{{
 		Key: "codex-spark|primary", Family: FamilySpark, WindowSeconds: 18000,
-		ResetAt: now.Add(time.Hour), SampledAt: newerAt, UsedPercent: float64Pointer(20),
+		ResetAt: now.Add(time.Hour), SampledAt: newerAt, UsedPercent: new(20.0),
 	}}, newerAt)
 	logs = append(logs, testLog{at: newerAt, model: "gpt-5.3-codex-spark", cost: 300_000})
 	// 采样失败/边界缺失不是「窗口消失」，已累计的成本必须留下。
@@ -768,18 +764,18 @@ func TestReconcileIgnoresStaleSiblingWhenAnotherWindowRollsBack(t *testing.T) {
 	weeklyResetAt := now.Add(6 * 24 * time.Hour)
 	usage := Reconcile(nil, []Sample{
 		{Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: fiveHourResetAt,
-			UsedPercent: float64Pointer(80)},
+			UsedPercent: new(80.0)},
 		{Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60, ResetAt: weeklyResetAt,
-			UsedPercent: float64Pointer(73)},
+			UsedPercent: new(73.0)},
 	}, now)
 	logs := []testLog{{at: now, model: "gpt-5.6-sol", cost: 1_000_000}}
 
 	rolledAt := now.Add(time.Hour)
 	usage = Reconcile(usage, []Sample{
 		{Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: fiveHourResetAt,
-			UsedPercent: float64Pointer(80), SampledAt: now.Add(-time.Minute)},
+			UsedPercent: new(80.0), SampledAt: now.Add(-time.Minute)},
 		{Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60, ResetAt: rolledAt.Add(7 * 24 * time.Hour),
-			UsedPercent: float64Pointer(5), SampledAt: rolledAt},
+			UsedPercent: new(5.0), SampledAt: rolledAt},
 	}, rolledAt.Add(time.Minute))
 	fiveHour := Find(usage, "codex|primary")
 	weekly := Find(usage, "codex|secondary")
@@ -800,9 +796,9 @@ func TestReconcileIgnoresStaleSiblingWhenAnotherWindowRollsBack(t *testing.T) {
 
 	usage = Reconcile(usage, []Sample{
 		{Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: rolledAt.Add(5 * time.Hour),
-			UsedPercent: float64Pointer(5), SampledAt: rolledAt.Add(2 * time.Minute)},
+			UsedPercent: new(5.0), SampledAt: rolledAt.Add(2 * time.Minute)},
 		{Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60, ResetAt: rolledAt.Add(7 * 24 * time.Hour),
-			UsedPercent: float64Pointer(6), SampledAt: rolledAt.Add(2 * time.Minute)},
+			UsedPercent: new(6.0), SampledAt: rolledAt.Add(2 * time.Minute)},
 	}, rolledAt.Add(2*time.Minute))
 	fiveHour = Find(usage, "codex|primary")
 	if fiveHour == nil || costAt(usage, fiveHour.Key, rolledAt.Add(2*time.Minute), logs...) != 0 ||
@@ -856,7 +852,7 @@ func TestReconcileCorrectsResetBoundaryBeforeRollingCost(t *testing.T) {
 						reconcileUsage = ReconcilePartial
 					}
 					seedAt := time.Unix(tc.oldReset-600, 0)
-					original := Sample{Key: tc.key, Family: FamilyCodex, WindowSeconds: tc.seconds, ResetAt: time.Unix(tc.oldReset, 0), UsedPercent: float64Pointer(40), SampledAt: seedAt}
+					original := Sample{Key: tc.key, Family: FamilyCodex, WindowSeconds: tc.seconds, ResetAt: time.Unix(tc.oldReset, 0), UsedPercent: new(40.0), SampledAt: seedAt}
 					usage := Reconcile(nil, []Sample{original}, seedAt)
 					logs := []testLog{{at: seedAt, model: "gpt-5.6-luna", cost: 1_000_000}}
 					if tc.name == "weekly" {
@@ -871,7 +867,7 @@ func TestReconcileCorrectsResetBoundaryBeforeRollingCost(t *testing.T) {
 						at = time.Unix(tc.oldReset+1, 0)
 					}
 					sample := original
-					sample.ResetAt, sample.SampledAt, sample.UsedPercent = time.Unix(tc.newReset, 0), at, float64Pointer(41)
+					sample.ResetAt, sample.SampledAt, sample.UsedPercent = time.Unix(tc.newReset, 0), at, new(41.0)
 					usage = reconcileUsage(usage, []Sample{sample}, at)
 					w := Find(usage, tc.key)
 					if w.ResetAt != tc.newReset || w.StartedAt != startedAt || w.CountFromAt != countFromAt || costAt(usage, tc.key, at, logs...) != 1_000_000 {
@@ -907,14 +903,14 @@ func TestReconcilePartialKeepsCostWhenFiveHourResetJitters(t *testing.T) {
 	resetAt := now.Add(time.Hour)
 	usage := Reconcile(nil, []Sample{{
 		Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: resetAt,
-		UsedPercent: float64Pointer(10), SampledAt: now,
+		UsedPercent: new(10.0), SampledAt: now,
 	}}, now)
 	logs := []testLog{{at: now, model: "gpt-5.6-sol", cost: 1_000_000}}
 
 	sampledAt := now.Add(time.Minute)
 	usage = ReconcilePartial(usage, []Sample{{
 		Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: resetAt.Add(3 * time.Minute),
-		UsedPercent: float64Pointer(11), SampledAt: sampledAt,
+		UsedPercent: new(11.0), SampledAt: sampledAt,
 	}}, sampledAt)
 	window := Find(usage, "codex|primary")
 	if window == nil || costAt(usage, window.Key, sampledAt, logs...) != 1_000_000 ||
@@ -935,7 +931,6 @@ func TestReconcileRollbackOnlyResetsSampledWindow(t *testing.T) {
 		{name: "complete", reconcile: Reconcile},
 		{name: "partial", reconcile: ReconcilePartial},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, time.August, 24, 2, 29, 7, 0, time.UTC)
@@ -943,18 +938,18 @@ func TestReconcileRollbackOnlyResetsSampledWindow(t *testing.T) {
 			weeklyResetAt := now.Add(6 * 24 * time.Hour)
 			usage := Reconcile(nil, []Sample{
 				{Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: primaryResetAt,
-					UsedPercent: float64Pointer(80), SampledAt: now},
+					UsedPercent: new(80.0), SampledAt: now},
 				{Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60, ResetAt: weeklyResetAt,
-					UsedPercent: float64Pointer(30), SampledAt: now},
+					UsedPercent: new(30.0), SampledAt: now},
 			}, now)
 			logs := []testLog{{at: now, model: "gpt-5.6-sol", cost: 1_000_000}}
 
 			sampledAt := now.Add(time.Minute)
 			usage = test.reconcile(usage, []Sample{
 				{Key: "codex|primary", WindowSeconds: 5 * 60 * 60, ResetAt: sampledAt.Add(5 * time.Hour),
-					UsedPercent: float64Pointer(5), SampledAt: sampledAt},
+					UsedPercent: new(5.0), SampledAt: sampledAt},
 				{Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60, ResetAt: weeklyResetAt,
-					UsedPercent: float64Pointer(31), SampledAt: sampledAt},
+					UsedPercent: new(31.0), SampledAt: sampledAt},
 			}, sampledAt)
 			primary := Find(usage, "codex|primary")
 			weekly := Find(usage, "codex|secondary")
@@ -974,14 +969,14 @@ func TestReconcileIgnoresOlderUpstreamUsageSample(t *testing.T) {
 	resetAt := now.Add(6 * 24 * time.Hour)
 	usage := Reconcile(nil, []Sample{{
 		Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt,
-		UsedPercent: float64Pointer(60),
+		UsedPercent: new(60.0),
 	}}, now)
 	logs := []testLog{{at: now, model: "gpt-5.6-sol", cost: 1_000_000}}
 
 	for _, seconds := range []int64{604800, 18000} {
 		next := Reconcile(usage, []Sample{{
 			Key: "codex|primary", WindowSeconds: seconds, ResetAt: resetAt.Add(-4 * 24 * time.Hour),
-			UsedPercent: float64Pointer(20), SampledAt: now.Add(-time.Second),
+			UsedPercent: new(20.0), SampledAt: now.Add(-time.Second),
 		}}, now.Add(time.Minute))
 		window := Find(next, "codex|primary")
 		if costAt(next, window.Key, now.Add(time.Minute), logs...) != 1_000_000 || window.WindowSeconds != 604800 ||
@@ -1029,14 +1024,14 @@ func TestReconcileIgnoresSmallUpstreamUsageRollback(t *testing.T) {
 	resetAt := now.Add(6 * 24 * time.Hour)
 	usage := Reconcile(nil, []Sample{{
 		Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
-		ResetAt: resetAt, UsedPercent: float64Pointer(80.5585),
+		ResetAt: resetAt, UsedPercent: new(80.5585),
 	}}, now)
 	logs := []testLog{{at: now, model: "gemini-3.6-flash-high", cost: 72_417_000}}
 
 	sampledAt := now.Add(time.Minute)
 	usage = Reconcile(usage, []Sample{{
 		Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
-		ResetAt: resetAt.Add(7 * time.Second), UsedPercent: float64Pointer(80.5575), SampledAt: sampledAt,
+		ResetAt: resetAt.Add(7 * time.Second), UsedPercent: new(80.5575), SampledAt: sampledAt,
 	}}, sampledAt.Add(time.Minute))
 	window := Find(usage, "gemini models|gemini-weekly")
 	if costAt(usage, window.Key, sampledAt.Add(time.Minute), logs...) != 72_417_000 || window.CountFromAt != 0 {
@@ -1062,18 +1057,18 @@ func TestReconcileIgnoresSmallUsageDropAcrossWindows(t *testing.T) {
 	weeklyResetAt := now.Add(6 * 24 * time.Hour)
 	usage := Reconcile(nil, []Sample{
 		{Key: "gemini models|gemini-5h", Family: FamilyGemini, WindowSeconds: 18000,
-			ResetAt: fiveHourResetAt, UsedPercent: float64Pointer(40.0)},
+			ResetAt: fiveHourResetAt, UsedPercent: new(40.0)},
 		{Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
-			ResetAt: weeklyResetAt, UsedPercent: float64Pointer(80.5585)},
+			ResetAt: weeklyResetAt, UsedPercent: new(80.5585)},
 	}, now)
 	logs := []testLog{{at: now, model: "gemini-3.6-flash-high", cost: 1_000_000}}
 
 	sampledAt := now.Add(time.Hour)
 	usage = Reconcile(usage, []Sample{
 		{Key: "gemini models|gemini-5h", Family: FamilyGemini, WindowSeconds: 18000,
-			ResetAt: fiveHourResetAt, UsedPercent: float64Pointer(39.999), SampledAt: sampledAt},
+			ResetAt: fiveHourResetAt, UsedPercent: new(39.999), SampledAt: sampledAt},
 		{Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
-			ResetAt: weeklyResetAt.Add(24 * time.Hour), UsedPercent: float64Pointer(80.5575), SampledAt: sampledAt},
+			ResetAt: weeklyResetAt.Add(24 * time.Hour), UsedPercent: new(80.5575), SampledAt: sampledAt},
 	}, sampledAt.Add(time.Minute))
 	for key, wantUsed := range map[string]float64{
 		"gemini models|gemini-5h":     39.999,
@@ -1097,7 +1092,7 @@ func TestReconcileUsageDropAtEpsilonBoundary(t *testing.T) {
 		resetAt := now.Add(6 * 24 * time.Hour)
 		usage := Reconcile(nil, []Sample{{
 			Key: "codex|primary", Family: FamilyAll, WindowSeconds: 604800,
-			ResetAt: resetAt, UsedPercent: float64Pointer(80),
+			ResetAt: resetAt, UsedPercent: new(80.0),
 		}}, now)
 		return usage
 	}
@@ -1106,7 +1101,7 @@ func TestReconcileUsageDropAtEpsilonBoundary(t *testing.T) {
 		usage = Reconcile(usage, []Sample{{
 			Key: "codex|primary", Family: FamilyAll, WindowSeconds: 604800,
 			ResetAt:     time.Date(2026, time.August, 30, 2, 29, 7, 0, time.UTC),
-			UsedPercent: float64Pointer(usedPercent), SampledAt: sampledAt,
+			UsedPercent: new(usedPercent), SampledAt: sampledAt,
 		}}, sampledAt)
 		return usage, sampledAt
 	}
@@ -1139,7 +1134,7 @@ func TestEpochFloorsCountingStartForEveryWindowGeneration(t *testing.T) {
 	weeklyResetAt := epochAt.Add(3 * 24 * time.Hour)
 	weekly := Sample{
 		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
-		ResetAt: weeklyResetAt, UsedPercent: float64Pointer(10), SampledAt: epochAt.Add(time.Minute),
+		ResetAt: weeklyResetAt, UsedPercent: new(10.0), SampledAt: epochAt.Add(time.Minute),
 	}
 
 	// 纪元之前开始的周期：新建窗口只从纪元起计数。
@@ -1159,7 +1154,7 @@ func TestEpochFloorsCountingStartForEveryWindowGeneration(t *testing.T) {
 	// 时长变化重建的窗口同样从纪元起计数。
 	fiveHour := Sample{
 		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 5 * 60 * 60,
-		ResetAt: epochAt.Add(2 * time.Hour), UsedPercent: float64Pointer(1), SampledAt: epochAt.Add(2 * time.Minute),
+		ResetAt: epochAt.Add(2 * time.Hour), UsedPercent: new(1.0), SampledAt: epochAt.Add(2 * time.Minute),
 	}
 	usage = Reconcile(usage, []Sample{fiveHour}, epochAt.Add(2*time.Minute))
 	window = Find(usage, "codex|primary")
@@ -1196,7 +1191,7 @@ func TestResetStartsQuotaEpoch(t *testing.T) {
 	}
 	weekly := Sample{
 		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
-		ResetAt: resetAt.Add(2 * 24 * time.Hour), UsedPercent: float64Pointer(3), SampledAt: resetAt.Add(-time.Hour),
+		ResetAt: resetAt.Add(2 * 24 * time.Hour), UsedPercent: new(3.0), SampledAt: resetAt.Add(-time.Hour),
 	}
 	usage := Reconcile(bare, []Sample{weekly}, resetAt.Add(-time.Hour))
 	window := Find(usage, "codex|primary")

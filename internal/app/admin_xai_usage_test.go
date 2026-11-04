@@ -237,15 +237,15 @@ func TestXAIUsage_PreservesPeriodPresenceAliasesAndEndpointPriority(t *testing.T
 			creditsStatus: http.StatusOK,
 			creditsBody:   `{"config":{"creditUsagePercent":0,"billingPeriodEnd":"2026-08-08T00:00:00Z"}}`,
 			monthlyStatus: http.StatusInternalServerError, monthlyBody: `{}`,
-			wantWeekly: true, wantWeeklyPercent: float64Pointer(0), wantWeeklyReset: "2026-08-08T00:00:00Z",
+			wantWeekly: true, wantWeeklyPercent: new(0.0), wantWeeklyReset: "2026-08-08T00:00:00Z",
 		},
 		{
 			name:          "monthly-only snake aliases and scalar strings preserve zero",
 			creditsStatus: http.StatusInternalServerError, creditsBody: `{}`,
 			monthlyStatus: http.StatusOK,
 			monthlyBody:   `{"config":{"monthly_limit":"0","used":{"val":"0"},"on_demand_cap":0,"on_demand_used":"0","billing_period_end":"2026-09-01T00:00:00Z"}}`,
-			wantMonthly:   true, wantMonthlyLimit: float64Pointer(0), wantUsed: float64Pointer(0),
-			wantOnDemandCap: float64Pointer(0), wantOnDemandUsed: float64Pointer(0), wantMonthlyReset: "2026-09-01T00:00:00Z",
+			wantMonthly:   true, wantMonthlyLimit: new(0.0), wantUsed: new(0.0),
+			wantOnDemandCap: new(0.0), wantOnDemandUsed: new(0.0), wantMonthlyReset: "2026-09-01T00:00:00Z",
 		},
 		{
 			name:          "weekly endpoint owns weekly and monthly endpoint owns monthly",
@@ -253,9 +253,9 @@ func TestXAIUsage_PreservesPeriodPresenceAliasesAndEndpointPriority(t *testing.T
 			creditsBody:   `{"config":{"credit_usage_percent":"10","product_usage":[{"product":"zero","usage_percent":"0"}],"current_period":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-08-08T00:00:00Z"},"monthly_limit":111,"used":11,"billing_period_end":"2026-08-31T00:00:00Z"}}`,
 			monthlyStatus: http.StatusOK,
 			monthlyBody:   `{"config":{"creditUsagePercent":90,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-08-09T00:00:00Z"},"monthlyLimit":{"val":"222.5"},"used":"22.25","onDemandCap":{"val":"500"},"onDemandUsed":0,"billingPeriodEnd":"2026-09-01T00:00:00Z"}}`,
-			wantWeekly:    true, wantWeeklyPercent: float64Pointer(10), wantWeeklyReset: "2026-08-08T00:00:00Z", wantProductZero: true,
-			wantMonthly: true, wantMonthlyLimit: float64Pointer(111), wantUsed: float64Pointer(11),
-			wantOnDemandCap: float64Pointer(500), wantOnDemandUsed: float64Pointer(0), wantMonthlyReset: "2026-08-31T00:00:00Z",
+			wantWeekly:    true, wantWeeklyPercent: new(10.0), wantWeeklyReset: "2026-08-08T00:00:00Z", wantProductZero: true,
+			wantMonthly: true, wantMonthlyLimit: new(111.0), wantUsed: new(11.0),
+			wantOnDemandCap: new(500.0), wantOnDemandUsed: new(0.0), wantMonthlyReset: "2026-08-31T00:00:00Z",
 		},
 		{
 			name:              "mixed config does not reuse monthly billingPeriodEnd as weekly reset",
@@ -264,11 +264,11 @@ func TestXAIUsage_PreservesPeriodPresenceAliasesAndEndpointPriority(t *testing.T
 			monthlyStatus:     http.StatusInternalServerError,
 			monthlyBody:       `{}`,
 			wantWeekly:        true,
-			wantWeeklyPercent: float64Pointer(5),
+			wantWeeklyPercent: new(5.0),
 			wantMonthly:       true,
-			wantMonthlyLimit:  float64Pointer(100),
-			wantUsed:          float64Pointer(25),
-			wantOnDemandUsed:  float64Pointer(0),
+			wantMonthlyLimit:  new(100.0),
+			wantUsed:          new(25.0),
+			wantOnDemandUsed:  new(0.0),
 			wantMonthlyReset:  "2026-08-31T00:00:00Z",
 		},
 		{
@@ -278,7 +278,7 @@ func TestXAIUsage_PreservesPeriodPresenceAliasesAndEndpointPriority(t *testing.T
 			monthlyStatus:     http.StatusOK,
 			monthlyBody:       `{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_MONTHLY","end":"2026-09-01T00:00:00Z"}}}`,
 			wantWeekly:        true,
-			wantWeeklyPercent: float64Pointer(0),
+			wantWeeklyPercent: new(0.0),
 			wantWeeklyReset:   "2026-08-08T00:00:00Z",
 		},
 		{
@@ -288,8 +288,8 @@ func TestXAIUsage_PreservesPeriodPresenceAliasesAndEndpointPriority(t *testing.T
 			monthlyStatus:     http.StatusOK,
 			monthlyBody:       `{"config":{"onDemandUsed":0}}`,
 			wantWeekly:        true,
-			wantWeeklyPercent: float64Pointer(0),
-			wantOnDemandUsed:  float64Pointer(0),
+			wantWeeklyPercent: new(0.0),
+			wantOnDemandUsed:  new(0.0),
 		},
 	}
 	for _, tc := range tests {
@@ -322,8 +322,6 @@ func TestXAIUsage_PreservesPeriodPresenceAliasesAndEndpointPriority(t *testing.T
 		})
 	}
 }
-
-func float64Pointer(value float64) *float64 { return &value }
 
 func equalFloatPointer(got, want *float64) bool {
 	return got == nil && want == nil || got != nil && want != nil && *got == *want

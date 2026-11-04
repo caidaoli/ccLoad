@@ -187,7 +187,6 @@ func TestServiceRejectsInvalidPersonalAccessTokenResponses(t *testing.T) {
 		{name: "missing identity", status: http.StatusOK, body: `{"email":"user@example.com"}`},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

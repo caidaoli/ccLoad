@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -228,9 +229,7 @@ func (s *AuthService) loadSessionsFromDB() error {
 	}
 
 	s.tokensMux.Lock()
-	for tokenHash, session := range sessions {
-		s.validTokens[tokenHash] = session
-	}
+	maps.Copy(s.validTokens, sessions)
 	s.tokensMux.Unlock()
 
 	if len(sessions) > 0 {
@@ -428,8 +427,8 @@ func (s *AuthService) RequireWebAuth() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			const prefix = "Bearer "
-			if strings.HasPrefix(authHeader, prefix) {
-				token := strings.TrimPrefix(authHeader, prefix)
+			if after, ok := strings.CutPrefix(authHeader, prefix); ok {
+				token := after
 
 				session, ok, err := s.webSession(token)
 				if err != nil {
@@ -603,8 +602,8 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			const prefix = "Bearer "
-			if strings.HasPrefix(authHeader, prefix) {
-				token = strings.TrimPrefix(authHeader, prefix)
+			if after, ok := strings.CutPrefix(authHeader, prefix); ok {
+				token = after
 				tokenFound = true
 			}
 		}

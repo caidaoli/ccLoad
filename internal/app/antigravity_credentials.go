@@ -205,7 +205,7 @@ func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Contex
 		queryCtx, cancel := context.WithTimeout(queryCtx, timeout)
 		defer cancel()
 		current := cloneAntigravityCredential(credential)
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := range 2 {
 			service := *m.service
 			if m.clientFor != nil {
 				service.Client = m.clientFor(cfg)

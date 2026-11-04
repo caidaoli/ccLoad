@@ -11,7 +11,7 @@ import (
 
 func assertGeminiFunctionCallStream(t *testing.T, body, name, query string) {
 	t.Helper()
-	for _, block := range strings.Split(body, "\n\n") {
+	for block := range strings.SplitSeq(body, "\n\n") {
 		_, data := parseSSEEventChunk([]byte(block))
 		payload, ok := decodeSSEPayload(data)
 		if !ok {

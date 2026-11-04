@@ -468,7 +468,7 @@ func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 
 			if streaming {
 				var delta, completed bool
-				for _, block := range bytes.Split(response.Body.Bytes(), []byte("\n\n")) {
+				for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
 					eventType, data := parseSSEEventChunk(block)
 					payload, ok := decodeSSEPayload(data)
 					if !ok {
@@ -567,7 +567,7 @@ func TestProxy_CursorOAuthSupportsGemini(t *testing.T) {
 			}
 			var payloads []geminiResponse
 			if streaming {
-				for _, block := range bytes.Split(response.Body.Bytes(), []byte("\n\n")) {
+				for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
 					_, data := parseSSEEventChunk(block)
 					if len(data) == 0 {
 						continue
@@ -652,7 +652,7 @@ func TestProxy_CursorOAuthResponsesEmitsNativeToolCalls(t *testing.T) {
 
 	var outputText strings.Builder
 	var functionNames, functionArguments []string
-	for _, block := range bytes.Split(response.Body.Bytes(), []byte("\n\n")) {
+	for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
 		eventType, data := parseSSEEventChunk(block)
 		payload, ok := decodeSSEPayload(data)
 		if !ok {

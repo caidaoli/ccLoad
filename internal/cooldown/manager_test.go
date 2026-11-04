@@ -68,7 +68,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 	// 创建多Key渠道（3个Key）
 	cfg := createTestChannel(t, store, "test-key-error")
 	keys := make([]*model.APIKey, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		keys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
@@ -1128,7 +1128,7 @@ func TestHandleError_NetworkError(t *testing.T) {
 
 	// 为测试连接重置场景，创建多Key渠道
 	netKeys := make([]*model.APIKey, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		netKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
@@ -1316,7 +1316,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 	// 创建多Key渠道
 	cfg := createTestChannel(t, store, "test-429-classification")
 	rateKeys := make([]*model.APIKey, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		rateKeys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
@@ -1436,7 +1436,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 重置冷却状态
 			_ = store.ResetChannelCooldown(ctx, cfg.ID)
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				_ = store.ResetKeyCooldown(ctx, cfg.ID, i)
 			}
 
@@ -1480,7 +1480,7 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 
 	cfg := createTestChannel(t, store, "test-structured-429-quota")
 	keys := make([]*model.APIKey, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		keys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
@@ -1674,7 +1674,7 @@ func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
 
 	loc := time.FixedZone("UTC+8", 8*60*60)
 	resetAt := time.Now().In(loc).Add(2 * time.Hour).Truncate(time.Second)
-	body := []byte(fmt.Sprintf(`{"code":6004,"msg":"您的使用量已超出频率限制，将在 %s UTC+8 重置，您也可以切换其他模型继续使用。"}`, resetAt.Format("2006-01-02 15:04:05")))
+	body := fmt.Appendf(nil, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 %s UTC+8 重置，您也可以切换其他模型继续使用。"}`, resetAt.Format("2006-01-02 15:04:05"))
 
 	action := manager.HandleError(ctx, ErrorInput{
 		ChannelID:  cfg.ID,
@@ -1955,7 +1955,7 @@ func TestHandleError_TokenHarborRollingFreeAllowancePromotesSingleKeyChannel(t *
 	}
 
 	resetAt := time.Now().UTC().Add(4 * 24 * time.Hour).Truncate(time.Microsecond)
-	body := []byte(fmt.Sprintf(`{"type":"error","error":{"type":"rate_limit_error","message":"You've used this period's free allowance. Your next rolling 7-day period starts at %s. Use the paid model 'deepseek-v4.1-flash' to keep going."}}`, resetAt.Format(time.RFC3339Nano)))
+	body := fmt.Appendf(nil, `{"type":"error","error":{"type":"rate_limit_error","message":"You've used this period's free allowance. Your next rolling 7-day period starts at %s. Use the paid model 'deepseek-v4.1-flash' to keep going."}}`, resetAt.Format(time.RFC3339Nano))
 	action := manager.HandleError(ctx, ErrorInput{
 		ChannelID:  cfg.ID,
 		KeyIndex:   0,
@@ -2107,7 +2107,7 @@ func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 
 	cfg := createTestChannel(t, store, "test-usage-limit-multi-key")
 	keys := make([]*model.APIKey, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		keys[i] = &model.APIKey{
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
@@ -2171,7 +2171,7 @@ func TestHandleError_AntigravityQuotaUsesMetadataModelAndResetTimestamp(t *testi
 	}
 
 	resetAt := time.Now().Add(3*time.Hour + 40*time.Minute + 30*time.Second).Truncate(time.Second)
-	body := []byte(fmt.Sprintf(`{
+	body := fmt.Appendf(nil, `{
 		"error": {
 			"code": 429,
 			"message": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h40m30s.",
@@ -2186,7 +2186,7 @@ func TestHandleError_AntigravityQuotaUsesMetadataModelAndResetTimestamp(t *testi
 				}
 			}]
 		}
-	}`, resetAt.Format(time.RFC3339)))
+	}`, resetAt.Format(time.RFC3339))
 
 	action := manager.HandleError(ctx, ErrorInput{
 		ChannelID:  cfg.ID,

@@ -69,15 +69,15 @@ func mergeResponseBody(raw string) mergedResponseParts {
 }
 
 func stripHTTPResponseEnvelope(raw string) string {
-	headerBreak := strings.Index(raw, "\n\n")
-	if headerBreak < 0 {
+	_, after, ok := strings.Cut(raw, "\n\n")
+	if !ok {
 		return strings.TrimSpace(raw)
 	}
 	firstLine := strings.TrimSpace(strings.Split(raw, "\n")[0])
 	if !strings.HasPrefix(strings.ToUpper(firstLine), "HTTP ") {
 		return strings.TrimSpace(raw)
 	}
-	return strings.TrimSpace(raw[headerBreak+2:])
+	return strings.TrimSpace(after)
 }
 
 func parseSSEJSONPayloads(body string) []map[string]any {
@@ -99,9 +99,9 @@ func parseSSEJSONPayloads(body string) []map[string]any {
 		}
 	}
 
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "data:") {
-			value := strings.TrimPrefix(line, "data:")
+	for line := range strings.SplitSeq(body, "\n") {
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			value := after
 			value = strings.TrimPrefix(value, " ")
 			dataLines = append(dataLines, value)
 			continue

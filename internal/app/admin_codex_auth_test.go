@@ -1814,8 +1814,8 @@ func TestXAIRefreshTokenImportJobSurvivesStartRequestCancellation(t *testing.T) 
 	}
 	var startEvent oauthCredentialImportEvent
 	for line := range strings.SplitSeq(response.Body.String(), "\n") {
-		if strings.HasPrefix(line, "data: ") {
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &startEvent); err != nil {
+		if after, ok := strings.CutPrefix(line, "data: "); ok {
+			if err := json.Unmarshal([]byte(after), &startEvent); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -4750,14 +4750,12 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	results := make(chan *codexauth.Credential, 16)
 	errs := make(chan error, 16)
 	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			got, getErr := manager.credential(context.Background(), channel, false)
 			results <- got
 			errs <- getErr
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -5209,14 +5207,14 @@ func TestCodexReserveResponsePreservesMainQuotaCost(t *testing.T) {
 				QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{
 					{Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 18000,
 						StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(4 * time.Hour).Unix(),
-						SampledUpstreamUsedPercent: float64Pointer(99), SampledUpstreamAtUnixNano: base.UnixNano()},
+						SampledUpstreamUsedPercent: new(99.0), SampledUpstreamAtUnixNano: base.UnixNano()},
 					{Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
 						StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
-						SampledUpstreamUsedPercent: float64Pointer(31), SampledUpstreamAtUnixNano: base.UnixNano()},
+						SampledUpstreamUsedPercent: new(31.0), SampledUpstreamAtUnixNano: base.UnixNano()},
 					// Legacy credentials may still label the reserve window as codex.
 					{Key: "gpt-reserve|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
 						StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(167 * time.Hour).Unix(),
-						SampledUpstreamUsedPercent: float64Pointer(0), SampledUpstreamAtUnixNano: base.UnixNano()},
+						SampledUpstreamUsedPercent: new(0.0), SampledUpstreamAtUnixNano: base.UnixNano()},
 				}},
 			}
 			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
@@ -5321,13 +5319,13 @@ func TestCodexWeeklyRoleChangePersistsCost(t *testing.T) {
 				QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{
 					{Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 18000,
 						StartedAt: base.Add(-time.Hour).Unix(), ResetAt: base.Add(4 * time.Hour).Unix(),
-						SampledUpstreamUsedPercent: float64Pointer(80), SampledUpstreamAtUnixNano: latest.UnixNano()},
+						SampledUpstreamUsedPercent: new(80.0), SampledUpstreamAtUnixNano: latest.UnixNano()},
 					{Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
 						StartedAt: base.Add(-24 * time.Hour).Unix(), ResetAt: weeklyResetAt, CountFromAt: base.Unix(),
-						SampledUpstreamUsedPercent: float64Pointer(5), SampledUpstreamAtUnixNano: base.UnixNano()},
+						SampledUpstreamUsedPercent: new(5.0), SampledUpstreamAtUnixNano: base.UnixNano()},
 					{Key: "codex-spark|secondary", Family: oauthcost.FamilySpark, WindowSeconds: 604800,
 						StartedAt: base.Add(-24 * time.Hour).Unix(), ResetAt: weeklyResetAt,
-						SampledUpstreamUsedPercent: float64Pointer(30), SampledUpstreamAtUnixNano: base.UnixNano()},
+						SampledUpstreamUsedPercent: new(30.0), SampledUpstreamAtUnixNano: base.UnixNano()},
 				}},
 			}
 			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
@@ -6023,11 +6021,11 @@ func TestHandleOAuthUsageReconcilesCostsAfterWindowChange(t *testing.T) {
 			seconds := int64(duration / time.Second)
 			key := "codex|primary"
 			sample := oauthcost.Sample{Key: key, Family: oauthcost.FamilyCodex, WindowSeconds: seconds,
-				ResetAt: resetAt, UsedPercent: float64Pointer(8.89), SampledAt: now}
+				ResetAt: resetAt, UsedPercent: new(8.89), SampledAt: now}
 			start := time.Unix(oauthcost.Find(oauthcost.Reconcile(nil, []oauthcost.Sample{sample}, now), key).StartedAt, 0)
 			oldSample := sample
 			oldSample.ResetAt = resetAt.Add(-duration * 3 / 5)
-			oldSample.UsedPercent = float64Pointer(5)
+			oldSample.UsedPercent = new(5.0)
 			oldSample.SampledAt = start.Add(-time.Minute)
 			credential := &codexauth.Credential{
 				Type: "codex", AccessToken: "quota-window", RefreshToken: "quota-window-refresh",
@@ -7312,7 +7310,7 @@ func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResu
 	}
 
 	events := make([]oauthUsageBatchEvent, 0, len(channelIDs)+2)
-	for _, block := range strings.Split(response.Body.String(), "\n\n") {
+	for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
 		if strings.TrimSpace(block) == "" {
 			continue
 		}
@@ -8859,7 +8857,6 @@ func TestTrackedOAuthProvidersResetOnlyRolledBackCostWindows(t *testing.T) {
 		xaiauth.ChannelType,
 	}
 	for _, provider := range providers {
-		provider := provider
 		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, time.August, 24, 2, 0, 0, 0, time.UTC)
@@ -9009,7 +9006,6 @@ func TestRequestAnthropicUsageSamplesBeforeProfileLookupCompletes(t *testing.T) 
 func TestOAuthQuotaNormalizersRejectInvalidUsagePercent(t *testing.T) {
 	t.Parallel()
 	for _, value := range []float64{-1, 101, math.NaN(), math.Inf(1)} {
-		value := value
 		t.Run(fmt.Sprintf("value_%v", value), func(t *testing.T) {
 			if summary, err := normalizeAnthropicUsage(&anthropicUsagePayload{
 				FiveHour: &anthropicUsageRawWindow{Utilization: &value, ResetsAt: "2030-01-02T00:00:00Z"},

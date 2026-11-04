@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 
 	"ccLoad/internal/model"
@@ -79,9 +80,7 @@ func (s *Server) setMultimodalFallbackModels(models map[string]string) {
 	}
 
 	immutable := make(map[string]string, len(models))
-	for from, to := range models {
-		immutable[from] = to
-	}
+	maps.Copy(immutable, models)
 	s.multimodalFallbackModels.Store(&multimodalFallbackSnapshot{models: immutable})
 }
 

@@ -75,7 +75,7 @@ func BenchmarkProtocolCapabilityCacheSet(b *testing.B) {
 	for _, size := range []int{50, 500} {
 		b.Run(fmt.Sprintf("entries=%d", size), func(b *testing.B) {
 			cache := &protocolCapabilityCache{}
-			for i := 0; i < size; i++ {
+			for i := range size {
 				cache.set(protocolCapabilityKey{
 					channelID: int64(i), baseURL: fmt.Sprintf("https://u%d.example.com", i),
 					clientProtocol: protocol.Anthropic, requestFamily: protocol.RequestFamilyMessages,

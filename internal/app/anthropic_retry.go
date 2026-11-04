@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -585,7 +586,7 @@ func stripAnthropicHistoryThinkingBlocks(body []byte) ([]byte, bool) {
 	}
 	updated := body
 	changed := false
-	for messageIndex := len(messages.Array()) - 1; messageIndex >= 0; messageIndex-- {
+	for messageIndex := range slices.Backward(messages.Array()) {
 		message := gjson.GetBytes(updated, fmt.Sprintf("messages.%d", messageIndex))
 		content := message.Get("content")
 		if !message.IsObject() || !content.IsArray() {
@@ -661,7 +662,7 @@ func downgradeAnthropicThinkingBlocks(body []byte) ([]byte, bool) {
 		}
 		return updated, true
 	}
-	for messageIndex := len(messages.Array()) - 1; messageIndex >= 0; messageIndex-- {
+	for messageIndex := range slices.Backward(messages.Array()) {
 		message := gjson.GetBytes(updated, fmt.Sprintf("messages.%d", messageIndex))
 		content := message.Get("content")
 		if !message.IsObject() || !content.IsArray() {

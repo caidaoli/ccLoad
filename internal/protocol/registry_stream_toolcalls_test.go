@@ -18,7 +18,7 @@ func registryToolInputEvents(t *testing.T, chunks [][]byte) []gjson.Result {
 	t.Helper()
 	var events []gjson.Result
 	for _, chunk := range chunks {
-		for _, line := range bytes.Split(chunk, []byte{'\n'}) {
+		for line := range bytes.SplitSeq(chunk, []byte{'\n'}) {
 			if !bytes.HasPrefix(line, []byte("data:")) {
 				continue
 			}

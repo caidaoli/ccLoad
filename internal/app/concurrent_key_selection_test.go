@@ -49,7 +49,7 @@ func TestConcurrentKeySelection(t *testing.T) {
 
 	// 启动并发Key选择
 	startTime := time.Now()
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -110,14 +110,14 @@ func TestConcurrentKeySelection(t *testing.T) {
 
 	// 验证Key分布（round_robin策略应该相对均匀）
 	t.Logf("Key分布统计:")
-	for keyIndex := 0; keyIndex < 10; keyIndex++ {
+	for keyIndex := range 10 {
 		count := keyDistribution[keyIndex]
 		percentage := float64(count) / float64(concurrency) * 100
 		t.Logf("  Key %d: %d 次 (%.1f%%)", keyIndex, count, percentage)
 	}
 
 	// 验证所有Key都被使用过（round_robin策略）
-	for keyIndex := 0; keyIndex < 10; keyIndex++ {
+	for keyIndex := range 10 {
 		if keyDistribution[keyIndex] == 0 {
 			t.Errorf("Key %d 从未被选中（round_robin策略应该均匀分布）", keyIndex)
 		}
@@ -146,7 +146,7 @@ func TestConcurrentKeyCooldown(t *testing.T) {
 	errors := make(chan error, 100)
 
 	// 并发场景：50个选择 + 50个冷却
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		// 选择Key
 		wg.Add(1)
 		go func(idx int) {
@@ -210,7 +210,7 @@ func TestConcurrentChannelOperations(t *testing.T) {
 	errors := make(chan error, 100)
 
 	// 并发创建10个渠道
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -271,7 +271,7 @@ func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, 
 	}
 
 	keys := make([]*model.APIKey, keyCount)
-	for i := 0; i < keyCount; i++ {
+	for i := range keyCount {
 		keys[i] = &model.APIKey{
 			ChannelID:   createdCfg.ID,
 			KeyIndex:    i,

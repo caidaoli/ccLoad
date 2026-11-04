@@ -53,7 +53,7 @@ func TestSQLiteAutoVacuumOnExistingDBDoesNotRunFullVacuumOnStartup(t *testing.T)
 	if _, err := db.ExecContext(ctx, "CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)"); err != nil {
 		t.Fatalf("创建表失败: %v", err)
 	}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if _, err := db.ExecContext(ctx, "INSERT INTO test (data) VALUES (?)", "test data"); err != nil {
 			t.Fatalf("插入数据失败: %v", err)
 		}

@@ -104,11 +104,11 @@ func matchesUnknownInputStatusError(body []byte) bool {
 
 func isResponsesInputStatusPath(value string, exact bool) bool {
 	lower := strings.ToLower(strings.TrimSpace(value))
-	start := strings.Index(lower, "input[")
-	if start < 0 {
+	_, after, ok := strings.Cut(lower, "input[")
+	if !ok {
 		return false
 	}
-	rest := lower[start+len("input["):]
+	rest := after
 	end := strings.IndexByte(rest, ']')
 	if end <= 0 {
 		return false

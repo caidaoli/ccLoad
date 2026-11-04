@@ -204,7 +204,7 @@ func TestScopeStabilitySnapshotAndConcurrentUse(t *testing.T) {
 		t.Fatal("scope mappings leaked")
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		wg.Go(func() {
 			out, err := same.MaskText("password=S3cr3tPass123")
 			if err != nil || out != second || same.RestoreText(out) != "password=S3cr3tPass123" {
@@ -330,7 +330,7 @@ func TestCapacityFailsClosed(t *testing.T) {
 	cfg.Rules = []privacy.Rule{{Kind: "CUSTOM", Prefix: "local_"}}
 	s := newSession(t, privacy.NewEngine(), "limit", cfg)
 	var body strings.Builder
-	for i := 0; i < 4097; i++ {
+	for i := range 4097 {
 		fmt.Fprintf(&body, "local_%08d ", i)
 	}
 	out, err := s.MaskText(body.String())
@@ -433,7 +433,7 @@ func TestToolResultEmbeddedJSONDecodesSensitiveValues(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				body := []byte(fmt.Sprintf(protocol.template, quoted))
+				body := fmt.Appendf(nil, protocol.template, quoted)
 				masked, err := s.MaskJSON(body)
 				if err != nil || !json.Valid(masked) {
 					t.Fatalf("invalid masked JSON: %s %v", masked, err)
@@ -491,7 +491,7 @@ func TestToolResultEmbeddedJSONRetainsRawTextRules(t *testing.T) {
 			cfg.Rules = []privacy.Rule{{Kind: "RAW", Regex: tc.regex}}
 			s := newSession(t, privacy.NewEngine(), "mixed", cfg)
 			quoted, _ := json.Marshal(tc.payload)
-			body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+			body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 			masked, err := s.MaskJSON(body)
 			if err != nil || !json.Valid(masked) {
 				t.Fatalf("invalid outer JSON: %s %v", masked, err)
@@ -534,7 +534,7 @@ func TestToolResultEmbeddedJSONRetainsRawTextRules(t *testing.T) {
 		s := newSession(t, privacy.NewEngine(), "repeated", cfg)
 		payload := `[` + strings.Repeat(`"privatevalue",`, 32768) + `"privatevalue"]`
 		quoted, _ := json.Marshal(payload)
-		body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+		body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 		masked, err := s.MaskJSON(body)
 		if err != nil || strings.Contains(string(masked), "privatevalue") || strings.Count(string(masked), "{{CCLOAD_WORD_") != 32769 {
 			t.Fatalf("duplicate raw/decoded candidates exhausted match budget: %v", err)
@@ -549,7 +549,7 @@ func TestToolResultEmbeddedJSONRetainsRawTextRules(t *testing.T) {
 		var previous string
 		for _, input := range inputs {
 			quoted, _ := json.Marshal(input)
-			body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+			body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 			masked, err := s.MaskJSON(body)
 			if err != nil {
 				t.Fatal(err)
@@ -574,7 +574,7 @@ func TestToolResultJSONDecodingPreservesOtherProtocolFields(t *testing.T) {
 	s := newSession(t, privacy.NewEngine(), "boundaries", cfg)
 	text := `{"value":"alice\u0040mycompany.com"}`
 	quoted, _ := json.Marshal(text)
-	body := []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":%s}],"text":%s,"output":%s,"content":[{"type":"tool_result","tool_use_id":"alice@mycompany.com","content":[{"type":"image","source":{"type":"base64","data":"alice@mycompany.com"}},{"type":"text","text":%s}]}]}`, quoted, quoted, quoted, quoted))
+	body := fmt.Appendf(nil, `{"messages":[{"role":"user","content":%s}],"text":%s,"output":%s,"content":[{"type":"tool_result","tool_use_id":"alice@mycompany.com","content":[{"type":"image","source":{"type":"base64","data":"alice@mycompany.com"}},{"type":"text","text":%s}]}]}`, quoted, quoted, quoted, quoted)
 	masked, err := s.MaskJSON(body)
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +595,7 @@ func TestToolResultJSONDecodingPreservesOtherProtocolFields(t *testing.T) {
 	// Even escaped existing placeholders stay protected from a custom word.
 	placeholder := `{"value":"\u007b\u007bCCLOAD_WORD_0123456789abcdef\u007d\u007d"}`
 	quoted, _ = json.Marshal(placeholder)
-	protectedBody := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	protectedBody := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 	if out, err := s.MaskJSON(protectedBody); err != nil || string(out) != string(protectedBody) {
 		t.Fatalf("escaped existing placeholder changed: %s %v", out, err)
 	}
@@ -656,7 +656,7 @@ func TestToolResultJSONCacheKeepsScopeValuesDynamic(t *testing.T) {
 	}
 	payload := `{"value":"PrivateValue\u00301234567","safe":"` + strings.Repeat("ordinary ", 40) + `"}`
 	quoted, _ := json.Marshal(payload)
-	body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 	assertMasked := func(s *privacy.Session, want bool) {
 		t.Helper()
 		masked, err := s.MaskJSON(body)
@@ -690,7 +690,7 @@ func TestToolResultJSONOverlappingRulesRetainEligibleHits(t *testing.T) {
 	}
 	payload := `{"value":"alpha bravo charlie delta","safe":"` + strings.Repeat("ordinary ", 40) + `"}`
 	quoted, _ := json.Marshal(payload)
-	body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 	for range 2 { // the second pass reuses policy candidates from the cache
 		masked, err := s.MaskJSON(body)
 		if err != nil {
@@ -719,7 +719,7 @@ func BenchmarkToolResultJSONMask(b *testing.B) {
 	}
 	payload.WriteByte(']')
 	quoted, _ := json.Marshal(payload.String())
-	body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+	body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 	cfg := privacy.DefaultConfig()
 	cfg.Enabled = true
 	policy, err := privacy.NewPolicy(cfg)
@@ -785,7 +785,7 @@ func TestToolResultRawStringMatchesRespectEscapesAndAllowList(t *testing.T) {
 			cfg.Rules = []privacy.Rule{{Kind: "RAW", Regex: tc.regex}}
 			s := newSession(t, privacy.NewEngine(), "raw-escapes", cfg)
 			quoted, _ := json.Marshal(`{"value":"` + tc.wire + `"}`)
-			body := []byte(fmt.Sprintf(`{"input":[{"type":"function_call_output","output":%s}]}`, quoted))
+			body := fmt.Appendf(nil, `{"input":[{"type":"function_call_output","output":%s}]}`, quoted)
 			masked, err := s.MaskJSON(body)
 			if err != nil {
 				t.Fatal(err)
@@ -1017,7 +1017,7 @@ func TestDictionaryEvictsIdleValuesAndFailsClosedWhenFull(t *testing.T) {
 		t.Fatal(err)
 	}
 	var body strings.Builder
-	for i := 0; i < 4095; i++ {
+	for i := range 4095 {
 		fmt.Fprintf(&body, "local_%08d ", i)
 	}
 	if _, err := s.MaskText(body.String()); err != nil {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/andybalholm/brotli"
@@ -70,13 +71,13 @@ func decodeContentEncodingBody(body io.ReadCloser, contentEncoding string) (io.R
 	reader := io.Reader(body)
 	decoderClosers := make([]func() error, 0, len(encodings))
 	cleanup := func() {
-		for i := len(decoderClosers) - 1; i >= 0; i-- {
-			_ = decoderClosers[i]()
+		for _, decoderCloser := range slices.Backward(decoderClosers) {
+			_ = decoderCloser()
 		}
 		_ = body.Close()
 	}
-	for index := len(encodings) - 1; index >= 0; index-- {
-		switch encoding := strings.TrimSpace(strings.ToLower(encodings[index])); encoding {
+	for _, encoding := range slices.Backward(encodings) {
+		switch encoding := strings.TrimSpace(strings.ToLower(encoding)); encoding {
 		case "", "identity":
 			continue
 		case "gzip":
@@ -119,8 +120,8 @@ func decodeContentEncodingBody(body io.ReadCloser, contentEncoding string) (io.R
 		return body, nil
 	}
 	closers := make([]func() error, 0, len(decoderClosers)+1)
-	for index := len(decoderClosers) - 1; index >= 0; index-- {
-		closers = append(closers, decoderClosers[index])
+	for _, decoderCloser := range slices.Backward(decoderClosers) {
+		closers = append(closers, decoderCloser)
 	}
 	closers = append(closers, body.Close)
 	return &compositeReadCloser{Reader: reader, closers: closers}, nil

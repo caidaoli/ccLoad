@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -355,9 +356,7 @@ func (s *Server) runOAuthCredentialImport(
 	}
 	initialNames := oauthCredentialChannelNames(configs)
 	committedNames := make(map[string]string, len(initialNames)+len(batch.Files))
-	for normalized, name := range initialNames {
-		committedNames[normalized] = name
-	}
+	maps.Copy(committedNames, initialNames)
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
@@ -856,7 +855,7 @@ func probeCodexAccessToken(ctx context.Context, client *http.Client, credential 
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, oauthUsageTimeout)
 	defer cancel()
-	for attempt := 0; attempt < codexCredentialProbeAttempts; attempt++ {
+	for attempt := range codexCredentialProbeAttempts {
 		req, err := newCodexUsageRequest(probeCtx, credential)
 		if err != nil {
 			return false, errors.New("build Codex credential validation request")
@@ -885,8 +884,7 @@ func probeCodexAccessToken(ctx context.Context, client *http.Client, credential 
 }
 
 func isTransientOAuthUsageError(err error) bool {
-	var requestErr *oauthUsageRequestError
-	if errors.As(err, &requestErr) {
+	if _, ok := errors.AsType[*oauthUsageRequestError](err); ok {
 		return true
 	}
 	var statusErr *oauthUsageHTTPStatusError

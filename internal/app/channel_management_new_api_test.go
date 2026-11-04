@@ -43,7 +43,6 @@ func TestNewAPIBalancePreservesRawQuotaAndHeaders(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			service := newChannelManagementService(nil, func(*model.Config) *http.Client {
@@ -114,7 +113,6 @@ func TestNewAPIBalanceRejectsUnsafeResponses(t *testing.T) {
 		{name: "forbidden", status: http.StatusForbidden, body: `{"message":"` + token + `"}`, wantStatus: http.StatusForbidden},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			service := newChannelManagementService(nil, func(*model.Config) *http.Client {
@@ -339,7 +337,6 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := &newAPIScript{t: t, steps: tt.steps}

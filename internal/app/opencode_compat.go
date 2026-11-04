@@ -90,7 +90,7 @@ func isOpenCodePath(raw, prefix string) bool {
 	// Reject dot segments before applying the prefix check. Otherwise a URL
 	// such as /zen/go/../other would satisfy the textual boundary while
 	// resolving to a different upstream resource.
-	for _, segment := range strings.Split(parsed.Path, "/") {
+	for segment := range strings.SplitSeq(parsed.Path, "/") {
 		if segment == "." || segment == ".." {
 			return false
 		}

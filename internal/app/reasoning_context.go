@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -520,8 +521,7 @@ var claudeCodeAuxiliaryPrompts = []string{
 
 func claudeCodeAuxiliaryRequest(body []byte) bool {
 	array := gjson.GetBytes(body, "messages").Array()
-	for i := len(array) - 1; i >= 0; i-- {
-		message := array[i]
+	for _, message := range slices.Backward(array) {
 		switch message.Get("role").String() {
 		case "system":
 			continue
@@ -595,8 +595,7 @@ func reasoningTurnInput(body []byte, client protocol.Protocol) (user, failed boo
 	}
 	last := array[len(array)-1]
 	user = last.Get("role").String() == "user"
-	for i := len(array) - 1; i >= 0; i-- {
-		item := array[i]
+	for _, item := range slices.Backward(array) {
 		tool := item.Get("role").String() == "tool" || strings.HasSuffix(item.Get("type").String(), "_call_output")
 		if !tool {
 			break
@@ -615,8 +614,7 @@ func anthropicTurnInput(body []byte) (user, failed bool) {
 		return true, false
 	}
 	array := messages.Array()
-	for i := len(array) - 1; i >= 0; i-- {
-		message := array[i]
+	for _, message := range slices.Backward(array) {
 		switch message.Get("role").String() {
 		case "system":
 			continue

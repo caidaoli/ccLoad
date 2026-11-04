@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -510,7 +511,7 @@ func TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes(t *testing.T) {
 
 	text := strings.Repeat("x", 512*1024)
 	var failed error
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		event := fmt.Sprintf(
 			`{"type":"response.output_item.done","output_index":%d,"item":{"id":"item_%d","type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}}`,
 			i, i, text,
@@ -3959,9 +3960,7 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 					"type": "response.create", "model": "gpt-test",
 					"input": []any{map[string]any{"role": "user", "content": prompt}},
 				}
-				for key, value := range tt.bodyHint {
-					payload[key] = value
-				}
+				maps.Copy(payload, tt.bodyHint)
 				if err := downstream.WriteJSON(payload); err != nil {
 					t.Fatalf("write independent websocket request: %v", err)
 				}
@@ -4480,14 +4479,12 @@ func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) 
 			env.server.client = upstream.Client()
 
 			responses := make(chan *httptest.ResponseRecorder, 2)
-			for index := 0; index < 2; index++ {
+			for index := range 2 {
 				payload := map[string]any{
 					"model": "gpt-test", "stream": true,
 					"input": []any{map[string]any{"role": "user", "content": fmt.Sprintf("request-%d", index)}},
 				}
-				for key, value := range tt.body {
-					payload[key] = value
-				}
+				maps.Copy(payload, tt.body)
 				body, err := json.Marshal(payload)
 				if err != nil {
 					t.Fatalf("marshal request %d: %v", index, err)
@@ -4513,7 +4510,7 @@ func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) 
 					arrivals++
 				case <-timer.C:
 					releaseUpstream()
-					for completed := 0; completed < 2; completed++ {
+					for range 2 {
 						select {
 						case <-responses:
 						case <-time.After(2 * time.Second):
@@ -4527,7 +4524,7 @@ func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) 
 			}
 			releaseUpstream()
 
-			for completed := 0; completed < 2; completed++ {
+			for range 2 {
 				select {
 				case recorder := <-responses:
 					if recorder.Code != http.StatusOK {
@@ -4619,7 +4616,7 @@ func TestCodexHTTPGatewayChainPreservesThreadConcurrency(t *testing.T) {
 	}
 	releaseUpstream()
 
-	for completed := 0; completed < 2; completed++ {
+	for range 2 {
 		select {
 		case recorder := <-responses:
 			if recorder.Code != http.StatusOK {

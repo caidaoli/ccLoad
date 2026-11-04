@@ -2,6 +2,7 @@ package oauthcost
 
 import (
 	"errors"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -185,9 +186,7 @@ func Clone(usage *Usage) *Usage {
 	clone := &Usage{CreditStandardCostMicroUSD: usage.CreditStandardCostMicroUSD, Identity: usage.Identity, AccountID: usage.AccountID, EpochAt: usage.EpochAt, EpochAtUnixNano: usage.EpochAtUnixNano}
 	if usage.WindowResetAtUnixNano != nil {
 		clone.WindowResetAtUnixNano = make(map[string]int64, len(usage.WindowResetAtUnixNano))
-		for key, at := range usage.WindowResetAtUnixNano {
-			clone.WindowResetAtUnixNano[key] = at
-		}
+		maps.Copy(clone.WindowResetAtUnixNano, usage.WindowResetAtUnixNano)
 	}
 	if usage.Windows != nil {
 		clone.Windows = make([]*Window, 0, len(usage.Windows))

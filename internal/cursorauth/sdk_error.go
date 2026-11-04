@@ -75,8 +75,7 @@ func classifyBridgeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var existing *BridgeError
-	if errors.As(err, &existing) {
+	if _, ok := errors.AsType[*BridgeError](err); ok {
 		return err
 	}
 	var connectErr *connect.Error
@@ -134,10 +133,7 @@ func classifyBridgeOperationError(
 		return classified
 	}
 
-	elapsed := time.Since(started)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(time.Since(started), 0)
 	summary := fmt.Sprintf("cursor SDK %s returned deadline_exceeded after %s", operation, elapsed.Round(time.Millisecond))
 	if operationCtx != nil && errors.Is(context.Cause(operationCtx), context.DeadlineExceeded) {
 		summary = fmt.Sprintf("cursor SDK %s exceeded its local deadline after %s", operation, elapsed.Round(time.Millisecond))

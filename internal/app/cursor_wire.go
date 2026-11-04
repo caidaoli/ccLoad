@@ -49,7 +49,7 @@ func (s *Server) tryCursorOAuthChannel(
 		}
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		result, forwardErr := s.forwardCursorAgent(ctx, cfg, credential, reqCtx, w)
 		if forwardErr != nil || result == nil {
 			return result, forwardErr
@@ -875,8 +875,8 @@ func openaiToolCallID(id string) string {
 	if strings.HasPrefix(id, "call_") {
 		return id
 	}
-	if strings.HasPrefix(id, "toolu_") {
-		return "call_" + strings.TrimPrefix(id, "toolu_")
+	if after, ok := strings.CutPrefix(id, "toolu_"); ok {
+		return "call_" + after
 	}
 	return "call_" + id
 }

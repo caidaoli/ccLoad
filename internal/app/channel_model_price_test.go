@@ -287,7 +287,7 @@ func TestChannelTestsBillLikeProxyWithRedirectAndHighContextPrice(t *testing.T) 
 	c.Params = gin.Params{{Key: "id", Value: channelID}}
 	srv.HandleChannelChat(c)
 	summary := ""
-	for _, line := range strings.Split(w.Body.String(), "\n") {
+	for line := range strings.SplitSeq(w.Body.String(), "\n") {
 		if data, ok := strings.CutPrefix(line, "data: "); ok && gjson.Get(data, "summary").Exists() {
 			summary = data
 		}

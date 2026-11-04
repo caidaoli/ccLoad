@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 
 	"ccLoad/internal/model"
@@ -415,7 +415,7 @@ func (c *codexNonStreamCollector) patchedTerminal() []byte {
 	for index := range c.indexedItems {
 		indices = append(indices, index)
 	}
-	sort.Slice(indices, func(i, j int) bool { return indices[i] < indices[j] })
+	slices.Sort(indices)
 	items := make([]json.RawMessage, 0, len(currentItems)+len(indices)+len(c.fallback))
 	for _, item := range currentItems {
 		items = append(items, json.RawMessage(bytes.Clone([]byte(item.Raw))))

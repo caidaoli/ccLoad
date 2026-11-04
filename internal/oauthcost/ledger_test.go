@@ -64,7 +64,7 @@ func TestLedgerSecondBucketsAndWindowBoundaries(t *testing.T) {
 func geminiWeeklySample(resetAt time.Time, used float64, at time.Time) []Sample {
 	return []Sample{{
 		Key: "gemini|weekly", Family: FamilyGemini, WindowSeconds: 7 * 24 * 60 * 60,
-		ResetAt: resetAt, UsedPercent: float64Pointer(used), SampledAt: at,
+		ResetAt: resetAt, UsedPercent: new(used), SampledAt: at,
 	}}
 }
 
@@ -188,7 +188,7 @@ func TestRollbackLowBandTakesPriorityOverRecovery(t *testing.T) {
 		recovery              *float64
 	}{
 		{name: "overlap", previous: 2, cut: 0.8, latest: 1},
-		{name: "exact low boundary", previous: 2.5, cut: 1, latest: 2, recovery: float64Pointer(2.25)},
+		{name: "exact low boundary", previous: 2.5, cut: 1, latest: 2, recovery: new(2.25)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			start := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)

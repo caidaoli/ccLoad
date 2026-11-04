@@ -37,7 +37,7 @@ func TestUserAgentUsesZedPlatformNames(t *testing.T) {
 
 func TestServiceUsesNativeAndLLMAuthenticationContracts(t *testing.T) {
 	expiresAt := time.Now().Add(time.Hour).Unix()
-	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".sig"
+	token := "e30." + base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, expiresAt)) + ".sig"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if got := request.Header.Get("User-Agent"); got != UserAgent() {
 			t.Errorf("user-agent = %q, want %q", got, UserAgent())
@@ -107,7 +107,7 @@ func TestServiceUsesNativeAndLLMAuthenticationContracts(t *testing.T) {
 
 func TestServiceOmitsSystemIDHeaderWhenUnavailable(t *testing.T) {
 	expiresAt := time.Now().Add(time.Hour).Unix()
-	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".sig"
+	token := "e30." + base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, expiresAt)) + ".sig"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/client/llm_tokens" {
 			http.NotFound(writer, request)

@@ -48,7 +48,6 @@ func TestChannelManagementEnvelopeRoundTrip(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			envelope := &ChannelManagementEnvelope{
@@ -131,7 +130,6 @@ func TestChannelManagementEnvelopeRejectsInvalidInput(t *testing.T) {
 		{name: "new api password", mutate: func(e *ChannelManagementEnvelope) { e.Settings.Password = "secret" }},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			envelope := valid()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,9 +66,7 @@ func TestOAuthQuotaOutputResponsesWebsocketIntegration(t *testing.T) {
 						_, _, _ = conn.ReadMessage()
 						return
 					}
-					for name, values := range headers {
-						w.Header()[name] = values
-					}
+					maps.Copy(w.Header(), headers)
 					w.Header().Set("Content-Type", "text/event-stream")
 					for _, event := range events {
 						data, err := json.Marshal(event)
