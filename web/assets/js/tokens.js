@@ -400,6 +400,9 @@
       statusSelect.dispatchEvent(new Event('change', { bubbles: true }));
       document.getElementById('tokensSearchInput').value = '';
       applyTokenFilters();
+      const rangeSelect = document.getElementById('tokensRange');
+      rangeSelect.value = 'today';
+      rangeSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     function renderTokens() {
