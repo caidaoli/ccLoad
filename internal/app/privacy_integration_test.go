@@ -523,14 +523,18 @@ func TestPrivacyProxyUnrestoredWebsocketDiagnostics(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 HTTP 最终错误归一为 WS error 后仍保留未知占位符并仅记录一次诊断
+ * @param t 测试上下文
+ */
 func TestPrivacyProxyUnrestoredWebsocketFinalErrorDiagnostics(t *testing.T) {
 	const unknown = "{{CCLOAD_EMAIL_0123456789abcdef}}"
 	for _, test := range []struct {
-		name, response, event string
+		name, response string
 	}{
-		{"generic", `{"error":{"message":"` + unknown + `"}}`, "error"},
-		{"terminal", `{"type":"response.failed","response":{"id":"resp-private-failed","error":{"message":"` + unknown + `"}}}`, "response.failed"},
-		{"retry", `{"type":"error","error":{"message":"` + unknown + `"}}`, "error"},
+		{"generic", `{"error":{"message":"` + unknown + `"}}`},
+		{"terminal", `{"type":"response.failed","response":{"id":"resp-private-failed","error":{"message":"` + unknown + `"}}}`},
+		{"retry", `{"type":"error","error":{"message":"` + unknown + `"}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			capture := capturePrivacyDiagnostics(t)
@@ -552,13 +556,10 @@ func TestPrivacyProxyUnrestoredWebsocketFinalErrorDiagnostics(t *testing.T) {
 				t.Fatal(err)
 			}
 			event := gjson.ParseBytes(payload)
-			if event.Get("type").String() != test.event {
-				t.Fatalf("event type=%q, want %q: %s", event.Get("type").String(), test.event, payload)
+			if event.Get("type").String() != "error" || event.Get("status").Int() != http.StatusBadRequest {
+				t.Fatalf("expected HTTP 400 as a WS error: %s", payload)
 			}
 			message := event.Get("error.message").String()
-			if test.event == "response.failed" {
-				message = event.Get("response.error.message").String()
-			}
 			if !strings.Contains(message, unknown) {
 				t.Fatalf("unrestored error content changed: %s", payload)
 			}

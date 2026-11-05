@@ -5,8 +5,28 @@ import (
 	"strings"
 	"testing"
 
+	"ccLoad/internal/protocol"
+
 	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 验证 Responses 强制搜索选择在 Registry 边界转换为 Chat 函数选择
+ * @param t 测试上下文
+ */
+func TestRegistryCodexToolSearchChoice(t *testing.T) {
+	reg := protocol.NewRegistry()
+	Register(reg)
+	raw := []byte(`{"tools":[{"type":"tool_search","execution":"client","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}],"tool_choice":{"type":"tool_search"},"input":"find a tool"}`)
+	out, err := reg.TranslateRequest(protocol.Codex, protocol.OpenAI, "chat-model", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := gjson.GetBytes(out, "tool_choice")
+	if choice.Get("type").String() != "function" || choice.Get("function.name").String() != gjson.GetBytes(out, "tools.0.function.name").String() {
+		t.Fatalf("tool_choice does not select the bridged search function: %s", out)
+	}
+}
 
 func TestCodexToolSearchIsEnabledForOpenAIAndGeminiBridges(t *testing.T) {
 	raw := []byte(`{

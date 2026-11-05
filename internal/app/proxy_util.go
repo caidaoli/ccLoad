@@ -377,7 +377,9 @@ func (r *proxyRequestContext) attemptModelOrOriginal() string {
 	return r.originalModel
 }
 
-// proxyResult 代理请求结果
+/**
+ * @brief 记录一次代理尝试的结果及后续路由动作
+ */
 type proxyResult struct {
 	status                    int
 	header                    http.Header
@@ -398,6 +400,7 @@ type proxyResult struct {
 	// 本地转换无法表示本次请求，不代表端点能力；回退成功后也不写能力缓存。
 	requestScopedProtocolMiss bool
 	websocketTargetCooling    bool
+	upstreamErrorEvent        bool ///< 错误来自 SSE/原生 WS 事件，而非 HTTP 错误响应体
 	responsesTurn             responsesWebsocketTurnResult
 	hasResponsesTurn          bool
 }
@@ -932,9 +935,14 @@ func resolveActualModel(cfg *model.Config, selected modelRoutingSelection) strin
 	return model.RoutingModelName(target)
 }
 
-// resolveFinalUpstreamModel 返回真正发送给上游的模型身份。
-// 协议转换使用 resolved model 构造上游 body，随后 custom_request_rules 可能再次覆盖 body.model。
-// Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
+/**
+ * @brief 解析模型行与请求体规则作用后真正发送给上游的模型身份
+ * @param cfg 本次候选渠道
+ * @param selected 已选定的渠道模型行
+ * @param upstreamProtocol 当前上游协议
+ * @return 实际上游模型名；Codex 原生图像模型去除路由前缀并规范大小写
+ * @details Gemini 模型由 URL 决定，请求体规则不改变其路由模型。
+ */
 func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, selected modelRoutingSelection, upstreamProtocol string) string {
 	actualModel := resolveActualModel(cfg, selected)
 	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) != protocol.Gemini {
@@ -942,7 +950,8 @@ func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, selected modelRout
 	}
 	if cfg.UsesCodexOAuth() {
 		if canonical, ok := canonicalCodexImageModel(actualModel); ok &&
-			(canonical == "gpt-image-2.5" || canonical == "gpt-image-2.5-flare" || canonical == "gpt-image-2.5-sunburst") {
+			(canonical == "gpt-image-2.5" || canonical == "gpt-image-2.5-flare" || canonical == "gpt-image-2.5-sunburst" ||
+				canonical == "gpt-image-2.6" || canonical == "gpt-image-2.6-flare" || canonical == "gpt-image-2.6-sunburst") {
 			return canonical
 		}
 	}

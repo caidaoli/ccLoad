@@ -32,7 +32,9 @@ const (
 	codexAlphaSearchURL          = "https://chatgpt.com/backend-api/codex/alpha/search"
 )
 
-// 导入凭证和模型获取必须共享这一份 Codex 模型目录，并按订阅计划过滤。
+/**
+ * @brief 凭证导入和模型获取共享的 Codex 模型目录，使用前按订阅计划过滤
+ */
 var codexOAuthDefaultModels = []string{
 	"gpt-6-astra",
 	"gpt-6.1-sol",
@@ -47,8 +49,14 @@ var codexOAuthDefaultModels = []string{
 	"gpt-image-2.5",
 	"gpt-image-2.5-flare",
 	"gpt-image-2.5-sunburst",
+	"gpt-image-2.6",
+	"gpt-image-2.6-flare",
+	"gpt-image-2.6-sunburst",
 }
 
+/**
+ * @brief 按 Codex 订阅计划排除不可用模型
+ */
 var codexOAuthExcludedModelsByPlan = map[string]map[string]struct{}{
 	"free": {
 		"gpt-6-astra":            {},
@@ -60,6 +68,9 @@ var codexOAuthExcludedModelsByPlan = map[string]map[string]struct{}{
 		"gpt-image-2.5":          {},
 		"gpt-image-2.5-flare":    {},
 		"gpt-image-2.5-sunburst": {},
+		"gpt-image-2.6":          {},
+		"gpt-image-2.6-flare":    {},
+		"gpt-image-2.6-sunburst": {},
 	},
 }
 

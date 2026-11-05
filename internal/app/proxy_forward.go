@@ -1319,7 +1319,19 @@ func isCodexSSEEventType(value string) bool {
 	return strings.HasPrefix(value, "response.")
 }
 
-// handleSuccessResponse 处理成功响应（流式传输）
+/**
+ * @brief 转发成功的上游响应并保留流内业务错误及已消耗用量
+ * @param reqCtx 当前请求及协议转换状态
+ * @param resp 上游 HTTP 响应
+ * @param hdrClone 原始响应头快照
+ * @param w 客户端响应写入端
+ * @param upstreamProtocol 实际上游协议
+ * @param readStats 上游读取统计
+ * @param observer 首字节及响应观测回调
+ * @return 响应状态、用量与提交状态
+ * @return 当前请求耗时，单位秒
+ * @return 上游读取、转换、客户端写入或提示词过滤错误
+ */
 func (s *Server) handleSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -1529,6 +1541,9 @@ func (s *Server) handleSuccessResponse(
 			return nil
 		},
 	)
+	if sseParser, ok := parser.(*sseUsageParser); ok {
+		streamErr = sseParser.geminiFilterBlockError(streamErr)
+	}
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite) ||
 		(reqCtx.isStreaming && !deferredWriter.Committed() && parser.GetLastError() != nil)
 	if reqCtx.isStreaming {
@@ -1538,7 +1553,7 @@ func (s *Server) handleSuccessResponse(
 			if streamErr == nil {
 				return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
 			}
-		} else if !deferredWriter.Committed() {
+		} else if !deferredWriter.Committed() && !errors.Is(streamErr, util.ErrUpstreamPromptBlocked) {
 			if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
 				streamErr = commitErr
 			}
@@ -1585,6 +1600,14 @@ func (s *Server) handleSuccessResponse(
 	}
 	streamComplete = parser.IsStreamComplete()
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
+	if errors.Is(streamErr, util.ErrUpstreamPromptBlocked) {
+		if result.ResponseCommitted {
+			if writeErr := writeGeminiPromptBlockStreamError(w, reqCtx.transformPlan.ClientProtocol, responsesStreamCursor{}, streamErr.Error()); writeErr != nil {
+				return finishStreaming(result, reqCtx.Duration().Seconds(), writeErr)
+			}
+		}
+		return finishStreaming(result, reqCtx.Duration().Seconds(), streamErr)
+	}
 	if reqCtx.isStreaming && result.ImageUsage != nil && responseContentTypeIsSSE(resp, true) && !streamComplete &&
 		len(result.SSEErrorEvent) == 0 && streamErr == nil {
 		streamErr = io.ErrUnexpectedEOF
@@ -1779,6 +1802,19 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	return result, reqCtx.Duration().Seconds(), headerErr
 }
 
+/**
+ * @brief 转换上游生成流，按客户端协议传递正常终态或请求过滤错误
+ * @param reqCtx 当前请求及协议转换状态
+ * @param resp 上游 HTTP 响应
+ * @param hdrClone 原始响应头快照
+ * @param w 客户端响应写入端
+ * @param upstreamProtocol 实际上游协议
+ * @param readStats 上游读取统计
+ * @param observer 首字节及响应观测回调
+ * @return 响应状态、原始用量与客户端提交状态
+ * @return 当前请求耗时，单位秒
+ * @return 读取、转换、写入或提示词过滤错误；正常完成返回 nil
+ */
 func (s *Server) handleTranslatedStreamSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -1960,6 +1996,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			return terminalProtocol && parser.IsStreamEnded() && translatedComplete
 		},
 	)
+	streamErr = parser.geminiFilterBlockError(streamErr)
 
 	// 上游已给出语义终态（如 finish_reason、stop_reason）时先补发终止事件，转换器据此完成收尾；
 	// 之后的 Finalize 只拦截真正缺少终态的截断流。
@@ -2022,6 +2059,14 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()
+	if errors.Is(streamErr, util.ErrUpstreamPromptBlocked) {
+		if result.ResponseCommitted {
+			if writeErr := writeGeminiPromptBlockStreamError(w, reqCtx.transformPlan.ClientProtocol, responsesCursor, streamErr.Error()); writeErr != nil {
+				return result, reqCtx.Duration().Seconds(), writeErr
+			}
+		}
+		return result, reqCtx.Duration().Seconds(), streamErr
+	}
 	result.SSEErrorEvent = parser.GetLastError()
 	if translatedError != nil && result.SSEErrorEvent == nil {
 		result.SSEErrorEvent = translatedError
@@ -2052,6 +2097,48 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	}
 
 	return result, reqCtx.Duration().Seconds(), streamErr
+}
+
+/**
+ * @brief 向已提交的生成流追加过滤请求错误，保留客户端协议的终态结构
+ * @param w 已提交的客户端响应
+ * @param client 客户端协议
+ * @param cursor Responses 流的 ID 与序号位置
+ * @param message 上游过滤原因
+ * @return JSON 编码或下游写入失败；成功返回 nil
+ */
+func writeGeminiPromptBlockStreamError(w http.ResponseWriter, client protocol.Protocol, cursor responsesStreamCursor, message string) error {
+	errorBody := map[string]any{"type": "invalid_request_error", "code": "content_filter", "message": message}
+	var payload any = map[string]any{"error": errorBody}
+	var event string
+	switch client {
+	case protocol.Anthropic:
+		event = "error"
+		payload = anthropicErrorBody(http.StatusBadRequest, message)
+	case protocol.Codex:
+		event = "response.failed"
+		payload = map[string]any{"type": event, "sequence_number": cursor.nextSequence, "response": map[string]any{
+			"id": cursor.responseID, "object": "response", "status": "failed", "error": errorBody,
+		}}
+	case protocol.Gemini:
+		payload = map[string]any{"error": map[string]any{"code": http.StatusBadRequest, "status": "INVALID_ARGUMENT", "message": message}}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if event != "" {
+		if _, err = fmt.Fprintf(w, "event: %s\n", event); err != nil {
+			return err
+		}
+	}
+	if _, err = fmt.Fprintf(w, "data: %s\n\n", encoded); err != nil {
+		return err
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
 }
 
 // translatedGeminiPromptBlockError 把 Gemini 拦截提示词的响应（没有 candidates，只有

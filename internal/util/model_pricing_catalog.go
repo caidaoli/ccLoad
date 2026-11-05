@@ -154,6 +154,9 @@ var (
 // - Claude: https://docs.claude.com/en/docs/about-claude/pricing
 // - OpenAI: https://openai.com/api/pricing/
 // - Gemini: https://ai.google.dev/gemini-api/docs/pricing
+/**
+ * @brief 基础模型费率目录，单位为美元每百万 token
+ */
 var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
 	// https://platform.claude.com/docs/en/about-claude/pricing （2026-10-08）
@@ -347,10 +350,15 @@ var basePricing = map[string]ModelPricing{
 	"gpt-4o-mini-audio-preview":    {InputPrice: 0.15, OutputPrice: 0.60},
 
 	// ========== OpenAI Image ==========
-	"gpt-image-1.5":        {InputPrice: 5.00, OutputPrice: 10.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
-	"chatgpt-image-latest": {InputPrice: 5.00, OutputPrice: 10.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
-	"gpt-image-1":          {InputPrice: 5.00, OutputPrice: 0.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
-	"gpt-image-1-mini":     {InputPrice: 2.00, OutputPrice: 0.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	// 文本输入费率；图像 token 使用 cost_calculator.go 中的专项费率。
+	// https://developers.openai.com/api/docs/models/gpt-image-2.6-flare
+	// https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst
+	"gpt-image-2.6-flare":    {InputPrice: 5.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
+	"gpt-image-2.6-sunburst": {InputPrice: 5.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
+	"gpt-image-1.5":          {InputPrice: 5.00, OutputPrice: 10.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
+	"chatgpt-image-latest":   {InputPrice: 5.00, OutputPrice: 10.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
+	"gpt-image-1":            {InputPrice: 5.00, OutputPrice: 0.00, CacheReadPrice: 1.25, HasCacheReadPrice: true},
+	"gpt-image-1-mini":       {InputPrice: 2.00, OutputPrice: 0.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
 
 	// ========== OpenAI o系列 ==========
 	"o1":                    {InputPrice: 15.00, OutputPrice: 60.00},

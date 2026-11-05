@@ -126,6 +126,17 @@ func TestToolSearchValidationLeavesOrdinaryUnsupportedToolsUntouched(t *testing.
 	}
 }
 
+func TestToolSearchChoiceDoesNotSelectOrdinaryFunctionWithoutSearch(t *testing.T) {
+	raw := []byte(`{"tools":[{"type":"function","name":"tool_search","parameters":{"type":"object"}}],"tool_choice":{"type":"tool_search"},"input":"hello"}`)
+	out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("chat-model", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if choice := gjson.GetBytes(out, "tool_choice"); choice.Get("type").String() != "tool_search" || choice.Get("function").Exists() {
+		t.Fatalf("undeclared search choice selected an ordinary function: %s", out)
+	}
+}
+
 func TestToolSearchResponseNonStreamRestoresSearchCall(t *testing.T) {
 	request := []byte(`{"model":"gpt-5.4","tools":[{"type":"tool_search","execution":"client","parameters":{"type":"object"}}]}`)
 	chatResponse := []byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"ts_1","type":"function","function":{"name":"tool_search","arguments":"{\"goal\":\"shipping\"}"}}]},"finish_reason":"tool_calls"}]}`)

@@ -372,8 +372,23 @@ func (s *Server) handleOperatorAbort(cfg *model.Config, actualModel, selectedKey
 	}
 }
 
-// handleNetworkError 处理网络错误
-// res 携带流式响应中途失败前已解析的 usage；契约: reqCtx 不能为 nil（用于获取 originalModel, tokenHash, isStreaming）
+/**
+ * @brief 记录转发错误及已提交用量，按错误分类决定重试与冷却
+ * @param ctx 请求上下文
+ * @param cfg 当前渠道
+ * @param keyIndex 当前 Key 索引
+ * @param actualModel 实际上游模型
+ * @param selectedKey 当前凭证
+ * @param _ 保留的令牌 ID 参数
+ * @param _ 保留的客户端 IP 参数
+ * @param duration 本次尝试耗时，单位秒
+ * @param err 转发错误；提示词过滤由客户端错误分支直接返回
+ * @param res 失败前的响应和用量；未取得响应时为 nil
+ * @param reqCtx 当前代理请求状态
+ * @param deferChannelCooldown 是否延迟渠道冷却
+ * @return 已记录的失败结果；过滤错误已写入流时标记为已响应
+ * @return 下一次重试或返回客户端的动作
+ */
 func (s *Server) handleNetworkError(
 	ctx context.Context,
 	cfg *model.Config,
@@ -403,6 +418,9 @@ func (s *Server) handleNetworkError(
 		succeeded:        false,
 		isClientCanceled: errors.Is(err, context.Canceled),
 		proxyLogWritten:  true,
+	}
+	if errors.Is(err, util.ErrUpstreamPromptBlocked) && res != nil && res.ResponseCommitted {
+		failure.succeeded = true
 	}
 
 	// 流式响应中途失败（用户按 Esc 为 499、上游断连为 5xx）时上游已按 token 收费：
@@ -785,9 +803,22 @@ func countTokensUpstreamErrorResult(cfg *model.Config, res *fwResult, duration f
 	}, action
 }
 
-// handleProxyErrorResponse 处理代理错误响应（业务逻辑层）
-// 从proxy.go提取，遵循SRP原则
-// 注意：与 handleErrorResponse（HTTP层）不同
+/**
+ * @brief 记录上游业务错误并按 Key、模型或渠道范围决定故障转移
+ * @param ctx 请求上下文
+ * @param cfg 当前渠道
+ * @param keyIndex 当前 Key 索引
+ * @param actualModel 实际上游模型
+ * @param selectedKey 当前凭证
+ * @param res 上游响应及流错误来源
+ * @param duration 本次尝试耗时，单位秒
+ * @param reqCtx 当前代理请求状态
+ * @param deferChannelCooldown 是否延迟渠道冷却
+ * @param forceReturnClient 是否直接返回客户端
+ * @param modelCapacityRateLimited 是否已处理模型容量冷却
+ * @return 保留 HTTP 状态、响应头及错误事件来源的失败结果
+ * @return 下一次重试或返回客户端的动作
+ */
 func (s *Server) handleProxyErrorResponse(
 	ctx context.Context,
 	cfg *model.Config,
@@ -828,12 +859,13 @@ func (s *Server) handleProxyErrorResponse(
 	s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(res.Status), duration, res, actualModel)
 
 	failure := &proxyResult{
-		status:    res.Status,
-		header:    res.Header,
-		body:      res.Body,
-		channelID: &cfg.ID,
-		duration:  duration,
-		succeeded: false,
+		status:             res.Status,
+		header:             res.Header,
+		body:               res.Body,
+		channelID:          &cfg.ID,
+		duration:           duration,
+		succeeded:          false,
+		upstreamErrorEvent: len(res.SSEErrorEvent) > 0,
 	}
 	deferAntigravityFallbackLog := cfg.UsesAntigravityOAuth() && deferChannelCooldown &&
 		shouldFallbackAntigravityBaseURL(res.Status, res.Body)

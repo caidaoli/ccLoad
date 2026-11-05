@@ -615,6 +615,20 @@ func (s *Server) acquireResponsesWebsocketTurnSlots(ctx context.Context, tokenHa
 	}, nil
 }
 
+/**
+ * @brief 执行一个 Responses WebSocket 回合，保留最终上游错误的状态与结构
+ * @param ctx 回合上下文
+ * @param c 客户端请求上下文
+ * @param conn 下游 WebSocket 连接
+ * @param clientPayload 客户端原始事件
+ * @param requestBody 完整会话请求
+ * @param nativeRequestBody 原生上游增量请求
+ * @param executionSession 当前执行会话
+ * @param allowLocalPrewarm 是否允许本地预热响应
+ * @param interrupt 当前回合的中断状态
+ * @return 已发送响应和待提交会话状态
+ * @return 请求、上游或传输失败；终态与重放错误由调用方按类型处理
+ */
 func (s *Server) executeResponsesWebsocketTurn(
 	ctx context.Context,
 	c *gin.Context,
@@ -877,7 +891,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
 	}
-	if lastResult != nil && isResponsesWebsocketFailurePayload(lastResult.body) {
+	if lastResult != nil && lastResult.upstreamErrorEvent && isResponsesWebsocketFailurePayload(lastResult.body) {
 		if isResponsesWebsocketTerminalPayload(lastResult.body) {
 			return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{payload: bytes.Clone(lastResult.body)}
 		}
@@ -901,10 +915,42 @@ func (s *Server) executeResponsesWebsocketTurn(
 			message: responsesWebsocketInterruptedMessage,
 		}
 	}
-	if lastResult != nil && len(lastResult.body) > 0 {
-		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
+	message := fmt.Sprintf("upstream status %d", status)
+	errorType := "invalid_request_error"
+	if status == http.StatusTooManyRequests {
+		errorType = "rate_limit_error"
+	} else if status >= http.StatusInternalServerError {
+		errorType = "server_error"
 	}
-	return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d", status)
+	var errorBody any
+	headers := make(map[string]string)
+	if lastResult != nil {
+		if len(lastResult.body) > 0 {
+			message += ": " + safeBodyToString(lastResult.body)
+			if json.Valid(lastResult.body) {
+				if upstreamError := gjson.GetBytes(lastResult.body, "error"); upstreamError.IsObject() {
+					errorBody = json.RawMessage(upstreamError.Raw)
+				}
+			}
+		}
+		for name, values := range lastResult.header {
+			if isForwardableWebsocketErrorHeader(name) && len(values) > 0 {
+				headers[name] = values[0]
+			}
+		}
+	}
+	if errorBody == nil {
+		errorBody = responsesWebsocketErrorBody{Type: errorType, Code: "upstream_error", Message: message}
+	}
+	event := gin.H{"type": "error", "status": status, "error": errorBody}
+	if len(headers) > 0 {
+		event["headers"] = headers
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{payload: payload}
 }
 
 func responsesWebsocketGenerateDisabled(payload []byte) bool {

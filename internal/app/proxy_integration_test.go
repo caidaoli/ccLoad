@@ -6247,10 +6247,17 @@ func TestProxy_CodexOAuthImage25Snapshots(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Codex OAuth 的 Image 2.5/2.6 原生生成、编辑与用量计费
+ * @param t 测试上下文
+ */
 func TestProxy_CodexOAuthImage25Direct(t *testing.T) {
 	t.Parallel()
 
-	for _, imageModel := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+	for _, imageModel := range []string{
+		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
+	} {
 		for _, endpoint := range []string{"generations", "edits"} {
 			for _, stream := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/stream=%t", imageModel, endpoint, stream), func(t *testing.T) {
@@ -6319,7 +6326,7 @@ func TestProxy_CodexOAuthImage25Direct(t *testing.T) {
 					if entry.StatusCode != http.StatusOK || entry.InputTokens != 3 || entry.OutputTokens != 5 {
 						t.Fatalf("image log: %+v", entry)
 					}
-					if imageModel != "gpt-image-2.5" && !floatEquals(entry.Cost, 0.000174) {
+					if imageModel != "gpt-image-2.5" && imageModel != "gpt-image-2.6" && !floatEquals(entry.Cost, 0.000174) {
 						t.Fatalf("image cost=%g, want 0.000174", entry.Cost)
 					}
 				})
@@ -19208,5 +19215,132 @@ func TestProxySystemOneEndpointRoutesOnlySystemOneChannels(t *testing.T) {
 	}
 	if systemOneCalls.Load() != 1 || chatCalls.Load() != 1 {
 		t.Fatalf("upstream calls: system_one=%d chat=%d", systemOneCalls.Load(), chatCalls.Load())
+	}
+}
+
+/**
+ * @brief 验证 Gemini 与 Antigravity 仅在流末尾缺少终态时识别稀疏过滤通知
+ * @param t 测试上下文
+ */
+func TestProxy_GeminiTerminalFilterNotice(t *testing.T) {
+	t.Parallel()
+	const (
+		notice        = `{"candidates":[{"content":{"parts":[{"text":"This request was blocked by Gemini's filters. See https://policies.google.com/terms/generative-ai/use-policy"}]}}]}`
+		partial       = `{"candidates":[{"content":{"role":"model","parts":[{"text":"partial answer"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005},"responseId":"filter-response","modelVersion":"gemini-3-flash"}`
+		complete      = `{"candidates":[{"content":{"role":"model","parts":[{"text":"completed answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005},"responseId":"filter-response","modelVersion":"gemini-3-flash"}`
+		usageOnly     = `{"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005}}`
+		explicitError = `{"error":{"code":429,"message":"upstream quota exhausted","status":"RESOURCE_EXHAUSTED"}}`
+	)
+	for _, antigravity := range []bool{false, true} {
+		for _, adapter := range antigravityProviderAdapterCases() {
+			for _, tt := range []struct {
+				name       string
+				frames     []string
+				blocked    bool
+				committed  bool
+				readError  bool
+				usageTail  bool
+				errorFirst bool
+			}{
+				{name: "notice only", frames: []string{notice}, blocked: true},
+				{name: "after output", frames: []string{partial, notice}, blocked: true, committed: true},
+				{name: "quoted before completion", frames: []string{notice, complete}, committed: true},
+				{name: "after completion", frames: []string{complete, notice}, committed: true},
+				{name: "followed by ordinary output", frames: []string{notice, partial, complete}, committed: true},
+				{name: "followed by usage", frames: []string{partial, notice, usageOnly}, committed: true, usageTail: true},
+				{name: "network interruption", frames: []string{partial, notice}, committed: true, readError: true},
+				{name: "explicit error precedes notice", frames: []string{partial, explicitError, notice}, committed: true, errorFirst: true},
+				{name: "role identifies generated notice", frames: []string{partial, strings.Replace(notice, `"content":{`, `"content":{"role":"model",`, 1)}, committed: true, usageTail: true},
+				{name: "usage identifies generated notice", frames: []string{partial, strings.TrimSuffix(notice, "}") + `,"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005}}`}, committed: true, usageTail: true},
+			} {
+				t.Run(fmt.Sprintf("antigravity=%t/%s/%s", antigravity, adapter.name, tt.name), func(t *testing.T) {
+					t.Parallel()
+					var calls atomic.Int32
+					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						calls.Add(1)
+						for _, frame := range tt.frames {
+							if antigravity {
+								frame = `{"response":` + frame + `}`
+							}
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+							w.(http.Flusher).Flush()
+						}
+						if tt.readError {
+							panic(http.ErrAbortHandler)
+						}
+					}))
+					defer upstream.Close()
+					channels := []testChannel{
+						{name: "filter-a", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100},
+						{name: "filter-b", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 200},
+					}
+					if antigravity {
+						for i := range channels {
+							channels[i].authType = model.AuthTypeAntigravityOAuth
+							channels[i].oauthCredential = antigravityProxyTestCredential(t, fmt.Sprintf("filter-%d", i))
+						}
+					}
+					env := setupProxyTestEnv(t, channels, map[int]string{0: upstream.URL, 1: upstream.URL})
+					body := maps.Clone(adapter.body)
+					path := adapter.path
+					if adapter.streamRequest {
+						body["stream"] = true
+					} else {
+						path = strings.Replace(path, ":generateContent", ":streamGenerateContent", 1) + "?alt=sse"
+					}
+					response := doProxyRequest(t, env.engine, path, body, nil)
+					wantClient := http.StatusOK
+					wantLog := http.StatusOK
+					if tt.blocked {
+						wantLog = http.StatusBadRequest
+						if !tt.committed {
+							wantClient = http.StatusBadRequest
+						}
+					} else if tt.errorFirst {
+						wantLog = http.StatusTooManyRequests
+					} else if tt.readError || tt.usageTail && adapter.name != "Gemini" {
+						wantLog = util.StatusStreamIncomplete
+					}
+					if response.Code != wantClient {
+						t.Fatalf("client status=%d body=%s, want %d", response.Code, response.Body.String(), wantClient)
+					}
+					entry := waitForProxyLog(t, env, "gemini-3-flash")
+					if entry.StatusCode != wantLog || calls.Load() != 1 {
+						t.Fatalf("log status=%d calls=%d, want status=%d with no replay; body=%s", entry.StatusCode, calls.Load(), wantLog, response.Body.String())
+					}
+					if tt.blocked && tt.committed {
+						if entry.InputTokens != 1000 || entry.Cost <= 0 {
+							t.Fatalf("blocked partial usage input=%d cost=%g", entry.InputTokens, entry.Cost)
+						}
+						frames := strings.Split(strings.TrimSpace(response.Body.String()), "\n\n")
+						event, terminal := parseSSEEventChunk([]byte(frames[len(frames)-1]))
+						errorObject := gjson.GetBytes(terminal, "error")
+						if adapter.name == "Codex" {
+							if event != "response.failed" || gjson.GetBytes(terminal, "response.status").String() != "failed" {
+								t.Fatalf("Responses terminal=%s", terminal)
+							}
+							errorObject = gjson.GetBytes(terminal, "response.error")
+						}
+						if !errorObject.IsObject() || !strings.Contains(errorObject.Get("message").String(), "This request was blocked by Gemini's filters.") {
+							t.Fatalf("missing filter error terminal: %s", terminal)
+						}
+					}
+					if tt.errorFirst && strings.Contains(response.Body.String(), `"code":"content_filter"`) {
+						t.Fatalf("filter notice replaced explicit upstream error: %s", response.Body.String())
+					}
+					if wantLog == http.StatusBadRequest || wantLog == http.StatusOK {
+						modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+						if err != nil || len(modelCooldowns) != 0 {
+							t.Fatalf("unexpected model cooldowns=%v err=%v", modelCooldowns, err)
+						}
+						channelCooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+						if err != nil || len(channelCooldowns) != 0 {
+							t.Fatalf("unexpected channel cooldowns=%v err=%v", channelCooldowns, err)
+						}
+					}
+				})
+			}
+		}
 	}
 }

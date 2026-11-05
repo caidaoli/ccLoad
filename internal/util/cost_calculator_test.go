@@ -971,8 +971,12 @@ func TestCalculateCost_MimoModels(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证已核实 GPT Image 模型的文字、图片及缓存 token 分项费率
+ * @param t 测试上下文
+ */
 func TestCalculateImageGenerationToolCost_GPTImage2(t *testing.T) {
-	for _, model := range []string{"gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"} {
+	for _, model := range []string{"gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"} {
 		cost := CalculateImageGenerationToolCost(model, ImageGenerationToolUsage{
 			TextInputTokens:   10,
 			TextCachedTokens:  4,
@@ -988,6 +992,25 @@ func TestCalculateImageGenerationToolCost_GPTImage2(t *testing.T) {
 		if !floatEquals(cost, expected, 0.000001) {
 			t.Errorf("%s tool成本 = %.6f, 期望 %.6f", model, cost, expected)
 		}
+	}
+}
+
+/**
+ * @brief 验证 GPT Image 2.6 文本价格可查询且未发布基础模型专项费率
+ * @param t 测试上下文
+ */
+func TestCalculateImageGenerationToolCost_GPTImage26Catalog(t *testing.T) {
+	for _, model := range []string{"gpt-image-2.6-flare", "gpt-image-2.6-sunburst"} {
+		price, ok := LookupSystemModelPricing(model)
+		if !ok || price.InputPrice != 5 || !price.HasCacheReadPrice || price.CacheReadPrice != 1.25 {
+			t.Errorf("%s text pricing=%+v, found=%v", model, price, ok)
+		}
+	}
+	if HasModelPricing("gpt-image-2.6") {
+		t.Fatal("unpublished base model unexpectedly has token pricing")
+	}
+	if cost := CalculateImageGenerationToolCost("gpt-image-2.6", ImageGenerationToolUsage{ImageOutputTokens: 1_000_000}); cost != 0 {
+		t.Fatalf("unpublished base model image price=%g", cost)
 	}
 }
 

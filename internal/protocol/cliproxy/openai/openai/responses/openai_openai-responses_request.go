@@ -551,7 +551,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			out, _ = sjson.SetBytes(out, "parallel_tool_calls", parallelToolCalls.Bool())
 		}
 		if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
-			out, _ = sjson.SetRawBytes(out, "tool_choice", convertResponsesToolChoiceWithIndex(toolChoice, toolIndex))
+			out, _ = sjson.SetRawBytes(out, "tool_choice", convertResponsesToolChoiceWithIndex(root, toolIndex))
 		}
 	}
 	if webSearch.Exists() {
@@ -628,7 +628,8 @@ func responsesInputAudioToChatPart(contentItem gjson.Result) ([]byte, bool) {
 	return part, true
 }
 
-func convertResponsesToolChoiceWithIndex(toolChoice gjson.Result, toolIndex *responsesToolIndex) []byte {
+func convertResponsesToolChoiceWithIndex(root gjson.Result, toolIndex *responsesToolIndex) []byte {
+	toolChoice := root.Get("tool_choice")
 	if !toolChoice.IsObject() {
 		return []byte(toolChoice.Raw)
 	}
@@ -639,6 +640,10 @@ func convertResponsesToolChoiceWithIndex(toolChoice gjson.Result, toolIndex *res
 			converted, _ := sjson.SetBytes([]byte(`{"type":"function","function":{}}`), "function.name", name)
 			return converted
 		}
+	}
+	if choiceType == "tool_search" && responsesRequestHasToolSearch(root) {
+		converted, _ := sjson.SetBytes([]byte(`{"type":"function","function":{}}`), "function.name", responsesChatToolSearchFunctionName)
+		return converted
 	}
 	if choiceType != "function" && choiceType != "custom" {
 		return []byte(toolChoice.Raw)

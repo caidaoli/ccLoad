@@ -113,6 +113,60 @@ func TestCliproxyCodexCompletedResponsePreservesInnerObjectOrder(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Chat 思考内容数组经 Registry 转换为有序的 Anthropic 思考与正文块
+ * @param t 测试上下文
+ */
+func TestRegistryOpenAIThinkingContentParts(t *testing.T) {
+	reg := protocol.NewRegistry()
+	Register(reg)
+	content := `[{"type":"thinking","thinking":[{"type":"text","text":"First "},{"type":"text","text":"thought."}]},{"type":"text","text":"Answer"}]`
+	raw := []byte(`{"id":"chat_1","model":"glm","choices":[{"message":{"role":"assistant","content":` + content + `},"finish_reason":"stop"}]}`)
+	out, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "glm", nil, nil, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := gjson.GetBytes(out, "content").Array()
+	if len(blocks) != 2 || blocks[0].Get("type").String() != "thinking" || blocks[0].Get("thinking").String() != "First thought." || blocks[1].Get("type").String() != "text" || blocks[1].Get("text").String() != "Answer" {
+		t.Fatalf("unexpected converted content: %s", out)
+	}
+
+	frames := []string{
+		`{"id":"chat_1","model":"glm","choices":[{"delta":{"content":` + content + `},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`[DONE]`,
+	}
+	var state any
+	var starts, values []string
+	for _, frame := range frames {
+		chunks, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "glm", []byte(`{"stream":true}`), nil, []byte("data: "+frame+"\n\n"), &state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, chunk := range chunks {
+			for line := range bytes.SplitSeq(chunk, []byte{'\n'}) {
+				if !bytes.HasPrefix(line, []byte("data: ")) {
+					continue
+				}
+				event := gjson.ParseBytes(bytes.TrimPrefix(line, []byte("data: ")))
+				switch event.Get("type").String() {
+				case "content_block_start":
+					starts = append(starts, event.Get("content_block.type").String())
+				case "content_block_delta":
+					if event.Get("delta.type").String() == "thinking_delta" {
+						values = append(values, event.Get("delta.thinking").String())
+					} else {
+						values = append(values, event.Get("delta.text").String())
+					}
+				}
+			}
+		}
+	}
+	if len(starts) != 2 || starts[0] != "thinking" || starts[1] != "text" || len(values) != 2 || values[0] != "First thought." || values[1] != "Answer" {
+		t.Fatalf("unexpected converted stream starts=%v values=%v", starts, values)
+	}
+}
+
 func TestCliproxyCodexCompletedResponseRejectsTruncatedJSON(t *testing.T) {
 	t.Parallel()
 	if _, err := cliproxyCodexCompletedResponse([]byte(`{"z":1`)); err == nil {

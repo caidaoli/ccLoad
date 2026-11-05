@@ -6183,7 +6183,11 @@ func TestHandleChannelImageGeneration_CodexOAuthUsesDirectImagesAPI(t *testing.T
 	}
 }
 
-func TestHandleChannelImageGeneration_CodexImage25(t *testing.T) {
+/**
+ * @brief 验证 Codex 图像模型的原生 Images 路由和上游错误回传
+ * @param t 测试上下文
+ */
+func TestHandleChannelImageGeneration_CodexImage25And26(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		model  string
@@ -6192,7 +6196,11 @@ func TestHandleChannelImageGeneration_CodexImage25(t *testing.T) {
 		{model: "gpt-image-2.5"},
 		{model: "gpt-image-2.5-flare"},
 		{model: "gpt-image-2.5-sunburst"},
+		{model: "gpt-image-2.6"},
+		{model: "gpt-image-2.6-flare"},
+		{model: "gpt-image-2.6-sunburst"},
 		{model: "gpt-image-2.5-flare", failed: true},
+		{model: "gpt-image-2.6-flare", failed: true},
 	} {
 		imageModel := tc.model
 		t.Run(fmt.Sprintf("%s/failed=%t", imageModel, tc.failed), func(t *testing.T) {

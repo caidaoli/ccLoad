@@ -5726,43 +5726,124 @@ func TestResponsesWebsocketMapsFinal429To503ForCodexRetry(t *testing.T) {
 	}
 }
 
-func TestResponsesWebsocketDoesNotMapFinal429ForOtherResponsesClients(t *testing.T) {
+/**
+ * @brief 验证 HTTP 上游最终失败保留状态、结构化错误和安全响应头
+ * @param t 测试上下文
+ */
+func TestResponsesWebsocketPreservesFinalHTTPError(t *testing.T) {
 	t.Parallel()
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"retry later"}}`)
-	}))
-	defer upstream.Close()
+	for _, tt := range []struct {
+		name      string
+		status    int
+		body      string
+		userAgent string
+		map429    string
+		wantType  string
+	}{
+		{
+			name: "other client keeps 429", status: http.StatusTooManyRequests,
+			body:      `{"error":{"type":"rate_limit_error","code":"usage_limit_reached","message":"retry later","param":null}}`,
+			userAgent: "openai-python/2.21.0", map429: "true",
+		},
+		{
+			name: "Codex keeps 429 when mapping disabled", status: http.StatusTooManyRequests,
+			body:      `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"retry later"}}`,
+			userAgent: "codex_cli_rs/0.147.0", map429: "false",
+		},
+		{
+			name: "request error", status: http.StatusBadRequest,
+			body:      `{"error":{"type":"invalid_request_error","code":"invalid_value","message":"invalid input","param":"input"}}`,
+			userAgent: "openai-python/2.21.0", map429: "true",
+		},
+		{
+			name: "HTTP error with event type", status: http.StatusTooManyRequests,
+			body:      `{"type":"error","error":{"type":"rate_limit_error","message":"retry later"}}`,
+			userAgent: "openai-python/2.21.0", map429: "true",
+		},
+		{
+			name: "HTTP request error with event type", status: http.StatusBadRequest,
+			body:      `{"type":"error","error":{"type":"invalid_request_error","message":"invalid input"}}`,
+			userAgent: "openai-python/2.21.0", map429: "true",
+		},
+		{
+			name: "server error", status: http.StatusServiceUnavailable,
+			body:      `{"error":{"type":"server_error","code":"overloaded","message":"upstream busy"}}`,
+			userAgent: "openai-python/2.21.0", map429: "true",
+		},
+		{
+			name: "unstructured body", status: http.StatusServiceUnavailable, body: "upstream busy",
+			userAgent: "openai-python/2.21.0", map429: "true", wantType: "server_error",
+		},
+		{
+			name: "empty body", status: http.StatusBadGateway,
+			userAgent: "openai-python/2.21.0", map429: "true", wantType: "server_error",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "120")
+				w.Header().Set("X-Request-Id", "request-final-error")
+				w.Header().Set("X-Ratelimit-Remaining-Requests", "0")
+				w.Header().Set("Set-Cookie", "private=value")
+				w.Header().Set("X-Upstream-Secret", "private")
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer upstream.Close()
 
-	env := setupProxyTestEnvWithSettings(t, []testChannel{{
-		name: "websocket-final-429", upstreamProtocol: util.ProtocolCodex, models: "gpt-test",
-	}}, map[int]string{0: upstream.URL}, map[string]string{
-		config.CodexMap429To503SettingKey: "true",
-	})
-	conn := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
-		"User-Agent": {"openai-python/2.21.0"},
-	})
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set websocket deadline: %v", err)
-	}
-	if err := conn.WriteJSON(map[string]any{
-		"type": "response.create", "model": "gpt-test",
-		"input": []any{map[string]any{"role": "user", "content": "hello"}},
-	}); err != nil {
-		t.Fatalf("write websocket request: %v", err)
-	}
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
+				name: "websocket-final-error", upstreamProtocol: util.ProtocolCodex, models: "gpt-test",
+			}}, map[int]string{0: upstream.URL}, map[string]string{
+				config.CodexMap429To503SettingKey: tt.map429,
+			})
+			conn := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+				"User-Agent": {tt.userAgent},
+			})
+			if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatalf("set websocket deadline: %v", err)
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.create", "model": "gpt-test",
+				"input": []any{map[string]any{"role": "user", "content": "hello"}},
+			}); err != nil {
+				t.Fatalf("write websocket request: %v", err)
+			}
 
-	var event map[string]any
-	if err := conn.ReadJSON(&event); err != nil {
-		t.Fatalf("read websocket error event: %v", err)
-	}
-	errorBody, _ := event["error"].(map[string]any)
-	message, _ := errorBody["message"].(string)
-	if event["type"] != "error" || event["status"] != float64(http.StatusBadRequest) ||
-		errorBody["type"] != "invalid_request_error" || errorBody["code"] != "upstream_error" ||
-		!strings.Contains(message, "upstream status 429") {
-		t.Fatalf("non-Codex websocket response was remapped: %#v", event)
+			var event struct {
+				Type    string            `json:"type"`
+				Status  int               `json:"status"`
+				Error   map[string]any    `json:"error"`
+				Headers map[string]string `json:"headers"`
+			}
+			if err := conn.ReadJSON(&event); err != nil {
+				t.Fatalf("read websocket error event: %v", err)
+			}
+			if event.Type != "error" || event.Status != tt.status {
+				t.Fatalf("websocket final error=%#v, want status %d", event, tt.status)
+			}
+			if tt.wantType == "" {
+				var upstreamBody struct {
+					Error map[string]any `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(tt.body), &upstreamBody); err != nil {
+					t.Fatalf("decode upstream error: %v", err)
+				}
+				if !reflect.DeepEqual(event.Error, upstreamBody.Error) {
+					t.Fatalf("error=%#v, want upstream error %#v", event.Error, upstreamBody.Error)
+				}
+			} else if message, _ := event.Error["message"].(string); event.Error["type"] != tt.wantType ||
+				event.Error["code"] != "upstream_error" || !strings.Contains(message, fmt.Sprintf("upstream status %d", tt.status)) {
+				t.Fatalf("unstructured upstream error=%#v", event.Error)
+			}
+			wantHeaders := map[string]string{
+				"Retry-After": "120", "X-Request-Id": "request-final-error", "X-Ratelimit-Remaining-Requests": "0",
+			}
+			if !reflect.DeepEqual(event.Headers, wantHeaders) {
+				t.Fatalf("headers=%#v, want safe headers %#v", event.Headers, wantHeaders)
+			}
+		})
 	}
 }
 

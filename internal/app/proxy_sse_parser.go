@@ -45,6 +45,9 @@ type usageAccumulator struct {
 	imageFallbackItemCosts   map[string]float64
 }
 
+/**
+ * @brief 增量解析上游 SSE 的用量、错误和语义终态
+ */
 type sseUsageParser struct {
 	usageAccumulator
 
@@ -61,7 +64,8 @@ type sseUsageParser struct {
 	sanitizer        sseLargeFieldSanitizer
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
-	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
+	lastError          []byte // 最后一个error事件的完整JSON（data字段内容）
+	geminiFilterNotice string ///< 最后一个非心跳帧是缺少生成身份和终态的过滤通知
 
 	// streamComplete 表示上游已给出语义终态，用于判定流是否完整：[DONE]、message_stop、
 	// Responses/Images 终态，以及 OpenAI finish_reason、Gemini finishReason、
@@ -534,7 +538,12 @@ func (p *sseUsageParser) parseBuffer() error {
 	return nil
 }
 
-// parseEvent 解析单个SSE事件
+/**
+ * @brief 解析单个上游 SSE 事件，累计用量并记录错误与终态
+ * @param eventType SSE 事件名称
+ * @param data 已拼接的事件 JSON 或结束标记
+ * @return 非法 JSON 的解析错误；上游业务错误保存在解析器状态中
+ */
 func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// [INFO] 事件类型过滤优化（2025-12-07）
 	// 问题：anyrouter等聚合服务使用非标准事件类型（如"."），导致usage丢失
@@ -547,6 +556,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if isHeartbeatEvent(eventType, data) {
 		return nil
 	}
+	p.geminiFilterNotice = ""
 
 	// 先解析 usage。失败终态也可能包含已经消耗的 token，计费不能因为
 	// response.failed 提前返回而静默归零。Unmarshal 失败不改写、不丢弃
@@ -582,6 +592,12 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		p.applyUsage(usage, p.upstreamProtocol)
 	}
 	p.applyToolUsageFromPayload(event)
+	if p.upstreamProtocol == util.ProtocolGemini {
+		if notice := geminiFilterNotice(event); notice != "" {
+			p.geminiFilterNotice = notice
+			return nil
+		}
+	}
 
 	// 特殊处理：error 事件（记录日志 + 存储错误体用于后续冷却处理）
 	// - Anthropic/聚合站：event: error 或 data 顶层 type=error / error 对象
@@ -665,6 +681,64 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	}
 
 	return nil
+}
+
+/**
+ * @brief 识别 Gemini 注入的稀疏过滤通知帧，保留正常生成和用量证据
+ * @param event 已解析的上游事件
+ * @return 严格匹配的通知文字；普通生成帧返回空串
+ */
+func geminiFilterNotice(event map[string]any) string {
+	for _, key := range []string{"responseId", "modelVersion", "usageMetadata", "cpaUsageMetadata"} {
+		if _, exists := event[key]; exists {
+			return ""
+		}
+	}
+	candidates, _ := event["candidates"].([]any)
+	if len(candidates) != 1 {
+		return ""
+	}
+	candidate, _ := candidates[0].(map[string]any)
+	for _, key := range []string{"index", "safetyRatings", "citationMetadata"} {
+		if _, exists := candidate[key]; exists {
+			return ""
+		}
+	}
+	finishReason, _ := candidate["finishReason"].(string)
+	content, _ := candidate["content"].(map[string]any)
+	role, _ := content["role"].(string)
+	if strings.TrimSpace(finishReason) != "" || strings.TrimSpace(role) != "" {
+		return ""
+	}
+	parts, _ := content["parts"].([]any)
+	if len(parts) != 1 {
+		return ""
+	}
+	part, _ := parts[0].(map[string]any)
+	for _, key := range []string{"thought", "thoughtSignature", "functionCall"} {
+		if _, exists := part[key]; exists {
+			return ""
+		}
+	}
+	text, _ := part["text"].(string)
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "This request was blocked by Gemini's filters.") &&
+		strings.Contains(text, "https://policies.google.com/terms/generative-ai/use-policy") {
+		return text
+	}
+	return ""
+}
+
+/**
+ * @brief 仅在干净 EOF 且上游未完成时将最后一个过滤通知判为请求错误
+ * @param streamErr 上游读取或取消错误
+ * @return 过滤通知对应的客户端错误，或原有读取错误；正常流返回 nil
+ */
+func (p *sseUsageParser) geminiFilterBlockError(streamErr error) error {
+	if streamErr == nil && p.lastError == nil && !p.streamComplete && p.geminiFilterNotice != "" {
+		return fmt.Errorf("%w: %s", util.ErrUpstreamPromptBlocked, p.geminiFilterNotice)
+	}
+	return streamErr
 }
 
 // GetUsage 获取累积的usage统计

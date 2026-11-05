@@ -884,8 +884,13 @@ func (s *Server) testResponsesImageGeneration(
 	return annotateImageGenerationResult(result, actualModel)
 }
 
+/**
+ * @brief 生成 Codex Images 不支持指定模型的可操作错误
+ * @param modelName 实际请求的图像模型名
+ * @return 包含受支持模型列表的错误
+ */
 func codexImageUnsupportedModelError(modelName string) error {
-	return fmt.Errorf("模型 %s 不受 Codex Images API 支持；可用模型: gpt-image-1.5, gpt-image-2, gpt-image-2.5, gpt-image-2.5-flare, gpt-image-2.5-sunburst", modelName)
+	return fmt.Errorf("模型 %s 不受 Codex Images API 支持；可用模型: gpt-image-1.5, gpt-image-2, gpt-image-2.5, gpt-image-2.5-flare, gpt-image-2.5-sunburst, gpt-image-2.6, gpt-image-2.6-flare, gpt-image-2.6-sunburst", modelName)
 }
 
 func xaiImageGenerationRequestBody(actualModel string, imageReq *imageGenerationTestRequest) ([]byte, error) {

@@ -24,6 +24,34 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-05)
+
+The synchronized baseline remains official `v8.0.51`. These targeted fixes use
+the local CLIProxyAPI checkout at `334d3884aed7f4223237289b51c98066850fba3e`:
+
+- Adapt `6044c5d14270fa094333b25932ac11ab13282821`: translate OpenAI text,
+  thinking and reasoning content arrays to Claude blocks in order, including
+  streamed content interleaved with tool arguments. Unknown typed parts are
+  ignored instead of being rendered as raw JSON text. Keep ccLoad's separate
+  native non-stream converter, usage and terminal-event contracts.
+- Adapt `8c9a78518e39f0ca527e188f9efea0193f436a31`: convert forced client
+  `tool_search` selection to its Chat function choice. Existing search replay,
+  response restoration, argument validation and reserved-name rejection remain.
+
+App-owned changes also preserve terminal HTTP error status and safe response
+headers on Responses WebSocket replies (`b5e6027ce4d72c88a92d5571d23afc22bbd7bd30`)
+and add the three Codex GPT Image 2.6 models
+(`7a7d37ecb5c61d69413d19d7bce085a82740f5ca`). Image prices come from the official
+OpenAI model pages, not the translator snapshot. The optional Codex 429-to-503
+policy is retained. No runtime executor, SIWC, Home or plugin code is imported.
+The app SSE parser also adopts the stream-level filter-notice evidence from
+`508ac2bce0966af94a30e6d44c43283390932b45`: only a sparse final Gemini notice
+followed by clean EOF without a terminal event or explicit upstream error is
+classified as a request fault. Committed usage remains billable, and native
+Claude refusal semantics are unchanged.
+This is not a full snapshot update; the baseline, provider provenance and
+license remain unchanged. Manifest hashes use the existing reviewed sync delta.
+
 ## Post-snapshot compatibility fixes (2026-11-04)
 
 The synchronized baseline above remains official `v8.0.51`. The following

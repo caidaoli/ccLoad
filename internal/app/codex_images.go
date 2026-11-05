@@ -18,6 +18,12 @@ import (
 	"ccLoad/internal/protocol"
 )
 
+/**
+ * @brief 识别 Codex Images 支持的模型并去除路由前缀与思考后缀
+ * @param raw 请求或渠道配置中的模型名
+ * @return 规范模型名；不支持时为空
+ * @return 模型是否受支持
+ */
 func canonicalCodexImageModel(raw string) (string, bool) {
 	name := model.RoutingModelName(strings.TrimSpace(raw))
 	if slash := strings.LastIndex(name, "/"); slash >= 0 {
@@ -26,13 +32,21 @@ func canonicalCodexImageModel(raw string) (string, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
 	case "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
-		"gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08":
+		"gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08",
+		"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst":
 		return name, true
 	default:
 		return "", false
 	}
 }
 
+/**
+ * @brief 判断当前请求是否使用 Codex 原生 Images 上游
+ * @param cfg 本次候选渠道
+ * @param reqCtx 已完成模型选择的代理请求上下文
+ * @return 原生 Images 模型名；请求不适用时为空
+ * @return 是否使用原生 Images 路径
+ */
 func (s *Server) codexDirectImagesModel(cfg *model.Config, reqCtx *proxyRequestContext) (string, bool) {
 	if cfg == nil || reqCtx == nil || !cfg.UsesCodexOAuth() || reqCtx.requestMethod != http.MethodPost ||
 		reqCtx.clientProtocol != protocol.OpenAI || cfg.GetProtocolTransformMode() == model.ProtocolTransformModeUpstream {
@@ -45,7 +59,8 @@ func (s *Server) codexDirectImagesModel(cfg *model.Config, reqCtx *proxyRequestC
 	actual := s.resolveFinalUpstreamModel(cfg, reqCtx.attemptModel, string(protocol.Codex))
 	canonical, _ := canonicalCodexImageModel(actual)
 	switch canonical {
-	case "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst":
+	case "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst":
 		return canonical, true
 	default:
 		return "", false

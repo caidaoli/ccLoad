@@ -4416,6 +4416,10 @@ func TestReauthorizationStartsQuotaEpochOnIdentityChange(t *testing.T) {
 	assertNewEpoch(got, "account-plan-change-2|business", before, after)
 }
 
+/**
+ * @brief 验证 Codex 凭证导入按订阅计划暴露可用模型
+ * @param t 测试上下文
+ */
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -4445,7 +4449,7 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 			if channel.SupportsModel("gpt-5.5") {
 				t.Fatalf("plan %q includes retired model gpt-5.5", tt.plan)
 			}
-			for _, name := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-image-2", "gpt-image-2.5"} {
+			for _, name := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-image-2", "gpt-image-2.5", "gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"} {
 				if channel.SupportsModel(name) != tt.paidModelsAllowed {
 					t.Fatalf("plan %q allows %q = %v, want %v", tt.plan, name, channel.SupportsModel(name), tt.paidModelsAllowed)
 				}

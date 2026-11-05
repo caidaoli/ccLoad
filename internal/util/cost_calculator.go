@@ -92,6 +92,9 @@ func scaleCostBreakdown(breakdown StandardCostBreakdown, multiplier float64) Sta
 type imageGenerationToolPricing = ImageGenerationPricing
 type imageGenerationFallbackPricing = ImageGenerationFallbackPricing
 
+/**
+ * @brief 已核实的图像生成文字与图片分项费率，单位为美元每百万 token
+ */
 var imageGenerationToolPricingByModel = map[string]imageGenerationToolPricing{
 	// 来源: https://openai.com/api/pricing/ (GPT Image 2, per 1M tokens)
 	"gpt-image-2": {
@@ -105,6 +108,16 @@ var imageGenerationToolPricingByModel = map[string]imageGenerationToolPricing{
 	},
 	// https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst
 	"gpt-image-2.5-sunburst": {
+		TextInputPrice: 5.00, TextCachedPrice: 1.25,
+		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
+	// https://developers.openai.com/api/docs/models/gpt-image-2.6-flare
+	"gpt-image-2.6-flare": {
+		TextInputPrice: 5.00, TextCachedPrice: 1.25,
+		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
+	// https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst
+	"gpt-image-2.6-sunburst": {
 		TextInputPrice: 5.00, TextCachedPrice: 1.25,
 		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
 	},
