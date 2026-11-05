@@ -1063,10 +1063,10 @@ func TestHandleChannelEditorModelStatsCoverTodayForRequestedChannel(t *testing.T
 		t.Fatalf("创建其他渠道失败: %v", err)
 	}
 
-	now := time.Now().Truncate(time.Second)
+	today := todayStart(time.Now())
 	entries := []*model.LogEntry{
 		{
-			Time:          model.JSONTime{Time: now.Add(-3 * time.Minute)},
+			Time:          model.JSONTime{Time: today},
 			ChannelID:     created.ID,
 			Model:         "external-model",
 			StatusCode:    http.StatusOK,
@@ -1075,7 +1075,7 @@ func TestHandleChannelEditorModelStatsCoverTodayForRequestedChannel(t *testing.T
 			FirstByteTime: 1,
 		},
 		{
-			Time:          model.JSONTime{Time: now.Add(-2 * time.Minute)},
+			Time:          model.JSONTime{Time: today},
 			ChannelID:     created.ID,
 			Model:         "external-model",
 			StatusCode:    http.StatusOK,
@@ -1084,13 +1084,13 @@ func TestHandleChannelEditorModelStatsCoverTodayForRequestedChannel(t *testing.T
 			FirstByteTime: 3,
 		},
 		{
-			Time:       model.JSONTime{Time: now.Add(-time.Minute)},
+			Time:       model.JSONTime{Time: today},
 			ChannelID:  created.ID,
 			Model:      "external-model",
 			StatusCode: http.StatusServiceUnavailable,
 		},
 		{
-			Time:          model.JSONTime{Time: now.Add(-time.Minute)},
+			Time:          model.JSONTime{Time: today},
 			ChannelID:     other.ID,
 			Model:         "external-model",
 			StatusCode:    http.StatusOK,
@@ -1099,7 +1099,7 @@ func TestHandleChannelEditorModelStatsCoverTodayForRequestedChannel(t *testing.T
 			FirstByteTime: 100,
 		},
 		{
-			Time:          model.JSONTime{Time: now.AddDate(0, 0, -1)},
+			Time:          model.JSONTime{Time: today.AddDate(0, 0, -1)},
 			ChannelID:     created.ID,
 			Model:         "external-model",
 			StatusCode:    http.StatusOK,
