@@ -41,3 +41,5 @@
 - Codex commentary 转 Claude 为携带内部 `cpa:commentary:v1` 标记的 thinking 块，最终答案按独立消息输出；回到 Codex 恢复 commentary phase，其他目标恢复普通 assistant 文本。该标记不是提供商签名，不得发送上游；原生 Anthropic 最终化与 OpenCode vendor-reasoning 特殊入口同样恢复。
 - Vertex `functionCall.partialArgs` 在 Claude/Chat/Responses 三方向按调用身份组装 JSONPath 与字符串续片；无效/未完成参数通过既有 ToolInputError/FinalizeToolInput 报错，Responses 至多一个 response.failed，不伪造成功工具终态。未完成调用中插入非空 text/thought 时统一报错，不再打开普通内容块；调用 ID 与续片匹配按 id/call_id/callId 优先级识别。参数清理前的临时 JSON 同样限制为 4 MiB，包含稀疏数组 null 空洞与转义后的字节数。
 - Gemini/Antigravity 转 Responses 的 tool_search item 使用 tsc_；Codex HTTP/WS 出站同时规范旧 ts_ 和无前缀 ID，处理碰撞并保留 call_id。Claude thinking 用量细分接受 output_tokens_details.thinking_tokens，保留总输出用量与旧别名。
+
+- Claude 会话中途 `role=system` 消息的最后非空字符串 `output_config.effort` 是当前轮等级，优先于顶层缓存占位（参考 CLIProxyAPI `fb30a9e8b`）。Chat、Responses、Gemini 及 Antigravity 请求在 ccLoad 转换边界归一为当前等级；`thinking.type=disabled/between_tools` 不采纳该指令。原生 Anthropic 仍保留顶层与消息级字段；日志读取最新指令。显式模型后缀与动态思考决策覆盖消息级等级，保留消息正文及其他配置字段。

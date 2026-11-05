@@ -998,8 +998,9 @@ func sanitizeCodexInputItemIDs(body []byte) []byte {
 				mappingKey := inputItemIDMappingKey{originalID: originalID, normalizedID: id}
 				shortened, ok := mapped[mappingKey]
 				if !ok {
+					rawNormalizedID := normalizeCodexInputItemIDPrefix(item, originalID)
 					for attempt := 0; ; attempt++ {
-						shortened = shortenCodexInputItemID(id, attempt)
+						shortened = shortenCodexInputItemID(rawNormalizedID, attempt)
 						if _, exists := occupied[shortened]; !exists {
 							break
 						}
@@ -1029,6 +1030,14 @@ func sanitizeCodexInputItemIDs(body []byte) []byte {
 }
 
 func normalizeCodexInputItemID(item gjson.Result, id string) string {
+	normalized := normalizeCodexInputItemIDPrefix(item, id)
+	if len([]rune(normalized)) > codexInputItemIDLimit {
+		return normalized
+	}
+	return sanitizeCodexInputItemIDChars(normalized)
+}
+
+func normalizeCodexInputItemIDPrefix(item gjson.Result, id string) string {
 	var prefix string
 	switch item.Get("type").String() {
 	case "message":
@@ -1058,6 +1067,15 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 	return prefix + "_" + id
 }
 
+func sanitizeCodexInputItemIDChars(id string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, id)
+}
+
 func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
 	if item.Get("type").String() != "reasoning" {
 		return false
@@ -1073,7 +1091,7 @@ func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
 func shortenCodexInputItemID(id string, attempt int) string {
 	runes := []rune(id)
 	if len(runes) <= codexInputItemIDLimit && attempt == 0 {
-		return id
+		return sanitizeCodexInputItemIDChars(id)
 	}
 	hashInput := id
 	if attempt > 0 {
@@ -1082,7 +1100,7 @@ func shortenCodexInputItemID(id string, attempt int) string {
 	sum := sha256.Sum256([]byte(hashInput))
 	suffix := fmt.Sprintf("_%x", sum[:8])
 	prefixLength := min(len(runes), codexInputItemIDLimit-len(suffix))
-	return string(runes[:prefixLength]) + suffix
+	return sanitizeCodexInputItemIDChars(string(runes[:prefixLength])) + suffix
 }
 
 func prepareCodexWebsocketInputHeaders(target, source http.Header, rules []model.CustomHeaderRule) {

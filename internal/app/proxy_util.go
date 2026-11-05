@@ -1111,6 +1111,9 @@ func extractThinkingEffortFromJSON(body []byte) string {
 	if err := sonic.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
+	if effort := protocol.AnthropicEffortDirective(body); effort != "" {
+		return effort
+	}
 	return extractThinkingEffortFromPayload(payload)
 }
 

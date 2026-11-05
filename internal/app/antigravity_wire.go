@@ -84,7 +84,10 @@ func translateAntigravityRequest(clientProtocol protocol.Protocol, modelName str
 	var err error
 	switch clientProtocol {
 	case protocol.Anthropic:
-		translated, err = antigravityclaude.ConvertClaudeRequestToAntigravity(modelName, body, stream)
+		body, err = protocol.NormalizeAnthropicEffortForTranslation(body)
+		if err == nil {
+			translated, err = antigravityclaude.ConvertClaudeRequestToAntigravity(modelName, body, stream)
+		}
 	case protocol.Codex:
 		translated, err = antigravityresponses.ConvertOpenAIResponsesRequestToAntigravity(modelName, body, stream)
 	case protocol.OpenAI:

@@ -29,7 +29,7 @@ func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
 	defer server.Close()
 
 	service := NewService(server.Client())
-	if service.RequestUserAgent() != "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)" {
+	if service.RequestUserAgent() != "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)" {
 		t.Fatalf("fallback User-Agent = %q", service.RequestUserAgent())
 	}
 	service.ManifestURL = server.URL + "/latest-arm64-mac.yml"

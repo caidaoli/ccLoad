@@ -75,6 +75,7 @@ func writeReasoningEffort(body []byte, client protocol.Protocol, effort string) 
 	case protocol.Codex:
 		return sjson.SetBytes(body, "reasoning.effort", effort)
 	case protocol.Anthropic:
+		body = clearAnthropicEffortDirectives(body)
 		// Same wire as a level suffix: translators read output_config.effort only
 		// under adaptive thinking, and a fixed budget would override the level.
 		out, err := sjson.SetBytes(body, "thinking.type", "adaptive")

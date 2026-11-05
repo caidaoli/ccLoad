@@ -801,7 +801,7 @@ func TestReasoningAutoAnthropicAndGeminiClients(t *testing.T) {
 				map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "private", "signature": "sig"},
 					map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": map[string]any{"command": "go test ./..."}}}},
 				map[string]any{"role": "user", "content": blocks},
-				map[string]any{"role": "system", "content": "SessionStart hook additional context"},
+				map[string]any{"role": "system", "content": "SessionStart hook additional context", "output_config": map[string]any{"effort": "low"}},
 			}}
 	}
 	for _, upstream := range []string{"codex", "anthropic"} {

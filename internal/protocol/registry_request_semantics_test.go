@@ -13,6 +13,78 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestRegistryAnthropicMidConversationEffort(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, thinking := range []string{`{"type":"adaptive"}`, `{"type":"enabled","budget_tokens":1024}`, `null`} {
+		for _, target := range []struct {
+			protocol    protocol.Protocol
+			model, path string
+		}{
+			{protocol.OpenAI, "gpt-5", "reasoning_effort"},
+			{protocol.Codex, "gpt-5", "reasoning.effort"},
+			{protocol.Gemini, "gemini-3.8-flash-high", "generationConfig.thinkingConfig.thinkingLevel"},
+		} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", target.protocol, thinking, stream), func(t *testing.T) {
+					raw := []byte(`{"thinking":` + thinking + `,"output_config":{"effort":"medium"},"messages":[{"role":"system","content":"earlier","output_config":{"effort":"low"}},{"role":"user","content":"work"},{"role":"system","content":"latest","output_config":{"effort":" HIGH "}},{"role":"system","content":"empty","output_config":{"effort":" "}},{"role":"user","content":"continue","output_config":{"effort":"low"}}]}`)
+					out, err := reg.TranslateRequest(protocol.Anthropic, target.protocol, target.model, raw, stream)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := gjson.GetBytes(out, target.path).String(); got != "high" {
+						t.Fatalf("effort=%q, want high: %s", got, out)
+					}
+					native, err := reg.TranslateRequest(protocol.Anthropic, protocol.Anthropic, "claude-opus-5-5", raw, stream)
+					if err != nil || string(native) != string(raw) {
+						t.Fatalf("native request changed: %s, %v", native, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRegistryAnthropicEffortDirectiveControls(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name, thinking, role, directive, wantChat, wantCodex, wantGemini string
+	}{
+		{"disabled", "disabled", "system", `"high"`, "none", "none", ""},
+		{"between_tools", "between_tools", "system", `"high"`, "", "medium", ""},
+		{"none", "adaptive", "system", `"none"`, "none", "none", ""},
+		{"auto", "adaptive", "system", `"auto"`, "xhigh", "xhigh", ""},
+		{"user", "adaptive", "user", `"high"`, "medium", "medium", "medium"},
+		{"invalid_type", "adaptive", "system", `42`, "medium", "medium", "medium"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(fmt.Sprintf(`{"thinking":{"type":%q},"output_config":{"effort":"medium"},"messages":[{"role":%q,"content":"work","output_config":{"effort":%s}}]}`, tc.thinking, tc.role, tc.directive))
+			for _, target := range []struct {
+				protocol          protocol.Protocol
+				model, path, want string
+			}{
+				{protocol.OpenAI, "gpt-5", "reasoning_effort", tc.wantChat},
+				{protocol.Codex, "gpt-5", "reasoning.effort", tc.wantCodex},
+				{protocol.Gemini, "gemini-3.8-flash-high", "generationConfig.thinkingConfig.thinkingLevel", tc.wantGemini},
+			} {
+				out, err := reg.TranslateRequest(protocol.Anthropic, target.protocol, target.model, raw, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := gjson.GetBytes(out, target.path).String(); got != target.want {
+					t.Fatalf("%s effort=%q, want %q: %s", target.protocol, got, target.want, out)
+				}
+				if tc.name == "none" && target.protocol == protocol.Gemini {
+					if budget := gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget"); budget.Type != gjson.Number || budget.Int() != 0 {
+						t.Fatalf("none directive did not disable Gemini thinking: %s", out)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryResponsesPreservesDeveloperRoles(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

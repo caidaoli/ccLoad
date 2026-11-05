@@ -9175,6 +9175,135 @@ func TestResponsesWebsocketToolSearchIDsAtOutboundBoundary(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketInputItemIDsSanitizeInvalidCharacters(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprintf("native=%v", native), func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			captured := make(chan []byte, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if native {
+					conn, err := upgrader.Upgrade(w, r, nil)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					_, body, err := conn.ReadMessage()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					captured <- body
+					_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-input-ids","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`))
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				captured <- body
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-input-ids\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n")
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{name: "input-item-ids", upstreamProtocol: "codex", websockets: native, models: "gpt-test"}}, map[int]string{0: upstream.URL})
+			env.server.client = upstream.Client()
+			send := func(input []map[string]any) []gjson.Result {
+				t.Helper()
+				conn := dialResponsesWebsocket(t, env.engine)
+				defer func() { _ = conn.Close() }()
+				if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": input}); err != nil {
+					t.Fatal(err)
+				}
+				readWebsocketUntilType(t, conn, "response.completed")
+				items := gjson.GetBytes(<-captured, "input").Array()
+				if len(items) != len(input) {
+					t.Fatalf("outbound input length=%d, want %d", len(items), len(input))
+				}
+				return items
+			}
+			longPlusSlash := "msg_" + strings.Repeat("A", 30) + "+/" + strings.Repeat("A", 414)
+			longSlashPlus := "msg_" + strings.Repeat("A", 30) + "/+" + strings.Repeat("A", 414)
+			longTailPlus := "msg_" + strings.Repeat("B", 100) + "+" + strings.Repeat("B", 100)
+			longTailSlash := "msg_" + strings.Repeat("B", 100) + "/" + strings.Repeat("B", 100)
+			input := []map[string]any{
+				{"type": "message", "id": longPlusSlash, "role": "assistant", "content": "plus slash"},
+				{"type": "message", "id": longSlashPlus, "role": "assistant", "content": "slash plus"},
+				{"type": "message", "id": longTailPlus, "role": "assistant", "content": "tail plus"},
+				{"type": "message", "id": longTailSlash, "role": "assistant", "content": "tail slash"},
+				{"type": "message", "id": "msg_short+id/with=chars", "role": "assistant", "content": "short plus"},
+				{"type": "message", "id": "msg_short/id+with=chars", "role": "assistant", "content": "short slash"},
+				{"type": "message", "id": "msg_short_id_with_chars", "role": "assistant", "content": "existing valid"},
+				{"type": "message", "id": "msg-A_09", "role": "user", "content": "valid prefix"},
+				{"type": "message", "id": "msg_中文🙂", "role": "user", "content": "unicode"},
+				{"type": "reasoning", "id": "rs_short+id/=", "encrypted_content": "opaque", "summary": []any{}},
+				{"type": "function_call", "id": "call:0+1/2", "call_id": "call:kept+/=", "name": "lookup", "arguments": "{}"},
+				{"type": "function_call_output", "id": "fco:0+1/2", "call_id": "call:kept+/=", "output": "ok"},
+				{"type": "custom_tool_call", "id": "custom+id/", "call_id": "custom:kept+/=", "name": "shell", "input": "pwd"},
+				{"type": "custom_tool_call_output", "id": "custom+output/", "call_id": "custom:kept+/=", "output": "ok"},
+				{"type": "tool_search_call", "id": "ts_short+id/=", "call_id": "search:kept+/=", "status": "completed", "arguments": "{}"},
+				{"type": "message", "id": longPlusSlash, "role": "assistant", "content": "repeat long"},
+				{"type": "message", "id": "msg_short+id/with=chars", "role": "assistant", "content": "repeat short"},
+			}
+			first := send(input)
+			seen := make(map[string]string, len(input))
+			mapped := make(map[string]string, len(input))
+			for idx, item := range first {
+				id := item.Get("id").String()
+				originalID := input[idx]["id"].(string)
+				if len(id) > codexInputItemIDLimit || strings.ContainsFunc(id, func(r rune) bool {
+					return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+				}) {
+					t.Errorf("input.%d.id=%q, want at most 64 portable characters", idx, id)
+				}
+				if previous, exists := seen[id]; exists && previous != originalID {
+					t.Errorf("distinct input IDs %q and %q collided as %q", previous, originalID, id)
+				}
+				if previous, exists := mapped[originalID]; exists && previous != id {
+					t.Errorf("repeated ID %q mapped to %q and %q", originalID, previous, id)
+				}
+				seen[id] = originalID
+				mapped[originalID] = id
+				if callID, exists := input[idx]["call_id"]; exists && item.Get("call_id").String() != callID {
+					t.Errorf("input.%d.call_id changed: %s", idx, item.Raw)
+				}
+			}
+			for originalID, wantID := range map[string]string{
+				"msg_short_id_with_chars": "msg_short_id_with_chars", "msg-A_09": "msg-A_09", "msg_中文🙂": "msg____",
+				"rs_short+id/=": "rs_short_id__", "call:0+1/2": "fc_call_0_1_2", "fco:0+1/2": "fco_0_1_2",
+				"custom+id/": "ctc_custom_id_", "custom+output/": "ctco_custom_output_", "ts_short+id/=": "tsc_short_id__",
+			} {
+				if got := mapped[originalID]; got != wantID {
+					t.Errorf("normalized ID %q=%q, want %q", originalID, got, wantID)
+				}
+			}
+			reversed := slices.Clone(input)
+			slices.Reverse(reversed)
+			normalized := make([]map[string]any, len(input))
+			for idx, item := range input {
+				normalized[idx] = maps.Clone(item)
+				normalized[idx]["id"] = first[idx].Get("id").String()
+			}
+			for name, nextInput := range map[string][]map[string]any{"repeat": input, "reverse": reversed, "normalized": normalized} {
+				next := send(nextInput)
+				for idx, item := range next {
+					want := nextInput[idx]["id"].(string)
+					if name != "normalized" {
+						want = mapped[want]
+					}
+					if got := item.Get("id").String(); got != want {
+						t.Errorf("%s input.%d.id=%q, want stable %q", name, idx, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 // codexInterruptWriteGate blocks one application write after the handshake.
 // Closing the socket still works, but the failed write returns only after release
 // so replacement-socket invalidation can be checked without scheduler timing.

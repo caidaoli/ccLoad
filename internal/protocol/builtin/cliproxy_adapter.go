@@ -79,6 +79,10 @@ func cliproxyAnthropicRequestToOpenAI(model string, raw []byte, stream bool) ([]
 	if err := cliproxyValidateAnthropicRequest(raw, true); err != nil {
 		return nil, err
 	}
+	raw, err := protocol.NormalizeAnthropicEffortForTranslation(raw)
+	if err != nil {
+		return nil, err
+	}
 	return cliproxyJSONRequest("anthropic request to openai", model, raw, stream, claude.ConvertClaudeRequestToOpenAI)
 }
 
@@ -112,6 +116,10 @@ func cliproxyCodexResponseToOpenAINonStream(ctx context.Context, model string, o
 
 func cliproxyAnthropicRequestToGemini(model string, raw []byte, stream bool) ([]byte, error) {
 	if err := cliproxyValidateAnthropicRequest(raw, false); err != nil {
+		return nil, err
+	}
+	raw, err := protocol.NormalizeAnthropicEffortForTranslation(raw)
+	if err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("anthropic request to gemini", model, raw, stream, claudegemini.ConvertClaudeRequestToGemini)
@@ -222,6 +230,10 @@ func cliproxyAnthropicResponseToCodexNonStream(ctx context.Context, model string
 
 func cliproxyAnthropicRequestToCodex(model string, raw []byte, stream bool) ([]byte, error) {
 	if err := cliproxyValidateAnthropicRequest(raw, true); err != nil {
+		return nil, err
+	}
+	raw, err := protocol.NormalizeAnthropicEffortForTranslation(raw)
+	if err != nil {
 		return nil, err
 	}
 	return cliproxyJSONRequest("anthropic request to codex", model, raw, stream, claudecodex.ConvertClaudeRequestToCodex)

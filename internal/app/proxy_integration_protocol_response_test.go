@@ -18,6 +18,75 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestProxy_AnthropicMidConversationEffort(t *testing.T) {
+	for _, upstreamProtocol := range []string{"anthropic", "openai"} {
+		for _, suffix := range []string{"", "(low)", "(none)", "(8192)", "(auto)"} {
+			t.Run(upstreamProtocol+suffix, func(t *testing.T) {
+				var sent []byte
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					sent, _ = io.ReadAll(r.Body)
+					w.Header().Set("Content-Type", "application/json")
+					if upstreamProtocol == "anthropic" {
+						_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+					} else {
+						_, _ = io.WriteString(w, `{"id":"chat_1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+					}
+				}))
+				defer upstream.Close()
+				env := setupProxyTestEnv(t, []testChannel{{name: "effort", models: "gpt-5.6-sol", upstreamProtocol: upstreamProtocol, protocolTransformMode: "local"}}, map[int]string{0: upstream.URL})
+				response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+					"model": "gpt-5.6-sol" + suffix, "max_tokens": 1024,
+					"thinking":      map[string]any{"type": "adaptive"},
+					"output_config": map[string]any{"effort": "medium"},
+					"messages": []any{
+						map[string]any{"role": "user", "content": "work"},
+						map[string]any{"role": "system", "content": "continue carefully", "output_config": map[string]any{"effort": "high"}},
+					},
+				}, map[string]string{"Anthropic-Beta": "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01"})
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d: %s", response.Code, response.Body.String())
+				}
+				wantLog := "high"
+				switch suffix {
+				case "(low)":
+					wantLog = "low"
+				case "(none)":
+					wantLog = "none"
+				case "(8192)":
+					wantLog = "medium"
+				case "(auto)":
+					wantLog = "auto"
+				}
+				if entry := waitForProxyLog(t, env, "gpt-5.6-sol"); entry.ThinkingEffort != wantLog {
+					t.Fatalf("logged effort=%q, want %q", entry.ThinkingEffort, wantLog)
+				}
+				if upstreamProtocol == "openai" {
+					want := wantLog
+					if suffix == "(none)" {
+						want = ""
+					}
+					if suffix == "(auto)" {
+						want = "xhigh"
+					}
+					if got := gjson.GetBytes(sent, "reasoning_effort").String(); got != want {
+						t.Fatalf("wire effort=%q, want %q: %s", got, want, sent)
+					}
+				} else if suffix == "" {
+					if gjson.GetBytes(sent, "output_config.effort").String() != "medium" || gjson.GetBytes(sent, "messages.1.output_config.effort").String() != "high" {
+						t.Fatalf("native effort directives changed: %s", sent)
+					}
+				} else {
+					for _, message := range gjson.GetBytes(sent, "messages").Array() {
+						if message.Get("role").String() == "system" && message.Get("output_config.effort").Exists() {
+							t.Fatalf("history overrides explicit suffix: %s", sent)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestProxy_XAIOAuthStreamsThroughAllClientProtocols(t *testing.T) {
 	tests := []struct {
 		name    string

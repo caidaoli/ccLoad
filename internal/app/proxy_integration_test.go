@@ -5092,8 +5092,9 @@ func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *t
 func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		effort string
-		want   string
+		effort    string
+		want      string
+		directive string
 	}{
 		{effort: "minimal", want: "low"},
 		{effort: "xhigh", want: "high"},
@@ -5101,9 +5102,11 @@ func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) 
 		{effort: "low", want: "low"},
 		{effort: "medium", want: "medium"},
 		{effort: "high", want: "high"},
+		{effort: "medium", directive: "high", want: "high"},
+		{effort: "medium", directive: "none", want: ""},
 	}
 	for _, tt := range tests {
-		t.Run(tt.effort, func(t *testing.T) {
+		t.Run(tt.effort+tt.directive, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				wireBody, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -5115,6 +5118,11 @@ func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) 
 				if !gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.includeThoughts").Bool() {
 					t.Errorf("Antigravity includeThoughts=false; body=%s", wireBody)
 				}
+				if tt.directive == "none" {
+					if budget := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingBudget"); budget.Type != gjson.Number || budget.Int() != 0 {
+						t.Errorf("none directive did not disable Antigravity thinking: %s", wireBody)
+					}
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity thinking ok"}]},"finishReason":"STOP"}]}}`)
 			}))
@@ -5125,9 +5133,13 @@ func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) 
 				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-thinking"),
 			}}, map[int]string{0: upstream.URL})
 
+			messages := []any{map[string]any{"role": "user", "content": "think"}}
+			if tt.directive != "" {
+				messages = append(messages, map[string]any{"role": "system", "content": "think harder", "output_config": map[string]any{"effort": tt.directive}})
+			}
 			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 				"model": "gemini-3.1-pro-low", "max_tokens": 100,
-				"messages":      []any{map[string]any{"role": "user", "content": "think"}},
+				"messages":      messages,
 				"thinking":      map[string]any{"type": "adaptive"},
 				"output_config": map[string]any{"effort": tt.effort},
 			}, nil)

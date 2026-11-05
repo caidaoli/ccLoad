@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 
 	"ccLoad/internal/model"
@@ -179,6 +180,7 @@ func indexOfOpenAIStyleLevel(level string) int {
 // 数字预算走 enabled；能力裁剪归转换器/后续归一化，这里不查 catalog——选路和
 // 重定向前拿不到实际上游模型。
 func applyAnthropicThinking(body []byte, cfg thinking.ThinkingConfig) []byte {
+	body = clearAnthropicEffortDirectives(body)
 	if cfg.Mode == thinking.ModeNone {
 		// ccLoad 全链路以"没有 thinking 字段"表示关闭思考（见 normalizeAnthropicThinking），
 		// 直接写成终态，避免归一化路径与原生 Claude Code 直通路径给出两种线协议。
@@ -208,6 +210,17 @@ func applyAnthropicThinking(body []byte, cfg thinking.ThinkingConfig) []byte {
 	}
 	out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 	return out
+}
+
+// Explicit model suffixes and automatic decisions replace the client's current
+// effort, including directives retained in conversation history.
+func clearAnthropicEffortDirectives(body []byte) []byte {
+	for index, message := range gjson.GetBytes(body, "messages").Array() {
+		if strings.EqualFold(strings.TrimSpace(message.Get("role").String()), "system") && message.Get("output_config.effort").Exists() {
+			body = deleteJSONPath(body, fmt.Sprintf("messages.%d.output_config.effort", index))
+		}
+	}
+	return body
 }
 
 func deleteAnthropicThinkingEffort(body []byte) []byte {

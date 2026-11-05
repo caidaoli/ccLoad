@@ -36,7 +36,7 @@ const (
 	antigravityHubPlatform  = "os_type=darwin; arch=arm64"
 	// fallbackHubVersion is reported until the Hub manifest is fetched. Cloud
 	// Code rejects newer models for clients below 2.23.0.
-	fallbackHubVersion = "2.24.0"
+	fallbackHubVersion = "2.29.0"
 )
 
 // Changelists belong to specific Hub releases; keep the fallback release listed.
@@ -44,6 +44,7 @@ const (
 var hubChangelists = map[string]string{
 	"2.23.0": "998057262",
 	"2.24.0": "1000335682",
+	"2.29.0": "1013060670",
 }
 
 // DefaultUserAgent is the Hub User-Agent used before the manifest is fetched.
