@@ -12,4 +12,4 @@ plugins:
     out: internal/cursorauth/sdkgen
     opt: paths=source_relative
 inputs:
-  - directory: third_party/cursor-sdk-bridge/v1.0.37/proto
+  - directory: third_party/cursor-sdk-bridge/v1.2.0/proto

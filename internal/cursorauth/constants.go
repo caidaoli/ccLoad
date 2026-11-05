@@ -5,6 +5,9 @@ package cursorauth
 
 import "time"
 
+/**
+ * @brief Cursor 控制面身份、锁定的 Bridge 协议版本与调用时限。
+ */
 const (
 	// ChannelType is the provider type stored in Cursor credentials.
 	ChannelType = "cursor"
@@ -28,9 +31,8 @@ const (
 	// RequestTimeout bounds one Cursor control-plane request.
 	RequestTimeout = 30 * time.Second
 	// AgentTimeout bounds one Cursor SDK Agent inference.
-	AgentTimeout = 180 * time.Second
-	// BridgeVersion pins the standalone companion shipped with ccLoad.
-	BridgeVersion = "v1.0.37"
+	AgentTimeout  = 180 * time.Second
+	BridgeVersion = "v1.2.0" ///< ccLoad 配套发布的 standalone Bridge 版本。
 	// BridgeProtocol is the only wire contract this build accepts.
 	BridgeProtocol = "sdk.v1"
 	// BridgeStartupTimeout bounds spawn, discovery, Ping, and capability checks.

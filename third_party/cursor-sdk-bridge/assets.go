@@ -4,10 +4,13 @@ package cursorbridge
 
 import _ "embed"
 
+/**
+ * @brief 随构建嵌入的锁定版本元数据与上游许可证。
+ */
 var (
 	//go:embed bridge.lock
 	lockFile string
-	//go:embed v1.0.37/LICENSE
+	//go:embed v1.2.0/LICENSE
 	licenseFile string
 )
 

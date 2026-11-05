@@ -3009,12 +3009,16 @@ type RunSnapshot struct {
 	AgentId string                 `protobuf:"bytes,2,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	Status  RunLifecycleStatus     `protobuf:"varint,3,opt,name=status,proto3,enum=sdk.v1.RunLifecycleStatus" json:"status,omitempty"`
 	// Final assistant text (or empty when not yet available).
-	Result        string                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
-	Model         *ModelSelection        `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	DurationMs    uint64                 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	Git           *RunGitInfo            `protobuf:"bytes,7,opt,name=git,proto3" json:"git,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	Usage         *TokenUsage            `protobuf:"bytes,9,opt,name=usage,proto3,oneof" json:"usage,omitempty"`
+	Result     string                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
+	Model      *ModelSelection        `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
+	DurationMs uint64                 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	Git        *RunGitInfo            `protobuf:"bytes,7,opt,name=git,proto3" json:"git,omitempty"`
+	CreatedAt  *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	Usage      *TokenUsage            `protobuf:"bytes,9,opt,name=usage,proto3,oneof" json:"usage,omitempty"`
+	// Stable failure code when the run ended in error.
+	ErrorCode *string `protobuf:"bytes,10,opt,name=error_code,json=errorCode,proto3,oneof" json:"error_code,omitempty"`
+	// Human-readable failure message when the run ended in error.
+	ErrorMessage  *string `protobuf:"bytes,11,opt,name=error_message,json=errorMessage,proto3,oneof" json:"error_message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3112,18 +3116,36 @@ func (x *RunSnapshot) GetUsage() *TokenUsage {
 	return nil
 }
 
+func (x *RunSnapshot) GetErrorCode() string {
+	if x != nil && x.ErrorCode != nil {
+		return *x.ErrorCode
+	}
+	return ""
+}
+
+func (x *RunSnapshot) GetErrorMessage() string {
+	if x != nil && x.ErrorMessage != nil {
+		return *x.ErrorMessage
+	}
+	return ""
+}
+
 type RunResult struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	RunId   string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	AgentId string                 `protobuf:"bytes,2,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	Status  RunLifecycleStatus     `protobuf:"varint,3,opt,name=status,proto3,enum=sdk.v1.RunLifecycleStatus" json:"status,omitempty"`
 	// Final assistant text for a completed run.
-	Result        string                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
-	Model         *ModelSelection        `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	DurationMs    uint64                 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	Git           *RunGitInfo            `protobuf:"bytes,7,opt,name=git,proto3" json:"git,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	Usage         *TokenUsage            `protobuf:"bytes,9,opt,name=usage,proto3,oneof" json:"usage,omitempty"`
+	Result     string                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
+	Model      *ModelSelection        `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
+	DurationMs uint64                 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	Git        *RunGitInfo            `protobuf:"bytes,7,opt,name=git,proto3" json:"git,omitempty"`
+	CreatedAt  *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	Usage      *TokenUsage            `protobuf:"bytes,9,opt,name=usage,proto3,oneof" json:"usage,omitempty"`
+	// Stable failure code when the run ended in error.
+	ErrorCode *string `protobuf:"bytes,10,opt,name=error_code,json=errorCode,proto3,oneof" json:"error_code,omitempty"`
+	// Human-readable failure message when the run ended in error.
+	ErrorMessage  *string `protobuf:"bytes,11,opt,name=error_message,json=errorMessage,proto3,oneof" json:"error_message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3219,6 +3241,20 @@ func (x *RunResult) GetUsage() *TokenUsage {
 		return x.Usage
 	}
 	return nil
+}
+
+func (x *RunResult) GetErrorCode() string {
+	if x != nil && x.ErrorCode != nil {
+		return *x.ErrorCode
+	}
+	return ""
+}
+
+func (x *RunResult) GetErrorMessage() string {
+	if x != nil && x.ErrorMessage != nil {
+		return *x.ErrorMessage
+	}
+	return ""
 }
 
 type RunGitInfo struct {
@@ -4157,7 +4193,7 @@ const file_sdk_v1_sdk_messages_proto_rawDesc = "" +
 	"\x05usage\x18\x01 \x01(\v2\x12.sdk.v1.TokenUsageR\x05usage\x12*\n" +
 	"\x04cost\x18\x02 \x01(\v2\x11.sdk.v1.UsageCostH\x00R\x04cost\x88\x01\x01\x12$\n" +
 	"\x04runs\x18\x03 \x03(\v2\x10.sdk.v1.RunUsageR\x04runsB\a\n" +
-	"\x05_cost\"\xf4\x02\n" +
+	"\x05_cost\"\xe3\x03\n" +
 	"\vRunSnapshot\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x122\n" +
@@ -4169,8 +4205,14 @@ const file_sdk_v1_sdk_messages_proto_rawDesc = "" +
 	"\x03git\x18\a \x01(\v2\x12.sdk.v1.RunGitInfoR\x03git\x129\n" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12-\n" +
-	"\x05usage\x18\t \x01(\v2\x12.sdk.v1.TokenUsageH\x00R\x05usage\x88\x01\x01B\b\n" +
-	"\x06_usage\"\xf2\x02\n" +
+	"\x05usage\x18\t \x01(\v2\x12.sdk.v1.TokenUsageH\x00R\x05usage\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"error_code\x18\n" +
+	" \x01(\tH\x01R\terrorCode\x88\x01\x01\x12(\n" +
+	"\rerror_message\x18\v \x01(\tH\x02R\ferrorMessage\x88\x01\x01B\b\n" +
+	"\x06_usageB\r\n" +
+	"\v_error_codeB\x10\n" +
+	"\x0e_error_message\"\xe1\x03\n" +
 	"\tRunResult\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x122\n" +
@@ -4182,8 +4224,14 @@ const file_sdk_v1_sdk_messages_proto_rawDesc = "" +
 	"\x03git\x18\a \x01(\v2\x12.sdk.v1.RunGitInfoR\x03git\x129\n" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12-\n" +
-	"\x05usage\x18\t \x01(\v2\x12.sdk.v1.TokenUsageH\x00R\x05usage\x88\x01\x01B\b\n" +
-	"\x06_usage\"B\n" +
+	"\x05usage\x18\t \x01(\v2\x12.sdk.v1.TokenUsageH\x00R\x05usage\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"error_code\x18\n" +
+	" \x01(\tH\x01R\terrorCode\x88\x01\x01\x12(\n" +
+	"\rerror_message\x18\v \x01(\tH\x02R\ferrorMessage\x88\x01\x01B\b\n" +
+	"\x06_usageB\r\n" +
+	"\v_error_codeB\x10\n" +
+	"\x0e_error_message\"B\n" +
 	"\n" +
 	"RunGitInfo\x124\n" +
 	"\bbranches\x18\x01 \x03(\v2\x18.sdk.v1.RunGitBranchInfoR\bbranches\"\\\n" +

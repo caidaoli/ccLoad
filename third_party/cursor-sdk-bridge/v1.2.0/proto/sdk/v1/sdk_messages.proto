@@ -417,6 +417,10 @@ message RunSnapshot {
   RunGitInfo git = 7;
   google.protobuf.Timestamp created_at = 8;
   optional TokenUsage usage = 9;
+  // Stable failure code when the run ended in error.
+  optional string error_code = 10;
+  // Human-readable failure message when the run ended in error.
+  optional string error_message = 11;
 }
 
 message RunResult {
@@ -430,6 +434,10 @@ message RunResult {
   RunGitInfo git = 7;
   google.protobuf.Timestamp created_at = 8;
   optional TokenUsage usage = 9;
+  // Stable failure code when the run ended in error.
+  optional string error_code = 10;
+  // Human-readable failure message when the run ended in error.
+  optional string error_message = 11;
 }
 
 message RunGitInfo {
