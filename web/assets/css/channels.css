@@ -215,6 +215,14 @@
       display: none;
     }
 
+    /* 登录弹窗共用禁用样式，认证方式不影响按钮反馈。 */
+    .oauth-dialog .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+
     .oauth-field label {
       color: var(--neutral-900);
       font-weight: 600;

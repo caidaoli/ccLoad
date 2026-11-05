@@ -14,7 +14,9 @@ import (
 	"ccLoad/internal/util"
 )
 
-// Channel authentication mechanisms and protocol transformation modes.
+/**
+ * @brief 定义渠道认证机制与协议转换模式。
+ */
 const (
 	AuthTypeAPIKey           = "api_key"
 	AuthTypeCodexOAuth       = "codex_oauth"
@@ -25,6 +27,7 @@ const (
 	AuthTypeCursorOAuth      = "cursor_oauth"
 	AuthTypeZedOAuth         = "zed_oauth"
 	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
+	AuthTypeLoomySession     = "loomy_session" ///< Loomy 会话认证，无已知续期接口。
 	// AuthTypeVertexOAuth authenticates Vertex AI with a Google service account.
 	AuthTypeVertexOAuth = "vertex_oauth"
 	// AuthTypeSystemOne is a decision-only channel authenticated by API keys.
@@ -41,8 +44,11 @@ const (
 	ExactUpstreamURLMarker = "#"
 )
 
-// NormalizeAuthType normalizes the channel credential mechanism. Empty is the
-// database migration default for every pre-existing channel.
+/**
+ * @brief 归一渠道认证类型并拒绝未登记的机制。
+ * @param value 待归一的认证类型文本。
+ * @return 返回去空白和小写后的已知类型；空输入采用 api_key，未知类型返回空字符串。
+ */
 func NormalizeAuthType(value string) string {
 	switch strings.TrimSpace(strings.ToLower(value)) {
 	case "", AuthTypeAPIKey:
@@ -63,6 +69,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeZedOAuth
 	case AuthTypeCodeBuddyOAuth:
 		return AuthTypeCodeBuddyOAuth
+	case AuthTypeLoomySession:
+		return AuthTypeLoomySession
 	case AuthTypeVertexOAuth:
 		return AuthTypeVertexOAuth
 	case AuthTypeSystemOne:
@@ -102,6 +110,14 @@ func CountsTowardQuotaWindows(authType string, cost float64, codexHasCredits boo
 	normalized := NormalizeAuthType(authType)
 	return TracksQuotaCost(normalized) && cost > 0 &&
 		(!codexHasCredits || normalized != AuthTypeCodexOAuth)
+}
+
+/**
+ * @brief 判断渠道是否使用 Loomy 短信会话认证。
+ * @return 非 nil 配置且归一认证类型为 loomy_session 时返回 true，否则返回 false。
+ */
+func (c *Config) UsesLoomySession() bool {
+	return c != nil && c.GetAuthType() == AuthTypeLoomySession
 }
 
 // UsesCodeBuddyOAuth reports whether this channel uses CodeBuddy credentials.

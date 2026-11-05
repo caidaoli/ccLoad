@@ -11,6 +11,7 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -52,8 +53,11 @@ type channelEditorData struct {
 	URLStats            channelEditorURLStats        `json:"url_stats"`
 }
 
-// HandleChannelEditor 聚合编辑器首次打开所需的数据，避免前端拼装多个快照。
-// GET /admin/channels/:id/editor
+/**
+ * @brief 聚合渠道编辑器的配置、凭证与统计，避免前端拼装不同时间的快照。
+ * @param c 携带路由参数、管理员身份和响应写入器的 HTTP 上下文。
+ * @note 处理 GET /admin/channels/:id/editor；私有凭证的可见性由访问权限决定，列表摘要不替代此接口。
+ */
 func (s *Server) HandleChannelEditor(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -111,6 +115,13 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	} else if cfg.UsesCursorOAuth() {
 		_, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesLoomySession() {
+		// Session 凭证仅在管理员编辑器返回，列表与普通详情仍使用掩码。
+		if _, parseErr := loomyauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}

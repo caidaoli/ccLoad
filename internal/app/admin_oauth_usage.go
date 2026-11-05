@@ -20,6 +20,7 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
@@ -194,6 +195,10 @@ type oauthUsageWindow struct {
 	StandardCostMicroUSD *int64 `json:"standard_cost_microusd,omitempty"`
 }
 
+/**
+ * @brief 统一承载提供商额度窗口、原生积分及采样告警。
+ * @details 保留原生积分与未知值，不将积分解释为 token。
+ */
 type oauthUsageSummary struct {
 	// 请求元数据来自实际使用的凭证，不持久化，也不暴露给客户端。
 	codexAccountID   string
@@ -204,7 +209,8 @@ type oauthUsageSummary struct {
 	// CodeBuddyCredits is the absolute remaining balance returned by the
 	// billing meter. CodeBuddy does not expose a percentage window like the
 	// other OAuth providers, so retain the provider-native value.
-	CodeBuddyCredits *codeBuddyCredits `json:"codebuddy_credits,omitempty"`
+	CodeBuddyCredits *codeBuddyCredits  `json:"codebuddy_credits,omitempty"`
+	LoomyCredits     *loomyauth.Balance `json:"loomy_credits,omitempty"` ///< Loomy 原生积分及每日总额，nil 表示尚无快照。
 	// Partial means omitted windows were not observed, rather than retired.
 	Partial               bool                    `json:"-"`
 	Provider              string                  `json:"provider"`
@@ -1440,6 +1446,12 @@ func (s *Server) streamChannelUsageBatch(c *gin.Context, channelIDs []int64) {
 	}
 }
 
+/**
+ * @brief 筛选请求范围内今日存在代理流量且支持额度查询的渠道。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param requestedIDs 允许参与本次筛选的渠道 ID 集合。
+ * @return 返回升序渠道 ID；统计或配置读取失败时返回错误。
+ */
 func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64) ([]int64, error) {
 	requested := make(map[int64]struct{}, len(requestedIDs))
 	for _, channelID := range requestedIDs {
@@ -1488,7 +1500,7 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			continue
 		}
 		if cfg.UsesAntigravityOAuth() || cfg.UsesZAIOAuth() ||
-			cfg.UsesCodeBuddyOAuth() ||
+			cfg.UsesCodeBuddyOAuth() || cfg.UsesLoomySession() ||
 			cfg.UsesCursorOAuth() || cfg.UsesZedOAuth() {
 			channelIDs = append(channelIDs, cfg.ID)
 		}
@@ -1621,6 +1633,16 @@ func (s *Server) refreshChannelUsage(ctx context.Context, channelID int64) (stri
 	return "oauth", usage, nil, err
 }
 
+/**
+ * @brief 将额度采样合并到当前凭证，防止旧请求覆盖新账号或较新采样。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param summary 本次上游采样归一后的额度快照。
+ * @param requestedAt 额度请求开始的绝对时间，用于判断并发更新顺序。
+ * @param sampledAt 额度采样完成的绝对时间。
+ * @return 返回最终采用的额度快照；旧采样可返回已有快照，读取、编码、身份变更或写入失败返回错误。
+ * @note 使用条件更新保留并发登录、签到和任务状态；写入冲突统一执行公共 OAuth 有界退避，不重复远程请求。
+ */
 func (s *Server) persistOAuthUsage(
 	ctx context.Context,
 	cfg *model.Config,
@@ -1655,6 +1677,12 @@ func (s *Server) persistOAuthUsage(
 		}
 		if state.provider != summary.Provider {
 			return nil, errors.New("OAuth credential changed provider while persisting usage")
+		}
+		if cfg.UsesLoomySession() {
+			original, parseErr := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if parseErr != nil || original.UserID != state.accountID {
+				return nil, errors.New("loomy account changed while persisting usage")
+			}
 		}
 		persisted, _, persistedRequestAt := persistedOAuthUsage(state.oauthUsage, summary.Provider)
 		if state.restartQuotaEpoch != nil {
@@ -1917,9 +1945,18 @@ func oauthQuotaLedgerFollowsSample(quotaUsage *oauthcost.Usage, key string, samp
 		oauthQuotaCostMatchesSampledWindow(sample, window.WindowSeconds, window.ResetAt)
 }
 
+/**
+ * @brief 按提供商能力获取并归一渠道额度。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 返回当前额度；凭证、网络、协议失败或不支持额度查询时返回错误。
+ * @note 可能访问上游及刷新可续期凭证；Loomy 额度查询不触发签到或新手任务。
+ */
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
 	cfg = s.withOAuthBaseURLOverride(withAntigravityDefaultFallbackURLs(cfg))
 	switch {
+	case cfg.UsesLoomySession():
+		return s.requestLoomyUsage(ctx, cfg)
 	case cfg.UsesCodeBuddyOAuth():
 		if s.codeBuddyCredentials == nil || s.codeBuddyService == nil {
 			return nil, errCodeBuddyUsageManagerUnavailable

@@ -13,9 +13,104 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/vertexauth"
 )
+
+/**
+ * @brief 验证 Loomy CSV 覆盖导入接受有效会话，拒绝失效、不可确认或格式无效的凭证。
+ * @param t 当前测试上下文。
+ * @note 通过导入 API 与持久化结果断言；模拟模型接口，不发送真实短信或上游请求。
+ */
+func TestAdminAPI_CSVImportLoomyCredentialValidation(t *testing.T) {
+	for _, outcome := range []string{"accepted", "rejected", "unavailable", "invalid_json", "missing_session", "missing_identity", "header_injection"} {
+		t.Run(outcome, func(t *testing.T) {
+			server := newInMemoryServer(t)
+			ctx := context.Background()
+			original, err := server.store.CreateConfig(ctx, &model.Config{
+				Name: "Loomy CSV Update", AuthType: model.AuthTypeLoomySession,
+				OAuthCredential: `{"session":"original-session","user_id":"loomy-user","onboarding_completed_at":"2030-01-01T00:00:00Z"}`,
+				URLs:            model.ChannelURLs{{URL: loomyauth.CompletionsURL, Exact: true, Protocols: []string{"openai"}}},
+				ModelEntries:    []model.ModelEntry{{Model: "original-model"}}, Enabled: false,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodGet || request.URL.Path != "/api/v1/models" || request.Header.Get("Token") != "imported-session" {
+					t.Error("unexpected Loomy credential validation request")
+				}
+				status, body := http.StatusOK, `{"data":[{"id":"imported-model","type":"chat"}]}`
+				switch outcome {
+				case "rejected":
+					status, body = http.StatusUnauthorized, `{"code":"401"}`
+				case "unavailable":
+					status, body = http.StatusServiceUnavailable, `{"error":"unavailable"}`
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})}
+			credential := `{"session":"imported-session","user_id":"loomy-user","onboarding_completed_at":"2030-01-01T00:00:00Z"}`
+			switch outcome {
+			case "invalid_json":
+				credential = `{`
+			case "missing_session":
+				credential = `{"user_id":"loomy-user"}`
+			case "missing_identity":
+				credential = `{"session":"imported-session"}`
+			case "header_injection":
+				credential = `{"session":"imported\r\nsession","user_id":"loomy-user"}`
+			}
+			var csvBody bytes.Buffer
+			csvWriter := csv.NewWriter(&csvBody)
+			if err := csvWriter.WriteAll([][]string{
+				{"name", "urls", "models", "auth_type", "oauth_credential", "enabled"},
+				{original.Name, `[{"url":"` + loomyauth.CompletionsURL + `","exact":true,"protocols":["openai"]}]`, "imported-model", model.AuthTypeLoomySession, credential, "true"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", "loomy.csv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(csvBody.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			request := newRequest(http.MethodPost, "/admin/channels/import", &body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			c, response := newTestContext(t, request)
+			server.HandleImportChannelsCSV(c)
+			wantStatus := http.StatusOK
+			if outcome == "rejected" || outcome == "unavailable" {
+				wantStatus = http.StatusBadRequest
+			}
+			if response.Code != wantStatus {
+				t.Fatalf("import status=%d, want %d; body=%s", response.Code, wantStatus, response.Body.String())
+			}
+			summary := mustParseAPIResponse[ChannelImportSummary](t, response.Body.Bytes()).Data
+			persisted, err := server.store.GetConfig(ctx, original.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != "accepted" {
+				if summary.Created != 0 || summary.Updated != 0 || len(summary.Errors) == 0 ||
+					persisted.OAuthCredential != original.OAuthCredential || persisted.Enabled || !persisted.SupportsModel("original-model") {
+					t.Fatal("invalid import changed the existing Loomy channel or reported success")
+				}
+				return
+			}
+			if summary.Created != 0 || summary.Updated != 1 || len(summary.Errors) != 0 ||
+				persisted.OAuthCredential != credential || !persisted.Enabled || !persisted.SupportsModel("imported-model") {
+				t.Fatal("valid import failed to update the Loomy credential and channel")
+			}
+		})
+	}
+}
 
 func TestAdminAPI_CSVImportValidatesVertexBeforeWrite(t *testing.T) {
 	for _, existingAuth := range []string{"", model.AuthTypeVertexOAuth} {

@@ -169,6 +169,15 @@ func (s *Server) doUpstreamRequest(cfg *model.Config, req *http.Request) (*http.
 	return s.doReservedUpstreamRequest(cfg, req, release, err)
 }
 
+/**
+ * @brief 使用已预留的请求额度发送上游请求，并将释放责任绑定到响应体。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param req 已构造且带上下文的出站请求。
+ * @param release 预留成功后的释放回调，须与 err 配套传入。
+ * @param err 预留阶段错误；非 nil 时不得发送请求或调用 release。
+ * @return 返回响应与错误；预留、压缩、传输或 Loomy 响应读取失败时返回错误。
+ * @note 预留失败直接返回；取得预留后，失败路径释放，成功路径由调用方关闭 Body 释放。
+ */
 func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request, release func(), err error) (*http.Response, error) {
 	if err != nil {
 		return nil, err
@@ -193,5 +202,10 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		return resp, nil
 	}
 	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
+	if cfg.UsesLoomySession() {
+		if err := normalizeLoomyResponse(resp); err != nil {
+			return nil, err
+		}
+	}
 	return resp, nil
 }

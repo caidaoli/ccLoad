@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/util"
@@ -507,11 +508,16 @@ func applyProtocolProbeRetrySummary(channel *ChannelWithCooldown, summary protoc
 	channel.ProtocolProbeRetryRemainingMS = max(1, retryAt.Sub(now).Milliseconds())
 }
 
+/**
+ * @brief 承载可向渠道列表和详情公开的 OAuth 状态投影。
+ * @details 凭证解析和展示数据分离，签到日期不依赖额度刷新是否成功。
+ */
 type channelOAuthMetadata struct {
 	planType                string
 	subscriptionActiveUntil *time.Time
 	anthropicPlanType       string
 	oauthUsage              *oauthUsageSummary
+	loomyLastCheckinDay     string ///< 最近确认的 Loomy 签到日，YYYY-MM-DD；与额度快照独立。
 	antigravityPaidTier     string
 	xaiEmail                string
 	xaiSubscriptionTier     string
@@ -522,7 +528,12 @@ type channelOAuthMetadata struct {
 	quotaUsage              *oauthcost.Usage
 }
 
-// channelView 投影列表与详情共有的 OAuth 字段；CodeBuddy 标志仅由列表添加。
+/**
+ * @brief 将公开的 OAuth 元数据投影为列表与详情共有的渠道视图。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 返回包含原渠道配置引用和公开元数据的视图。
+ * @note CodeBuddy 的列表专属标志仍由列表流程补充。
+ */
 func (metadata channelOAuthMetadata) channelView(cfg *model.Config) ChannelWithCooldown {
 	return ChannelWithCooldown{
 		Config:                       cfg,
@@ -530,6 +541,7 @@ func (metadata channelOAuthMetadata) channelView(cfg *model.Config) ChannelWithC
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AnthropicPlanType:            metadata.anthropicPlanType,
 		OAuthUsage:                   metadata.oauthUsage,
+		LoomyLastCheckinDay:          metadata.loomyLastCheckinDay,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
 		XAIEmail:                     metadata.xaiEmail,
 		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
@@ -545,6 +557,12 @@ func fillChannelRedirectModels(cfg *model.Config) {
 	}
 }
 
+/**
+ * @brief 从私有凭证提取可公开的账号、订阅、额度和签到状态。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 返回安全元数据；配置为空、凭证缺失或解析失败时返回零值。
+ * @note 不返回访问令牌或会话；Loomy 签到日期独立于额度快照。
+ */
 func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata {
 	if cfg == nil || cfg.OAuthCredential == "" {
 		return channelOAuthMetadata{}
@@ -611,6 +629,15 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
+	}
+	if cfg.UsesLoomySession() {
+		credential, err := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, loomyauth.ChannelType)
+		// 签到独立于额度快照；余额请求失败也要向列表和详情返回已确认日期。
+		return channelOAuthMetadata{oauthUsage: usage, loomyLastCheckinDay: credential.LastCheckinDay}
 	}
 	if cfg.UsesCodeBuddyOAuth() {
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -931,9 +958,20 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 	}}, nil
 }
 
-// oauthSyntheticKeyFields 解析 OAuth 渠道凭证，返回合成 Key 行所需的原始凭证值与备注。
+/**
+ * @brief 为凭证渠道的合成 Key 行取得认证材料与提供商备注。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 依次返回原始认证值、备注和错误；解析失败返回错误，不支持的类型返回两个空字符串和 nil。
+ * @note 认证值仅用于内部处理；向外展示前必须按权限掩码。
+ */
 func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err error) {
 	switch {
+	case cfg.UsesLoomySession():
+		credential, err := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.Session, "Loomy session", nil
 	case cfg.UsesCodeBuddyOAuth():
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

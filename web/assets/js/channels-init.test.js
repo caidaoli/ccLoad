@@ -97,6 +97,8 @@ test('returning via reload or bfcache restores channel name search with the othe
   setGlobal('loadChannelStats', async () => {});
   setGlobal('modelFilterInputValueFromFilterValue', (value) => value);
   setGlobal('channelAuthTypeFilterLabel', (value) => value);
+  // 过滤和恢复都读取界面提供的选项，测试提供相同的可选认证类型。
+  setGlobal('getChannelAuthTypeOptions', () => [{ value: 'all' }, { value: 'xai_oauth' }]);
 
   try {
     delete require.cache[require.resolve('./channels-init.js')];
@@ -159,7 +161,7 @@ test('selecting the xAI auth type keeps the filter and reloads with it', () => {
   setGlobal('allAvailableModels', []);
   setGlobal('allAvailableChannelNames', []);
   setGlobal('channelAuthTypeFilterLabel', value => value);
-  setGlobal('getChannelAuthTypeOptions', () => []);
+  setGlobal('getChannelAuthTypeOptions', () => [{ value: 'all' }, { value: 'xai_oauth' }]);
   setGlobal('createSearchableCombobox', options => {
     if (options.inputId === 'channelAuthTypeFilter') authCombobox = options;
     return { setValue() {}, refresh() {} };

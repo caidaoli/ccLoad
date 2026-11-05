@@ -25,6 +25,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
@@ -880,7 +881,15 @@ func channelTestActualModel(result map[string]any, fallback string) string {
 	return model.RoutingModelName(fallback)
 }
 
+/**
+ * @brief 判断认证拒绝后是否具备重新签发测试凭证的能力。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return Loomy 返回 false；Cursor 仅有效 API Key 存在时返回 true；其他配置沿用公共续期流程。
+ */
 func canRemintOAuthChannelTest(cfg *model.Config) bool {
+	if cfg.UsesLoomySession() {
+		return false
+	}
 	if cfg == nil || !cfg.UsesCursorOAuth() {
 		return true
 	}
@@ -961,6 +970,15 @@ func (s *Server) prepareRejectedOAuthChannelTestAuth(
 	)
 }
 
+/**
+ * @brief 为渠道测试装载指定刷新策略下的认证材料。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param mode 凭证装载或强制刷新策略。
+ * @param rejectedAccessToken 上次被拒绝的访问令牌，用于避免覆盖并发刷新结果。
+ * @return 依次返回运行时配置、Key 选择、是否属于 OAuth 处理范围和错误；非 OAuth 返回 nil、默认选择、false、nil。
+ * @note 可读取或刷新凭证；Loomy 仅装载已有 session，禁止以原会话伪造刷新。
+ */
 func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 	ctx context.Context,
 	cfg *model.Config,
@@ -1005,6 +1023,13 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
 		}
 		return runtimeCfg, selection, true, nil
+	case cfg.UsesLoomySession():
+		credential, err := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, selection, true, err
+		}
+		selection.requestCredential = credential.Session
+		return cfg.Clone(), selection, true, nil
 	case cfg.UsesCodeBuddyOAuth():
 		var credential *codebuddyauth.Credential
 		var err error
@@ -1255,6 +1280,17 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	return s.applyChannelTestResultCooldown(ctx, cfg, keyIndex, testReq, updatePersistedCooldown, result)
 }
 
+/**
+ * @brief 根据测试结果更新冷却状态并反馈实际执行的处理动作。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param keyIndex 测试使用的 Key 索引；无独立 Key 时使用 NoKeyIndex。
+ * @param testReq 包含测试模型与请求选项的输入。
+ * @param updatePersistedCooldown 是否允许本次测试修改持久化冷却状态。
+ * @param result 测试结果映射，将被原地修改。
+ * @return 返回原地补充 cooldown_action 等字段的结果映射。
+ * @note 允许持久化时写入冷却或认证失效状态；Loomy 仅按本次 CAS 结果报告禁用，重读只用于识别凭证变化。
+ */
 func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.Config, keyIndex int, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool, result map[string]any) map[string]any {
 	actualModel := channelTestActualModel(result, testReq.Model)
 	if success, ok := result["success"].(bool); ok && success {
@@ -1300,6 +1336,19 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
+	if cfg.UsesLoomySession() && statusCode == http.StatusUnauthorized {
+		result["cooldown_action"] = "unknown_action"
+		// 最终禁用状态可能来自管理员或并发请求，只有本次 CAS 成功才能认领动作。
+		if s.handleLoomyRejection(ctx, cfg, loomyauth.ErrSessionExpired) {
+			result["cooldown_action"] = "channel_disabled"
+		} else if current, err := s.store.GetConfig(ctx, cfg.ID); err == nil && current != nil {
+			if current.GetAuthType() != cfg.GetAuthType() ||
+				!sameOAuthCredentialMaterial(cfg.GetAuthType(), current.OAuthCredential, cfg.OAuthCredential) {
+				result["cooldown_action"] = "credential_changed_no_cooldown"
+			}
+		}
+		return result
+	}
 	input := httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers)
 	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
 		input.UpstreamStatusCode = upstreamStatusCode
@@ -2370,6 +2419,15 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	return cfgForBuild, requestPlan, nil
 }
 
+/**
+ * @brief 按测试计划构造含提供商认证与超时控制的出站请求。
+ * @param reqCtx 测试请求的父取消上下文。
+ * @param cfgForBuild 用于认证和代理请求构造的运行时配置。
+ * @param testReq 测试协议、流式模式及业务参数。
+ * @param requestPlan 已生成 URL 和请求体的测试计划，将记录超时与调试状态。
+ * @return 返回请求、必须调用的取消函数和错误；构造失败时已取消内部超时。
+ * @note 更新测试计划的超时和调试记录；Loomy 复用正式请求的认证头规则。
+ */
 func (s *Server) newTestUpstreamRequest(
 	reqCtx context.Context,
 	cfgForBuild *model.Config,
@@ -2411,7 +2469,10 @@ func (s *Server) newTestUpstreamRequest(
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	wireRebuilt := false
 	oauthFingerprint := requestPlan.anthropicOAuthFingerprint
-	if cfgForBuild.UsesCodeBuddyOAuth() {
+	if cfgForBuild.UsesLoomySession() {
+		injectLoomyHeaders(req, cfgForBuild, requestPlan.apiKey)
+		wireRebuilt = true
+	} else if cfgForBuild.UsesCodeBuddyOAuth() {
 		if err := injectCodeBuddyHeaders(req, cfgForBuild, requestPlan.apiKey); err != nil {
 			timeout.cancelAll()
 			return nil, nil, err

@@ -27,8 +27,10 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -40,6 +42,139 @@ import (
 )
 
 const antigravityCapacityBodyForAdminTest = `{"error":{"code":503,"message":"No capacity available for model gemini-3-flash on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"gemini-3-flash"}}]}}`
+
+/**
+ * @brief 模拟条件禁用写库失败，验证测试结果不会谎报渠道已禁用。
+ */
+type failingLoomyDisableStore struct {
+	storage.Store ///< 复用底层存储，仅替换条件禁用的失败行为。
+}
+
+/**
+ * @brief 模拟凭证匹配后的条件禁用持久化失败。
+ * @param 1 未命名的 context.Context，表示存储操作上下文。
+ * @param 2 未命名的 int64，表示渠道 ID。
+ * @param 3 第一个未命名 string，表示认证类型。
+ * @param 4 第二个未命名 string，表示要匹配的私有凭证快照。
+ * @return 始终为 false，不修改底层渠道。
+ * @return 始终返回模拟存储错误。
+ * @note 参数标签按无名参数的位置编号；本替身仅用于满足存储接口。
+ */
+func (s *failingLoomyDisableStore) DisableOAuthChannelIfCredentialMatches(context.Context, int64, string, string) (bool, error) {
+	return false, errors.New("forced disable failure")
+}
+
+/**
+ * @brief 验证管理测试的 Loomy 协议、会话失效与并发重新登录保护。
+ * @param t 当前测试上下文。
+ */
+func TestLoomyManagementWireAndRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string ///< 子用例名称。
+		expired              bool   ///< 是否模拟明确会话失效。
+		reauthorized         bool   ///< 是否在旧请求完成前重新登录。
+		disableFailure       bool   ///< 是否模拟条件禁用写库失败。
+		alreadyDisabled      bool   ///< 检测前渠道已禁用。
+		disableDuringRequest bool   ///< 模拟管理员在请求期间禁用渠道。
+		wantAction           string ///< 期望返回的实际冷却或禁用动作。
+	}{
+		{name: "success"},
+		{name: "expired", expired: true, wantAction: "channel_disabled"},
+		{name: "reauthorized", expired: true, reauthorized: true, wantAction: "credential_changed_no_cooldown"},
+		{name: "disable_failure", expired: true, disableFailure: true, wantAction: "unknown_action"},
+		{name: "already_disabled", expired: true, alreadyDisabled: true, wantAction: "unknown_action"},
+		{name: "disabled_during_request", expired: true, disableDuringRequest: true, wantAction: "unknown_action"},
+		{name: "reauthorized_and_disabled", expired: true, reauthorized: true, disableDuringRequest: true, wantAction: "credential_changed_no_cooldown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			/**
+			 * @brief 固定管理测试会话，用于验证请求认证与旧凭证禁用保护。
+			 */
+			const session = "private-loomy-session"
+			// 在启动后台任务前注入故障存储，避免测试自己改写运行中的共享依赖。
+			srv := newInMemoryServerWithCustomStore(t, func(store storage.Store) storage.Store {
+				if tc.disableFailure {
+					return &failingLoomyDisableStore{Store: store}
+				}
+				return store
+			})
+			var cfg *model.Config
+			checkinDay := time.Now().In(loomyLocation).Format("2006-01-02")
+			reauthorized, err := (&loomyauth.Credential{Session: "new-loomy-session", UserID: "user", LastCheckinDay: checkinDay}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Header.Get("Token") != session || r.Header.Get("Authorization") != "Bearer "+session {
+					t.Error("missing Loomy auth")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if tc.reauthorized {
+					// 模拟旧检测仍在途时重登成功，通过持久状态和返回动作核验竞态。
+					changed, err := srv.store.CompareAndSwapOAuthCredential(r.Context(), cfg.ID, model.AuthTypeLoomySession, cfg.OAuthCredential, reauthorized)
+					if err != nil || !changed {
+						t.Errorf("reauthorization changed=%v err=%v", changed, err)
+					}
+				}
+				if tc.disableDuringRequest {
+					// 禁用来自另一项管理员操作，检测不能把最终状态认领为自己的动作。
+					current, err := srv.store.GetConfig(r.Context(), cfg.ID)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					current.Enabled = false
+					if _, err := srv.store.UpdateConfig(r.Context(), current.ID, current); err != nil {
+						t.Error(err)
+					}
+				}
+				if tc.expired {
+					w.WriteHeader(403)
+					_, _ = io.WriteString(w, `{"code":"100002"}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","model":"chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			}))
+			raw, err := (&loomyauth.Credential{Session: session, UserID: "user", LastCheckinDay: checkinDay}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = srv.store.CreateConfig(context.Background(), &model.Config{Name: "loomy", AuthType: model.AuthTypeLoomySession, OAuthCredential: raw, Enabled: !tc.alreadyDisabled, CostMultiplier: 1,
+				URLs: model.ChannelURLs{{URL: upstream.URL + "/api/v1/chat/completions", Exact: true, Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "chat"}}, ProtocolTransformMode: model.ProtocolTransformModeLocal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			testReq := &testutil.TestChannelRequest{Model: "chat", ClientProtocol: "openai", Content: "hello"}
+			result := srv.testChannelAPIWithCooldownTarget(context.Background(), cfg, session, testReq, cooldown.NoKeyIndex, true)
+			result = srv.applyChannelTestResultCooldown(context.Background(), cfg, cooldown.NoKeyIndex, testReq, true, result)
+			if result["success"] != !tc.expired || calls.Load() != 1 {
+				t.Fatalf("result=%v calls=%d", result, calls.Load())
+			}
+			if !tc.expired {
+				headers, _ := result["upstream_request_headers"].(map[string]string)
+				if headers["Token"] == session || headers["Authorization"] == "Bearer "+session || headers["Token"] == "" {
+					t.Fatal("session leaked from management test")
+				}
+			}
+			stored, err := srv.store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEnabled := (!tc.expired || tc.reauthorized || tc.disableFailure) && !tc.alreadyDisabled && !tc.disableDuringRequest
+			if stored.Enabled != wantEnabled {
+				t.Fatalf("enabled=%v, want %v", stored.Enabled, wantEnabled)
+			}
+			if tc.expired && result["cooldown_action"] != tc.wantAction {
+				t.Fatalf("action=%v, want %s", result["cooldown_action"], tc.wantAction)
+			}
+			if tc.reauthorized && stored.OAuthCredential != reauthorized {
+				t.Fatal("old test must preserve the reauthorized credential")
+			}
+		})
+	}
+}
 
 func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
 	for _, enabled := range []bool{false, true} {

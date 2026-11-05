@@ -268,9 +268,14 @@ type RequestValidator interface {
 	Validate() error
 }
 
-// isSensitiveHeader 判断是否为需要脱敏的认证类请求头
+/**
+ * @brief 判定调试输出必须脱敏的认证头，覆盖 Loomy 的 token 头。
+ * @param key 待判断的 HTTP 头名称。
+ * @return 头名不区分大小写命中敏感列表时返回 true。
+ */
 func isSensitiveHeader(key string) bool {
 	return strings.EqualFold(key, "Authorization") ||
+		strings.EqualFold(key, "Token") || // Loomy sends its session in this header too.
 		strings.EqualFold(key, "X-Refresh-Token") ||
 		strings.EqualFold(key, "X-Api-Key") ||
 		strings.EqualFold(key, "Api-Key") ||

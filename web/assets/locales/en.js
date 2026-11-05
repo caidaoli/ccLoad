@@ -1,6 +1,22 @@
 // English language pack
 window.I18N_LOCALES = window.I18N_LOCALES || {};
 window.I18N_LOCALES['en'] = {
+  'channels.authTypeLoomy': 'Loomy',
+  'channels.loomy.login': 'Loomy SMS sign-in',
+  'channels.loomy.phone': 'Phone number',
+  'channels.loomy.code': 'Verification code',
+  'channels.loomy.sendCode': 'Send code',
+  'channels.loomy.sending': 'Sending verification code…',
+  'channels.loomy.codeSent': 'Code sent. Complete sign-in within 5 minutes.',
+  'channels.loomy.signingIn': 'Signing in and fetching models…',
+  'channels.loomy.loginSuccess': 'Loomy channel saved',
+  'channels.loomy.resend': 'Please request a new code.',
+  'channels.loomy.invalidResponse': 'Invalid Loomy response',
+  'channels.loomy.tasksCompleted': 'Onboarding completed',
+  'channels.loomy.tasksPending': 'Onboarding pending; retry at the next check-in',
+  'channels.loomy.daily': 'Daily points',
+  'channels.loomy.permanent': 'Permanent points',
+  'channels.loomy.copyUnsupported': 'Add Loomy through SMS sign-in. Existing accounts update their original channel.',
   // ============================================================
   // Common
   // ============================================================
@@ -156,6 +172,7 @@ window.I18N_LOCALES['en'] = {
   'channels.menu.apiKeyChannel': 'API Key channel',
   'channels.menu.apiKeyChannelDesc': 'Enter URL / Key / models manually, with ✨ one-click fill',
   'channels.menu.openCodeDesc': 'Choose Zen / Zen Go access',
+  'channels.menu.loomyDesc': 'SMS sign-in with daily check-in',
   'channels.openCode.dialogTitle': 'Add OpenCode channel',
   'channels.openCode.dialogDescription': 'Choose a connection, then configure the key and models.',
   'channels.openCode.connectionLabel': 'Connection',
@@ -1888,8 +1905,14 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.codeBuddyCredits': 'CodeBuddy credits remaining: {remain}',
   'channels.codebuddy.unlimitedCredits': 'CodeBuddy credits: Unlimited',
   'channels.codebuddy.credits': 'Credits',
-  'channels.codebuddy.checkin': 'Check in now',
-  'channels.codebuddy.checkinRunning': 'Checking in…',
+  'channels.oauth.checkin': 'Check in now',
+  'channels.oauth.checkedIn': 'Checked in today',
+  'channels.oauth.notCheckedIn': 'Not checked in today',
+  'channels.loomy.checkinSuccess': 'Loomy check-in successful',
+  'channels.loomy.alreadyCheckedIn': 'Loomy is already checked in today',
+  'channels.loomy.checkinFailed': 'Loomy check-in failed',
+  'channels.loomy.checkinInvalid': 'Loomy did not return a valid check-in result',
+  'channels.oauth.checkinRunning': 'Checking in…',
   'channels.codebuddy.checkinSuccess': 'CodeBuddy check-in succeeded',
   'channels.codebuddy.alreadyCheckedIn': 'CodeBuddy is already checked in today',
   'channels.codebuddy.checkinFailed': 'CodeBuddy check-in failed',

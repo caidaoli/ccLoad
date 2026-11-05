@@ -30,10 +30,12 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/storage"
+	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
@@ -73,6 +75,114 @@ type proxyTestEnv struct {
 	server *Server
 	store  storage.Store
 	engine *gin.Engine
+}
+
+/**
+ * @brief 验证 Loomy 聊天协议转换、会话失效处理及调试认证信息脱敏。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_LoomyWireExpiryAndDebugRedaction(t *testing.T) {
+	for _, scenario := range []string{"json", "stream", "expired-200", "expired-403", "expired-padded", "waf"} {
+		t.Run(scenario, func(t *testing.T) {
+			var calls atomic.Int32
+			/**
+			 * @brief 固定代理测试会话，用于核对协议认证头及调试脱敏。
+			 */
+			const session = "loomy-private-session-for-wire-test"
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path != "/api/v1/chat/completions" || r.Header.Get("token") != session || r.Header.Get("Authorization") != "Bearer "+session || r.Header.Get("Content-Type") != "application/json;charset=utf-8" {
+					t.Error("incorrect Loomy wire")
+				}
+				var body struct {
+					Messages []struct {
+						Content string `json:"content"` ///< 消息中的文本内容。
+					} `json:"messages"` ///< 转换后发送到上游的聊天消息。
+					Tools []json.RawMessage `json:"tools"` ///< 转换后发送到上游的工具定义。
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if len(body.Messages) != 1 || body.Messages[0].Content != "你好" || len(body.Tools) != 1 {
+					t.Error("message or tools changed")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch scenario {
+				case "expired-200":
+					_, _ = io.WriteString(w, `{"code":"020002"}`)
+				case "expired-padded":
+					_, _ = io.WriteString(w, `{"code":" 020002 "}`)
+				case "expired-403":
+					w.WriteHeader(403)
+					_, _ = io.WriteString(w, `{"code":"100002"}`)
+				case "waf":
+					w.WriteHeader(403)
+					_, _ = io.WriteString(w, `{"code":"TM.00000001"}`)
+				case "stream":
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"model\":\"chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				default:
+					_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","model":"chat","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
+				}
+			}))
+			raw, err := (&loomyauth.Credential{Session: session, UserID: "user"}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "loomy", upstreamProtocol: "openai", models: "chat", authType: model.AuthTypeLoomySession, oauthCredential: raw}}, map[int]string{0: upstream.URL + "/api/v1/chat/completions#"}, map[string]string{"debug_log_enabled": "true", "cooldown_fallback_enabled": "false"})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "chat", "stream": scenario == "stream", "messages": []map[string]string{{"role": "user", "content": "你好"}},
+				"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "parameters": map[string]any{"type": "object"}}}},
+			}, nil)
+			if calls.Load() != 1 {
+				t.Fatalf("upstream replayed %d times", calls.Load())
+			}
+			if scenario == "json" {
+				var payload struct {
+					Choices []struct {
+						Message struct {
+							Calls []struct {
+								ID string `json:"id"` ///< 协议转换前后应保留的工具调用标识。
+							} `json:"tool_calls"` ///< 回复中的工具调用列表。
+						} `json:"message"` ///< 包含工具调用的回复消息。
+					} `json:"choices"` ///< 上游返回的聊天候选结果。
+				}
+				if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &payload) != nil || len(payload.Choices) != 1 || len(payload.Choices[0].Message.Calls) != 1 || payload.Choices[0].Message.Calls[0].ID != "call-1" {
+					t.Fatalf("tool response=%s", response.Body.String())
+				}
+			} else if scenario == "stream" {
+				parser := newSSEUsageParser("openai")
+				if err := parser.Feed(response.Body.Bytes()); err != nil {
+					t.Fatal(err)
+				}
+				if !parser.IsStreamComplete() {
+					t.Fatal("incomplete Loomy stream")
+				}
+			} else if response.Code == 200 {
+				t.Fatalf("business error treated as success: %s", response.Body.String())
+			}
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEnabled := !strings.HasPrefix(scenario, "expired")
+			if len(configs) != 1 || configs[0].Enabled != wantEnabled {
+				t.Fatalf("unexpected channel state, want enabled=%v", wantEnabled)
+			}
+			entry := waitForProxyLog(t, env, "chat")
+			debug, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+			if err != nil || debug == nil {
+				t.Fatalf("debug missing: %v", err)
+			}
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(debug.ReqHeaders), &headers); err != nil {
+				t.Fatal(err)
+			}
+			if headers["Token"] == session || headers["Authorization"] == "Bearer "+session || headers["Token"] == "" {
+				t.Fatal("session exposed in persisted debug headers")
+			}
+		})
+	}
 }
 
 func TestProxy_SameChannelModelVariantsRotateAndSkipCooldown(t *testing.T) {
@@ -7328,55 +7438,118 @@ func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) 
 	}
 }
 
+/**
+ * @brief 验证被拒绝的 PAT 只禁用匹配快照，认证类型已切换的渠道继续可用。
+ * @param t 当前测试上下文。
+ * @details 普通编辑接口禁止切换认证类型；在隔离测试库模拟旧请求返回 401 前身份已变化，通过持久状态和后续代理响应验证防御性保护。
+ */
 func TestProxy_RejectedCodexPersonalAccessTokenDisablesChannel(t *testing.T) {
 	t.Parallel()
-	const accessToken = "at-static-rejected"
-	var upstreamAttempts atomic.Int32
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamAttempts.Add(1)
-		if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
-			t.Errorf("Authorization = %q", got)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
-	}))
-	defer upstream.Close()
+	for _, changeAuthType := range []bool{false, true} {
+		t.Run(fmt.Sprintf("change-auth-type=%t", changeAuthType), func(t *testing.T) {
+			const accessToken = "at-static-rejected"
+			var upstreamAttempts atomic.Int32
+			var switchAuthType func(context.Context) error
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := upstreamAttempts.Add(1)
+				if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+					t.Errorf("Authorization = %q", got)
+				}
+				if attempt > 1 {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"new-provider-ok","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+					return
+				}
+				if switchAuthType != nil {
+					if err := switchAuthType(r.Context()); err != nil {
+						t.Errorf("switch authentication type: %v", err)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+			}))
+			defer upstream.Close()
 
-	credential, err := (&codexauth.Credential{
-		Type: codexauth.ChannelType, AuthMode: codexauth.AuthModePersonalAccessToken,
-		AccessToken: accessToken, ChatGPTUserID: "pat-user", AccountID: "pat-account",
-	}).JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "codex-pat-rejected", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
-		authType: model.AuthTypeCodexOAuth, oauthCredential: credential,
-	}}, map[int]string{0: upstream.URL})
-	var tokenEndpointCalls atomic.Int32
-	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		tokenEndpointCalls.Add(1)
-		return nil, fmt.Errorf("unexpected token endpoint request: %s", req.URL)
-	})}
-	env.server.codexCredentials.service = codexauth.NewService(refreshClient)
-	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+			credential, err := (&codexauth.Credential{
+				Type: codexauth.ChannelType, AuthMode: codexauth.AuthModePersonalAccessToken,
+				AccessToken: accessToken, ChatGPTUserID: "pat-user", AccountID: "pat-account",
+			}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "codex-pat-rejected", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+				authType: model.AuthTypeCodexOAuth, oauthCredential: credential,
+			}}, map[int]string{0: upstream.URL + "/v1"})
+			var replacement string
+			if changeAuthType {
+				replacement = mustXAICredentialJSON(t, &xaiauth.Credential{
+					Type: xaiauth.ChannelType, AccessToken: accessToken, RefreshToken: "new-refresh",
+					Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				})
+				/**
+				                 * @brief 在隔离测试库注入认证身份变化，使旧请求携带的快照失效。
+								 * @param ctx 当前请求上下文。
+								 * @return 配置读取或保存失败返回错误，成功返回 nil。
+								 * @note 写入真实存储并失效列表缓存，使后续代理请求使用新的认证配置。
+				*/
+				switchAuthType = func(ctx context.Context) error {
+					configs, err := env.store.ListConfigs(ctx)
+					if err != nil {
+						return err
+					}
+					if len(configs) != 1 {
+						return fmt.Errorf("channel count=%d, want 1", len(configs))
+					}
+					if _, err := env.store.(*sqlstore.SQLStore).ExecContext(ctx,
+						`UPDATE channels SET auth_type = ?, oauth_credential = ? WHERE id = ?`,
+						model.AuthTypeXAIOAuth, replacement, configs[0].ID); err != nil {
+						return err
+					}
+					env.server.InvalidateChannelListCache()
+					return nil
+				}
+			}
+			var tokenEndpointCalls atomic.Int32
+			refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				tokenEndpointCalls.Add(1)
+				return nil, fmt.Errorf("unexpected token endpoint request: %s", req.URL)
+			})}
+			env.server.codexCredentials.service = codexauth.NewService(refreshClient)
+			env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
 
-	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": "gpt-test", "stream": false, "input": "hello",
-	}, nil)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	if got := upstreamAttempts.Load(); got != 1 {
-		t.Fatalf("upstream attempts=%d, want 1", got)
-	}
-	if got := tokenEndpointCalls.Load(); got != 0 {
-		t.Fatalf("PAT token endpoint calls=%d, want 0", got)
-	}
-	configs, err := env.store.ListConfigs(context.Background())
-	if err != nil || len(configs) != 1 || configs[0].Enabled {
-		t.Fatalf("rejected PAT channel was not disabled: configs=%+v err=%v", configs, err)
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "gpt-test", "stream": false, "input": "hello",
+			}, nil)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if got := upstreamAttempts.Load(); got != 1 {
+				t.Fatalf("upstream attempts=%d, want 1", got)
+			}
+			if got := tokenEndpointCalls.Load(); got != 0 {
+				t.Fatalf("PAT token endpoint calls=%d, want 0", got)
+			}
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 || configs[0].Enabled != changeAuthType {
+				t.Fatalf("unexpected channel state after old request rejection: configs=%+v err=%v", configs, err)
+			}
+			if changeAuthType {
+				if configs[0].GetAuthType() != model.AuthTypeXAIOAuth || configs[0].OAuthCredential != replacement {
+					t.Fatal("old request changed the replacement provider credential")
+				}
+				response = doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+					"model": "gpt-test", "stream": false, "input": "hello",
+				}, nil)
+				var result struct {
+					ID string `json:"id"` ///< 新提供商返回的响应标识。
+				}
+				if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.ID != "new-provider-ok" {
+					t.Fatalf("replacement OAuth channel unavailable: status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+		})
 	}
 }
 

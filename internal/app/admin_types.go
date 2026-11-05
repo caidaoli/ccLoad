@@ -685,7 +685,10 @@ type ChannelModelStats struct {
 	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`
 }
 
-// ChannelWithCooldown 带冷却状态的渠道响应结构
+/**
+ * @brief 组合渠道配置、冷却与公开凭证状态供管理视图使用。
+ * @details Loomy 签到日独立提供，避免额度读取失败导致签到状态丢失。
+ */
 type ChannelWithCooldown struct {
 	*model.Config
 	CodexRequiresReauthorization  bool                   `json:"codex_requires_reauthorization,omitempty"`
@@ -693,6 +696,7 @@ type ChannelWithCooldown struct {
 	CodexSubscriptionActiveUntil  *time.Time             `json:"codex_subscription_active_until,omitempty"`
 	AnthropicPlanType             string                 `json:"anthropic_plan_type,omitempty"`
 	OAuthUsage                    *oauthUsageSummary     `json:"oauth_usage,omitempty"`
+	LoomyLastCheckinDay           string                 `json:"loomy_last_checkin_day,omitempty"` ///< 最近确认的北京时间签到日，空值表示尚未确认。
 	AntigravityPaidTier           string                 `json:"antigravity_paid_tier,omitempty"`
 	XAIEmail                      string                 `json:"xai_email,omitempty"`
 	XAISubscriptionTier           string                 `json:"xai_subscription_tier,omitempty"`

@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
@@ -31,6 +35,228 @@ func (s *failChannelDeleteStore) DeleteConfig(ctx context.Context, id int64) err
 		return fmt.Errorf("forced delete failure for channel %d", id)
 	}
 	return s.Store.DeleteConfig(ctx, id)
+}
+
+/**
+ * @brief 验证短信挑战的管理员绑定、一次性消费、限流及重新登录状态保留。
+ * @param t 当前测试上下文。
+ * @note 使用本地模拟上游和虚拟时间，不发送真实短信，也不修改挑战或限流器内部状态。
+ */
+func TestLoomySMSLoginChallengeLifecycle(t *testing.T) {
+	synctest.Test(t, testLoomySMSLoginChallengeLifecycle)
+}
+
+/**
+ * @brief 通过管理 API 验证挑战有效期与短信冷却边界共享真实业务时钟。
+ * @param t 虚拟时间环境内的测试上下文。
+ * @note 必须在 synctest 环境内调用；时间推进同时作用于挑战有效期和短信限流。
+ */
+func testLoomySMSLoginChallengeLifecycle(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	var sends, logins atomic.Int32
+	var failSend atomic.Bool
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/phone/sendMsgCode":
+			sends.Add(1)
+			if failSend.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"000000","data":{"msgid":"challenge"}}`))
+		case "/login/phone/checkCode":
+			logins.Add(1)
+			_, _ = w.Write([]byte(`{"code":"000000","data":{"session":"verified-session","userid":"verified-user"}}`))
+		case "/api/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"chat","type":"chat"}]}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	server.loomyService = &loomyauth.Service{BaseURL: upstream.URL, AccountURL: upstream.URL}
+	/**
+	 * @brief 调用带管理员身份的管理 API，验证挑战的所有权边界。
+	 * @param owner 管理员会话哈希；空值表示未登录。
+	 * @param path 管理 API 请求路径。
+	 * @param input 编码为 JSON 请求体的输入。
+	 * @param handler 被测试的 HTTP 管理处理函数。
+	 * @return 返回记录状态码与响应体的 httptest.ResponseRecorder。
+	 */
+	call := func(owner, path string, input any, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+		t.Helper()
+		c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, path, input))
+		if owner != "" {
+			c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAdmin, SessionHash: owner})
+		}
+		handler(c)
+		return response
+	}
+	/**
+	 * @brief 通过真实管理处理器创建本地模拟短信挑战。
+	 * @param owner 管理员会话哈希。
+	 * @param phone 提交给短信接口的手机号。
+	 * @return 返回短信接口的状态码与响应记录。
+	 */
+	send := func(owner, phone string) *httptest.ResponseRecorder {
+		return call(owner, "/admin/loomy/login/send-code", gin.H{"phone": phone}, server.HandleLoomySendCode)
+	}
+	/**
+	 * @brief 用固定模拟验证码验证指定管理员的一次性挑战。
+	 * @param owner 管理员会话哈希。
+	 * @param id 待消费的登录挑战 ID。
+	 * @return 返回验证接口的状态码与响应记录。
+	 */
+	verify := func(owner, id string) *httptest.ResponseRecorder {
+		return call(owner, "/admin/loomy/login/verify", gin.H{"login_id": id, "code": "123456"}, server.HandleLoomyLogin)
+	}
+	if response := send("", "13800138000"); response.Code != http.StatusUnauthorized || sends.Load() != 0 {
+		t.Fatal("missing administrator session must not send SMS")
+	}
+	response := send("owner", "13800138000")
+	if response.Code != http.StatusOK {
+		t.Fatalf("send status=%d", response.Code)
+	}
+	id := mustParseAPIResponse[struct {
+		LoginID string `json:"login_id"` ///< 服务端一次性短信挑战 ID，不包含上游会话。
+	}](t, response.Body.Bytes()).Data.LoginID
+	if id == "" {
+		t.Fatal("missing login challenge")
+	}
+	if response := send("owner", "13800138000"); response.Code != http.StatusTooManyRequests || sends.Load() != 1 {
+		t.Fatal("rapid resend must not reach upstream")
+	}
+	if response := verify("other-owner", id); response.Code != http.StatusBadRequest || logins.Load() != 0 {
+		t.Fatal("another administrator session must not consume the challenge")
+	}
+	if response := verify("owner", id); response.Code != http.StatusOK || logins.Load() != 1 {
+		t.Fatalf("owner verification status=%d", response.Code)
+	}
+	if response := verify("owner", id); response.Code != http.StatusBadRequest || logins.Load() != 1 {
+		t.Fatal("consumed challenge must not replay login")
+	}
+	if response := send("owner", "13800138000"); response.Code != http.StatusTooManyRequests || sends.Load() != 1 {
+		t.Fatal("successful verification must not release the SMS cooldown")
+	}
+	configs, err := store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || !configs[0].UsesLoomySession() {
+		t.Fatalf("saved channels=%d err=%v", len(configs), err)
+	}
+	credential, err := loomyauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || credential.UserID != "verified-user" || credential.Session != "verified-session" {
+		t.Fatal("channel must use identity returned by the account service")
+	}
+	response = send("owner", "13900139000")
+	if response.Code != http.StatusOK {
+		t.Fatalf("second send status=%d", response.Code)
+	}
+	expiredID := mustParseAPIResponse[struct {
+		LoginID string `json:"login_id"` ///< 服务端一次性短信挑战 ID，不包含上游会话。
+	}](t, response.Body.Bytes()).Data.LoginID
+	if expiredID == "" {
+		t.Fatal("missing challenge for expiration scenario")
+	}
+	time.Sleep(5 * time.Minute)
+	if response := verify("owner", expiredID); response.Code != http.StatusBadRequest || logins.Load() != 1 {
+		t.Fatal("expired challenge must not reach upstream")
+	}
+	// 错误验证码消费挑战后，发送预算仍按手机号保留，不能借换管理员会话绕过。
+	response = send("owner", "13800000003")
+	if response.Code != http.StatusOK {
+		t.Fatalf("send for invalid-code scenario status=%d", response.Code)
+	}
+	invalidID := mustParseAPIResponse[struct {
+		LoginID string `json:"login_id"` ///< 服务端一次性短信挑战 ID，不包含上游会话。
+	}](t, response.Body.Bytes()).Data.LoginID
+	if invalidID == "" {
+		t.Fatal("missing challenge for invalid-code scenario")
+	}
+	response = call("owner", "/admin/loomy/login/verify", gin.H{"login_id": invalidID, "code": "x"}, server.HandleLoomyLogin)
+	if response.Code != http.StatusBadGateway || logins.Load() != 1 {
+		t.Fatal("invalid code must fail without reaching upstream login")
+	}
+	time.Sleep(59 * time.Second)
+	response = send("other-owner", "13800000003")
+	if response.Code != http.StatusTooManyRequests || sends.Load() != 3 || response.Header().Get("Retry-After") != "1" {
+		t.Fatalf("resend before cooldown status=%d sends=%d retry=%s", response.Code, sends.Load(), response.Header().Get("Retry-After"))
+	}
+	time.Sleep(time.Second)
+	if response := send("other-owner", "13800000003"); response.Code != http.StatusOK || sends.Load() != 4 {
+		t.Fatalf("resend at cooldown boundary status=%d sends=%d", response.Code, sends.Load())
+	}
+	// 发码结果不确定时也不重置预算，避免上游已发送却被本地连续重试。
+	failSend.Store(true)
+	if response := send("owner", "13800000004"); response.Code != http.StatusBadGateway {
+		t.Fatalf("upstream send failure status=%d", response.Code)
+	}
+	if response := send("owner", "13800000004"); response.Code != http.StatusTooManyRequests || sends.Load() != 5 {
+		t.Fatal("upstream failure must not release the SMS cooldown")
+	}
+}
+
+/**
+ * @brief 验证 Loomy 编辑器凭证可见性与合成 Key 展示的权限边界。
+ * @param t 当前测试上下文。
+ */
+func TestLoomyChannelEditorCredentialVisibility(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &loomyauth.Credential{
+		Session: "loomy-editor-private-session", UserID: "loomy-editor-user",
+		LastCheckinDay: "2026-11-04", OnboardingCompletedAt: "2026-11-04T01:00:00+08:00",
+	}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "loomy-editor", AuthType: model.AuthTypeLoomySession, OAuthCredential: raw,
+		URLs:         model.ChannelURLs{{URL: loomyauth.CompletionsURL, Exact: true, Protocols: []string{util.ProtocolOpenAI}}},
+		ModelEntries: []model.ModelEntry{{Model: "chat"}}, Enabled: true, CostMultiplier: 2.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprint(created.ID)
+	editorContext, editorResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+id+"/editor", nil))
+	editorContext.Params = gin.Params{{Key: "id", Value: id}}
+	server.HandleChannelEditor(editorContext)
+	if editorResponse.Code != http.StatusOK {
+		t.Fatalf("editor status=%d body=%s", editorResponse.Code, editorResponse.Body.String())
+	}
+	editor := mustParseAPIResponse[channelEditorData](t, editorResponse.Body.Bytes()).Data
+	var exposed loomyauth.Credential
+	if err := json.Unmarshal(editor.OAuthCredential, &exposed); err != nil {
+		t.Fatal(err)
+	}
+	if exposed.Session != credential.Session || exposed.UserID != credential.UserID ||
+		exposed.LastCheckinDay != credential.LastCheckinDay || exposed.OnboardingCompletedAt != credential.OnboardingCompletedAt {
+		t.Fatalf("incomplete editor credential: %+v", exposed)
+	}
+	if len(editor.Keys) != 1 || editor.Keys[0].APIKey != util.MaskAPIKey(credential.Session) || editor.Keys[0].CostMultiplier != 2.5 {
+		t.Fatalf("invalid synthetic key: %+v", editor.Keys)
+	}
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]map[string]any](t, listResponse.Body.Bytes()).Data
+	if len(list) != 1 || list[0]["oauth_credential"] != nil || list[0]["session"] != nil {
+		t.Fatalf("list must omit private credentials: %+v", list)
+	}
+	// 没有余额快照时，也必须提供持久化签到日期；不需要暴露原始凭证。
+	if list[0]["loomy_last_checkin_day"] != credential.LastCheckinDay || editor.Channel.LoomyLastCheckinDay != credential.LastCheckinDay {
+		t.Fatal("list/editor omitted the persisted check-in day")
+	}
+	detailContext, detailResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+id, nil))
+	detailContext.Params = gin.Params{{Key: "id", Value: id}}
+	server.HandleChannelByID(detailContext)
+	detail := mustParseAPIResponse[map[string]any](t, detailResponse.Body.Bytes()).Data
+	if detail["oauth_credential"] != nil || detail["session"] != nil {
+		t.Fatalf("detail must omit private credentials: %+v", detail)
+	}
+	if detail["loomy_last_checkin_day"] != credential.LastCheckinDay {
+		t.Fatal("detail omitted the persisted check-in day")
+	}
 }
 
 func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {

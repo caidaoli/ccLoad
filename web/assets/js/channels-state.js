@@ -48,7 +48,10 @@ let allAvailableModels = [];
 let allAvailableChannelNames = [];
 let batchRefreshResultsByChannelId = new Map();
 
-// 认证类型选项：渠道筛选与编辑抽屉头部共用（日志页复用抽屉时不加载 channels-filters.js）
+/**
+ * @brief 提供筛选、凭证清理等入口共用的本地化认证类型名称。
+ * @return 返回首项为 all 的认证类型选项数组。
+ */
 function getChannelAuthTypeOptions() {
   return [
     { value: 'all', label: window.t('channels.authTypeAll') },
@@ -57,6 +60,7 @@ function getChannelAuthTypeOptions() {
     { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
     { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
     { value: 'codebuddy_oauth', label: window.t('channels.authTypeCodeBuddy') },
+    { value: 'loomy_session', label: window.t('channels.authTypeLoomy') },
     { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
     { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },
     { value: 'zed_oauth', label: window.t('channels.authTypeZed') },

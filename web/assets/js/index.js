@@ -79,12 +79,16 @@
       { pattern: /(^|\/)jev(-|$)/, authType: 'system_one' }
     ]);
 
-    // 渠道认证类型的显示名与渠道管理页筛选一致；图标共用 channel-provider-icons.js
+    /**
+     * @brief 统一映射首页认证类型到本地化文案键。
+     * @details 冻结映射以保持首页统计和渠道名称一致。
+     */
     const AUTH_TYPE_LABEL_KEYS = Object.freeze({
       api_key: 'channels.authTypeAPI',
       codex_oauth: 'channels.authTypeCodex',
       antigravity_oauth: 'channels.authTypeAntigravity',
       codebuddy_oauth: 'channels.authTypeCodeBuddy',
+      loomy_session: 'channels.authTypeLoomy',
       xai_oauth: 'channels.authTypeXAI',
       anthropic_oauth: 'channels.authTypeAnthropic',
       zai_oauth: 'channels.authTypeZAI',
