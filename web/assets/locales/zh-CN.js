@@ -1186,6 +1186,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.debugRaw': '原始',
   'logs.debugRefreshing': '正在更新…',
   'logs.debugPrivacySummary': '隐私脱敏：上游请求替换了 {values} 个值，共 {count} 处',
+  'logs.debugPrivacyJump': '定位请求中的 {kind}，再次点击跳转下一处',
   'logs.debugRequestFinished': '请求已结束',
   'logs.debugUnavailableTitle': '这条记录没有可查看的 Debug 日志',
   'logs.debugUnavailableHintDisabled': '该请求发生时未开启 Debug 日志，因此没有保存上游原始请求/响应。',

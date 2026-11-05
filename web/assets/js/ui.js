@@ -2678,8 +2678,10 @@ window.WebAuth = window.WebAuth || {
   // 与 internal/privacy/engine.go 的占位符格式一致：{{CCLOAD_<KIND>_<16 位十六进制>}}
   const PRIVACY_PLACEHOLDER_RE = /\{\{CCLOAD_([A-Z][A-Z0-9_]{0,23})_[a-f0-9]{16}\}\}/g;
 
-  // 前端唯一的占位符高亮入口：内容先按文本/DOM 渲染，再只改其中的文本节点，
-  // 链接地址等属性里的占位符保持原样；被语法高亮或 SSE 分片拆成多个节点的不再完整，不高亮。
+  /**
+   * @brief 高亮文本节点中的完整脱敏占位符，并记录类别供日志定位。
+   * @param root 已完成渲染的 DOM 根节点；链接属性与跨节点的占位符保持原样。
+   */
   function highlightPrivacyPlaceholders(root) {
     if (!root || typeof document.createTreeWalker !== 'function') return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -2695,6 +2697,7 @@ window.WebAuth = window.WebAuth || {
         if (match.index > last) fragment.append(text.slice(last, match.index));
         const mark = document.createElement('mark');
         mark.className = 'privacy-placeholder';
+        mark.dataset.privacyKind = match[1];
         mark.textContent = match[0];
         fragment.append(mark);
         last = match.index + match[0].length;

@@ -645,11 +645,24 @@
 
     .debug-privacy-summary__kind {
       padding: 1px 6px;
+      border: none;
       border-radius: 4px;
       background: var(--primary-100);
       color: var(--primary-700);
       font-family: var(--font-family-mono);
       font-size: var(--text-xs);
+      line-height: inherit;
+      cursor: pointer;
+    }
+
+    .debug-privacy-summary__kind:hover,
+    .debug-privacy-summary__kind:focus-visible {
+      background: var(--primary-200);
+    }
+
+    #debugLogModal mark.privacy-placeholder--active {
+      background: var(--primary-200);
+      outline: 2px solid var(--primary-600);
     }
 
     .debug-log-unavailable {

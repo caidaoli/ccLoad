@@ -1186,6 +1186,7 @@ window.I18N_LOCALES['en'] = {
   'logs.debugRaw': 'Raw',
   'logs.debugRefreshing': 'Refreshing…',
   'logs.debugPrivacySummary': 'Privacy redaction: {values} value(s) masked in the upstream request, {count} occurrence(s)',
+  'logs.debugPrivacyJump': 'Locate {kind} in the request; click again for the next occurrence',
   'logs.debugRequestFinished': 'Request finished',
   'logs.debugUnavailableTitle': 'No debug log is available for this record',
   'logs.debugUnavailableHintDisabled': 'Debug logging was disabled when this request was processed, so the raw upstream request/response was never stored.',

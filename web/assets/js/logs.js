@@ -2678,7 +2678,10 @@ function setDebugLogStatus(kind) {
   el.hidden = false;
 }
 
-// 统计实际发往上游的请求体（req_body）里的脱敏占位符；没有占位符时整栏隐藏。
+/**
+ * @brief 展示实际外发请求的脱敏统计与按类别定位按钮；无占位符时隐藏。
+ * @param data Debug 日志数据；null 时清空统计。
+ */
 function renderDebugPrivacySummary(data) {
   const el = document.getElementById('debugPrivacySummary');
   if (!el) return;
@@ -2693,13 +2696,39 @@ function renderDebugPrivacySummary(data) {
   const kinds = document.createElement('span');
   kinds.className = 'debug-privacy-summary__kinds';
   for (const [kind, count] of stats.kinds) {
-    const chip = document.createElement('span');
+    const chip = document.createElement('button');
+    chip.type = 'button';
     chip.className = 'debug-privacy-summary__kind';
+    chip.dataset.privacyKind = kind;
     chip.textContent = `${kind} ×${count}`;
+    chip.title = t('logs.debugPrivacyJump', { kind });
     kinds.append(chip);
   }
   el.replaceChildren(text, kinds);
   el.hidden = false;
+}
+
+/**
+ * @brief 切到实际外发请求，循环定位同类脱敏占位符并展开其折叠祖先。
+ * @param kind 脱敏统计按钮对应的占位符类别。
+ */
+function jumpToDebugPrivacyPlaceholder(kind) {
+  const transformed = currentDebugLogData.protocol_transformed;
+  activateDebugTab(transformed ? 'translated-request' : 'request');
+  const pre = document.getElementById(transformed ? 'debugTranslatedReqRaw' : 'debugReqRaw');
+  const matches = Array.from(pre.querySelectorAll('mark.privacy-placeholder'))
+    .filter(mark => mark.dataset.privacyKind === kind);
+  if (matches.length === 0) return;
+  const current = pre.querySelector('.privacy-placeholder--active');
+  const next = matches[(matches.indexOf(current) + 1) % matches.length];
+  current?.classList.remove('privacy-placeholder--active');
+  next.classList.add('privacy-placeholder--active');
+  const regions = next.closest('.code-line').dataset.foldRegion;
+  for (const id of regions ? regions.split(' ') : []) {
+    const toggle = pre.querySelector(`[data-fold-toggle="${id}"]`);
+    if (toggle.getAttribute('aria-expanded') === 'false') toggle.click();
+  }
+  next.scrollIntoView({ block: 'center', inline: 'center' });
 }
 
 function startActiveDebugLogPolling(activeRequestId) {
@@ -2934,6 +2963,12 @@ async function refreshDebugMergedResponse(data, tab) {
 // 部分测试桩只提供最小 document API，这里避免在脚本加载阶段就假定完整 DOM 存在。
 if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
   document.addEventListener('click', (e) => {
+    const privacyKind = e.target.closest('#debugPrivacySummary button[data-privacy-kind]');
+    if (privacyKind) {
+      jumpToDebugPrivacyPlaceholder(privacyKind.dataset.privacyKind);
+      return;
+    }
+
     const tab = e.target.closest('#debugLogModal .upstream-tab');
     if (tab) {
       activateDebugTab(tab.dataset.tab);
