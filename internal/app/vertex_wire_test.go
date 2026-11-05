@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -400,6 +401,147 @@ func TestProxy_VertexOAuthRemintsTokenAfterUnauthorized(t *testing.T) {
 	}
 	if calls := upstream.tokenCalls.Load(); calls != 2 {
 		t.Fatalf("token mints=%d, want 2", calls)
+	}
+}
+
+/**
+ * @brief 验证 Vertex 令牌获取失败按可恢复性冷却渠道并切换备用渠道
+ * @param t 测试上下文
+ */
+func TestProxy_VertexOAuthMintFailureCoolsChannelAndFailsOver(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []bool{false, true} {
+		for _, tc := range []struct {
+			name         string
+			status       int
+			body         string
+			tokenError   error
+			wantCooldown time.Duration
+		}{
+			{name: "network", tokenError: errors.New("token endpoint connection refused"), wantCooldown: 17 * time.Second},
+			{name: "timeout", tokenError: context.DeadlineExceeded, wantCooldown: 17 * time.Second},
+			{name: "unexpected_eof", tokenError: io.ErrUnexpectedEOF, wantCooldown: 17 * time.Second},
+			{name: "server", status: http.StatusServiceUnavailable, body: `{"error":"invalid_grant"}`, wantCooldown: 17 * time.Second},
+			{name: "rate_limit", status: http.StatusTooManyRequests, body: `{"error":"temporarily_unavailable"}`, wantCooldown: 11 * time.Second},
+			{name: "invalid_grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, wantCooldown: 24 * time.Hour},
+		} {
+			t.Run(fmt.Sprintf("%s/rejected=%v", tc.name, rejected), func(t *testing.T) {
+				t.Parallel()
+				primary := newVertexTestUpstream(t)
+				primary.respond = func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = io.WriteString(w, `{"error":{"code":401,"status":"UNAUTHENTICATED"}}`)
+				}
+				fallback := newVertexTestUpstream(t)
+				env := setupProxyTestEnvWithSettings(t, []testChannel{
+					{
+						name: "vertex-primary", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel,
+						authType: model.AuthTypeVertexOAuth, oauthCredential: vertexTestCredential(t, primary.tokenURI()),
+					},
+					{name: "vertex-fallback", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel},
+				}, map[int]string{0: primary.server.URL + vertexTestRegionURL, 1: fallback.server.URL}, map[string]string{
+					"cooldown_server_seconds": "17", "cooldown_rate_limit_seconds": "11", "cooldown_max_seconds": "30",
+				})
+				var mintCalls atomic.Int32
+				tokenClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					call := mintCalls.Add(1)
+					status, body := tc.status, tc.body
+					if rejected && call == 1 {
+						status, body = http.StatusOK, `{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}`
+					} else if tc.tokenError != nil {
+						return nil, tc.tokenError
+					}
+					return &http.Response{
+						StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}},
+						Body: io.NopCloser(strings.NewReader(body)), Request: req,
+					}, nil
+				})}
+				env.server.vertexCredentials = newVertexCredentialManager(func(*model.Config) *http.Client { return tokenClient })
+
+				response := doProxyRequest(t, env.engine, "/v1beta/models/"+vertexTestModel+":generateContent", map[string]any{
+					"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}},
+				}, nil)
+				if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "candidates.0.content.parts.0.text").String() != "ok" {
+					t.Fatalf("status=%d body=%s, want fallback response", response.Code, response.Body.String())
+				}
+				wantMints, wantPrimary := int32(1), 0
+				if rejected {
+					wantMints, wantPrimary = 2, 1
+				}
+				if calls := mintCalls.Load(); calls != wantMints {
+					t.Fatalf("token mints=%d, want %d", calls, wantMints)
+				}
+				if calls, _ := primary.calls(); len(calls) != wantPrimary {
+					t.Fatalf("primary publisher calls=%d, want %d", len(calls), wantPrimary)
+				}
+				if calls, _ := fallback.calls(); len(calls) != 1 {
+					t.Fatalf("fallback publisher calls=%d, want 1", len(calls))
+				}
+
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil || len(configs) != 2 {
+					t.Fatalf("channels=%d err=%v, want both channels preserved", len(configs), err)
+				}
+				var primaryConfig *model.Config
+				for _, cfg := range configs {
+					if !cfg.Enabled {
+						t.Fatalf("channel %s was disabled", cfg.Name)
+					}
+					if cfg.Name == "vertex-primary" {
+						primaryConfig = cfg
+					}
+				}
+				if primaryConfig == nil {
+					t.Fatal("primary channel missing")
+				}
+				if duration := time.Duration(primaryConfig.CooldownDurationMs) * time.Millisecond; duration > tc.wantCooldown || duration < tc.wantCooldown-time.Millisecond {
+					t.Fatalf("primary cooldown duration=%v, want %v", duration, tc.wantCooldown)
+				}
+				cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(cooldowns) != 1 || !cooldowns[primaryConfig.ID].After(time.Now()) {
+					t.Fatalf("channel cooldowns=%v, want only primary channel %d cooling", cooldowns, primaryConfig.ID)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证客户端在 Vertex 令牌获取阶段取消请求时不冷却渠道
+ * @param t 测试上下文
+ */
+func TestProxy_VertexOAuthMintCancellationDoesNotCoolChannel(t *testing.T) {
+	t.Parallel()
+	upstream := newVertexTestUpstream(t)
+	env := setupVertexProxyTestEnv(t, upstream)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	tokenClient := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		cancel()
+		return nil, errors.New("token endpoint connection refused")
+	})}
+	env.server.vertexCredentials = newVertexCredentialManager(func(*model.Config) *http.Client { return tokenClient })
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1beta/models/"+vertexTestModel+":generateContent",
+		strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer test-api-key")
+	response := httptest.NewRecorder()
+	env.engine.ServeHTTP(response, request)
+	if response.Code != StatusClientClosedRequest {
+		t.Fatalf("status=%d body=%s, want client cancellation", response.Code, response.Body.String())
+	}
+	if requests, _ := upstream.calls(); len(requests) != 0 {
+		t.Fatalf("publisher calls=%d, want none after cancellation", len(requests))
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cooldowns) != 0 {
+		t.Fatalf("channel cooldowns=%v, want none after cancellation", cooldowns)
 	}
 }
 

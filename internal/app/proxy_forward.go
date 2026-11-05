@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -5025,6 +5026,20 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 const rejectedOAuthCredentialCooldown = 24 * time.Hour
 
+/**
+ * @brief 使用 OAuth 凭证转发请求，认证拒绝后刷新一次并按失败性质冷却或禁用渠道
+ * @param ctx 请求上下文；取消后停止转发且不施加凭证冷却
+ * @param cfg 当前渠道配置
+ * @param reqCtx 当前代理请求状态
+ * @param w 客户端响应写入器
+ * @param provider 用于诊断的提供商名称
+ * @param disableRejectedCredential 是否允许禁用被永久拒绝的凭证快照
+ * @param loadCredential 加载或刷新凭证；失败时可同时返回仍有效的旧令牌
+ * @param credentialRejected 判断转发结果是否表示访问令牌被拒绝
+ * @return 转发结果；没有可用凭证时返回可切换渠道的失败结果
+ * @return 渠道没有有效 URL 或尝试转发失败时返回错误
+ * @note 可刷新凭证、写入冷却或禁用渠道，并向客户端写响应。
+ */
 func (s *Server) tryOAuthChannel(
 	ctx context.Context,
 	cfg *model.Config,
@@ -5077,7 +5092,7 @@ func (s *Server) tryOAuthChannel(
 					}
 					return oauthCredentialUnavailableResult(cfg, provider), nil
 				}
-				s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
+				s.cooldownOAuthCredentialFailure(ctx, cfg, provider, credentialErr)
 				if rejectedResult != nil {
 					rejectedResult.nextAction = cooldown.ActionRetryChannel
 					return rejectedResult, nil
@@ -5104,7 +5119,7 @@ func (s *Server) tryOAuthChannel(
 					result.nextAction = cooldown.ActionRetryChannel
 					return result, nil
 				}
-				s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
+				s.cooldownOAuthCredentialFailure(ctx, cfg, provider, credentialErr)
 				result.nextAction = cooldown.ActionRetryChannel
 				return result, nil
 			}
@@ -5178,6 +5193,41 @@ func (s *Server) disableTerminalOAuthCredential(
 func sameOAuthTokens(a, b string) bool {
 	return gjson.Get(a, "access_token").String() == gjson.Get(b, "access_token").String() &&
 		gjson.Get(a, "refresh_token").String() == gjson.Get(b, "refresh_token").String()
+}
+
+/**
+ * @brief 凭证获取的传输故障、限流和服务端错误使用配置的指数退避，其他失败保留长期冷却
+ * @param ctx 已检查取消状态的请求上下文；写库使用独立的有界上下文
+ * @param cfg 当前渠道配置
+ * @param provider 用于诊断的提供商名称
+ * @param credentialErr 凭证加载错误；nil 表示刷新后的访问令牌仍被上游拒绝
+ * @note 写入渠道冷却并失效缓存，不影响其他渠道，也不按业务模型记录冷却。
+ */
+func (s *Server) cooldownOAuthCredentialFailure(ctx context.Context, cfg *model.Config, provider string, credentialErr error) {
+	statusCode, _, _ := util.ClassifyError(credentialErr)
+	_, isTransportFailure := errors.AsType[net.Error](credentialErr)
+	retryable := isTransportFailure ||
+		errors.Is(credentialErr, io.EOF) || errors.Is(credentialErr, io.ErrUnexpectedEOF)
+	if endpointFailure, ok := errors.AsType[oauthTokenEndpointFailure](credentialErr); ok {
+		statusCode = endpointFailure.StatusCode()
+		retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+	}
+	if !retryable {
+		s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
+		return
+	}
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+
+	now := time.Now()
+	duration, err := s.store.BumpChannelCooldown(cooldownCtx, cfg.ID, now, statusCode)
+	if err != nil {
+		log.Printf("[WARN] 设置 OAuth 凭证不可用渠道冷却失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
+	} else {
+		log.Printf("[COOLDOWN] OAuth 凭证不可用渠道冷却: provider=%s channel_id=%d 冷却至 %s (%s)",
+			provider, cfg.ID, now.Add(duration).Format("2006-01-02 15:04:05"), duration)
+	}
+	s.invalidateChannelRelatedCache(cfg.ID)
 }
 
 func (s *Server) cooldownRejectedOAuthCredential(ctx context.Context, cfg *model.Config, provider string) {
