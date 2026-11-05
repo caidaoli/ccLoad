@@ -14,25 +14,52 @@ ccLoad 是 Claude/OpenAI/Gemini/Codex 多协议 API 网关，负责渠道选择�
 Go 构建和测试必须带 `-tags sonic`（Makefile 已处理）。环境变量契约见 `.env.example`（容器部署见 `.env.docker.example`）；本地 `.env` 被 gitignore，仅作个人覆盖。
 
 ```bash
-make build                    # 构建并注入版本
-make dev                      # 开发运行
-go test -tags sonic ./internal/app -run 'TestXxx' # 受影响测试
-go test -tags sonic ./internal/...
-make verify-web               # 前端验证，含 node:test
-make race-fast                # 并发相关改动；全量使用 make race
-golangci-lint run ./...        # Go 改动提交前零警告
+make build                                         # 构建并注入版本
+make dev                                           # 开发运行
+go test -tags sonic ./internal/app -run 'TestXxx'  # 受影响测试
+go test -tags sonic ./internal/...                 # 全量 Go 测试
+make verify-web                                    # 前端验证，含 node:test
+make race-fast                                     # 并发相关改动；全量用 make race
+golangci-lint run ./...                            # Go 改动提交前零警告
 ```
 
-- 迭代运行受影响包；Go 改动提交前运行全量 `./internal/...` 与 lint，前端改动运行 `make verify-web`。
-- 不用 `-count=1`，除非排查缓存、不稳定测试或测量性能。独立检查可并行。
+- 迭代运行受影响包；Go 改动提交前跑全量测试与 lint，前端改动跑 `make verify-web`；独立检查可并行。
+- 不用 `-count=1`，除非排查缓存、不稳定测试或测量性能。
 - 调整测试并行度时读 [测试并行化](.claude/agent-guide/testing.md)。发布和核心同步的专属验证命令见各自技能。
 
 ## 通用代码约束
 
 - 用 `any`；配置错误 fail-fast；`defer cancel()` 无条件调用，取消监听用 `context.AfterFunc`。
-- lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose/modernize，gosec 已禁；modernize 不检查 `internal/protocol/cliproxy/` 快照。
+- lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose/modernize；gosec 已禁，revive `exported` 因与 Doxygen 注释冲突已禁，modernize 不检查 `internal/protocol/cliproxy/` 快照。
 - JSON 重复 key 按 `encoding/json` 后者胜出，不加检测、拒绝或兼容兜底，审查也不作为问题；只有改写与渲染不一致时才就地收敛（见 `ordered_json.go`）。
 - Web 单选下拉必须可搜索：统一由 `searchable-select.js` 增强并复用 `createSearchableCombobox`；原生 `<select>` 仅作隐藏的表单/业务值载体。保留动态选项、禁用态、`input/change`、表单提交、键盘/ARIA 与 `<dialog>` 顶层菜单；多选控件未提供可搜索实现前禁止新增。
+
+### 注释
+
+新增或修改的声明（类型、接口方法、常量、包级变量、函数/方法，含未导出辅助函数）紧贴写多行 Doxygen 块注释 `/** ... */`，不写单行 `/** */` 或 `//` 文档注释；结构体字段与常量组成员用行尾 `///<`，常量组注释写在 `const (` 上。存量代码不批量补，`internal/protocol/cliproxy/` 快照不加。
+
+- **标签**：`@brief` 必填；`@param` 按序逐个说明（接收者除外），类型参数用 `@tparam`；每个返回值按序写一条 `@return`，说明 `nil`/零值/`false` 等特殊值，`error` 写触发条件及可 `errors.Is/As` 的哨兵或类型；会 panic 的写 `@throw panic` 及条件；调用限制与副作用（并发安全、持锁、`ctx` 取消、须 `Close`、改入参或共享状态、启动 goroutine）写 `@note`，设计细节写 `@details`；无内容不留空标签。
+- **内容**：写业务契约与设计原因（单位、状态转换、错误边界），不复述代码或签名。
+
+```go
+/**
+ * @brief 获取第三方平台的接口调用凭据
+ * @param ctx 请求上下文；取消时中止刷新且不写缓存
+ * @param user 当前登录用户及租户信息
+ * @return 接口调用凭据，不含 Bearer 前缀
+ * @return 刷新失败时返回 ErrTokenExpired
+ * @note 并发安全；同租户并发刷新合并为一次上游请求
+ */
+func getAccessToken(ctx context.Context, user *Member) (string, error)
+
+/**
+ * @brief 已缓存的第三方平台凭据
+ */
+type credential struct {
+	token     string    ///< 访问令牌，不含 Bearer 前缀
+	expiresAt time.Time ///< 过期时刻（UTC），提前 60 秒视为过期
+}
+```
 
 ## 任务入口
 

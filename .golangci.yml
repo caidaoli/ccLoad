@@ -24,10 +24,10 @@ linters:
         - stringsbuilder
     revive:
       rules:
-        # 禁用类型名称重叠检查（如 sql.SQLStore），重命名会破坏 API
+        # 文档注释统一用 Doxygen 块注释（见 CLAUDE.md「注释」），与 godoc 的“以名称开头”格式冲突；
+        # 该规则其余部分是名称重叠检查（如 sql.SQLStore），重命名会破坏 API，一并禁用
         - name: exported
-          arguments:
-            - "disableStutteringCheck"
+          disabled: true
         # 禁用包名检查（util 等通用包名在 internal 中是合理的）
         - name: var-naming
           disabled: true
