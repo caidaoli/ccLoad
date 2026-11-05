@@ -114,7 +114,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `model_multimodal_fallback` | `{}` | JSON map `{"non-vision model":"fallback model"}` (max 64 mappings / 8 KB); applied immediately without a process restart |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
 | `model_custom_pricing` | `{}` | JSON object overriding model prices (USD per million tokens); takes precedence over the models.dev catalog and the embedded pricing |
-| `reasoning_auto` | `{"enabled":false,…,"timeout_ms":2000}` | Dynamic reasoning effort: `enabled`, `decision_channel_id` (must be a System One channel), `decision_model`, `business_models` (exact base names; an empty list enables nothing), `timeout_ms` (100–10000); applied immediately on save, see the [usage guide](usage.md#dynamic-reasoning-effort) |
+| `reasoning_auto` | `{"enabled":false,…,"timeout_ms":2000}` | Dynamic reasoning effort: `enabled`, `decision_model` (routed across enabled System One channels with failover), `business_models` (exact base names; an empty list enables nothing), `timeout_ms` (100–10000); applied immediately on save, see the [usage guide](usage.md#dynamic-reasoning-effort) |
 | `privacy_redaction` | `{}` | Privacy redaction rules (off by default); edit them in the Settings "Privacy redaction" dialog; applied immediately on save, see the [usage guide](usage.md#privacy-redaction) |
 | `responses_ws_max_connections` | `128` | Max concurrent downstream Responses WebSocket connections across the process; `0` uses the built-in default |
 | `responses_ws_max_connections_per_token` | `64` | Max concurrent downstream Responses WebSocket connections per auth token; `0` uses the built-in default |

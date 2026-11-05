@@ -4678,7 +4678,7 @@ button.settings-dialog-count[aria-pressed="true"] {
 
 .reasoning-auto-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.6fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.6fr);
   gap: 10px 20px;
   margin-bottom: 22px;
 }

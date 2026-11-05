@@ -1,12 +1,13 @@
 package model
 
-// ReasoningAutoConfig is the opt-in decision service configuration.
+/**
+ * @brief 按模型路由的动态思考判断配置
+ */
 type ReasoningAutoConfig struct {
-	Enabled           bool     `json:"enabled"`
-	DecisionChannelID int64    `json:"decision_channel_id"`
-	DecisionModel     string   `json:"decision_model"`
-	BusinessModels    []string `json:"business_models"`
-	TimeoutMS         int      `json:"timeout_ms"`
+	Enabled        bool     `json:"enabled"`         ///< 是否启用动态判断
+	DecisionModel  string   `json:"decision_model"`  ///< System One 逻辑模型名
+	BusinessModels []string `json:"business_models"` ///< 生效业务模型的精确基名
+	TimeoutMS      int      `json:"timeout_ms"`      ///< 整次判断的总超时，单位毫秒
 }
 
 // ReasoningDecision contains decision metadata, never conversation or credentials.

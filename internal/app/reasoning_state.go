@@ -376,18 +376,26 @@ func reasoningDecisionContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, reasoningRequestContextKey{}, (*proxyRequestContext)(nil))
 }
 
-// Usage and cost use the same result keys as other channel tests, so the
-// manual-test log records them instead of a free call.
+/**
+ * @brief 管理测试调用 System One 并返回与普通渠道测试一致的用量和费用字段
+ * @param ctx 管理测试上下文
+ * @param cfg 固定了待测模型行的渠道配置
+ * @param apiKey 待测凭据
+ * @param modelName 待测逻辑模型名
+ * @param state 判断文本
+ * @return 测试结果；失败原因包含在结果字段中
+ */
 func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, apiKey, modelName, state string) map[string]any {
 	start := time.Now()
-	result, err := s.callSystemOne(ctx, cfg, apiKey, modelName, state, reasoningDefaultLevels)
+	row, _ := s.firstModelRow(cfg, modelName)
+	result, err := s.callSystemOne(ctx, cfg, apiKey, row, state, reasoningDefaultLevels)
 	if errors.Is(err, ErrChannelRPMExceeded) {
 		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
 	}
 	if errors.Is(err, ErrChannelConcurrencyExceeded) {
 		return channelConcurrencyExceededTestResult(start, err)
 	}
-	result.costUnknown = s.reasoningCostUnknown(cfg, modelName, result)
+	result.costUnknown = s.reasoningCostUnknown(row, result)
 	out := map[string]any{"success": err == nil, "status_code": result.status, "duration_ms": result.duration.Milliseconds(),
 		"effort": result.effort, "cost_unknown": result.costUnknown, "client_protocol": util.ProtocolSystemOne, "upstream_protocol": util.ProtocolSystemOne,
 		"base_url": result.baseURL, "actual_model": result.actualModel}

@@ -2,7 +2,7 @@
 
 修改模型解析、候选过滤、Key/URL 选择、请求规则或多模态回退时读取。
 
-- **动态思考等级**(`reasoning_auto`)对配置名单中的模型生效：非 `auto` 思考后缀（等级、`none`、数字预算）跳过判断；无后缀或 `auto` 后缀允许判断，并用结果覆盖请求体已有等级。`(-1)` 与 `(auto)` 沿用后缀解析器的相同自动语义；未启用动态判断或无有效结果时，`auto` 仍回到模型默认行为。自动建议不改变业务模型名或路由身份，每次实际发送按重定向后的模型目录裁剪；渠道 body rules 继续最后生效。判断渠道只能是 System One 渠道（普通聊天渠道判断太慢，保存设置与运行时均拒绝）。
+- **动态思考等级**(`reasoning_auto`)对配置名单中的模型生效：非 `auto` 思考后缀（等级、`none`、数字预算）跳过判断；无后缀或 `auto` 后缀允许判断，并用结果覆盖请求体已有等级。`(-1)` 与 `(auto)` 沿用后缀解析器的相同自动语义；未启用动态判断或无有效结果时，`auto` 仍回到模型默认行为。自动建议不改变业务模型名或路由身份，每次实际发送按重定向后的模型目录裁剪；渠道 body rules 继续最后生效。判断只配置逻辑模型名，调用 `selectSystemOneCandidates` 复用 System One 精确模型选路及成本、时段、冷却、优先级/健康度排序；每个候选渠道尝试一次，失败在总判断超时内换渠。模型行选择、重定向和 Key 授权沿用普通选路规则；判断只使用 System One 渠道，普通聊天渠道不参与。
 - **System One 路由**(`selector.go:selectSystemOneCandidates`):下游 `POST /v1/systemone` 的客户端协议为 `system_one`，只从 `GetEnabledSystemOneChannelsByModel`（缓存独立索引）精确匹配模型，不做模糊回退或协议转换，聊天渠道永不服务该端点；反过来普通模型列表、聊天候选、自动协议探测与聊天定时检测均排除 System One 渠道。转发固定非流式、仅 `Authorization: Bearer`，URL 同判断调用（`systemOneURL`：基址以 `/v1` 结尾时只拼 `/systemone`，不带客户端查询串），usage 读 `input_tokens/output_tokens`。
 
 - **选择顺序**:成本限额检查 → 可用时段过滤 → 冷却过滤(正确性优先;模型冷却按各渠道解析重定向/模糊匹配后的实际上游模型过滤)→ 排序二选一:`enable_health_score` 默认 **false** 走渠道平滑加权轮询(按有效 Key 数),开启才走健康度排序(`calculateEffectivePriority`:`P_eff = Priority - 失败惩罚 - TTFB惩罚`,两种惩罚各按样本量打置信度折扣,TTFB 部分还要 `enable_ttfb_score` 单独开)。TTFB 基准在健康缓存刷新时按统计窗口内全部渠道的有效首字均值计算中位数，与统计原子发布；列表、预演、普通选路及全冷却兜底共用该快照，不随列表筛选、模型/令牌范围或冷却过滤重算。全局不足两个渠道有有效首字样本时才跳过 TTFB 惩罚；无样本渠道不惩罚

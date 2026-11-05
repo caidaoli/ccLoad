@@ -89,6 +89,15 @@ type reasoningCallResult struct {
 	privacyMasked  privacy.Counts
 }
 
+/**
+ * @brief 按 System One 模型选路，在同一超时预算内依次尝试候选渠道
+ * @param parent 业务请求上下文，保留取消与隐私会话并解除客户端渠道范围限制
+ * @param transcript 已投影的判断上下文
+ * @param levels 按强度升序排列的候选等级
+ * @return 最后一次尝试的结果，duration 为包含选路和故障转移的总耗时
+ * @return 候选耗尽、容量满或上下文结束时返回错误；成功时为 nil
+ * @note 每个实际尝试独立计费、写日志和冷却；取消后不再尝试其他渠道
+ */
 func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (result reasoningCallResult, err error) {
 	start := time.Now()
 	cfg := s.reasoningAuto.Load() // one snapshot per decision, even if the setting is saved meanwhile
@@ -115,52 +124,59 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 		result.reason = "queue_full"
 		return result, errors.New("reasoning decision capacity reached")
 	}
-	channel, err := s.store.GetConfig(ctx, cfg.DecisionChannelID)
-	if err != nil || channel == nil || !channel.Enabled || channel.IsCoolingDown(time.Now()) {
-		return result, errors.New("reasoning decision channel unavailable")
+	channels, err := s.selectSystemOneCandidates(ctx, cfg.DecisionModel)
+	if err != nil {
+		return result, err
 	}
-	if channel.DailyCostLimit > 0 && s.costCache != nil && s.costCache.Get(channel.ID) >= channel.DailyCostLimit {
-		return result, errors.New("reasoning decision channel cost limit reached")
+	err = errors.New("reasoning decision model has no available System One channel")
+	for _, channel := range channels {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		result, err = s.attemptReasoningDecision(ctx, channel, cfg.DecisionModel, transcript, levels)
+		if err == nil {
+			return result, nil
+		}
 	}
-	if !channel.IsSystemOne() {
-		return result, errors.New("reasoning decision channel must be a System One channel")
-	}
-	modelName := cfg.DecisionModel
-	if !channel.SupportsModel(modelName) {
-		return result, errors.New("reasoning decision model unavailable")
-	}
+	return result, err
+}
+
+/**
+ * @brief 对一个已选路的判断渠道执行一次调用并记录该次尝试
+ * @param ctx 整次判断共享的超时上下文
+ * @param channel 通过模型、成本、时段与冷却筛选的渠道快照
+ * @param modelName 判断逻辑模型名
+ * @param transcript 已投影的判断上下文
+ * @param levels 按强度升序排列的候选等级
+ * @return 本次尝试的结果与耗时
+ * @return 凭据、请求、响应或取消错误；成功时为 nil
+ * @note 失败冷却写入使用 ctx，不延长总判断预算
+ */
+func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Config, modelName, transcript string, levels []string) (result reasoningCallResult, err error) {
+	start := time.Now()
+	result.reason = "decision_unavailable"
 	keys, err := s.getAPIKeys(ctx, channel.ID)
 	if err != nil {
 		return result, err
 	}
-	// This helper shares the normal model-scoped key selection. There is no
-	// authentication retry or cross-channel retry here.
-	runtimeChannel, selected, err := s.prepareChannelTestAuth(ctx, channel, keys, modelName, string(protocol.SystemOne), nil, "", oauthCredentialRefreshIfNeeded)
+	row, err := s.selectChannelModelRow(ctx, channel, modelName, string(protocol.SystemOne), nil, keys)
 	if err != nil {
 		return result, err
 	}
-	channel = runtimeChannel
-	row, found := s.firstModelRow(channel, modelName)
-	if !found || !channel.IsAvailableAt(time.Now()) || !s.modelRowApplicable(channel, row, time.Now()) {
-		return result, errors.New("reasoning decision channel unavailable")
+	keys, _ = s.filterAPIKeysForModelRow(channel, keys, row, string(protocol.SystemOne))
+	keyIndex, apiKey, err := s.selectKeyWithFallback(channel, keys, nil)
+	if err != nil {
+		return result, err
 	}
-	modelCooldowns, cooldownErr := s.getAllModelCooldowns(ctx)
-	if cooldownErr != nil {
-		return result, cooldownErr
-	}
-	actual := s.resolveFinalUpstreamModel(channel, row, string(protocol.SystemOne))
-	if modelCooldowns[channel.ID][actual].After(time.Now()) {
-		return result, errors.New("reasoning decision model cooling down")
-	}
-	result, err = s.callSystemOne(ctx, channel, selected.requestCredential, modelName, transcript, levels)
+	result, err = s.callSystemOne(ctx, channel, apiKey, row, transcript, levels)
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
 	}
 	result.duration = time.Since(start)
-	result.costUnknown = s.reasoningCostUnknown(channel, modelName, result)
+	result.costUnknown = s.reasoningCostUnknown(row, result)
 	if err != nil {
 		if ctx.Err() == nil && result.status >= 400 && s.cooldownManager != nil {
-			in := cooldownInputForModel(httpErrorInputFromParts(channel.ID, selected.keyIndex, result.status, result.responseBody, result.responseHeader), actual)
+			in := cooldownInputForModel(httpErrorInputFromParts(channel.ID, keyIndex, result.status, result.responseBody, result.responseHeader), result.actualModel)
 			// Cooldown persistence shares the decision budget and cancellation.
 			s.cooldownManager.HandleError(ctx, s.completeCooldownInput(channel, in))
 			s.invalidateChannelRelatedCache(channel.ID)
@@ -184,9 +200,9 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 	if result.status > 0 || result.baseURL != "" {
 		params := logEntryParams{RequestModel: modelName, ActualModel: result.actualModel,
 			RequestPath: "/v1/systemone", ChannelID: channel.ID, StatusCode: result.status,
-			Duration: result.duration.Seconds(), APIKeyUsed: selected.apiKey, StartTime: start,
+			Duration: result.duration.Seconds(), APIKeyUsed: apiKey, StartTime: start,
 			UpstreamProtocol: protocol.SystemOne, BaseURL: result.baseURL,
-			CostMultiplier: selected.costMultiplier, ModelPrice: row.entry.Pricing, Result: result.usage, DebugData: result.debug}
+			CostMultiplier: apiKeyCostMultiplierAt(channel, keys, keyIndex), ModelPrice: row.entry.Pricing, Result: result.usage, DebugData: result.debug}
 		if result.usage != nil {
 			params.ResponseModel = result.usage.ResponseModel
 		}
@@ -255,13 +271,22 @@ func (s *Server) decisionURL(cfg *model.Config) (string, error) {
 	return value, nil
 }
 
-func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, modelName, transcript string, levels []string) (result reasoningCallResult, err error) {
+/**
+ * @brief 发送固定模型行的非流式 System One 判断请求
+ * @param ctx 判断超时或管理测试上下文
+ * @param cfg 渠道配置快照
+ * @param key 已选中的凭据
+ * @param row 本次调用固定的模型行，用于重定向和定价
+ * @param transcript 判断文本
+ * @param levels 按强度升序排列的候选等级
+ * @return 上游原始结果、解析等级和用量，失败时保留已获取的数据
+ * @return 限流、传输、隐私遮蔽或响应格式错误；成功时为 nil
+ * @note 请求遵守渠道请求规则与隐私边界，响应体最多读取 1 MiB
+ */
+func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key string, row modelRoutingSelection, transcript string, levels []string) (result reasoningCallResult, err error) {
 	start := time.Now()
 	defer func() { result.duration = time.Since(start) }()
-	result.actualModel = modelName
-	if row, found := s.firstModelRow(cfg, modelName); found {
-		result.actualModel = s.resolveFinalUpstreamModel(cfg, row, string(protocol.SystemOne))
-	}
+	result.actualModel = s.resolveFinalUpstreamModel(cfg, row, string(protocol.SystemOne))
 	baseURL, err := s.decisionURL(cfg)
 	if err != nil {
 		return result, err
@@ -393,10 +418,14 @@ func reasoningDecisionCriteria(levels []string, criteria map[string]string) json
 	return out.Bytes()
 }
 
-// Unknown usage or price is reported as unknown cost, never as a free call.
-func (s *Server) reasoningCostUnknown(cfg *model.Config, modelName string, result reasoningCallResult) bool {
-	row, _ := s.firstModelRow(cfg, modelName)
-	_, known := util.LookupEffectiveModelPricing(util.ResolveBillingModel(result.actualModel, modelName))
+/**
+ * @brief 判断用量或模型定价是否不足以计算本次判断成本
+ * @param row 本次调用选定的模型行，包含逻辑模型和自定义价格
+ * @param result 上游调用结果
+ * @return 用量或价格未知时为 true
+ */
+func (s *Server) reasoningCostUnknown(row modelRoutingSelection, result reasoningCallResult) bool {
+	_, known := util.LookupEffectiveModelPricing(util.ResolveBillingModel(result.actualModel, row.logicalModel))
 	return !result.usageKnown || (!known && row.entry.Pricing == nil)
 }
 

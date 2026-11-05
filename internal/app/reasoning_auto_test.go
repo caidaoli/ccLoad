@@ -205,6 +205,14 @@ func reasoningAutoCompletedEvent(id, text string) map[string]any {
 	}
 }
 
+/**
+ * @brief 建立按判断模型路由的代理测试环境
+ * @param t 测试生命周期
+ * @param judgeURL System One 判断服务地址
+ * @param channels 业务渠道配置
+ * @param urls 与业务渠道一一对应的上游地址
+ * @return 已启用动态思考并关闭全冷却兜底的测试环境
+ */
 func setupReasoningAutoTestEnv(t testing.TB, judgeURL string, channels []testChannel, urls []string) *proxyTestEnv {
 	t.Helper()
 	if len(channels) != len(urls) {
@@ -218,7 +226,7 @@ func setupReasoningAutoTestEnv(t testing.TB, judgeURL string, channels []testCha
 		upstreamURLs[i+1] = url
 	}
 	policy, err := json.Marshal(model.ReasoningAutoConfig{
-		Enabled: true, DecisionChannelID: 1, DecisionModel: "judge",
+		Enabled: true, DecisionModel: "judge",
 		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna", "kimi-k3", "grok-4.7"}, TimeoutMS: 2000,
 	})
 	if err != nil {
@@ -299,10 +307,10 @@ func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 	}
 }
 
-// The judge chooses among the business model's own catalog levels, listed in
-// ascending order. A max answer is sent one level below max: automatic decisions
-// never pick max. Catalogs ccLoad has no executor for (kimi, xai) still supply
-// levels for generic channels.
+/**
+ * @brief 保存按模型判断的配置后立即更新后续请求，不重启服务
+ * @param t 测试上下文
+ */
 func TestReasoningAutoSettingAppliesWithoutRestart(t *testing.T) {
 	t.Parallel()
 	judge := newReasoningAutoJudge(t, "high")
@@ -323,7 +331,7 @@ func TestReasoningAutoSettingAppliesWithoutRestart(t *testing.T) {
 			t.Fatalf("save status=%d body=%s", w.Code, w.Body.String())
 		}
 	}
-	policy := model.ReasoningAutoConfig{Enabled: false, DecisionChannelID: 1, DecisionModel: "judge",
+	policy := model.ReasoningAutoConfig{Enabled: false, DecisionModel: "judge",
 		BusinessModels: []string{"gpt-5.6-sol"}, TimeoutMS: 2000}
 	headers := map[string]string{"Session-Id": "hot-reload"}
 

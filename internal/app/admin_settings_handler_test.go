@@ -858,7 +858,11 @@ func TestAdminRetiredSettingsHiddenButPreserved(t *testing.T) {
 	}
 }
 
-func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
+/**
+ * @brief 判断配置按模型校验可用 System One 渠道，无渠道 ID 也能保存并热生效
+ * @param t 测试上下文
+ */
+func TestReasoningAutoSettingsValidateModelAndPersist(t *testing.T) {
 	t.Parallel()
 	server := newInMemoryServer(t)
 	ctx := context.Background()
@@ -871,7 +875,7 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 		URLs: model.ChannelURLs{{URL: "https://chat.example", Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "gpt-5", RedirectModel: "gpt-5.4"}}}); err != nil {
 		t.Fatal(err)
 	}
-	policy := fmt.Sprintf(`{"enabled":true,"decision_channel_id":%d,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":2000}`, channel.ID)
+	policy := `{"enabled":true,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":2000}`
 	w := batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing credentials status=%d body=%s", w.Code, w.Body.String())
@@ -893,7 +897,7 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing business model status=%d body=%s", w.Code, w.Body.String())
 	}
-	for _, field := range []string{"enabled", "decision_channel_id", "decision_model", "business_models", "timeout_ms"} {
+	for _, field := range []string{"enabled", "decision_model", "business_models", "timeout_ms"} {
 		w = batchUpdateSetting(t, server, reasoningAutoSettingKey, fmt.Sprintf(`{"enabled":false,%q:null}`, field))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("null %s status=%d body=%s", field, w.Code, w.Body.String())
@@ -913,10 +917,34 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: chat.ID, KeyIndex: 0, APIKey: "chat-key"}}); err != nil {
 		t.Fatal(err)
 	}
-	chatPolicy := strings.Replace(policy, fmt.Sprintf(`"decision_channel_id":%d`, channel.ID), fmt.Sprintf(`"decision_channel_id":%d`, chat.ID), 1)
-	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, chatPolicy)
+	channel.Enabled = false
+	if _, err := server.store.UpdateConfig(ctx, channel.ID, channel); err != nil {
+		t.Fatal(err)
+	}
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "System One") {
 		t.Fatalf("chat decision status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 原配置中的固定渠道失效时，同模型的其他决策渠道仍允许保存。
+	backup, err := server.store.CreateConfig(ctx, &model.Config{Name: "backup decision", Enabled: true, AuthType: model.AuthTypeSystemOne,
+		URLs: model.ChannelURLs{{URL: "https://backup.example"}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest", RedirectModel: "jev-v2"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: backup.ID, KeyIndex: 0, APIKey: "backup-key", AllowedModels: []string{"other-model"}}}); err != nil {
+		t.Fatal(err)
+	}
+	legacyPolicy := strings.Replace(policy, `"enabled":true`, fmt.Sprintf(`"enabled":true,"decision_channel_id":%d`, channel.ID), 1)
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, legacyPolicy)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unauthorized decision key status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: backup.ID, KeyIndex: 1, APIKey: "allowed-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, legacyPolicy)
+	if w.Code != http.StatusOK || server.reasoningAuto.Load().DecisionModel != "jev-latest" {
+		t.Fatalf("legacy model policy status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

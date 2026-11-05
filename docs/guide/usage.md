@@ -154,7 +154,9 @@ The suffix is not a model identity: routing, auth, cooldown, logging, and the up
 System setting `reasoning_auto` lets a fast decision model pick the reasoning effort turn by turn for the models you list. It is off by default.
 
 1. Create a System One channel from **Channels → Add → System One channel**. Ordinary chat channels are too slow and are rejected both when saving the setting and at runtime.
-2. Open **Settings → Dynamic reasoning effort**, enable it, pick the decision channel and model, select the request models to cover (exact base names, no wildcards; an empty list enables nothing), and set the decision timeout (0.1–10 s, default 2 s). Apply, then **Save All Changes**; it takes effect immediately without a restart.
+2. Open **Settings → Dynamic reasoning effort**, enable it, pick the decision model, select the request models to cover (exact base names, no wildcards; an empty list enables nothing), and set the decision timeout (0.1–10 s, default 2 s). Apply, then **Save All Changes**; it takes effect immediately without a restart.
+
+Configure the same decision model on multiple System One channels to enable failover. Decisions use the existing channel priority, health and cooldown rules, trying the next candidate after a failure within the shared decision timeout. Existing configurations keep their decision model; `decision_channel_id` no longer restricts routing.
 
 For covered models:
 

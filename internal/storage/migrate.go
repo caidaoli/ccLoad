@@ -516,6 +516,14 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 	return fmt.Errorf("create index: %w", err)
 }
 
+/**
+ * @brief 初始化缺失的系统设置并更新已登记的设置元数据和历史迁移
+ * @param ctx 数据库操作上下文
+ * @param db 已连接的配置数据库
+ * @param dialect 数据库方言
+ * @return 初始化、元数据刷新或设置迁移失败时返回错误，成功时为 nil
+ * @note 保留已有用户配置值，显式历史迁移除外
+ */
 func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	healthDefaults := model.DefaultHealthScoreConfig()
 	responsesWSMaxSessionsDescription := fmt.Sprintf(
@@ -563,7 +571,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"global_cooldown_detection_rules", "{}", "json", "未配置渠道专属规则时继承的全局冷却探测规则", "{}"},
 		{"model_multimodal_fallback", "{}", "json", "多模态请求(含图片/文件等非文本内容)自动改用回退模型，JSON对象格式 {\"文本模型\":\"回退模型\"}", "{}"},
 		{"privacy_redaction", "{}", "json", "隐私脱敏配置（默认关闭，保存后立即生效）", "{}"},
-		{"reasoning_auto", `{ "enabled": false, "decision_channel_id": 0, "decision_model": "", "business_models": [], "timeout_ms": 2000 }`, "json", "动态思考等级配置（保存后立即生效）", `{ "enabled": false, "decision_channel_id": 0, "decision_model": "", "business_models": [], "timeout_ms": 2000 }`},
+		{"reasoning_auto", `{ "enabled": false, "decision_model": "", "business_models": [], "timeout_ms": 2000 }`, "json", "动态思考等级配置（保存后立即生效）", `{ "enabled": false, "decision_model": "", "business_models": [], "timeout_ms": 2000 }`},
 		{"model_custom_pricing", "{}", "json", "模型自定义价格覆盖（价格单位为美元/百万Token）", "{}"},
 		{"antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON, "json", "Antigravity systemInstruction 和 CodeBuddy system/developer 消息文本中使用零宽字符替换的敏感词 JSON 字符串数组", config.DefaultAntigravitySensitiveWordsJSON},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},

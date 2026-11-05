@@ -124,6 +124,10 @@ func buildManyFallbackPairs(count int) string {
 	return "{" + strings.Join(pairs, ",") + "}"
 }
 
+/**
+ * @brief 校验按模型判断的配置字段，并允许旧固定渠道字段作为未知字段载入
+ * @param t 测试上下文
+ */
 func TestReasoningAutoSettingValidation(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -131,15 +135,16 @@ func TestReasoningAutoSettingValidation(t *testing.T) {
 		valid bool
 	}{
 		{`{"enabled":false}`, true},
+		{`{"enabled":true,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":100}`, true},
 		{`{"enabled":true,"decision_channel_id":1,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":100}`, true},
 		{`{"enabled":true}`, false},
 		{`{"timeout_ms":99}`, false}, {`{"timeout_ms":10001}`, false},
 		{`{"business_models":["gpt-*"]}`, false}, {`{"business_models":["gpt-5(high)"]}`, false},
-		{`{"enabled":null}`, false}, {`{"decision_channel_id":null}`, false},
+		{`{"enabled":null}`, false}, {`{"decision_channel_id":null}`, true},
 		{`{"decision_model":null}`, false}, {`{"business_models":null}`, false}, {`{"timeout_ms":null}`, false},
 		{`{"ENABLED":null}`, false}, {`{"BUSINESS_MODELS":null}`, false},
 		{`{"enabled":null,"ENABLED":false}`, true}, {`{"business_models":null,"business_models":[]}`, true},
-		{`{"enabled":"false"}`, false}, {`{"decision_channel_id":"0"}`, false},
+		{`{"enabled":"false"}`, false}, {`{"decision_channel_id":"0"}`, true},
 		{`{"decision_model":0}`, false}, {`{"business_models":{}}`, false}, {`{"timeout_ms":"2000"}`, false},
 		{`null`, false}, {`[]`, false},
 	} {

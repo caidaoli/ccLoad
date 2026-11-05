@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -19,6 +21,15 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+/**
+ * @brief 创建按判断模型选路的执行器测试环境
+ * @param t 测试上下文
+ * @param judge 判断渠道及其模型和凭据
+ * @param handler 判断上游响应处理器
+ * @return 带独立业务渠道与判断渠道的代理环境
+ * @return 判断上游收到请求的原子计数器
+ * @note 上游测试服务器随测试结束关闭
+ */
 func reasoningExecutorEnv(t *testing.T, judge testChannel, handler http.HandlerFunc) (*proxyTestEnv, *atomic.Int32) {
 	t.Helper()
 	calls := new(atomic.Int32)
@@ -33,7 +44,7 @@ func reasoningExecutorEnv(t *testing.T, judge testChannel, handler http.HandlerF
 	}))
 	t.Cleanup(business.Close)
 	env := setupProxyTestEnv(t, []testChannel{{name: "business", models: "gpt-5.6", apiKey: "business-key"}, judge}, map[int]string{0: business.URL, 1: upstream.URL})
-	env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionChannelID: 2, DecisionModel: strings.Split(judge.models, ",")[0], BusinessModels: []string{"gpt-5.6"}, TimeoutMS: 1000})
+	env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionModel: strings.Split(judge.models, ",")[0], BusinessModels: []string{"gpt-5.6"}, TimeoutMS: 1000})
 	return env, calls
 }
 
@@ -295,6 +306,199 @@ func TestReasoningDecisionRejectsChatChannel(t *testing.T) {
 		t.Fatalf("decision=%+v error=%v calls=%d", result, err, calls.Load())
 	}
 }
+
+/**
+ * @brief 判断渠道失败后按模型切换渠道，并独立记录各次尝试的渠道、状态与用量
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionModelFailover(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		status        int
+		response      string
+		reason        string
+		input, output int
+	}{
+		{name: "unavailable", status: http.StatusServiceUnavailable, response: `{"error":{"message":"unavailable"}}`, reason: "upstream_error"},
+		{name: "rate limited", status: http.StatusTooManyRequests, response: `{"error":{"message":"limited"}}`, reason: "rate_limited"},
+		{name: "unauthorized", status: http.StatusUnauthorized, response: `{"error":{"message":"unauthorized"}}`, reason: "authentication_failed"},
+		{name: "invalid answer", status: http.StatusOK, response: `{"answers":{},"usage":{"input_tokens":7,"output_tokens":2}}`, reason: "invalid_response", input: 7, output: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			first := newReasoningAutoJudge(t)
+			first.respond = func(w http.ResponseWriter, _ *http.Request, _ int) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.response)
+			}
+			second := newReasoningAutoJudge(t, "xhigh")
+			business := newReasoningAutoBusiness(t)
+			env := setupReasoningAutoTestEnv(t, first.server.URL, []testChannel{
+				{name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol"},
+				{name: "second-judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge", priority: -10},
+			}, []string{business.server.URL, second.server.URL})
+			reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Analyze concurrent migration failures."), nil)
+			assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+			if len(first.snapshot()) != 1 || len(second.snapshot()) != 1 {
+				t.Fatalf("decision attempts: first=%d second=%d", len(first.snapshot()), len(second.snapshot()))
+			}
+			for _, want := range []struct {
+				channelID     int64
+				status        int
+				input, output int
+				decision      string
+				reason        string
+			}{
+				{channelID: 1, status: tc.status, input: tc.input, output: tc.output, decision: "fallback", reason: tc.reason},
+				{channelID: 3, status: http.StatusOK, input: 1000, output: 100, decision: "decided"},
+			} {
+				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+					return entry.ClientProtocol == "system_one" && entry.ChannelID == want.channelID
+				})
+				if entry == nil || entry.StatusCode != want.status || entry.Model != "judge" || entry.InputTokens != want.input || entry.OutputTokens != want.output || entry.AuthTokenID != 0 {
+					t.Fatalf("channel %d attempt log=%+v", want.channelID, entry)
+				}
+				if entry.ReasoningDecision == nil || entry.ReasoningDecision.Status != want.decision || entry.ReasoningDecision.Reason != want.reason {
+					t.Fatalf("channel %d decision metadata=%+v", want.channelID, entry.ReasoningDecision)
+				}
+			}
+			entry := waitForProxyLog(t, env, "gpt-5.6-sol")
+			if entry.ReasoningDecision == nil || entry.ReasoningDecision.Status != "decided" || entry.ReasoningDecision.SuggestedEffort != "xhigh" {
+				t.Fatalf("business decision metadata=%+v", entry.ReasoningDecision)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 判断模型选路跳过不可用渠道及未授权模型行，保留选定行的重定向与定价
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionModelCandidates(t *testing.T) {
+	t.Parallel()
+	cooled := newReasoningAutoJudge(t)
+	var rejectedCalls, selectedCalls atomic.Int32
+	rejected := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		rejectedCalls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(rejected.Close)
+	selected := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		selectedCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path != "/v1/systemone" || r.Header.Get("Authorization") != "Bearer allowed-key" || gjson.GetBytes(body, "model").String() != "judge-v2" {
+			t.Errorf("selected decision request: path=%s authorization=%s body=%s", r.URL.Path, r.Header.Get("Authorization"), body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"answers":{"effort":{"type":"choice","choice":"xhigh"}},"usage":{"input_tokens":12,"output_tokens":6}}`)
+	}))
+	t.Cleanup(selected.Close)
+	business := newReasoningAutoBusiness(t)
+	inputPrice, outputPrice, unavailablePrice := 1.0, 2.0, 99.0
+	env := setupReasoningAutoTestEnv(t, cooled.server.URL, []testChannel{
+		{name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol"},
+		{name: "chat-judge", upstreamProtocol: "openai", models: "judge", priority: 300},
+		{name: "disabled-judge", authType: model.AuthTypeSystemOne, models: "judge", priority: 200},
+		{name: "selected-judge", authType: model.AuthTypeSystemOne, priority: 10, modelEntries: []model.ModelEntry{
+			{Model: "judge", RedirectModel: "judge-v1", Pricing: &util.CustomModelPrice{InputPrice: &unavailablePrice, OutputPrice: &unavailablePrice}},
+			{Model: "judge", RedirectModel: "judge-v2", Pricing: &util.CustomModelPrice{InputPrice: &inputPrice, OutputPrice: &outputPrice}},
+		}},
+	}, []string{business.server.URL, rejected.URL, rejected.URL, selected.URL})
+	ctx := context.Background()
+	if err := env.store.SetChannelCooldown(ctx, 1, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := env.store.GetConfig(ctx, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled.Enabled = false
+	if _, err := env.store.UpdateConfig(ctx, disabled.ID, disabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.DeleteAllAPIKeys(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: 5, KeyIndex: 0, APIKey: "denied-key", Priority: 100, AllowedModels: []string{"other-model"}},
+		{ChannelID: 5, KeyIndex: 1, APIKey: "allowed-key", Priority: -10, AllowedModels: []string{"judge"}, DetectedModels: []string{"judge-v2"}, CostMultiplier: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	env.server.InvalidateAPIKeysCache(5)
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Analyze an unresolved concurrency defect."), nil)
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+	if len(cooled.snapshot()) != 0 || rejectedCalls.Load() != 0 || selectedCalls.Load() != 1 {
+		t.Fatalf("candidate calls: cooled=%d rejected=%d selected=%d", len(cooled.snapshot()), rejectedCalls.Load(), selectedCalls.Load())
+	}
+	entry := waitForDecisionLog(t, env)
+	if entry.ChannelID != 5 || entry.Model != "judge" || entry.ActualModel != "judge-v2" {
+		t.Fatalf("redirected decision log=%+v", entry)
+	}
+	if entry.ReasoningDecision == nil || entry.ReasoningDecision.CostUnknown || math.Abs(entry.Cost-0.000024) > 1e-12 {
+		t.Fatalf("selected model row pricing: cost=%v decision=%+v", entry.Cost, entry.ReasoningDecision)
+	}
+}
+
+/**
+ * @brief 判断超时或业务请求取消后不再尝试后续渠道
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionFailoverStopsOnContextDone(t *testing.T) {
+	t.Parallel()
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelled=%v", cancelled), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			first := newReasoningAutoJudge(t)
+			first.respond = func(_ http.ResponseWriter, r *http.Request, _ int) {
+				if cancelled {
+					cancel()
+				}
+				<-r.Context().Done()
+			}
+			second := newReasoningAutoJudge(t)
+			business := newReasoningAutoBusiness(t)
+			env := setupReasoningAutoTestEnv(t, first.server.URL, []testChannel{
+				{name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol"},
+				{name: "second-judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge", priority: -10},
+			}, []string{business.server.URL, second.server.URL})
+			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.TimeoutMS = 100 })
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"Analyze concurrent migration failures."}]}`)).WithContext(ctx)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			response := httptest.NewRecorder()
+			start := time.Now()
+			env.engine.ServeHTTP(response, req)
+			if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+				t.Fatalf("decision exceeded timeout/cancellation budget: %v", elapsed)
+			}
+			if len(first.snapshot()) != 1 || len(second.snapshot()) != 0 {
+				t.Fatalf("decision attempts: first=%d second=%d", len(first.snapshot()), len(second.snapshot()))
+			}
+			reason := "timeout"
+			if cancelled {
+				reason = "cancelled"
+				if len(business.snapshot()) != 0 {
+					t.Fatal("cancelled request reached business upstream")
+				}
+			} else {
+				if response.Code != http.StatusOK || len(business.snapshot()) != 1 {
+					t.Fatalf("timeout fallback status=%d business calls=%d", response.Code, len(business.snapshot()))
+				}
+			}
+			entry := waitForDecisionLog(t, env)
+			if entry.ReasoningDecision == nil || entry.ReasoningDecision.Reason != reason {
+				t.Fatalf("decision metadata=%+v, want %s", entry.ReasoningDecision, reason)
+			}
+		})
+	}
+}
+
 func TestReasoningDecisionSystemOneRedirectAndCustomPrice(t *testing.T) {
 	t.Parallel()
 	inputPrice, outputPrice := 1.0, 2.0
@@ -339,6 +543,10 @@ func (s slowReasoningCooldownStore) BumpModelCooldown(ctx context.Context, _ int
 	}
 }
 
+/**
+ * @brief 冷却持久化耗尽判断预算后业务请求降级，且不再尝试下一判断渠道
+ * @param t 测试上下文
+ */
 func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 	t.Parallel()
 	judge := newReasoningAutoJudge(t)
@@ -347,10 +555,12 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(w, `{"error":{"message":"limited"}}`)
 	}
+	second := newReasoningAutoJudge(t)
 	business := newReasoningAutoBusiness(t)
-	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
-		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
-	}}, []string{business.server.URL})
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{
+		{name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol"},
+		{name: "second-judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge", priority: -10},
+	}, []string{business.server.URL, second.server.URL})
 	editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.TimeoutMS = 100 })
 	env.server.cooldownManager = cooldown.NewManager(slowReasoningCooldownStore{env.store}, env.server)
 	start := time.Now()
@@ -360,6 +570,9 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 	}
 	if len(business.snapshot()) != 1 {
 		t.Fatal("business request did not proceed after the decision timeout")
+	}
+	if len(second.snapshot()) != 0 {
+		t.Fatal("decision tried another channel after the cooldown write exhausted its budget")
 	}
 	decisionLog := waitForDecisionLog(t, env)
 	proxyLog := waitForProxyLog(t, env, "gpt-5.6-sol")

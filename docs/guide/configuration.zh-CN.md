@@ -116,7 +116,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `model_multimodal_fallback` | `{}` | JSON 映射 `{"非视觉模型":"回退模型"}`（最多 64 条 / 8 KB）；保存后立即生效，无需重启 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
 | `model_custom_pricing` | `{}` | JSON 对象，覆盖模型价格（单位：美元/百万 Token）；优先级高于 models.dev 目录和内嵌定价 |
-| `reasoning_auto` | `{"enabled":false,…,"timeout_ms":2000}` | 动态思考等级：`enabled`、`decision_channel_id`（须为 System One 决策渠道）、`decision_model`、`business_models`（精确基名，空名单不启用）、`timeout_ms`（100–10000）；保存后立即生效，见[使用指南](usage.zh-CN.md#动态思考等级) |
+| `reasoning_auto` | `{"enabled":false,…,"timeout_ms":2000}` | 动态思考等级：`enabled`、`decision_model`（按模型选择启用的 System One 渠道并故障转移）、`business_models`（精确基名，空名单不启用）、`timeout_ms`（100–10000）；保存后立即生效，见[使用指南](usage.zh-CN.md#动态思考等级) |
 | `privacy_redaction` | `{}` | 隐私脱敏规则（默认关闭）；建议在设置页「隐私脱敏」弹窗中编辑，保存后立即生效，见[使用指南](usage.zh-CN.md#隐私脱敏) |
 | `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数；`0` 使用内建默认值 |
 | `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数；`0` 使用内建默认值 |

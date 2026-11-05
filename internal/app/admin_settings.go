@@ -250,8 +250,11 @@ func (s *Server) AdminGetSetting(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, setting)
 }
 
-// AdminBatchUpdateSettings 批量更新配置(事务保护)
-// POST /admin/settings/batch
+/**
+ * @brief 串行校验并批量保存系统设置，发布可热更新项，其余设置触发重启
+ * @param c POST /admin/settings/batch 的请求及响应上下文
+ * @note 校验或持久化失败时不发布运行态；设置更新期间持有 settingsUpdateMu
+ */
 func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 	s.settingsUpdateMu.Lock()
 	defer s.settingsUpdateMu.Unlock()
@@ -280,7 +283,7 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 		if key == reasoningAutoSettingKey {
 			policy, err := ParseReasoningAutoConfig(value)
 			if err == nil {
-				err = s.validateReasoningAutoChannel(c.Request.Context(), policy)
+				err = s.validateReasoningAutoModels(c.Request.Context(), policy)
 			}
 			if err != nil {
 				RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid value for %s: %v", key, err))

@@ -229,6 +229,9 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
       removeAttribute: name => attributes.delete(name),
       getAttribute: name => attributes.get(name) ?? null,
       innerHTML: '',
+      get options() {
+        return [...this.innerHTML.matchAll(/<option value="([^"]*)"/g)].map(match => ({ value: match[1] }));
+      },
       insertAdjacentHTML(_position, html) { this.innerHTML += html; },
       focus() { global.document.activeElement = this; }
     };
@@ -1268,8 +1271,8 @@ test('设置加载失败时提供重试入口并重新加载', async (t) => {
 });
 
 test('dynamic reasoning setting validates and saves its JSON contract without a restart', async (t) => {
-  const initial = JSON.stringify({ enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 });
-  const value = JSON.stringify({ enabled: true, decision_channel_id: 7, decision_model: 'jev-latest', business_models: ['gpt-5'], timeout_ms: 1500 });
+  const initial = JSON.stringify({ enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 });
+  const value = JSON.stringify({ enabled: true, decision_model: 'jev-latest', business_models: ['gpt-5'], timeout_ms: 1500 });
   const page = await loadSettingsPage(t, [{key: 'reasoning_auto', value: initial, value_type: 'string'}], {reasoning_auto: initial});
   page.inputs.reasoning_auto.value = value;
   page.setAllowSave(true);
@@ -1308,7 +1311,7 @@ test('invalid persisted reasoning JSON leaves settings reload and repair usable'
 
 test('persisted reasoning JSON formatting does not mark the page dirty', async (t) => {
   const persisted = '{ "enabled": false, "timeout_ms": 2000 }';
-  const rendered = JSON.stringify({ enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 });
+  const rendered = JSON.stringify({ enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 });
   const page = await loadSettingsPage(t, [{ key: 'reasoning_auto', value: persisted, value_type: 'json' }], { reasoning_auto: rendered });
   assert.equal(page.hasUnsavedChanges(), false);
 });
@@ -1317,7 +1320,7 @@ test('reasoning editor rejects explicit null and incorrect field types', async (
   const initial = JSON.stringify({ enabled: false });
   const page = await loadSettingsPage(t, [{ key: 'reasoning_auto', value: initial, value_type: 'json' }], { reasoning_auto: initial });
   page.setAllowSave(true);
-  for (const [field, invalid] of Object.entries({ enabled: 'false', decision_channel_id: '0', decision_model: 0, business_models: {}, timeout_ms: '2000' })) {
+  for (const [field, invalid] of Object.entries({ enabled: 'false', decision_model: 0, business_models: {}, timeout_ms: '2000' })) {
     for (const value of [null, invalid]) {
       page.editInput('reasoning_auto', JSON.stringify({ enabled: false, [field]: value }));
       page.saveButton.click();
@@ -1347,7 +1350,7 @@ test('reasoning business models reject only parseable thinking suffixes and wild
   assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto), JSON.parse(accepted));
 });
 
-const reasoningDefaults = { enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 };
+const reasoningDefaults = { enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 };
 const privacyDefaults = {
   enabled: false, secrets: true, personal: false,
   kinds: { ssn: true, passport: true, iban: true, birthday: true, mac: true, serial: true, home: false, userhost: false, ip: false, bucket: false },
@@ -1766,7 +1769,7 @@ test('privacy save validates list and rule boundaries even when disabled', async
   assert.equal(saveRequests(page).length, 1);
 });
 
-const reasoningConfigured = { ...reasoningDefaults, enabled: true, decision_channel_id: 7, decision_model: 'judge', business_models: ['gpt-5'], timeout_ms: 1500 };
+const reasoningConfigured = { ...reasoningDefaults, enabled: true, decision_model: 'judge', business_models: ['gpt-5'], timeout_ms: 1500 };
 
 async function loadReasoningPage(t, config = reasoningConfigured, options = {}) {
   const value = JSON.stringify(config);
@@ -1850,24 +1853,47 @@ test('Escape closes the reasoning modal even when focus left the modal', async (
   assert.equal(page.inputs.reasoning_auto.value, original);
 });
 
-test('reasoning decision channel offers only System One channels', async (t) => {
-  const page = await loadReasoningPage(t);
+test('reasoning decision models combine enabled System One channels and deduplicate enabled models', async (t) => {
+  const page = await loadReasoningPage(t, reasoningConfigured, {
+    channels: [
+      { id: 7, enabled: true, auth_type: 'system_one', models: ['judge', { model: 'shared', disabled: false }, { model: 'disabled', disabled: true }] },
+      { id: 8, enabled: true, auth_type: 'system_one', models: [{ model: 'other-judge' }, 'shared', { model: 'judge', disabled: true }] },
+      { id: 9, enabled: true, auth_type: 'api_key', models: ['chat'] },
+      { id: 10, enabled: false, auth_type: 'system_one', models: ['offline-judge'] }
+    ]
+  });
   await page.openReasoning();
-  const values = [...page.reasoningField('reasoningDecisionChannel').innerHTML.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
-  assert.deepEqual(values, ['0', '7', '8']);
+  const select = page.reasoningField('reasoningDecisionModel');
+  assert.deepEqual(select.options.map(option => option.value), ['', 'judge', 'shared', 'other-judge']);
+  assert.equal(select.value, 'judge');
 });
 
-test('changing reasoning decision channel clears the old decision model', async (t) => {
+test('reasoning decision model is required when enabled and can change across channels', async (t) => {
   const page = await loadReasoningPage(t);
   await page.openReasoning();
-  page.editReasoningField('decision_channel_id', 8);
-  assert.equal(page.reasoningField('reasoningDecisionModel').value, '');
+  page.editReasoningField('decision_model', '');
   page.reasoningAction('apply-reasoning-auto');
   assert.equal(page.hasUnsavedChanges(), false);
   assert.equal(page.reasoningError.hidden, false);
   page.editReasoningField('decision_model', 'other-judge');
   page.reasoningAction('apply-reasoning-auto');
-  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...reasoningConfigured, decision_channel_id: 8, decision_model: 'other-judge' });
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...reasoningConfigured, decision_model: 'other-judge' });
+});
+
+test('reasoning preserves a stored decision model absent from enabled channels and saves without a channel ID', async (t) => {
+  const page = await loadReasoningPage(t, { ...reasoningConfigured, decision_channel_id: 99, decision_model: 'retired-judge' });
+  await page.openReasoning();
+  const select = page.reasoningField('reasoningDecisionModel');
+  assert.deepEqual(select.options.map(option => option.value), ['', 'retired-judge', 'judge', 'other-judge']);
+  assert.equal(select.value, 'retired-judge');
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.editReasoningField('timeout_ms', 3);
+  page.reasoningAction('apply-reasoning-auto');
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  const saved = JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto);
+  assert.deepEqual(saved, { ...reasoningConfigured, decision_model: 'retired-judge', timeout_ms: 3000 });
 });
 
 test('invalid reasoning timeout cannot apply a modal draft', async (t) => {
@@ -1906,11 +1932,13 @@ test('invalid persisted reasoning is locked until reset and reset cancellation p
   const original = page.inputs.reasoning_auto.value;
   await page.openReasoning();
   assert.equal(page.reasoningField('reasoningTimeout').disabled, true);
+  assert.equal(page.reasoningField('reasoningDecisionModel').disabled, true);
   page.editReasoningField('timeout_ms', 3);
   page.reasoningAction('apply-reasoning-auto');
   assert.equal(page.inputs.reasoning_auto.value, original);
   page.reasoningAction('reset-reasoning-auto');
   assert.equal(page.reasoningField('reasoningTimeout').disabled, false);
+  assert.equal(page.reasoningField('reasoningDecisionModel').disabled, false);
   page.editReasoningField('timeout_ms', 3);
   assert.equal(page.inputs.reasoning_auto.value, original);
   page.reasoningAction('close-reasoning-auto');
@@ -1928,7 +1956,6 @@ test('reasoning option load failure preserves the stored decision and selected m
   const page = await loadReasoningPage(t, reasoningConfigured, { reasoningLoadError: 'offline' });
   await page.openReasoning();
   assert.equal(page.reasoningError.hidden, false);
-  assert.equal(page.reasoningField('reasoningDecisionChannel').value, '7');
   assert.equal(page.reasoningField('reasoningDecisionModel').value, 'judge');
   assert.deepEqual(page.reasoningModels().map(input => [input.value, input.checked]), [['gpt-5', true]]);
   page.editReasoningField('timeout_ms', 2.5);

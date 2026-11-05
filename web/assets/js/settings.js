@@ -279,7 +279,7 @@ function validateCustomPricingInput(value) {
   return '';
 }
 
-const reasoningAutoDefaults = { enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 };
+const reasoningAutoDefaults = { enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 };
 let reasoningAutoChannels = [];
 // 持久化值无效时编辑器锁定：控件只能显示默认值，任何编辑都会覆盖真实配置，只允许通过重置恢复。
 let reasoningAutoLocked = false;
@@ -297,8 +297,8 @@ function parseReasoningAuto(value) {
 }
 
 function formatReasoningAuto(config) {
-  const { enabled, decision_channel_id, decision_model, business_models, timeout_ms } = config;
-  return JSON.stringify({ enabled, decision_channel_id, decision_model, business_models, timeout_ms });
+  const { enabled, decision_model, business_models, timeout_ms } = config;
+  return JSON.stringify({ enabled, decision_model, business_models, timeout_ms });
 }
 
 function validateReasoningAuto(value) {
@@ -307,13 +307,12 @@ function validateReasoningAuto(value) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return t('settings.reasoningAuto.invalid');
   config = { ...reasoningAutoDefaults, ...config };
   if (typeof config.enabled !== 'boolean'
-    || !Number.isSafeInteger(config.decision_channel_id) || config.decision_channel_id < 0
     || typeof config.decision_model !== 'string'
     || !Array.isArray(config.business_models)
     || config.business_models.some(model => typeof model !== 'string' || !model.trim() || /[*?]/.test(model) || hasThinkingSuffix(model.trim()))
     || new Set(config.business_models.map(model => model.trim())).size !== config.business_models.length
     || !Number.isSafeInteger(config.timeout_ms) || config.timeout_ms < 100 || config.timeout_ms > 10000
-    || (config.enabled && (!config.decision_channel_id || !config.decision_model.trim() || !config.business_models.length))) {
+    || (config.enabled && (!config.decision_model.trim() || !config.business_models.length))) {
     return t('settings.reasoningAuto.invalid');
   }
   return '';
@@ -339,9 +338,6 @@ function renderReasoningAutoEditor(value) {
       ${label('enabled')}
     </label>
     <div class="reasoning-auto-fields">
-      <div><label class="form-label" for="reasoningDecisionChannel">${label('channel')}</label>
-        <select class="form-input" id="reasoningDecisionChannel" data-reasoning-field="decision_channel_id"${disabled}></select>
-      </div>
       <div><label class="form-label" for="reasoningDecisionModel">${label('model')}</label>
         <select class="form-input" id="reasoningDecisionModel" data-reasoning-field="decision_model"${disabled}></select>
       </div>
@@ -364,7 +360,7 @@ function renderReasoningAutoEditor(value) {
     </div>
     <p class="settings-dialog-note">${label('note')}</p>
   </div>`;
-  refreshReasoningChannelOptions();
+  refreshReasoningModelOptions(config.decision_model);
   renderReasoningBusinessModels();
 }
 
@@ -398,27 +394,17 @@ function updateReasoningModelsSelectAll() {
 }
 
 function refreshReasoningModelOptions(selected) {
-  const channel = reasoningAutoChannels.find(item => item.id === Number(document.getElementById('reasoningDecisionChannel')?.value));
   const select = document.getElementById('reasoningDecisionModel');
   if (!select) return;
-  const models = [...new Set((channel?.models || []).filter(item => !item.disabled).map(item => typeof item === 'string' ? item : item.model).filter(Boolean))];
+  const models = [...new Set(reasoningAutoChannels
+    .filter(channel => channel.auth_type === 'system_one' && channel.enabled)
+    .flatMap(channel => channel.models || [])
+    .filter(item => !item.disabled)
+    .map(item => typeof item === 'string' ? item : item.model)
+    .filter(Boolean))];
   if (selected && !models.includes(selected)) models.unshift(selected);
   select.innerHTML = `<option value="">—</option>` + models.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join('');
   select.value = selected || '';
-}
-
-function refreshReasoningChannelOptions() {
-  const select = document.getElementById('reasoningDecisionChannel');
-  if (!select || !reasoningAutoDraft) return;
-  const selected = String(reasoningAutoDraft.decision_channel_id);
-  // 只有决策渠道（System One）够快，能在每个业务请求前完成判断。
-  const channels = reasoningAutoChannels.filter(channel => channel.auth_type === 'system_one' && (channel.enabled || String(channel.id) === selected));
-  select.innerHTML = '<option value="0">—</option>' + channels.map(channel => `<option value="${channel.id}">${escapeHtml(channel.name)}</option>`).join('');
-  if (selected !== '0' && !channels.some(channel => String(channel.id) === selected)) {
-    select.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`);
-  }
-  select.value = selected;
-  refreshReasoningModelOptions(reasoningAutoDraft.decision_model);
 }
 
 function showReasoningAutoError(message) {
@@ -437,7 +423,7 @@ async function loadReasoningAutoOptions() {
     if (reasoningAutoDraft !== draft) return;
     reasoningAutoChannels = Array.isArray(channels) ? channels : [];
     reasoningAutoModels = [...new Set([...reasoningAutoModels, ...(options?.models || [])])].filter(model => typeof model === 'string' && model.trim() && !/[*?]/.test(model) && !hasThinkingSuffix(model));
-    refreshReasoningChannelOptions();
+    refreshReasoningModelOptions(reasoningAutoDraft.decision_model);
     renderReasoningBusinessModels();
   } catch (error) {
     if (reasoningAutoDraft === draft) showReasoningAutoError(t('settings.reasoningAuto.loadFailed') + ': ' + error.message);
@@ -528,11 +514,7 @@ function bindReasoningAutoModal() {
       reasoningAutoDraft.business_models = [...models];
       updateReasoningModelsSelectAll();
     } else if (field === 'enabled') reasoningAutoDraft.enabled = input.checked;
-    else if (field === 'decision_channel_id') {
-      reasoningAutoDraft.decision_channel_id = Number(input.value);
-      reasoningAutoDraft.decision_model = '';
-      refreshReasoningModelOptions('');
-    } else if (field === 'decision_model') reasoningAutoDraft.decision_model = input.value;
+    else if (field === 'decision_model') reasoningAutoDraft.decision_model = input.value;
     else if (field === 'timeout_ms') reasoningAutoDraft.timeout_ms = reasoningTimeoutMs(input.value);
   });
   modal.addEventListener('keydown', event => {
