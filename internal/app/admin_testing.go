@@ -1537,6 +1537,14 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 	return map[string]any{"success": false, "error": "渠道测试失败: 未找到可用URL"}
 }
 
+/**
+ * @brief 通过 SDK 执行 Cursor 渠道测试，展示客户端响应并按真实用量计费。
+ * @param reqCtx 当前测试请求上下文。
+ * @param cfg 测试渠道及凭证快照。
+ * @param apiKey 构造客户端请求所需的凭证。
+ * @param testReq 已绑定渠道模型价格的测试请求。
+ * @return 测试结果，usage 保存真实用量，usage_estimate 仅用于展示。
+ */
 func (s *Server) testCursorOAuthChannel(
 	reqCtx context.Context,
 	cfg *model.Config,
@@ -1629,6 +1637,9 @@ func (s *Server) testCursorOAuthChannel(
 	if proxyRes == nil {
 		return fail(http.StatusBadGateway, "Cursor SDK Bridge 未返回结果", false)
 	}
+	defer populateCursorTestUsageAndCost(
+		result, &attemptReq, requestBodyServiceTier(protocol.Protocol(clientProtocol), body), proxyRes.forwarded,
+	)
 	status := proxyRes.status
 	bodyBytes := proxyRes.body
 	if rec.Body.Len() > 0 {
@@ -1647,14 +1658,6 @@ func (s *Server) testCursorOAuthChannel(
 		result["success"] = true
 		result["message"] = "API测试成功"
 		if testReq.Stream {
-			usageParser := newSSEUsageParser(clientProtocol)
-			_ = usageParser.Feed(bodyBytes)
-			populateTestNormalizedUsageAndCost(
-				result,
-				&attemptReq,
-				requestBodyServiceTier(protocol.Protocol(clientProtocol), body),
-				usageParser,
-			)
 			result["response_text"] = string(proxyRes.body)
 			result["raw_response"] = rec.Body.String()
 			result["upstream_response_body"] = rec.Body.String()
@@ -1672,14 +1675,6 @@ func (s *Server) testCursorOAuthChannel(
 			result["upstream_response_body"] = string(bodyBytes)
 			return result
 		}
-		usageParser := newJSONUsageParser(clientProtocol)
-		_ = usageParser.Feed(bodyBytes)
-		populateTestNormalizedUsageAndCost(
-			result,
-			&attemptReq,
-			requestBodyServiceTier(protocol.Protocol(clientProtocol), body),
-			usageParser,
-		)
 		result["success"] = true
 		result["message"] = "API测试成功"
 		result["upstream_response_body"] = string(bodyBytes)
@@ -2886,33 +2881,82 @@ func (s *Server) bindChannelTestBilling(cfg *model.Config, testReq *testutil.Tes
 	}
 }
 
-// channelTestCostUSD 与代理 computeRequestCostWithPrice 同一口径计算测试成本：计费模型由
-// ResolveBillingModel 在实际上游模型与请求模型间选择，service_tier 合并请求声明与上游回显，
-// 渠道模型价格整份替换标准价格。没有 token 用量时只计工具费用；ok=false 表示无可计费用量。
+/**
+ * @brief 使用 SDK 的真实用量填充管理测试与聊天日志，估算独立保留。
+ * @param result 待补充真实用量与成本的测试结果。
+ * @param testReq 已绑定价格的实际上游测试请求。
+ * @param requestedServiceTier 请求声明的计费档位。
+ * @param forwarded SDK 转发结果；nil 表示发送前已失败，不产生用量。
+ */
+func populateCursorTestUsageAndCost(result map[string]any, testReq *testutil.TestChannelRequest, requestedServiceTier string, forwarded *fwResult) {
+	if forwarded == nil {
+		return
+	}
+	result["usage"] = map[string]any{
+		"input_tokens":                forwarded.InputTokens,
+		"output_tokens":               forwarded.OutputTokens,
+		"reasoning_tokens":            forwarded.ReasoningTokens,
+		"cache_read_input_tokens":     forwarded.CacheReadInputTokens,
+		"cache_creation_input_tokens": forwarded.CacheCreationInputTokens,
+		"cache_5m_input_tokens":       forwarded.Cache5mInputTokens,
+		"cache_1h_input_tokens":       forwarded.Cache1hInputTokens,
+	}
+	if forwarded.UsageEstimate != nil {
+		result["usage_estimate"] = forwarded.UsageEstimate
+	}
+	if cost, ok := channelTestCostFromUsage(testReq, testReq.Model, requestedServiceTier, forwarded); ok {
+		result["cost_usd"] = cost
+	}
+}
+
+/**
+ * @brief 从响应解析器提取真实用量，按代理统一口径计算管理测试成本。
+ * @param testReq 已绑定渠道模型价格的测试请求。
+ * @param actualModel 实际请求的上游模型。
+ * @param requestedServiceTier 请求声明的计费档位。
+ * @param parser 上游响应的用量解析器。
+ * @return 标准 Token 成本与工具成本之和。
+ * @return 存在可计费用量时为 true，否则为 false。
+ */
 func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, requestedServiceTier string, parser usageParser) (float64, bool) {
 	input, output, cacheRead, cacheCreation := parser.GetUsage()
 	cache5m, cache1h, observedServiceTier := parser.GetCacheBreakdown()
-	toolCost := parser.GetToolCostUSD()
-	if input+output+cacheRead+cacheCreation <= 0 {
-		return toolCost, toolCost > 0
-	}
-	requestModel := testReq.RequestModel
-	if requestModel == "" {
-		requestModel = testReq.Model
-	}
-	billingModel := util.ResolveBillingModel(model.RoutingModelName(actualModel), model.RoutingModelName(requestModel))
-	serviceTier := resolveBillingServiceTier(requestedServiceTier, observedServiceTier)
-	return computeRequestCostWithPrice(billingModel, serviceTier, testReq.ChannelModelPrice, &fwResult{
+	return channelTestCostFromUsage(testReq, actualModel, requestedServiceTier, &fwResult{
 		InputTokens:              input,
 		OutputTokens:             output,
 		CacheReadInputTokens:     cacheRead,
 		CacheCreationInputTokens: cacheCreation,
 		Cache5mInputTokens:       cache5m,
 		Cache1hInputTokens:       cache1h,
-		ServiceTier:              serviceTier,
+		ServiceTier:              observedServiceTier,
 		RateCard:                 openAIRateCard(testReq.CodexOAuth, parser.GetCodexHasCredits()),
-		ToolCostUSD:              toolCost,
-	}), true
+		ToolCostUSD:              parser.GetToolCostUSD(),
+	})
+}
+
+/**
+ * @brief 按真实转发用量和渠道价格计算管理测试成本。
+ * @param testReq 已绑定渠道模型价格的测试请求。
+ * @param actualModel 实际请求的上游模型。
+ * @param requestedServiceTier 请求声明的计费档位。
+ * @param usage 真实 Token 与工具用量；nil 表示未发送请求。
+ * @return 标准 Token 成本与工具成本之和。
+ * @return 存在可计费用量时为 true，否则为 false。
+ */
+func channelTestCostFromUsage(testReq *testutil.TestChannelRequest, actualModel, requestedServiceTier string, usage *fwResult) (float64, bool) {
+	if usage == nil {
+		return 0, false
+	}
+	if usage.InputTokens+usage.OutputTokens+usage.CacheReadInputTokens+usage.CacheCreationInputTokens <= 0 {
+		return usage.ToolCostUSD, usage.ToolCostUSD > 0
+	}
+	requestModel := testReq.RequestModel
+	if requestModel == "" {
+		requestModel = testReq.Model
+	}
+	billingModel := util.ResolveBillingModel(model.RoutingModelName(actualModel), model.RoutingModelName(requestModel))
+	serviceTier := resolveBillingServiceTier(requestedServiceTier, usage.ServiceTier)
+	return computeRequestCostWithPrice(billingModel, serviceTier, testReq.ChannelModelPrice, usage), true
 }
 
 func testRequestThinkingEffort(testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan) string {

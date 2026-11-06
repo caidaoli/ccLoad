@@ -214,7 +214,9 @@ type chatURLAttemptResult struct {
 	streamResult *chatStreamResult
 }
 
-// chatStreamResult collects timing and usage from a chat stream for the summary event.
+/**
+ * @brief 保存聊天展示用量、真实 SDK 用量与请求时序。
+ */
 type chatStreamResult struct {
 	start            time.Time
 	firstContentTime time.Time
@@ -227,16 +229,25 @@ type chatStreamResult struct {
 	capacityRetries  int
 	errorResult      map[string]any
 	debugData        *model.DebugLogEntry
+	forwarded        *fwResult ///< Cursor 的真实转发用量；nil 表示尚未发送或提前失败。
 
 	// requestedServiceTier 是上游请求体声明的计费档位，与上游回显合并后参与计费。
 	requestedServiceTier string
 }
 
-// costUSD 与非流式测试、代理同一口径计算本次流式测试成本；ok=false 表示无可计费用量。
+/**
+ * @brief 按真实上游用量计算聊天成本，Cursor 的客户端估算不参与计费。
+ * @param testReq 已绑定渠道价格的测试请求。
+ * @return 本次聊天的标准成本。
+ * @return 存在可计费用量时为 true，否则为 false。
+ */
 func (sr *chatStreamResult) costUSD(testReq *testutil.TestChannelRequest) (float64, bool) {
 	actualModel := sr.model
 	if actualModel == "" {
 		actualModel = testReq.Model
+	}
+	if sr.upstreamProtocol == "cursor-sdk-bridge" {
+		return channelTestCostFromUsage(testReq, actualModel, sr.requestedServiceTier, sr.forwarded)
 	}
 	return channelTestCostUSD(testReq, actualModel, sr.requestedServiceTier, sr.usageParser)
 }
@@ -281,10 +292,16 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 	return []byte("data: " + string(jsonBytes) + "\n\n")
 }
 
-// streamCursorChannelChat keeps the admin chat endpoint on the same SDK path
-// as normal Cursor proxy requests. Cursor's configured URL is a control-plane
-// address, not an OpenAI/Anthropic chat endpoint, so HTTP forwarding it can
-// only produce a misleading 404.
+/**
+ * @brief 通过 SDK 执行 Cursor 管理聊天，展示响应用量并单独记录真实消费。
+ * @param c 管理聊天的 HTTP 上下文。
+ * @param persistedCfg 用于写日志的持久化渠道。
+ * @param cfg 实际执行的渠道和凭证快照。
+ * @param keySelection 当前测试凭证及计费倍率。
+ * @param testReq 已绑定价格的管理聊天请求。
+ * @param originalModel 重定向前的请求模型。
+ * @param clientProtocol 客户端协议，用于解码展示 SSE。
+ */
 func (s *Server) streamCursorChannelChat(
 	c *gin.Context,
 	persistedCfg, cfg *model.Config,
@@ -395,6 +412,7 @@ func (s *Server) streamCursorChannelChat(
 		fail(http.StatusBadGateway, "Cursor SDK Bridge 未返回结果")
 		return
 	}
+	sr.forwarded = result.forwarded
 	sr.statusCode = result.status
 	if result.status < http.StatusOK || result.status >= http.StatusMultipleChoices || !result.succeeded {
 		message := extractChatUpstreamError(result.status, result.body)
@@ -823,6 +841,15 @@ func writeChatNonStreamSummary(c *gin.Context, result map[string]any) {
 	writeChatFrontendChunks(c, []byte("data: "+string(jsonBytes)+"\n\n"))
 }
 
+/**
+ * @brief 持久化管理聊天日志，Cursor 使用真实消费并独立保存展示估算。
+ * @param c 管理聊天 HTTP 上下文。
+ * @param cfg 日志所属的持久化渠道。
+ * @param testReq 已绑定模型价格的测试请求。
+ * @param keySelection 当前凭证及成本倍率。
+ * @param sr 已收集的聊天结果；nil 时不写日志。
+ * @param originalModel 重定向前的请求模型。
+ */
 func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, keySelection channelTestKeySelection, sr *chatStreamResult, originalModel string) {
 	if sr == nil {
 		return
@@ -849,7 +876,9 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	if !sr.firstContentTime.IsZero() {
 		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
 	}
-	if sr.usageParser != nil {
+	if sr.upstreamProtocol == "cursor-sdk-bridge" {
+		populateCursorTestUsageAndCost(result, testReq, sr.requestedServiceTier, sr.forwarded)
+	} else if sr.usageParser != nil {
 		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
 		result["codex_has_credits"] = sr.usageParser.GetCodexHasCredits()
 		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,8 +14,52 @@ import (
 	"ccLoad/internal/cursorauth"
 	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
+
+/**
+ * @brief 在 HTTP 代理边界重放逐轮用量和终态事件。
+ */
+type cursorUsageEventsRunner []cursorauth.Event
+
+/**
+ * @brief 为需要观察请求取消的 HTTP 回归提供可控 Runner 边界。
+ */
+type cursorRunnerFunc func(context.Context, *cursorauth.Credential, cursorauth.Request) (<-chan cursorauth.Event, error)
+
+/**
+ * @brief 执行回归场景定义的事件生产流程。
+ * @param ctx 当前附着请求上下文。
+ * @param credential 当前渠道凭证。
+ * @param request 当前推理请求。
+ * @return 场景生成的推理事件通道。
+ * @return 场景定义的启动错误；nil 表示已开始生成事件。
+ */
+func (r cursorRunnerFunc) Run(ctx context.Context, credential *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
+	return r(ctx, credential, request)
+}
+
+/**
+ * @brief 返回预设事件，模拟 SDK 已解析的真实用量与工具回调。
+ * @param ctx 当前请求上下文。
+ * @param credential 当前渠道凭证。
+ * @param request 当前请求。
+ * @return 顺序包含全部预设事件的已关闭通道。
+ * @return 始终为 nil，故障通过预设终态事件报告。
+ */
+func (r cursorUsageEventsRunner) Run(
+	_ context.Context,
+	_ *cursorauth.Credential,
+	_ cursorauth.Request,
+) (<-chan cursorauth.Event, error) {
+	events := make(chan cursorauth.Event, len(r))
+	for _, event := range r {
+		events <- event
+	}
+	close(events)
+	return events, nil
+}
 
 type cursorRefreshOnceRunner struct {
 	calls            int
@@ -203,6 +249,10 @@ func TestProxy_CursorOAuthDoesNotReplayStreamAfterOutput(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 重放的实时和终态用量均不重复写入日志、令牌统计或成本。
+ * @param t 测试上下文。
+ */
 func TestProxy_CursorOAuthReplayDoesNotDuplicateUsageLog(t *testing.T) {
 	t.Parallel()
 	credentialJSON, err := (&cursorauth.Credential{
@@ -215,9 +265,19 @@ func TestProxy_CursorOAuthReplayDoesNotDuplicateUsageLog(t *testing.T) {
 		name: "cursor-replay", upstreamProtocol: "openai", models: "grok-4.6",
 		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
 	}}, map[int]string{0: "https://unused.invalid"})
-	env.server.cursorRunner = &fakeCursorRunner{
-		text: "final", replayed: true, usage: &cursorauth.Usage{InputTokens: 100, OutputTokens: 20},
+	env.server.cursorRunner = cursorUsageEventsRunner{
+		{Usage: &cursorauth.Usage{InputTokens: 100, OutputTokens: 20}, Replayed: true},
+		{Text: "final", Done: true, Usage: &cursorauth.Usage{InputTokens: 50, OutputTokens: 10}, Replayed: true},
 	}
+	tokenHash := model.HashToken("test-api-key")
+	if err := env.store.CreateAuthToken(context.Background(), &model.AuthToken{Token: tokenHash, IsActive: true}); err != nil {
+		t.Fatalf("CreateAuthToken: %v", err)
+	}
+	token, err := env.store.GetAuthTokenByValue(context.Background(), tokenHash)
+	if err != nil {
+		t.Fatalf("GetAuthTokenByValue: %v", err)
+	}
+	injectAPIToken(env.server.authService, "test-api-key", 0, token.ID)
 
 	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "grok-4.6",
@@ -243,8 +303,231 @@ func TestProxy_CursorOAuthReplayDoesNotDuplicateUsageLog(t *testing.T) {
 	if len(logs) != 0 {
 		t.Fatalf("replayed request wrote %d duplicate logs", len(logs))
 	}
+	token, err = env.store.GetAuthTokenByValue(context.Background(), tokenHash)
+	if err != nil || token.SuccessCount != 0 || token.FailureCount != 0 || token.PromptTokensTotal != 0 ||
+		token.CompletionTokensTotal != 0 || token.TotalCostUSD != 0 {
+		t.Fatalf("replayed request changed token statistics: token=%+v err=%v", token, err)
+	}
 }
 
+/**
+ * @brief 逐轮真实用量立即计费，终态只补差，后续错误保留已提交的真实消费。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
+	t.Parallel()
+	first := &cursorauth.Usage{
+		InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 300, CacheWriteTokens: 400, ReasoningTokens: 50,
+	}
+	second := &cursorauth.Usage{
+		InputTokens: 500, OutputTokens: 100, CacheReadTokens: 150, CacheWriteTokens: 200, ReasoningTokens: 25,
+	}
+	residual := &cursorauth.Usage{
+		InputTokens: 100, OutputTokens: 20, CacheReadTokens: 30, CacheWriteTokens: 40, ReasoningTokens: 5,
+	}
+	for _, tt := range []struct {
+		name         string
+		events       cursorUsageEventsRunner
+		resumed      bool
+		failed       bool
+		uncommitted  bool
+		wantEstimate bool
+		wantBillable cursorauth.Usage
+		wantClient   cursorauth.Usage
+	}{
+		{
+			name: "tool turn preserves real usage over callback estimate",
+			events: cursorUsageEventsRunner{
+				{Usage: first},
+				{ToolCall: &cursorauth.ToolCall{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{}`)},
+					Usage: &cursorauth.Usage{InputTokens: 900_000}, UsageEstimated: true},
+			},
+			wantBillable: *first, wantClient: *first,
+		},
+		{
+			name: "multiple increments and terminal residual",
+			events: cursorUsageEventsRunner{
+				{Usage: first}, {Usage: second}, {Text: "final", Done: true, Usage: residual},
+			},
+			wantBillable: cursorauth.Usage{InputTokens: 1600, OutputTokens: 320, CacheReadTokens: 480, CacheWriteTokens: 640, ReasoningTokens: 80},
+			wantClient:   cursorauth.Usage{InputTokens: 1500, OutputTokens: 300, CacheReadTokens: 450, CacheWriteTokens: 600, ReasoningTokens: 75},
+		},
+		{
+			name: "resumed turn reports current real usage",
+			events: cursorUsageEventsRunner{
+				{Usage: first}, {Text: "final", Done: true, Usage: residual},
+			},
+			resumed:      true,
+			wantBillable: cursorauth.Usage{InputTokens: 1100, OutputTokens: 220, CacheReadTokens: 330, CacheWriteTokens: 440, ReasoningTokens: 55},
+			wantClient:   *first,
+		},
+		{
+			name: "stream failure retains earlier usage",
+			events: cursorUsageEventsRunner{
+				{Delta: "partial", Text: "partial"}, {Usage: first}, {Usage: second},
+				{Done: true, Err: errors.New("Cursor stream interrupted")},
+			},
+			failed:       true,
+			wantBillable: cursorauth.Usage{InputTokens: 1500, OutputTokens: 300, CacheReadTokens: 450, CacheWriteTokens: 600, ReasoningTokens: 75},
+		},
+		{
+			name: "stream failure only estimates unreported usage",
+			events: cursorUsageEventsRunner{
+				{Delta: "partial", Text: "partial"},
+				{Done: true, Err: errors.New("Cursor stream interrupted")},
+			},
+			failed: true, wantEstimate: true,
+		},
+		{
+			name: "started run failure before output only estimates input",
+			events: cursorUsageEventsRunner{
+				{Done: true, Err: errors.New("Cursor stream interrupted")},
+			},
+			failed: true, uncommitted: true, wantEstimate: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+			if err != nil {
+				t.Fatalf("encode Cursor credential: %v", err)
+			}
+			inputPrice, outputPrice, cacheReadPrice, cacheWritePrice := 2.0, 3.0, 0.5, 4.0
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "cursor-incremental-usage", upstreamProtocol: "openai",
+				modelEntries: []model.ModelEntry{{Model: "grok-4.6", Pricing: &util.CustomModelPrice{
+					InputPrice: &inputPrice, OutputPrice: &outputPrice, CacheReadPrice: &cacheReadPrice, CacheWritePrice: &cacheWritePrice,
+				}}},
+				authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+			}}, map[int]string{0: "https://unused.invalid"})
+			env.server.cursorRunner = tt.events
+			ctx := context.Background()
+			tokenHash := model.HashToken("test-api-key")
+			if err := env.store.CreateAuthToken(ctx, &model.AuthToken{Token: tokenHash, IsActive: true}); err != nil {
+				t.Fatalf("CreateAuthToken: %v", err)
+			}
+			token, err := env.store.GetAuthTokenByValue(ctx, tokenHash)
+			if err != nil {
+				t.Fatalf("GetAuthTokenByValue: %v", err)
+			}
+			injectAPIToken(env.server.authService, "test-api-key", 0, token.ID)
+			messages := []any{map[string]any{"role": "user", "content": "lookup"}}
+			if tt.resumed {
+				messages = append(messages,
+					map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
+						"id": "call_lookup", "type": "function", "function": map[string]any{"name": "lookup", "arguments": `{}`},
+					}}},
+					map[string]any{"role": "tool", "tool_call_id": "call_lookup", "content": "result"},
+				)
+			}
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "grok-4.6", "messages": messages, "stream": tt.failed,
+				"tools": []any{map[string]any{"type": "function", "function": map[string]any{
+					"name": "lookup", "parameters": map[string]any{"type": "object"},
+				}}},
+			}, nil)
+			wantHTTPStatus := http.StatusOK
+			if tt.uncommitted {
+				wantHTTPStatus = http.StatusBadGateway
+			}
+			if response.Code != wantHTTPStatus {
+				t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+			}
+			if tt.failed {
+				var failureMessage string
+				if tt.uncommitted {
+					var payload struct {
+						Error struct {
+							Message string `json:"message"`
+						} `json:"error"`
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+						t.Fatalf("decode failure response: %v body=%s", err, response.Body.String())
+					}
+					failureMessage = payload.Error.Message
+				} else {
+					for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+						_, data := parseSSEEventChunk(block)
+						payload, ok := decodeSSEPayload(data)
+						if !ok {
+							continue
+						}
+						if failure, ok := payload["error"].(map[string]any); ok {
+							failureMessage, _ = failure["message"].(string)
+						}
+					}
+				}
+				if failureMessage != "Cursor stream interrupted" {
+					t.Fatalf("stream failure missing from response: %s", response.Body.String())
+				}
+			} else {
+				var payload struct {
+					Usage struct {
+						PromptTokens     int `json:"prompt_tokens"`
+						CompletionTokens int `json:"completion_tokens"`
+						TotalTokens      int `json:"total_tokens"`
+						PromptDetails    struct {
+							CachedTokens         int `json:"cached_tokens"`
+							CachedCreationTokens int `json:"cached_creation_tokens"`
+						} `json:"prompt_tokens_details"`
+					} `json:"usage"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+					t.Fatalf("decode response: %v body=%s", err, response.Body.String())
+				}
+				want := tt.wantClient
+				wantPrompt := want.InputTokens + want.CacheReadTokens + want.CacheWriteTokens
+				if payload.Usage.PromptTokens != wantPrompt || payload.Usage.CompletionTokens != want.OutputTokens ||
+					payload.Usage.TotalTokens != wantPrompt+want.OutputTokens || payload.Usage.PromptDetails.CachedTokens != want.CacheReadTokens ||
+					payload.Usage.PromptDetails.CachedCreationTokens != want.CacheWriteTokens {
+					t.Fatalf("client usage=%+v want=%+v", payload.Usage, want)
+				}
+			}
+			entry := waitForProxyLog(t, env, "grok-4.6")
+			want := tt.wantBillable
+			wantStatus := http.StatusOK
+			wantSuccesses, wantFailures := int64(1), int64(0)
+			if tt.failed {
+				wantStatus = http.StatusBadGateway
+				wantSuccesses, wantFailures = 0, 1
+			}
+			wantCost := (float64(want.InputTokens)*inputPrice + float64(want.OutputTokens)*outputPrice +
+				float64(want.CacheReadTokens)*cacheReadPrice + float64(want.CacheWriteTokens)*cacheWritePrice) / 1_000_000
+			if entry.StatusCode != wantStatus || entry.InputTokens != want.InputTokens || entry.OutputTokens != want.OutputTokens ||
+				entry.CacheReadInputTokens != want.CacheReadTokens || entry.CacheCreationInputTokens != want.CacheWriteTokens ||
+				entry.Cache5mInputTokens != want.CacheWriteTokens || entry.ReasoningTokens != want.ReasoningTokens || math.Abs(entry.Cost-wantCost) > 1e-12 {
+				t.Fatalf("logged usage=%+v want=%+v cost=%v", entry, want, wantCost)
+			}
+			if tt.wantEstimate {
+				if entry.UsageEstimate == nil || entry.UsageEstimate.InputTokens <= 0 ||
+					(tt.uncommitted && entry.UsageEstimate.OutputTokens != 0) || (!tt.uncommitted && entry.UsageEstimate.OutputTokens <= 0) {
+					t.Fatalf("missing or incorrect failure estimate: %+v", entry.UsageEstimate)
+				}
+			} else if entry.UsageEstimate != nil {
+				t.Fatalf("real usage must not carry an estimate: %+v", entry.UsageEstimate)
+			}
+			for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				token, err = env.store.GetAuthTokenByValue(ctx, tokenHash)
+				if err == nil && token.SuccessCount+token.FailureCount > 0 {
+					if token.PromptTokensTotal != int64(want.InputTokens) || token.CompletionTokensTotal != int64(want.OutputTokens) ||
+						token.CacheReadTokensTotal != int64(want.CacheReadTokens) || token.CacheCreationTokensTotal != int64(want.CacheWriteTokens) ||
+						math.Abs(token.TotalCostUSD-wantCost) > 1e-12 || token.SuccessCount != wantSuccesses || token.FailureCount != wantFailures {
+						t.Fatalf("token statistics=%+v want=%+v cost=%v", token, want, wantCost)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("token usage was not billed: token=%+v err=%v", token, err)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 工具轮缺少真实报告时单独展示估算，不累计真实 Token 或费用。
+ * @param t 测试上下文。
+ */
 func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing.T) {
 	t.Parallel()
 	credentialJSON, err := (&cursorauth.Credential{
@@ -263,6 +546,16 @@ func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing
 		toolUsageEstimated: true,
 	}
 	env.server.cursorRunner = runner
+	ctx := context.Background()
+	tokenHash := model.HashToken("test-api-key")
+	if err := env.store.CreateAuthToken(ctx, &model.AuthToken{Token: tokenHash, IsActive: true}); err != nil {
+		t.Fatalf("CreateAuthToken: %v", err)
+	}
+	token, err := env.store.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("GetAuthTokenByValue: %v", err)
+	}
+	injectAPIToken(env.server.authService, "test-api-key", 0, token.ID)
 
 	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "grok-4.6", "messages": []any{map[string]any{"role": "user", "content": "lookup"}},
@@ -293,8 +586,51 @@ func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing
 	}
 
 	entry := waitForProxyLog(t, env, "grok-4.6")
-	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.CacheReadInputTokens != 0 {
+	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.CacheReadInputTokens != 0 || entry.Cost != 0 {
 		t.Fatalf("estimated intermediate usage must not be billed: %+v", entry)
+	}
+	if entry.UsageEstimate == nil || entry.UsageEstimate.InputTokens <= 0 || entry.UsageEstimate.OutputTokens <= 0 {
+		t.Fatalf("tool turn is missing its separate usage estimate: %+v", entry.UsageEstimate)
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		token, err = env.store.GetAuthTokenByValue(ctx, tokenHash)
+		if err == nil && token.SuccessCount == 1 {
+			if token.PromptTokensTotal != 0 || token.CompletionTokensTotal != 0 || token.CacheReadTokensTotal != 0 ||
+				token.CacheCreationTokensTotal != 0 || token.TotalCostUSD != 0 {
+				t.Fatalf("estimated tool usage changed real token statistics: %+v", token)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tool turn statistics were not recorded: token=%+v err=%v", token, err)
+		}
+	}
+}
+
+/**
+ * @brief Runner 未启动推理便失败时，不生成消费估算或费用。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthRunnerStartFailureHasNoUsageEstimate(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+	if err != nil {
+		t.Fatalf("encode Cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-start-failure", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = &fakeCursorRunner{err: cursorauth.ErrAgentMissing}
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "grok-4.6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+	}
+	entry := waitForProxyLog(t, env, "grok-4.6")
+	if entry.UsageEstimate != nil || entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.Cost != 0 {
+		t.Fatalf("runner startup failure fabricated usage: %+v", entry)
 	}
 }
 
@@ -610,6 +946,89 @@ func TestProxy_CursorOAuthSupportsGemini(t *testing.T) {
 					text, finish, promptTokens, outputTokens, response.Body.String())
 			}
 		})
+	}
+}
+
+/**
+ * @brief 响应转译失败取消推理后继续结算晚到用量，同时只输出一次失败。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthResponsesTranslationFailureRetainsUsageAfterCancel(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+	if err != nil {
+		t.Fatalf("encode Cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-response-translation-failure", upstreamProtocol: "openai",
+		modelEntries: []model.ModelEntry{{Model: "grok-4.6", Pricing: channelPrice(1, 2)}},
+		authType:     model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	translationErr := errors.New("Cursor response translation failed")
+	env.server.protocolRegistry.RegisterStreamResponse(protocol.OpenAI, protocol.Codex,
+		func(_ context.Context, _ string, _, _, raw []byte, _ *any) ([][]byte, error) {
+			if len(raw) == 0 {
+				return nil, nil
+			}
+			return [][]byte{[]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")}, translationErr
+		})
+	canceled := make(chan struct{})
+	env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, _ *cursorauth.Credential, _ cursorauth.Request) (<-chan cursorauth.Event, error) {
+		events := make(chan cursorauth.Event, 4)
+		go func() {
+			defer close(events)
+			events <- cursorauth.Event{Delta: "partial", Text: "partial"}
+			<-ctx.Done()
+			close(canceled)
+			events <- cursorauth.Event{Delta: "late output", Ping: true}
+			events <- cursorauth.Event{Usage: &cursorauth.Usage{InputTokens: 1000, OutputTokens: 200}}
+			events <- cursorauth.Event{Done: true, Usage: &cursorauth.Usage{InputTokens: 500, OutputTokens: 100}, Err: context.Cause(ctx)}
+		}()
+		return events, nil
+	})
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "grok-4.6", "input": "hello", "stream": true,
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("response translation failure did not cancel the runner")
+	}
+	var output strings.Builder
+	failures, deltas := 0, 0
+	for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+		if len(bytes.TrimSpace(block)) == 0 {
+			continue
+		}
+		eventType, data := parseSSEEventChunk(block)
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			t.Fatalf("unexpected stream block after translation failure: %s", block)
+		}
+		switch eventType {
+		case "response.output_text.delta":
+			deltas++
+			delta, _ := payload["delta"].(string)
+			output.WriteString(delta)
+		case "error":
+			failures++
+			if payload["message"] != translationErr.Error() {
+				t.Fatalf("translation failure was replaced: %s", data)
+			}
+		default:
+			t.Fatalf("unexpected response event after translation failure: %s", data)
+		}
+	}
+	if deltas != 1 || output.String() != "partial" || failures != 1 {
+		t.Fatalf("translation failure duplicated output: deltas=%d text=%q failures=%d", deltas, output.String(), failures)
+	}
+	entry := waitForProxyLog(t, env, "grok-4.6")
+	if entry.StatusCode != http.StatusBadGateway || entry.InputTokens != 1500 || entry.OutputTokens != 300 ||
+		entry.UsageEstimate != nil || math.Abs(entry.Cost-0.0021) > 1e-12 {
+		t.Fatalf("translation failure lost late real usage: %+v", entry)
 	}
 }
 

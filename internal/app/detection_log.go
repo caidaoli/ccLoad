@@ -98,7 +98,14 @@ func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry)
 	s.recordURLRequestFromLog(entry)
 }
 
+/**
+ * @brief 提取检测结果中的真实用量，并独立保留不参与计费的估算。
+ * @param entry 待填充的日志。
+ * @param result 管理测试或聊天的执行结果。
+ * @param upstreamProtocol 用于归一化客户端响应的上游协议。
+ */
 func populateDetectionUsage(entry *model.LogEntry, result map[string]any, upstreamProtocol string) {
+	entry.UsageEstimate, _ = result["usage_estimate"].(*model.TokenUsageEstimate)
 	if usage, ok := getResultMap(result, "usage"); ok {
 		populateLogEntryUsage(entry, usage)
 		return

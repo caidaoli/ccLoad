@@ -5,9 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 )
 
+/**
+ * @brief 单条 Send 流的状态及已发出用量，仅由流读取协程访问。
+ */
 type sdkRunState struct {
 	agentID       string
 	runID         string
@@ -18,6 +23,7 @@ type sdkRunState struct {
 	errorCode     string
 	statusMessage string
 	usage         *Usage
+	reportedUsage Usage ///< 已通过逐轮事件发出的真实用量，用于扣除终态重复累计。
 	onRunID       func(string)
 	onTerminal    func(string)
 }
@@ -51,6 +57,12 @@ func (s *sdkRunState) consume(message *sdkv1.RunStreamMessage) ([]Event, error) 
 	}
 }
 
+/**
+ * @brief 将 SDK 消息转换为文本、运行状态和逐轮真实用量事件。
+ * @param message 上游 SDK 消息。
+ * @return 本条消息产生的事件；无客户端事件时为 nil。
+ * @return 会话身份改变或 usage 结构非法时返回错误。
+ */
 func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, error) {
 	if message == nil {
 		return nil, nil
@@ -64,6 +76,23 @@ func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, err
 	}
 	if err := s.setAgentID(firstString(payload, "agent_id", "agentId")); err != nil {
 		return nil, err
+	}
+	if message.GetType() == "usage" {
+		value := message.GetMessage().GetFields()["usage"].GetStructValue()
+		if value == nil {
+			return nil, errors.New("cursor usage message is missing token counts")
+		}
+		data, err := protojson.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("encode cursor usage message: %w", err)
+		}
+		var tokens sdkv1.TokenUsage
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, &tokens); err != nil {
+			return nil, fmt.Errorf("decode cursor usage message: %w", err)
+		}
+		usage := usageFromSDK(&tokens)
+		s.reportedUsage.Add(usage)
+		return []Event{{Usage: usage}}, nil
 	}
 	if message.GetType() == "status" {
 		if text := firstString(payload, "message"); text != "" {
@@ -93,6 +122,25 @@ func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, err
 		events = append(events, Event{Delta: delta, Text: s.text})
 	}
 	return events, nil
+}
+
+/**
+ * @brief 从 run 累计用量扣除已发出的逐轮用量，防止终态重复计费。
+ * @return 尚未发出的真实用量；上游没有累计量时为 nil。
+ * @note 累计快照可能滞后于流事件，各分项差额最低为零。
+ */
+func (s *sdkRunState) unreportedUsage() *Usage {
+	if s.usage == nil {
+		return nil
+	}
+	return &Usage{
+		InputTokens:      max(0, s.usage.InputTokens-s.reportedUsage.InputTokens),
+		OutputTokens:     max(0, s.usage.OutputTokens-s.reportedUsage.OutputTokens),
+		CacheReadTokens:  max(0, s.usage.CacheReadTokens-s.reportedUsage.CacheReadTokens),
+		CacheWriteTokens: max(0, s.usage.CacheWriteTokens-s.reportedUsage.CacheWriteTokens),
+		TotalTokens:      max(0, s.usage.TotalTokens-s.reportedUsage.TotalTokens),
+		ReasoningTokens:  max(0, s.usage.ReasoningTokens-s.reportedUsage.ReasoningTokens),
+	}
 }
 
 func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, error) {
@@ -157,11 +205,18 @@ func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, err
 	}
 }
 
+/**
+ * @brief 将 SDK 用量转换为计费所需的互斥输入与缓存计数。
+ * @param usage 上游用量；nil 表示未报告。
+ * @return 归一化用量；上游未报告时返回 nil。
+ * @details v1.2.0 本地运行时的 total=input+output，input 已包含缓存；
+ * 仅在上游总量明确采用该口径时扣除缓存，保留采用分项总和口径的上游数据。
+ */
 func usageFromSDK(usage *sdkv1.TokenUsage) *Usage {
 	if usage == nil {
 		return nil
 	}
-	return &Usage{
+	result := &Usage{
 		InputTokens:      safeSDKTokenCount(usage.GetInputTokens()),
 		OutputTokens:     safeSDKTokenCount(usage.GetOutputTokens()),
 		CacheReadTokens:  safeSDKTokenCount(usage.GetCacheReadTokens()),
@@ -169,6 +224,10 @@ func usageFromSDK(usage *sdkv1.TokenUsage) *Usage {
 		TotalTokens:      safeSDKTokenCount(usage.GetTotalTokens()),
 		ReasoningTokens:  safeSDKTokenCount(usage.GetReasoningTokens()),
 	}
+	if result.TotalTokens > 0 && result.TotalTokens == result.InputTokens+result.OutputTokens {
+		result.InputTokens = max(0, result.InputTokens-result.CacheReadTokens-result.CacheWriteTokens)
+	}
+	return result
 }
 
 func safeSDKTokenCount(value int64) int {

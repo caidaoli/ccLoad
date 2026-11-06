@@ -2560,6 +2560,114 @@ func TestPrivacyMaskedMigrationAndRoundTripSQLite(t *testing.T) {
 	verifyPrivacyMaskedMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
 }
 
+/**
+ * @brief 验证 SQLite 旧日志迁移及估算用量独立存储
+ * @param t 测试上下文
+ */
+func TestUsageEstimateMigrationAndRoundTripSQLite(t *testing.T) {
+	db := openTestDB(t)
+	if err := migrate(context.Background(), db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	verifyUsageEstimateMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+/**
+ * @brief 验证各方言的估算用量迁移、单条及批量往返和统计隔离
+ * @param t 测试上下文
+ * @param db 隔离测试数据库
+ * @param store 目标方言存储
+ * @param dialect 目标 SQL 方言
+ */
+func verifyUsageEstimateMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "legacy", StatusCode: 200, Message: "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE logs DROP COLUMN usage_estimate"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := migrate(ctx, db, dialect); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "usage-estimate", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimate := &model.TokenUsageEstimate{InputTokens: 120, OutputTokens: 15}
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "estimated", StatusCode: 200, Message: "estimated", UsageEstimate: estimate,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "estimated-batch", StatusCode: 200, Message: "estimated", UsageEstimate: estimate},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "estimated-debug", StatusCode: 200, Message: "estimated", UsageEstimate: estimate,
+			DebugData: &model.DebugLogEntry{CreatedAt: now.Unix(), ReqBody: []byte(`{}`)}},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "plain", StatusCode: 200, Message: "plain"},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "actual", StatusCode: 200, Message: "actual", InputTokens: 17, OutputTokens: 11, Cost: 0.5, CostMultiplier: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]*model.TokenUsageEstimate{
+		"legacy": nil, "estimated": estimate, "estimated-batch": estimate, "estimated-debug": estimate, "plain": nil, "actual": nil,
+	} {
+		logs, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, &model.LogFilter{Model: name})
+		if err != nil || len(logs) != 1 {
+			t.Fatalf("%s logs: %+v, error = %v", name, logs, err)
+		}
+		got := logs[0]
+		if (got.UsageEstimate == nil) != (want == nil) || got.UsageEstimate != nil && *got.UsageEstimate != *want {
+			t.Fatalf("%s usage_estimate = %+v, want %+v", name, got.UsageEstimate, want)
+		}
+		if name != "actual" && (got.InputTokens != 0 || got.OutputTokens != 0 || got.ReasoningTokens != 0 ||
+			got.CacheReadInputTokens != 0 || got.CacheCreationInputTokens != 0 || got.Cache5mInputTokens != 0 || got.Cache1hInputTokens != 0 || got.Cost != 0) {
+			t.Fatalf("%s estimate changed actual usage or cost: %+v", name, got)
+		}
+	}
+	var raw sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT usage_estimate FROM logs WHERE model = 'plain'").Scan(&raw); err != nil || raw.Valid {
+		t.Fatalf("plain usage_estimate = %+v, error = %v", raw, err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT usage_estimate FROM logs WHERE model = 'estimated'").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]int
+	if err := json.Unmarshal([]byte(raw.String), &stored); err != nil || len(stored) != 2 || stored["input_tokens"] != 120 || stored["output_tokens"] != 15 {
+		t.Fatalf("stored usage_estimate = %+v, error = %v", stored, err)
+	}
+	stats, err := store.GetStatsLite(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &cfg.ID})
+	if err != nil || len(stats) != 5 {
+		t.Fatalf("usage stats = %+v, error = %v", stats, err)
+	}
+	var input, output int64
+	var cost float64
+	for _, stat := range stats {
+		if stat.TotalInputTokens != nil {
+			input += *stat.TotalInputTokens
+		}
+		if stat.TotalOutputTokens != nil {
+			output += *stat.TotalOutputTokens
+		}
+		if stat.TotalCost != nil {
+			cost += *stat.TotalCost
+		}
+	}
+	if input != 17 || output != 11 || cost != 0.5 {
+		t.Fatalf("estimates changed aggregate input/output/cost: %d/%d/%g", input, output, cost)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE logs SET usage_estimate = '{' WHERE model = 'estimated'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{Model: "estimated"}); err == nil || !strings.Contains(err.Error(), "usage_estimate") {
+		t.Fatalf("invalid estimate JSON error = %v", err)
+	}
+}
+
 func verifyPrivacyMaskedMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {
 	t.Helper()
 	ctx := context.Background()

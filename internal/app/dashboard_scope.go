@@ -21,6 +21,9 @@ type tokenLogChannelMetadata struct {
 	APIKeyHashes map[string]struct{}
 }
 
+/**
+ * @brief 令牌用户可见的日志字段，真实计费量与展示估算分别返回。
+ */
 type tokenLogEntry struct {
 	ID                       int64                       `json:"id"`
 	Time                     model.JSONTime              `json:"time"`
@@ -43,6 +46,7 @@ type tokenLogEntry struct {
 	InputTokens              int                         `json:"input_tokens"`
 	OutputTokens             int                         `json:"output_tokens"`
 	ReasoningTokens          int                         `json:"reasoning_tokens,omitempty"`
+	UsageEstimate            *model.TokenUsageEstimate   `json:"usage_estimate,omitempty"` ///< 不参与实际用量或费用汇总。
 	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
 	Cache5mInputTokens       int                         `json:"cache_5m_input_tokens"`
@@ -165,6 +169,13 @@ func projectDashboardLogs(logs []*model.LogEntry, modelPrice logModelPriceFunc) 
 	return projected
 }
 
+/**
+ * @brief 按令牌日志白名单投影并清除消息中的渠道秘密。
+ * @param logs 已按令牌身份筛选的日志。
+ * @param channels 用于消息脱敏的渠道元数据。
+ * @param modelPrice 当前渠道价格解析器。
+ * @return 可向令牌用户返回的日志，估算不影响实际成本。
+ */
 func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannelMetadata, modelPrice logModelPriceFunc) []tokenLogEntry {
 	projected := make([]tokenLogEntry, 0, len(logs))
 	for _, entry := range logs {
@@ -206,6 +217,7 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			InputTokens:              entry.InputTokens,
 			OutputTokens:             entry.OutputTokens,
 			ReasoningTokens:          entry.ReasoningTokens,
+			UsageEstimate:            entry.UsageEstimate,
 			CacheReadInputTokens:     entry.CacheReadInputTokens,
 			CacheCreationInputTokens: entry.CacheCreationInputTokens,
 			Cache5mInputTokens:       entry.Cache5mInputTokens,

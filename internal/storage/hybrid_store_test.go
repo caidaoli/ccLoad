@@ -908,6 +908,10 @@ func TestHybridStore_ChannelManagementCASMarksDirtyOnlyOnSuccess(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证日志展示元数据随真实日志独立复制到混合模式主库
+ * @param t 测试上下文
+ */
 func TestHybridStoreDecisionMetadataReplicated(t *testing.T) {
 	primary := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)
@@ -916,14 +920,16 @@ func TestHybridStoreDecisionMetadataReplicated(t *testing.T) {
 	ctx := context.Background()
 	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", ClientEffort: "xhigh", CostUnknown: true}
 	masked := &privacy.Counts{Word: 3}
+	estimate := &model.TokenUsageEstimate{InputTokens: 200, OutputTokens: 30}
 	entry := &model.LogEntry{Time: model.JSONTime{Time: time.Now()}, ClientProtocol: "system_one", ReasoningDecision: metadata,
-		PrivacyMasked: masked, Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20}
+		PrivacyMasked: masked, UsageEstimate: estimate, Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20}
 	if err := hybrid.AddLog(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
 	replicated := func(logs []*model.LogEntry) bool {
 		return len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata &&
-			logs[0].PrivacyMasked != nil && *logs[0].PrivacyMasked == *masked
+			logs[0].PrivacyMasked != nil && *logs[0].PrivacyMasked == *masked &&
+			logs[0].UsageEstimate != nil && *logs[0].UsageEstimate == *estimate && logs[0].InputTokens == 20 && logs[0].Cost == 0.1
 	}
 	filter := &model.LogFilter{ClientProtocol: "system_one"}
 	logs, err := hybrid.ListLogs(ctx, time.Time{}, 10, 0, filter)

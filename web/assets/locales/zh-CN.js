@@ -1896,6 +1896,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.codebuddy.checkinFailed': 'CodeBuddy 签到失败',
   'channels.codebuddy.checkinInvalid': '上游未返回有效的 CodeBuddy 签到结果',
   'channels.oauth.usageReset': '重置 {time}',
+  'logs.tokenEstimateTooltip': '估算值，仅供参考，不计入费用和实际用量统计',
   'channels.oauth.usageCompactAmount': '{used}/预估{estimated}',
   'channels.oauth.codexPurchasedCreditCost': 'Credit 累计标准成本：{cost}',
   'channels.oauth.codexCreditCostShort': 'Credit 标准成本 {cost}',

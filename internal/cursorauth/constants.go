@@ -30,9 +30,7 @@ const (
 
 	// RequestTimeout bounds one Cursor control-plane request.
 	RequestTimeout = 30 * time.Second
-	// AgentTimeout bounds one Cursor SDK Agent inference.
-	AgentTimeout  = 180 * time.Second
-	BridgeVersion = "v1.2.0" ///< ccLoad 配套发布的 standalone Bridge 版本。
+	BridgeVersion  = "v1.2.0" ///< ccLoad 配套发布的 standalone Bridge 版本。
 	// BridgeProtocol is the only wire contract this build accepts.
 	BridgeProtocol = "sdk.v1"
 	// BridgeStartupTimeout bounds spawn, discovery, Ping, and capability checks.

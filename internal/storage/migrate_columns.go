@@ -185,12 +185,22 @@ func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[s
 	return existingCols, nil
 }
 
-// ensureLogsNewColumns 确保logs表有新增字段(2025-12新增,支持MySQL和SQLite)
+/**
+ * @brief 幂等补齐日志表字段，旧日志的展示元数据保持 NULL
+ * @param ctx 迁移上下文
+ * @param db 迁移目标数据库
+ * @param dialect 目标 SQL 方言
+ * @return 列检查或迁移失败时返回数据库错误，否则返回 nil
+ * @note 修改目标数据库的日志表结构
+ */
 func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := ensureColumn(ctx, db, dialect, "logs", "reasoning_decision", "TEXT NULL", "TEXT NULL"); err != nil {
 		return err
 	}
 	if err := ensureColumn(ctx, db, dialect, "logs", "privacy_masked", "TEXT NULL", "TEXT NULL"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, dialect, "logs", "usage_estimate", "TEXT NULL", "TEXT NULL"); err != nil {
 		return err
 	}
 	switch dialect {

@@ -19,11 +19,12 @@ import (
 	"ccLoad/internal/cursorauth/sdkgen/sdk/v1/sdkv1connect"
 )
 
-// SDKRunner translates the existing inference Runner contract onto one shared
-// managed Cursor SDK bridge.
+/**
+ * @brief 通过共享的 Cursor SDK Bridge 执行请求并管理跨 HTTP 工具会话。
+ */
 type SDKRunner struct {
-	bridge  *bridge
-	timeout time.Duration
+	bridge      *bridge
+	idleTimeout time.Duration ///< 无附着请求的工具会话回收间隔；零值使用默认值。
 
 	resumeMu       sync.Mutex
 	mu             sync.Mutex
@@ -41,6 +42,9 @@ type SDKRunner struct {
 	callbackClient   *bridgeClient
 }
 
+/**
+ * @brief 保留一个 Cursor Agent 的事件流、工具状态与当前请求的附着状态。
+ */
 type sdkSession struct {
 	agentID            string
 	apiKey             string
@@ -57,15 +61,28 @@ type sdkSession struct {
 	terminated         bool
 	terminal           *Event
 
-	turnMu   sync.Mutex
-	attached bool
+	turnMu      sync.Mutex
+	attached    bool
+	idleTimeout time.Duration ///< 工具轮之间等待下一请求的最长间隔。
+	idleTimer   *time.Timer   ///< 仅在无附着请求时运行，受 turnMu 保护。
 }
 
-// NewSDKRunner constructs the process-level Cursor inference runner. An
-// optional explicit path binds the runner to the startup-validated bridge.
+/**
+ * @brief Cursor 会话的空闲回收间隔与已完成工具调用的重放保留期。
+ */
+const (
+	sdkSessionIdleTimeout = 30 * time.Minute ///< 仅限制工具轮之间的等待，不限制活动请求。
+	sdkCompletedCallsTTL  = 3 * time.Minute  ///< 完成后短期保留调用标识，支持重复结果重放。
+)
+
+/**
+ * @brief 创建进程级 Cursor 推理执行器。
+ * @param binaryPath 可选的、已在启动时校验的 Bridge 路径。
+ * @return 管理共享 Bridge 和跨请求工具会话的执行器。
+ */
 func NewSDKRunner(binaryPath ...string) *SDKRunner {
 	return &SDKRunner{
-		bridge: newBridge(binaryPath...), timeout: AgentTimeout,
+		bridge: newBridge(binaryPath...), idleTimeout: sdkSessionIdleTimeout,
 		sessions: make(map[string]*sdkSession), calls: make(map[string]*pendingToolCall),
 		completedCalls: make(map[string]*sdkSession),
 	}
@@ -171,9 +188,15 @@ func listCursorModels(
 	}))
 }
 
-// Run is the generic Cursor turn entry: resume a live custom-tool callback,
-// replay a completed one, or start CreateAgent. Trailing tool_result blocks
-// that do not match an in-memory call_id are history, not a 502.
+/**
+ * @brief 恢复工具调用、重放已完成结果，或创建新的 Cursor Agent。
+ * @param ctx 当前请求上下文；附着期间取消会终止 Agent，工具轮结束后解除绑定。
+ * @param credential 含 User API Key 的 Cursor 凭证。
+ * @param request 当前提示词、工具定义或客户端工具结果。
+ * @return 当前请求的事件流；启动失败时为 nil。
+ * @return 凭证、请求或 Bridge 操作错误；成功附着时为 nil。
+ * @note 启动后台事件消费；工具轮之间保留 Agent，空闲超时后回收。
+ */
 func (r *SDKRunner) Run(
 	ctx context.Context,
 	credential *Credential,
@@ -254,14 +277,14 @@ func (r *SDKRunner) Run(
 		return nil, errors.New("cursor-sdk-bridge CreateAgent returned an empty agent_id")
 	}
 
-	runTimeout := r.timeout
-	if runTimeout <= 0 {
-		runTimeout = AgentTimeout
+	idleTimeout := r.idleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = sdkSessionIdleTimeout
 	}
 	// Native custom tools may suspend this run across multiple downstream HTTP
 	// requests, so its lifetime cannot be derived from any one request context.
 	runStarted := time.Now()
-	runCtx, stopRun := context.WithTimeout(context.Background(), runTimeout)
+	runCtx, stopRun := context.WithCancel(context.Background())
 	session := &sdkSession{
 		agentID: agentID, apiKey: apiKey, workdir: client.workdir,
 		client: client.agent, ctx: runCtx, cancel: stopRun,
@@ -269,6 +292,7 @@ func (r *SDKRunner) Run(
 		tools:              make(map[string]struct{}, len(customTools)),
 		inputTokenEstimate: request.InputTokenEstimate,
 		captureRaw:         rawResponseCaptureEnabled(ctx),
+		idleTimeout:        idleTimeout,
 	}
 	for name := range customTools {
 		session.tools[name] = struct{}{}
@@ -278,6 +302,8 @@ func (r *SDKRunner) Run(
 		go r.deleteAgent(client.agent, agentID, client.workdir, apiKey)
 		return nil, err
 	}
+	stopCaller := context.AfterFunc(ctx, session.cancelRun)
+	defer stopCaller()
 	stream, err := client.agent.Send(runCtx, connect.NewRequest(&sdkv1.SendRequest{
 		AgentId: agentID,
 		Message: &sdkv1.UserMessage{Text: prompt},
@@ -287,7 +313,10 @@ func (r *SDKRunner) Run(
 		},
 	}))
 	if err != nil {
-		classifiedErr := classifyBridgeOperationError("Send", runCtx, runTimeout, runStarted, err)
+		if ctx.Err() != nil {
+			err = context.Cause(ctx)
+		}
+		classifiedErr := classifyBridgeOperationError("Send", ctx, 0, runStarted, err)
 		session.abort(classifiedErr)
 		r.unregisterSession(session)
 		// Transfer the active-run reference to cleanup. A failed Send must return
@@ -301,7 +330,7 @@ func (r *SDKRunner) Run(
 	}
 
 	finish = false
-	go r.consumeRun(session, stream, runTimeout, runStarted)
+	go r.consumeRun(session, stream)
 	return session.nextTurn(ctx, nil)
 }
 
@@ -539,6 +568,14 @@ func subtleAPIKeyMismatch(left, right string) bool {
 	return left == "" || right == "" || left != right
 }
 
+/**
+ * @brief 将一个请求附着到 Agent，消费至终态或下一批客户端工具调用。
+ * @param ctx 当前请求上下文；附着期间取消会终止 Agent。
+ * @param before 附着后、消费事件前提交工具结果的操作；nil 表示无需提交。
+ * @return 当前轮事件流；附着或提交失败时为 nil。
+ * @return 已有附着请求或提交失败时返回错误，否则为 nil。
+ * @note turnMu 保护附着与空闲计时器；关闭输出前解除请求取消绑定。
+ */
 func (s *sdkSession) nextTurn(ctx context.Context, before func() error) (<-chan Event, error) {
 	s.turnMu.Lock()
 	if s.attached {
@@ -546,10 +583,28 @@ func (s *sdkSession) nextTurn(ctx context.Context, before func() error) (<-chan 
 		return nil, errors.New("cursor tool session already has an attached request")
 	}
 	s.attached = true
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
+	}
 	s.turnMu.Unlock()
+	stopCaller := context.AfterFunc(ctx, s.cancelRun)
 	release := func() {
+		stopCaller()
 		s.turnMu.Lock()
 		s.attached = false
+		if s.ctx.Err() == nil {
+			var timer *time.Timer
+			timer = time.AfterFunc(s.idleTimeout, func() {
+				s.turnMu.Lock()
+				defer s.turnMu.Unlock()
+				if !s.attached && s.idleTimer == timer {
+					s.idleTimer = nil
+					s.cancel()
+				}
+			})
+			s.idleTimer = timer
+		}
 		s.turnMu.Unlock()
 	}
 	if before != nil {
@@ -575,6 +630,44 @@ func (s *sdkSession) nextTurn(ctx context.Context, before func() error) (<-chan 
 			}
 		}
 		defer stopBatchTimer()
+		cancelTurn := func(pending Event) {
+			s.cancelRun()
+			final := Event{Text: text.String(), Done: true, Err: context.Cause(ctx)}
+			collect := func(event Event) {
+				if event.Usage != nil && !event.UsageEstimated {
+					if final.Usage == nil {
+						final.Usage = &Usage{}
+					}
+					final.Usage.Add(event.Usage)
+				}
+			}
+			collect(pending)
+			<-s.done
+			for {
+				select {
+				case event := <-s.events:
+					collect(event)
+				default:
+					if !pending.Done {
+						terminal, _ := s.terminalEvent()
+						collect(terminal)
+					}
+					// This goroutine is the only sender. If the consumer stopped,
+					// reclaim one queued slot and carry its usage into the terminal.
+					select {
+					case output <- final:
+					default:
+						select {
+						case queued := <-output:
+							collect(queued)
+						default:
+						}
+						output <- final
+					}
+					return
+				}
+			}
+		}
 		deliver := func(event Event) bool {
 			if event.Delta != "" {
 				text.WriteString(event.Delta)
@@ -582,11 +675,14 @@ func (s *sdkSession) nextTurn(ctx context.Context, before func() error) (<-chan 
 			if event.Delta != "" || event.Text != "" || event.Done {
 				event.Text = text.String()
 			}
+			if event.Done && ctx.Err() != nil {
+				event.Err = context.Cause(ctx)
+			}
 			select {
 			case output <- event:
 				return true
 			case <-ctx.Done():
-				s.cancel()
+				cancelTurn(event)
 				return false
 			}
 		}
@@ -621,11 +717,7 @@ func (s *sdkSession) nextTurn(ctx context.Context, before func() error) (<-chan 
 					}
 				}
 			case <-ctx.Done():
-				s.cancel()
-				select {
-				case output <- Event{Text: text.String(), Done: true, Err: context.Cause(ctx)}:
-				default:
-				}
+				cancelTurn(Event{})
 				return
 			}
 		}
@@ -685,8 +777,26 @@ func (s *sdkSession) terminalEvent() (Event, bool) {
 	return *s.terminal, true
 }
 
-func (s *sdkSession) abort(err error) {
+/**
+ * @brief 取消 Agent 并停止工具轮之间的空闲回收计时器。
+ * @note 并发安全；可重复调用。
+ */
+func (s *sdkSession) cancelRun() {
+	s.turnMu.Lock()
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
+	}
 	s.cancel()
+	s.turnMu.Unlock()
+}
+
+/**
+ * @brief 取消 Agent 并立即发布调用方指定的终态错误。
+ * @param err 终止会话的原因。
+ */
+func (s *sdkSession) abort(err error) {
+	s.cancelRun()
 	s.finish(Event{Done: true, Err: err})
 }
 
@@ -771,11 +881,15 @@ func (r *SDKRunner) begin() error {
 	return nil
 }
 
+/**
+ * @brief 消费 Cursor Agent 的后台流并收尾用量、终态和资源清理。
+ * @param session 当前 Agent 会话。
+ * @param stream Send 返回的上游事件流。
+ * @note 持有一个 active 引用；取消和删除 Agent 使用独立清理预算。
+ */
 func (r *SDKRunner) consumeRun(
 	session *sdkSession,
 	stream *connect.ServerStreamForClient[sdkv1.RunStreamMessage],
-	runTimeout time.Duration,
-	runStarted time.Time,
 ) {
 	defer r.active.Done()
 	runCtx := session.ctx
@@ -795,8 +909,11 @@ func (r *SDKRunner) consumeRun(
 		close(runCallbackDone)
 	})
 
+	var undeliveredUsage Usage
 	deliverEvent := func(event Event) {
-		session.emit(event)
+		if !session.emit(event) && event.Usage != nil && !event.UsageEstimated {
+			undeliveredUsage.Add(event.Usage)
+		}
 	}
 	var consumeErr error
 	for stream.Receive() {
@@ -825,9 +942,6 @@ func (r *SDKRunner) consumeRun(
 	if state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED && runCtx.Err() != nil {
 		consumeErr = context.Cause(runCtx)
 	}
-	if consumeErr != nil && errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-		consumeErr = classifyBridgeOperationError("Agent run", runCtx, runTimeout, runStarted, consumeErr)
-	}
 	if consumeErr != nil {
 		canceller.Request()
 	}
@@ -835,19 +949,25 @@ func (r *SDKRunner) consumeRun(
 	// Usage lookup is part of the run and must stop when its caller cancels.
 	// Keep the session alive until the lookup completes; agent deletion below
 	// retains its independent cleanup context.
-	if state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED && !hasTokenUsage(state.usage) {
+	if runCtx.Err() == nil && !hasTokenUsage(state.usage) {
 		if usage := loadRunUsage(runCtx, client, state.runID, agentID, session.workdir, session.apiKey); hasTokenUsage(usage) {
 			state.usage = usage
 		}
 	}
-	session.cancel()
+	session.cancelRun()
 	if stopRunCallback() {
 		close(runCallbackDone)
 	} else {
 		<-runCallbackDone
 	}
-	finalEvent := Event{Text: state.text, Done: true, Err: consumeErr, Usage: state.usage}
-	if !hasTokenUsage(finalEvent.Usage) {
+	finalEvent := Event{Text: state.text, Done: true, Err: consumeErr, Usage: state.unreportedUsage()}
+	if hasTokenUsage(&undeliveredUsage) {
+		if finalEvent.Usage == nil {
+			finalEvent.Usage = &Usage{}
+		}
+		finalEvent.Usage.Add(&undeliveredUsage)
+	}
+	if !hasTokenUsage(state.usage) && !hasTokenUsage(&state.reportedUsage) {
 		finalEvent.Usage = session.estimatedUsage()
 		finalEvent.UsageEstimated = finalEvent.Usage != nil
 	}
@@ -862,12 +982,13 @@ func (r *SDKRunner) consumeRun(
 	r.deleteAgent(client, agentID, session.workdir, session.apiKey)
 }
 
+/**
+ * @brief 在固定重放保留期后移除一个已完成 Agent 的工具调用标识。
+ * @param session 已完成的 Agent 会话。
+ * @note 异步清理 completedCalls，与活动请求时限和工具会话空闲预算独立。
+ */
 func (r *SDKRunner) expireCompletedToolTurns(session *sdkSession) {
-	retention := r.timeout
-	if retention <= 0 {
-		retention = AgentTimeout
-	}
-	time.AfterFunc(retention, func() {
+	time.AfterFunc(sdkCompletedCallsTTL, func() {
 		r.mu.Lock()
 		for callID, completedSession := range r.completedCalls {
 			if completedSession == session {

@@ -81,6 +81,18 @@ func (s *Server) tryCursorOAuthChannel(
 	return nil, errors.New("cursor credential retry loop exhausted")
 }
 
+/**
+ * @brief 执行一轮 Cursor 请求，向客户端报告当前轮用量并累计真实增量计费。
+ * @param ctx 请求上下文；取消时停止当前附着请求。
+ * @param cfg 当前 Cursor 渠道配置。
+ * @param credential 经过验证的 Cursor 凭证。
+ * @param reqCtx 代理请求与计费上下文。
+ * @param w 客户端响应写入器。
+ * @return 当前轮代理结果，包含成功响应或可分类的上游失败。
+ * @return 已分类失败通过代理结果返回，此处始终为 nil。
+ * @details 终态补差可能包含未采集的历史轮，仅用于计费，不覆盖已知的当前轮上下文用量。
+ * @note 写入客户端响应、代理日志和令牌统计；重放结果不重复记账。
+ */
 func (s *Server) forwardCursorAgent(
 	ctx context.Context,
 	cfg *model.Config,
@@ -223,10 +235,9 @@ func (s *Server) forwardCursorAgent(
 		result.isClientCanceled = status == StatusClientClosedRequest
 		result.proxyLogWritten = !reqCtx.skipProxyLog
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, err)
+		failed := &fwResult{Status: status, Body: result.body}
+		result.forwarded = failed
 		if !reqCtx.skipProxyLog {
-			failed := &fwResult{
-				Status: status, Body: result.body,
-			}
 			duration := time.Since(started).Seconds()
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, err.Error())
 			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), duration, failed, modelID)
@@ -302,6 +313,7 @@ func (s *Server) forwardCursorAgent(
 
 	var runErr error
 	var usage *cursorauth.Usage
+	var turnUsage *cursorauth.Usage
 	resumedToolRun := len(request.ToolResults) > 0
 	if resumedToolRun {
 		usage = estimatedCursorResponseUsage(request.InputTokenEstimate, "", nil)
@@ -338,30 +350,42 @@ func (s *Server) forwardCursorAgent(
 			runErr = event.Err
 		}
 		if event.Usage != nil {
-			if event.Done && !event.UsageEstimated && !event.Replayed {
-				billableUsage = event.Usage
-			}
-			// A terminal Cursor SDK usage value is cumulative for the whole native
-			// run, which may span many Chat Completions requests. It is valid for
-			// billing once, but invalid as this request's context usage.
-			if !resumedToolRun || event.UsageEstimated {
-				usage = event.Usage
+			if event.UsageEstimated {
+				if turnUsage == nil {
+					usage = event.Usage
+				}
+			} else {
+				if !event.Replayed {
+					if billableUsage == nil {
+						billableUsage = &cursorauth.Usage{}
+					}
+					billableUsage.Add(event.Usage)
+				}
+				if !event.Done {
+					if turnUsage == nil {
+						turnUsage = &cursorauth.Usage{}
+					}
+					turnUsage.Add(event.Usage)
+					usage = turnUsage
+				} else if turnUsage == nil && !resumedToolRun {
+					usage = event.Usage
+				}
 			}
 		}
 		replayed = replayed || event.Replayed
 		if event.ToolCall != nil {
 			calls = append(calls, *event.ToolCall)
 		}
-		if event.Ping {
+		if event.Ping && responseTransformErr == nil {
 			timeoutCtx.stopFirstByteTimer()
 			writePing()
 		}
-		if streaming && event.Delta != "" {
+		if streaming && event.Delta != "" && responseTransformErr == nil {
 			writeStream(event.Delta)
 			streamedPlain += len(event.Delta)
 		}
 		if responseTransformErr != nil {
-			break
+			cancelRun()
 		}
 	}
 	duration := time.Since(started).Seconds()
@@ -396,12 +420,13 @@ func (s *Server) forwardCursorAgent(
 		result.duration = duration
 		result.firstByteTime = firstByte.Seconds()
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, runErr)
+		failed := &fwResult{
+			Status: status, Body: result.body, FirstByteTime: firstByte.Seconds(),
+			ResponseCommitted: wroteHeader,
+		}
+		applyCursorUsage(failed, billableUsage, request, full, calls)
+		result.forwarded = failed
 		if !reqCtx.skipProxyLog && !replayed {
-			failed := &fwResult{
-				Status: status, Body: result.body, FirstByteTime: firstByte.Seconds(),
-				ResponseCommitted: wroteHeader,
-			}
-			applyCursorUsage(failed, billableUsage)
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, runErr.Error())
 			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), duration, failed, modelID)
 		}
@@ -426,7 +451,7 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	plain := full
-	if resumedToolRun {
+	if resumedToolRun && turnUsage == nil {
 		usage = estimatedCursorResponseUsage(request.InputTokenEstimate, plain, calls)
 	}
 
@@ -491,14 +516,15 @@ func (s *Server) forwardCursorAgent(
 	forwarded := &fwResult{
 		Status: http.StatusOK, Header: header, Body: responseBody, FirstByteTime: firstByte.Seconds(),
 	}
-	applyCursorUsage(forwarded, billableUsage)
+	applyCursorUsage(forwarded, billableUsage, request, plain, calls)
 	if !reqCtx.skipProxyLog && !replayed {
 		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, forwarded, "")
 		s.updateTokenStatsForProxy(reqCtx, model.TokenStatsSuccess, duration, forwarded, modelID)
 	}
 	return &proxyResult{
 		status: http.StatusOK, header: header, body: responseBody, channelID: &channelID,
-		duration: duration, firstByteTime: firstByte.Seconds(), succeeded: true,
+		forwarded: forwarded,
+		duration:  duration, firstByteTime: firstByte.Seconds(), succeeded: true,
 		nextAction: cooldown.ActionReturnClient, proxyLogWritten: !reqCtx.skipProxyLog && !replayed,
 	}, nil
 }
@@ -821,8 +847,19 @@ func cursorOpenAIUsage(usage *cursorauth.Usage) map[string]any {
 	return result
 }
 
-func applyCursorUsage(result *fwResult, usage *cursorauth.Usage) {
-	if result == nil || usage == nil {
+/**
+ * @brief 应用 Cursor 真实消费，缺少上游报告时单独记录展示估算。
+ * @param result 已启动 Cursor run 的转发结果，必须非 nil。
+ * @param usage 本次请求已收到的真实增量合计；nil 表示没有真实报告。
+ * @param request 已发送的请求及其输入估算。
+ * @param text 当前轮已生成的文本。
+ * @param calls 当前轮已生成的工具调用。
+ * @note 估算不写入真实 Token 字段，调用方不得在认证或发送前失败时调用。
+ */
+func applyCursorUsage(result *fwResult, usage *cursorauth.Usage, request cursorauth.Request, text string, calls []cursorauth.ToolCall) {
+	if usage == nil {
+		estimated := estimatedCursorResponseUsage(request.InputTokenEstimate, text, calls)
+		result.UsageEstimate = &model.TokenUsageEstimate{InputTokens: estimated.InputTokens, OutputTokens: estimated.OutputTokens}
 		return
 	}
 	result.InputTokens = usage.InputTokens
@@ -836,10 +873,11 @@ func applyCursorUsage(result *fwResult, usage *cursorauth.Usage) {
 	result.Cache5mInputTokens = usage.CacheWriteTokens
 }
 
-// estimateCursorInputTokens gives clients a context signal while Cursor's
-// native run is suspended inside a custom-tool callback. The bridge does not
-// expose a reliable usage snapshot at that point, so this estimate is only
-// returned to the client and is intentionally excluded from billing/logging.
+/**
+ * @brief 在 Cursor 未报告真实用量时提供客户端上下文与日志展示的估算依据。
+ * @param request 已解析的提示词和客户端工具定义。
+ * @return 估算输入 Token 数，至少为 1；不参与真实统计或计费。
+ */
 func estimateCursorInputTokens(request cursorauth.Request) int {
 	count := CountTokensRequest{
 		Model:    request.Model,

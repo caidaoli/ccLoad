@@ -197,6 +197,43 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 令牌日志返回展示估算，同时保持真实 Token 与费用为零。
+ * @param t 测试上下文。
+ */
+func TestDashboardTokenLogsPreserveDisplayOnlyUsageEstimate(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	estimate := &model.TokenUsageEstimate{InputTokens: 76200, OutputTokens: 557}
+	if err := store.AddLog(context.Background(), &model.LogEntry{
+		Time: model.JSONTime{Time: time.Now()}, Model: "claude-opus-5-5",
+		LogSource: model.LogSourceProxy, StatusCode: http.StatusOK, AuthTokenID: 42,
+		UsageEstimate: estimate,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today", nil))
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	server.HandleErrors(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Data []model.LogEntry `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+	if len(response.Data) != 1 {
+		t.Fatalf("logs=%d, want 1", len(response.Data))
+	}
+	entry := response.Data[0]
+	if entry.UsageEstimate == nil || *entry.UsageEstimate != *estimate {
+		t.Fatalf("usage estimate=%+v", entry.UsageEstimate)
+	}
+	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.Cost != 0 {
+		t.Fatalf("estimate affected actual usage or cost: %+v", entry)
+	}
+}
+
 func TestDashboardLogsFailClosedWhenPersistedKeyNoLongerExists(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

@@ -1896,6 +1896,7 @@ window.I18N_LOCALES['en'] = {
   'channels.codebuddy.checkinFailed': 'CodeBuddy check-in failed',
   'channels.codebuddy.checkinInvalid': 'The upstream returned no valid CodeBuddy check-in result',
   'channels.oauth.usageReset': 'Reset {time}',
+  'logs.tokenEstimateTooltip': 'Estimated; excluded from billing and actual token totals',
   'channels.oauth.usageCompactAmount': '{used}/{estimated}',
   'channels.oauth.codexPurchasedCreditCost': 'Credit accumulated standard cost: {cost}',
   'channels.oauth.codexCreditCostShort': 'Credit standard cost {cost}',

@@ -7388,6 +7388,136 @@ func TestAdminTestCursorOAuthBillsChannelModelPricing(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Cursor 管理 HTTP 入口只按真实消费计费，响应上下文和估算独立展示。
+ * @param t 测试上下文。
+ */
+func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []struct {
+		name   string
+		chat   bool
+		stream bool
+	}{
+		{name: "json"},
+		{name: "stream", stream: true},
+		{name: "chat", chat: true, stream: true},
+	} {
+		for _, tc := range []struct {
+			name          string
+			events        cursorUsageEventsRunner
+			startErr      error
+			wantInput     int
+			wantOutput    int
+			wantEstimated bool
+			wantContext   bool
+			noRegistry    bool
+		}{
+			{
+				name: "estimate is display only", wantEstimated: true,
+				events: cursorUsageEventsRunner{{Text: "estimated answer", Done: true,
+					Usage: &cursorauth.Usage{InputTokens: 999, OutputTokens: 100}, UsageEstimated: true}},
+			},
+			{
+				name: "terminal residual is billed without replacing context", wantInput: 1100, wantOutput: 220, wantContext: true,
+				events: cursorUsageEventsRunner{
+					{Usage: &cursorauth.Usage{InputTokens: 1000, OutputTokens: 200}},
+					{Text: "actual answer", Done: true, Usage: &cursorauth.Usage{InputTokens: 100, OutputTokens: 20}},
+				},
+			},
+			{
+				name: "interrupted stream retains real consumption", wantInput: 1000, wantOutput: 200,
+				events: cursorUsageEventsRunner{
+					{Delta: "partial", Text: "partial"},
+					{Usage: &cursorauth.Usage{InputTokens: 1000, OutputTokens: 200}},
+					{Done: true, Err: errors.New("Cursor stream interrupted")},
+				},
+			},
+			{name: "send failure has no estimate or charge", startErr: cursorauth.ErrAgentMissing},
+			{name: "translation unavailable before send", noRegistry: true},
+		} {
+			t.Run(endpoint.name+"/"+tc.name, func(t *testing.T) {
+				srv := newInMemoryServer(t)
+				cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
+				cfg.ModelEntries[0].Pricing = channelPrice(1, 2)
+				if _, err := srv.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+				srv.cursorRunner = tc.events
+				if tc.startErr != nil {
+					srv.cursorRunner = &fakeCursorRunner{err: tc.startErr}
+				}
+				clientProtocol := "anthropic"
+				if tc.noRegistry {
+					clientProtocol = "codex"
+					srv.protocolRegistry = nil
+				}
+				request := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", cfg.ID), map[string]any{
+					"model": "grok-4.6", "client_protocol": clientProtocol, "content": "hello", "stream": endpoint.stream,
+				})
+				c, recorder := newTestContext(t, request)
+				c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+				if endpoint.chat {
+					srv.HandleChannelChat(c)
+				} else {
+					srv.HandleChannelTest(c)
+				}
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+				}
+				var display map[string]any
+				if endpoint.chat {
+					for block := range strings.SplitSeq(recorder.Body.String(), "\n\n") {
+						payload := strings.TrimSpace(strings.TrimPrefix(block, "data:"))
+						if payload == "" || payload == "[DONE]" {
+							continue
+						}
+						var event map[string]any
+						if err := json.Unmarshal([]byte(payload), &event); err != nil {
+							t.Fatal(err)
+						}
+						if summary, ok := event["summary"].(map[string]any); ok {
+							display = summary
+						}
+					}
+				} else {
+					display = mustParseAPIResponse[map[string]any](t, recorder.Body.Bytes()).Data
+				}
+				wantCost := float64(tc.wantInput+2*tc.wantOutput) / 1e6
+				if cost := getResultFloat64OrDefault(display, "cost_usd", 0); math.Abs(cost-wantCost) > 1e-12 {
+					t.Fatalf("display cost=%v, want %v; display=%v", cost, wantCost, display)
+				}
+				if tc.wantContext {
+					if endpoint.chat {
+						if getResultIntOrDefault(display, "input_tokens", 0) != 1000 || getResultIntOrDefault(display, "output_tokens", 0) != 200 {
+							t.Fatalf("chat context=%v, want current turn 1000/200", display)
+						}
+					} else if !endpoint.stream {
+						contextUsage, ok := getNestedMap(display, "api_response", "usage")
+						if !ok || getMapIntOrDefault(contextUsage, "input_tokens", 0) != 1000 || getMapIntOrDefault(contextUsage, "output_tokens", 0) != 200 {
+							t.Fatalf("client response context=%v, want current turn 1000/200", display)
+						}
+					}
+				}
+				logs, err := srv.store.ListLogs(context.Background(), time.Time{}, 10, 0, &model.LogFilter{LogSource: model.LogSourceAll})
+				if err != nil || len(logs) != 1 {
+					t.Fatalf("logs=%+v err=%v, want one manual log", logs, err)
+				}
+				entry := logs[0]
+				if entry.InputTokens != tc.wantInput || entry.OutputTokens != tc.wantOutput || math.Abs(entry.Cost-wantCost) > 1e-12 {
+					t.Fatalf("log=%+v, want actual tokens=%d/%d cost=%v", entry, tc.wantInput, tc.wantOutput, wantCost)
+				}
+				if (entry.UsageEstimate != nil) != tc.wantEstimated {
+					t.Fatalf("usage_estimate=%+v, want present=%v", entry.UsageEstimate, tc.wantEstimated)
+				}
+				if tc.wantEstimated && (entry.UsageEstimate.InputTokens <= 0 || entry.UsageEstimate.OutputTokens <= 0) {
+					t.Fatalf("usage_estimate=%+v, want input/output display estimates", entry.UsageEstimate)
+				}
+			})
+		}
+	}
+}
+
 func TestHandleChannelTestCursorWritesOneManualLogWithDebug(t *testing.T) {
 	t.Parallel()
 	srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": "true"})

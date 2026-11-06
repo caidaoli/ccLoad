@@ -70,7 +70,17 @@ func (jt *JSONTime) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// LogEntry 请求日志条目
+/**
+ * @brief 仅供日志展示的估算用量，不参与真实用量统计或费用计算
+ */
+type TokenUsageEstimate struct {
+	InputTokens  int `json:"input_tokens"`  ///< 估算的输入 Token 数
+	OutputTokens int `json:"output_tokens"` ///< 估算的输出 Token 数
+}
+
+/**
+ * @brief 请求日志条目，估算用量与真实用量独立保存
+ */
 type LogEntry struct {
 	ID                   int64              `json:"id"`
 	Time                 JSONTime           `json:"time"`
@@ -99,6 +109,8 @@ type LogEntry struct {
 	ReasoningDecision    *ReasoningDecision `json:"reasoning_decision,omitempty"`
 	PrivacyMasked        *privacy.Counts    `json:"privacy_masked,omitempty"` // 本次尝试实际外发的脱敏占位符按组计数
 	ThinkingEffort       string             `json:"thinking_effort,omitempty"`
+
+	UsageEstimate *TokenUsageEstimate `json:"usage_estimate,omitempty"` ///< 仅供展示的估算用量，nil 表示没有估算
 
 	// Token统计（2025-11新增，支持Claude API usage字段）
 	InputTokens              int     `json:"input_tokens"`

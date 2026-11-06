@@ -2,6 +2,8 @@
 
 修改成本、Token/Key 白名单、额度窗口、采样对账或手动重置时读取。
 
+- **Cursor 用量**：计费累计 SDK 实际发出的每轮增量，终态只补未报告差额，已完成工具结果重放不重复记账；异常结束保留已知真实消费。本地 SDK 的 `totalTokens=inputTokens+outputTokens` 口径表示 input 已含缓存，归一化时先扣缓存再按各价目计费。工具轮没有真实报告时，日志独立保存 `usage_estimate`（输入、输出），前端以 `≈` 标明，不进入真实 token、费用及额度汇总。管理测试和聊天也从 Cursor 转发结果取真实计费量，不能解析含估算的客户端响应来计费。
+
 - **Anthropic iterations 缓存分档**（`proxy_sse_parser.go`）：顶层缺少 `cache_creation` 时，可从 `usage.iterations` 的 message 轮次恢复 5m/1h 缓存写入明细，但各轮明细必须完整有效、只含支持的 TTL，且合计等于顶层 `cache_creation_input_tokens`。不能把各轮 token 再叠加到顶层累计量；不完整、未知 TTL、负数、溢出或总量不一致时沿用原回退。顶层明细及占位 0 的既有快照规则保持不变。
 
 - **内部思考判断**：决策调用按 `log_source=proxy` 记录，请求协议 `client_protocol=system_one`，usage、成本及渠道/模型单独成行；它是网关运营开销，`auth_token_id=0`，不累计客户端业务令牌或费用限额。已知成本计入判断渠道日成本与适用的 OAuth 账本；请求数、健康度、URL 选择与汇总统计和普通代理流量同口径，按请求协议区分。缺 usage 或定价时使用 `reasoning_decision.cost_unknown=true` 明确标记未知费用，不把零金额当成免费。内置 System One 价格按前缀匹配 `jev`（$0.042/MTok）与 `drex`（$0.05/MTok），只计输入 token，输出免费（`model_pricing_catalog.go`）。业务日志的 `reasoning_decision` 保留客户端原等级 `client_effort`、建议、置信度、触发、实际应用/覆盖状态、耗时和回退原因，不记录判断渠道/模型、判断费用、关联 ID 与截断标记（排查靠 Debug 日志回放）；实际发送等级与原等级字符串不同（如 `max→xhigh` 也算）时，前端模型右上角思考角标显示 `原→发送`，客户端未指定或相同只显示发送等级；进行中请求同样显示，发送时由 `ForwardObserver.OnThinkingEffort` 回写 `thinking_effort` 与 `client_effort`（仅不同时非空），前端刷新已有行的模型单元格；业务行信息列不写等级变化，判断行信息列只显示判定等级与置信度或失败原因；`thinking_effort` 仍表示实际发送等级。

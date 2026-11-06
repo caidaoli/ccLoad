@@ -150,6 +150,10 @@ func newPostgresQueryStore(t *testing.T, env *postgresTestEnv) Store {
 	return store
 }
 
+/**
+ * @brief 在条件可用的隔离 PostgreSQL 实例验证迁移与存储契约
+ * @param t 测试上下文
+ */
 func TestPostgres(t *testing.T) {
 	env := setupPostgresEnv(t)
 	ctx := context.Background()
@@ -177,6 +181,16 @@ func TestPostgres(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 		verifyPrivacyMaskedMigrationAndRoundTrip(t, env.db, store, DialectPostgres)
+	})
+
+	t.Run("UsageEstimateMigrationAndRoundTrip", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		verifyUsageEstimateMigrationAndRoundTrip(t, env.db, store, DialectPostgres)
 	})
 
 	t.Run("FullMigration", func(t *testing.T) {

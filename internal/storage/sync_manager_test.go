@@ -317,6 +317,10 @@ func TestSyncManager_RestoreOnStartup_NormalizesNullCredentialForLegacySQLiteRep
 	}
 }
 
+/**
+ * @brief 验证启动恢复保留估算展示字段且不填充真实用量
+ * @param t 测试上下文
+ */
 func TestSyncManager_RestoreLogsSnapshot(t *testing.T) {
 	mysql := createTestStoreForSync(t, "mysql_logs")
 	sqlite := createTestStoreForSync(t, "sqlite_logs")
@@ -336,6 +340,9 @@ func TestSyncManager_RestoreLogsSnapshot(t *testing.T) {
 			Model:      "gpt-4",
 			StatusCode: 200,
 			Duration:   1.5,
+		}
+		if i > 0 {
+			entry.UsageEstimate = &model.TokenUsageEstimate{InputTokens: i * 100, OutputTokens: i * 10}
 		}
 		if err := mysql.AddLog(ctx, entry); err != nil {
 			t.Fatalf("添加日志失败: %v", err)
@@ -367,7 +374,12 @@ func TestSyncManager_RestoreLogsSnapshot(t *testing.T) {
 		t.Fatalf("查询 SQLite 日志失败: %v", err)
 	}
 	if len(sqliteLogs) != 5 {
-		t.Errorf("SQLite 日志数量不匹配: got %d, want 5", len(sqliteLogs))
+		t.Fatalf("SQLite 日志数量不匹配: got %d, want 5", len(sqliteLogs))
+	}
+	for i, entry := range sqliteLogs {
+		if !reflect.DeepEqual(entry.UsageEstimate, mysqlLogs[i].UsageEstimate) || entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.Cost != 0 {
+			t.Fatalf("restored usage = %+v, source estimate = %+v", entry, mysqlLogs[i].UsageEstimate)
+		}
 	}
 }
 

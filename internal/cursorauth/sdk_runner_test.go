@@ -53,17 +53,54 @@ type shutdownErrorControlClient struct {
 	err error
 }
 
+/**
+ * @brief 通过客户端边界模拟 Send 失败或等待请求取消。
+ */
 type sendFailureAgentClient struct {
 	sdkv1connect.SdkAgentServiceClient
 	err           error
+	sendFn        func(context.Context) error ///< 设置时替代立即返回错误的行为。
 	deleteStarted chan struct{}
 	deleteRelease chan struct{}
 }
 
+/**
+ * @brief 在 Send 已发起后观察 DeleteAgent 清理边界。
+ */
+type deleteObservingAgentClient struct {
+	sdkv1connect.SdkAgentServiceClient
+	deleted chan struct{} ///< 删除 RPC 完成后关闭。
+}
+
+/**
+ * @brief 执行真实删除 RPC 并通知测试。
+ * @param ctx 清理上下文。
+ * @param request 删除请求。
+ * @return 上游删除响应；失败时为 nil。
+ * @return 上游 RPC 错误；成功时为 nil。
+ */
+func (c *deleteObservingAgentClient) DeleteAgent(
+	ctx context.Context,
+	request *connect.Request[sdkv1.DeleteAgentRequest],
+) (*connect.Response[sdkv1.DeleteAgentResponse], error) {
+	defer close(c.deleted)
+	return c.SdkAgentServiceClient.DeleteAgent(ctx, request)
+}
+
+/**
+ * @brief 模拟 Send 的同步失败或取消等待。
+ * @param ctx 当前 Agent 上下文。
+ * @param request 未使用的发送请求。
+ * @return 始终为 nil，不建立事件流。
+ * @return 配置的失败或 sendFn 返回的取消错误。
+ */
 func (c *sendFailureAgentClient) Send(
-	context.Context,
-	*connect.Request[sdkv1.SendRequest],
+	ctx context.Context,
+	_ *connect.Request[sdkv1.SendRequest],
 ) (*connect.ServerStreamForClient[sdkv1.RunStreamMessage], error) {
+	if c.sendFn != nil {
+		return nil, c.sendFn(ctx)
+	}
 	return nil, c.err
 }
 
@@ -225,7 +262,7 @@ func newTestSDKRunner(t *testing.T, handler *testAgentHandler) *SDKRunner {
 	bridge := newBridge()
 	bridge.state = bridgeRunning
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
-	return &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+	return &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 }
 
 func TestSDKRunnerStartMakesBridgeReadyWithoutModelRequest(t *testing.T) {
@@ -496,7 +533,7 @@ func TestSDKRunnerListModelsAddsFastSuffix(t *testing.T) {
 	bridge := newBridge()
 	bridge.state = bridgeRunning
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
-	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
 	models, err := runner.ListModels(context.Background(), "user-api-key")
 	if err != nil {
@@ -529,7 +566,7 @@ func TestSDKRunnerListModelsRemoteDeadlineDoesNotClaimLocalLimit(t *testing.T) {
 	bridge := newBridge()
 	bridge.state = bridgeRunning
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
-	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
 	_, err := runner.ListModels(context.Background(), "user-api-key")
 	if err == nil || !strings.Contains(err.Error(), "ListModels returned deadline_exceeded after") ||
@@ -551,7 +588,7 @@ func TestSDKRunnerListModelsPreservesRemoteDeadlineDiagnostic(t *testing.T) {
 	bridge := newBridge()
 	bridge.state = bridgeRunning
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
-	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
 	_, err := runner.ListModels(context.Background(), "user-api-key")
 	if err == nil || !strings.Contains(err.Error(), "proxy CONNECT failed") ||
@@ -606,7 +643,7 @@ func TestSDKRunnerListModelsRetriesOnceAfterBridgeCrash(t *testing.T) {
 			return nil, errors.New("unexpected extra bridge restart")
 		}
 	}
-	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
 	models, err := runner.ListModels(context.Background(), "account-a")
 	if err != nil {
@@ -647,7 +684,7 @@ func TestSDKRunnerListModelsKeepsConcurrentChannelAPIKeysIsolated(t *testing.T) 
 	bridge := newBridge()
 	bridge.state = bridgeRunning
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
-	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
 	type result struct {
 		models []string
@@ -910,6 +947,162 @@ func TestSDKRunnerSendFailureReturnsBeforeAgentCleanup(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 活动请求持续时间超过工具会话空闲预算时仍可正常完成。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerActiveRequestOutlivesSessionIdleTimeout(t *testing.T) {
+	const idleTimeout = 20 * time.Millisecond
+	handler := &testAgentHandler{}
+	handler.sendFn = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		if err := stream.Send(sdkMessage(t, "status", map[string]any{
+			"agent_id": "agent-1", "run_id": "run-1",
+		})); err != nil {
+			return err
+		}
+		timer := time.NewTimer(5 * idleTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := stream.Send(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "done")); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-1"))
+	}
+	runner := newTestSDKRunner(t, handler)
+	runner.idleTimeout = idleTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	events, err := runner.Run(ctx, &Credential{APIKey: "test-key"}, Request{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var final Event
+	for event := range events {
+		if event.Done {
+			final = event
+		}
+	}
+	if !final.Done || final.Err != nil || final.Text != "done" {
+		t.Fatalf("active request final = %+v", final)
+	}
+}
+
+/**
+ * @brief Send 尚未返回事件流时，请求取消仍中止调用并删除 Agent。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerCallerCancellationStopsSynchronousSend(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		timeout          time.Duration
+		cancelAfterStart bool
+		wantErr          error
+	}{
+		{name: "cancelled", timeout: time.Second, cancelAfterStart: true, wantErr: context.Canceled},
+		{name: "deadline", timeout: 100 * time.Millisecond, wantErr: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sendStarted := make(chan struct{})
+			deleteStarted := make(chan struct{})
+			deleteRelease := make(chan struct{})
+			t.Cleanup(func() { close(deleteRelease) })
+			runner := newTestSDKRunner(t, &testAgentHandler{})
+			client := runner.bridge.process.client
+			client.agent = &sendFailureAgentClient{
+				SdkAgentServiceClient: client.agent,
+				sendFn: func(ctx context.Context) error {
+					close(sendStarted)
+					<-ctx.Done()
+					return ctx.Err()
+				},
+				deleteStarted: deleteStarted, deleteRelease: deleteRelease,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+			defer cancel()
+			returned := make(chan error, 1)
+			go func() {
+				_, err := runner.Run(ctx, &Credential{APIKey: "test-key"}, Request{Prompt: "hello"})
+				returned <- err
+			}()
+			select {
+			case <-sendStarted:
+			case <-time.After(time.Second):
+				t.Fatal("Send did not start")
+			}
+			if tc.cancelAfterStart {
+				cancel()
+			}
+			select {
+			case err := <-returned:
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Run() error = %v, want %v", err, tc.wantErr)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("synchronous Send ignored caller cancellation")
+			}
+			select {
+			case <-deleteStarted:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled Send did not delete its Agent")
+			}
+		})
+	}
+}
+
+/**
+ * @brief 无后续请求的工具会话在空闲预算耗尽后删除，旧结果按历史开启新 Agent。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerReclaimsIdleToolSession(t *testing.T) {
+	runner, _ := newNativeToolTestRunner(t)
+	runner.idleTimeout = 20 * time.Millisecond
+	client := runner.bridge.process.client
+	agentClient := client.agent
+	deleted := make(chan struct{})
+	client.agent = &deleteObservingAgentClient{SdkAgentServiceClient: agentClient, deleted: deleted}
+	credential := &Credential{APIKey: "test-key"}
+	request := Request{
+		Prompt: "lookup", ToolChoice: "auto",
+		Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	events, err := runner.Run(ctx, credential, request)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	call := readNativeToolCall(t, events)
+	select {
+	case <-deleted:
+	case <-ctx.Done():
+		t.Fatal("idle tool session was not deleted")
+	}
+	client.agent = agentClient
+	runner.idleTimeout = time.Second
+	request.ToolResults = []ToolResult{{CallID: call.ID, Output: "late-result"}}
+	events, err = runner.Run(ctx, credential, request)
+	if err != nil {
+		t.Fatalf("Run() after idle expiry error = %v", err)
+	}
+	nextCall := readNativeToolCall(t, events)
+	var arguments struct {
+		Session string `json:"session"`
+	}
+	if err := json.Unmarshal(nextCall.Arguments, &arguments); err != nil {
+		t.Fatalf("decode new tool arguments: %v", err)
+	}
+	if arguments.Session != "agent-2" {
+		t.Fatalf("tool call after idle expiry used %q, want new agent-2", arguments.Session)
+	}
+	if got := resumeNativeToolCall(t, runner, credential, nextCall.ID, "new-result"); got != "agent-2:new-result" {
+		t.Fatalf("new tool session result = %q", got)
+	}
+}
+
 func TestSDKRunnerCallerCancellationInterruptsUsageFallback(t *testing.T) {
 	getRunStarted := make(chan struct{})
 	getRunRelease := make(chan struct{})
@@ -1010,6 +1203,153 @@ func TestSDKRunnerCallerCancellationStopsSendWithoutRunID(t *testing.T) {
 	}
 	if handler.deleted == nil || handler.deleted.GetAgentId() != "agent-1" {
 		t.Fatalf("DeleteAgent request = %+v", handler.deleted)
+	}
+}
+
+/**
+ * @brief 真实 usage 流事件与终态只记一次，异常结束仍补查并保留已报告用量。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerPreservesIncrementalUsageOnTermination(t *testing.T) {
+	for _, status := range []sdkv1.RunLifecycleStatus{
+		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED,
+		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR,
+		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_EXPIRED,
+	} {
+		t.Run(status.String(), func(t *testing.T) {
+			handler := &testAgentHandler{runSnapshot: &sdkv1.RunSnapshot{
+				AgentId: "agent-1", RunId: "run-1", Status: status,
+				Usage: &sdkv1.TokenUsage{InputTokens: 15, OutputTokens: 7, CacheReadTokens: 5, TotalTokens: 27},
+			}}
+			handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				for _, event := range []*sdkv1.RunStreamMessage{
+					sdkMessage(t, "usage", map[string]any{"agent_id": "agent-1", "run_id": "run-1", "usage": map[string]any{
+						"inputTokens": 10, "outputTokens": 2, "cacheReadTokens": 3, "totalTokens": 15,
+					}}),
+					runResult("agent-1", "run-1", status, ""), runDone("agent-1", "run-1"),
+				} {
+					if err := stream.Send(event); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			runner := newTestSDKRunner(t, handler)
+			events, err := runner.Run(context.Background(), &Credential{APIKey: "key"}, Request{Prompt: "hello"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var total Usage
+			var final Event
+			for event := range events {
+				if event.Usage != nil && !event.UsageEstimated {
+					total.Add(event.Usage)
+				}
+				if event.Done {
+					final = event
+				}
+			}
+			if total != (Usage{InputTokens: 15, OutputTokens: 7, CacheReadTokens: 5, TotalTokens: 27}) {
+				t.Fatalf("usage was lost or double counted: %+v", total)
+			}
+			if final.Usage == nil || *final.Usage != (Usage{InputTokens: 5, OutputTokens: 5, CacheReadTokens: 2, TotalTokens: 12}) {
+				t.Fatalf("terminal remainder = %+v", final.Usage)
+			}
+			if (final.Err == nil) != (status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED) {
+				t.Fatalf("terminal error=%v status=%v", final.Err, status)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 使用 v1.2.0 实际报告口径验证输入包含缓存时不会重复计费。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerNormalizesLocalUsageWithoutDoubleCountingCache(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		if err := stream.Send(sdkMessage(t, "usage", map[string]any{"agent_id": "agent-1", "run_id": "run-1", "usage": map[string]any{
+			"inputTokens": 22285, "outputTokens": 403, "cacheReadTokens": 16447, "cacheWriteTokens": 5828, "totalTokens": 22688,
+		}})); err != nil {
+			return err
+		}
+		result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "")
+		result.GetResult().GetResult().Usage = &sdkv1.TokenUsage{InputTokens: 22285, OutputTokens: 403, CacheReadTokens: 16447, CacheWriteTokens: 5828, TotalTokens: 22688}
+		if err := stream.Send(result); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-1"))
+	}
+	runner := newTestSDKRunner(t, handler)
+	events, err := runner.Run(context.Background(), &Credential{APIKey: "key"}, Request{Prompt: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total Usage
+	for event := range events {
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+		if event.Usage != nil && !event.UsageEstimated {
+			total.Add(event.Usage)
+		}
+	}
+	if total != (Usage{InputTokens: 10, OutputTokens: 403, CacheReadTokens: 16447, CacheWriteTokens: 5828, TotalTokens: 22688}) {
+		t.Fatalf("normalized local usage = %+v", total)
+	}
+}
+
+/**
+ * @brief 慢消费者取消后仍收到已缓冲的真实用量，且不重复结算。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerCancellationPreservesBufferedUsage(t *testing.T) {
+	handler := &testAgentHandler{getRunStarted: make(chan struct{}), getRunRelease: make(chan struct{})}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		usage := sdkMessage(t, "usage", map[string]any{"agent_id": "agent-1", "run_id": "run-1", "usage": map[string]any{
+			"inputTokens": 10, "outputTokens": 2, "totalTokens": 12,
+		}})
+		if err := stream.Send(usage); err != nil {
+			return err
+		}
+		for range 40 {
+			if err := stream.Send(sdkMessage(t, "assistant", map[string]any{"message": map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "x"}},
+			}})); err != nil {
+				return err
+			}
+		}
+		return stream.Send(usage)
+	}
+	runner := newTestSDKRunner(t, handler)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := runner.Run(ctx, &Credential{APIKey: "key"}, Request{Prompt: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handler.getRunStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream messages were not consumed")
+	}
+	cancel()
+	var total Usage
+	var final Event
+	for event := range events {
+		if event.Usage != nil && !event.UsageEstimated {
+			total.Add(event.Usage)
+		}
+		if event.Done {
+			final = event
+		}
+	}
+	if total != (Usage{InputTokens: 20, OutputTokens: 4, TotalTokens: 24}) {
+		t.Fatalf("cancellation lost or duplicated usage: %+v", total)
+	}
+	if !final.Done || !errors.Is(final.Err, context.Canceled) {
+		t.Fatalf("terminal event = %+v", final)
 	}
 }
 

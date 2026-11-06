@@ -42,16 +42,22 @@ func (h *nativeToolControlHandler) callback() (string, string) {
 	return h.url, h.token
 }
 
+/**
+ * @brief 模拟带多轮自定义工具和逐轮用量的 SDK Agent。
+ */
 type nativeToolAgentHandler struct {
 	sdkv1connect.UnimplementedSdkAgentServiceHandler
 	control *nativeToolControlHandler
 	nextID  atomic.Int32
 
-	mu      sync.Mutex
-	creates map[string]*sdkv1.CreateAgentRequest
-	results map[string]map[string]any
-	getRuns map[string]int
-	usage   map[string]*sdkv1.TokenUsage
+	mu        sync.Mutex
+	creates   map[string]*sdkv1.CreateAgentRequest
+	results   map[string]map[string]any
+	getRuns   map[string]int
+	usage     map[string]*sdkv1.TokenUsage
+	turns     int
+	turnDelay time.Duration
+	turnUsage map[string]any
 }
 
 func (h *nativeToolAgentHandler) CreateAgent(
@@ -65,6 +71,13 @@ func (h *nativeToolAgentHandler) CreateAgent(
 	return connect.NewResponse(&sdkv1.CreateAgentResponse{AgentId: agentID}), nil
 }
 
+/**
+ * @brief 每轮报告用量并等待客户端工具结果，最后返回累计快照可补查的终态。
+ * @param ctx 上游请求上下文。
+ * @param request Send 请求。
+ * @param stream SDK 响应流。
+ * @return 发送、工具回调失败或请求取消时返回错误。
+ */
 func (h *nativeToolAgentHandler) Send(
 	ctx context.Context,
 	request *connect.Request[sdkv1.SendRequest],
@@ -79,22 +92,38 @@ func (h *nativeToolAgentHandler) Send(
 	}
 	callbackURL, callbackToken := h.control.callback()
 	callback := sdkv1connect.NewSdkCustomToolCallbackServiceClient(http.DefaultClient, callbackURL)
-	// Deliberately reuse the bridge-scoped ID across Agents. ccLoad must expose
-	// distinct downstream call IDs so concurrent sessions cannot collide.
-	callID := "bridge-call"
-	toolRequest := connect.NewRequest(&sdkv1.CallCustomToolRequest{
-		AgentId: agentID, ToolName: "lookup", ToolCallId: &callID,
-		Args: mustStruct(map[string]any{"session": agentID}),
-	})
-	toolRequest.Header().Set("Authorization", "Bearer "+callbackToken)
-	response, err := callback.CallCustomTool(ctx, toolRequest)
-	if err != nil {
-		return err
+	var result map[string]any
+	for range max(1, h.turns) {
+		if h.turnDelay > 0 {
+			select {
+			case <-time.After(h.turnDelay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if h.turnUsage != nil {
+			if err := stream.Send(nativeSDKMessage("usage", map[string]any{
+				"agent_id": agentID, "run_id": runID, "usage": h.turnUsage,
+			})); err != nil {
+				return err
+			}
+		}
+		// The bridge-scoped ID may repeat across Agents and tool turns.
+		callID := "bridge-call"
+		toolRequest := connect.NewRequest(&sdkv1.CallCustomToolRequest{
+			AgentId: agentID, ToolName: "lookup", ToolCallId: &callID,
+			Args: mustStruct(map[string]any{"session": agentID}),
+		})
+		toolRequest.Header().Set("Authorization", "Bearer "+callbackToken)
+		response, err := callback.CallCustomTool(ctx, toolRequest)
+		if err != nil {
+			return err
+		}
+		result = response.Msg.GetResult().AsMap()
+		h.mu.Lock()
+		h.results[agentID] = result
+		h.mu.Unlock()
 	}
-	result := response.Msg.GetResult().AsMap()
-	h.mu.Lock()
-	h.results[agentID] = result
-	h.mu.Unlock()
 	text := fmt.Sprintf("%s:%v", agentID, result["value"])
 	if err := stream.Send(nativeSDKMessage("assistant", map[string]any{
 		"agent_id": agentID, "run_id": runID,
@@ -171,7 +200,7 @@ func newNativeToolTestRunner(t *testing.T) (*SDKRunner, *nativeToolAgentHandler)
 	bridge.state = bridgeRunning
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
 	runner := &SDKRunner{
-		bridge: bridge, timeout: 3 * time.Second,
+		bridge: bridge, idleTimeout: 3 * time.Second,
 		sessions: make(map[string]*sdkSession), calls: make(map[string]*pendingToolCall),
 		completedCalls: make(map[string]*sdkSession),
 	}
@@ -552,4 +581,72 @@ func resumeNativeToolCall(t *testing.T, runner *SDKRunner, credential *Credentia
 		}
 	}
 	return text
+}
+
+/**
+ * @brief 多轮活动会话超过空闲预算仍可恢复，每轮用量及终态差额只发出一次。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerToolTurnsPreserveLifetimeAndIncrementalUsage(t *testing.T) {
+	runner, handler := newNativeToolTestRunner(t)
+	runner.idleTimeout = 80 * time.Millisecond
+	handler.turns = 4
+	handler.turnDelay = 35 * time.Millisecond
+	handler.turnUsage = map[string]any{
+		"inputTokens": 10, "outputTokens": 2, "cacheReadTokens": 3,
+		"cacheWriteTokens": 1, "totalTokens": 16, "reasoningTokens": 1,
+	}
+	handler.usage["run-agent-1"] = &sdkv1.TokenUsage{
+		InputTokens: 45, OutputTokens: 10, CacheReadTokens: 12,
+		CacheWriteTokens: 4, TotalTokens: 71, ReasoningTokens: new(int64(4)),
+	}
+	credential := &Credential{APIKey: "channel-key"}
+	req := Request{Model: "model-1", Prompt: "lookup", Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}}, InputTokenEstimate: 999}
+	started := time.Now()
+	var sum Usage
+	for turn := range 5 {
+		ctx, cancel := context.WithCancel(context.Background())
+		events, err := runner.Run(ctx, credential, req)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		var call ToolCall
+		var actual Usage
+		var final Event
+		for event := range events {
+			if event.Err != nil {
+				cancel()
+				t.Fatal(event.Err)
+			}
+			if event.ToolCall != nil {
+				call = *event.ToolCall
+			}
+			if event.Usage != nil && !event.UsageEstimated {
+				actual.Add(event.Usage)
+			}
+			if event.Done {
+				final = event
+			}
+		}
+		cancel()
+		sum.Add(&actual)
+		if turn < 4 {
+			if call.ID == "" || actual != (Usage{InputTokens: 10, OutputTokens: 2, CacheReadTokens: 3, CacheWriteTokens: 1, TotalTokens: 16, ReasoningTokens: 1}) {
+				t.Fatalf("turn %d call=%+v usage=%+v", turn, call, actual)
+			}
+			req = Request{ToolResults: []ToolResult{{CallID: call.ID, Output: "ok"}}, InputTokenEstimate: 999}
+		} else if !final.Done || actual != (Usage{InputTokens: 5, OutputTokens: 2, TotalTokens: 7}) {
+			t.Fatalf("terminal=%+v residual=%+v", final, actual)
+		}
+	}
+	if time.Since(started) <= runner.idleTimeout {
+		t.Fatal("test did not span the idle timeout budget")
+	}
+	if sum != (Usage{InputTokens: 45, OutputTokens: 10, CacheReadTokens: 12, CacheWriteTokens: 4, TotalTokens: 71, ReasoningTokens: 4}) {
+		t.Fatalf("usage counted twice: %+v", sum)
+	}
+	if handler.nextID.Load() != 1 {
+		t.Fatalf("active session was replaced: creates=%d", handler.nextID.Load())
+	}
 }

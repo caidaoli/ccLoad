@@ -4,6 +4,8 @@
 
 ## 系统设置与连接生命周期
 
+- **日志展示估算**：`logs.usage_estimate` 为可空 JSON 文本，字段为 `input_tokens`、`output_tokens`；SQLite、PostgreSQL、MySQL 的建表、迁移、单条/批量写入及混合复制必须保留。旧日志为空，不回填推测值；实际 token 与费用列、聚合查询不使用此字段。
+
 - **系统设置与热更新**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读取配置；唯一写入口 `POST /admin/settings/batch` 由 `settingsUpdateMu` 串行化保存。`model_multimodal_fallback`、`model_custom_pricing`、`reasoning_auto` 和 `privacy_redaction` 由 `commitSettingUpdates` 在持久化成功后发布运行态快照，避免数据库终值与运行态错序；一次提交只含这些键时免重启，同时包含其他键则调用 `go s.triggerRestart()`，2 秒后重启生效。后端 `hotReloadedSettingKeys` 与前端 `hotReloadSettingKeys` 必须同步。其余设置继续使用启动缓存，不能在保存时顺手刷新。重启回调属于 `Server` 实例并由锁保护，禁止恢复为包级可变全局。
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全属这一类,保持环境变量;运行期策略才进系统设置
 - **全局限额与冷却时长**(`server.go:loadServerRuntimeConfig`):均为系统设置,启动读一次,改后重启生效。`max_concurrency`(全局并发信号量;三层同名警告见渠道级限流条)、`max_body_bytes`/`max_image_body_bytes`(Images 路径独立上限,同时约束 Responses WS 帧与 transcript,注入见 `newRequestBodyLimits`)、`cooldown_{auth,server,timeout,rate_limit,min,max}_seconds`(`loadCooldownSettings` 读出 `util.CooldownSettings`,经 `Store.ConfigureCooldown` 注入;下限>上限时整对回退默认)。旧 `CCLOAD_MAX_CONCURRENCY`/`CCLOAD_MAX_BODY_BYTES`/`CCLOAD_COOLDOWN_*` 已废弃,仍设置时启动打 WARN

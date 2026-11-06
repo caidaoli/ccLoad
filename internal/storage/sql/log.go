@@ -16,6 +16,12 @@ import (
 
 const minuteMs int64 = 60_000 // 用于 minute_bucket 计算
 
+/**
+ * @brief 读取真实用量及独立的日志展示元数据
+ * @param scanner 按 logListQuery 列顺序提供数据的扫描器
+ * @return 日志条目；扫描或 JSON 解码失败时返回 nil
+ * @return 数据库扫描或展示元数据 JSON 解码失败时返回错误，否则返回 nil
+ */
 func scanLogEntry(scanner interface {
 	Scan(...any) error
 }) (*model.LogEntry, error) {
@@ -38,6 +44,7 @@ func scanLogEntry(scanner interface {
 	var thinkingEffort sql.NullString
 	var reasoningDecision sql.NullString
 	var privacyMasked sql.NullString
+	var usageEstimate sql.NullString
 	var inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheCreationTokens, cache5mTokens, cache1hTokens sql.NullInt64
 	var cost sql.NullFloat64
 	var costMultiplier sql.NullFloat64
@@ -45,7 +52,7 @@ func scanLogEntry(scanner interface {
 
 	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &actualModel, &responseModel, &logSource, &e.ChannelID,
 		&e.StatusCode, &e.Message, &duration, &isStreamingInt, &upstreamWebsocketInt, &firstByteTime, &apiKeyUsed, &apiKeyHash, &e.AuthTokenID, &clientProtocol, &upstreamProtocol, &clientIP, &baseURL, &serviceTier, &thinkingEffort,
-		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost, &costMultiplier, &codexHasCredits, &reasoningDecision, &privacyMasked); err != nil {
+		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost, &costMultiplier, &codexHasCredits, &reasoningDecision, &privacyMasked, &usageEstimate); err != nil {
 		return nil, err
 	}
 
@@ -57,6 +64,11 @@ func scanLogEntry(scanner interface {
 	if privacyMasked.Valid && privacyMasked.String != "" {
 		if err := json.Unmarshal([]byte(privacyMasked.String), &e.PrivacyMasked); err != nil {
 			return nil, fmt.Errorf("decode log privacy_masked: %w", err)
+		}
+	}
+	if usageEstimate.Valid && usageEstimate.String != "" {
+		if err := json.Unmarshal([]byte(usageEstimate.String), &e.UsageEstimate); err != nil {
+			return nil, fmt.Errorf("decode log usage_estimate: %w", err)
 		}
 	}
 	e.CodexHasCredits = codexHasCredits != 0
@@ -233,12 +245,21 @@ func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuo
 	return effects, nil
 }
 
+/**
+ * @brief 日志写入列，真实用量与估算 JSON 分列保存
+ */
 const logsInsertColumns = `INSERT INTO logs(time, minute_bucket, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked) VALUES `
+				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked, usage_estimate) VALUES `
 
-const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+/**
+ * @brief 单条日志写入占位符，与日志写入列顺序一致
+ */
+const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const logRowParams = 34
+/**
+ * @brief 单条日志写入参数数量
+ */
+const logRowParams = 35
 
 // BatchAddLogs 批量写入日志（单事务，多值 INSERT 提升刷盘吞吐）
 // 设计：
@@ -412,7 +433,11 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 	return nil
 }
 
-// logRowArgs 构造单条日志的 INSERT 参数列表（顺序与 logRowPlaceholders 严格对齐）。
+/**
+ * @brief 构造日志写入参数，展示估算不改写真实用量或费用
+ * @param e 待写入的日志
+ * @return 与日志写入列顺序一致的参数列表
+ */
 func logRowArgs(e *model.LogEntry) []any {
 	t := e.Time.Time
 	if t.IsZero() {
@@ -437,6 +462,11 @@ func logRowArgs(e *model.LogEntry) []any {
 		encoded, _ := json.Marshal(e.PrivacyMasked)
 		privacyJSON = string(encoded)
 	}
+	var estimateJSON any
+	if e.UsageEstimate != nil {
+		encoded, _ := json.Marshal(e.UsageEstimate)
+		estimateJSON = string(encoded)
+	}
 	return []any{
 		timeMs, minuteBucket, e.Model, e.ActualModel, e.ResponseModel,
 		model.NormalizeStoredLogSource(e.LogSource),
@@ -446,12 +476,15 @@ func logRowArgs(e *model.LogEntry) []any {
 		e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,
 		normalizeCostMultiplier(e.CostMultiplier),
-		e.CodexHasCredits, decisionJSON, privacyJSON,
+		e.CodexHasCredits, decisionJSON, privacyJSON, estimateJSON,
 	}
 }
 
+/**
+ * @brief 日志列表投影，包含独立的估算用量展示元数据
+ */
 const logListQuery = `SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked
+	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked, usage_estimate
 	FROM logs`
 
 // ListLogs 查询日志列表

@@ -221,7 +221,9 @@ type upstreamWireAliases struct {
 	anthropicTools anthropicMCPToolAliases
 }
 
-// fwResult 转发结果
+/**
+ * @brief 上游转发结果，真实用量参与计费，估算用量仅供日志展示。
+ */
 type fwResult struct {
 	Status              int
 	UpstreamStatus      int // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
@@ -236,6 +238,7 @@ type fwResult struct {
 	InputTokens              int
 	OutputTokens             int
 	ReasoningTokens          int
+	UsageEstimate            *model.TokenUsageEstimate ///< 真实用量缺失时的展示估算，不参与统计或计费
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
@@ -384,6 +387,7 @@ type proxyResult struct {
 	status                    int
 	header                    http.Header
 	body                      []byte
+	forwarded                 *fwResult ///< 已消费的上游真实用量及展示估算，供管理测试复用
 	channelID                 *int64
 	duration                  float64
 	firstByteTime             float64
@@ -1231,7 +1235,11 @@ func resolveProxyBillingModel(requestPath, actualModel, requestModel string) str
 	return util.ResolveBillingModel(actualModel, requestModel)
 }
 
-// buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
+/**
+ * @brief 构建请求日志，独立保留真实用量与仅供展示的估算。
+ * @param p 当前尝试的请求、上游结果及计费参数。
+ * @return 包含诊断信息及按真实用量计算成本的日志条目。
+ */
 func buildLogEntry(p logEntryParams) *model.LogEntry {
 	logTime := p.StartTime
 	if logTime.IsZero() {
@@ -1328,6 +1336,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.InputTokens = res.InputTokens
 		entry.OutputTokens = res.OutputTokens
 		entry.ReasoningTokens = res.ReasoningTokens
+		entry.UsageEstimate = res.UsageEstimate
 		entry.CacheReadInputTokens = res.CacheReadInputTokens
 		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
 		entry.Cache5mInputTokens = res.Cache5mInputTokens

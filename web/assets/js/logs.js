@@ -1278,12 +1278,14 @@ function renderLogs(data) {
     }
 
     // 6. Token统计显示(0值为空)：与其他页面一致用 K/M 缩写，精确值放 title
-    const tokenValue = (value, type) => {
+    const tokenValue = (value, type, estimated = false) => {
       if (value === undefined || value === null || value === 0) return '';
-      return `<span class="token-metric-value${type ? ` token-type--${type}` : ''}" title="${value.toLocaleString()}">${window.formatNumber(value)}</span>`;
+      const title = estimated ? `${value.toLocaleString()} · ${t('logs.tokenEstimateTooltip')}` : value.toLocaleString();
+      return `<span class="token-metric-value${type ? ` token-type--${type}` : ''}" title="${escapeHtml(title)}">${estimated ? '≈' : ''}${window.formatNumber(value)}</span>`;
     };
-    const inputTokensDisplay = tokenValue(entry.input_tokens);
-    const outputTokensDisplay = tokenValue(entry.output_tokens);
+    const displayedUsage = entry.usage_estimate || entry;
+    const inputTokensDisplay = tokenValue(displayedUsage.input_tokens, '', Boolean(entry.usage_estimate));
+    const outputTokensDisplay = tokenValue(displayedUsage.output_tokens, '', Boolean(entry.usage_estimate));
     const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'cache-read');
 
     // 缓存建列

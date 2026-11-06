@@ -153,6 +153,10 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 // 使用顶层测试函数包裹子测试，确保容器生命周期正确管理
 // ============================================================================
 
+/**
+ * @brief 在条件可用的隔离 MySQL 实例验证迁移与存储契约
+ * @param t 测试上下文
+ */
 func TestMySQL(t *testing.T) {
 	env := setupMySQLEnv(t)
 
@@ -180,6 +184,16 @@ func TestMySQL(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 		verifyPrivacyMaskedMigrationAndRoundTrip(t, env.db, store, DialectMySQL)
+	})
+
+	t.Run("UsageEstimateMigrationAndRoundTrip", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		verifyUsageEstimateMigrationAndRoundTrip(t, env.db, store, DialectMySQL)
 	})
 
 	t.Run("FullMigration", func(t *testing.T) {
