@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"regexp"
 	"slices"
@@ -385,7 +384,7 @@ type Balance struct {
 	Permanent      *float64 `json:"balance"`                  ///< 永久积分余额，nil 表示未知。
 	Daily          *float64 `json:"dailyBalance"`             ///< 当日剩余积分，nil 表示未知。
 	Available      *float64 `json:"availableBalance"`         ///< 上游提供的可用总积分，nil 表示未知。
-	DailyQuota     *float64 `json:"dailyQuota,omitempty"`     ///< 签到实测或完整当日流水推导的每日总积分；nil 表示未知。
+	DailyQuota     *float64 `json:"dailyQuota,omitempty"`     ///< 当日签到确认的每日总积分；nil 表示未知。
 	DailyConsumed  *float64 `json:"dailyConsumed,omitempty"`  ///< 与 DailyCycleDate 对应的当日已用积分，nil 表示未知。
 	DailyCycleDate string   `json:"dailyCycleDate,omitempty"` ///< 每日总额及已用对应的业务日期，格式 YYYY-MM-DD。
 }
@@ -407,66 +406,6 @@ func (s *Service) FetchBalance(ctx context.Context, session string) (*Balance, e
 		return nil, errors.New("invalid Loomy balance response")
 	}
 	return &balance, nil
-}
-
-/**
- * @brief 从完整有界流水汇总指定业务日的每日积分消耗。
- * @param ctx 分页请求的取消与截止时间上下文。
- * @param session 当前账号会话。
- * @param cycleDate 要统计的业务日期，按 YYYY-MM-DD 与上游精确匹配。
- * @return 指定业务日的每日消费积分；无消费或失败时为 0。
- * @return 存在该业务日的 daily 流水时为 true（不限于消费），无匹配记录或失败时为 false。
- * @return 请求失败、分页不完整或数据无效时返回错误；上游拒绝可用 errors.As 检查 *APIError，会话失效可用 errors.Is 检查 ErrSessionExpired；成功为 nil。
- * @details 每页 100 条，最多 6 页；只累加 daily 来源的 debit，拒绝缺失、负数及非有限消费值，避免用部分流水伪造额度。
- */
-func (s *Service) FetchDailyConsumed(ctx context.Context, session, cycleDate string) (float64, bool, error) {
-	/**
-	 * @brief 限定每日流水每页 100 条、最多六页；不允许使用截断结果推导额度。
-	 */
-	const pageSize, maxPages = 100, 6
-	var consumed float64
-	var count int
-	foundCycle := false
-	for page := 1; page <= maxPages; page++ {
-		path := fmt.Sprintf("/api/v1/points/records?pageNo=%d&pageSize=%d&recordType=all", page, pageSize)
-		raw, err := s.tokenRequest(ctx, http.MethodGet, path, session, nil)
-		if err != nil {
-			return 0, false, err
-		}
-		var data struct {
-			Total *int `json:"total"` ///< 流水总条数，必须存在且非负，用于判断分页是否完整。
-			List  *[]struct {
-				Direction     string   `json:"direction"`      ///< 积分变动方向，只统计 debit 消费。
-				ConsumeSource string   `json:"consumeSource"`  ///< 积分池来源，只统计 daily。
-				CycleDate     string   `json:"dailyCycleDate"` ///< 记录所属的业务日期，与目标日期精确匹配。
-				Points        *float64 `json:"pointsActual"`   ///< 实际消费积分；消费记录必须提供有限非负数值。
-			} `json:"list"` ///< 当前页流水；nil 表示缺失，空切片仅在总条数已满足时完整。
-		}
-		if json.Unmarshal(raw, &data) != nil || data.List == nil || data.Total == nil || *data.Total < 0 {
-			return 0, false, errors.New("invalid Loomy ledger response")
-		}
-		for _, row := range *data.List {
-			if row.ConsumeSource != "daily" || row.CycleDate != cycleDate {
-				continue
-			}
-			foundCycle = true
-			if row.Direction != "debit" {
-				continue
-			}
-			if row.Points == nil || *row.Points < 0 || math.IsNaN(*row.Points) || math.IsInf(*row.Points, 0) {
-				return 0, false, errors.New("invalid Loomy daily consumption")
-			}
-			consumed += *row.Points
-		}
-		count += len(*data.List)
-		if count >= *data.Total {
-			return consumed, foundCycle, nil
-		}
-		if len(*data.List) == 0 {
-			break
-		}
-	}
-	return 0, false, errors.New("incomplete Loomy daily ledger")
 }
 
 /**

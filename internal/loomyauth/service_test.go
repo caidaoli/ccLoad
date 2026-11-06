@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -138,52 +137,6 @@ func TestBusinessContracts(t *testing.T) {
 			}
 			if err != nil && strings.Contains(err.Error(), "private") {
 				t.Fatal("upstream body leaked")
-			}
-		})
-	}
-}
-
-/**
- * @brief 验证每日积分汇总必须读取完整流水且只累加指定日期的 daily debit。
- * @param t 当前测试上下文。
- * @details 覆盖跨页、空流水、字段缺失、截断和六页上限。
- */
-func TestDailyLedgerConsumption(t *testing.T) {
-	for _, tc := range []struct {
-		name        string   ///< 子用例名称。
-		pages       []string ///< 按分页次序返回的模拟流水数据。
-		want        float64  ///< 预期汇总的每日消费积分。
-		found, fail bool     ///< found：是否预期发现目标业务日的 daily 流水；fail：是否预期分页或记录校验失败。
-	}{
-		{"complete pages", []string{
-			`{"total":5,"list":[{"direction":"debit","consumeSource":"daily","dailyCycleDate":"2026-11-04","pointsActual":10},{"direction":"debit","consumeSource":"permanent","dailyCycleDate":"2026-11-04","pointsActual":500}]}`,
-			`{"total":5,"list":[{"direction":"debit","consumeSource":"daily","dailyCycleDate":"2026-11-03","pointsActual":999},{"direction":"credit","consumeSource":"daily","dailyCycleDate":"2026-11-04","pointsActual":100},{"direction":"debit","consumeSource":"daily","dailyCycleDate":"2026-11-04","pointsActual":2.5}]}`,
-		}, 12.5, true, false},
-		{"empty ledger", []string{`{"total":0,"list":[]}`}, 0, false, false},
-		{"missing date", []string{`{"total":1,"list":[{"direction":"debit","consumeSource":"daily","pointsActual":100}]}`}, 0, false, false},
-		{"missing total", []string{`{"list":[]}`}, 0, false, true},
-		{"truncated ledger", []string{`{"total":1,"list":[]}`}, 0, false, true},
-		{"missing points", []string{`{"total":1,"list":[{"direction":"debit","consumeSource":"daily","dailyCycleDate":"2026-11-04"}]}`}, 0, false, true},
-		{"page limit", []string{`{"total":1000,"list":[{"direction":"debit","consumeSource":"daily","dailyCycleDate":"2026-11-04","pointsActual":10}]}`}, 0, false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/points/records" ||
-					r.URL.Query().Get("pageNo") != fmt.Sprint(calls) || r.URL.Query().Get("pageSize") != "100" ||
-					r.URL.Query().Get("recordType") != "all" || r.Header.Get("token") != "session" {
-					t.Error("invalid ledger request")
-				}
-				index := min(calls-1, len(tc.pages)-1)
-				_, _ = fmt.Fprintf(w, `{"code":"000000","data":%s}`, tc.pages[index])
-			}))
-			defer server.Close()
-			service := NewService(server.Client())
-			service.BaseURL = server.URL
-			consumed, found, err := service.FetchDailyConsumed(context.Background(), "session", "2026-11-04")
-			if (err != nil) != tc.fail || consumed != tc.want || found != tc.found || calls > 6 {
-				t.Fatalf("consumed=%v found=%v calls=%d err=%v", consumed, found, calls, err)
 			}
 		})
 	}

@@ -322,13 +322,13 @@ func completeLoomyOnboarding(ctx context.Context, service *loomyauth.Service, se
 }
 
 /**
- * @brief 只读获取原生积分，并以当前业务日的可靠数据推导每日总额。
+ * @brief 只读获取原生积分，按当天签到确认的总额计算已用积分。
  * @param ctx 本次操作的取消与截止时间上下文。
  * @param cfg 本次操作使用的渠道配置及私有凭证快照。
- * @return 额度快照；非认证流水失败仍保留余额并添加告警，凭证或余额读取失败时为 nil。
- * @return 凭证、客户端或余额请求失败时返回错误；会话失效可用 errors.Is 检查 loomyauth.ErrSessionExpired，成功或仅流水推导失败时为 nil。
+ * @return 额度快照；缺少当天签到总额时只展示余额，凭证或余额读取失败时为 nil。
+ * @return 凭证、客户端或余额请求失败时返回错误；会话失效可用 errors.Is 检查 loomyauth.ErrSessionExpired，成功为 nil。
  * @note 不触发签到或任务；明确会话失效会按快照尝试禁用渠道。
- * @details 总额优先取当日签到实测，其次当日缓存，最后完整流水；跨北京日界放弃分母，永久积分不虚构总额。
+ * @details 余额和流水没有共同快照，不能相加推导总额，也不沿用旧快照中的推导值；跨北京日界放弃分母。
  */
 func (s *Server) requestLoomyUsage(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
 	credential, err := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -347,31 +347,8 @@ func (s *Server) requestLoomyUsage(ctx context.Context, cfg *model.Config) (*oau
 	}
 	summary := &oauthUsageSummary{Provider: loomyauth.ChannelType, Windows: []oauthUsageWindow{}, LoomyCredits: balance}
 	quota := credential.DailyQuota
-	if credential.DailyCycleDate != day || quota == nil || *quota <= 0 {
-		quota = nil
-		// 流水推导结果随余额快照持久化；当天后续刷新无需再次翻页。
-		previous, _, _ := persistedOAuthUsage(credential.OAuthUsage, loomyauth.ChannelType)
-		if previous != nil && previous.LoomyCredits != nil && previous.LoomyCredits.DailyCycleDate == day {
-			quota = previous.LoomyCredits.DailyQuota
-		}
-	}
-	if quota == nil && balance.Daily != nil {
-		consumed, foundToday, ledgerErr := service.FetchDailyConsumed(ctx, credential.Session, day)
-		if errors.Is(ledgerErr, loomyauth.ErrSessionExpired) {
-			s.handleLoomyRejection(ctx, cfg, ledgerErr)
-			return nil, ledgerErr
-		}
-		if ledgerErr == nil && (foundToday || *balance.Daily > 0) {
-			value := math.Max(0, *balance.Daily) + consumed
-			if value > 0 {
-				quota = &value
-			}
-		} else if ledgerErr != nil {
-			summary.Warnings = append(summary.Warnings, "每日积分总额暂不可用")
-		}
-	}
 	// 读取跨越北京日界线时放弃本次分母，不能把两个业务日混算。
-	if time.Now().In(loomyLocation).Format("2006-01-02") == day && quota != nil && *quota > 0 && balance.Daily != nil {
+	if credential.DailyCycleDate == day && time.Now().In(loomyLocation).Format("2006-01-02") == day && quota != nil && *quota > 0 && balance.Daily != nil {
 		used := math.Max(0, *quota-*balance.Daily)
 		balance.DailyQuota, balance.DailyConsumed, balance.DailyCycleDate = quota, &used, day
 	}

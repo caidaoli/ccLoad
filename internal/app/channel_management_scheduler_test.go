@@ -481,35 +481,46 @@ func TestLoomyCheckinPersistenceRetryAndReauthorization(t *testing.T) {
 }
 
 /**
- * @brief 验证每日积分总额的来源优先级和跨日隔离，不用固定默认额度。
+ * @brief 验证用量 API 只使用当日签到总额，连续刷新保留余额且清除旧推导缓存。
  * @param t 当前测试上下文。
  */
 func TestLoomyUsageQuotaSources(t *testing.T) {
 	now := time.Now().In(loomyLocation)
 	day := now.Format("2006-01-02")
+	quota, zeroQuota, cachedQuota, cachedUsed := 2000.0, 0.0, 2200.0, 1000.0
 	for _, tc := range []struct {
-		name                string  ///< 子用例名称。
-		quotaDay            string  ///< 已保存每日总额所属的北京时间日期。
-		storedQuota         float64 ///< 已保存的每日积分总额。
-		ledgerBody          string  ///< 模拟每日积分流水的 JSON 正文。
-		wantQuota, wantUsed float64 ///< wantQuota：期望推导的每日总积分；wantUsed：期望的当日已用积分。
-		wantLedger          int32   ///< 期望向上游查询流水的次数。
+		name        string   ///< 子用例名称。
+		quotaDay    string   ///< 已保存每日总额所属的北京时间日期。
+		storedQuota *float64 ///< 签到确认的每日积分总额；nil 表示未知。
+		legacyCache bool     ///< 是否预存当天错误推导的每日总额 2200。
+		omitDaily   bool     ///< 上游是否未提供每日余额。
+		wantQuota   float64  ///< 期望采用的每日总额；零表示未知。
 	}{
-		{"check-in wins", day, 5000, "", 5000, 3800, 0},
-		{"derive today's quota", "", 0, `{"total":1,"list":[{"direction":"debit","consumeSource":"daily","dailyCycleDate":"` + day + `","pointsActual":800}]}`, 2000, 800, 1},
-		{"discard yesterday", now.AddDate(0, 0, -1).Format("2006-01-02"), 5000, `{"total":0,"list":[]}`, 1200, 0, 1},
-		{"partial ledger stays unknown", "", 0, `{"total":1,"list":[]}`, 0, 0, 2},
-		{"failed ledger retains balance", "", 0, `{}`, 0, 0, 2},
+		{"check-in wins over legacy cache", day, &quota, true, false, quota},
+		{"missing quota stays unknown", "", nil, false, false, 0},
+		{"discard yesterday", now.AddDate(0, 0, -1).Format("2006-01-02"), &quota, false, false, 0},
+		{"zero quota stays unknown", day, &zeroQuota, false, false, 0},
+		{"missing quota clears legacy cache", "", nil, true, false, 0},
+		{"old quota clears legacy cache", now.AddDate(0, 0, -1).Format("2006-01-02"), &quota, true, false, 0},
+		{"missing daily balance stays unknown", day, &quota, true, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var ledgerCalls atomic.Int32
+			var balanceCalls, ledgerCalls atomic.Int32
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/v1/points/balance":
-					_, _ = w.Write([]byte(`{"code":"000000","data":{"balance":15000,"dailyBalance":1200,"availableBalance":16200}}`))
+					daily := 1200
+					if balanceCalls.Add(1) == 2 {
+						daily = 1000
+					}
+					if tc.omitDaily {
+						_, _ = w.Write([]byte(`{"code":"000000","data":{"balance":15000,"availableBalance":15000}}`))
+					} else {
+						_, _ = fmt.Fprintf(w, `{"code":"000000","data":{"balance":15000,"dailyBalance":%d,"availableBalance":%d}}`, daily, 15000+daily)
+					}
 				case "/api/v1/points/records":
 					ledgerCalls.Add(1)
-					_, _ = fmt.Fprintf(w, `{"code":"000000","data":%s}`, tc.ledgerBody)
+					_, _ = fmt.Fprintf(w, `{"code":"000000","data":{"total":1,"list":[{"direction":"debit","consumeSource":"daily","dailyCycleDate":"%s","pointsActual":1000}]}}`, day)
 				default:
 					t.Errorf("read-only usage called %s", r.URL.Path)
 					http.NotFound(w, r)
@@ -517,9 +528,19 @@ func TestLoomyUsageQuotaSources(t *testing.T) {
 			}))
 			store := newCodexAuthTestStore(t)
 			srv := &Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}}
-			credential := &loomyauth.Credential{Session: "session", UserID: "user", DailyCycleDate: tc.quotaDay}
-			if tc.storedQuota > 0 {
-				credential.DailyQuota = &tc.storedQuota
+			credential := &loomyauth.Credential{Session: "session", UserID: "user", DailyCycleDate: tc.quotaDay, DailyQuota: tc.storedQuota}
+			if tc.legacyCache {
+				previousAt := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+				var err error
+				credential.OAuthUsage, err = json.Marshal(persistedOAuthUsageSnapshot{
+					RequestedAt: previousAt, SampledAt: previousAt,
+					Summary: oauthUsageSummary{Provider: loomyauth.ChannelType, Windows: []oauthUsageWindow{}, LoomyCredits: &loomyauth.Balance{
+						DailyQuota: &cachedQuota, DailyConsumed: &cachedUsed, DailyCycleDate: day,
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			raw, err := credential.JSON()
 			if err != nil {
@@ -532,33 +553,59 @@ func TestLoomyUsageQuotaSources(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for range 2 {
-				requestedAt := time.Now()
-				usage, err := srv.requestLoomyUsage(context.Background(), cfg)
+			router := gin.New()
+			router.POST("/admin/channels/:id/oauth-usage", srv.HandleOAuthUsage)
+			for attempt := range 2 {
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/oauth-usage", cfg.ID), nil))
+				if response.Code != http.StatusOK {
+					t.Fatalf("usage status=%d body=%s", response.Code, response.Body.String())
+				}
+				usage := mustParseAPIResponse[map[string]json.RawMessage](t, response.Body.Bytes()).Data
+				persisted, err := store.GetConfig(context.Background(), cfg.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				balance := usage.LoomyCredits
-				if balance == nil || balance.Daily == nil || *balance.Daily != 1200 || balance.Permanent == nil || *balance.Permanent != 15000 {
-					t.Fatalf("lost balance: %+v", balance)
+				stored, err := loomyauth.ParseCredential([]byte(persisted.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
 				}
-				if tc.wantQuota > 0 {
-					if balance.DailyQuota == nil || *balance.DailyQuota != tc.wantQuota || balance.DailyConsumed == nil || *balance.DailyConsumed != tc.wantUsed || balance.DailyCycleDate != day {
-						t.Fatalf("wrong daily quota: %+v", balance)
+				var snapshot struct {
+					Summary map[string]json.RawMessage `json:"summary"` ///< 持久化的用量快照。
+				}
+				if err := json.Unmarshal(stored.OAuthUsage, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				for source, raw := range map[string]json.RawMessage{"response": usage["loomy_credits"], "persisted": snapshot.Summary["loomy_credits"]} {
+					var balance map[string]any
+					if err := json.Unmarshal(raw, &balance); err != nil {
+						t.Fatalf("%s balance: %v", source, err)
 					}
-				} else if balance.DailyQuota != nil || balance.DailyConsumed != nil {
-					t.Fatalf("fabricated quota: %+v", balance)
-				}
-				if _, err := srv.persistOAuthUsage(context.Background(), cfg, usage, requestedAt, time.Now()); err != nil {
-					t.Fatal(err)
-				}
-				cfg, err = store.GetConfig(context.Background(), cfg.ID)
-				if err != nil {
-					t.Fatal(err)
+					daily := 1200.0 - float64(attempt)*200
+					var wantDaily any
+					wantAvailable := 15000.0
+					if !tc.omitDaily {
+						wantDaily = daily
+						wantAvailable += daily
+					}
+					if balance["dailyBalance"] != wantDaily || balance["balance"] != 15000.0 || balance["availableBalance"] != wantAvailable {
+						t.Fatalf("%s attempt=%d lost balance: %+v", source, attempt, balance)
+					}
+					if tc.wantQuota > 0 {
+						if balance["dailyQuota"] != tc.wantQuota || balance["dailyConsumed"] != tc.wantQuota-daily || balance["dailyCycleDate"] != day {
+							t.Fatalf("%s attempt=%d wrong daily quota: %+v", source, attempt, balance)
+						}
+					} else {
+						for _, field := range []string{"dailyQuota", "dailyConsumed", "dailyCycleDate"} {
+							if _, present := balance[field]; present {
+								t.Fatalf("%s attempt=%d fabricated %s: %+v", source, attempt, field, balance)
+							}
+						}
+					}
 				}
 			}
-			if ledgerCalls.Load() != tc.wantLedger {
-				t.Fatalf("ledger calls=%d want=%d", ledgerCalls.Load(), tc.wantLedger)
+			if balanceCalls.Load() != 2 || ledgerCalls.Load() != 0 {
+				t.Fatalf("read-only usage calls: balance=%d ledger=%d, want 2 and 0", balanceCalls.Load(), ledgerCalls.Load())
 			}
 		})
 	}
