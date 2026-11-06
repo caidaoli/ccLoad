@@ -90,7 +90,7 @@ func (s *Server) tryCursorOAuthChannel(
  * @param w 客户端响应写入器。
  * @return 当前轮代理结果，包含成功响应或可分类的上游失败。
  * @return 已分类失败通过代理结果返回，此处始终为 nil。
- * @details 终态补差可能包含未采集的历史轮，仅用于计费，不覆盖已知的当前轮上下文用量。
+ * @details SDK 独立 usage 和终态补差都可能包含历史工具轮；恢复轮的客户端用量始终按本次请求估算，累计量仅用于计费。
  * @note 写入客户端响应、代理日志和令牌统计；重放结果不重复记账。
  */
 func (s *Server) forwardCursorAgent(
@@ -314,10 +314,6 @@ func (s *Server) forwardCursorAgent(
 	var runErr error
 	var usage *cursorauth.Usage
 	var turnUsage *cursorauth.Usage
-	resumedToolRun := len(request.ToolResults) > 0
-	if resumedToolRun {
-		usage = estimatedCursorResponseUsage(request.InputTokenEstimate, "", nil)
-	}
 	var billableUsage *cursorauth.Usage
 	replayed := false
 	for event := range events {
@@ -367,7 +363,7 @@ func (s *Server) forwardCursorAgent(
 					}
 					turnUsage.Add(event.Usage)
 					usage = turnUsage
-				} else if turnUsage == nil && !resumedToolRun {
+				} else if turnUsage == nil {
 					usage = event.Usage
 				}
 			}
@@ -451,7 +447,7 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	plain := full
-	if resumedToolRun && turnUsage == nil {
+	if len(request.ToolResults) > 0 {
 		usage = estimatedCursorResponseUsage(request.InputTokenEstimate, plain, calls)
 	}
 

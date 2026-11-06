@@ -2,7 +2,7 @@
 
 修改成本、Token/Key 白名单、额度窗口、采样对账或手动重置时读取。
 
-- **Cursor 用量**：计费累计 SDK 实际发出的每轮增量，终态只补未报告差额，已完成工具结果重放不重复记账；异常结束保留已知真实消费。本地 SDK 的 `totalTokens=inputTokens+outputTokens` 口径表示 input 已含缓存，归一化时先扣缓存再按各价目计费。工具轮没有真实报告时，日志独立保存 `usage_estimate`（输入、输出），前端以 `≈` 标明，不进入真实 token、费用及额度汇总。管理测试和聊天也从 Cursor 转发结果取真实计费量，不能解析含估算的客户端响应来计费。
+- **Cursor 用量**：计费累计 SDK 实际发出的每轮增量，终态只补未报告差额，已完成工具结果重放不重复记账；异常结束保留已知真实消费。本地 SDK 的 `totalTokens=inputTokens+outputTokens` 口径表示 input 已含缓存，归一化时先扣缓存再按各价目计费。SDK 用量边界不等于客户端 HTTP 工具轮：独立 `usage` 事件与终态补差都可能累计此前工具轮的消费，工具恢复轮发给客户端的上下文用量始终按本次请求与输出估算，不使用累计输入、缓存或输出。工具轮没有真实报告时，日志独立保存 `usage_estimate`（输入、输出），前端以 `≈` 标明，不进入真实 token、费用及额度汇总。管理测试和聊天也从 Cursor 转发结果取真实计费量，不能解析含估算的客户端响应来计费。
 
 - **Anthropic iterations 缓存分档**（`proxy_sse_parser.go`）：顶层缺少 `cache_creation` 时，可从 `usage.iterations` 的 message 轮次恢复 5m/1h 缓存写入明细，但各轮明细必须完整有效、只含支持的 TTL，且合计等于顶层 `cache_creation_input_tokens`。不能把各轮 token 再叠加到顶层累计量；不完整、未知 TTL、负数、溢出或总量不一致时沿用原回退。顶层明细及占位 0 的既有快照规则保持不变。
 

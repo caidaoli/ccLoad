@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -353,13 +354,12 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 			wantClient:   cursorauth.Usage{InputTokens: 1500, OutputTokens: 300, CacheReadTokens: 450, CacheWriteTokens: 600, ReasoningTokens: 75},
 		},
 		{
-			name: "resumed turn reports current real usage",
+			name: "resumed turn estimates context while billing real usage",
 			events: cursorUsageEventsRunner{
 				{Usage: first}, {Text: "final", Done: true, Usage: residual},
 			},
 			resumed:      true,
 			wantBillable: cursorauth.Usage{InputTokens: 1100, OutputTokens: 220, CacheReadTokens: 330, CacheWriteTokens: 440, ReasoningTokens: 55},
-			wantClient:   *first,
 		},
 		{
 			name: "stream failure retains earlier usage",
@@ -477,7 +477,14 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 				}
 				want := tt.wantClient
 				wantPrompt := want.InputTokens + want.CacheReadTokens + want.CacheWriteTokens
-				if payload.Usage.PromptTokens != wantPrompt || payload.Usage.CompletionTokens != want.OutputTokens ||
+				if tt.resumed {
+					if payload.Usage.PromptTokens <= 0 || payload.Usage.PromptTokens >= 1000 ||
+						payload.Usage.CompletionTokens <= 0 || payload.Usage.CompletionTokens >= 100 ||
+						payload.Usage.TotalTokens != payload.Usage.PromptTokens+payload.Usage.CompletionTokens ||
+						payload.Usage.PromptDetails.CachedTokens != 0 || payload.Usage.PromptDetails.CachedCreationTokens != 0 {
+						t.Fatalf("resumed response exposed cumulative usage: %+v", payload.Usage)
+					}
+				} else if payload.Usage.PromptTokens != wantPrompt || payload.Usage.CompletionTokens != want.OutputTokens ||
 					payload.Usage.TotalTokens != wantPrompt+want.OutputTokens || payload.Usage.PromptDetails.CachedTokens != want.CacheReadTokens ||
 					payload.Usage.PromptDetails.CachedCreationTokens != want.CacheWriteTokens {
 					t.Fatalf("client usage=%+v want=%+v", payload.Usage, want)
@@ -634,56 +641,111 @@ func TestProxy_CursorOAuthRunnerStartFailureHasNoUsageEstimate(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 工具恢复轮的客户端上下文不包含 SDK 独立 usage 或终态携带的跨轮累计消费。
+ * @param t 测试上下文。
+ */
 func TestProxy_CursorOAuthResumedTurnDoesNotExposeCumulativeRunUsage(t *testing.T) {
 	t.Parallel()
-	credentialJSON, err := (&cursorauth.Credential{
-		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
-	}).JSON()
-	if err != nil {
-		t.Fatalf("encode cursor credential: %v", err)
+	cumulative := &cursorauth.Usage{
+		InputTokens: 42, OutputTokens: 16_177, CacheReadTokens: 1_533_702, CacheWriteTokens: 102_950, TotalTokens: 1_652_871,
 	}
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "cursor-resume-usage", upstreamProtocol: "openai", models: "grok-4.6",
-		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
-	}}, map[int]string{0: "https://unused.invalid"})
-	env.server.cursorRunner = &fakeCursorRunner{
-		text: "final answer", usage: &cursorauth.Usage{
-			InputTokens: 900_000, OutputTokens: 5_000, CacheReadTokens: 800_000, TotalTokens: 1_705_000,
-		},
-	}
-
-	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
-		"model": "grok-4.6",
-		"messages": []any{
-			map[string]any{"role": "user", "content": "find it"},
-			map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
-				"id": "call_1", "type": "function",
-				"function": map[string]any{"name": "lookup", "arguments": `{}`},
-			}}},
-			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "result"},
-		},
-	}, nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
-	}
-	var payload struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v body=%s", err, response.Body.String())
-	}
-	if payload.Usage.PromptTokens <= 0 || payload.Usage.PromptTokens >= 900_000 ||
-		payload.Usage.CompletionTokens <= 0 || payload.Usage.TotalTokens != payload.Usage.PromptTokens+payload.Usage.CompletionTokens {
-		t.Fatalf("resumed response exposed invalid usage: %+v", payload.Usage)
-	}
-
-	entry := waitForProxyLog(t, env, "grok-4.6")
-	if entry.InputTokens != 900_000 || entry.OutputTokens != 5_000 || entry.CacheReadInputTokens != 800_000 {
-		t.Fatalf("terminal cumulative usage was not logged for billing: %+v", entry)
+	for _, clientProtocol := range []string{"anthropic", "openai"} {
+		for _, streaming := range []bool{false, true} {
+			for _, usageEvent := range []bool{false, true} {
+				name := fmt.Sprintf("%s/stream=%t/usage_event=%t", clientProtocol, streaming, usageEvent)
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+					if err != nil {
+						t.Fatalf("encode Cursor credential: %v", err)
+					}
+					env := setupProxyTestEnv(t, []testChannel{{
+						name: "cursor-resume-usage", upstreamProtocol: clientProtocol, models: "claude-opus-5-5",
+						authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+					}}, map[int]string{0: "https://unused.invalid"})
+					events := cursorUsageEventsRunner{{Text: "final answer", Done: true, Usage: cumulative}}
+					if usageEvent {
+						events = cursorUsageEventsRunner{
+							{Usage: cumulative}, {Text: "final answer", Done: true, Usage: &cursorauth.Usage{}},
+						}
+					}
+					env.server.cursorRunner = events
+					path := "/v1/chat/completions"
+					messages := []any{
+						map[string]any{"role": "user", "content": "find it"},
+						map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
+							"id": "call_1", "type": "function", "function": map[string]any{"name": "lookup", "arguments": `{}`},
+						}}},
+						map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "result"},
+					}
+					if clientProtocol == "anthropic" {
+						path = "/v1/messages"
+						messages = []any{
+							map[string]any{"role": "user", "content": "find it"},
+							map[string]any{"role": "assistant", "content": []any{map[string]any{
+								"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{},
+							}}},
+							map[string]any{"role": "user", "content": []any{map[string]any{
+								"type": "tool_result", "tool_use_id": "toolu_1", "content": "result",
+							}}},
+						}
+					}
+					response := doProxyRequest(t, env.engine, path, map[string]any{
+						"model": "claude-opus-5-5", "messages": messages, "stream": streaming, "max_tokens": 256,
+					}, nil)
+					if response.Code != http.StatusOK {
+						t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+					}
+					payloads := [][]byte{response.Body.Bytes()}
+					if streaming {
+						payloads = nil
+						for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+							_, data := parseSSEEventChunk(block)
+							if len(data) > 0 && !bytes.Equal(data, []byte("[DONE]")) {
+								payloads = append(payloads, data)
+							}
+						}
+					}
+					var usage map[string]any
+					for _, data := range payloads {
+						var payload struct {
+							Usage map[string]any `json:"usage"`
+						}
+						if err := json.Unmarshal(data, &payload); err != nil {
+							t.Fatalf("decode response: %v body=%s", err, data)
+						}
+						if payload.Usage != nil {
+							usage = payload.Usage
+						}
+					}
+					inputKey, outputKey := "input_tokens", "output_tokens"
+					if clientProtocol == "openai" {
+						inputKey, outputKey = "prompt_tokens", "completion_tokens"
+					}
+					input, inputOK := usage[inputKey].(float64)
+					output, outputOK := usage[outputKey].(float64)
+					if !inputOK || !outputOK || input <= 0 || input >= 1000 || output <= 0 || output >= 100 {
+						t.Fatalf("resumed response exposed invalid context usage: %+v", usage)
+					}
+					if clientProtocol == "anthropic" {
+						if usage["cache_read_input_tokens"] != float64(0) || usage["cache_creation_input_tokens"] != float64(0) {
+							t.Fatalf("resumed response exposed cumulative cache usage: %+v", usage)
+						}
+					} else {
+						details, ok := usage["prompt_tokens_details"].(map[string]any)
+						if !ok || details["cached_tokens"] != float64(0) || details["cached_creation_tokens"] != float64(0) || usage["total_tokens"] != input+output {
+							t.Fatalf("resumed response exposed invalid cache or total usage: %+v", usage)
+						}
+					}
+					entry := waitForProxyLog(t, env, "claude-opus-5-5")
+					if entry.InputTokens != cumulative.InputTokens || entry.OutputTokens != cumulative.OutputTokens ||
+						entry.CacheReadInputTokens != cumulative.CacheReadTokens || entry.CacheCreationInputTokens != cumulative.CacheWriteTokens || entry.UsageEstimate != nil {
+						t.Fatalf("cumulative consumption was not preserved for billing: %+v", entry)
+					}
+				})
+			}
+		}
 	}
 }
 
