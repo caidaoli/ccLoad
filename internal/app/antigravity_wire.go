@@ -798,8 +798,15 @@ var (
 	antigravityResponseSchemaKeys  = []string{"response", "responseJsonSchema", "response_json_schema"}
 )
 
+/**
+ * @brief 按实际上游模型清理 Antigravity 工具及结构化输出 schema。
+ * @param request Gemini 请求正文，不含 Antigravity 信封。
+ * @param modelName 实际上游模型名。
+ * @return schema 别名已归一且满足目标模型约束的请求正文。
+ */
 func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
-	useAntigravitySchema := strings.Contains(strings.ToLower(modelName), "claude") ||
+	isClaudeModel := strings.Contains(strings.ToLower(modelName), "claude")
+	useAntigravitySchema := isClaudeModel ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3-pro") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3.1-pro")
 	generationConfigKeys := []string{"generationConfig", "generation_config"}
@@ -808,7 +815,7 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 	// 工具 schema 只在 tools 子文档上改写、最后整体写回一次：逐声明对整份请求
 	// set/delete 会把长对话 contents 复制「声明数×别名数」次。
 	if tools := gjson.GetBytes(request, "tools"); tools.IsArray() {
-		if normalized := normalizeAntigravityToolSchemas(tools.Raw, useAntigravitySchema); normalized != tools.Raw {
+		if normalized := normalizeAntigravityToolSchemas(tools.Raw, useAntigravitySchema, isClaudeModel); normalized != tools.Raw {
 			request = setJSONRaw(request, "tools", normalized)
 		}
 	}
@@ -826,7 +833,14 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 	return consolidateAntigravityGenerationConfigParents(request)
 }
 
-func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema bool) string {
+/**
+ * @brief 归一工具声明的 schema 别名，Claude 入参使用 JSON Schema 载体保留联合类型。
+ * @param tools Gemini 工具数组 JSON。
+ * @param useAntigravitySchema 是否使用 Antigravity 原生 schema 规则。
+ * @param isClaudeModel 实际目标是否为 Claude；仅影响入参 schema 的载体。
+ * @return 清理后的工具数组 JSON。
+ */
+func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema, isClaudeModel bool) string {
 	out := []byte(tools)
 	for ti, tool := range gjson.Parse(tools).Array() {
 		if !tool.IsObject() {
@@ -845,7 +859,12 @@ func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema bool) st
 				for _, aliases := range [][]string{antigravityParameterSchemaKeys, antigravityResponseSchemaKeys} {
 					if _, schemaRaw, found := firstAntigravityJSONObject(normalized, aliases); found {
 						cleaned := cleanAntigravitySchemaRaw(schemaRaw, useAntigravitySchema, false)
-						normalized = consolidateAntigravitySchemaAliases(normalized, aliases[0], aliases, cleaned)
+						canonical := aliases[0]
+						if isClaudeModel && canonical == "parameters" {
+							canonical = "parametersJsonSchema"
+							cleaned = normalizeAntigravityJSONSchemaTypes(cleaned)
+						}
+						normalized = consolidateAntigravitySchemaAliases(normalized, canonical, aliases, cleaned)
 					}
 				}
 				if string(normalized) != declaration.Raw {
@@ -855,6 +874,24 @@ func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema bool) st
 		}
 	}
 	return string(out)
+}
+
+/**
+ * @brief 将 Gemini 原生类型枚举转为 JSON Schema 类型名，不改 schema 内的字面值。
+ * @param schema 已清理的工具入参 schema JSON。
+ * @return 类型名符合 JSON Schema 的工具入参。
+ */
+func normalizeAntigravityJSONSchemaTypes(schema string) string {
+	var paths []string
+	cliproxyutil.WalkSchema(gjson.Parse(schema), "", "type", &paths)
+	for _, path := range paths {
+		typeName := gjson.Get(schema, path).String()
+		switch typeName {
+		case "OBJECT", "ARRAY", "STRING", "NUMBER", "INTEGER", "BOOLEAN", "NULL":
+			schema, _ = sjson.Set(schema, path, strings.ToLower(typeName))
+		}
+	}
+	return schema
 }
 
 func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {

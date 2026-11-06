@@ -4012,6 +4012,216 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证四种入口按实际上游模型选择工具 schema 载体并保留联合分支。
+ * @param t 测试上下文。
+ */
+func TestProxy_AntigravityToolSchemaModelBoundary(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"recipient":{"type":"string"},
+			"message":{
+				"nullable":true,
+				"anyOf":[
+					{"type":"string"},
+					{"anyOf":[
+						{"type":"object","properties":{"type":{"const":"shutdown_request"},"reason":{"type":"string"}},"required":["type","reason"]},
+						{"type":"object","properties":{"type":{"const":"shutdown_response"},"request_id":{"type":"string"},"approve":{"type":"boolean"}},"required":["type","request_id","approve"]},
+						{"type":"object","properties":{"type":{"const":"plan_approval_response"},"request_id":{"type":"string"},"approved_plan":{"type":"string"}},"required":["type","request_id","approved_plan"]}
+					]}
+				]
+			}
+		},
+		"required":["recipient","message"]
+	}`)
+	const requestModel = "tool-schema-model"
+	for _, target := range []string{"claude-sonnet-4-6", "gemini-3-flash"} {
+		for _, adapter := range antigravityProviderAdapterCases() {
+			t.Run(target+"/"+adapter.name, func(t *testing.T) {
+				wireBodies := make(chan []byte, 1)
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					wire, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read Antigravity request: %v", err)
+						http.Error(w, "read request", http.StatusInternalServerError)
+						return
+					}
+					wireBodies <- wire
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"schema ok"}]},"finishReason":"STOP"}]}}`)
+				}))
+				t.Cleanup(upstream.Close)
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: "antigravity-tool-schema", upstreamProtocol: "gemini",
+					modelEntries:    []model.ModelEntry{{Model: requestModel, RedirectModel: target}},
+					authType:        model.AuthTypeAntigravityOAuth,
+					oauthCredential: antigravityProxyTestCredential(t, "at-tool-schema"),
+				}}, map[int]string{0: upstream.URL})
+				body := maps.Clone(adapter.body)
+				path := adapter.path
+				if adapter.name == "Gemini" {
+					path = "/v1beta/models/" + requestModel + ":generateContent"
+				} else {
+					body["model"] = requestModel
+				}
+				switch adapter.name {
+				case "Claude":
+					body["tools"] = []any{map[string]any{"name": "SendMessage", "input_schema": schema}}
+				case "OpenAI":
+					body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{"name": "SendMessage", "parameters": schema}}}
+				case "Codex":
+					body["tools"] = []any{map[string]any{"type": "function", "name": "SendMessage", "parameters": schema}}
+				case "Gemini":
+					body["tools"] = []any{map[string]any{"functionDeclarations": []any{map[string]any{
+						"name": "SendMessage", "parametersJsonSchema": schema, "responseJsonSchema": schema,
+					}}}}
+					body["generationConfig"] = map[string]any{"responseMimeType": "application/json", "responseJsonSchema": schema}
+				}
+				response := doProxyRequest(t, env.engine, path, body, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if got := gjson.GetBytes(response.Body.Bytes(), adapter.nonStreamTextPath).String(); got != "schema ok" {
+					t.Fatalf("response text=%q body=%s", got, response.Body.String())
+				}
+				wire := <-wireBodies
+				if got := gjson.GetBytes(wire, "model").String(); got != target {
+					t.Fatalf("upstream model=%q, want %q", got, target)
+				}
+				declaration := gjson.GetBytes(wire, "request.tools.0.functionDeclarations.0")
+				parameterKey, otherKey := "parameters", "parametersJsonSchema"
+				if target == "claude-sonnet-4-6" {
+					parameterKey, otherKey = otherKey, parameterKey
+				}
+				if !declaration.Get(parameterKey).IsObject() || declaration.Get(otherKey).Exists() {
+					t.Fatalf("tool parameter carrier, want only %s: %s", parameterKey, declaration.Raw)
+				}
+				assertUnion := func(label string, got gjson.Result, preserveNullable bool) {
+					t.Helper()
+					message := got.Get("properties.message")
+					branches := message.Get("anyOf").Array()
+					if len(branches) != 2 || branches[0].Get("type").String() != "string" {
+						t.Fatalf("%s lost string/object union: %s", label, got.Raw)
+					}
+					if preserveNullable && !message.Get("nullable").Bool() {
+						t.Fatalf("%s lost nullable marker: %s", label, got.Raw)
+					}
+					controls := branches[1].Get("anyOf").Array()
+					if len(controls) != 3 {
+						t.Fatalf("%s control-message union branches=%d, want 3: %s", label, len(controls), got.Raw)
+					}
+					for index, field := range []string{"reason", "approve", "approved_plan"} {
+						control := controls[index]
+						if control.Get("type").String() != "object" || !control.Get("properties.type").IsObject() || !control.Get("properties."+field).IsObject() {
+							t.Fatalf("%s control-message branch %d lost fields: %s", label, index, control.Raw)
+						}
+						required := control.Get("required").Array()
+						if !slices.ContainsFunc(required, func(value gjson.Result) bool { return value.String() == field }) {
+							t.Fatalf("%s control-message branch %d lost required %s: %s", label, index, field, control.Raw)
+						}
+					}
+				}
+				assertUnion("tool parameters", declaration.Get(parameterKey), target == "claude-sonnet-4-6" && adapter.name != "Codex")
+				if adapter.name == "Gemini" {
+					if declaration.Get("responseJsonSchema").Exists() {
+						t.Fatalf("function response schema alias survived: %s", declaration.Raw)
+					}
+					assertUnion("function response", declaration.Get("response"), target == "claude-sonnet-4-6")
+					assertUnion("generation response", gjson.GetBytes(wire, "request.generationConfig.responseSchema"), true)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证原生 Gemini 大写类型转换为 Claude JSON Schema 类型且不改示例字面值。
+ * @param t 测试上下文。
+ */
+func TestProxy_AntigravityClaudeNativeToolSchemaTypes(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type":"OBJECT",
+		"properties":{
+			"type":{"type":"STRING"},
+			"rows":{"type":"ARRAY","items":{
+				"type":"OBJECT",
+				"properties":{
+					"type":{"type":"STRING"},
+					"count":{"type":"INTEGER"},
+					"ratio":{"type":"NUMBER"},
+					"active":{"type":"BOOLEAN"}
+				},
+				"required":["type"]
+			}}
+		},
+		"required":["type","rows"],
+		"example":{"type":"STRING","examples":[{"type":"STRING","nested":{"type":"STRING"}}]}
+	}`)
+	wireBodies := make(chan []byte, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read Antigravity request: %v", err)
+			http.Error(w, "read request", http.StatusInternalServerError)
+			return
+		}
+		wireBodies <- wire
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"schema ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-native-schema-types", upstreamProtocol: "gemini", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-native-schema-types"),
+	}}, map[int]string{0: upstream.URL})
+	for _, tc := range []struct {
+		parameterKey    string
+		declarationsKey string
+	}{
+		{parameterKey: "parameters", declarationsKey: "functionDeclarations"},
+		{parameterKey: "parametersJsonSchema", declarationsKey: "function_declarations"},
+		{parameterKey: "parameters_json_schema", declarationsKey: "functionDeclarations"},
+	} {
+		t.Run(tc.parameterKey, func(t *testing.T) {
+			response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "schema types"}}}},
+				"tools": []any{map[string]any{tc.declarationsKey: []any{map[string]any{
+					"name": "inspect", tc.parameterKey: schema,
+				}}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			wire := <-wireBodies
+			declaration := gjson.GetBytes(wire, "request.tools.0."+tc.declarationsKey+".0")
+			got := declaration.Get("parametersJsonSchema")
+			if !got.IsObject() || declaration.Get("parameters").Exists() || declaration.Get("parameters_json_schema").Exists() {
+				t.Fatalf("tool must use only parametersJsonSchema: %s", declaration.Raw)
+			}
+			for path, want := range map[string]string{
+				"type":                       "object",
+				"properties.type.type":       "string",
+				"properties.rows.type":       "array",
+				"properties.rows.items.type": "object",
+				"properties.rows.items.properties.type.type":   "string",
+				"properties.rows.items.properties.count.type":  "integer",
+				"properties.rows.items.properties.ratio.type":  "number",
+				"properties.rows.items.properties.active.type": "boolean",
+			} {
+				if actual := got.Get(path).String(); actual != want {
+					t.Fatalf("schema %s=%q, want %q: %s", path, actual, want, got.Raw)
+				}
+			}
+			for _, path := range []string{"example.type", "example.examples.0.type", "example.examples.0.nested.type"} {
+				if actual := got.Get(path).String(); actual != "STRING" {
+					t.Fatalf("literal %s=%q, want STRING: %s", path, actual, got.Raw)
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravitySystemInstructionDropsEmptyParts(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"gemini-3-flash", "claude-opus-5-5-high"} {
