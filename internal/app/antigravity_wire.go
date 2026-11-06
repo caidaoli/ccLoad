@@ -50,7 +50,7 @@ This information may or may not be relevant to the coding task, it is up for you
 )
 
 /**
- * @brief 可唯一定位的 Antigravity thinking 签名拒绝所使用的一次性修复标记。
+ * @brief Antigravity 历史 thinking 签名拒绝所使用的一次性修复标记。
  */
 const stripAntigravityInvalidThinkingSignatureStrategy = "strip_antigravity_invalid_thinking_signature"
 
@@ -85,11 +85,11 @@ func buildAntigravitySensitiveWordMatcher(words []string) *regexp.Regexp {
 }
 
 /**
- * @brief 对上游明确拒绝且可唯一定位的历史 thinking 生成一次修复请求。
+ * @brief 对上游明确拒绝的历史 thinking 签名生成一次省略历史 thinking 的修复请求。
  * @param cfg 当前渠道配置。
  * @param plan 当前转换计划，其 TranslatedBody 必须是实际发送的 Antigravity 信封。
  * @param res 上游结果；只有未提交的 thinking 签名校验 400 可以修复。
- * @return 仅移除该 thinking 的请求；不能安全定位时为 nil。
+ * @return 移除全部 model thinking 及其空 turn 的请求；错误不匹配或没有可移除 thinking 时为 nil。
  * @return 是否生成修复请求；调用方按策略名限制重试一次。
  * @details 错误索引属于 Cloud Code 内部转换后的 Anthropic 消息，不能用于索引 Gemini contents。
  */
@@ -115,30 +115,38 @@ func antigravityThinkingSignatureRetryBody(cfg *model.Config, plan protocol.Tran
 	}
 
 	body := plan.TranslatedBody
-	removePath := ""
+	var removePaths []string
 	for i, content := range gjson.GetBytes(body, "request.contents").Array() {
 		if content.Get("role").String() != "model" {
 			continue
 		}
 		parts := content.Get("parts").Array()
+		contentPath := fmt.Sprintf("request.contents.%d", i)
+		start := len(removePaths)
 		for j, part := range parts {
 			if part.Get("thought").Type != gjson.True {
 				continue
 			}
-			if removePath != "" || part.Get("functionCall").Exists() || part.Get("functionResponse").Exists() {
+			if part.Get("functionCall").Exists() || part.Get("functionResponse").Exists() {
 				return nil, false
 			}
-			removePath = fmt.Sprintf("request.contents.%d", i)
-			if len(parts) > 1 {
-				removePath += fmt.Sprintf(".parts.%d", j)
-			}
+			removePaths = append(removePaths, fmt.Sprintf("%s.parts.%d", contentPath, j))
+		}
+		if removed := len(removePaths) - start; removed > 0 && removed == len(parts) {
+			removePaths = append(removePaths[:start], contentPath)
 		}
 	}
-	if removePath == "" {
+	if len(removePaths) == 0 {
 		return nil, false
 	}
-	updated, err := sjson.DeleteBytes(body, removePath)
-	return updated, err == nil
+	for _, removePath := range slices.Backward(removePaths) {
+		var err error
+		body, err = sjson.DeleteBytes(body, removePath)
+		if err != nil {
+			return nil, false
+		}
+	}
+	return body, true
 }
 
 func translateAntigravityRequest(clientProtocol protocol.Protocol, modelName string, body []byte, stream bool) ([]byte, error) {

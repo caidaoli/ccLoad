@@ -5146,17 +5146,19 @@ func TestProxy_AntigravityOAuthRejectsSignatureWithoutRewritingHistory(t *testin
 }
 
 /**
- * @brief 验证 Antigravity 明确拒绝唯一历史 thinking 签名时只省略该块重试一次
+ * @brief 验证 Antigravity 明确拒绝历史 thinking 签名时省略全部历史 thinking 并仅重试一次
  * @param t 测试上下文
  */
 func TestProxy_AntigravityOAuthRetriesRejectedThinkingSignature(t *testing.T) {
 	t.Parallel()
-	const rejection = "{\"error\":{\"code\":400,\"message\":\"messages.3.content.0: Invalid `signature` in `thinking` block\",\"status\":\"INVALID_ARGUMENT\"}}"
+	const rejection = "{\"error\":{\"code\":400,\"message\":\"messages.1.content.28: Invalid `signature` in `thinking` block\",\"status\":\"INVALID_ARGUMENT\"}}"
 	const success = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"retry ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`
 	cases := []struct {
 		name         string
 		streaming    bool
+		httpError    bool
 		thoughts     int
+		sameTurn     bool
 		soleThought  bool
 		structured   bool
 		nestedError  bool
@@ -5169,11 +5171,15 @@ func TestProxy_AntigravityOAuthRetriesRejectedThinkingSignature(t *testing.T) {
 		{name: "SSE rejection before commit", streaming: true, thoughts: 1, wantAttempts: 2, wantStatus: http.StatusOK},
 		{name: "sole thinking turn", thoughts: 1, soleThought: true, wantAttempts: 2, wantStatus: http.StatusOK},
 		{name: "Claude 5.5 structured output", thoughts: 1, structured: true, wantAttempts: 2, wantStatus: http.StatusOK},
-		{name: "HTTP rejection persists", thoughts: 1, rejectRetry: true, wantAttempts: 2, wantStatus: http.StatusBadRequest},
-		{name: "SSE rejection persists", streaming: true, thoughts: 1, rejectRetry: true, wantAttempts: 2, wantStatus: http.StatusBadRequest},
-		{name: "ambiguous thinking history", thoughts: 2, wantAttempts: 1, wantStatus: http.StatusBadRequest},
+		{name: "HTTP rejection persists", thoughts: 2, rejectRetry: true, wantAttempts: 2, wantStatus: http.StatusBadRequest},
+		{name: "SSE rejection persists", streaming: true, thoughts: 2, rejectRetry: true, wantAttempts: 2, wantStatus: http.StatusBadRequest},
+		{name: "multiple thinking turns", thoughts: 2, nestedError: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "multiple thinking parts in one turn", thoughts: 2, sameTurn: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "multiple thinking with sole thinking turn", thoughts: 2, soleThought: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "streaming HTTP rejection with multiple thinking", streaming: true, httpError: true, thoughts: 2, nestedError: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "SSE rejection with multiple thinking", streaming: true, thoughts: 2, wantAttempts: 2, wantStatus: http.StatusOK},
 		{name: "no thinking history", wantAttempts: 1, wantStatus: http.StatusBadRequest},
-		{name: "SSE rejection after commit", streaming: true, thoughts: 1, committed: true, wantAttempts: 1, wantStatus: http.StatusOK},
+		{name: "SSE rejection after commit", streaming: true, thoughts: 2, committed: true, wantAttempts: 1, wantStatus: http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5212,7 +5218,7 @@ func TestProxy_AntigravityOAuthRetriesRejectedThinkingSignature(t *testing.T) {
 						body, _ := json.Marshal(map[string]any{"error": map[string]any{"code": 400, "message": string(message), "status": "INVALID_ARGUMENT"}})
 						errorBody = string(body)
 					}
-					if tc.streaming {
+					if tc.streaming && !tc.httpError {
 						if tc.committed {
 							_, _ = io.WriteString(w, "data: "+`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}]}}`+"\n\n")
 							w.(http.Flusher).Flush()
@@ -5240,11 +5246,16 @@ func TestProxy_AntigravityOAuthRetriesRejectedThinkingSignature(t *testing.T) {
 			if tc.thoughts > 0 && !tc.soleThought {
 				assistantContent = append(assistantContent, map[string]any{"type": "thinking", "thinking": "inspect the file", "signature": signature})
 			}
+			if tc.sameTurn {
+				assistantContent = append(assistantContent,
+					map[string]any{"type": "text", "text": "between the thinking blocks"},
+					map[string]any{"type": "thinking", "thinking": "inspect another detail", "signature": signature})
+			}
 			assistantContent = append(assistantContent, map[string]any{
 				"type": "tool_use", "id": "toolu_lookup", "name": "lookup", "input": map[string]any{"path": "/tmp/file"},
 			})
 			followupContent := []any{map[string]any{"type": "text", "text": "after the tool result"}}
-			if tc.thoughts > 1 {
+			if tc.thoughts > 1 && !tc.sameTurn {
 				followupContent = append(followupContent, map[string]any{"type": "thinking", "thinking": "inspect the result", "signature": signature})
 			}
 			messages := []any{map[string]any{"role": "user", "content": "review the file"}}
