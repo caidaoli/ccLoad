@@ -357,6 +357,12 @@ func (r *antigravityReplay) captureStream(chunks [][]byte) {
 	}
 }
 
+/**
+ * @brief 在成功终态保存签名，HTTP 或 SSE 签名拒绝时失效当前作用域。
+ * @param result 当前上游结果；nil 时不处理。
+ * @param err 转发错误；非 nil 时不保存本轮签名。
+ * @note 持有缓存锁更新作用域和缓存条目。
+ */
 func (r *antigravityReplay) finish(result *fwResult, err error) {
 	if r == nil || result == nil {
 		return
@@ -364,7 +370,8 @@ func (r *antigravityReplay) finish(result *fwResult, err error) {
 	c := r.cache
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if result.Status == http.StatusBadRequest && strings.Contains(strings.ToLower(gjson.GetBytes(result.Body, "error.message").String()), "signature") {
+	errorBody, status := forwardResultErrorPayload(result)
+	if status == http.StatusBadRequest && strings.Contains(strings.ToLower(gjson.GetBytes(errorBody, "error.message").String()), "signature") {
 		r.scopeState.generation++
 		for key, entry := range c.entries {
 			if entry.scope == r.scope {

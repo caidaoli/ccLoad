@@ -640,7 +640,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 			return nil, "", err
 		}
 	}
-	if cfg != nil && cfg.UsesAntigravityOAuth() {
+	if !wireBodyRulesApplied && cfg != nil && cfg.UsesAntigravityOAuth() {
 		var err error
 		body, err = prepareAntigravityRequestBody(
 			cfg, requestModel, body, sourceBody, headers, s.antigravityPromptMatcher,
@@ -2692,6 +2692,10 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	openCodeFree := isOpenCodeFreeRequest(cfg, baseURL, plan.UpstreamProtocol, openCodePath, plan.RequestModel())
 	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree
+	if cfg.UsesAntigravityOAuth() {
+		// Antigravity 的重放信封不含 stream 字段，流式意图保留在转换计划中。
+		upstreamStreaming = plan.Streaming
+	}
 	reqCtx := newRequestContextForStreaming(ctx, upstreamStreaming, s.resolveProtocolTimeouts(plan))
 	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree {
 		reqCtx.isStreaming = plan.Streaming
@@ -3955,6 +3959,9 @@ func retryBodyForRejectedRequest(
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
+	if retryBody, ok := antigravityThinkingSignatureRetryBody(cfg, plan, res); ok {
+		return retryBody, stripAntigravityInvalidThinkingSignatureStrategy, true
+	}
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
 		return retryBody, strategy, true
 	}

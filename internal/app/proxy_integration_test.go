@@ -5035,6 +5035,288 @@ func TestProxy_AntigravityOAuthRejectsSignatureWithoutRewritingHistory(t *testin
 	}
 }
 
+/**
+ * @brief 验证 Antigravity 明确拒绝唯一历史 thinking 签名时只省略该块重试一次
+ * @param t 测试上下文
+ */
+func TestProxy_AntigravityOAuthRetriesRejectedThinkingSignature(t *testing.T) {
+	t.Parallel()
+	const rejection = "{\"error\":{\"code\":400,\"message\":\"messages.3.content.0: Invalid `signature` in `thinking` block\",\"status\":\"INVALID_ARGUMENT\"}}"
+	const success = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"retry ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`
+	cases := []struct {
+		name         string
+		streaming    bool
+		thoughts     int
+		soleThought  bool
+		structured   bool
+		nestedError  bool
+		rejectRetry  bool
+		committed    bool
+		wantAttempts int
+		wantStatus   int
+	}{
+		{name: "HTTP rejection", thoughts: 1, nestedError: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "SSE rejection before commit", streaming: true, thoughts: 1, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "sole thinking turn", thoughts: 1, soleThought: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "Claude 5.5 structured output", thoughts: 1, structured: true, wantAttempts: 2, wantStatus: http.StatusOK},
+		{name: "HTTP rejection persists", thoughts: 1, rejectRetry: true, wantAttempts: 2, wantStatus: http.StatusBadRequest},
+		{name: "SSE rejection persists", streaming: true, thoughts: 1, rejectRetry: true, wantAttempts: 2, wantStatus: http.StatusBadRequest},
+		{name: "ambiguous thinking history", thoughts: 2, wantAttempts: 1, wantStatus: http.StatusBadRequest},
+		{name: "no thinking history", wantAttempts: 1, wantStatus: http.StatusBadRequest},
+		{name: "SSE rejection after commit", streaming: true, thoughts: 1, committed: true, wantAttempts: 1, wantStatus: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			targetModel := "claude-sonnet-4-6"
+			settings := map[string]string(nil)
+			if tc.structured {
+				targetModel = "claude-opus-5-5-high"
+				settings = map[string]string{"antigravity_sensitive_words": `["answer"]`}
+			}
+			var mu sync.Mutex
+			var bodies [][]byte
+			var paths []string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read upstream request: %v", err)
+					return
+				}
+				mu.Lock()
+				bodies = append(bodies, body)
+				paths = append(paths, r.URL.RequestURI())
+				attempt := len(bodies)
+				mu.Unlock()
+				if tc.streaming {
+					w.Header().Set("Content-Type", "text/event-stream")
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				if attempt == 1 || tc.rejectRetry {
+					errorBody := rejection
+					if tc.nestedError {
+						message, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{
+							"type": "invalid_request_error", "message": gjson.Get(rejection, "error.message").String(),
+						}})
+						body, _ := json.Marshal(map[string]any{"error": map[string]any{"code": 400, "message": string(message), "status": "INVALID_ARGUMENT"}})
+						errorBody = string(body)
+					}
+					if tc.streaming {
+						if tc.committed {
+							_, _ = io.WriteString(w, "data: "+`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}]}}`+"\n\n")
+							w.(http.Flusher).Flush()
+						}
+						_, _ = io.WriteString(w, "data: "+errorBody+"\n\n")
+					} else {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = io.WriteString(w, errorBody)
+					}
+					return
+				}
+				if tc.streaming {
+					_, _ = io.WriteString(w, "data: "+success+"\n\n")
+				} else {
+					_, _ = io.WriteString(w, success)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
+				name: "rejected-thinking-signature", upstreamProtocol: "gemini", models: targetModel, priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-rejected-thinking"),
+			}}, map[int]string{0: upstream.URL}, settings)
+			assistantContent := []any{map[string]any{"type": "text", "text": "before the tool call"}}
+			signature := antigravityProxyClaudeThoughtSignature(targetModel)
+			if tc.thoughts > 0 && !tc.soleThought {
+				assistantContent = append(assistantContent, map[string]any{"type": "thinking", "thinking": "inspect the file", "signature": signature})
+			}
+			assistantContent = append(assistantContent, map[string]any{
+				"type": "tool_use", "id": "toolu_lookup", "name": "lookup", "input": map[string]any{"path": "/tmp/file"},
+			})
+			followupContent := []any{map[string]any{"type": "text", "text": "after the tool result"}}
+			if tc.thoughts > 1 {
+				followupContent = append(followupContent, map[string]any{"type": "thinking", "thinking": "inspect the result", "signature": signature})
+			}
+			messages := []any{map[string]any{"role": "user", "content": "review the file"}}
+			if tc.soleThought {
+				messages = append(messages,
+					map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "inspect the file", "signature": signature}}},
+					map[string]any{"role": "user", "content": "use the tool"})
+			}
+			messages = append(messages,
+				map[string]any{"role": "assistant", "content": assistantContent},
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "tool_result", "tool_use_id": "toolu_lookup", "content": "file contents"},
+				}},
+				map[string]any{"role": "assistant", "content": followupContent},
+				map[string]any{"role": "user", "content": "continue the review"})
+			path := "/v1/messages"
+			request := map[string]any{
+				"model": targetModel, "max_tokens": 128, "stream": tc.streaming,
+				"thinking": map[string]any{"type": "adaptive"},
+				"messages": messages,
+				"tools": []any{map[string]any{
+					"name": "lookup", "description": "read a file",
+					"input_schema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
+				}},
+			}
+			var schema map[string]any
+			if tc.structured {
+				path = "/v1beta/models/" + targetModel + ":generateContent"
+				schema = map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []any{"answer"}, "additionalProperties": false}
+				request = map[string]any{
+					"contents": []any{
+						map[string]any{"role": "user", "parts": []any{map[string]any{"text": "review the file"}}},
+						map[string]any{"role": "model", "parts": []any{
+							map[string]any{"text": "before the tool call"},
+							map[string]any{"thought": true, "text": "inspect the file", "thoughtSignature": signature},
+							map[string]any{"functionCall": map[string]any{"name": "lookup", "args": map[string]any{"path": "/tmp/file"}}},
+						}},
+						map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": map[string]any{"name": "lookup", "response": map[string]any{"result": "file contents"}}}}},
+						map[string]any{"role": "model", "parts": []any{map[string]any{"text": "after the tool result"}}},
+						map[string]any{"role": "user", "parts": []any{map[string]any{"text": "continue the review"}}},
+					},
+					"tools":      []any{map[string]any{"functionDeclarations": []any{map[string]any{"name": "lookup", "parameters": map[string]any{"type": "object"}}}}},
+					"toolConfig": map[string]any{"functionCallingConfig": map[string]any{"mode": "ANY", "allowedFunctionNames": []any{"lookup"}}},
+					"generationConfig": map[string]any{
+						"thinkingConfig":   map[string]any{"includeThoughts": true, "thinkingLevel": "high"},
+						"responseMimeType": "application/json", "responseSchema": schema,
+					},
+				}
+			}
+			response := doProxyRequest(t, env.engine, path, request, nil)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status=%d, want %d: %s", response.Code, tc.wantStatus, response.Body.String())
+			}
+			mu.Lock()
+			sent := slices.Clone(bodies)
+			sentPaths := slices.Clone(paths)
+			mu.Unlock()
+			if len(sent) != tc.wantAttempts {
+				t.Fatalf("upstream attempts=%d, want %d", len(sent), tc.wantAttempts)
+			}
+			wantPath := "/v1internal:generateContent"
+			if tc.streaming {
+				wantPath = "/v1internal:streamGenerateContent?alt=sse"
+			}
+			for _, sentPath := range sentPaths {
+				if sentPath != wantPath {
+					t.Fatalf("upstream path=%q, want %q", sentPath, wantPath)
+				}
+			}
+			var first map[string]any
+			if err := json.Unmarshal(sent[0], &first); err != nil {
+				t.Fatalf("decode first upstream request: %v", err)
+			}
+			firstRequest := first["request"].(map[string]any)
+			thoughts, calls, results := 0, 0, 0
+			var retainedContents []any
+			for _, rawContent := range firstRequest["contents"].([]any) {
+				content := rawContent.(map[string]any)
+				parts := content["parts"].([]any)
+				retained := make([]any, 0, len(parts))
+				for _, rawPart := range parts {
+					part := rawPart.(map[string]any)
+					if part["thought"] == true {
+						thoughts++
+						thoughtSignature, _ := part["thoughtSignature"].(string)
+						if content["role"] != "model" || thoughtSignature == "" {
+							t.Fatalf("fixture did not send signed model thinking: %+v", content)
+						}
+						continue
+					}
+					if part["functionCall"] != nil {
+						calls++
+					}
+					if part["functionResponse"] != nil {
+						results++
+					}
+					retained = append(retained, rawPart)
+				}
+				content["parts"] = retained
+				if len(retained) > 0 {
+					retainedContents = append(retainedContents, rawContent)
+				}
+			}
+			firstRequest["contents"] = retainedContents
+			if thoughts != tc.thoughts || calls != 1 || results != 1 {
+				t.Fatalf("wire fixture thoughts=%d calls=%d results=%d, want %d/1/1", thoughts, calls, results, tc.thoughts)
+			}
+			if !gjson.GetBytes(sent[0], "request.generationConfig.thinkingConfig").Exists() {
+				t.Fatal("fixture did not retain thinking settings on the wire")
+			}
+			if tc.structured {
+				if got := gjson.GetBytes(sent[0], "request.toolConfig.functionCallingConfig.mode").String(); got != "AUTO" {
+					t.Fatalf("Claude 5.5 tool mode=%q, want AUTO", got)
+				}
+				parts := gjson.GetBytes(sent[0], "request.systemInstruction.parts").Array()
+				prompt := parts[len(parts)-1].Get("text").String()
+				start := strings.IndexByte(prompt, '{')
+				if start < 0 {
+					t.Fatalf("structured output prompt has no schema: %q", prompt)
+				}
+				var promptSchema map[string]any
+				if err := json.NewDecoder(strings.NewReader(prompt[start:])).Decode(&promptSchema); err != nil {
+					t.Fatalf("decode structured output prompt schema: %v", err)
+				}
+				if !reflect.DeepEqual(promptSchema, schema) {
+					t.Fatalf("structured output schema changed: got=%v want=%v", promptSchema, schema)
+				}
+			}
+			if len(sent) == 2 {
+				var second map[string]any
+				if err := json.Unmarshal(sent[1], &second); err != nil {
+					t.Fatalf("decode retry upstream request: %v", err)
+				}
+				if !reflect.DeepEqual(firstRequest, second["request"]) {
+					t.Fatalf("retry changed fields beyond the rejected thinking: first=%s second=%s", sent[0], sent[1])
+				}
+			}
+			if response.Code == http.StatusOK {
+				wantText := "retry ok"
+				if tc.committed {
+					wantText = "partial"
+				}
+				text := gjson.GetBytes(response.Body.Bytes(), "content.0.text").String()
+				if tc.structured {
+					text = gjson.GetBytes(response.Body.Bytes(), "candidates.0.content.parts.0.text").String()
+				}
+				if tc.streaming {
+					var output strings.Builder
+					for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
+						_, data := parseSSEEventChunk([]byte(block))
+						if len(data) == 0 {
+							continue
+						}
+						if !gjson.ValidBytes(data) {
+							t.Fatalf("invalid SSE JSON payload: %q", data)
+						}
+						if gjson.GetBytes(data, "type").String() == "content_block_delta" {
+							output.WriteString(gjson.GetBytes(data, "delta.text").String())
+						}
+					}
+					text = output.String()
+				}
+				if text != wantText {
+					t.Fatalf("response text=%q, want %q: %s", text, wantText, response.Body.String())
+				}
+			}
+			if len(sent) == 2 && !tc.rejectRetry {
+				assertNoProxyCooldowns(t, env)
+				entry := waitForProxyLog(t, env, targetModel)
+				if entry.StatusCode != http.StatusOK || !strings.Contains(entry.Message, "[strip_antigravity_invalid_thinking_signature]") {
+					t.Fatalf("success log status=%d message=%q", entry.StatusCode, entry.Message)
+				}
+				logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0,
+					&model.LogFilter{LogSource: model.LogSourceProxy})
+				if err != nil || len(logs) != 1 {
+					t.Fatalf("proxy logs=%d err=%v, want only final success", len(logs), err)
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *testing.T) {
 	t.Parallel()
 	var attempts atomic.Int32
@@ -17914,6 +18196,10 @@ func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证思考签名恢复受会话、文本、有效期及 HTTP/SSE 拒绝结果约束
+ * @param t 测试上下文
+ */
 func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 	t.Parallel()
 	for _, streaming := range []bool{false, true} {
@@ -17926,6 +18212,11 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 				raw, _ := io.ReadAll(r.Body)
 				bodies = append(bodies, raw)
 				if rejected {
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: "+`{"error":{"code":400,"message":"Invalid thought signature","status":"INVALID_ARGUMENT"}}`+"\n\n")
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(400)
 					_, _ = io.WriteString(w, `{"error":{"message":"Invalid thought signature"}}`)
@@ -17995,7 +18286,9 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 				t.Fatal("expired signature restored")
 			}
 			rejected = true
-			send("session-a", "private reasoning", "", true)
+			if res := send("session-a", "private reasoning", "", true); res.Code != http.StatusBadRequest || !hasSignature() {
+				t.Fatalf("cached signature rejection status=%d recovered=%v: %s", res.Code, hasSignature(), res.Body.String())
+			}
 			rejected = false
 			send("session-a", "private reasoning", "", true)
 			if hasSignature() {
