@@ -788,6 +788,25 @@
       display: grid;
     }
 
+    .channel-page-menu__panel--channels {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .channel-page-menu__panel--channels > .channel-page-menu__group-label,
+    .channel-page-menu__item--wide {
+      grid-column: 1 / -1;
+    }
+
+    .channel-page-menu__panel--channels .channel-page-menu__text {
+      overflow-wrap: anywhere;
+    }
+
+    .channel-page-menu__panel--channels .channel-page-menu__desc {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .channel-page-menu__item {
       appearance: none;
       display: flex;

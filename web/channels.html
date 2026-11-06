@@ -69,79 +69,90 @@
                     <span data-i18n="common.add">添加</span>
                     <svg class="channel-page-menu__chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                   </button>
-                  <div id="channelAddMenu" class="channel-page-menu__panel" role="menu">
+                  <div id="channelAddMenu" class="channel-page-menu__panel channel-page-menu__panel--channels" role="menu">
                     <div class="channel-page-menu__group-label" data-i18n="channels.menu.newChannel">新建渠道</div>
-                    <button id="addChannelBtn" data-action="show-add-modal" type="button" class="channel-page-menu__item" role="menuitem">
+                    <button id="addChannelBtn" data-action="show-add-modal" type="button" class="channel-page-menu__item channel-page-menu__item--wide" role="menuitem"
+                      data-i18n-title="channels.menu.apiKeyChannelDesc" title="手动填写 URL / Key / 模型，支持 ✨ 一键填充">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="api_key" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.menu.apiKeyChannel">API Key 渠道</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.menu.apiKeyChannelDesc">手动填写 URL / Key / 模型，支持 ✨ 一键填充</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="codex">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="codex"
+                      data-i18n-title="channels.oauth.providerCodexDesc" title="浏览器 OAuth 或 Personal Access Token">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="codex_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerCodex">Codex</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerCodexDesc">浏览器 OAuth 或 Personal Access Token</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="anthropic">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="anthropic"
+                      data-i18n-title="channels.oauth.providerAnthropicDesc" title="浏览器登录后粘贴授权码">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="anthropic_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerAnthropic">Anthropic</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerAnthropicDesc">浏览器登录后粘贴授权码</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="antigravity">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="antigravity"
+                      data-i18n-title="channels.oauth.providerAntigravityDesc" title="浏览器 OAuth 登录">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="antigravity_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerAntigravity">Antigravity</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerAntigravityDesc">浏览器 OAuth 登录</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="codebuddy">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="codebuddy"
+                      data-i18n-title="channels.oauth.providerCodeBuddyDesc" title="国内版 / 国际版，浏览器 OAuth 或认证文件">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="codebuddy_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerCodeBuddy">CodeBuddy</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerCodeBuddyDesc">国内版 / 国际版，浏览器 OAuth 或认证文件</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="xai">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="xai"
+                      data-i18n-title="channels.oauth.providerXAIDesc" title="刷新令牌、SSO Cookie 或手动授权">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="xai_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerXAI">xAI</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerXAIDesc">刷新令牌、SSO Cookie 或手动授权</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="cursor">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="cursor"
+                      data-i18n-title="channels.oauth.providerCursorDesc" title="粘贴 Cursor User API Key">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="cursor_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerCursor">Cursor</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerCursorDesc">粘贴 Cursor User API Key</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="zed">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="zed"
+                      data-i18n-title="channels.oauth.providerZedDesc" title="使用 Zed 原生应用登录">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="zed_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerZed">Zed</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerZedDesc">使用 Zed 原生应用登录</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="zai">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="zai"
+                      data-i18n-title="channels.oauth.providerZAIDesc" title="ZCode 登录或 Coding Plan API Key">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="zai_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerZAI">Z.ai</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerZAIDesc">ZCode 登录或 Coding Plan API Key</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="vertex">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="vertex"
+                      data-i18n-title="channels.oauth.providerVertexDesc" title="上传服务账号 JSON 密钥">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="vertex_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.oauth.providerVertex">Vertex</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerVertexDesc">上传服务账号 JSON 密钥</span>
                       </span>
                     </button>
-                    <button data-action="open-opencode-channel" type="button" class="channel-page-menu__item" role="menuitem">
+                    <button data-action="open-opencode-channel" type="button" class="channel-page-menu__item" role="menuitem"
+                      data-i18n-title="channels.menu.openCodeDesc" title="选择 Zen / Zen Go 接入">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="opencode" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title">OpenCode</span>
@@ -149,14 +160,16 @@
                       </span>
                     </button>
                     <!-- Loomy 与其他渠道入口共用标题和描述布局。 -->
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-action="open-loomy-login">
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-action="open-loomy-login"
+                      data-i18n-title="channels.menu.loomyDesc" title="短信登录，支持每日签到">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="loomy_session" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title">Loomy</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.menu.loomyDesc">短信登录，支持每日签到</span>
                       </span>
                     </button>
-                    <button id="addSystemOneChannelBtn" data-action="show-add-system-one-modal" type="button" class="channel-page-menu__item" role="menuitem">
+                    <button id="addSystemOneChannelBtn" data-action="show-add-system-one-modal" type="button" class="channel-page-menu__item" role="menuitem"
+                      data-i18n-title="channels.menu.systemOneChannelDesc" title="System One 决策接口，动态思考判断专用">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="system_one" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.menu.systemOneChannel">决策渠道</span>
