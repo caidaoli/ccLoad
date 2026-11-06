@@ -36,6 +36,7 @@
   <script defer src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-import-export.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-codex-auth.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-loomy-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
@@ -147,6 +148,14 @@
                         <span class="channel-page-menu__desc" data-i18n="channels.menu.openCodeDesc">选择 Zen / Zen Go 接入</span>
                       </span>
                     </button>
+                    <!-- Loomy 与其他渠道入口共用标题和描述布局。 -->
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-action="open-loomy-login">
+                      <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="loomy_session" data-provider-icon aria-hidden="true"></span>
+                      <span class="channel-page-menu__text">
+                        <span class="channel-page-menu__title">Loomy</span>
+                        <span class="channel-page-menu__desc" data-i18n="channels.menu.loomyDesc">短信登录，支持每日签到</span>
+                      </span>
+                    </button>
                     <button id="addSystemOneChannelBtn" data-action="show-add-system-one-modal" type="button" class="channel-page-menu__item" role="menuitem">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="system_one" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
@@ -247,6 +256,43 @@
           </form>
         </dialog>
 
+        <dialog id="loomyLoginDialog" class="oauth-dialog oauth-dialog--compact" aria-labelledby="loomyLoginTitle">
+          <div class="oauth-dialog-header">
+            <h2 id="loomyLoginTitle" data-i18n="channels.loomy.login">Loomy 短信登录</h2>
+            <button id="loomyLoginClose" type="button" class="close-btn"
+              data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+          </div>
+          <form id="loomyLoginForm" class="oauth-dialog-body">
+            <!-- 复用登录表单组件，验证码发送操作紧邻验证码输入。 -->
+            <div class="oauth-field">
+              <label for="loomyPhone" data-i18n="channels.loomy.phone">手机号</label>
+              <input id="loomyPhone" type="tel" autocomplete="tel" required maxlength="24" class="form-input">
+            </div>
+            <div class="oauth-field">
+              <label for="loomyCode" data-i18n="channels.loomy.code">验证码</label>
+              <!-- 复用公共并排表单布局，输入框在窄屏自动收缩。 -->
+              <div class="form-row-inline__content">
+                <input id="loomyCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required class="form-input field-grow">
+                <button id="loomySendCode" type="button" class="btn btn-secondary" data-i18n="channels.loomy.sendCode">发送验证码</button>
+              </div>
+            </div>
+            <!-- 代理沿用统一登录弹窗的位置、提示和说明，放在认证字段之后。 -->
+            <div class="oauth-field">
+              <label for="loomyProxy" data-i18n="channels.oauth.proxyURLLabel">代理（可选）</label>
+              <input id="loomyProxy" name="loomy_proxy_url" type="text"
+                class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                data-i18n-placeholder="channels.proxyURLPlaceholder"
+                placeholder="http://… | https://… | socks5://… | socks5h://…"
+                aria-describedby="loomyProxyURLHint loomyLoginStatus">
+              <p id="loomyProxyURLHint" class="oauth-field-hint"
+                data-i18n="channels.oauth.proxyURLHint">授权、导入校验及读取账号与模型时经此代理，并保存为渠道代理。留空则直连；重新授权时留空会保留渠道原有代理。</p>
+            </div>
+            <p id="loomyLoginStatus" class="oauth-dialog-status" role="status" aria-live="polite" hidden></p>
+            <div class="oauth-actions">
+              <button id="loomyVerify" type="submit" class="btn btn-primary" disabled data-i18n="common.login">登录</button>
+            </div>
+          </form>
+        </dialog>
         <dialog id="oauthLoginDialog" class="oauth-dialog oauth-dialog--compact"
           aria-labelledby="oauthLoginDialogTitle" aria-describedby="oauthLoginDialogDescription">
           <div class="oauth-dialog-header">
@@ -588,6 +634,7 @@
                   <option value="zed_oauth">Zed</option>
                   <option value="zai_oauth">Z.ai</option>
                   <option value="vertex_oauth">Vertex</option>
+                  <option value="loomy_session">Loomy</option>
                 </select>
               </div>
               <div class="oauth-field">

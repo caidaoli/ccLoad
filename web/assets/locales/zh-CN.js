@@ -1,6 +1,22 @@
 // 中文语言包
 window.I18N_LOCALES = window.I18N_LOCALES || {};
 window.I18N_LOCALES['zh-CN'] = {
+  'channels.authTypeLoomy': 'Loomy',
+  'channels.loomy.login': 'Loomy 短信登录',
+  'channels.loomy.phone': '手机号',
+  'channels.loomy.code': '验证码',
+  'channels.loomy.sendCode': '发送验证码',
+  'channels.loomy.sending': '正在发送验证码…',
+  'channels.loomy.codeSent': '验证码已发送，请在 5 分钟内完成登录。',
+  'channels.loomy.signingIn': '正在登录并获取模型…',
+  'channels.loomy.loginSuccess': 'Loomy 渠道已保存',
+  'channels.loomy.resend': '请重新发送验证码。',
+  'channels.loomy.invalidResponse': 'Loomy 返回了无效响应',
+  'channels.loomy.tasksCompleted': '新手任务已完成',
+  'channels.loomy.tasksPending': '新手任务待处理，下次签到重试',
+  'channels.loomy.daily': '每日积分',
+  'channels.loomy.permanent': '永久积分',
+  'channels.loomy.copyUnsupported': 'Loomy 渠道请通过短信登录添加；同账号会更新原渠道。',
   // ============================================================
   // 通用
   // ============================================================
@@ -156,6 +172,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.menu.apiKeyChannel': 'API Key 渠道',
   'channels.menu.apiKeyChannelDesc': '手动填写 URL / Key / 模型，支持 ✨ 一键填充',
   'channels.menu.openCodeDesc': '选择 Zen / Zen Go 接入',
+  'channels.menu.loomyDesc': '短信登录，支持每日签到',
   'channels.openCode.dialogTitle': '添加 OpenCode 渠道',
   'channels.openCode.dialogDescription': '选择接入方式，然后配置 Key 和模型。',
   'channels.openCode.connectionLabel': '接入方式',
@@ -1889,8 +1906,14 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.codeBuddyCredits': 'CodeBuddy 剩余积分：{remain}',
   'channels.codebuddy.unlimitedCredits': 'CodeBuddy 积分：无限额度',
   'channels.codebuddy.credits': '积分',
-  'channels.codebuddy.checkin': '立即签到',
-  'channels.codebuddy.checkinRunning': '签到中…',
+  'channels.oauth.checkin': '立即签到',
+  'channels.oauth.checkedIn': '今日已签到',
+  'channels.oauth.notCheckedIn': '今日未签到',
+  'channels.loomy.checkinSuccess': 'Loomy 签到成功',
+  'channels.loomy.alreadyCheckedIn': 'Loomy 今日已签到',
+  'channels.loomy.checkinFailed': 'Loomy 签到失败',
+  'channels.loomy.checkinInvalid': '上游未返回有效的 Loomy 签到结果',
+  'channels.oauth.checkinRunning': '签到中…',
   'channels.codebuddy.checkinSuccess': 'CodeBuddy 签到成功',
   'channels.codebuddy.alreadyCheckedIn': 'CodeBuddy 今日已签到',
   'channels.codebuddy.checkinFailed': 'CodeBuddy 签到失败',

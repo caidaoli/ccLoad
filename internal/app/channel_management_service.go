@@ -463,22 +463,18 @@ func (s *channelManagementService) persistChannelManagementState(
 	}
 }
 
+/**
+ * @brief 按渠道串行化管理账户操作，避免同一渠道并发签到。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param channelID 持久化渠道 ID。
+ * @return 成功返回必须调用一次的释放函数；等待取消时返回 nil 与上下文错误。
+ * @note 获取后应立即 defer 释放。
+ */
 func (s *channelManagementService) acquireChannel(ctx context.Context, channelID int64) (func(), error) {
 	if s == nil || channelID <= 0 {
 		return nil, errInvalidManagementRequest
 	}
-	gateValue, ok := s.gates.Load(channelID)
-	if !ok {
-		newGate := make(chan struct{}, 1)
-		gateValue, _ = s.gates.LoadOrStore(channelID, newGate)
-	}
-	gate := gateValue.(chan struct{})
-	select {
-	case gate <- struct{}{}:
-		return func() { <-gate }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return acquireKeyedGate(ctx, &s.gates, channelID)
 }
 
 func mergeChannelManagementSettings(

@@ -29,6 +29,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
@@ -43,7 +44,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Server 是 ccLoad 的核心HTTP服务器，负责代理请求转发和管理API
+/**
+ * @brief 持有代理、管理 API 及后台任务共享的服务依赖与生命周期。
+ * @note Loomy 的协议客户端与进程内挑战、账号锁分离，持久业务状态仍保存在渠道凭证。
+ */
 type Server struct {
 	// ============================================================================
 	// 服务层
@@ -106,6 +110,8 @@ type Server struct {
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
 	codeBuddyService              *codebuddyauth.Service
+	loomyService                  *loomyauth.Service ///< 共享 Loomy 协议端点配置；渠道请求复制后应用自己的 HTTP 客户端。
+	loomyState                    loomyRuntimeState  ///< 服务实例内的挑战、限流、账号锁及自动尝试保护。
 	codeBuddyCredentials          *codeBuddyCredentialManager
 	codeBuddyOAuth                *codeBuddyOAuthManager
 	zedService                    *zedauth.Service
@@ -202,6 +208,13 @@ func NewServer(store storage.Store) *Server {
 	return newServer(store, config.LogBatchTimeout)
 }
 
+/**
+ * @brief 从持久配置构建服务并启动共享后台工作流程。
+ * @param store 配置、凭证、日志及调度状态使用的存储实现。
+ * @param logBatchTimeout 日志批量写入的最大等待时长，单位为 time.Duration。
+ * @return 返回完成初始化并已启动后台任务的服务实例。
+ * @note 调用方负责关闭服务；关键配置初始化失败会终止进程。
+ */
 func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	startedAt := time.Now()
 	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
@@ -420,6 +433,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	})
 	s.zaiService = zaiauth.NewService(s.client)
 	s.codeBuddyService = codebuddyauth.NewService(s.client)
+	s.loomyService = loomyauth.NewService(s.client)
 	s.codeBuddyCredentials = &codeBuddyCredentialManager{server: s}
 	s.codeBuddyOAuth = &codeBuddyOAuthManager{server: s, sessions: make(map[string]*codeBuddyLoginSession)}
 	s.zaiCredentials = newZAICredentialManager(store, s.getClientForChannel, func(int64) {
@@ -1020,8 +1034,11 @@ func bootstrapCostAndURLStats(store storage.Store, costCache *CostCache, urlSele
 	}
 }
 
-// startBackgroundWorkers 启动所有常驻后台协程。
-// 全部纳入 s.wg，Shutdown 时通过 shutdownCh 协调退出。
+/**
+ * @brief 启动服务常驻后台任务并登记退出等待。
+ * @note 仅在服务初始化完成后调用一次；Shutdown 通过服务上下文与关闭信号终止任务，并等待全部任务退出。
+ * @details Loomy 签到使用独立循环，慢批次不会占用管理账户和 CodeBuddy 的调度循环。
+ */
 func (s *Server) startBackgroundWorkers() {
 	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
 	s.wg.Add(1)
@@ -1050,6 +1067,8 @@ func (s *Server) startBackgroundWorkers() {
 	go s.responsesExecutionSessionCleanupLoop()
 	s.wg.Add(1)
 	go s.managementCheckinLoop()
+	s.wg.Add(1)
+	go s.loomyCheckinLoop()
 }
 
 func (s *Server) disabledURLReloadLoop() {
@@ -1334,9 +1353,12 @@ func anthropicCredentialPoolScope(cfg *model.Config) string {
 	return fmt.Sprintf("anthropic:channel:%d:%x", cfg.ID, digest)
 }
 
-// otherOAuthCredentialPoolScope isolates one OAuth account's connections from
-// other accounts, including when a channel is reauthorized for a new account.
-// Prefer account identifiers over rotating access tokens to preserve reuse.
+/**
+ * @brief 按渠道与账号身份隔离 OAuth 连接池，避免重新授权后跨账号复用。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 返回不含明文认证材料的哈希作用域；nil 或非 OAuth 配置返回空字符串。
+ * @details 优先使用稳定账号标识，避免访问令牌轮换造成不必要的连接池切换。
+ */
 func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 	if cfg == nil || !cfg.UsesOAuth() {
 		return ""
@@ -1413,6 +1435,10 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 					credential.UID, credential.EnterpriseID, credential.Domain, credential.BaseURL)
 			} else if credential.RefreshToken != "" {
 				identity = "refresh:" + credential.RefreshToken
+			}
+		case model.AuthTypeLoomySession:
+			if credential.UserID != "" {
+				identity = "user:" + credential.UserID
 			}
 		}
 	}
@@ -1757,7 +1783,11 @@ func (s *Server) resolveProtocolTimeouts(plan protocol.TransformPlan) protocolTi
 	return timeouts
 }
 
-// SetupRoutes - 新的路由设置函数，适配Gin
+/**
+ * @brief 注册代理、管理和静态页面路由及对应权限边界。
+ * @param r 尚未开始处理请求的 Gin 路由引擎。
+ * @note 向传入引擎添加中间件和路由，应在开始服务请求之前调用。
+ */
 func (s *Server) SetupRoutes(r *gin.Engine) {
 	// 安全响应头（管理界面防护）
 	r.Use(func(c *gin.Context) {
@@ -1859,6 +1889,9 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
 		admin.POST("/zai/oauth/start", s.HandleStartZAIOAuth)
 		admin.POST("/codebuddy/oauth/start", s.HandleStartCodeBuddyOAuth)
+		admin.POST("/loomy/login/send-code", s.HandleLoomySendCode)
+		admin.POST("/loomy/login/verify", s.HandleLoomyLogin)
+		admin.POST("/channels/:id/loomy-checkin", s.HandleLoomyCheckin)
 		admin.GET("/codebuddy/oauth/status", s.HandleCodeBuddyOAuthStatus)
 		admin.POST("/codebuddy/oauth/cancel", s.HandleCancelCodeBuddyOAuth)
 		admin.POST("/codebuddy/credentials/import", s.HandleImportCodeBuddyCredential)

@@ -906,6 +906,15 @@ func normalizeModelFetchKeys(apiKeys []string) []string {
 	return normalized
 }
 
+/**
+ * @brief 按渠道认证能力和目标协议发现可用模型。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param overrideProtocol 显式模型发现协议；空值使用渠道默认协议。
+ * @param keyMode 模型发现使用的 Key 选择策略。
+ * @return 返回模型目录；渠道缺失、协议不支持、凭证不可用或上游请求失败时返回错误。
+ * @note 可能访问上游及刷新受支持的 OAuth 凭证。
+ */
 func (s *Server) fetchModelsForChannel(
 	ctx context.Context,
 	cfg *model.Config,
@@ -921,6 +930,9 @@ func (s *Server) fetchModelsForChannel(
 	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
+	if cfg.UsesLoomySession() {
+		return s.fetchLoomyModels(ctx, cfg, overrideProtocol)
+	}
 	if cfg.UsesCodeBuddyOAuth() {
 		return sortOAuthFetchModels(s.fetchCodeBuddyOAuthModels(ctx, cfg, overrideProtocol))
 	}

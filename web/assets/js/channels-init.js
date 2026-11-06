@@ -151,8 +151,13 @@ function initChannelPageMenus() {
   });
 }
 
+/**
+ * @brief 在页面节点就绪后绑定公共渠道操作及提供商认证入口。
+ * @note 注册 DOM 事件并初始化交互组件，Loomy 登录复用同一页面生命周期。
+ */
 function initChannelsPageActions() {
   initChannelPageMenus();
+  if (typeof setupLoomyActions === 'function') setupLoomyActions();
   if (typeof initChannelEditorActions === 'function') {
     initChannelEditorActions();
   }
@@ -247,6 +252,12 @@ function applyChannelsAccessMode() {
 
 window.initPageBootstrap({
   topbarKey: 'channels',
+  /**
+   * @brief 初始化渠道页权限、筛选和首屏数据。
+   * @return Promise<void>：首屏初始化及后续刷新监听注册完成。
+   * @throw Error 权限或首屏数据加载及初始化依赖失败时。
+   * @note 恢复持久筛选；无效认证类型退回 all，加载列表与统计并注册自动刷新。
+   */
   run: async () => {
     const readOnly = applyChannelsAccessMode();
     initChannelsPageActions();
@@ -300,7 +311,8 @@ window.initPageBootstrap({
       }
     } else if (savedFilters) {
       filters.status = savedFilters.status || 'all';
-      filters.authType = ['codebuddy_oauth', 'api_key', 'system_one', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'].includes(savedFilters.authType) ? savedFilters.authType : 'all';
+      // 恢复筛选与交互选择使用相同的认证类型选项。
+      filters.authType = getChannelAuthTypeOptions().some(option => option.value === savedFilters.authType) ? savedFilters.authType : 'all';
       filters.model = savedFilters.model || 'all';
       filters.modelExact = filters.model !== 'all' && savedFilters.modelExact !== false;
       filters.search = savedFilters.search || '';

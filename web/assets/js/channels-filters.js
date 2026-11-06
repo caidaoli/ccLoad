@@ -124,7 +124,10 @@ function updateChannelNameOptions() {
   if (channelNameCombobox) channelNameCombobox.refresh();
 }
 
-// Setup filter event listeners
+/**
+ * @brief 绑定渠道筛选事件并使用公共认证类型选项校验输入。
+ * @note 筛选变化重置页码、保存筛选状态并重新加载列表。
+ */
 function setupFilterListeners() {
   document.getElementById('statusFilter').addEventListener('change', (e) => {
     filters.status = e.target.value;
@@ -155,8 +158,8 @@ function setupFilterListeners() {
       showAllOptionsOnOpen: true,
       getOptions: getChannelAuthTypeOptions,
       onSelect: (value) => {
-        const validValues = new Set(['all', 'codebuddy_oauth', 'api_key', 'system_one', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth']);
-        filters.authType = validValues.has(value) ? value : 'all';
+        // 使用筛选器同一份选项校验，新增渠道不再维护额外白名单。
+        filters.authType = getChannelAuthTypeOptions().some(option => option.value === value) ? value : 'all';
         channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
         loadChannels();

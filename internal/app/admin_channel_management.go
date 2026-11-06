@@ -90,6 +90,15 @@ type channelCheckinAuditMessage struct {
 	Balance *channelCheckinAuditBalance `json:"balance,omitempty"`
 }
 
+/**
+ * @brief 将管理账户签到结果与失败状态归一为渠道审计记录。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param result 管理账户签到结果，可为 nil。
+ * @param operationErr 业务操作错误；成功时为 nil。
+ * @return 序列化或写库失败时返回错误，成功返回 nil。
+ * @note 写入签到来源的日志；结果缺失时由操作错误补充状态。
+ */
 func (s *Server) addChannelCheckinAuditLog(ctx context.Context, cfg *model.Config, result *channelCheckinResult, operationErr error) error {
 	status := ""
 	statusCode := 0
@@ -108,7 +117,22 @@ func (s *Server) addChannelCheckinAuditLog(ctx context.Context, cfg *model.Confi
 	if status == "" && operationErr != nil {
 		_, status = channelManagementErrorCode(operationErr)
 	}
-	message, err := json.Marshal(channelCheckinAuditMessage{Profile: managementProfileForAudit(cfg), Status: status, Balance: balance})
+	return s.writeChannelCheckinAuditLog(ctx, cfg, checkedAt, statusCode,
+		channelCheckinAuditMessage{Profile: managementProfileForAudit(cfg), Status: status, Balance: balance})
+}
+
+/**
+ * @brief 按统一渠道字段写入提供商的签到审计结果。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param checkedAt 提供商签到结果的采样时间。
+ * @param statusCode 本次签到的 HTTP 或归一状态码。
+ * @param payload 不含认证材料且可编码为 JSON 的提供商审计消息。
+ * @return 编码或持久化失败时返回错误，成功返回 nil。
+ * @note 写入渠道级日志并记录渠道倍率快照，避免零倍率被解释为免费请求。
+ */
+func (s *Server) writeChannelCheckinAuditLog(ctx context.Context, cfg *model.Config, checkedAt time.Time, statusCode int, payload any) error {
+	message, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

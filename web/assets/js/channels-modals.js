@@ -624,6 +624,13 @@ async function showAddModal(authType = 'api_key', channelPreset = '') {
   scheduleChannelEditorTableSizingSync();
 }
 
+/**
+ * @brief 从专用编辑接口加载一致的渠道配置与可见凭证。
+ * @param id 要编辑的持久化渠道 ID。
+ * @return Promise<void>：完成编辑器数据填充或显示加载错误。
+ * @throw Error 后续下拉或编辑器依赖初始化失败且未被本函数捕获时。
+ * @note 打开并更新编辑弹窗；凭证模式使用公共能力判断。
+ */
 async function editChannel(id) {
   let editorData;
   try {
@@ -651,7 +658,7 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
-  editingChannelAuthType = ['system_one', 'codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'].includes(channel.auth_type)
+  editingChannelAuthType = channel.auth_type === 'system_one' || isCredentialChannelAuthType(channel.auth_type)
     ? channel.auth_type
     : 'api_key';
   clearChannelDuplicateHint();
@@ -1070,6 +1077,12 @@ function validateChannelRequiredFields(missingByField) {
   return false;
 }
 
+/**
+ * @brief 校验编辑器并创建或更新渠道。
+ * @param event 可选的表单提交事件，用于阻止默认提交。
+ * @return Promise<void>：保存及列表刷新完成，或已反馈校验与接口错误。
+ * @note 写入渠道并刷新页面；凭证渠道不得将展示用掩码 Key 回传为真实凭证。
+ */
 async function saveChannel(event) {
   event.preventDefault();
   if (!validateChannelScheduledCheckSchedule()) return;
@@ -1083,7 +1096,7 @@ async function saveChannel(event) {
   }
 
   const validURLConfigs = getValidInlineURLConfigs();
-  const isOAuth = ['codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'].includes(editingChannelAuthType);
+  const isOAuth = isCredentialChannelAuthType(editingChannelAuthType);
   const validKeyRows = isOAuth ? [] : getValidInlineKeyRows();
   if (validKeyRows.some(row => !Number.isInteger(row.priority) || row.priority < -99999 || row.priority > 9999999)) {
     if (window.showError) window.showError(window.t('channels.keyPriorityInvalid'));
@@ -2161,7 +2174,19 @@ function batchRefreshSelectedChannelsReplace() {
   return batchRefreshSelectedChannels('replace');
 }
 
+/**
+ * @brief 为可克隆类型加载源配置并准备新渠道编辑表单。
+ * @param id 源渠道 ID。
+ * @param name 源渠道名称，用于生成克隆名称。
+ * @return Promise<void>：完成克隆表单准备；Loomy 或源不存在时不创建。
+ * @throw Error 后续下拉或表单依赖初始化失败且未被捕获时。
+ * @note Loomy 账号须通过短信验证并去重，拒绝通过克隆绕过。
+ */
 async function copyChannel(id, name) {
+  if (channels.find(channel => Number(channel.id) === Number(id))?.auth_type === 'loomy_session') {
+    window.showError(window.t('channels.loomy.copyUnsupported'));
+    return;
+  }
   const channel = channels.find(c => c.id === id);
   if (!channel) return;
 
@@ -3738,12 +3763,18 @@ async function fetchedKeyModelApplyAccepted(changedCount, isSingleKeyChannel) {
   return window.showConfirm(window.t('channels.applyFetchedKeyModelsConfirm', { count: changedCount }));
 }
 
+/**
+ * @brief 根据当前渠道认证能力发现模型并更新模型编辑区。
+ * @param markDirty 解构选项：是否将模型变化标记为未保存，默认 true。
+ * @return Promise<void>：模型已更新或错误已在界面反馈。
+ * @note 已有凭证渠道通过后端发现模型，不从合成 Key 读取认证材料。
+ */
 async function fetchModelsFromAPI({ markDirty = true } = {}) {
   let endpoint;
   let fetchOptions;
   let modelFetchEntries = [];
   let skippedKeyCount = 0;
-  if (['codebuddy_oauth', 'antigravity_oauth', 'codex_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'].includes(editingChannelAuthType)) {
+  if (isCredentialChannelAuthType(editingChannelAuthType)) {
     if (!editingChannelId) {
       window.showError(window.t('channels.saveBeforeModelTest'));
       return;

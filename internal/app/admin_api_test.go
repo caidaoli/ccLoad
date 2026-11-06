@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/xaiauth"
 
@@ -631,10 +632,21 @@ func TestAdminAPI_CSVRoundTripsModelVariants(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证凭证渠道通过 CSV 导出再导入后保留认证类型且不生成 API Key。
+ * @param t 当前测试上下文。
+ * @note 使用独立内存数据库；Loomy 同时验证签到、任务及额度快照完整保留。
+ */
 func TestAdminAPI_CSVExportImportSupportsEveryOAuthType(t *testing.T) {
 	source := newInMemoryServer(t)
 	ctx := context.Background()
 	testChannels := []*model.Config{
+		{
+			Name: "Loomy CSV", AuthType: model.AuthTypeLoomySession,
+			OAuthCredential: `{"session":"loomy-exported-session","user_id":"loomy-user","last_checkin_day":"2030-01-02","daily_quota":100,"daily_cycle_date":"2030-01-02","onboarding_completed_at":"2030-01-01T00:00:00Z","next_checkin_attempt_at":"2030-01-03T00:01:00+08:00","oauth_usage":{"sampled_at":"2030-01-02T00:00:00Z","requested_at":"2030-01-02T00:00:00Z","summary":{"provider":"loomy","loomy_credits":{"balance":10,"dailyBalance":80}}}}`,
+			URLs:            model.ChannelURLs{{URL: loomyauth.CompletionsURL, Exact: true, Protocols: []string{"openai"}}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "loomy-chat"}},
+		},
 		{
 			Name: "Codex OAuth", AuthType: model.AuthTypeCodexOAuth,
 			OAuthCredential: `{"type":"codex","access_token":"codex-access","refresh_token":"codex-refresh","expired":"2030-01-01T00:00:00Z"}`,
@@ -707,6 +719,19 @@ func TestAdminAPI_CSVExportImportSupportsEveryOAuthType(t *testing.T) {
 	for _, cfg := range configs {
 		if cfg.GetAuthType() != wantAuthType[cfg.Name] || cfg.OAuthCredential == "" {
 			t.Fatalf("restored channel %q lost its OAuth authentication type", cfg.Name)
+		}
+		if cfg.UsesLoomySession() {
+			want, err := loomyauth.ParseCredential([]byte(testChannels[0].OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantJSON, err := want.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.OAuthCredential != wantJSON || !cfg.URLs[0].Exact || !cfg.SupportsModel("loomy-chat") {
+				t.Fatal("Loomy CSV roundtrip lost credential state or routing configuration")
+			}
 		}
 		keys, err := target.store.GetAPIKeys(ctx, cfg.ID)
 		if err != nil || len(keys) != 0 {

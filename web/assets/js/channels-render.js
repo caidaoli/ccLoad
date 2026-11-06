@@ -143,7 +143,21 @@ function escapeChannelRefreshText(value) {
   }[c]));
 }
 
-const OAUTH_USAGE_AUTH_TYPES = [
+/**
+ * @brief 按公共能力集合判断是否为私有凭证渠道。
+ * @param authType 渠道认证类型。
+ * @return 属于私有凭证渠道返回 true，否则返回 false。
+ */
+function isCredentialChannelAuthType(authType) {
+  return CREDENTIAL_CHANNEL_AUTH_TYPES.includes(authType);
+}
+
+/**
+ * @brief 统一声明使用私有凭证编辑流程的认证类型。
+ * @details 包含 Vertex 等没有额度查询接口的凭证渠道，不能直接代替额度能力集合。
+ */
+const CREDENTIAL_CHANNEL_AUTH_TYPES = [
+  'loomy_session',
   'codex_oauth',
   'antigravity_oauth',
   'xai_oauth',
@@ -151,8 +165,15 @@ const OAUTH_USAGE_AUTH_TYPES = [
   'zai_oauth',
   'cursor_oauth',
   'zed_oauth',
-  'codebuddy_oauth'
+  'codebuddy_oauth',
+  'vertex_oauth'
 ];
+
+/**
+ * @brief 从凭证类型中筛选支持额度查询的认证类型。
+ * @details 排除没有额度接口的 Vertex，避免界面出现无法执行的刷新操作。
+ */
+const OAUTH_USAGE_AUTH_TYPES = CREDENTIAL_CHANNEL_AUTH_TYPES.filter(authType => authType !== 'vertex_oauth');
 
 // Mirrors the backend check on the saved URL. URL() is unsuitable: it drops
 // :443, resolves dot segments and hides empty userinfo before we can see them.
@@ -862,23 +883,71 @@ function buildQuotaLoadingHtml(text) {
   return `<div class="ch-oauth-usage__loading" role="status">${QUOTA_ACTION_ICONS.loading}${escapeChannelRefreshText(text)}</div>`;
 }
 
-function buildCodeBuddyCheckinButton(channelID, state = {}) {
+/**
+ * @brief 使用公共签到文案生成按钮，并与额度变更状态互斥。
+ * @param action 事件委托识别的签到动作。
+ * @param channelID 按钮绑定的渠道 ID。
+ * @param state 当前渠道额度与签到请求状态。
+ * @param checkedIn 今天是否已签到；undefined 使用通用签到文案。
+ * @return 返回包含状态与禁用属性的按钮 HTML。
+ */
+function buildOAuthCheckinButton(action, channelID, state = {}, checkedIn) {
   const loading = state?.checkin_status === 'loading';
   const disabled = state?.status === 'loading' || state?.reset_status === 'loading';
   const text = loading
-    ? window.t('channels.codebuddy.checkinRunning')
-    : window.t('channels.codebuddy.checkin');
-  return buildQuotaActionButton('checkin-codebuddy', channelID, 'checkin', text, { disabled, busy: loading });
+    ? window.t('channels.oauth.checkinRunning')
+    : window.t(checkedIn === true ? 'channels.oauth.checkedIn'
+      : checkedIn === false ? 'channels.oauth.notCheckedIn' : 'channels.oauth.checkin');
+  return buildQuotaActionButton(action, channelID, 'checkin', text, { disabled, busy: loading });
 }
 
 // 空单元格占位：额度/运行表现列无内容时保持列对齐。
 const CHANNEL_EMPTY_CELL_HTML = '<span class="ch-cell-empty" aria-hidden="true">—</span>';
 
+/**
+ * @brief 为签到结果生成与管理账户一致的摘要结构。
+ * @param text 需要展示的纯文本状态。
+ * @return 返回已转义的摘要 HTML；文本为空时返回空字符串。
+ */
+function buildCheckinSummaryHtml(text) {
+  return text ? `<div class="ch-oauth-usage__credits-summary" role="status">${escapeChannelRefreshText(text)}</div>` : '';
+}
+
+/**
+ * @brief 统一生成国内 CodeBuddy 与 Loomy 签到状态和操作入口。
+ * @param channel 包含认证类型及持久签到日的渠道快照。
+ * @param state 本地请求状态及本次操作确认的签到日。
+ * @return 返回签到区域 HTML；不支持签到的类型返回空字符串。
+ * @details Loomy 按 UTC+8 合并持久与临时签到日；无余额快照仍显示状态，已签到保留补做任务入口。
+ */
 function buildOAuthUsageCheckinHtml(channel, state = {}) {
-  if (channel?.auth_type !== 'codebuddy_oauth' || channel?.codebuddy_enterprise || channel?.codebuddy_international) {
+  const isLoomy = channel?.auth_type === 'loomy_session';
+  if (!isLoomy && (channel?.auth_type !== 'codebuddy_oauth' || channel?.codebuddy_enterprise || channel?.codebuddy_international)) {
     return '';
   }
-  return buildCodeBuddyCheckinButton(channel.id, state);
+  const today = loomyBusinessDay();
+  // 持久状态不依赖余额是否可用；旧手动请求不能覆盖自动签到后读到的当日日期。
+  const checkedIn = isLoomy ? state.checkin_day === today || channel.loomy_last_checkin_day === today : undefined;
+  const status = isLoomy ? window.t(checkedIn ? 'channels.oauth.checkedIn' : 'channels.oauth.notCheckedIn') : '';
+  const notice = state.checkin_status === 'ready'
+    ? isLoomy
+      ? (state.checkin_day === today ? String(state.checkin_notice || '') : '')
+      : window.t(state.checkin_result === 'already_checked' ? 'channels.codebuddy.alreadyCheckedIn' : 'channels.codebuddy.checkinSuccess')
+    : '';
+  const error = state.checkin_status === 'error' ? String(state.checkin_error || '').trim() : '';
+  // 签到反馈放进统一入口，余额缺省、加载或报错时也能显示；已签到仍可补任务。
+  return `${buildCheckinSummaryHtml(status)}
+    ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
+    ${error ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(error)}">${escapeChannelRefreshText(error)}</div>` : ''}
+    ${buildOAuthCheckinButton(isLoomy ? 'checkin-loomy' : 'checkin-codebuddy', channel.id, state, checkedIn)}`;
+}
+
+/**
+ * @brief 使用北京时间确定 Loomy 今日签到状态的业务日期。
+ * @return 返回当前 UTC+8 日期，格式 YYYY-MM-DD。
+ */
+function loomyBusinessDay() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 const OAUTH_RESET_CREDIT_ICON = '<svg class="ch-oauth-usage__credit-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.75" stroke="currentColor" stroke-width="1.3"/><path d="M1.75 6.25H14.25M4.5 10H7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
@@ -1138,10 +1207,26 @@ function buildAntigravityCreditsHtml(credits) {
   return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
 }
 
-// 额度窗口行：左侧名称+金额，右侧主值+时间，悬浮展开明细，点击文字刷新；percent 为 null 时不画进度条。
-function buildOAuthUsageWindowHtml({ refresh, tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null, level = '' }) {
+/**
+ * @brief 渲染提供商共用的额度行、提示和进度条。
+ * @param refresh 额度刷新触发器配置。
+ * @param tooltipID 当前额度行唯一的提示节点 ID。
+ * @param label 左侧额度名称。
+ * @param amount 左侧金额或已用/总额文本，空值不显示。
+ * @param value 右侧主要数值文本，空值不显示。
+ * @param time 右侧重置时间文本，空值不显示。
+ * @param detailLines 悬浮提示的纯文本行数组，空行被过滤。
+ * @param ariaLabel 进度条的无障碍说明。
+ * @param percent 可用百分比，裁剪到 0–100；null 表示未知。
+ * @param level 进度条级别样式，空值按百分比推导。
+ * @param showTrack 占比未知时是否仍显示不含数值的空轨道。
+ * @return 返回已转义展示文本的额度行 HTML。
+ * @details 解构参数描述同一额度行；未知百分比不生成虚假读数。
+ */
+function buildOAuthUsageWindowHtml({ refresh, tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null, level = '', showTrack = false }) {
   const id = escapeChannelRefreshText(tooltipID);
-  let track = '';
+  // 积分额度缺少总额时仍保留统一轨道，但不伪造百分比或进度条读数。
+  let track = showTrack ? '<div class="ch-oauth-usage__track" aria-hidden="true"></div>' : '';
   if (percent !== null) {
     const clamped = Math.min(100, Math.max(0, percent));
     track = `<div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(formatOAuthUsagePercent(clamped))}">
@@ -1173,33 +1258,73 @@ function oauthUsageTooltipID(prefix, channelID, index) {
   return `${prefix}-${String(channelID).replace(/[^a-zA-Z0-9_-]/g, '')}-${index}`;
 }
 
+/**
+ * @brief 在公共完整积分布局与 CodeBuddy 原有余额摘要间按数据选择。
+ * @param credits CodeBuddy 原生积分余额、已用、总额及无限额标志。
+ * @param refresh 公共额度刷新配置。
+ * @return 返回积分 HTML；余额不是有限数时返回空字符串。
+ * @details 完整数据复用公共额度行，缺少已用或总额时保留已有摘要行为。
+ */
 function buildCodeBuddyCreditsHtml(credits, refresh) {
   const remain = Number(credits?.remain);
   if (!Number.isFinite(remain)) return '';
-  const formatCredits = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  const total = credits?.total;
-  const used = credits?.used;
-  if (!credits?.unlimited && Number.isFinite(total) && Number.isFinite(used)) {
-    const label = window.t('channels.codebuddy.credits');
-    const percent = total > 0 ? remain / total * 100 : 0;
-    const percentText = formatOAuthUsagePercent(Math.min(100, Math.max(0, percent)));
-    const usageText = window.t('channels.management.usage', { used: formatCredits(used), total: formatCredits(total) });
-    const availableText = window.t('channels.management.available', { percent: percentText });
-    return buildOAuthUsageWindowHtml({
-      refresh,
-      tooltipID: oauthUsageTooltipID('ch-codebuddy-credits-tooltip', refresh.channelID, 0),
-      label,
-      amount: `${formatCredits(used)}/${formatCredits(total)}`,
-      value: formatCredits(Math.max(0, remain)),
-      detailLines: [label, usageText, availableText],
-      ariaLabel: availableText,
-      percent
-    });
+  if (credits?.unlimited || (Number.isFinite(credits?.total) && Number.isFinite(credits?.used))) {
+    return buildOAuthCreditsHtml({ ...credits, remain }, refresh);
   }
-  const text = credits?.unlimited
-    ? window.t('channels.codebuddy.unlimitedCredits')
-    : window.t('channels.oauth.codeBuddyCredits', { remain: formatCredits(Math.max(0, remain)) });
+  const text = window.t('channels.oauth.codeBuddyCredits', {
+    remain: Math.max(0, remain).toLocaleString(undefined, { maximumFractionDigits: 2 })
+  });
   return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(text))}</div></div>`;
+}
+
+/**
+ * @brief 复用统一布局显示原生积分，不为缺失数据编造总额。
+ * @param credits 原生积分余额、已用、总额及无限额标志。
+ * @param refresh 公共额度刷新配置。
+ * @param label 解构选项中的积分名称，默认 CodeBuddy 积分。
+ * @param tooltipID 解构选项中的唯一提示 ID，默认根据渠道生成。
+ * @param percent 解构选项中的显示百分比，绑定为 displayPercent；null 时根据可靠数据计算。
+ * @return 返回完整积分行或无限额摘要 HTML。
+ * @details 未知数值显示 —，负余额按零展示；永久积分可以指定满格，不伪造已用或总额。
+ */
+function buildOAuthCreditsHtml(credits, refresh, {
+  label = window.t('channels.codebuddy.credits'),
+  tooltipID = oauthUsageTooltipID('ch-codebuddy-credits-tooltip', refresh.channelID, 0),
+  percent: displayPercent = null
+} = {}) {
+  /**
+   * @brief 以当前地区格式显示积分，避免非必要小数影响读取。
+   * @param value 已经确认有效的积分数值。
+   * @return 返回最多两位小数的本地化文本。
+   */
+  const formatCredits = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (credits?.unlimited) {
+    const text = window.t('channels.codebuddy.unlimitedCredits');
+    return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(text))}</div></div>`;
+  }
+  const remain = Number.isFinite(credits?.remain) ? Math.max(0, credits.remain) : null;
+  const total = Number.isFinite(credits?.total) ? credits.total : null;
+  const used = Number.isFinite(credits?.used) ? credits.used : null;
+  const totalText = total === null ? '—' : formatCredits(total);
+  const usedText = used === null ? '—' : formatCredits(used);
+  const remainingText = remain === null ? '—' : formatCredits(remain);
+  const percent = displayPercent ?? (remain !== null && total !== null && used !== null
+    ? (total > 0 ? remain / total * 100 : 0) : null);
+  const usageText = window.t('channels.management.usage', { used: usedText, total: totalText });
+  const availableText = percent === null ? '' : window.t('channels.management.available', {
+    percent: formatOAuthUsagePercent(Math.min(100, Math.max(0, percent)))
+  });
+  return buildOAuthUsageWindowHtml({
+    refresh,
+    tooltipID,
+    label,
+    amount: `${usedText}/${totalText}`,
+    value: remainingText,
+    detailLines: [label, usageText, window.t('channels.management.remaining', { amount: remainingText }), availableText],
+    ariaLabel: availableText,
+    percent,
+    showTrack: true
+  });
 }
 
 const OAUTH_USAGE_VISIBLE_WINDOWS = 2;
@@ -1235,6 +1360,12 @@ function toggleOAuthUsageWindows(btn) {
   btn.textContent = oauthUsageWindowsToggleLabel(expanded, Number(btn.dataset.hiddenCount) || 0);
 }
 
+/**
+ * @brief 按公共额度能力和当前操作状态渲染渠道额度区域。
+ * @param channel 渠道及持久额度快照。
+ * @return 返回额度 HTML；不支持额度或 Token 只读模式时返回空字符串。
+ * @details 本地请求状态优先；Loomy 每日总额只使用当天数据，永久积分大于零显示满格，零或未知时隐藏。
+ */
 function buildOAuthUsageStatusHtml(channel) {
   if (!channelShowsOAuthUsage(channel) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
@@ -1322,6 +1453,26 @@ function buildOAuthUsageStatusHtml(channel) {
     });
   });
   const codeBuddyCreditsHtml = isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, refresh) : '';
+  if (channel?.auth_type === 'loomy_session') {
+    const credits = state.data?.loomy_credits;
+    const today = loomyBusinessDay();
+    const currentCycle = credits?.dailyCycleDate === today;
+    for (const [key, labelKey] of [['dailyBalance', 'channels.loomy.daily'], ['balance', 'channels.loomy.permanent']]) {
+      const permanent = key === 'balance';
+      const remain = credits?.[key];
+      // 永久积分仅在有余额时展示满格轨道，不据此编造已用或总额。
+      if (permanent && !(Number.isFinite(remain) && remain > 0)) continue;
+      rows.push(buildOAuthCreditsHtml({
+        remain,
+        total: key === 'dailyBalance' && currentCycle ? credits?.dailyQuota : undefined,
+        used: key === 'dailyBalance' && currentCycle ? credits?.dailyConsumed : undefined
+      }, refresh, {
+        tooltipID: oauthUsageTooltipID('ch-loomy-credits-tooltip', channel.id, key),
+        label: window.t(labelKey),
+        percent: permanent ? 100 : null
+      }));
+    }
+  }
   if (codeBuddyCreditsHtml) rows.push(codeBuddyCreditsHtml);
   // 每条额度行都是刷新入口；一条都没有时由占位符承担。
   if (rows.length === 0) rows.push(buildQuotaRefreshPlaceholder(refresh));
@@ -1333,21 +1484,11 @@ function buildOAuthUsageStatusHtml(channel) {
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';
-  const codeBuddyCheckinNotice = isCodeBuddy && state.checkin_status === 'ready'
-    ? window.t(state.checkin_result === 'already_checked'
-      ? 'channels.codebuddy.alreadyCheckedIn'
-      : 'channels.codebuddy.checkinSuccess')
-    : '';
-  const codeBuddyCheckinError = isCodeBuddy && state.checkin_status === 'error'
-    ? String(state.checkin_error || '').trim()
-    : '';
   return `<div class="ch-oauth-usage">
     ${buildOAuthUsageRowsHtml(channel.id, rows)}
     ${anthropicCreditsHtml}
     ${isCodex ? (buildCodexResetCreditsHtml(state.data, state, channel.id) || buildCodexPurchasedCreditsHtml(state.data)) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
-    ${codeBuddyCheckinNotice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(codeBuddyCheckinNotice)}</div>` : ''}
-    ${codeBuddyCheckinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(codeBuddyCheckinError)}">${escapeChannelRefreshText(codeBuddyCheckinError)}</div>` : ''}
     ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
     ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
     ${checkinHtml}
@@ -1435,6 +1576,11 @@ function buildManagementBalanceRows(refresh, balance) {
   return rows;
 }
 
+/**
+ * @brief 使用共用摘要展示渠道管理账户的签到与余额状态。
+ * @param channel 包含管理账户状态的渠道快照。
+ * @return 返回管理状态 HTML；无可展示信息时返回空字符串。
+ */
 function buildManagementAccountStatusHtml(channel) {
   const account = channel?.management_account;
   const profile = String(account?.profile || '').trim();
@@ -1494,7 +1640,7 @@ function buildManagementAccountStatusHtml(channel) {
 
   return `<div class="ch-oauth-usage">
     ${balanceHtml}
-    ${checkinSummary ? `<div class="ch-oauth-usage__credits-summary" role="status">${escapeChannelRefreshText(checkinSummary)}</div>` : ''}
+    ${buildCheckinSummaryHtml(checkinSummary)}
     ${checkinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(checkinError)}">${escapeChannelRefreshText(checkinError)}</div>` : ''}
     ${checkedInHtml}
     ${checkinButton}
@@ -1566,6 +1712,12 @@ function buildChannelHealthHtml(channel, stats) {
  * @param {Object} channel - 渠道数据
  * @returns {HTMLElement|null} 行元素
  */
+/**
+ * @brief 按公共渠道能力生成卡片与可执行的管理操作。
+ * @param channel 用于构建卡片的渠道快照。
+ * @return 返回渠道卡片 DOM 节点。
+ * @note Loomy 通过已验证账号去重，不提供克隆入口。
+ */
 function createChannelCard(channel) {
   const isCooldown = channel.cooldown_remaining_ms > 0;
   const stats = channelStatsById[channel.id] || null;
@@ -1618,6 +1770,8 @@ function createChannelCard(channel) {
   };
 
   const card = TemplateEngine.render('tpl-channel-card', cardData);
+  // Loomy 必须由短信登录绑定账号，不展示点击后必然报错的克隆入口。
+  if (channel.auth_type === 'loomy_session') card?.querySelector('[data-action="copy"]')?.remove();
   return card;
 }
 
@@ -1641,6 +1795,10 @@ function confirmQuotaRefresh(refresh, failedKey) {
 
 /**
  * 初始化渠道卡片事件委托 (替代inline onclick)
+ */
+/**
+ * @brief 集中绑定渠道列表的管理操作与只读权限拦截。
+ * @note 注册列表事件；Loomy 签到成功但任务未完成或存在告警时显示警告级提示。
  */
 function initChannelEventDelegation() {
   const container = document.getElementById('channels-container');
@@ -1747,7 +1905,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'checkin-loomy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1784,6 +1942,15 @@ function initChannelEventDelegation() {
           }).catch(error => {
             if (window.showError) window.showError(error?.message || window.t('channels.codebuddy.checkinFailed'));
           });
+        }
+        break;
+      case 'checkin-loomy':
+        if (typeof checkInLoomy === 'function') {
+          checkInLoomy(channelId).then(result => {
+            const message = loomyCheckinMessage(result);
+            if (result.onboarding === 'pending' || result.warnings?.length) window.showNotification?.(message, 'warning');
+            else window.showSuccess?.(message);
+          }).catch(error => window.showError?.(error.message));
         }
         break;
       case 'refresh-management-balance':
@@ -1917,6 +2084,7 @@ function renderChannels(channelsToRender = channels) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    isCredentialChannelAuthType,
     buildChannelModelListHtml,
     buildChannelModelPopoverHtml,
     copyChannelModelName,

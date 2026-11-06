@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+global.isCredentialChannelAuthType = require('./channels-render.js').isCredentialChannelAuthType;
+global.channelShowsOAuthUsage = require('./channels-render.js').channelShowsOAuthUsage;
 
 const {
   applyChannelAuthEditorMode,
@@ -2924,7 +2926,7 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
   try {
     for (const authType of [
       'codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth',
-      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'
+      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth', 'loomy_session'
     ]) {
       elements.get('channelOAuthQuotaPassthrough').checked = true;
       applyChannelAuthEditorMode(authType);
@@ -3040,6 +3042,19 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(vertexCredential, null, 2));
+
+    const loomyCredential = {
+      session: 'loomy-session', user_id: 'loomy-user',
+      last_checkin_day: '2026-11-04', onboarding_completed_at: '2026-11-04T01:00:00+08:00'
+    };
+    applyChannelAuthEditorMode('loomy_session', loomyCredential);
+    assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
+    assert.equal(elements.get('channelApiKey').value, '');
+    assert.equal(rowKeyInput.readOnly, true);
+    let copiedLoomyCredential;
+    await copyOAuthCredential(async text => { copiedLoomyCredential = JSON.parse(text); });
+    assert.deepEqual(copiedLoomyCredential, loomyCredential);
 
     applyChannelAuthEditorMode('api_key');
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);

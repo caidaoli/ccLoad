@@ -10,9 +10,13 @@ function parseKeys(input) {
   return [...new Set(keys)];
 }
 
+/**
+ * @brief 统一判断当前渠道 Key 编辑区是否受凭证模式约束。
+ * @return 凭证渠道返回 true；编辑认证类型尚未定义或普通 Key 渠道返回 false。
+ */
 function isChannelKeyEditorReadOnly() {
   return typeof editingChannelAuthType !== 'undefined' &&
-    ['codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'].includes(editingChannelAuthType);
+    isCredentialChannelAuthType(editingChannelAuthType);
 }
 
 function canFetchInlineKeyRate() {

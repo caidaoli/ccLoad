@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
@@ -36,11 +37,30 @@ func (s *oauthUsageCredentialState) tracksQuotaCost() bool {
 	return s != nil && model.TracksQuotaCost(s.authType)
 }
 
+/**
+ * @brief 把提供商私有凭证适配为公共额度合并状态。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 返回账号身份、额度快照及编码回调；凭证缺失、无效或不支持时返回错误。
+ * @note 编码回调仅更新额度相关字段，保留认证材料与账号级业务状态。
+ */
 func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialState, error) {
 	if cfg == nil || strings.TrimSpace(cfg.OAuthCredential) == "" {
 		return nil, errors.New("OAuth credential is unavailable")
 	}
 	switch {
+	case cfg.UsesLoomySession():
+		credential, err := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		return &oauthUsageCredentialState{
+			provider: loomyauth.ChannelType, authType: model.AuthTypeLoomySession, accountID: credential.UserID, oauthUsage: credential.OAuthUsage,
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				// Preserve onboarding and daily state while replacing only the balance.
+				credential.OAuthUsage = usage
+				return credential.JSON()
+			},
+		}, nil
 	case cfg.UsesCodeBuddyOAuth():
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

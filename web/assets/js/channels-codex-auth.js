@@ -155,6 +155,15 @@ function oauthCredentialExpiryState(credential, nowMs = Date.now()) {
   return { expiresAt, tone: remaining < 60 * 60 * 1000 ? 'warning' : 'ok', text };
 }
 
+/**
+ * @brief 按认证能力生成非空的凭证概要行。
+ * @param authType 渠道认证类型。
+ * @param credential 已解析私有凭证，可为空。
+ * @param credentialInfo 后端提供的安全凭证能力摘要。
+ * @param expiry 预先解析的凭证有效期状态。
+ * @return 返回用于概要展示的行数组。
+ * @details Loomy 使用 user_id 显示账号，不把缺少 refresh_token 误报为缺失能力。
+ */
 function oauthCredentialSummaryRows(authType, credential, credentialInfo, expiry) {
   const t = key => window.t(`channels.oauthCredential.${key}`);
   const provider = typeof channelAuthTypeFilterLabel === 'function' ? channelAuthTypeFilterLabel(authType) : authType;
@@ -172,7 +181,8 @@ function oauthCredentialSummaryRows(authType, credential, credentialInfo, expiry
       note: expiry?.text || '',
       tone: expiry?.tone || ''
     },
-    { label: 'Refresh Token', value: refreshToken ? t('refreshTokenAuto') : t('refreshTokenMissing') },
+    // Loomy 使用不可续期的 session，不将无 refresh token 显示成缺少配置。
+    { label: 'Refresh Token', value: authType === 'loomy_session' ? '' : (refreshToken ? t('refreshTokenAuto') : t('refreshTokenMissing')) },
     { label: t('lastRefresh'), value: lastRefresh },
     {
       label: t('accountId'),
@@ -248,6 +258,15 @@ async function copyOAuthCredential(copier = window.copyToClipboard) {
   await copier(currentOAuthCredentialJSON);
 }
 
+/**
+ * @brief 按渠道认证能力切换凭证、Key、续期与额度编辑状态。
+ * @param authType 渠道认证类型。
+ * @param credential 已解析的私有凭证，默认无凭证。
+ * @param channel 当前渠道快照，创建模式可为空。
+ * @param credentialInfo 后端提供的凭证能力摘要，可为空。
+ * @param credentialView 凭证显示模式，默认 decoded。
+ * @note 修改编辑器 DOM 与只读状态；凭证支持和额度查询支持分别判断。
+ */
 function applyChannelAuthEditorMode(
   authType,
   credential = null,
@@ -260,9 +279,7 @@ function applyChannelAuthEditorMode(
   const xaiOAuth = authType === 'xai_oauth';
   const anthropicOAuth = authType === 'anthropic_oauth';
   const zaiOAuth = authType === 'zai_oauth';
-  const cursorOAuth = authType === 'cursor_oauth';
-  const zedOAuth = authType === 'zed_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth || authType === 'vertex_oauth';
+  const credentialVisible = isCredentialChannelAuthType(authType);
   const oauth = credentialVisible;
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
@@ -370,8 +387,24 @@ function selectedOAuthProvider(provider = (typeof document !== 'undefined'
   return provider === 'codebuddy' ? codeBuddyOAuthProvider() : oauthProviderConfig(provider).provider;
 }
 
+/**
+ * @brief 通过公共状态组件更新渠道凭证提示。
+ * @param message 提示文本；空值隐藏提示。
+ * @param kind 提示级别，空值使用默认样式。
+ * @note 原地更新状态节点的文本和样式。
+ */
 function setCodexAuthStatus(message, kind = '') {
-  const status = document.getElementById('codexAuthStatus');
+  setOAuthStatus(document.getElementById('codexAuthStatus'), message, kind);
+}
+
+/**
+ * @brief 统一更新认证状态提示，保持隐藏状态与级别样式一致。
+ * @param status 目标 DOM 状态节点；为空时不操作。
+ * @param message 纯文本提示；空值隐藏节点。
+ * @param kind 提示级别，写入 data-kind。
+ * @note 使用 textContent，禁止把上游消息作为 HTML 注入。
+ */
+function setOAuthStatus(status, message, kind = '') {
   if (!status) return;
   status.textContent = message || '';
   status.hidden = !message;
@@ -396,20 +429,24 @@ function codexOAuthDelay(ms, signal = undefined) {
   });
 }
 
+/**
+ * @brief 更新 Codex 登录对话框的公共认证状态。
+ * @param message 纯文本提示；空值隐藏。
+ * @param kind 提示级别，空值使用默认样式。
+ * @note 修改对应对话框的状态节点。
+ */
 function setCodexOAuthDialogStatus(message, kind = '') {
-  const status = document.getElementById('oauthLoginDialogStatus');
-  if (!status) return;
-  status.textContent = message || '';
-  status.hidden = !message;
-  status.dataset.kind = kind;
+  setOAuthStatus(document.getElementById('oauthLoginDialogStatus'), message, kind);
 }
 
+/**
+ * @brief 更新凭证导入对话框的公共认证状态。
+ * @param message 纯文本提示；空值隐藏。
+ * @param kind 提示级别，空值使用默认样式。
+ * @note 修改导入状态节点。
+ */
 function setOAuthCredentialImportStatus(message, kind = '') {
-  const status = document.getElementById('oauthCredentialImportStatus');
-  if (!status) return;
-  status.textContent = message || '';
-  status.hidden = !message;
-  status.dataset.kind = kind;
+  setOAuthStatus(document.getElementById('oauthCredentialImportStatus'), message, kind);
 }
 
 function getOAuthCredentialImportProgressElements(prefix = 'oauthCredentialImport') {
@@ -1673,18 +1710,14 @@ async function readXAICredentialImportStream(response, onEvent, recovery) {
   };
 }
 
+/**
+ * @brief 复用渠道认证选项名称生成凭证清理的提供商文案。
+ * @param authType 渠道认证类型。
+ * @return 返回公共选项标签；未登记类型返回原类型文本。
+ */
 function oauthCredentialCleanupProviderLabel(authType) {
-  return ({
-    codex_oauth: 'Codex',
-    antigravity_oauth: 'Antigravity',
-    xai_oauth: 'xAI',
-    anthropic_oauth: 'Anthropic',
-    zai_oauth: 'Z.ai',
-    cursor_oauth: 'Cursor',
-    zed_oauth: 'Zed',
-    codebuddy_oauth: 'CodeBuddy',
-    vertex_oauth: 'Vertex'
-  })[authType] || authType;
+  // 与筛选及编辑器共用名称，未知类型仍保留原值。
+  return getChannelAuthTypeOptions().find(option => option.value === authType)?.label || authType;
 }
 
 function openOAuthCredentialCleanupDialog(trigger = null) {
@@ -2305,8 +2338,24 @@ function resetActiveChannelUsageAutoRefreshState() {
   activeChannelUsageAutoRefreshPendingIDs.clear();
 }
 
-// Every list load refreshes the displayed channels again; only an in-flight
-// request for the same channel is skipped.
+/**
+ * @brief 判断渠道是否正在执行会改变额度的签到或重置操作。
+ * @param channelID 要检查的渠道 ID。
+ * @return 签到或重置进行中返回 true，否则返回 false。
+ * @details 普通额度查询应避让变更操作，防止旧余额覆盖操作结果。
+ */
+function isOAuthUsageMutationPending(channelID) {
+  return anthropicResetCreditsByChannelID.get(channelID)?.reset_status === 'loading' ||
+    oauthUsageStateByChannelID.get(channelID)?.checkin_status === 'loading';
+}
+
+/**
+ * @brief 为当前列表的活跃渠道发起可避让变更操作的自动额度刷新。
+ * @param channelIDs 当前列表候选渠道 ID，内部去重并过滤无效值。
+ * @param fetcher 返回原始 HTTP Response 的认证请求函数，默认 fetchWithAuth。
+ * @return Promise：成功返回批量统计；只读、无可刷新渠道或失败时返回 null。
+ * @note 读取 SSE 并更新额度缓存；排除已有请求及变更中的渠道，代次校验阻止旧响应覆盖新状态。
+ */
 async function maybeAutoRefreshActiveChannelUsage(channelIDs, fetcher = fetchWithAuth) {
   const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
   if (readOnly) return null;
@@ -2314,7 +2363,7 @@ async function maybeAutoRefreshActiveChannelUsage(channelIDs, fetcher = fetchWit
     .map(Number)
     .filter(channelID => Number.isInteger(channelID) && channelID > 0)))
     .filter(channelID => !activeChannelUsageAutoRefreshPendingIDs.has(channelID) &&
-      anthropicResetCreditsByChannelID.get(channelID)?.reset_status !== 'loading');
+      !isOAuthUsageMutationPending(channelID));
   if (pendingIDs.length === 0) return null;
   for (const channelID of pendingIDs) activeChannelUsageAutoRefreshPendingIDs.add(channelID);
   const oauthOperationFloor = oauthUsageOperationSequence;
@@ -2372,12 +2421,22 @@ async function maybeAutoRefreshActiveChannelUsage(channelIDs, fetcher = fetchWit
   }
 }
 
+/**
+ * @brief 刷新单个渠道额度并按操作代次保护最新状态。
+ * @param channelID 有效的持久化渠道 ID。
+ * @param fetcher 返回已解包业务数据的认证请求函数。
+ * @param options 刷新选项对象，默认空对象。
+ * @param options.reload 是否刷新渠道列表；false 时仅更新额度显示。
+ * @return Promise：返回额度快照；变更操作进行中返回现有快照或 null。
+ * @throw Error 渠道 ID 无效、接口或响应格式错误，以及后续列表重载失败时。
+ * @note 可能更新额度缓存并重新加载列表。
+ */
 async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options = {}) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) {
     throw new Error('A saved OAuth channel is required');
   }
-  if (anthropicResetCreditsByChannelID.get(numericID)?.reset_status === 'loading') {
+  if (isOAuthUsageMutationPending(numericID)) {
     return getOAuthUsageState(numericID)?.data || null;
   }
   const operationID = ++oauthUsageOperationSequence;
@@ -2410,13 +2469,42 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
   }
 }
 
+/**
+ * @brief 通过公共签到流程领取国内 CodeBuddy 每日积分。
+ * @param channelID 有效的渠道 ID。
+ * @param fetcher 返回已解包业务结果的认证请求函数。
+ * @param options 签到后列表刷新选项。
+ * @return Promise：返回成功签到结果，必须包含有效额度快照。
+ * @throw Error 渠道、接口、签到状态、额度结果无效或后续重载失败时。
+ * @note 更新签到状态与额度，并按选项重载列表。
+ */
 async function checkInCodeBuddy(channelID, fetcher = fetchDataWithAuth, options = {}) {
+  return checkInOAuthChannel(channelID, { provider: 'codebuddy', label: 'CodeBuddy' }, fetcher, options);
+}
+
+/**
+ * @brief 统一处理提供商签到、并发结果保护与余额结果应用。
+ * @param channelID 有效的渠道 ID。
+ * @param provider 解构配置中的接口提供商标识。
+ * @param label 解构配置中的展示名称，用于响应校验错误。
+ * @param usageOptional 解构配置中的额度可缺省标志；默认 false。
+ * @param notice 解构配置中的成功提示生成函数，可缺省。
+ * @param fetcher 返回已解包签到业务结果的认证请求函数。
+ * @param options 签到后的刷新选项对象。
+ * @param options.reload false 时只重绘额度，不重载整个渠道列表。
+ * @return Promise：返回提供商签到响应；迟到响应仍可返回，但不覆盖更新代次的页面状态。
+ * @throw Error 渠道 ID、请求、签到状态或必需额度无效，以及后续列表刷新失败时。
+ * @note 标记签到进行中以供余额刷新避让，并按操作代次保护缓存；允许 Loomy 余额刷新失败时保留每日签到成功。
+ */
+async function checkInOAuthChannel(channelID, { provider, label, usageOptional = false, notice }, fetcher, options = {}) {
+  const i18n = `channels.${provider}`;
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) {
-    throw new Error('A saved CodeBuddy channel is required');
+    throw new Error(`A saved ${label} channel is required`);
   }
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
-  const persistedUsage = channelList.find(channel => Number(channel?.id) === numericID)?.oauth_usage;
+  const channel = channelList.find(item => Number(item?.id) === numericID);
+  const persistedUsage = channel?.oauth_usage;
   const previous = oauthUsageStateByChannelID.get(numericID) ||
     (persistedUsage ? { status: 'ready', data: persistedUsage } : null);
   const operationID = ++oauthUsageOperationSequence;
@@ -2426,37 +2514,54 @@ async function checkInCodeBuddy(channelID, fetcher = fetchDataWithAuth, options 
     ...(previous || {}),
     status: previous?.data ? 'ready' : 'idle',
     checkin_status: 'loading',
-    checkin_error: ''
+    checkin_error: '',
+    ...(notice ? { checkin_notice: '' } : {})
   });
   rerenderOAuthUsage();
   try {
-    const result = await fetcher(`/admin/channels/${numericID}/codebuddy-checkin`, { method: 'POST' });
+    const result = await fetcher(`/admin/channels/${numericID}/${provider}-checkin`, { method: 'POST' });
     if (!result || !['success', 'already_checked'].includes(result.status) ||
-        !result.usage || !Array.isArray(result.usage.windows)) {
-      throw new Error(window.t('channels.codebuddy.checkinInvalid'));
+        (!usageOptional && (!result.usage || !Array.isArray(result.usage.windows)))) {
+      throw new Error((usageOptional && result?.warnings?.join('; ')) || window.t(`${i18n}.checkinInvalid`));
     }
     if (oauthUsageOperationByChannelID.get(numericID) !== operationID) return result;
     oauthUsageOperationByChannelID.delete(numericID);
+    // 列表加载失败后再刷新余额，也不能丢掉已经确认的当日签到状态。
+    if (provider === 'loomy' && result.day) {
+      // 等待期间筛选或自动刷新可能替换列表，必须更新当前渠道对象。
+      const currentChannel = (typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [])
+        .find(item => Number(item?.id) === numericID && item.auth_type === 'loomy_session');
+      if (currentChannel && result.day > (currentChannel.loomy_last_checkin_day || '')) {
+        currentChannel.loomy_last_checkin_day = result.day;
+      }
+    }
+    // 附属余额查询失败不能抹掉已完成的签到或已有余额。
+    const usage = result.usage || previous?.data;
     oauthUsageStateByChannelID.set(numericID, {
-      status: 'ready',
-      data: result.usage,
+      status: usage ? 'ready' : 'idle',
+      data: usage,
       checkin_status: 'ready',
-      checkin_result: result.status
+      checkin_result: result.status,
+      // 余额缺省或随后的列表读取失败时，仍保留这次确认的签到日期。
+      ...(result.day ? { checkin_day: result.day } : {}),
+      ...(notice ? { checkin_notice: notice(result) } : {})
     });
+    // 先显示已完成的签到，列表刷新失败时也不能留下加载中的按钮。
+    rerenderOAuthUsage();
     if (options.reload !== false && typeof loadChannels === 'function') {
       await loadChannels({ refreshUsage: false });
-    } else {
-      rerenderOAuthUsage();
     }
     return result;
   } catch (error) {
-    const rawMessage = error?.message || window.t('channels.codebuddy.checkinFailed');
+    const rawMessage = error?.message || window.t(`${i18n}.checkinFailed`);
     // The API error is intentionally detailed for logs, but the channel row
     // should show only CodeBuddy's actionable upstream message.
-    const message = String(rawMessage).match(/\):\s*(.+)$/)?.[1]?.trim() || rawMessage;
+    const message = provider === 'codebuddy'
+      ? String(rawMessage).match(/\):\s*(.+)$/)?.[1]?.trim() || rawMessage
+      : rawMessage;
     if (oauthUsageOperationByChannelID.get(numericID) === operationID) {
       oauthUsageOperationByChannelID.delete(numericID);
-      oauthUsageStateByChannelID.set(numericID, previous?.data ? {
+      const state = previous?.data ? {
         ...previous,
         status: 'ready',
         checkin_status: 'error',
@@ -2466,7 +2571,8 @@ async function checkInCodeBuddy(channelID, fetcher = fetchDataWithAuth, options 
         error: message,
         checkin_status: 'error',
         checkin_error: message
-      });
+      };
+      oauthUsageStateByChannelID.set(numericID, { ...state, ...(notice ? { checkin_notice: '' } : {}) });
       rerenderOAuthUsage();
     }
     throw error;
@@ -2537,11 +2643,21 @@ async function resetCodexQuota(channelID, fetcher = fetchDataWithAuth, options =
   }
 }
 
+/**
+ * @brief 批量刷新允许执行的渠道额度并核对 SSE 完成结果。
+ * @param channelIDs 候选渠道 ID 集合，内部过滤无效、重复及变更中渠道。
+ * @param fetcher 返回原始 HTTP Response 的认证请求函数。
+ * @param options 批量刷新选项。
+ * @param options.reload 是否在结束后重新加载渠道列表。
+ * @return Promise：返回 total、succeeded、failed 统计；无可执行渠道时各项为零。
+ * @throw Error 请求、SSE、完成结果或额度格式无效，以及重载失败时。
+ * @note 消费 SSE 并按渠道操作代次更新缓存。
+ */
 async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth, options = {}) {
   const ids = Array.from(new Set((channelIDs || [])
     .map(id => Number(id))
     .filter(id => Number.isInteger(id) && id > 0 &&
-      anthropicResetCreditsByChannelID.get(id)?.reset_status !== 'loading')));
+      !isOAuthUsageMutationPending(id))));
   const summary = { total: ids.length, succeeded: 0, failed: 0 };
   if (ids.length === 0) return summary;
 
@@ -2612,6 +2728,12 @@ async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth, optio
   }
 }
 
+/**
+ * @brief 刷新当前选中且支持额度查询的渠道，并统一反馈统计。
+ * @param fetcher 返回原始 HTTP Response 的认证请求函数。
+ * @return Promise：成功或所选渠道均不支持时返回含 skipped 的统计；没有选择或捕获执行错误时返回 null。
+ * @note 修改批量操作状态并显示成功或错误提示，内部捕获请求失败。
+ */
 async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const selectedIDs = typeof getSelectedChannelIDs === 'function' ? getSelectedChannelIDs() : [];
   if (selectedIDs.length === 0) {
@@ -2622,10 +2744,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    if (typeof channelShowsOAuthUsage === 'function') {
-      return channelShowsOAuthUsage(channel);
-    }
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth'].includes(channel.auth_type);
+    return channelShowsOAuthUsage(channel);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {

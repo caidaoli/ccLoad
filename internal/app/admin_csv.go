@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
@@ -1095,8 +1096,22 @@ func exportChannelManagementCheckin(cfg *model.Config) (enabled, checkinTime str
 	return strconv.FormatBool(envelope.Settings.DailyCheckinEnabled), envelope.Settings.DailyCheckinTime, nil
 }
 
+/**
+ * @brief 校验并归一 CSV 导入的提供商私有凭证。
+ * @param authType 渠道认证类型。
+ * @param raw 待解析的私有凭证 JSON 文本。
+ * @return 规范 JSON；校验失败时为空字符串。
+ * @return 不支持的类型、无效凭证或序列化失败时返回错误；成功返回 nil。
+ * @note 仅校验格式并保留凭证内的业务状态；覆盖已有渠道前由公共导入流程验证凭证可用性。
+ */
 func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 	switch authType {
+	case model.AuthTypeLoomySession:
+		credential, err := loomyauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeCodeBuddyOAuth:
 		credential, err := codebuddyauth.ParseCredential([]byte(raw))
 		if err != nil {
@@ -1209,6 +1224,15 @@ func (s *Server) prepareCSVImportOAuthCredentials(
 	return nil
 }
 
+/**
+ * @brief 在 CSV 覆盖渠道前验证导入凭证可用性，避免失效凭证替换现有配置。
+ * @param ctx 导入请求上下文，取消时停止上游校验。
+ * @param existing 已有渠道，提供校验所需的代理策略与原凭证；首次验证 Vertex 时为导入配置。
+ * @param imported 待导入的渠道及已通过格式校验的凭证。
+ * @return 验证或刷新后的凭证 JSON；失败时为空字符串。
+ * @return 凭证无效、上游校验失败、提供商不支持或序列化失败时返回错误；成功返回 nil。
+ * @note 可能请求上游或刷新令牌，但不写本地渠道；调用方须在批量写入事务前完成校验。
+ */
 func (s *Server) validateCSVImportOAuthCredential(
 	ctx context.Context,
 	existing *model.Config,
@@ -1216,6 +1240,19 @@ func (s *Server) validateCSVImportOAuthCredential(
 ) (string, error) {
 	client := s.getClientForChannel(existing)
 	switch imported.GetAuthType() {
+	case model.AuthTypeLoomySession:
+		credential, err := loomyauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service, err := s.loomyClient(existing)
+		if err != nil {
+			return "", err
+		}
+		if _, err := service.FetchModels(ctx, credential.Session); err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeCodeBuddyOAuth:
 		credential, err := codebuddyauth.ParseCredential([]byte(imported.OAuthCredential))
 		if err != nil {

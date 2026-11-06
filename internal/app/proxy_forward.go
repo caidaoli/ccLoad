@@ -23,6 +23,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
@@ -203,8 +204,20 @@ func classifySSEPrefix(prefix []byte) (matched, needMore bool) {
 // 请求构建和转发
 // ============================================================================
 
-// buildProxyRequest 构建上游代理请求（统一处理URL、Header、认证）
-// 从proxy.go提取，遵循SRP原则
+/**
+ * @brief 按渠道 URL、协议和认证规则构造可发送的上游请求。
+ * @param reqCtx 已解析的下游请求及协议转换上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param apiKey 本次选定的 API Key 或提供商认证材料。
+ * @param method 出站 HTTP 方法。
+ * @param body 已转换或待按上游规则补充的请求体字节。
+ * @param hdr 下游请求头，用于按代理规则复制。
+ * @param rawQuery 不含问号的原始查询串。
+ * @param requestPath 原始请求路径，用于协议路由。
+ * @param baseURL 本次选定的上游根地址或完整端点。
+ * @return 返回完成认证与头规则处理的请求；URL、协议转换或请求构造失败返回错误。
+ * @note 可能更新请求上下文中的转换结果；Loomy 官方认证头在自定义头之后写入。
+ */
 func (s *Server) buildProxyRequest(
 	reqCtx *requestContext,
 	cfg *model.Config,
@@ -424,7 +437,10 @@ func (s *Server) buildProxyRequest(
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	wireRebuilt := false
-	if cfg.UsesCodeBuddyOAuth() {
+	if cfg.UsesLoomySession() {
+		injectLoomyHeaders(req, cfg, apiKey)
+		wireRebuilt = true
+	} else if cfg.UsesCodeBuddyOAuth() {
 		if err := injectCodeBuddyHeaders(req, cfg, apiKey); err != nil {
 			return nil, err
 		}
@@ -4851,6 +4867,15 @@ func prioritizePinnedCodexWebsocketURL(
 	return urls
 }
 
+/**
+ * @brief 按渠道认证方式执行 Key、URL 尝试并统一取消与额度结果处理。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param reqCtx 已解析的下游请求及协议转换上下文。
+ * @param w 下游响应写入器。
+ * @return 返回代理结果及错误；全部候选耗尽返回 ErrAllKeysExhausted，操作员中断转换为专用结果。
+ * @note 可能提交下游响应及更新渠道状态；凭证渠道进入对应 OAuth 公共流程。
+ */
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (result *proxyResult, err error) {
 	defer func() { filterOAuthQuotaResult(cfg, result) }()
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -4901,6 +4926,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	}
 	if cfg.UsesCodexOAuth() {
 		return s.tryCodexOAuthChannel(ctx, cfg, reqCtx, w)
+	}
+	if cfg.UsesLoomySession() {
+		return s.tryLoomyChannel(ctx, cfg, reqCtx, w)
 	}
 	if cfg.UsesCodeBuddyOAuth() {
 		return s.tryCodeBuddyOAuthChannel(ctx, cfg, reqCtx, w)
@@ -5120,6 +5148,12 @@ func (s *Server) tryOAuthChannel(
 			result = lastFailure
 		}
 		if result != nil && credentialRejected(result) {
+			// Loomy has no refresh grant: disable only the rejected snapshot.
+			if cfg.UsesLoomySession() {
+				s.handleLoomyRejection(ctx, runtimeCfg, loomyauth.ErrSessionExpired)
+				result.nextAction = cooldown.ActionRetryChannel
+				return result, nil
+			}
 			if credentialErr != nil || attempt == 1 {
 				if disableRejectedCredential && credentialErr != nil &&
 					s.disableTerminalOAuthCredential(ctx, cfg, provider, credentialErr) {
@@ -5149,18 +5183,42 @@ func (s *Server) tryOAuthChannel(
 	return nil, ErrAllKeysExhausted
 }
 
+/**
+ * @brief 仅对已确认终态失效且认证材料仍匹配的快照尝试禁用。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param provider 用于错误摘要和日志的提供商名称。
+ * @param refreshErr 携带失败凭证快照的终态认证错误。
+ * @return 终态拒绝处理完成返回 true，包括凭证已更新而跳过禁用；非终态、缺失失败快照或写库失败返回 false。
+ * @note 纯额度或签到元数据变化允许重试条件更新；认证材料更新后绝不禁用新登录。
+ */
 func (s *Server) disableTerminalOAuthCredential(
 	ctx context.Context,
 	cfg *model.Config,
 	provider string,
 	refreshErr error,
 ) bool {
+	handled, _ := s.applyTerminalOAuthRejection(ctx, cfg, provider, refreshErr)
+	return handled
+}
+
+/**
+ * @brief 处理终态凭证拒绝，并分别报告已处理与本次实际禁用。
+ * @param ctx 持久化上下文，取消后使用有限时长的冷却写入上下文。
+ * @param cfg 失败请求对应的渠道快照。
+ * @param provider 日志中的提供商名称。
+ * @param refreshErr 携带认证类型及失败凭证的终态错误。
+ * @return 已处理终态拒绝时为 true；非终态、缺失凭证或写库失败时为 false。
+ * @return 仅本次 CAS 将渠道从启用改为禁用时为 true，跳过或失败时为 false。
+ * @note 重试仅合并元数据差异；不禁用已换认证材料的渠道，并失效相关缓存。
+ */
+func (s *Server) applyTerminalOAuthRejection(ctx context.Context, cfg *model.Config, provider string, refreshErr error) (bool, bool) {
 	if !oauthRefreshTokenRejected(refreshErr) {
-		return false
+		return false, false
 	}
 	var failedRefresh *codexCredentialRefreshError
 	if !errors.As(refreshErr, &failedRefresh) || strings.TrimSpace(failedRefresh.credential) == "" {
-		return false
+		return false, false
 	}
 
 	disableCtx, cancel := cooldownWriteContext(ctx)
@@ -5174,15 +5232,16 @@ func (s *Server) disableTerminalOAuthCredential(
 		)
 		if err != nil {
 			log.Printf("[ERROR] 禁用 OAuth 凭证失效渠道失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
-			return false
+			return false, false
 		}
 		if disabled || attempt == 2 {
 			break
 		}
 		// 指纹、被动额度等元数据写入也会改变凭证 blob；只有 token 变了才代表别人已刷新。
 		current, getErr := s.store.GetConfig(disableCtx, cfg.ID)
-		if getErr != nil || !current.Enabled || current.OAuthCredential == expected ||
-			!sameOAuthTokens(current.OAuthCredential, expected) {
+		if getErr != nil || current == nil || !current.Enabled || current.OAuthCredential == expected ||
+			current.GetAuthType() != failedRefresh.authType ||
+			!sameOAuthCredentialMaterial(failedRefresh.authType, current.OAuthCredential, expected) {
 			break
 		}
 		expected = current.OAuthCredential
@@ -5194,7 +5253,7 @@ func (s *Server) disableTerminalOAuthCredential(
 	}
 	s.invalidateChannelRelatedCache(cfg.ID)
 	s.InvalidateChannelListCache()
-	return true
+	return true, disabled
 }
 
 func sameOAuthTokens(a, b string) bool {

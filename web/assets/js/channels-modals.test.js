@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+// 与页面相同，编辑器使用公共认证能力判断。
+global.isCredentialChannelAuthType = require('./channels-render.js').isCredentialChannelAuthType;
 
 const {
   normalizeInlineKeyRow,
@@ -3472,6 +3474,7 @@ test('Key sorting confirms priorities without rebuilding keys, cancels drafts, a
   ].map(row => ({ ...row, model_scope_auto: false }));
   const states = [{ key_index: 0, disabled: true }, { key_index: 2, cooldown_remaining_ms: 30000 }];
   const context = vm.createContext({
+    isCredentialChannelAuthType: global.isCredentialChannelAuthType,
     inlineKeyTableData: structuredClone(rows), currentChannelKeyCooldowns: structuredClone(states),
     editingChannelAuthType: 'api_key', currentKeyStatusFilter: 'all',
     document: { getElementById: id => id === 'keySortModal' ? dialog : list },

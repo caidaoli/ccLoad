@@ -13,6 +13,7 @@ import (
 
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
@@ -438,13 +439,18 @@ func (s *Server) currentOAuthCredentialCleanupJobs() *oauthCredentialCleanupJobM
 	return s.oauthCredentialCleanupJobs
 }
 
+/**
+ * @brief 限定凭证清理任务允许处理的认证类型。
+ * @param value 待归一的认证类型文本。
+ * @return 返回归一后的受支持类型；未知类型及 API Key 类型返回空字符串。
+ */
 func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	authType := model.NormalizeAuthType(value)
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
 		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth,
-		model.AuthTypeVertexOAuth:
+		model.AuthTypeVertexOAuth, model.AuthTypeLoomySession:
 		return authType
 	default:
 		return ""
@@ -753,6 +759,16 @@ func withOAuthCredentialCleanupStage(event oauthCredentialCleanupEvent, stage st
 	return event
 }
 
+/**
+ * @brief 测试凭证健康状态，并按清理任务策略处理确定失效的凭证。
+ * @param ctx 本次操作的取消与截止时间上下文。
+ * @param job 持有清理策略、取消状态和进度事件的任务。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @param event 包含渠道及测试模型的初始事件。
+ * @param finalizeDeletion 成功删除后同步关联状态的可选回调，nil 表示无后续同步。
+ * @return 返回最终清理事件，包含健康、续期、禁用、删除、跳过或失败状态。
+ * @note 会发起测试请求，支持续期的提供商可刷新后复测；Loomy 明确失效直接按凭证快照清理，保护并发重新登录。
+ */
 func (s *Server) cleanupOAuthCredentialChannel(
 	ctx context.Context,
 	job *oauthCredentialCleanupJob,
@@ -788,6 +804,10 @@ func (s *Server) cleanupOAuthCredentialChannel(
 	}
 	if testedCfg != nil {
 		cfg = testedCfg
+	}
+	// Loomy 没有续期接口；明确失效后直接按测试快照清理，禁止用原 session 假刷新。
+	if cfg.UsesLoomySession() {
+		return s.cleanupRejectedOAuthCredential(ctx, job, cfg, event, loomyauth.ErrSessionExpired, finalizeDeletion)
 	}
 
 	job.appendEvent(withOAuthCredentialCleanupStage(event, "refreshing"))
@@ -897,7 +917,15 @@ type oauthTokenEndpointFailure interface {
 	UpstreamResponseBody() string
 }
 
+/**
+ * @brief 识别刷新凭证或不可续期会话的终态认证拒绝。
+ * @param err 可能包装提供商错误的错误链。
+ * @return 确定不可恢复的认证拒绝返回 true；临时网络、额度和其他不确定错误返回 false。
+ */
 func oauthRefreshTokenRejected(err error) bool {
+	if errors.Is(err, loomyauth.ErrSessionExpired) {
+		return true
+	}
 	var codexFailure *codexCredentialRefreshError
 	if errors.As(err, &codexFailure) && codexFailure.authType == model.AuthTypeCodexOAuth && codexauth.IsTerminalRefreshError(err) {
 		return true
@@ -981,6 +1009,13 @@ func (s *Server) testOAuthCredentialChannel(
 	return s.testChannelAPI(ctx, runtimeCfg, keySelection.requestCredential, req), testedCfg, testedAccessToken, nil
 }
 
+/**
+ * @brief 核对当前存储凭证是否仍为测试实际使用的认证材料。
+ * @param persisted 数据库中重新读取的渠道与凭证。
+ * @param runtimeCfg 本次测试实际使用的运行时渠道配置。
+ * @param selection 本次测试选中的请求凭证及 Key 状态。
+ * @return 认证类型和实际 token 或 session 一致返回 true；配置缺失、解析失败或材料变化返回 false。
+ */
 func oauthCredentialMatchesTestRuntime(
 	persisted, runtimeCfg *model.Config,
 	selection channelTestKeySelection,
@@ -990,14 +1025,25 @@ func oauthCredentialMatchesTestRuntime(
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
+		Session     string `json:"session"` ///< 数据库当前凭证中的 Loomy 会话，用于与测试实际认证材料比较。
 	}
-	if sonic.Unmarshal([]byte(persisted.OAuthCredential), &payload) != nil || payload.AccessToken == "" {
+	if sonic.Unmarshal([]byte(persisted.OAuthCredential), &payload) != nil {
 		return false
 	}
 	runtimeAccessToken := oauthCredentialTestAccessToken(persisted, runtimeCfg, selection)
-	return payload.AccessToken == runtimeAccessToken
+	if persisted.UsesLoomySession() {
+		return payload.Session != "" && payload.Session == runtimeAccessToken
+	}
+	return payload.AccessToken != "" && payload.AccessToken == runtimeAccessToken
 }
 
+/**
+ * @brief 提取凭证健康测试实际提交的 token 或 session。
+ * @param persisted 数据库中重新读取的渠道与凭证。
+ * @param runtimeCfg 本次测试实际使用的运行时渠道配置。
+ * @param selection 本次测试选中的请求凭证及 Key 状态。
+ * @return 返回对应运行时认证材料；配置缺失或类型不支持时返回空字符串。
+ */
 func oauthCredentialTestAccessToken(
 	persisted, runtimeCfg *model.Config,
 	selection channelTestKeySelection,
@@ -1011,17 +1057,24 @@ func oauthCredentialTestAccessToken(
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
 	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(), persisted.UsesZedOAuth(),
-		persisted.UsesVertexOAuth():
+		persisted.UsesVertexOAuth(), persisted.UsesLoomySession():
 		return selection.requestCredential
 	}
 	return ""
 }
 
+/**
+ * @brief 选择凭证清理测试使用的上游对话协议。
+ * @param cfg 本次操作使用的渠道配置及私有凭证快照。
+ * @return 返回协议名称；Loomy 使用 OpenAI，缺少配置及默认类型使用 Anthropic。
+ */
 func oauthCredentialCleanupProtocol(cfg *model.Config) string {
 	if cfg == nil {
 		return string(protocol.Anthropic)
 	}
 	switch {
+	case cfg.UsesLoomySession():
+		return string(protocol.OpenAI)
 	case cfg.UsesCodexOAuth(), cfg.UsesXAIOAuth(), cfg.UsesZedOAuth():
 		return string(protocol.Codex)
 	case cfg.UsesAntigravityOAuth(), cfg.UsesVertexOAuth():
