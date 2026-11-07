@@ -445,3 +445,135 @@ func TestConvertGeminiRequestToClaude_SanitizesToolNamesAndProvidesFallbackSchem
 		t.Fatalf("tool_choice.name = %q, want mcp_server_get_data. Output: %s", toolChoiceName, result)
 	}
 }
+
+func TestConvertGeminiRequestToClaude_ToolResultsUseUserMessages(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		wantIDs  []string
+	}{
+		{
+			name: "model role with parallel responses",
+			contents: `[
+				{"role":"user","parts":[{"text":"read files"}]},
+				{"role":"model","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}},{"functionCall":{"name":"read","id":"call-b","args":{}}}]},
+				{"role":"model","parts":[{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}},{"functionResponse":{"name":"read","id":"call-b","response":{"result":"two"}}}]}
+			]`,
+			wantIDs: []string{"call-a", "call-b"},
+		},
+		{
+			name: "assistant role with snake case response",
+			contents: `[
+				{"role":"user","parts":[{"text":"read file"}]},
+				{"role":"model","parts":[{"function_call":{"name":"read","id":"call-a","args":{}}}]},
+				{"role":"assistant","parts":[{"function_response":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+			]`,
+			wantIDs: []string{"call-a"},
+		},
+		{
+			name: "call and response in one model turn",
+			contents: `[
+				{"role":"user","parts":[{"text":"read file"}]},
+				{"role":"model","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}},{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+			]`,
+			wantIDs: []string{"call-a"},
+		},
+		{
+			name: "call and response in one user turn",
+			contents: `[
+				{"role":"user","parts":[{"text":"read file"}]},
+				{"role":"user","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}},{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+			]`,
+			wantIDs: []string{"call-a"},
+		},
+		{
+			name: "ordinary user tool result",
+			contents: `[
+				{"role":"user","parts":[{"text":"read file"}]},
+				{"role":"model","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}}]},
+				{"role":"user","parts":[{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+			]`,
+			wantIDs: []string{"call-a"},
+		},
+		{
+			name: "model result without explicit tool id",
+			contents: `[
+				{"role":"user","parts":[{"text":"read file"}]},
+				{"role":"model","parts":[{"functionCall":{"name":"read","args":{}}}]},
+				{"role":"model","parts":[{"functionResponse":{"name":"read","response":{"result":"one"}}}]}
+			]`,
+			wantIDs: []string{"toolu_gemini_0000000000000001"},
+		},
+		{
+			name: "missing result role",
+			contents: `[
+				{"role":"user","parts":[{"text":"read file"}]},
+				{"role":"model","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}}]},
+				{"parts":[{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+			]`,
+			wantIDs: []string{"call-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, stream := range []bool{false, true} {
+			t.Run(tt.name+map[bool]string{false: "/nonstream", true: "/stream"}[stream], func(t *testing.T) {
+				out, errConvert := ConvertGeminiRequestToClaude("claude-sonnet-4", []byte(`{"contents":`+tt.contents+`}`), stream)
+				if errConvert != nil {
+					t.Fatalf("conversion failed: %v", errConvert)
+				}
+				messages := gjson.GetBytes(out, "messages").Array()
+				if len(messages) != 3 {
+					t.Fatalf("messages = %s; want user, assistant tool calls, user tool results", gjson.GetBytes(out, "messages").Raw)
+				}
+				if got := messages[1].Get("role").String(); got != "assistant" {
+					t.Fatalf("tool call role = %q, want assistant; body=%s", got, out)
+				}
+				if got := messages[2].Get("role").String(); got != "user" {
+					t.Fatalf("tool result role = %q, want user; body=%s", got, out)
+				}
+				calls := messages[1].Get("content").Array()
+				results := messages[2].Get("content").Array()
+				if len(calls) != len(tt.wantIDs) || len(results) != len(tt.wantIDs) {
+					t.Fatalf("calls=%s results=%s, want %d pairs", messages[1].Get("content").Raw, messages[2].Get("content").Raw, len(tt.wantIDs))
+				}
+				for i, wantID := range tt.wantIDs {
+					if calls[i].Get("type").String() != "tool_use" || calls[i].Get("id").String() != wantID {
+						t.Fatalf("call[%d] = %s, want tool_use id %q", i, calls[i].Raw, wantID)
+					}
+					if results[i].Get("type").String() != "tool_result" || results[i].Get("tool_use_id").String() != wantID {
+						t.Fatalf("result[%d] = %s, want tool_result id %q", i, results[i].Raw, wantID)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConvertGeminiRequestToClaude_ToolResultsPrecedeUserText(t *testing.T) {
+	tests := map[string]string{
+		"text and result in one turn": `[
+			{"role":"user","parts":[{"text":"read file"}]},
+			{"role":"model","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}}]},
+			{"role":"model","parts":[{"text":"continue"},{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+		]`,
+		"text before a separate result turn": `[
+			{"role":"user","parts":[{"text":"read file"}]},
+			{"role":"model","parts":[{"functionCall":{"name":"read","id":"call-a","args":{}}}]},
+			{"role":"user","parts":[{"text":"continue"}]},
+			{"role":"model","parts":[{"functionResponse":{"name":"read","id":"call-a","response":{"result":"one"}}}]}
+		]`,
+	}
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			out, errConvert := ConvertGeminiRequestToClaude("claude-sonnet-4", []byte(`{"contents":`+contents+`}`), true)
+			if errConvert != nil {
+				t.Fatalf("conversion failed: %v", errConvert)
+			}
+			message := gjson.GetBytes(out, "messages.2")
+			if message.Get("role").String() != "user" || message.Get("content.0.type").String() != "tool_result" || message.Get("content.0.tool_use_id").String() != "call-a" || message.Get("content.1.text").String() != "continue" {
+				t.Fatalf("user content = %s; want tool result before text", message.Raw)
+			}
+		})
+	}
+}

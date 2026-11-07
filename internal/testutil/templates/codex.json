@@ -9,7 +9,7 @@
     "effort": "medium"
   },
   "text": {
-    "verbosity": "low"
+    "verbosity": "medium"
   },
   "tool_choice": "auto",
   "client_metadata": {

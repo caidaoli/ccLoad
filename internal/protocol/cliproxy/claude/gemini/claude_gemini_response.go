@@ -8,6 +8,7 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"strings"
 	"time"
 
@@ -148,16 +149,12 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 					(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs[idx] = toolID
 				}
 			} else if cb.Get("type").String() == "redacted_thinking" {
-				if data := cb.Get("data"); data.Exists() && data.String() != "" {
-					part := []byte(`{"thought":true,"thoughtSignature":""}`)
-					part, _ = sjson.SetBytes(part, "thoughtSignature", data.String())
+				if part := geminiCompatibleThoughtSignaturePart(cb.Get("data").String()); len(part) > 0 {
 					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
 					return [][]byte{template}
 				}
 			} else if cb.Get("type").String() == "thinking" {
-				if signature := cb.Get("signature"); signature.Exists() && signature.String() != "" {
-					part := []byte(`{"thought":true,"thoughtSignature":""}`)
-					part, _ = sjson.SetBytes(part, "thoughtSignature", sigcompat.GeminiReplaySignatureOrBypass(signature.String(), sigcompat.SignatureBlockKindGeminiModelPart))
+				if part := geminiCompatibleThoughtSignaturePart(cb.Get("signature").String()); len(part) > 0 {
 					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
 					return [][]byte{template}
 				}
@@ -186,10 +183,10 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", thinkingPart)
 				}
 			case "signature_delta":
-				if signature := delta.Get("signature"); signature.Exists() && signature.String() != "" {
-					part := []byte(`{"thought":true,"thoughtSignature":""}`)
-					part, _ = sjson.SetBytes(part, "thoughtSignature", sigcompat.GeminiReplaySignatureOrBypass(signature.String(), sigcompat.SignatureBlockKindGeminiModelPart))
+				if part := geminiCompatibleThoughtSignaturePart(delta.Get("signature").String()); len(part) > 0 {
 					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
+				} else {
+					return [][]byte{}
 				}
 			case "input_json_delta":
 				// Tool use input delta - accumulate partial_json by index for later assembly at content_block_stop
@@ -359,14 +356,16 @@ func convertClaudeResponseToGeminiNonStreamMessage(_ context.Context, modelName 
 			part = []byte(`{"text":""}`)
 			part, _ = sjson.SetBytes(part, "text", block.Get("text").String())
 		case "thinking":
-			part = []byte(`{"thought":true,"text":""}`)
-			part, _ = sjson.SetBytes(part, "text", block.Get("thinking").String())
-			if signature := block.Get("signature"); signature.Exists() && signature.String() != "" {
-				part, _ = sjson.SetBytes(part, "thoughtSignature", signature.String())
+			part = geminiCompatibleThoughtSignaturePart(block.Get("signature").String())
+			if len(part) == 0 {
+				part = []byte(`{"thought":true,"text":""}`)
 			}
+			part, _ = sjson.SetBytes(part, "text", block.Get("thinking").String())
 		case "redacted_thinking":
-			part = []byte(`{"thought":true,"thoughtSignature":""}`)
-			part, _ = sjson.SetBytes(part, "thoughtSignature", block.Get("data").String())
+			part = geminiCompatibleThoughtSignaturePart(block.Get("data").String())
+			if len(part) == 0 {
+				continue
+			}
 		case "tool_use":
 			part = []byte(`{"functionCall":{"id":"","name":"","args":{}}}`)
 			part, _ = sjson.SetBytes(part, "functionCall.id", block.Get("id").String())
@@ -498,9 +497,7 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 						newParam.ToolUseIDs[idx] = toolID
 					}
 				} else if cb.Get("type").String() == "thinking" {
-					if sig := cb.Get("signature"); sig.Exists() && sig.String() != "" {
-						partJSON := []byte(`{"thought":true,"thoughtSignature":""}`)
-						partJSON, _ = sjson.SetBytes(partJSON, "thoughtSignature", sigcompat.GeminiReplaySignatureOrBypass(sig.String(), sigcompat.SignatureBlockKindGeminiModelPart))
+					if partJSON := geminiCompatibleThoughtSignaturePart(cb.Get("signature").String()); len(partJSON) > 0 {
 						allParts = append(allParts, partJSON)
 					}
 				}
@@ -527,9 +524,7 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 						allParts = append(allParts, partJSON)
 					}
 				case "signature_delta":
-					if sig := delta.Get("signature"); sig.Exists() && sig.String() != "" {
-						partJSON := []byte(`{"thought":true,"thoughtSignature":""}`)
-						partJSON, _ = sjson.SetBytes(partJSON, "thoughtSignature", sigcompat.GeminiReplaySignatureOrBypass(sig.String(), sigcompat.SignatureBlockKindGeminiModelPart))
+					if partJSON := geminiCompatibleThoughtSignaturePart(delta.Get("signature").String()); len(partJSON) > 0 {
 						allParts = append(allParts, partJSON)
 					}
 				case "input_json_delta":
@@ -655,6 +650,25 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 // GeminiTokenCount builds a Gemini token count response.
 func GeminiTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.GeminiTokenCountJSON(count)
+}
+
+// geminiCompatibleThoughtSignaturePart omits incompatible signatures rather
+// than emitting a function-call bypass sentinel in a thought part's byte field.
+func geminiCompatibleThoughtSignaturePart(rawSignature string) []byte {
+	signature := sigcompat.GeminiReplaySignatureOrBypass(rawSignature, sigcompat.SignatureBlockKindGeminiModelPart)
+	if sigcompat.IsGeminiThoughtSignatureBypass(signature) {
+		return nil
+	}
+	if _, errDecode := base64.StdEncoding.DecodeString(signature); errDecode != nil {
+		decoded, errRawDecode := base64.RawStdEncoding.DecodeString(signature)
+		if errRawDecode != nil {
+			return nil
+		}
+		signature = base64.StdEncoding.EncodeToString(decoded)
+	}
+	part := []byte(`{"thought":true,"thoughtSignature":""}`)
+	part, _ = sjson.SetBytes(part, "thoughtSignature", signature)
+	return part
 }
 
 // consolidateParts merges consecutive text parts and thinking parts to create a cleaner response.

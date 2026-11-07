@@ -231,9 +231,13 @@ func TestCodexTesterBuild_UsesCurrentCodexClientHeaders(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Codex 测试请求形状和仅接受 medium 详细度模型的兼容性
+ * @param t 测试上下文
+ */
 func TestCodexTesterBuild_UsesCurrentCodexClientBodyShape(t *testing.T) {
 	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
-	req := &TestChannelRequest{Model: "gpt-5.5", Content: "hello", Stream: true}
+	req := &TestChannelRequest{Model: "gpt-6-chat-thinking", Content: "hello", Stream: true}
 
 	_, headers, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
 	if err != nil {
@@ -268,8 +272,8 @@ func TestCodexTesterBuild_UsesCurrentCodexClientBodyShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("text missing or invalid; body=%s", body)
 	}
-	if got, _ := textConfig["verbosity"].(string); got != "low" {
-		t.Fatalf("text.verbosity = %q, want low; body=%s", got, body)
+	if got, _ := textConfig["verbosity"].(string); got != "medium" {
+		t.Fatalf("text.verbosity = %q, want medium; body=%s", got, body)
 	}
 
 	clientMetadata, ok := payload["client_metadata"].(map[string]any)

@@ -10,6 +10,7 @@ func TestLookupThinkingLevels(t *testing.T) {
 		model string
 		want  []string
 	}{
+		{"gpt-6-chat-thinking", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"claude-sonnet-5-5", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"claude-opus-5-5-high", []string{"low", "medium", "high"}},
 		{"claude-sonnet-5-5-high", []string{"low", "medium", "high"}},
@@ -28,5 +29,13 @@ func TestLookupThinkingLevels(t *testing.T) {
 	}
 	if info := LookupModelInfo("kimi-k3"); info != nil {
 		t.Fatalf("Lookup must keep excluding catalogs without an executor, got %+v", info)
+	}
+}
+
+func TestCatalogModelIDsCodexChatThinking(t *testing.T) {
+	for _, catalog := range []string{"codex-free", "codex-team", "codex-plus", "codex-pro"} {
+		if ids := CatalogModelIDs(catalog); !slices.Contains(ids, "gpt-6-chat-thinking") {
+			t.Errorf("CatalogModelIDs(%q)=%v, missing gpt-6-chat-thinking", catalog, ids)
+		}
 	}
 }

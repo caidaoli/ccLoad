@@ -228,6 +228,10 @@ var basePricing = map[string]ModelPricing{
 		InputPriceHigh: 20.00, OutputPriceHigh: 75.00, CacheReadPriceHigh: 2.00, // >272K context
 		CacheReadCountsTowardTier: true,
 	},
+	// 用户于 2026-11-07 确认的内部参考价，非 OpenAI 官方定价；不加长上下文溢价。
+	"gpt-6-chat-thinking": {
+		InputPrice: 4.00, OutputPrice: 20.00, CacheReadPrice: 0.40, HasCacheReadPrice: true,
+	},
 	// GPT-6.1 Sol 官方价格：缓存读为输入价格的 5%，>272K 整段按高价计费。
 	"gpt-6.1-sol": {
 		InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.10, HasCacheReadPrice: true,

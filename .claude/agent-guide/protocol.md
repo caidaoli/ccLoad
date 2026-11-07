@@ -24,6 +24,7 @@
 - Claude `tool_result.is_error` 仅布尔 `true` 在 Gemini/Antigravity 请求中映射为 `functionResponse.response.error`，其他值仍用 `result`；保留结果 JSON 类型、图片及工具调用配对。
 - Claude 工具结果中的图片在 Gemini/Antigravity 请求中嵌入所属 `functionResponse.parts[].inlineData`，不作为外层独立 Part；并行工具各自保留图片、调用 ID 与错误结果。
 - Gemini 跨协议入口接受 `functionCall/functionResponse` 及蛇形别名；缺少 role 且包含工具调用时按 assistant 处理，普通缺省 role 始终为 user，不按上一回合交替推断。纯工具结果转 Chat 不额外生成空 user 消息。
+- Gemini 转 Claude 的工具结果始终进入 user 回合；混合调用/结果按顺序拆分角色，合并后的结果排在其他 user 内容之前并保留调用 ID。Claude 转 Gemini 的普通/隐藏思考签名只输出兼容 Gemini 且可解码为标准 Base64 的值，补齐原生签名 padding；不输出 bypass 占位串或外来签名，保留普通思考文本及结束事件。流式、SSE 聚合和原生 JSON 响应遵守相同签名约束。
 - Chat/Claude/Gemini 转 Responses 保留输出 token 上限为 `max_output_tokens`；Chat 优先 `max_completion_tokens` 再 `max_tokens`，Claude 使用 `max_tokens`，Gemini 接受 generationConfig 及蛇形字段。普通同协议请求仍原样透传。
 - Responses 转 Claude 回放时，同一 assistant 回合存在空搜索结果则移除其文本的 `web_search_result_location` 引用，保留正文、其他引用和完整结果对应回合的引用；不引入运行时搜索缓存。
 - Antigravity 转 Claude 将安全/过滤终止原因映射为 `refusal`，工具调用仍优先 `tool_use`；流尾部空 `finishReason` 不覆盖先前非空原因，但仍触发待发搜索内容的排空。`MALFORMED_FUNCTION_CALL` 与 Gemini 转 Claude 一致不映射为 `refusal`（Claude Code 会将其报为违规），非流仍由应用层转为错误。

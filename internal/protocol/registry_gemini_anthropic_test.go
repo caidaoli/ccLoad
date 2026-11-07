@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -60,6 +61,127 @@ func TestRegistry_TranslateRequest_GeminiToAnthropic(t *testing.T) {
 	}
 	if req.ToolChoice["type"] != "tool" || req.ToolChoice["name"] != "lookup" {
 		t.Fatalf("unexpected anthropic tool choice: %+v", req.ToolChoice)
+	}
+}
+
+/**
+ * @brief 验证 Gemini 混合工具调用和结果在 Claude 请求中分离角色并保留配对
+ * @param t 测试上下文
+ */
+func TestRegistry_TranslateRequest_GeminiToAnthropic_MixedToolResults(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	raw := []byte(`{"contents":[{"role":"user","parts":[{"text":"read files"}]},{"role":"model","parts":[{"functionCall":{"id":"call-a","name":"read","args":{}}},{"functionCall":{"id":"call-b","name":"read","args":{}}},{"functionResponse":{"id":"call-b","name":"read","response":{"result":"two"}}},{"text":"continue"},{"functionResponse":{"id":"call-a","name":"read","response":{"result":"one"}}}]}]}`)
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			out, err := reg.TranslateRequest(protocol.Gemini, protocol.Anthropic, "claude-sonnet-4", raw, stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := gjson.GetBytes(out, "messages").Array()
+			if len(messages) != 3 || messages[1].Get("role").String() != "assistant" || messages[2].Get("role").String() != "user" {
+				t.Fatalf("expected user/calls/results turns: %s", out)
+			}
+			calls := messages[1].Get("content").Array()
+			results := messages[2].Get("content").Array()
+			if len(calls) != 2 || len(results) != 3 {
+				t.Fatalf("expected two calls, two results and text: %s", out)
+			}
+			for i, id := range []string{"call-a", "call-b"} {
+				if calls[i].Get("type").String() != "tool_use" || calls[i].Get("id").String() != id {
+					t.Fatalf("tool call %d changed: %s", i, out)
+				}
+			}
+			for i, id := range []string{"call-b", "call-a"} {
+				if results[i].Get("type").String() != "tool_result" || results[i].Get("tool_use_id").String() != id {
+					t.Fatalf("tool result %d lost its identity or order: %s", i, out)
+				}
+			}
+			if results[2].Get("text").String() != "continue" {
+				t.Fatalf("user text must follow the tool results: %s", out)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Claude 原生 JSON 与 SSE 经 Registry 输出的 Gemini 签名可按 bytes 字段解码
+ * @param t 测试上下文
+ */
+func TestRegistry_TranslateResponse_AnthropicToGemini_ThoughtSignatureBytes(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name      string
+		signature string
+		want      string
+	}{
+		{name: "foreign", signature: "foreign_claude_sig_123"},
+		{name: "native unpadded", signature: "gemini#EggKBgEMOdbHNA", want: "EggKBgEMOdbHNA=="},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				var payloads [][]byte
+				if stream {
+					var state any
+					for _, event := range []string{
+						`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+						`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reasoning"}}`,
+						fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":%q}}`, tc.signature),
+						`{"type":"content_block_stop","index":0}`,
+						`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`,
+					} {
+						chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Gemini, "claude-sonnet-4", nil, nil, []byte("data: "+event+"\n\n"), &state)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, chunk := range chunks {
+							for line := range strings.SplitSeq(string(chunk), "\n") {
+								if data, ok := strings.CutPrefix(line, "data: "); ok {
+									payloads = append(payloads, []byte(data))
+								}
+							}
+						}
+					}
+				} else {
+					raw := []byte(fmt.Sprintf(`{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"reasoning","signature":%q}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}`, tc.signature))
+					out, err := reg.TranslateResponseNonStream(context.Background(), protocol.Anthropic, protocol.Gemini, "claude-sonnet-4", nil, nil, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					payloads = append(payloads, out)
+				}
+				var text, signature, finish string
+				for _, payload := range payloads {
+					var response struct {
+						Candidates []struct {
+							Content struct {
+								Parts []struct {
+									ThoughtSignature []byte `json:"thoughtSignature"`
+								} `json:"parts"`
+							} `json:"content"`
+						} `json:"candidates"`
+					}
+					if err := json.Unmarshal(payload, &response); err != nil {
+						t.Fatalf("Gemini bytes field cannot be decoded: %v; %s", err, payload)
+					}
+					for _, part := range gjson.GetBytes(payload, "candidates.0.content.parts").Array() {
+						text += part.Get("text").String()
+						if value := part.Get("thoughtSignature"); value.Exists() {
+							signature = value.String()
+						}
+					}
+					if value := gjson.GetBytes(payload, "candidates.0.finishReason"); value.Exists() {
+						finish = value.String()
+					}
+				}
+				if text != "reasoning" || signature != tc.want || finish != "STOP" {
+					t.Fatalf("text=%q signature=%q finish=%q; want reasoning/%q/STOP", text, signature, finish, tc.want)
+				}
+			})
+		}
 	}
 }
 
@@ -269,6 +391,10 @@ func TestRegistry_TranslateResponseStream_AnthropicToGemini_ThinkingBlock(t *tes
 	}
 }
 
+/**
+ * @brief 验证不兼容的隐藏思考签名不泄漏到 Gemini bytes 字段且正文和终态保留
+ * @param t 测试上下文
+ */
 func TestRegistry_TranslateResponseStream_AnthropicToGemini_RedactedThinking(t *testing.T) {
 	t.Parallel()
 	reg := protocol.NewRegistry()
@@ -296,18 +422,29 @@ func TestRegistry_TranslateResponseStream_AnthropicToGemini_RedactedThinking(t *
 		}
 	}
 
-	result := allOutput.String()
-	if !strings.Contains(result, `"thoughtSignature":"opaque"`) {
-		t.Fatalf("expected redacted thinking as Gemini thought signature, got:\n%s", result)
+	var text, finish string
+	for line := range strings.SplitSeq(allOutput.String(), "\n") {
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			for _, part := range gjson.Get(data, "candidates.0.content.parts").Array() {
+				if part.Get("thoughtSignature").Exists() {
+					t.Fatalf("foreign redacted signature leaked: %s", data)
+				}
+				text += part.Get("text").String()
+			}
+			if value := gjson.Get(data, "candidates.0.finishReason"); value.Exists() {
+				finish = value.String()
+			}
+		}
 	}
-	if !strings.Contains(result, `"answer"`) {
-		t.Fatalf("expected text 'answer', got:\n%s", result)
-	}
-	if !strings.Contains(result, `"finishReason":"STOP"`) {
-		t.Fatalf("expected finishReason=STOP, got:\n%s", result)
+	if text != "answer" || finish != "STOP" {
+		t.Fatalf("text=%q finish=%q, want answer/STOP", text, finish)
 	}
 }
 
+/**
+ * @brief 验证不兼容签名增量被省略且思考文本和流终态保留
+ * @param t 测试上下文
+ */
 func TestRegistry_TranslateResponseStream_AnthropicToGemini_SignatureDelta(t *testing.T) {
 	t.Parallel()
 	reg := protocol.NewRegistry()
@@ -335,13 +472,22 @@ func TestRegistry_TranslateResponseStream_AnthropicToGemini_SignatureDelta(t *te
 		}
 	}
 
-	result := allOutput.String()
-	if !strings.Contains(result, `"thoughtSignature":"skip_thought_signature_validator"`) {
-		t.Fatalf("expected incompatible signature to use Gemini bypass sentinel, got:\n%s", result)
+	var text, finish string
+	for line := range strings.SplitSeq(allOutput.String(), "\n") {
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			for _, part := range gjson.Get(data, "candidates.0.content.parts").Array() {
+				if part.Get("thoughtSignature").Exists() {
+					t.Fatalf("incompatible signature leaked: %s", data)
+				}
+				text += part.Get("text").String()
+			}
+			if value := gjson.Get(data, "candidates.0.finishReason"); value.Exists() {
+				finish = value.String()
+			}
+		}
 	}
-	// 必须有 finishReason（流完整关闭）
-	if !strings.Contains(result, `"finishReason":"STOP"`) {
-		t.Fatalf("expected finishReason=STOP, stream hung: got:\n%s", result)
+	if text != "reasoning" || finish != "STOP" {
+		t.Fatalf("text=%q finish=%q, want reasoning/STOP", text, finish)
 	}
 }
 

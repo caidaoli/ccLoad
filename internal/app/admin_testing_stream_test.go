@@ -1919,6 +1919,10 @@ func TestHandleChannelChat_XAIOAuthWithoutAPIKeyUsesProviderWire(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证渠道对话转换为 Codex 请求时保留认证、工具及兼容的默认详细度
+ * @param t 测试上下文
+ */
 func TestHandleChannelChat_CodexOAuthTransformsOpenAIClientProtocol(t *testing.T) {
 	var upstreamBody []byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1985,8 +1989,8 @@ func TestHandleChannelChat_CodexOAuthTransformsOpenAIClientProtocol(t *testing.T
 		t.Fatalf("Codex reasoning = %#v; want request thinking_effort=none to remove template reasoning; body=%s", reasoning, upstreamBody)
 	}
 	textConfig, _ := payload["text"].(map[string]any)
-	if got, _ := textConfig["verbosity"].(string); got != "low" {
-		t.Fatalf("Codex text.verbosity = %q, want low; body=%s", got, upstreamBody)
+	if got, _ := textConfig["verbosity"].(string); got != "medium" {
+		t.Fatalf("Codex text.verbosity = %q, want medium; body=%s", got, upstreamBody)
 	}
 	if got, _ := payload["prompt_cache_key"].(string); got == "" {
 		t.Fatalf("Codex prompt_cache_key is missing; body=%s", upstreamBody)

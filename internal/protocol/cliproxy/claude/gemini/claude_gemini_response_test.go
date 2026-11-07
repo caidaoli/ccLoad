@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -48,115 +49,130 @@ func TestConvertClaudeResponseToGeminiNonStreamPreservesToolUseID(t *testing.T) 
 	}
 }
 
-func TestConvertClaudeResponseToGemini_StreamThinkingSignature(t *testing.T) {
+func TestConvertClaudeResponseToGemini_ThinkingSignature(t *testing.T) {
 	const validGeminiSignature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
-
 	tests := []struct {
-		name          string
-		signature     string
-		wantSignature string
+		name      string
+		signature string
+		want      string
 	}{
-		{
-			name:          "foreign claude signature maps to bypass sentinel",
-			signature:     "foreign_claude_sig_123",
-			wantSignature: "skip_thought_signature_validator",
-		},
-		{
-			name:          "preserves valid gemini signature",
-			signature:     "gemini#" + validGeminiSignature,
-			wantSignature: validGeminiSignature,
-		},
+		{name: "foreign Claude", signature: "foreign_claude_sig_123"},
+		{name: "foreign base64", signature: "Y2xhdWRlLW9wYXF1ZS1zaWduYXR1cmU="},
+		{name: "bypass sentinel", signature: "skip_thought_signature_validator"},
+		{name: "invalid native base64", signature: "gemini#invalid@bytes"},
+		{name: "native Gemini", signature: "gemini#" + validGeminiSignature, want: validGeminiSignature},
+		{name: "unprefixed Gemini", signature: validGeminiSignature, want: validGeminiSignature},
+		{name: "unpadded Gemini", signature: "gemini#EggKBgEMOdbHNA", want: "EggKBgEMOdbHNA=="},
+		{name: "padded Gemini", signature: "gemini#EggKBgEMOdbHNA==", want: "EggKBgEMOdbHNA=="},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			var param any
-
-			chunks := [][]byte{
-				[]byte(`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-7-sonnet-20250219"}}`),
-				[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
-				[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"thinking text"}}`),
-				[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"` + tt.signature + `"}}`),
-				[]byte(`data: {"type":"content_block_stop","index":0}`),
-				[]byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`),
-				[]byte(`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"final answer"}}`),
-				[]byte(`data: {"type":"content_block_stop","index":1}`),
-				[]byte(`data: {"type":"message_stop"}`),
-			}
-
-			var emittedParts []gjson.Result
-			for _, chunk := range chunks {
-				out := ConvertClaudeResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, chunk, &param)
-				for _, c := range out {
-					parts := gjson.GetBytes(c, "candidates.0.content.parts").Array()
-					emittedParts = append(emittedParts, parts...)
+		for _, format := range []string{"stream start", "stream delta", "SSE start", "SSE delta", "message"} {
+			t.Run(tt.name+"/"+format, func(t *testing.T) {
+				startSignature, deltaSignature := "", ""
+				if strings.HasSuffix(format, "start") {
+					startSignature = tt.signature
+				} else {
+					deltaSignature = tt.signature
 				}
-			}
-
-			var foundSignature string
-			for _, p := range emittedParts {
-				if p.Get("thought").Bool() && p.Get("thoughtSignature").Exists() {
-					foundSignature = p.Get("thoughtSignature").String()
+				events := []string{
+					`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-test"}}`,
+					`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"` + startSignature + `"}}`,
+					`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"thinking text"}}`,
+					`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"` + deltaSignature + `"}}`,
+					`data: {"type":"content_block_stop","index":0}`,
+					`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+					`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"final answer"}}`,
+					`data: {"type":"content_block_stop","index":1}`,
+					`data: {"type":"message_stop"}`,
 				}
-			}
-
-			if foundSignature != tt.wantSignature {
-				t.Fatalf("expected thoughtSignature %q, got %q", tt.wantSignature, foundSignature)
-			}
-		})
+				var outputs [][]byte
+				switch {
+				case strings.HasPrefix(format, "stream"):
+					var param any
+					for _, event := range events {
+						outputs = append(outputs, ConvertClaudeResponseToGemini(context.Background(), "gemini-2.5-pro", nil, nil, []byte(event), &param)...)
+					}
+				case strings.HasPrefix(format, "SSE"):
+					outputs = append(outputs, ConvertClaudeResponseToGeminiNonStream(context.Background(), "gemini-2.5-pro", nil, nil, []byte(strings.Join(events, "\n")), nil))
+				case format == "message":
+					raw := `{"type":"message","id":"msg_123","content":[{"type":"thinking","thinking":"thinking text","signature":"` + tt.signature + `"},{"type":"text","text":"final answer"}],"stop_reason":"end_turn"}`
+					outputs = append(outputs, ConvertClaudeResponseToGeminiNonStream(context.Background(), "gemini-2.5-pro", nil, nil, []byte(raw), nil))
+				}
+				var thoughtText, answer strings.Builder
+				var foundSignature string
+				for _, out := range outputs {
+					for _, part := range gjson.GetBytes(out, "candidates.0.content.parts").Array() {
+						if part.Get("thought").Bool() {
+							thoughtText.WriteString(part.Get("text").String())
+						} else {
+							answer.WriteString(part.Get("text").String())
+						}
+						if signature := part.Get("thoughtSignature"); signature.Exists() {
+							if tt.want == "" {
+								t.Fatalf("incompatible signature was emitted: %s", part.Raw)
+							}
+							foundSignature = signature.String()
+							if _, err := base64.StdEncoding.DecodeString(foundSignature); err != nil {
+								t.Fatalf("thoughtSignature %q is not valid base64: %v; response=%s", foundSignature, err, out)
+							}
+						}
+					}
+				}
+				if thoughtText.String() != "thinking text" || answer.String() != "final answer" {
+					t.Fatalf("thought=%q answer=%q; expected both texts to survive signature filtering", thoughtText.String(), answer.String())
+				}
+				if foundSignature != tt.want {
+					t.Fatalf("thoughtSignature = %q, want %q", foundSignature, tt.want)
+				}
+			})
+		}
 	}
 }
 
-func TestConvertClaudeResponseToGeminiNonStream_ThinkingSignature(t *testing.T) {
-	const validGeminiSignature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
-
+func TestConvertClaudeResponseToGemini_RedactedThinkingSignature(t *testing.T) {
 	tests := []struct {
-		name          string
-		signature     string
-		wantSignature string
+		name      string
+		signature string
+		want      string
 	}{
-		{
-			name:          "foreign claude signature maps to bypass sentinel",
-			signature:     "foreign_claude_sig_123",
-			wantSignature: "skip_thought_signature_validator",
-		},
-		{
-			name:          "preserves valid gemini signature",
-			signature:     "gemini#" + validGeminiSignature,
-			wantSignature: validGeminiSignature,
-		},
+		{name: "foreign Claude", signature: "opaque"},
+		{name: "invalid native", signature: "gemini#invalid@bytes"},
+		{name: "native Gemini", signature: "gemini#EggKBgEMOdbHNA", want: "EggKBgEMOdbHNA=="},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			raw := []byte(strings.Join([]string{
-				`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-7-sonnet-20250219"}}`,
-				`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
-				`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"thinking text"}}`,
-				`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"` + tt.signature + `"}}`,
-				`data: {"type":"content_block_stop","index":0}`,
-				`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
-				`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"final answer"}}`,
-				`data: {"type":"content_block_stop","index":1}`,
-				`data: {"type":"message_stop"}`,
-			}, "\n"))
-
-			out := ConvertClaudeResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, raw, nil)
-
-			thoughtPart := gjson.GetBytes(out, "candidates.0.content.parts.0")
-			if !thoughtPart.Get("thought").Bool() || thoughtPart.Get("text").String() != "thinking text" {
-				t.Fatalf("expected thought part with text 'thinking text', got %s", thoughtPart.Raw)
-			}
-			if got := thoughtPart.Get("thoughtSignature").String(); got != tt.wantSignature {
-				t.Fatalf("expected thoughtSignature %q, got %q", tt.wantSignature, got)
-			}
-
-			textPart := gjson.GetBytes(out, "candidates.0.content.parts.1")
-			if textPart.Get("text").String() != "final answer" {
-				t.Fatalf("expected text part 'final answer', got %s", textPart.Raw)
-			}
-		})
+		for _, stream := range []bool{false, true} {
+			t.Run(tt.name+map[bool]string{false: "/message", true: "/stream"}[stream], func(t *testing.T) {
+				var outputs [][]byte
+				if stream {
+					var param any
+					for _, event := range []string{
+						`data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"` + tt.signature + `"}}`,
+						`data: {"type":"content_block_stop","index":0}`,
+						`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"final answer"}}`,
+					} {
+						outputs = append(outputs, ConvertClaudeResponseToGemini(context.Background(), "gemini-2.5-pro", nil, nil, []byte(event), &param)...)
+					}
+				} else {
+					raw := `{"type":"message","content":[{"type":"redacted_thinking","data":"` + tt.signature + `"},{"type":"text","text":"final answer"}]}`
+					outputs = append(outputs, ConvertClaudeResponseToGeminiNonStream(context.Background(), "gemini-2.5-pro", nil, nil, []byte(raw), nil))
+				}
+				var foundSignature, answer string
+				for _, out := range outputs {
+					for _, part := range gjson.GetBytes(out, "candidates.0.content.parts").Array() {
+						if part.Get("thought").Bool() {
+							foundSignature = part.Get("thoughtSignature").String()
+							if foundSignature == "" {
+								t.Fatalf("redacted thinking emitted an empty part: %s", part.Raw)
+							}
+						} else {
+							answer += part.Get("text").String()
+						}
+					}
+				}
+				if foundSignature != tt.want || answer != "final answer" {
+					t.Fatalf("thoughtSignature=%q answer=%q, want %q and final answer", foundSignature, answer, tt.want)
+				}
+			})
+		}
 	}
 }

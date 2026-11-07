@@ -227,7 +227,7 @@ func setupReasoningAutoTestEnv(t testing.TB, judgeURL string, channels []testCha
 	}
 	policy, err := json.Marshal(model.ReasoningAutoConfig{
 		Enabled: true, DecisionModel: "judge",
-		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna", "kimi-k3", "grok-4.7"}, TimeoutMS: 2000,
+		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-chat-thinking", "kimi-k3", "grok-4.7"}, TimeoutMS: 2000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +348,10 @@ func TestReasoningAutoSettingAppliesWithoutRestart(t *testing.T) {
 	assertNoRestart(t, restarted)
 }
 
+/**
+ * @brief 验证动态判断使用完整模型目录等级并按上游协议发送有效思考档位
+ * @param t 测试生命周期
+ */
 func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -355,6 +359,7 @@ func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 		levels              []string
 	}{
 		{"gpt-5.6-sol", "max", "xhigh", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"gpt-6-chat-thinking", "max", "xhigh", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"kimi-k3", "max", "high", []string{"low", "high", "max"}},
 		{"grok-4.7", "xhigh", "xhigh", []string{"low", "medium", "high", "xhigh"}},
 	} {

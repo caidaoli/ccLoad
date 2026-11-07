@@ -26,7 +26,23 @@ version of this file stored in Git `HEAD` before the synchronization edits.
 
 ## Post-snapshot compatibility fixes (2026-11-07)
 
-The synchronized baseline remains official `v8.0.51`. These targeted fixes use
+The targeted `v8.0.58` fixes use the local CLIProxyAPI checkout at
+`e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882`:
+
+- Adapt `55c05f703302f9b4789117055464cdd70e221fa1`: put Gemini tool results
+  in Claude user turns, split mixed calls/results, and place results before
+  other user content while retaining call IDs. Keep ccLoad's missing-role
+  policy instead of inferring alternating conversation roles.
+- Apply the same commit's Gemini signature compatibility and Base64 padding
+  rules to streaming responses, accumulated SSE, and ccLoad's native Claude
+  JSON converter. Omit incompatible thinking/redacted-thinking signatures;
+  preserve visible thinking text and response termination.
+- Adapt `c1842be2111065160ea7768ffb9a3f71b17b890d`: add
+  `gpt-6-chat-thinking` to the four Codex catalogs, including context/output
+  limits, image input and supported thinking levels. This updates capability
+  metadata; it does not grant model access to accounts.
+
+The synchronized baseline remains official `v8.0.51`. Earlier targeted fixes use
 the local CLIProxyAPI checkout at `482efbf5a777771523c1237ed7aaee965451c51d`:
 
 - Adapt `374056f28bfaa6b7582a82cba9f8ca84868f642e`: keep Claude deferred tools

@@ -15,13 +15,17 @@ import (
 	"ccLoad/internal/util"
 )
 
+/**
+ * @brief 验证 Codex 模型清单的能力、令牌可见性及条件缓存契约
+ * @param t 测试生命周期
+ */
 func TestProxyGemini_CodexModelsManifest(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
 	allowed, err := store.CreateConfig(context.Background(), &model.Config{
 		Name: "codex-manifest-allowed", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
-		ModelEntries: []model.ModelEntry{{Model: "gpt-5.5"}, {Model: "gpt-6-sol"}, {Model: "gpt-4o"}, {Model: "claude-opus-5"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.5"}, {Model: "gpt-6-sol"}, {Model: "gpt-6-chat-thinking"}, {Model: "gpt-4o"}, {Model: "claude-opus-5"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +43,7 @@ func TestProxyGemini_CodexModelsManifest(t *testing.T) {
 	otherTokenHash := model.HashToken("other-codex-manifest-token")
 	restriction := mustChannelRestriction(t, model.ChannelRestrictionModeAllow, allowed.ID)
 	server.authService.authTokensMux.Lock()
-	server.authService.authTokenModels[tokenHash] = []string{"gpt-5.5", "gpt-6-sol", "claude-opus-5", "gpt-secret"}
+	server.authService.authTokenModels[tokenHash] = []string{"gpt-5.5", "gpt-6-sol", "gpt-6-chat-thinking", "claude-opus-5", "gpt-secret"}
 	server.authService.authTokenChannels[tokenHash] = restriction
 	server.authService.authTokenModels[otherTokenHash] = []string{"gpt-4o"}
 	server.authService.authTokensMux.Unlock()
@@ -80,23 +84,29 @@ func TestProxyGemini_CodexModelsManifest(t *testing.T) {
 		Data json.RawMessage `json:"data"`
 	}
 	mustUnmarshalJSON(t, response.Body.Bytes(), &payload)
-	if len(payload.Models) != 3 || len(payload.Data) != 0 {
+	if len(payload.Models) != 4 || len(payload.Data) != 0 {
 		t.Fatalf("unexpected manifest: %+v", payload)
 	}
 	for index, expected := range []struct {
 		slug          string
 		contextWindow int64
 		defaultEffort string
+		efforts       []string
 	}{
-		{slug: "claude-opus-5", contextWindow: 1000000, defaultEffort: "none"},
-		{slug: "gpt-5.5", contextWindow: 272000, defaultEffort: "medium"},
-		{slug: "gpt-6-sol", contextWindow: 272000, defaultEffort: "medium"},
+		{slug: "claude-opus-5", contextWindow: 1000000, defaultEffort: "none", efforts: []string{"none"}},
+		{slug: "gpt-5.5", contextWindow: 272000, defaultEffort: "medium", efforts: []string{"low", "medium", "high", "xhigh"}},
+		{slug: "gpt-6-chat-thinking", contextWindow: 272000, defaultEffort: "medium", efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+		{slug: "gpt-6-sol", contextWindow: 272000, defaultEffort: "medium", efforts: []string{"low", "medium", "high", "xhigh", "max"}},
 	} {
 		entry := payload.Models[index]
 		if entry.Slug != expected.slug || entry.Visibility != "list" || !entry.SupportedInAPI || entry.ContextWindow != expected.contextWindow || entry.MaxContextWindow != nil || entry.ModelMessages.InstructionsTemplate == "" || entry.MultiAgentVersion != "v2" || !slices.Contains(entry.InputModalities, "image") {
 			t.Fatalf("incomplete Codex model: %+v", entry)
 		}
-		if entry.DefaultReasoningLevel != expected.defaultEffort || len(entry.SupportedReasoningLevels) == 0 {
+		efforts := make([]string, 0, len(entry.SupportedReasoningLevels))
+		for _, level := range entry.SupportedReasoningLevels {
+			efforts = append(efforts, level.Effort)
+		}
+		if entry.DefaultReasoningLevel != expected.defaultEffort || !slices.Equal(efforts, expected.efforts) {
 			t.Fatalf("incorrect reasoning metadata: %+v", entry)
 		}
 	}
@@ -136,7 +146,7 @@ func TestProxyGemini_CodexModelsManifest(t *testing.T) {
 		} `json:"data"`
 	}
 	mustUnmarshalJSON(t, ordinary.Body.Bytes(), &ordinaryList)
-	if ordinary.Code != http.StatusOK || ordinaryList.Object != "list" || len(ordinaryList.Data) != 3 {
+	if ordinary.Code != http.StatusOK || ordinaryList.Object != "list" || len(ordinaryList.Data) != 4 {
 		t.Fatalf("empty client_version changed ordinary list: status=%d, body=%s", ordinary.Code, ordinary.Body.String())
 	}
 }

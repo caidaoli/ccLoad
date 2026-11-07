@@ -475,6 +475,32 @@ func TestCalculateCost_ZeroTokens(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 GPT-6 Chat Thinking 使用确认的内部参考价且不增加长上下文费用
+ * @param t 测试上下文
+ */
+func TestCalculateCost_GPT6ChatThinkingReferencePricing(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		input, output, cache int
+		want                 float64
+	}{
+		{name: "input", input: 1000, want: 0.004},
+		{name: "output", output: 1000, want: 0.020},
+		{name: "cached input", cache: 1000, want: 0.0004},
+		{name: "272K boundary", input: 272000, output: 1000, want: 1.108},
+		{name: "above 272K", input: 272001, output: 1000, want: 1.108004},
+		{name: "cache crosses 272K", input: 100000, output: 1000, cache: 200000, want: 0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CalculateCostDetailed("gpt-6-chat-thinking", tc.input, tc.output, tc.cache, 0, 0)
+			if !floatEquals(got, tc.want, 0.000000001) {
+				t.Fatalf("cost = %.9f, want %.9f", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCalculateCost_OpenAIModels(t *testing.T) {
 	// 测试OpenAI模型费用计算
 	// [INFO] 重构后：inputTokens应为归一化后的可计费token（已由解析层扣除缓存）
