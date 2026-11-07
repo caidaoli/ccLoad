@@ -579,8 +579,8 @@ func TestAccioCommittedStreamDoesNotReplay(t *testing.T) {
 }
 
 func TestAccioRefreshConcurrentReauthorizationWins(t *testing.T) {
-	for _, upstreamFailure := range []bool{false, true} {
-		t.Run(fmt.Sprint(upstreamFailure), func(t *testing.T) {
+	for _, tc := range []struct{ upstreamFailure, cookieOnly bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		t.Run(fmt.Sprintf("failure=%v/cookieOnly=%v", tc.upstreamFailure, tc.cookieOnly), func(t *testing.T) {
 			s := newInMemoryServer(t)
 			cfg, err := s.store.CreateConfig(context.Background(), newAccioChannel("refresh", accioTestCredential(t, "global", "old-access")))
 			if err != nil {
@@ -609,10 +609,10 @@ func TestAccioRefreshConcurrentReauthorizationWins(t *testing.T) {
 					case <-r.Context().Done():
 						return nil, r.Context().Err()
 					}
-					if upstreamFailure {
+					if tc.upstreamFailure {
 						return accioTestResponse(r, 401, `{}`), nil
 					}
-					return accioTestResponse(r, 200, `{"data":{"accessToken":"stale-refresh-access","refreshToken":"stale-refresh-token"}}`), nil
+					return accioTestResponse(r, 200, `{"data":{"accessToken":"stale-refresh-access","refreshToken":"stale-refresh-token","sgcookie":"stale-session-cookie"}}`), nil
 				default:
 					return accioTestResponse(r, 404, `{}`), nil
 				}
@@ -629,7 +629,11 @@ func TestAccioRefreshConcurrentReauthorizationWins(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("refresh never started")
 			}
-			c, w := newTestContext(t, newJSONRequest(t, "POST", "/admin/accio/credentials/import", map[string]any{"region": "global", "credential": map[string]any{"accessToken": "winner-access", "refreshToken": "winner-refresh"}}))
+			access, refresh := "winner-access", "winner-refresh"
+			if tc.cookieOnly {
+				access, refresh = "old-access", "refresh-secret"
+			}
+			c, w := newTestContext(t, newJSONRequest(t, "POST", "/admin/accio/credentials/import", map[string]any{"region": "global", "credential": map[string]any{"accessToken": access, "refreshToken": refresh, "sgcookie": "winner-session-cookie"}}))
 			s.HandleImportAccioCredential(c)
 			if w.Code != 200 {
 				t.Fatalf("reauthorization failed: %d %s", w.Code, w.Body.String())
@@ -637,7 +641,11 @@ func TestAccioRefreshConcurrentReauthorizationWins(t *testing.T) {
 			close(release)
 			select {
 			case response := <-done:
-				if response.Code != 200 {
+				if tc.cookieOnly && tc.upstreamFailure {
+					if response.Code == 200 {
+						t.Fatal("cookie-only update hid a failed token refresh")
+					}
+				} else if response.Code != 200 {
 					t.Fatalf("refresh did not use new authorization: %d %s", response.Code, response.Body.String())
 				}
 			case <-time.After(5 * time.Second):
@@ -651,7 +659,10 @@ func TestAccioRefreshConcurrentReauthorizationWins(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if credential.AccessToken != "winner-access" || credential.RefreshToken != "winner-refresh" || refreshes.Load() != 1 {
+			if tc.cookieOnly && !tc.upstreamFailure {
+				access, refresh = "stale-refresh-access", "stale-refresh-token"
+			}
+			if credential.AccessToken != access || credential.RefreshToken != refresh || credential.SGCookie != "winner-session-cookie" || refreshes.Load() != 1 {
 				t.Fatalf("refresh overwrote reauthorization: %#v requests=%d", credential, refreshes.Load())
 			}
 		})
@@ -776,6 +787,7 @@ func TestAccioImportAndUsage(t *testing.T) {
 		imported := map[string]any{"accessToken": fmt.Sprintf("secret-access-%d", index), "refreshToken": "secret-refresh"}
 		if index == 0 {
 			imported["utdid"] = "imported-device"
+			imported["sgCookie"] = "imported-session-cookie"
 		}
 		c, w := newTestContext(t, newJSONRequest(t, "POST", "/admin/accio/credentials/import", map[string]any{"region": region, "credential": imported}))
 		s.HandleImportAccioCredential(c)
@@ -819,12 +831,15 @@ func TestAccioImportAndUsage(t *testing.T) {
 	if credential.DeviceID != "imported-device" {
 		t.Fatal("reauthorization without a device ID lost the imported device identity")
 	}
+	if credential.SGCookie != "imported-session-cookie" {
+		t.Fatal("reauthorization without sgcookie lost the imported session cookie")
+	}
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
 	s.HandleChannels(c)
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	for _, secret := range []string{"secret-access-0", "secret-access-1", "secret-access-2", "secret-refresh"} {
+	for _, secret := range []string{"secret-access-0", "secret-access-1", "secret-access-2", "secret-refresh", "imported-session-cookie"} {
 		if strings.Contains(w.Body.String(), secret) {
 			t.Fatal("channel list leaked credential")
 		}
@@ -844,7 +859,8 @@ func TestAccioProxyAndAdminWire(t *testing.T) {
 			env := setupProxyTestEnv(t, []testChannel{{name: "accio", authType: model.AuthTypeAccioOAuth, oauthCredential: credential, modelEntries: []model.ModelEntry{{Model: "accio-test"}}, upstreamProtocol: "openai"}}, map[int]string{0: "https://phoenix-gw.alibaba.com/v1/chat/completions"})
 			var chats atomic.Int32
 			accioTestClient(env.server, func(r *http.Request) (*http.Response, error) {
-				for key, want := range map[string]string{"User-Agent": "undici", "x-platform": "desktop", "x-app-version": "0.32.6", "x-package-region": "GLOBAL", "Accept-Language": "en"} {
+				userAgent := "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+				for key, want := range map[string]string{"User-Agent": userAgent, "x-platform": "desktop", "x-app-version": "0.34.4", "x-package-region": "GLOBAL", "Accept-Language": "en"} {
 					if got := r.Header.Get(key); got != want {
 						t.Errorf("%s: header %s = %q, want %q", r.URL.Path, key, got, want)
 					}
@@ -1176,11 +1192,14 @@ func TestAccioProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
 			if r.Header.Get("Authorization") != "" {
 				t.Error("refresh leaked old bearer")
 			}
-			return accioTestResponse(r, 200, `{"success":true,"data":{"accessToken":"dt-recovered-secret","refreshToken":"refresh-recovered-secret","userId":"same-user"}}`), nil
+			return accioTestResponse(r, 200, `{"success":true,"data":{"accessToken":"dt-recovered-secret","refreshToken":"refresh-recovered-secret","userId":"same-user","sgcookie":"rotated-session-cookie"}}`), nil
 		default:
 			attempt := chats.Add(1)
 			body := `data: {"error_code":"401","error_message":"token expired"}` + "\n\n"
 			if attempt > 1 {
+				if r.Header.Get("sgcookie") != "rotated-session-cookie" {
+					t.Error("retry omitted the rotated session cookie")
+				}
 				body = strings.ReplaceAll(accioTestCompletion, "hello", "recovered")
 			}
 			response := accioTestResponse(r, 200, body)
@@ -1205,6 +1224,14 @@ func TestAccioProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
 	mustUnmarshalJSON(t, w.Body.Bytes(), &result)
 	if len(result.Choices) != 1 || result.Choices[0].Message.Content != "recovered" || chats.Load() != 2 || refreshes.Load() != 1 {
 		t.Fatalf("native auth refresh response=%s chats=%d refreshes=%d", w.Body.String(), chats.Load(), refreshes.Load())
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("channels=%d err=%v", len(configs), err)
+	}
+	stored, err := accioauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || stored.SGCookie != "rotated-session-cookie" {
+		t.Fatal("refresh did not persist the rotated session cookie")
 	}
 	for _, secret := range []string{"dt-rejected-secret", "refresh-secret", "dt-recovered-secret", "refresh-recovered-secret"} {
 		if strings.Contains(w.Body.String(), secret) {

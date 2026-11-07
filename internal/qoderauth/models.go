@@ -72,6 +72,10 @@ func ClassifyError(status int, body []byte) *APIError {
 					if child == false {
 						queued = true
 					}
+				case "isqueued":
+					if child == true {
+						queued = true
+					}
 				case "message", "msg":
 					if text, ok := child.(string); ok && text != "" {
 						message = text

@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net/http"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,16 @@ func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []by
 		}
 		tools = value
 	}
+	contextLength, err := cosyContextLength(config, messages, tools)
+	if err != nil {
+		return nil, err
+	}
+	extra := map[string]any{"context": []any{}, "modelConfig": map[string]any{"key": model.Key, "is_reasoning": model.SupportsReasoning}, "originalContent": lastUser}
+	if contextLength > 0 {
+		params["context_length"] = contextLength
+		slim["max_input_tokens"] = contextLength
+		extra["ideModelConfigOverride"] = map[string]int{"max_input_tokens": contextLength}
+	}
 	recordID, requestID := uuid.NewString(), uuid.NewString()
 	sessionID := uuid.NewString()
 	for _, key := range []string{"session_id", "user"} {
@@ -127,7 +138,7 @@ func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []by
 		"messages": messages, "tools": tools, "parameters": params, "model_config": slim,
 		"chat_context": map[string]any{
 			"chatPrompt": "", "imageUrls": nil, "features": []any{}, "text": lastUser,
-			"extra": map[string]any{"context": []any{}, "modelConfig": map[string]any{"key": model.Key, "is_reasoning": model.SupportsReasoning}, "originalContent": lastUser},
+			"extra": extra,
 		},
 		"business": map[string]any{"product": "cli", "version": "1.0.0", "type": "agent", "stage": "start", "id": uuid.NewString(), "name": string([]rune(lastUser)[:min(len([]rune(lastUser)), 30)]), "begin_at": time.Now().UnixMilli()},
 	}
@@ -179,23 +190,21 @@ func cosyThinking(input map[string]json.RawMessage, model Model, params map[stri
 	}
 	params["enable_thinking"] = true
 	if effort, ok := raw.(string); ok {
-		switch effort {
-		case "minimal", "min":
-			effort = "low"
-		case "high", "max":
-			effort = "xhigh"
-		case "enabled":
-			return
-		}
 		allowed := model.Efforts
 		if len(allowed) == 0 {
 			allowed = []string{"low", "medium", "xhigh"}
 		}
-		valid := false
-		for _, supported := range allowed {
-			valid = valid || effort == supported
+		if !slices.Contains(allowed, effort) {
+			switch effort {
+			case "minimal", "min":
+				effort = "low"
+			case "high", "max":
+				effort = "xhigh"
+			case "enabled":
+				return
+			}
 		}
-		if !valid {
+		if !slices.Contains(allowed, effort) {
 			effort = allowed[0]
 			for _, supported := range allowed {
 				if supported == "medium" {
@@ -205,6 +214,90 @@ func cosyThinking(input map[string]json.RawMessage, model Model, params map[stri
 		}
 		params["reasoning_effort"] = effort
 	}
+}
+
+func cosyContextLength(config map[string]json.RawMessage, messages []map[string]json.RawMessage, tools json.RawMessage) (int, error) {
+	raw := bytes.TrimSpace(config["context_config"])
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return 0, nil
+	}
+	type tier struct {
+		Tokens       int  `json:"token_count"`
+		TokensCamel  int  `json:"tokenCount"`
+		Default      bool `json:"is_default"`
+		DefaultCamel bool `json:"isDefault"`
+	}
+	var tiers []tier
+	if raw[0] == '{' {
+		var entries map[string]tier
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return 0, fmt.Errorf("qoder context config: %w", err)
+		}
+		for _, entry := range entries {
+			tiers = append(tiers, entry)
+		}
+	} else if err := json.Unmarshal(raw, &tiers); err != nil {
+		return 0, fmt.Errorf("qoder context config: %w", err)
+	}
+	minimum, maximum, defaultTokens := 0, 0, 0
+	for i := range tiers {
+		entry := &tiers[i]
+		if entry.Tokens == 0 {
+			entry.Tokens = entry.TokensCamel
+		}
+		if entry.Tokens <= 0 {
+			continue
+		}
+		if minimum == 0 || entry.Tokens < minimum {
+			minimum = entry.Tokens
+		}
+		maximum = max(maximum, entry.Tokens)
+		if entry.Default || entry.DefaultCamel {
+			defaultTokens = entry.Tokens
+		}
+	}
+	if maximum == 0 {
+		return 0, nil
+	}
+	var current int
+	if raw := config["max_input_tokens"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return 0, fmt.Errorf("qoder current context length: %w", err)
+		}
+	}
+	if current <= 0 {
+		current = defaultTokens
+		if current == 0 {
+			current = minimum
+		}
+	}
+	payload, err := json.Marshal(map[string]any{"messages": messages, "tools": tools})
+	if err != nil {
+		return 0, fmt.Errorf("qoder context input: %w", err)
+	}
+	var characters, cjk int
+	for _, ch := range string(payload) {
+		characters++
+		if ch >= 0x1100 && ch <= 0x11ff || ch >= 0x2e80 && ch <= 0x9fff ||
+			ch >= 0xac00 && ch <= 0xd7af || ch >= 0xf900 && ch <= 0xfaff || ch >= 0xff00 && ch <= 0xffef {
+			cjk++
+		}
+	}
+	// Keep room for tokenizer differences and serialized tool declarations.
+	needed := ((cjk+(characters-cjk+3)/4)*115 + 99) / 100
+	if needed <= current {
+		return 0, nil
+	}
+	selected := maximum
+	for _, entry := range tiers {
+		if entry.Tokens > current && entry.Tokens >= needed {
+			selected = min(selected, entry.Tokens)
+		}
+	}
+	if selected <= current {
+		return 0, nil
+	}
+	return selected, nil
 }
 
 func cosyContentText(raw json.RawMessage) string {
@@ -367,6 +460,7 @@ func cosySign(req *http.Request, c *Credential, body []byte) error {
 		arch = "x86_64"
 	}
 	for name, value := range map[string]string{
+		"User-Agent":    "Qoder",
 		"Authorization": "Bearer COSY." + payload + "." + hex.EncodeToString(digest[:]),
 		"Cosy-Key":      wrappedKey, "Cosy-User": c.UserID, "Cosy-Date": date, "Cosy-Version": cosyVersion,
 		"Cosy-Machineid": c.MachineID, "Cosy-Machinetoken": c.MachineID, "Cosy-Machinetype": "5",

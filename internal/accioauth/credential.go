@@ -23,6 +23,7 @@ type Credential struct {
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	DeviceID     string `json:"device_id,omitempty"`
+	SGCookie     string `json:"sgcookie,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	Email        string `json:"email,omitempty"`
 	Name         string `json:"name,omitempty"`
@@ -49,6 +50,11 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	}
 	if c.DeviceID == "" {
 		c.DeviceID = authText(fields, "utdid", "deviceId")
+	}
+	var err error
+	c.SGCookie, err = authSGCookie(fields)
+	if err != nil {
+		return nil, err
 	}
 	if c.UserID == "" {
 		c.UserID = authText(fields, "userId")
@@ -89,6 +95,9 @@ func (c *Credential) Normalize() error {
 			return errors.New("invalid Accio credential token")
 		}
 	}
+	if len(c.SGCookie) > 4096 || strings.ContainsFunc(c.SGCookie, func(r rune) bool { return r < ' ' || r > '~' }) {
+		return errors.New("invalid Accio sgcookie")
+	}
 	if c.AccessToken == "" {
 		return errors.New("accio access_token is required")
 	}
@@ -123,6 +132,23 @@ func (c *Credential) NeedsRefresh(now time.Time) bool {
 
 // GatewayURL is shared by both Accio editions.
 func (c *Credential) GatewayURL() string { return "https://phoenix-gw.alibaba.com" }
+
+func authSGCookie(data map[string]json.RawMessage) (string, error) {
+	for _, key := range []string{"sgcookie", "sgCookie"} {
+		raw := data[key]
+		if len(raw) == 0 {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", errors.New("invalid Accio sgcookie")
+		}
+		if value != "" {
+			return value, nil
+		}
+	}
+	return "", nil
+}
 
 func authExpiry(raw json.RawMessage) (int64, error) {
 	if len(raw) == 0 || string(raw) == "null" {

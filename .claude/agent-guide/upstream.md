@@ -6,7 +6,7 @@
 
 ## Accio
 
-- 所有出站接口共用 Accio 请求头：`User-Agent: undici`、JSON Content-Type/Accept、`Accept-Language/x-language: en`、`x-platform: desktop`、`x-os`（macOS 为 `macos`）、`x-app-version: 0.32.6` 与地区头；推理另设 SSE Accept、`version: 0.32.6` 和 `appKey: 35298846`。2026-10-20 真实国际版导入验证通过；相同凭据使用 Go 默认 UA 返回 HTTP 200 / 业务码 423。控制面错误展示真实 HTTP 状态与数字业务码，重试分类仍用归一状态，不回显原始响应消息。
+- 所有出站接口统一使用不含 ccLoad 标识的标准 Chrome UA，共用 JSON Content-Type/Accept、`Accept-Language/x-language: en`、`x-platform: desktop`、`x-os`（macOS 为 `macos`）、`x-app-version: 0.34.4` 与地区头；推理另设 SSE Accept、`version: 0.34.4` 和 `appKey: OneChat`。2026-11-07 国际版同账号同出口对照：推理 `undici` 返回 `Bxpunish: 1` HTML，仅换 UA 可恢复 SSE，只改版本或 appKey 仍被拦截；不再保留 `undici` 或 Go 默认 UA。控制面错误展示真实 HTTP 状态与数字业务码，重试分类仍用归一状态，不回显原始响应消息。
 - Accio 先将 `system` / `developer` 文本中的 `Claude`、`Codex` 大小写敏感替换为 `Accio`，再复用 `antigravity_sensitive_words`。后者仅处理 `system` / `developer` 消息字符串和 text 内容块；在渠道请求体规则之后、ADK 编码之前插入零宽字符，正常代理与管理测试共用入口。空数组只禁用零宽处理，名称替换仍生效；敏感词配置修改后重启生效。
 - `accio_oauth` 对 Registry 暴露逻辑 OpenAI Chat。支持显式 `region=cn|global` 的 PKCE 网页授权及 canonical/官方 camelCase JSON 凭据导入，无签到；按地区与用户标识账号。重新导入保留模型配置，目录批量导入按身份去重。
 - 网页授权复用 Codex OAuth 管理器的启动、回调、状态、取消及生命周期：国内登录 `www.accio-ai.com/login`，国际登录 `www.accio.com/login`，客户端 `accio-work`；随机本机端口接收 `/auth/callback-accio`，远程部署可提交完整回调 URL。`return_url` 与换码 `redirectUri` 逐字相同；state 一次性消费，PKCE verifier 留在服务端。
@@ -14,6 +14,7 @@
 - 目录 `POST /api/llm/config` 获取可见对话模型，公开 ID 与推理 body 的 `model` 统一使用目录 `modelName`，列表按名称去重、不生成编码重定向，缺少名称的条目跳过。不解析或匹配 `modelCode`，旧编码重定向不兼容；不使用静态别名或兜底模型。目录按渠道/地区/用户缓存一小时并绑定访问令牌指纹，避免换凭据仍用旧能力。
 - `accio_wire.go` 在统一出站边界构造 ADK `/api/adk/llm/generateContent?sg_k=md5(request_id)` 请求；认证 token 仅放实际请求体，逻辑请求留给调试/重试/转换。消息、工具及思考参数转原生字段，思考落点由模型目录 `protocol` 决定。
 - 推理携带 `utdid`：官方 JSON 的 `utdid/deviceId` 保存为 `device_id`；缺少时按地区+已验证用户标识派生稳定 desktop 标识，刷新令牌不改变设备身份，重新授权缺项保留已有设备值。2026-10-20 实测缺该头会返回 HTTP 200 HTML + `Bxpunish: 1`；补头后进入真实 SSE，但测试环境仍收到业务码 555 / sentinel rate limit（映射429）。管理测试诊断记录实际原生请求，body token 与设备头脱敏；网关挑战先分类为502并剔除挑战Cookie/跳转地址，不误报EOF或刷新令牌。
+- 官方 `sgcookie/sgCookie` 经导入、OAuth 换码和刷新保存为可选 `sgcookie`，仅随推理发送同名头并在调试输出脱敏；缺项保留已有值，拒绝超过4096字节或非可见 ASCII 的值。刷新期间仅更新 cookie 时保留最新 cookie 并发布已轮换令牌，不能把 cookie 更新误判为新授权而丢弃已消费刷新令牌的结果。
 - 正常推理响应为 SSE，转换成 Chat SSE 后复用现有协议转换及非流式聚合器；空 `content` 对象允许缺少 `parts` 或 `parts: null`，仍处理同帧终态与 usage，除 `null` 外的非数组 `parts` 拒绝。保留工具参数与 usage，缺失终态的 EOF 返回错误，已有输出后不重放。原生业务错误映射 401/429/502，SSE 错误携带顶层 status 供通用分类器识别。
 - 额度以百分比窗口展示，订阅字段保留原单位；只保存安全 `oauth_usage` 快照，不进入 USD 窗口成本账本。控制面错误不回显令牌/query URL，禁止跟随重定向。
 - 参考提交及独立实现边界见 `internal/accioauth/UPSTREAM.md`；使用说明见 `docs/guide/accio.zh-CN.md`。
@@ -21,6 +22,7 @@
 ## Qoder
 
 - `qoder_oauth` 渠道使用显式 `region=cn|global`，支持 PKCE 网页授权、PAT 换取令牌和 canonical JSON 导入。凭据含 `user_id`、`machine_id`，地区与用户共同标识账号；重新授权保留模型配置与签到记录。令牌临期刷新、401 后单次刷新及 CAS 使用现有 OAuth 生命周期。
+- PKCE `nonce` 使用带横线的标准 UUID，轮询接受 `token/device_token`。刷新仅按刷新令牌 `jrt-` 前缀选择作业端点，其余走设备端点，不用旧 access token 的类型推断。思考档位优先保留目录声明的值；长上下文按目录 `context_config` 对象/数组档位升档，估算消息和工具定义时按 CJK/全角字符计数并留15%余量，同时写入 `parameters.context_length`、`chat_context.extra.ideModelConfigOverride.max_input_tokens` 与 `model_config.max_input_tokens` 后再编码签名。`isQueued=true` 与其他排队信号统一映射503。
 - Qoder 对 Registry 暴露逻辑 OpenAI Chat；`internal/qoderauth` 在实际发送前构造专属信封、编码请求体并生成 COSY 签名，签名后不再改变请求体。`qoder_wire.go` 接线复用统一路由/冷却。国内版推理在 gateway.qoder.com.cn；国际版作业令牌 jt- 走 api2.qoder.sh，其余走 api3.qoder.sh。国际模型目录始终在 api3，不能跟随作业令牌改到 api2。目录按渠道/地区/用户缓存一小时，不使用猜测的静态模型表；公开模型名取 `display_name` 去空白后小写，推理时按名称不区分大小写或原生 key 精确匹配目录。
 - Qoder 复用系统设置 `antigravity_sensitive_words`，仅对 `system` / `developer` 消息字符串或 text 内容块插入零宽字符，不改写用户/助手文本、工具声明、工具参数或工具结果。空数组禁用，修改后重启生效；正常代理与管理测试均在最终请求编码和 COSY 签名前处理。
 - 上游始终返回 SSE；信封内的业务状态先归一为 OpenAI 错误，认证/额度/排队分别映射 401/429/503；HTTP 非2xx也按相同业务码分类。文本、工具、思考和 usage 归一后进入已有转换器。非流式通过共享 Chat SSE 聚合器处理。缺少终态的 EOF 不得标记成功；输出后不得自动重放。

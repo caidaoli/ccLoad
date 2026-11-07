@@ -75,8 +75,110 @@ func TestBuildChatRequestNativeWire(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestReasoningEfforts(t *testing.T) {
+	for _, tc := range []struct {
+		name, effort, want string
+		allowed            []string
+	}{
+		{"declared high", "high", "high", []string{"low", "medium", "high"}},
+		{"high alias", "high", "xhigh", []string{"low", "medium", "xhigh"}},
+		{"max alias", "max", "xhigh", []string{"low", "medium", "xhigh"}},
+		{"unknown effort", "unsupported", "medium", []string{"low", "medium", "xhigh"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"messages": []map[string]string{{"role": "user", "content": "hello"}}, "reasoning_effort": tc.effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := (&Service{}).BuildChatRequest(context.Background(), &Credential{Region: "global", UserID: "u", AccessToken: "token", MachineID: "m"}, body, Model{Key: "key", SupportsReasoning: true, Efforts: tc.allowed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := request.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Parameters map[string]any `json:"parameters"`
+			}
+			if err := json.Unmarshal(decodeNativeRequest(t, encoded), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Parameters["reasoning_effort"] != tc.want {
+				t.Fatalf("reasoning effort = %v, want %s", envelope.Parameters["reasoning_effort"], tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildChatRequestContextTiers(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, text string
+		tools              json.RawMessage
+		want               int
+	}{
+		{"default fits", `{"max_input_tokens":100,"context_config":{"small":{"token_count":100},"large":{"token_count":400}}}`, "hello", nil, 0},
+		{"map tiers", `{"max_input_tokens":100,"context_config":{"small":{"token_count":100},"medium":{"token_count":200},"large":{"token_count":400}}}`, strings.Repeat("a", 400), nil, 200},
+		{"array tiers and CJK", `{"context_config":[{"tokenCount":400},{"token_count":100,"isDefault":true},{"token_count":200}]}`, strings.Repeat("中", 180), nil, 400},
+		{"fullwidth text", `{"max_input_tokens":100,"context_config":[{"token_count":100},{"token_count":200},{"token_count":400}]}`, strings.Repeat("Ａ", 180), nil, 400},
+		{"CJK punctuation", `{"max_input_tokens":100,"context_config":[{"token_count":100},{"token_count":200},{"token_count":400}]}`, strings.Repeat("、。", 90), nil, 400},
+		{"current tier retained", `{"max_input_tokens":400,"context_config":[{"token_count":100,"is_default":true},{"token_count":400}]}`, strings.Repeat("中", 180), nil, 0},
+		{"largest tier", `{"max_input_tokens":100,"context_config":[{"token_count":100},{"token_count":400}]}`, strings.Repeat("中", 1000), nil, 400},
+		{"tool definitions counted", `{"max_input_tokens":100,"context_config":[{"token_count":100},{"token_count":400}]}`, "hello", json.RawMessage(`[{"type":"function","function":{"name":"lookup","description":"` + strings.Repeat("a", 800) + `","parameters":{"type":"object"}}}]`), 400},
+		{"no declared tiers", `{"max_input_tokens":100}`, strings.Repeat("中", 1000), nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := map[string]any{"messages": []map[string]string{{"role": "user", "content": tc.text}}}
+			if tc.tools != nil {
+				input["tools"] = tc.tools
+			}
+			body, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := (&Service{}).BuildChatRequest(context.Background(), &Credential{Region: "cn", UserID: "u", AccessToken: "token", MachineID: "m"}, body, Model{Key: "key", Config: json.RawMessage(tc.config)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := request.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			assertCOSYRequest(t, request, encoded)
+			var envelope struct {
+				Parameters  map[string]any `json:"parameters"`
+				ModelConfig map[string]any `json:"model_config"`
+				Context     struct {
+					Extra map[string]any `json:"extra"`
+				} `json:"chat_context"`
+			}
+			if err := json.Unmarshal(decodeNativeRequest(t, encoded), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == 0 {
+				if envelope.Parameters["context_length"] != nil || envelope.ModelConfig["max_input_tokens"] != nil || envelope.Context.Extra["ideModelConfigOverride"] != nil {
+					t.Fatalf("request changed context without an upgrade: %s", decodeNativeRequest(t, encoded))
+				}
+				return
+			}
+			if envelope.Parameters["context_length"] != float64(tc.want) || envelope.ModelConfig["max_input_tokens"] != float64(tc.want) || envelope.Context.Extra["ideModelConfigOverride"].(map[string]any)["max_input_tokens"] != float64(tc.want) {
+				t.Fatalf("context tier missing from native fields: %s", decodeNativeRequest(t, encoded))
+			}
+		})
+	}
+}
+
 func assertCOSYRequest(t *testing.T, req *http.Request, body []byte) {
 	t.Helper()
+	if got := req.Header.Get("User-Agent"); got != "Qoder" {
+		t.Errorf("User-Agent = %q, want Qoder", got)
+	}
 	parts := strings.Split(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer COSY."), ".")
 	if len(parts) != 2 {
 		t.Fatalf("not COSY authorization: %q", req.Header.Get("Authorization"))
@@ -244,6 +346,7 @@ func TestNormalizeStreamTerminalAndErrors(t *testing.T) {
 		{"auth", `data: {"statusCodeValue":403,"body":"{\"code\":105,\"message\":\"expired\"}"}` + "\n\n", 401, false},
 		{"quota", `data: {"statusCodeValue":403,"body":{"code":112,"message":"credits exhausted"}}` + "\n\n", 429, false},
 		{"queue", `data: {"statusCodeValue":403,"body":{"code":10605,"message":"queued","credit":0}}` + "\n\n", 503, false},
+		{"explicit queue signal", `data: {"statusCodeValue":403,"body":{"isQueued":true,"message":"waiting","credit":0}}` + "\n\n", 503, false},
 		{"nested business error", nativeEvent(map[string]any{"code": 105, "message": "expired"}), 401, false},
 		{"malformed after finish", nativeDelta("ok", "stop") + "data: broken\n\n", 502, false},
 	}
@@ -294,6 +397,15 @@ func TestBuildChatRequestRejectsInvalidInput(t *testing.T) {
 	for _, body := range []string{`not-json`, `null`, `{}`, `{"messages":{}}`, `{"messages":[]}`, `{"messages":[{"role":"invalid","content":"x"}]}`, `{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"YQ==","format":"wav"}}]}]}`, `{"messages":[{"role":"assistant","tool_calls":[{"type":"custom"}]}]}`, `{"messages":[{"role":"user","content":"x"}],"tools":[{"type":"custom"}]}`} {
 		if _, err := s.BuildChatRequest(context.Background(), &Credential{Region: "global", UserID: "u", AccessToken: "token", MachineID: "m"}, []byte(body), Model{Key: "key"}); err == nil {
 			t.Errorf("accepted %s", body)
+		}
+	}
+	for _, config := range []string{
+		`{"context_config":"invalid"}`,
+		`{"context_config":{"small":{"token_count":"100"}}}`,
+		`{"context_config":[{"token_count":100}],"max_input_tokens":"100"}`,
+	} {
+		if _, err := s.BuildChatRequest(context.Background(), &Credential{Region: "global", UserID: "u", AccessToken: "token", MachineID: "m"}, []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Model{Key: "key", Config: json.RawMessage(config)}); err == nil {
+			t.Errorf("accepted invalid model context %s", config)
 		}
 	}
 }

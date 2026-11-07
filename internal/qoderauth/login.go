@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // LoginTTL bounds the lifetime of a pending device login.
@@ -35,10 +37,7 @@ func StartLogin(region string) (*LoginSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	nonce, err := authRandom(16)
-	if err != nil {
-		return nil, err
-	}
+	nonce := uuid.NewString()
 	machineID, err := authRandom(32)
 	if err != nil {
 		return nil, err
@@ -80,7 +79,7 @@ func (s *Service) PollLogin(ctx context.Context, session *LoginSession) (*Creden
 	if err != nil {
 		return nil, err
 	}
-	c.AccessToken = authText(data, "token")
+	c.AccessToken = authText(data, "token", "device_token")
 	if c.AccessToken == "" {
 		return nil, errors.New("qoder login response is missing token")
 	}

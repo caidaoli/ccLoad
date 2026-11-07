@@ -107,7 +107,10 @@ func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []by
 	req.Header = requestHeaders(c)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("version", accioAppVersion)
-	req.Header.Set("appKey", "35298846")
+	req.Header.Set("appKey", "OneChat")
+	if c.SGCookie != "" {
+		req.Header.Set("sgcookie", c.SGCookie)
+	}
 	deviceID := c.DeviceID
 	if deviceID == "" && c.UserID != "" {
 		// OAuth and previously imported credentials may lack a desktop ID.

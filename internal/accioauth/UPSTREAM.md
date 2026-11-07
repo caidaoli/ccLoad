@@ -13,20 +13,28 @@ Files read in full under
 `balance.rs`, `oauth.rs`, `protocol.rs`, `stream.rs`, and `chat.rs`.
 The same commit's `server/core/egress.rs` supplies its default `undici` User-Agent.
 
+The 2026-11-07 comparison follows [aimod-cc/Agent2API](https://github.com/aimod-cc/Agent2API)
+at `e8bed7397aaf9d8962489074557c2f1f1a8d4f97`, whose migration document points to
+[ProvidersPlugin/Agent2Providers](https://github.com/ProvidersPlugin/Agent2Providers)
+at `3055f416841c1393ec04294a702603fd41e840aa`. Its Accio protocol files live in
+`crates/providers/src/providers/accio/`. That plugin is AGPL-3.0; only protocol
+facts are used, with no implementation copied or translated.
+
 Protocol facts used:
 
 - Both editions use `https://phoenix-gw.alibaba.com`; `x-package-region`
   distinguishes `CN` and `GLOBAL`.
-- All outbound operations share Accio headers: `User-Agent: undici`, JSON
+- All outbound operations share Accio headers: JSON
   Content-Type/Accept, `Accept-Language: en`, `x-language: en`,
   `x-platform: desktop`, `x-os` (host OS; macOS uses `macos`),
-  `x-app-version: 0.32.6`, and the edition's `x-package-region`.
-  Inference overrides Accept to SSE and adds `version: 0.32.6` and
-  `appKey: 35298846`. No Bearer header is added.
+  `x-app-version: 0.34.4`, and the edition's `x-package-region`.
+  All requests use a standard Chrome/146 browser UA without ccLoad branding.
+  Inference overrides Accept to SSE and adds
+  `version: 0.34.4` and `appKey: OneChat`. No Bearer header is added.
   A user-authorized GLOBAL import on 2026-10-20 returned business code 423
   with HTTP 200 under Go's default UA; the same credential succeeded with an
-  explicit UA. The final shared headers above passed identity verification and
-  imported 43 visible chat models. This validates import, not live OAuth or inference.
+  explicit UA. The original 0.32.6 shared headers passed identity verification and
+  imported 43 visible chat models. That check validated import, not live OAuth or inference.
 - Browser login uses `https://www.accio-ai.com/login` (CN) or
   `https://www.accio.com/login` (GLOBAL), with `return_url`, `state`,
   `code_challenge`, `code_challenge_method=S256`, and `client_id=accio-work`.
@@ -45,6 +53,13 @@ Protocol facts used:
 - Official desktop token JSON uses camelCase; ccLoad persists its own snake_case
   envelope with an explicit `region` and Unix-second expiry. Millisecond and
   RFC3339 official expiries normalize on import. No local desktop files are read.
+- Optional `sgcookie` / `sgCookie` is retained on import, OAuth exchange and refresh,
+  persisted as `sgcookie`, and sent only as an inference header. Missing or empty
+  refresh/reimport fields preserve the existing value. Values must be at most
+  4096 bytes of visible ASCII (spaces allowed); invalid values are rejected without
+  echoing them. Debug headers are redacted. A concurrent cookie-only update is
+  preserved while publishing a successful token rotation, rather than discarding
+  the rotated tokens as though the account had been reauthorized.
 - `POST /api/llm/config` takes `token` and `supportAutoModel: true`. The `data`
   provider array (or older `{providers: [...]}` envelope) contains `modelList`.
   `modelName` is both the public model ID and the inference `model` value.
@@ -126,3 +141,21 @@ including when followed by zero-width handling.
 The updated product preparation path was then replayed with a prompt containing
 both Claude Code and Codex CLI text: HTTP 200, no SSE error, and a complete
 `[DONE]` terminator. The temporary live diagnostic test was removed afterward.
+
+Live inference findings (2026-11-07):
+
+- The reported GLOBAL `accio_gateway_blocked` failure was reproduced with the
+  configured account and direct egress: `User-Agent: undici` returned HTTP 200
+  HTML with `Bxpunish: 1`. Changing only the UA returned real SSE with text and
+  a terminal frame; changing only the version headers or appKey remained blocked.
+- The final standard Chrome/146 browser UA (no ccLoad product token), paired
+  with version 0.34.4 and appKey OneChat, passed raw SSE and both streaming and
+  non-streaming management inference with the catalog's `auto` model. The account
+  had a device ID but no sgcookie, so the fix does not require reimporting it.
+  Channel configuration was read only; requests used an isolated in-memory server.
+  No credential refresh, production configuration write or deployment was performed.
+- The same standard browser UA also passed userinfo, the 39-model catalog,
+  quota and subscription queries. Control-plane and inference now share that UA;
+  no Accio request retains `undici`.
+- Cookie persistence/rotation, reauthorization races and redaction are covered
+  by mock HTTP tests. Live browser OAuth and CN inference were not exercised.

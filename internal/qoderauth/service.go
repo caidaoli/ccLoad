@@ -220,7 +220,7 @@ func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credent
 		return fresh, err
 	}
 	path := "/api/v1/deviceToken/refresh"
-	if strings.HasPrefix(c.RefreshToken, "jrt-") || strings.HasPrefix(c.AccessToken, "jt-") {
+	if strings.HasPrefix(c.RefreshToken, "jrt-") {
 		path = "/api/v1/jobToken/refresh"
 	}
 	headers := make(http.Header)

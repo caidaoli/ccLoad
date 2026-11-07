@@ -228,6 +228,9 @@ func (s *Server) commitAccioCredential(ctx context.Context, credential *accioaut
 		if credential.DeviceID == "" {
 			credential.DeviceID = stored.DeviceID
 		}
+		if credential.SGCookie == "" {
+			credential.SGCookie = stored.SGCookie
+		}
 		payload, err = credential.JSON()
 		if err != nil {
 			return nil, false, err

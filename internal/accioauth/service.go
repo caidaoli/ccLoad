@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const accioAppVersion = "0.32.6"
+const accioAppVersion = "0.34.4"
 
 // Service performs control-plane requests; BaseURL overrides the gateway for tests.
 type Service struct {
@@ -54,8 +54,7 @@ func authCopy(c *Credential) (*Credential, error) {
 
 func requestHeaders(c *Credential) http.Header {
 	h := make(http.Header)
-	// Match the reference client's Node fetch UA; Go's default receives code 423.
-	h.Set("User-Agent", "undici")
+	h.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
 	h.Set("Content-Type", "application/json")
 	h.Set("Accept", "application/json")
 	h.Set("Accept-Language", "en")
@@ -241,6 +240,13 @@ func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credent
 	c.AccessToken = token
 	if refresh := authText(data, "refreshToken", "refresh_token"); refresh != "" {
 		c.RefreshToken = refresh
+	}
+	cookie, err := authSGCookie(data)
+	if err != nil {
+		return nil, err
+	}
+	if cookie != "" {
+		c.SGCookie = cookie
 	}
 	expiry := data["expiresAt"]
 	if len(expiry) == 0 {

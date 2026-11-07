@@ -22,9 +22,9 @@ func assertAccioRequestHeaders(t *testing.T, r *http.Request, region, accept str
 		os = "macos"
 	}
 	for key, want := range map[string]string{
-		"User-Agent": "undici", "Content-Type": "application/json",
+		"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36", "Content-Type": "application/json",
 		"Accept": accept, "Accept-Language": "en", "x-language": "en",
-		"x-platform": "desktop", "x-os": os, "x-app-version": "0.32.6",
+		"x-platform": "desktop", "x-os": os, "x-app-version": "0.34.4",
 		"x-package-region": region, "Authorization": "",
 	} {
 		if got := r.Header.Get(key); got != want {
@@ -62,7 +62,11 @@ func TestOAuthAuthorizationAndExchange(t *testing.T) {
 				}) {
 					t.Errorf("invalid token request: %s %#v", r.URL, body)
 				}
-				_, _ = fmt.Fprint(w, `{"success":true,"data":{"accessToken":"new-access","refreshToken":"new-refresh","expiresAt":1800000000000}}`)
+				cookieKey := "sgcookie"
+				if region == "global" {
+					cookieKey = "sgCookie"
+				}
+				_, _ = fmt.Fprintf(w, `{"success":true,"data":{"accessToken":"new-access","refreshToken":"new-refresh","expiresAt":1800000000000,%q:"session=login; companion=value"}}`, cookieKey)
 			}))
 			defer server.Close()
 			s := NewService(server.Client())
@@ -71,7 +75,7 @@ func TestOAuthAuthorizationAndExchange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if credential.Region != region || credential.AccessToken != "new-access" || credential.RefreshToken != "new-refresh" || credential.ExpiresAt != 1800000000 || credential.UserID != "" {
+			if credential.Region != region || credential.AccessToken != "new-access" || credential.RefreshToken != "new-refresh" || credential.SGCookie != "session=login; companion=value" || credential.ExpiresAt != 1800000000 || credential.UserID != "" {
 				t.Fatalf("unexpected credential: %#v", credential)
 			}
 		})
@@ -97,15 +101,15 @@ func TestOAuthExchangeRejectsInvalidTokens(t *testing.T) {
 
 func TestCredentialImport(t *testing.T) {
 	for _, raw := range []string{
-		`{"region":"cn","access_token":"access","refresh_token":"refresh","expires_at":1800000000000,"user_id":"42","device_id":"desktop-test"}`,
-		`{"region":"cn","accessToken":"access","refreshToken":"refresh","expiresAt":"1800000000000","userId":42,"utdid":"desktop-test"}`,
-		`{"region":"cn","accessToken":"access","refreshToken":"refresh","expiresAt":"2027-01-15T08:00:00Z","userId":"42","deviceId":"desktop-test"}`,
+		`{"region":"cn","access_token":"access","refresh_token":"refresh","expires_at":1800000000000,"user_id":"42","device_id":"desktop-test","sgcookie":"session=value; companion=value"}`,
+		`{"region":"cn","accessToken":"access","refreshToken":"refresh","expiresAt":"1800000000000","userId":42,"utdid":"desktop-test","sgCookie":"session=value; companion=value"}`,
+		`{"region":"cn","accessToken":"access","refreshToken":"refresh","expiresAt":"2027-01-15T08:00:00Z","userId":"42","deviceId":"desktop-test","sgcookie":"session=value; companion=value","sgCookie":"alias-is-not-selected"}`,
 	} {
 		c, err := ParseCredential([]byte(raw))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.DeviceID != "desktop-test" || c.Type != ChannelType || c.ExpiresAt != 1800000000 || c.UserID != "42" || c.AccessToken != "access" || c.RefreshToken != "refresh" {
+		if c.DeviceID != "desktop-test" || c.SGCookie != "session=value; companion=value" || c.Type != ChannelType || c.ExpiresAt != 1800000000 || c.UserID != "42" || c.AccessToken != "access" || c.RefreshToken != "refresh" {
 			t.Fatalf("unexpected credential: %#v", c)
 		}
 		encoded, err := c.JSON()
@@ -116,11 +120,14 @@ func TestCredentialImport(t *testing.T) {
 		if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
 			t.Fatal(err)
 		}
-		if fields["device_id"] != "desktop-test" || fields["access_token"] != "access" || fields["expires_at"] != float64(1800000000) {
+		if fields["device_id"] != "desktop-test" || fields["sgcookie"] != "session=value; companion=value" || fields["access_token"] != "access" || fields["expires_at"] != float64(1800000000) {
 			t.Fatalf("invalid canonical JSON: %s", encoded)
 		}
 		if _, found := fields["accessToken"]; found {
 			t.Fatal("official field leaked into canonical format")
+		}
+		if _, found := fields["sgCookie"]; found {
+			t.Fatal("cookie alias leaked into canonical format")
 		}
 	}
 	for _, raw := range []string{`null`, `[]`, `{"accessToken":"access"}`, `{"region":"intl","accessToken":"access"}`, `{"region":"global","type":"qoder","accessToken":"access"}`, `{"region":"cn","accessToken":"a\nb"}`, `{"region":"cn","accessToken":"a","utdid":"bad\r\nheader"}`, `{"region":"cn","accessToken":"a","expiresAt":-1}`, `{"region":"cn","accessToken":"a","expiresAt":"broken"}`} {
@@ -136,11 +143,78 @@ func TestCredentialImport(t *testing.T) {
 	if c.NeedsRefresh(time.Now()) {
 		t.Fatal("unknown expiry should not be fabricated")
 	}
-	if _, err := c.JSON(); err != nil {
+	encoded, err := c.JSON()
+	if err != nil {
 		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields["sgcookie"]; present {
+		t.Fatal("empty sgcookie should be omitted")
 	}
 	if c.Type != "" {
 		t.Fatal("JSON mutated receiver")
+	}
+}
+
+func TestSGCookieValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{"spaces", "session=cookie-secret; companion=value", true},
+		{"maximum length", strings.Repeat("c", 4096), true},
+		{"empty", "", true},
+		{"null", nil, true},
+		{"carriage return", "cookie-secret\r", false},
+		{"line feed", "\ncookie-secret", false},
+		{"tab", "cookie-secret\tvalue", false},
+		{"nul", "cookie-secret\x00", false},
+		{"del", "cookie-secret\x7f", false},
+		{"non ASCII", "cookie-secret中文", false},
+		{"too long", strings.Repeat("c", 4097), false},
+		{"wrong type", map[string]string{"cookie-secret": "value"}, false},
+	} {
+		for _, key := range []string{"sgcookie", "sgCookie"} {
+			t.Run(tc.name+"/"+key, func(t *testing.T) {
+				fields := map[string]any{"region": "global", "accessToken": "access", key: tc.value}
+				body, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) }))
+				defer server.Close()
+				s := NewService(server.Client())
+				s.BaseURL = server.URL
+				for name, parse := range map[string]func() (*Credential, error){
+					"import": func() (*Credential, error) { return ParseCredential(body) },
+					"OAuth": func() (*Credential, error) {
+						return s.ExchangeCode(context.Background(), "global", "code", "verifier", "http://localhost:1234/auth/callback-accio")
+					},
+					"refresh": func() (*Credential, error) {
+						return s.Refresh(context.Background(), &Credential{Region: "global", AccessToken: "old", RefreshToken: "refresh"})
+					},
+				} {
+					credential, err := parse()
+					if !tc.valid {
+						if err == nil || strings.Contains(err.Error(), "cookie-secret") {
+							t.Fatalf("%s: expected a private validation error, got %v", name, err)
+						}
+						continue
+					}
+					if err != nil {
+						t.Fatalf("%s: %v", name, err)
+					}
+					want, _ := tc.value.(string)
+					if credential.SGCookie != want {
+						t.Errorf("%s: cookie was changed", name)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -148,10 +222,6 @@ func TestIdentityAndRefresh(t *testing.T) {
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertAccioRequestHeaders(t, r, "CN", "application/json")
-		if r.UserAgent() != "undici" {
-			_, _ = fmt.Fprint(w, `{"success":false,"code":"423","message":"user blocked"}`)
-			return
-		}
 		calls = append(calls, r.URL.Path)
 		if r.Header.Get("x-package-region") != "CN" || r.Header.Get("Authorization") != "" {
 			t.Errorf("unexpected auth headers: %#v", r.Header)
@@ -178,7 +248,7 @@ func TestIdentityAndRefresh(t *testing.T) {
 			if r.Method != http.MethodPost || !reflect.DeepEqual(body, map[string]string{"accessToken": "old+access", "refreshToken": "old-refresh"}) {
 				t.Errorf("invalid refresh request: %#v", body)
 			}
-			_, _ = fmt.Fprint(w, `{"code":"200","data":{"accessToken":"new-access","refreshToken":"new-refresh","expiresAt":1800000000000,"userId":"42"}}`)
+			_, _ = fmt.Fprint(w, `{"code":"200","data":{"accessToken":"new-access","refreshToken":"new-refresh","expiresAt":1800000000000,"userId":"42","sgCookie":"session=rotated; companion=value"}}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -186,22 +256,22 @@ func TestIdentityAndRefresh(t *testing.T) {
 	defer server.Close()
 	s := NewService(server.Client())
 	s.BaseURL = server.URL
-	original := &Credential{Region: "cn", AccessToken: "old+access", RefreshToken: "old-refresh", DeviceID: "desktop-test", OAuthUsage: "saved"}
+	original := &Credential{Region: "cn", AccessToken: "old+access", RefreshToken: "old-refresh", DeviceID: "desktop-test", SGCookie: "session=original", OAuthUsage: "saved"}
 	profile, err := s.CompleteIdentity(context.Background(), original)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.UserID != "42" || profile.Name != "Name" || profile.Email != "test@example.com" {
+	if profile.UserID != "42" || profile.Name != "Name" || profile.Email != "test@example.com" || profile.SGCookie != "session=original" {
 		t.Fatalf("invalid profile: %#v", profile)
 	}
 	fresh, err := s.Refresh(context.Background(), profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.DeviceID != "desktop-test" || fresh.AccessToken != "new-access" || fresh.RefreshToken != "new-refresh" || fresh.ExpiresAt != 1800000000 || fresh.OAuthUsage != "saved" {
+	if fresh.DeviceID != "desktop-test" || fresh.SGCookie != "session=rotated; companion=value" || fresh.AccessToken != "new-access" || fresh.RefreshToken != "new-refresh" || fresh.ExpiresAt != 1800000000 || fresh.OAuthUsage != "saved" {
 		t.Fatalf("invalid refreshed credential: %#v", fresh)
 	}
-	if original.UserID != "" || original.AccessToken != "old+access" || profile.AccessToken != "old+access" {
+	if original.UserID != "" || original.AccessToken != "old+access" || profile.AccessToken != "old+access" || profile.SGCookie != "session=original" {
 		t.Fatal("input credential was mutated")
 	}
 	if len(calls) != 2 {
@@ -220,16 +290,30 @@ func TestIdentityAndRefresh(t *testing.T) {
 }
 
 func TestRefreshOmittedFields(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprint(w, `{"data":{"accessToken":"new"}}`) }))
-	defer server.Close()
-	s := NewService(server.Client())
-	s.BaseURL = server.URL
-	c, err := s.Refresh(context.Background(), &Credential{Region: "global", AccessToken: "old", RefreshToken: "refresh", ExpiresAt: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.RefreshToken != "refresh" || c.ExpiresAt != 0 {
-		t.Fatalf("omitted fields mishandled: %#v", c)
+	for name, body := range map[string]string{
+		"omitted":        `{"data":{"accessToken":"new"}}`,
+		"empty cookie":   `{"data":{"accessToken":"new","sgcookie":""}}`,
+		"empty alias":    `{"data":{"accessToken":"new","sgCookie":""}}`,
+		"null cookie":    `{"data":{"accessToken":"new","sgcookie":null}}`,
+		"rotated cookie": `{"data":{"accessToken":"new","sgcookie":"session=rotated"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprint(w, body) }))
+			defer server.Close()
+			s := NewService(server.Client())
+			s.BaseURL = server.URL
+			c, err := s.Refresh(context.Background(), &Credential{Region: "global", AccessToken: "old", RefreshToken: "refresh", SGCookie: "session=original", ExpiresAt: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCookie := "session=original"
+			if name == "rotated cookie" {
+				wantCookie = "session=rotated"
+			}
+			if c.RefreshToken != "refresh" || c.SGCookie != wantCookie || c.ExpiresAt != 0 {
+				t.Fatalf("omitted fields mishandled: %#v", c)
+			}
+		})
 	}
 }
 

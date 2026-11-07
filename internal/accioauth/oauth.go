@@ -56,6 +56,10 @@ func (s *Service) ExchangeCode(ctx context.Context, region, code, verifier, redi
 	c := &Credential{
 		Region: region, AccessToken: authText(data, "accessToken"), RefreshToken: authText(data, "refreshToken"),
 	}
+	c.SGCookie, err = authSGCookie(data)
+	if err != nil {
+		return nil, err
+	}
 	c.ExpiresAt, err = authExpiry(data["expiresAt"])
 	if err != nil {
 		return nil, err

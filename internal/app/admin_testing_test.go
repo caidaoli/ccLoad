@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -50,6 +51,15 @@ func TestAdminTestAccioCapturesNativeWire(t *testing.T) {
 					t.Parallel()
 					srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": strconv.FormatBool(debugEnabled)})
 					cfg := newAccioChannel("Accio", accioTestCredential(t, "global", "native-access-secret"))
+					credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+					if err != nil {
+						t.Fatal(err)
+					}
+					credential.SGCookie = "native-session-cookie-value"
+					cfg.OAuthCredential, err = credential.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
 					cfg.ModelEntries = []model.ModelEntry{{Model: "accio-test"}}
 					cfg.CustomRequestRules = &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "utdid", Value: "native-device-secret"}}}
 					var wireURL string
@@ -86,7 +96,8 @@ func TestAdminTestAccioCapturesNativeWire(t *testing.T) {
 					headers, _ := result["upstream_request_headers"].(map[string]string)
 					wantHeaders := flattenHeader(wireHeaders)
 					wantHeaders["Utdid"] = "******"
-					if !reflect.DeepEqual(headers, wantHeaders) || headers["User-Agent"] != "undici" || headers["Authorization"] != "" || wireHeaders.Get("utdid") == "" || wireHeaders.Get("utdid") == "******" {
+					wantHeaders["Sgcookie"] = "nati******alue"
+					if !reflect.DeepEqual(headers, wantHeaders) || !strings.HasPrefix(headers["User-Agent"], "Mozilla/5.0 ") || strings.Contains(strings.ToLower(headers["User-Agent"]), "ccload") || headers["Authorization"] != "" || wireHeaders.Get("utdid") == "" || wireHeaders.Get("utdid") == "******" || wireHeaders.Get("sgcookie") != credential.SGCookie {
 						t.Fatal("diagnostic headers differ from the native request beyond device redaction")
 					}
 					if wireBody["token"] != "native-access-secret" {
@@ -122,6 +133,9 @@ func TestAdminTestAccioCapturesNativeWire(t *testing.T) {
 					}
 					if strings.Contains(string(encoded), "native-access-secret") || strings.Contains(string(encoded), "refresh-secret") || strings.Contains(string(encoded), "client-device-secret") || strings.Contains(string(encoded), wireHeaders.Get("utdid")) {
 						t.Fatal("credential leaked in diagnostics")
+					}
+					if strings.Contains(string(encoded), credential.SGCookie) {
+						t.Fatal("session cookie leaked in diagnostics")
 					}
 				})
 			}

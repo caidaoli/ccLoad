@@ -25,7 +25,7 @@ func TestBuildChatRequestNativeContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertAccioRequestHeaders(t, req, "CN", "text/event-stream")
-			if req.Header.Get("version") != "0.32.6" || req.Header.Get("appKey") != "35298846" {
+			if req.Header.Get("version") != "0.34.4" || req.Header.Get("appKey") != "OneChat" {
 				t.Fatal("native request omitted Accio version/appKey")
 			}
 			defer func() { _ = req.Body.Close() }()
@@ -107,6 +107,17 @@ func TestBuildChatRequestDeviceIdentity(t *testing.T) {
 	credential.DeviceID = "official-device"
 	if device(credential) != "official-device" {
 		t.Fatal("imported device identity ignored")
+	}
+	for _, cookie := range []string{"", "official-session-cookie"} {
+		credential.SGCookie = cookie
+		req, err := service.BuildChatRequest(context.Background(), credential, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), Model{ID: "auto"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = req.Body.Close()
+		if req.Header.Get("sgcookie") != cookie {
+			t.Fatal("imported session cookie ignored")
+		}
 	}
 }
 

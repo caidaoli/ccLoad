@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func authTestService(t *testing.T, handler http.HandlerFunc) *Service {
@@ -111,15 +113,18 @@ func TestExchangePATAndIdentity(t *testing.T) {
 }
 
 func TestRefreshTokenFamiliesAndIdentity(t *testing.T) {
-	for _, family := range []string{"device", "job"} {
+	for _, family := range []string{"device", "job", "device refresh with job access"} {
 		t.Run(family, func(t *testing.T) {
 			c := &Credential{Region: "cn", AccessToken: "dt-old", RefreshToken: "drt-old", UserID: "user", MachineID: "machine", ExpiresAt: 1, OAuthUsage: `{"remaining":9}`, LastCheckinAt: 12, LastCheckinCampaign: "campaign"}
 			path := "/api/v1/deviceToken/refresh"
 			token := "dt-new"
 			refresh := "drt-new"
-			if family == "job" {
+			switch family {
+			case "job":
 				c.AccessToken, c.RefreshToken = "jt-old", "jrt-old"
 				path, token, refresh = "/api/v1/jobToken/refresh", "jt-new", "jrt-new"
+			case "device refresh with job access":
+				c.AccessToken = "jt-old"
 			}
 			original := *c
 			service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +192,10 @@ func TestLoginPKCEAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := parsed.Query()
+	nonce, err := uuid.Parse(query.Get("nonce"))
+	if err != nil || nonce.String() != query.Get("nonce") {
+		t.Fatal("authorization nonce must be a canonical UUID")
+	}
 	digest := sha256.Sum256([]byte(session.verifier))
 	if parsed.Host != "qoder.com" || parsed.Path != "/device/selectAccounts" || query.Get("challenge_method") != "S256" || query.Get("challenge") != base64.RawURLEncoding.EncodeToString(digest[:]) || query.Get("nonce") == "" || strings.Contains(session.AuthURL, session.verifier) {
 		t.Fatal("invalid public PKCE authorization URL")
@@ -226,6 +235,24 @@ func TestLoginPKCEAndPending(t *testing.T) {
 	session.expiresAt = time.Now().Add(-time.Second)
 	if _, err := service.PollLogin(context.Background(), session); err == nil || calls != 3 {
 		t.Fatal("expired session reached upstream")
+	}
+}
+
+func TestLoginDeviceTokenResponse(t *testing.T) {
+	session, err := StartLogin("cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/deviceToken/poll" {
+			authTestJSON(t, w, map[string]string{"device_token": "dt-token", "refresh_token": "drt-token", "user_id": "user"})
+			return
+		}
+		authTestJSON(t, w, map[string]string{"id": "user"})
+	})
+	credential, err := service.PollLogin(context.Background(), session)
+	if err != nil || credential.AccessToken != "dt-token" || credential.RefreshToken != "drt-token" {
+		t.Fatalf("device-token login failed: %+v %v", credential, err)
 	}
 }
 

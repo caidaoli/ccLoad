@@ -82,6 +82,9 @@ func (m *accioCredentialManager) credential(ctx context.Context, cfg *model.Conf
 			// Keep the newest metadata and publish the rotated token pair together.
 			merged := *latestCredential
 			merged.AccessToken, merged.RefreshToken = refreshed.AccessToken, refreshed.RefreshToken
+			if latestCredential.SGCookie == current.SGCookie {
+				merged.SGCookie = refreshed.SGCookie
+			}
 			merged.ExpiresAt = refreshed.ExpiresAt
 			if merged.UserID == "" {
 				merged.UserID = refreshed.UserID
