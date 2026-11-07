@@ -31,22 +31,18 @@ type channelWithScore struct {
 	effPriority float64
 }
 
-// sortChannelsByHealth 按健康度排序渠道（仅排序，不改变冷却过滤语义）
-// keyCooldowns: Key级冷却状态，用于计算有效Key数量（排除冷却中的Key）
-// now: 当前时间，用于判断Key是否处于冷却中
+/**
+ * @brief 按全局健康快照的有效优先级排序，并在同档渠道内按有效 Key 数轮询
+ * @param channels 已通过冷却过滤的候选
+ * @param keyCooldowns 各渠道 Key 的冷却截止时间
+ * @param now 本轮选路的当前时间
+ * @return 排序后的候选；空入参原样返回
+ * @note 推进同档渠道轮询状态，不改变渠道配置或冷却状态
+ */
 func (s *Server) sortChannelsByHealth(
 	channels []*modelpkg.Config,
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
-) []*modelpkg.Config {
-	return s.sortChannelsByHealthInternal(channels, keyCooldowns, now, false)
-}
-
-func (s *Server) sortChannelsByHealthInternal(
-	channels []*modelpkg.Config,
-	keyCooldowns map[int64]map[int]time.Time,
-	now time.Time,
-	dryRun bool,
 ) []*modelpkg.Config {
 	if len(channels) == 0 {
 		return channels
@@ -66,7 +62,7 @@ func (s *Server) sortChannelsByHealthInternal(
 	groupStart := 0
 	for i := 1; i <= len(scored); i++ {
 		if i == len(scored) || effPriorityBucket(scored[i].effPriority) != effPriorityBucket(scored[groupStart].effPriority) {
-			if !dryRun && i-groupStart > 1 {
+			if i-groupStart > 1 {
 				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now)
 			}
 			groupStart = i

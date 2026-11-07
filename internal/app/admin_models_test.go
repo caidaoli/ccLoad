@@ -2036,6 +2036,10 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 	}
 }
 
+/**
+ * @brief 验证模型批量刷新在不同模式下保留配置和凭据授权，并刷新真实选路候选
+ * @param t 测试上下文
+ */
 func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	type batchRefreshData struct {
 		Mode      string                   `json:"mode"`
@@ -2406,9 +2410,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err := store.CreateAPIKeysBatch(ctx, originalKeys); err != nil {
 			t.Fatal(err)
 		}
-		payload := map[string]any{"client_protocol": "openai", "model": "new"}
-		if before := previewRoute(t, server, payload); len(before.Candidates) != 0 {
-			t.Fatalf("stale scope unexpectedly allowed new model: %+v", before)
+		if before, err := server.selectCandidatesByModelAndClientProtocol(ctx, "new", "openai"); err != nil || len(before) != 0 {
+			t.Fatalf("stale scope unexpectedly allowed new model: candidates=%+v err=%v", before, err)
 		}
 		request := BatchRefreshModelsRequest{ChannelIDs: []int64{cfg.ID}, Mode: "merge"}
 		refresh(t, server, ctx, request, "updated")
@@ -2434,8 +2437,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 				t.Fatalf("key %d scope changed unexpectedly: %+v", i, keys[i])
 			}
 		}
-		if after := previewRoute(t, server, payload); len(after.Candidates) != 1 || after.Candidates[0].AvailableKeyCount != 1 {
-			t.Fatalf("new model is not routable with exactly its supporting key: %+v", after)
+		if after, err := server.selectCandidatesByModelAndClientProtocol(ctx, "new", "openai"); err != nil || len(after) != 1 || after[0].ID != cfg.ID {
+			t.Fatalf("new model is not routable with its refreshed key scope: candidates=%+v err=%v", after, err)
 		}
 		refresh(t, server, ctx, request, "unchanged")
 	})
@@ -2472,9 +2475,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			}}); err != nil {
 				t.Fatal(err)
 			}
-			payload := map[string]any{"client_protocol": tc.protocol, "model": "logical"}
-			if before := previewRoute(t, server, payload); len(before.Candidates) != 1 || before.Candidates[0].AvailableKeyCount != 1 {
-				t.Fatalf("logical model was not routable before refresh: %+v", before)
+			if before, err := server.selectCandidatesByModelAndClientProtocol(ctx, "logical", tc.protocol); err != nil || len(before) != 1 || before[0].ID != cfg.ID {
+				t.Fatalf("logical model was not routable before refresh: candidates=%+v err=%v", before, err)
 			}
 			refresh(t, server, ctx, BatchRefreshModelsRequest{ChannelIDs: []int64{cfg.ID}, Mode: "merge"}, "updated")
 			keys, err := store.GetAPIKeys(ctx, cfg.ID)
@@ -2484,8 +2486,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			if !keys[0].AllowsModel("logical") || !reflect.DeepEqual(keys[0].DetectedModels, []string{tc.target}) {
 				t.Fatalf("successful probe lost final upstream capability: %+v", keys[0])
 			}
-			if after := previewRoute(t, server, payload); len(after.Candidates) != 1 || after.Candidates[0].AvailableKeyCount != 1 {
-				t.Fatalf("logical model lost its confirmed upstream route after refresh: %+v", after)
+			if after, err := server.selectCandidatesByModelAndClientProtocol(ctx, "logical", tc.protocol); err != nil || len(after) != 1 || after[0].ID != cfg.ID {
+				t.Fatalf("logical model lost its confirmed upstream route after refresh: candidates=%+v err=%v", after, err)
 			}
 		})
 	}

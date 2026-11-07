@@ -20122,3 +20122,57 @@ func TestProxy_GeminiTerminalFilterNotice(t *testing.T) {
 		}
 	}
 }
+
+/**
+ * @brief 验证四种客户端协议的多模态请求按回退模型选择真实上游
+ * @param t 测试上下文
+ */
+func TestProxy_MultimodalFallbackAcrossProtocols(t *testing.T) {
+	for _, client := range []string{"anthropic", "openai", "codex", "gemini"} {
+		t.Run(client, func(t *testing.T) {
+			var upstreamRequests atomic.Int64
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamRequests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				var body string
+				switch client {
+				case "anthropic":
+					body = `{"id":"msg-test","type":"message","role":"assistant","model":"vision-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+				case "openai":
+					body = `{"id":"chat-test","object":"chat.completion","model":"vision-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+				case "codex":
+					body = `{"id":"resp-test","object":"response","model":"vision-model","status":"completed","output":[{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`
+				case "gemini":
+					body = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+				}
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "first", upstreamProtocol: client, models: "vision-model", priority: 50},
+				{name: "second", upstreamProtocol: client, models: "vision-model", priority: 50},
+			}, map[int]string{0: upstream.URL, 1: upstream.URL})
+			env.server.setMultimodalFallbackModels(map[string]string{"text-model": "vision-model"})
+			var path string
+			var payload map[string]any
+			switch client {
+			case "anthropic":
+				path = "/v1/messages"
+				payload = map[string]any{"model": "text-model", "max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "QUJD"}}}}}}
+			case "openai":
+				path = "/v1/chat/completions"
+				payload = map[string]any{"model": "text-model", "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.test/image.png"}}}}}}
+			case "codex":
+				path = "/v1/responses"
+				payload = map[string]any{"model": "text-model", "input": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_image", "image_url": "https://example.test/image.png"}}}}}
+			case "gemini":
+				path = "/v1beta/models/text-model:generateContent"
+				payload = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "QUJD"}}}}}}
+			}
+			response := doProxyRequest(t, env.engine, path, payload, nil)
+			if response.Code != http.StatusOK || upstreamRequests.Load() != 1 {
+				t.Fatalf("real proxy status=%d body=%s calls=%d", response.Code, response.Body.String(), upstreamRequests.Load())
+			}
+		})
+	}
+}

@@ -154,7 +154,7 @@ ttfb_penalty = relative_slowness × ttfb_penalty_weight × ttfb_confidence
 effective_priority = base_priority - failure_penalty - ttfb_penalty
 ```
 
-**Confidence factors** prevent new or low-traffic channels from receiving a full penalty from a few samples. TTFB scoring uses the median of valid per-channel average first-byte times across the entire health-statistics window. Statistics and the baseline refresh together. The channel list, route preview, and actual HTTP/WS routing use the same scoring basis; model, token, list, and cooldown filters do not recalculate scores. Channels at or faster than the median receive no TTFB penalty. The penalty is skipped when fewer than two channels globally have valid TTFB data, and channels without samples are not penalized.
+**Confidence factors** prevent new or low-traffic channels from receiving a full penalty from a few samples. TTFB scoring uses the median of valid per-channel average first-byte times across the entire health-statistics window. Statistics and the baseline refresh together. The channel list and actual HTTP/WS routing use the same scoring basis; model, token, list, and cooldown filters do not recalculate scores. Channels at or faster than the median receive no TTFB penalty. The penalty is skipped when fewer than two channels globally have valid TTFB data, and channels without samples are not penalized.
 
 Ordinary session affinity applies only within the highest effective-priority tier. Bound Responses execution sessions still prefer their original channel to preserve upstream connections and continuation state; unavailable channels follow the existing failover rules. Health scores determine health ordering without overriding these execution-session constraints.
 

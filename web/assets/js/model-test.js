@@ -2,7 +2,6 @@ const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
 const TEST_MODE_CHAT = 'chat';
 const TEST_MODE_IMAGE = 'image';
-const TEST_MODE_PREVIEW = 'preview';
 
 // localStorage keys
 const STORAGE_KEY_TEST_MODE = 'ccload_model_test_mode';
@@ -1759,8 +1758,10 @@ function renderChannelModeRows() {
   finalizeTableRender();
 }
 
+/**
+ * @brief 按当前渠道模型并集刷新模型选择器。
+ */
 function populateModelSelector() {
-  window.ModelTestRoutePreview.refreshModels();
   const models = getAllModels();
   const typedModel = getModelInputValue();
 
@@ -1864,12 +1865,14 @@ function renderRowsByMode() {
   }
 }
 
+/**
+ * @brief 模型测试页面的独立功能页签及键盘切换顺序。
+ */
 const MODEL_TEST_MODE_TABS = [
   { id: 'modeTabChat', mode: TEST_MODE_CHAT },
   { id: 'modeTabImage', mode: TEST_MODE_IMAGE },
   { id: 'modeTabChannel', mode: TEST_MODE_CHANNEL },
-  { id: 'modeTabModel', mode: TEST_MODE_MODEL },
-  { id: 'modeTabPreview', mode: TEST_MODE_PREVIEW }
+  { id: 'modeTabModel', mode: TEST_MODE_MODEL }
 ];
 
 function syncModeTabState() {
@@ -1914,12 +1917,14 @@ function initModeTabKeyboard() {
   });
 }
 
+/**
+ * @brief 根据当前模式切换面板、选择器和测试操作。
+ */
 function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
   const isChatMode = testMode === TEST_MODE_CHAT;
   const isImageMode = testMode === TEST_MODE_IMAGE;
-  const isPreviewMode = testMode === TEST_MODE_PREVIEW;
-  const isStandaloneMode = isChatMode || isImageMode || isPreviewMode;
+  const isStandaloneMode = isChatMode || isImageMode;
   const fetchModelsBtn = getFetchModelsBtn();
   const addModelsBtn = getAddModelsBtn();
   const deleteModelsBtn = getDeleteModelsBtn();
@@ -1934,7 +1939,6 @@ function updateModeUI() {
   chatToolbar?.classList.toggle('hidden', !isChatMode);
   chatPanel?.classList.toggle('hidden', !isChatMode);
   imagePanel?.classList.toggle('hidden', !isImageMode);
-  document.getElementById('routePreviewPanel')?.classList.toggle('hidden', !isPreviewMode);
   modelTestCard?.classList.toggle('model-test-card--chat-mode', isChatMode);
 
   if (isStandaloneMode) return;
@@ -3414,8 +3418,12 @@ function bindEvents() {
   });
 }
 
+/**
+ * @brief 切换测试模式并初始化对应操作区。
+ * @param mode channel、model、chat 或 image；其他值忽略
+ */
 function setTestMode(mode) {
-  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT && mode !== TEST_MODE_IMAGE && mode !== TEST_MODE_PREVIEW) return;
+  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT && mode !== TEST_MODE_IMAGE) return;
   if (testMode === mode) return;
 
   const previousMode = testMode;
@@ -3427,11 +3435,6 @@ function setTestMode(mode) {
   saveTestModeToStorage(mode);
   clearProgress();
 
-  if (testMode === TEST_MODE_PREVIEW) {
-    updateModeUI();
-    window.ModelTestRoutePreview.open();
-    return;
-  }
   if (testMode === TEST_MODE_CHAT) {
     updateModeUI();
     initChatPanel();
@@ -3477,10 +3480,18 @@ function saveTestModeToStorage(mode) {
   } catch (_) { /* ignore */ }
 }
 
+/**
+ * @brief 恢复测试模式，将已移除的预演偏好迁移至按模型测试。
+ * @return 已保存的有效模式；无有效偏好时返回 channel
+ */
 function loadTestModeFromStorage() {
   try {
     const mode = localStorage.getItem(STORAGE_KEY_TEST_MODE);
-    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT || mode === TEST_MODE_IMAGE || mode === TEST_MODE_PREVIEW) {
+    if (mode === 'preview') {
+      saveTestModeToStorage(TEST_MODE_MODEL);
+      return TEST_MODE_MODEL;
+    }
+    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT || mode === TEST_MODE_IMAGE) {
       return mode;
     }
   } catch (_) { /* ignore */ }
@@ -4958,6 +4969,10 @@ document.addEventListener('click', (e) => {
 
 });
 
+/**
+ * @brief 初始化测试页面并按账户角色加载可用功能。
+ * @return 页面初始化完成的 Promise
+ */
 async function bootstrap() {
   if (window.isAPITokenRole()) {
     await window.TokenModelTest.init();
@@ -4972,7 +4987,6 @@ async function bootstrap() {
   bindEvents();
   initChatExportDropdown();
   initModeTabKeyboard();
-  window.ModelTestRoutePreview.init({ t: i18nText, protocols: getClientProtocols(), protocolLabel, getModelOptions: getAllChatModelOptions });
   window.ModelTestImage?.init({
     t: i18nText,
     getModelName,
@@ -5034,8 +5048,6 @@ async function bootstrap() {
     initChatPanel();
   } else if (testMode === TEST_MODE_IMAGE) {
     window.ModelTestImage?.open();
-  } else if (testMode === TEST_MODE_PREVIEW) {
-    window.ModelTestRoutePreview.open();
   }
 }
 

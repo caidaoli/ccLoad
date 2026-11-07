@@ -527,3 +527,21 @@ func TestServer_HandleChannelKeysProjectsOAuthAccessTokens(t *testing.T) {
 		})
 	}
 }
+
+/**
+ * @brief 验证移除的选路预演管理接口返回未找到
+ * @param t 测试上下文
+ */
+func TestServer_SetupRoutes_RoutePreviewRemoved(t *testing.T) {
+	srv := newInMemoryServer(t)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, newJSONRequest(t, http.MethodPost, "/admin/route-preview", map[string]any{
+		"client_protocol": "openai", "model": "test-model",
+	}))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("removed route status=%d body=%s", response.Code, response.Body.String())
+	}
+}
