@@ -24,6 +24,29 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-07)
+
+The synchronized baseline remains official `v8.0.51`. These targeted fixes use
+the local CLIProxyAPI checkout at `482efbf5a777771523c1237ed7aaee965451c51d`:
+
+- Adapt `374056f28bfaa6b7582a82cba9f8ca84868f642e`: keep Claude deferred tools
+  out of the initial Codex tool list, introduce their definitions through
+  `additional_tools` at discovery, preserve tool references, and keep resident
+  tool names stable when deferred declarations are added. Retain ccLoad's
+  existing mid-conversation tool additions. Preserve historical references in
+  tool results even when their declarations are absent; reject unresolved
+  standalone references that cannot be represented.
+- App-owned Codex refresh handling adopts the grant claim/receipt semantics of
+  `68cd75724e4de4e0450475cc99c7491166cf3392` using ccLoad's SQL storage. An
+  uncertain exchange cannot be replayed after a restart or credential import;
+  valid access tokens remain usable. No upstream executor or storage backend
+  implementation is imported.
+
+The nested custom-tool request normalization in `2443e8830` is already covered.
+Its response wrapping is not adopted: ccLoad retains native custom calls for
+nested Chat custom declarations. This is not a full snapshot update; the
+baseline, provider provenance and license remain unchanged.
+
 ## Post-snapshot compatibility fixes (2026-11-05)
 
 The synchronized baseline remains official `v8.0.51`. These targeted fixes use

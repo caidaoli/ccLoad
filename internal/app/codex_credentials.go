@@ -74,13 +74,14 @@ type codexCredentialManager struct {
 	refreshBackoff map[int64]codexRefreshBackoff
 }
 
+/**
+ * @brief 记录提前刷新退避或已明确拒绝的 grant
+ */
 type codexRefreshBackoff struct {
-	accessToken string
-	until       time.Time
-	// A terminal rejection belongs to the refresh grant, independently of the
-	// access token's remaining lifetime. Never retry that same grant.
-	rejectedRefreshToken string
-	terminalError        error
+	accessToken          string    ///< 最近提前刷新失败或寿命不足的 access token
+	until                time.Time ///< 可再次提前刷新的时间
+	rejectedRefreshToken string    ///< 已明确拒绝的 grant，不随 access token 到期重试
+	terminalError        error     ///< 需要重新授权的原因
 }
 
 // codexCredentialRefreshError keeps the exact persisted credential snapshot
@@ -152,6 +153,16 @@ func (m *codexCredentialManager) credentialAfterUnauthorized(ctx context.Context
 	return m.credentialForRejectedAccessToken(ctx, cfg, true, rejectedAccessToken)
 }
 
+/**
+ * @brief 按当前凭据加载或刷新 access token，合并并发刷新和迟到拒绝
+ * @param ctx 等待上下文；取消不撤销共享刷新
+ * @param cfg 已选择的渠道配置
+ * @param forceRefresh 是否由管理操作或真实拒绝强制刷新
+ * @param rejectedAccessToken 实际被拒绝的 access token，无拒绝时为空
+ * @return 可用于实际推理验证的凭据；明确终态且已到期时返回 nil
+ * @return 刷新或存储错误；不确定结果保留旧 access token 供上游验证
+ * @note 刷新由服务器生命周期持有，网络交换前通过权威存储 claim 防止 grant 重放。
+ */
 func (m *codexCredentialManager) credentialForRejectedAccessToken(
 	ctx context.Context,
 	cfg *model.Config,
@@ -218,7 +229,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 		if m.clientFor != nil {
 			service.Client = m.clientFor(currentCfg)
 		}
-		refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken)
+		refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken, m.store)
 		if refreshErr != nil {
 			winnerCfg, winnerErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
 			if winnerErr == nil && winnerCfg.OAuthCredential != currentCfg.OAuthCredential && winnerCfg.UsesCodexOAuth() {
@@ -241,7 +252,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 				if m.invalidateConfig != nil {
 					m.invalidateConfig(currentCfg.ID)
 				}
-			} else {
+			} else if !codexauth.IsRefreshOutcomeUnknown(refreshErr) {
 				m.backOffEarlyRefresh(currentCfg.ID, current.AccessToken)
 			}
 			return nil, newCodexCredentialRefreshError(
@@ -358,6 +369,13 @@ func (m *codexCredentialManager) earlyRefreshBackingOff(channelID int64, credent
 	return ok && backoff.accessToken == credential.AccessToken && now.Before(backoff.until)
 }
 
+/**
+ * @brief 查询当前 grant 的不可重放错误
+ * @param channelID 渠道 ID
+ * @param refreshToken 当前渠道的刷新 token
+ * @return 已明确拒绝的刷新错误；该 grant 未被阻止时返回 nil
+ * @note 并发安全；更换 grant 后旧错误不适用。
+ */
 func (m *codexCredentialManager) rejectedRefreshError(channelID int64, refreshToken string) error {
 	if m == nil {
 		return nil
@@ -371,14 +389,29 @@ func (m *codexCredentialManager) rejectedRefreshError(channelID int64, refreshTo
 	return nil
 }
 
-// requiresReauthorization projects only the state of the credential being shown;
-// a delayed failure for an older grant cannot mark a newly authorized account.
-func (m *codexCredentialManager) requiresReauthorization(cfg *model.Config) bool {
+/**
+ * @brief 仅为当前展示的 grant 提示恢复或重新授权
+ * @param ctx 持久化刷新记录查询上下文
+ * @param cfg 当前渠道配置
+ * @return 当前 grant 被拒绝或结果不确定时返回 true
+ * @return 凭据解析或持久化记录读取失败时返回错误
+ * @note 旧 grant 的迟到错误不会标记重新授权后的凭据。
+ */
+func (m *codexCredentialManager) requiresReauthorization(ctx context.Context, cfg *model.Config) (bool, error) {
 	if m == nil || cfg == nil || !cfg.UsesCodexOAuth() {
-		return false
+		return false, nil
 	}
 	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
-	return err == nil && m.rejectedRefreshError(cfg.ID, credential.RefreshToken) != nil
+	if err != nil {
+		return false, err
+	}
+	if credential.IsPersonalAccessToken() {
+		return false, nil
+	}
+	if m.rejectedRefreshError(cfg.ID, credential.RefreshToken) != nil {
+		return true, nil
+	}
+	return codexauth.RefreshRecoveryRequired(ctx, m.store, codexauth.DefaultClientID, credential.RefreshToken)
 }
 
 func (m *codexCredentialManager) backOffEarlyRefresh(channelID int64, accessToken string) {

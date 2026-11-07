@@ -923,6 +923,9 @@ type oauthTokenEndpointFailure interface {
  * @return 确定不可恢复的认证拒绝返回 true；临时网络、额度和其他不确定错误返回 false。
  */
 func oauthRefreshTokenRejected(err error) bool {
+	if codexauth.IsRefreshOutcomeUnknown(err) {
+		return false
+	}
 	if errors.Is(err, loomyauth.ErrSessionExpired) {
 		return true
 	}

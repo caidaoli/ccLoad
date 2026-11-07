@@ -89,7 +89,13 @@ func migratePostgres(ctx context.Context, db *sql.DB) error {
 	return migrate(ctx, db, DialectPostgres)
 }
 
-// migrate 统一迁移逻辑
+/**
+ * @brief 按数据库方言创建缺失表并执行非破坏性迁移
+ * @param ctx 迁移上下文
+ * @param db 待迁移数据库连接
+ * @param dialect 数据库方言
+ * @return 建表、索引或增量数据迁移失败时返回错误
+ */
 func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	// 迁移约束：不得在启动迁移中删除废弃字段或表。
 	// 新库由当前 schema 决定不创建；旧库保留原结构和数据，以支持版本回退。
@@ -98,6 +104,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	tables := []func() *schema.TableBuilder{
 		schema.DefineSchemaMigrationsTable, // 迁移版本表必须最先创建
 		schema.DefineChannelsTable,
+		schema.DefineCodexRefreshJournalTable,
 		schema.DefineAPIKeysTable,
 		schema.DefineChannelModelsTable,
 		schema.DefineChannelModelCooldownsTable,

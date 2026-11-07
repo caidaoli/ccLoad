@@ -76,7 +76,7 @@ func cliproxyAnthropicResponseToOpenAINonStream(ctx context.Context, model strin
 }
 
 func cliproxyAnthropicRequestToOpenAI(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateAnthropicRequest(raw, true); err != nil {
+	if err := cliproxyValidateAnthropicRequest(raw, protocol.OpenAI); err != nil {
 		return nil, err
 	}
 	raw, err := protocol.NormalizeAnthropicEffortForTranslation(raw)
@@ -115,7 +115,7 @@ func cliproxyCodexResponseToOpenAINonStream(ctx context.Context, model string, o
 }
 
 func cliproxyAnthropicRequestToGemini(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateAnthropicRequest(raw, false); err != nil {
+	if err := cliproxyValidateAnthropicRequest(raw, protocol.Gemini); err != nil {
 		return nil, err
 	}
 	raw, err := protocol.NormalizeAnthropicEffortForTranslation(raw)
@@ -229,7 +229,7 @@ func cliproxyAnthropicResponseToCodexNonStream(ctx context.Context, model string
 }
 
 func cliproxyAnthropicRequestToCodex(model string, raw []byte, stream bool) ([]byte, error) {
-	if err := cliproxyValidateAnthropicRequest(raw, true); err != nil {
+	if err := cliproxyValidateAnthropicRequest(raw, protocol.Codex); err != nil {
 		return nil, err
 	}
 	raw, err := protocol.NormalizeAnthropicEffortForTranslation(raw)
@@ -364,7 +364,13 @@ func cliproxyValidateOpenAIRequest(raw []byte) error {
 	return nil
 }
 
-func cliproxyValidateAnthropicRequest(raw []byte, allowToolAddition bool) error {
+/**
+ * @brief 按目标协议验证 Anthropic 内容块及中途工具声明的可表示性
+ * @param raw 客户端请求 JSON
+ * @param target 跨协议转换目标
+ * @return JSON 无效或内容无法由目标协议表示时返回错误，否则为 nil
+ */
+func cliproxyValidateAnthropicRequest(raw []byte, target protocol.Protocol) error {
 	var request struct {
 		Tools []struct {
 			Name string `json:"name"`
@@ -397,7 +403,7 @@ func cliproxyValidateAnthropicRequest(raw []byte, allowToolAddition bool) error 
 			blockType, _ := block["type"].(string)
 			switch blockType {
 			case "tool_addition":
-				if !allowToolAddition || message.Role != "system" {
+				if target == protocol.Gemini || message.Role != "system" {
 					return fmt.Errorf("unsupported Anthropic tool_addition in %q message for this target", message.Role)
 				}
 				tool, _ := block["tool"].(map[string]any)
@@ -422,6 +428,10 @@ func cliproxyValidateAnthropicRequest(raw []byte, allowToolAddition bool) error 
 					}
 				} else {
 					return errors.New("unsupported Anthropic tool_addition specification")
+				}
+			case "tool_reference", "tool_search_tool_result":
+				if target != protocol.Codex || message.Role == "system" {
+					return fmt.Errorf("unsupported Anthropic %s in %q message for target %s", blockType, message.Role, target)
 				}
 			case "text", "image", "document", "tool_use", "tool_result", "thinking", "redacted_thinking", "server_tool_use", "web_search_tool_result":
 			default:

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	sqlstore "ccLoad/internal/storage/sql"
 )
@@ -21,6 +22,96 @@ func createTestStoreForSync(t *testing.T, suffix string) *sqlstore.SQLStore {
 		t.Fatalf("创建测试存储失败: %v", err)
 	}
 	return store.(*sqlstore.SQLStore)
+}
+
+/**
+ * @brief 验证首次恢复仅封锁 Codex OAuth 刷新授权，并保留已有本地 journal
+ * @param t 测试上下文
+ */
+func TestSyncManager_RestoreOnStartup_BlocksRestoredCodexRefreshGrants(t *testing.T) {
+	source := createTestStoreForSync(t, "refresh_source")
+	target := createTestStoreForSync(t, "refresh_target")
+	t.Cleanup(func() { _ = source.Close(); _ = target.Close() })
+	ctx := context.Background()
+	channelID := createCodexQuotaChannel(t, source, time.Now())
+	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "refresh")
+	localKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "local-refresh")
+	for store, claimKey := range map[Store]string{source: key, target: localKey} {
+		if claimed, err := store.RefreshClaim(ctx, claimKey); err != nil || !claimed {
+			t.Fatalf("claim = (%v, %v)", claimed, err)
+		}
+		if err := store.RefreshComplete(ctx, claimKey, []byte(`{"access_token":"saved"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cfg := range []*model.Config{
+		{Name: "codex-pat", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: `{"type":"codex","auth_mode":"personalAccessToken","access_token":"at-static"}`},
+		{Name: "other-provider", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: `{"type":"antigravity","access_token":"access","refresh_token":"other-refresh","expired":"2030-01-01T00:00:00Z"}`},
+	} {
+		cfg.URLs = model.ChannelURLs{{URL: "https://example.com"}}
+		cfg.Enabled = true
+		if _, err := source.CreateConfig(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, exists, err := target.RefreshRead(ctx, key); err != nil || !exists || receipt != nil {
+		t.Fatalf("restored grant = (%q, %v, %v), want pending", receipt, exists, err)
+	}
+	if claimed, err := target.RefreshClaim(ctx, key); err != nil || claimed {
+		t.Fatalf("restored claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if receipt, exists, err := target.RefreshRead(ctx, localKey); err != nil || !exists || string(receipt) != `{"access_token":"saved"}` {
+		t.Fatalf("existing local receipt = (%q, %v, %v)", receipt, exists, err)
+	}
+	cfg, err := target.GetConfig(ctx, channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil || credential.AccessToken != "access" || credential.RefreshToken != "refresh" {
+		t.Fatalf("restored credential changed: %v", err)
+	}
+	configs, err := target.ListConfigs(ctx)
+	if err != nil || len(configs) != 3 {
+		t.Fatalf("restored channels = (%d, %v), want 3", len(configs), err)
+	}
+	var journalCount int
+	if err := target.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_refresh_journal`).Scan(&journalCount); err != nil || journalCount != 2 {
+		t.Fatalf("journal count = (%d, %v), want 2", journalCount, err)
+	}
+	if err := target.RefreshComplete(ctx, key, []byte(`{"access_token":"recovered"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, exists, err := target.RefreshRead(ctx, key); err != nil || !exists || string(receipt) != `{"access_token":"recovered"}` {
+		t.Fatalf("restored grant overwrote local receipt = (%q, %v, %v)", receipt, exists, err)
+	}
+}
+
+/**
+ * @brief 验证损坏的恢复凭据阻止配置和刷新申领一起提交
+ * @param t 测试上下文
+ */
+func TestSyncManager_RestoreOnStartup_InvalidCodexCredentialRollsBack(t *testing.T) {
+	source := createTestStoreForSync(t, "invalid_refresh_source")
+	target := createTestStoreForSync(t, "invalid_refresh_target")
+	t.Cleanup(func() { _ = source.Close(); _ = target.Close() })
+	ctx := context.Background()
+	channelID := createCodexQuotaChannel(t, source, time.Now())
+	if _, err := source.ExecContext(ctx, `UPDATE channels SET oauth_credential = ? WHERE id = ?`, "{broken", channelID); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err == nil {
+		t.Fatal("invalid restored credential was accepted")
+	}
+	if configs, err := target.ListConfigs(ctx); err != nil || len(configs) != 0 {
+		t.Fatalf("failed restore left channels = (%d, %v)", len(configs), err)
+	}
 }
 
 func TestSyncManager_RestoreOnStartup_RestoresOAuthQuotaLedger(t *testing.T) {

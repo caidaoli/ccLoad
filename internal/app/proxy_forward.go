@@ -5262,12 +5262,12 @@ func sameOAuthTokens(a, b string) bool {
 }
 
 /**
- * @brief 凭证获取的传输故障、限流和服务端错误使用配置的指数退避，其他失败保留长期冷却
+ * @brief 凭证传输故障、限流、服务端错误与 Codex 不确定结果使用配置短退避，其他失败保留长期冷却
  * @param ctx 已检查取消状态的请求上下文；写库使用独立的有界上下文
  * @param cfg 当前渠道配置
  * @param provider 用于诊断的提供商名称
  * @param credentialErr 凭证加载错误；nil 表示刷新后的访问令牌仍被上游拒绝
- * @note 写入渠道冷却并失效缓存，不影响其他渠道，也不按业务模型记录冷却。
+ * @note 写入渠道冷却并失效缓存；Codex 不确定结果只允许随后恢复回执，不允许重放 grant。
  */
 func (s *Server) cooldownOAuthCredentialFailure(ctx context.Context, cfg *model.Config, provider string, credentialErr error) {
 	statusCode, _, _ := util.ClassifyError(credentialErr)
@@ -5277,6 +5277,12 @@ func (s *Server) cooldownOAuthCredentialFailure(ctx context.Context, cfg *model.
 	if endpointFailure, ok := errors.AsType[oauthTokenEndpointFailure](credentialErr); ok {
 		statusCode = endpointFailure.StatusCode()
 		retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+	}
+	if cfg.UsesCodexOAuth() && codexauth.IsRefreshOutcomeUnknown(credentialErr) {
+		retryable = true
+		if statusCode != http.StatusTooManyRequests && statusCode < http.StatusInternalServerError {
+			statusCode = http.StatusServiceUnavailable
+		}
 	}
 	if !retryable {
 		s.cooldownRejectedOAuthCredential(ctx, cfg, provider)

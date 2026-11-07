@@ -12,6 +12,190 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestConvertClaudeRequestToCodex_ToolSearchDeferredLoadingPreservesPromptCachePrefix(t *testing.T) {
+	before := []byte(`{"system":"You are Claude Code.","tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":"DeferredToolPlaceholder","defer_loading":true,"input_schema":{"type":"object"}},{"name":"Read","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"Find tools"},{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]}]}`)
+	after, _ := sjson.SetRawBytes(before, "tools.1", []byte(`{"name":"WebSearch","defer_loading":true,"input_schema":{"type":"object"}}`))
+	after, _ = sjson.SetRawBytes(after, "tools.-1", []byte(`{"name":"WebFetch","defer_loading":true,"input_schema":{"type":"object"}}`))
+	after, _ = sjson.SetRawBytes(after, "messages.-1", []byte(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":"WebSearch"},{"type":"tool_reference","name":"WebFetch"},{"type":"tool_reference","tool_name":"WebSearch"}]}]}`))
+	for _, stream := range []bool{false, true} {
+		beforeOut, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", before, stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterOut, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", after, stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := gjson.GetBytes(afterOut, "tools").Raw, gjson.GetBytes(beforeOut, "tools").Raw; got != want || gjson.GetBytes(afterOut, "tools.#").Int() != 2 {
+			t.Fatalf("tool discovery changed the top-level cache prefix: before=%s after=%s", beforeOut, afterOut)
+		}
+		beforeInputs, afterInputs := gjson.GetBytes(beforeOut, "input").Array(), gjson.GetBytes(afterOut, "input").Array()
+		if len(beforeInputs) != 2 || len(afterInputs) != 4 {
+			t.Fatalf("unexpected discovery history: before=%s after=%s", beforeOut, afterOut)
+		}
+		for i, item := range beforeInputs {
+			if item.Raw != afterInputs[i].Raw {
+				t.Fatalf("input prefix changed at %d: before=%s after=%s", i, beforeOut, afterOut)
+			}
+		}
+		if afterInputs[2].Get("type").String() != "function_call_output" || afterInputs[3].Get("type").String() != "additional_tools" || afterInputs[3].Get("role").String() != "developer" {
+			t.Fatalf("discovery must follow its tool result: %s", afterOut)
+		}
+		tools := afterInputs[3].Get("tools").Array()
+		if len(tools) != 2 || tools[0].Get("name").String() != "WebSearch" || tools[1].Get("name").String() != "WebFetch" || tools[0].Get("defer_loading").Exists() {
+			t.Fatalf("discovered definitions lost order or deduplication: %s", afterOut)
+		}
+		refs := gjson.Parse(afterInputs[2].Get("output").String()).Array()
+		if len(refs) != 3 || refs[1].Get("name").String() != "WebFetch" {
+			t.Fatalf("search result references were lost: %s", afterOut)
+		}
+	}
+}
+
+func TestConvertClaudeRequestToCodex_RepeatedToolSearchAndLongMCPToolMapping(t *testing.T) {
+	eager := "mcp__eager_server_with_a_long_name_for_testing__deliver_final_subagent_handback_report"
+	first := "mcp__first_server_with_a_long_name_for_testing__deliver_final_subagent_handback_report"
+	second := "mcp__second_server_with_a_long_name_for_testing__deliver_final_subagent_handback_report"
+	before := []byte(fmt.Sprintf(`{"tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":%q,"input_schema":{"type":"object"}},{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"start"},{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":%q}]}]}]}`, eager, first, first))
+	after, _ := sjson.SetRawBytes(before, "tools", []byte(fmt.Sprintf(`[{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}},{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}},{"name":%q,"input_schema":{"type":"object"}}]`, second, first, eager)))
+	for _, message := range []string{
+		`{"role":"assistant","content":[{"type":"tool_use","id":"search_2","name":"ToolSearch","input":{}}]}`,
+		fmt.Sprintf(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_2","content":[{"type":"tool_reference","name":%q},{"type":"tool_reference","tool_name":%q}]}]}`, second, first),
+		fmt.Sprintf(`{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_reference","name":%q}}]}`, first),
+	} {
+		after, _ = sjson.SetRawBytes(after, "messages.-1", []byte(message))
+	}
+	beforeOut, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", before, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterOut, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", after, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(beforeOut, "tools").Raw != gjson.GetBytes(afterOut, "tools").Raw {
+		t.Fatalf("new deferred collision changed eager tools: before=%s after=%s", beforeOut, afterOut)
+	}
+	beforeInputs, afterInputs := gjson.GetBytes(beforeOut, "input").Array(), gjson.GetBytes(afterOut, "input").Array()
+	for i, item := range beforeInputs {
+		if i >= len(afterInputs) || item.Raw != afterInputs[i].Raw {
+			t.Fatalf("new deferred collision changed input prefix: before=%s after=%s", beforeOut, afterOut)
+		}
+	}
+	var discovered []string
+	for _, item := range afterInputs {
+		if item.Get("type").String() == "additional_tools" {
+			for _, tool := range item.Get("tools").Array() {
+				discovered = append(discovered, tool.Get("name").String())
+			}
+		}
+	}
+	if len(discovered) != 2 || discovered[0] == discovered[1] || len(discovered[0]) > 64 || len(discovered[1]) > 64 {
+		t.Fatalf("repeated references or colliding names changed discovery: %s", afterOut)
+	}
+	refs := gjson.Parse(afterInputs[5].Get("output").String()).Array()
+	if len(refs) != 2 || refs[0].Get("name").String() != discovered[1] || refs[1].Get("tool_name").String() != discovered[0] {
+		t.Fatalf("tool references did not use declaration short names: %s", afterOut)
+	}
+	reply := []byte(fmt.Sprintf(`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","name":%q,"call_id":"call_1","arguments":"{}"},{"type":"function_call","name":%q,"call_id":"call_2","arguments":"{}"}]}}`, discovered[0], discovered[1]))
+	out := ConvertCodexResponseToClaudeNonStream(context.Background(), "gpt-6.1-sol", after, afterOut, reply, nil)
+	if gjson.GetBytes(out, "content.0.name").String() != first || gjson.GetBytes(out, "content.1.name").String() != second {
+		t.Fatalf("deferred tool names did not round-trip: %s", out)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_StandaloneToolReferenceAndSearchResultOrdering(t *testing.T) {
+	input := []byte(`{"tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":"WebSearch","defer_loading":true,"input_schema":{"type":"object"}},{"name":"WebFetch","defer_loading":true,"input_schema":{"type":"object"}},{"name":"Lookup","defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"before"},{"type":"tool_reference","tool_name":"WebSearch"},{"type":"text","text":"between"},{"type":"tool_search_tool_result","content":{"tool_references":[{"type":"tool_reference","name":"WebFetch"}]}},{"type":"text","text":"after"}]},{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1n"}},{"type":"text","text":"found"},{"type":"tool_reference","tool_name":"Lookup"}]},{"type":"text","text":"continue"}]}]}`)
+	out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := gjson.GetBytes(out, "input").Array()
+	wantTypes := []string{"message", "additional_tools", "message", "additional_tools", "message", "function_call", "function_call_output", "additional_tools", "message"}
+	if len(items) != len(wantTypes) {
+		t.Fatalf("discovery changed mixed content history: %s", out)
+	}
+	for i, want := range wantTypes {
+		if items[i].Get("type").String() != want {
+			t.Fatalf("input[%d] must be %s: %s", i, want, out)
+		}
+	}
+	for i, want := range map[int]string{0: "before", 2: "between", 4: "after", 8: "continue"} {
+		if items[i].Get("content.0.text").String() != want {
+			t.Fatalf("text crossed discovery point %d: %s", i, out)
+		}
+	}
+	result := items[6].Get("output").Array()
+	if len(result) != 3 || result[0].Get("type").String() != "input_image" || result[1].Get("text").String() != "found" || gjson.Parse(result[2].Get("text").String()).Get("tool_name").String() != "Lookup" {
+		t.Fatalf("mixed tool result lost image, text or reference: %s", out)
+	}
+	if items[1].Get("tools.0.name").String() != "WebSearch" || items[3].Get("tools.0.name").String() != "WebFetch" || items[7].Get("tools.0.name").String() != "Lookup" {
+		t.Fatalf("tool definitions moved across discovery points: %s", out)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_ForcedDeferredTool(t *testing.T) {
+	raw := []byte(`{"tools":[{"name":"Lookup","defer_loading":true,"input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Lookup"},"messages":[{"role":"user","content":"lookup"}]}`)
+	out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(out, "tools.0.name").String() != "Lookup" || gjson.GetBytes(out, "tool_choice.name").String() != "Lookup" {
+		t.Fatalf("explicit choice must make the deferred tool available: %s", out)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_ToolResultPreservesUnresolvedReferences(t *testing.T) {
+	for _, content := range []string{
+		`[{"type":"tool_reference","tool_name":"Bash"}]`,
+		`[{"type":"text","text":"found"},{"type":"tool_reference","name":"Bash"}]`,
+		`[{"type":"tool_reference"}]`,
+	} {
+		raw := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":` + content + `}]}]}`)
+		out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", raw, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items := gjson.GetBytes(out, "input").Array()
+		if len(items) != 2 || items[1].Get("type").String() != "function_call_output" {
+			t.Fatalf("unresolved result generated a tool declaration: %s", out)
+		}
+		output := items[1].Get("output")
+		parts := gjson.Parse(content).Array()
+		if len(parts) == 1 {
+			if output.Type != gjson.String || output.String() != content {
+				t.Fatalf("reference-only result changed: %s", out)
+			}
+		} else if output.Get("0.text").String() != "found" || output.Get("1.type").String() != "input_text" || output.Get("1.text").String() != parts[1].Raw {
+			t.Fatalf("mixed result lost its unresolved reference: %s", out)
+		}
+	}
+}
+
+func TestConvertClaudeRequestToCodex_RepeatedStandaloneReference(t *testing.T) {
+	raw := []byte(`{"tools":[{"name":"Lookup","defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"tool_reference","name":"Lookup"}]},{"role":"assistant","content":"ready"},{"role":"user","content":[{"type":"tool_reference","name":"Lookup"}]}]}`)
+	out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := gjson.GetBytes(out, "input").Array()
+	if len(items) != 2 || items[0].Get("type").String() != "additional_tools" || items[1].Get("content.0.text").String() != "ready" {
+		t.Fatalf("repeated standalone references must not duplicate declarations: %s", out)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_ParallelToolResultsDeferDiscovery(t *testing.T) {
+	raw := []byte(`{"tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":"Read","input_schema":{"type":"object"}},{"name":"Lookup","defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}},{"type":"tool_use","id":"read_1","name":"Read","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","name":"Lookup"}]},{"type":"text","text":"between results"},{"type":"tool_result","tool_use_id":"read_1","content":"file"}]}]}`)
+	out, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := gjson.GetBytes(out, "input").Array()
+	if len(items) != 6 || items[2].Get("type").String() != "function_call_output" || items[3].Get("content.0.text").String() != "between results" || items[4].Get("type").String() != "function_call_output" || items[5].Get("type").String() != "additional_tools" {
+		t.Fatalf("discovered definitions must follow all parallel tool results: %s", out)
+	}
+}
+
 func TestConvertClaudeRequestToCodex_MaxOutputTokens(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1476,13 +1660,10 @@ func TestConvertClaudeRequestToCodex_MidConversationToolAdditions(t *testing.T) 
 		t.Fatalf("ConvertClaudeRequestToCodex returned error: %v", err)
 	}
 
-	// Top-level tools[] must remain untouched (2 tools: Read and deferred_lookup) to preserve the prompt cache prefix.
+	// Deferred declarations are emitted only at their discovery point.
 	topTools := gjson.GetBytes(translated, "tools").Array()
-	if len(topTools) != 2 {
-		t.Fatalf("expected 2 top-level tools, got %d: %s", len(topTools), gjson.GetBytes(translated, "tools").Raw)
-	}
-	if topTools[0].Get("name").String() != "Read" || topTools[1].Get("name").String() != "deferred_lookup" {
-		t.Fatalf("unexpected top-level tool names: %q, %q", topTools[0].Get("name").String(), topTools[1].Get("name").String())
+	if len(topTools) != 1 || topTools[0].Get("name").String() != "Read" {
+		t.Fatalf("expected only Read in top-level tools: %s", gjson.GetBytes(translated, "tools").Raw)
 	}
 
 	// Expected input items:

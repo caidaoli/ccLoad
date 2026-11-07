@@ -296,6 +296,86 @@ func TestRegistryAnthropicMidConversationTools(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Anthropic 独立工具引用仅在 Codex 桥接开放并保留发现工具定义
+ * @param t 测试上下文
+ */
+func TestRegistryAnthropicDeferredToolReferences(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, block := range []string{
+		`{"type":"tool_reference","tool_name":"Lookup"}`,
+		`{"type":"tool_search_tool_result","content":{"tool_references":[{"type":"tool_reference","name":"Lookup"}]}}`,
+	} {
+		for _, target := range []protocol.Protocol{protocol.Codex, protocol.OpenAI, protocol.Gemini} {
+			for _, stream := range []bool{false, true} {
+				raw := []byte(`{"tools":[{"name":"Lookup","defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[` + block + `]}]}`)
+				out, err := reg.TranslateRequest(protocol.Anthropic, target, "target", raw, stream)
+				if target != protocol.Codex {
+					if _, ok := errors.AsType[*protocol.RequestTranslationError](err); !ok {
+						t.Fatalf("unsupported tool reference target=%s: %v", target, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gjson.GetBytes(out, "input.0.type").String() != "additional_tools" || gjson.GetBytes(out, "input.0.tools.0.name").String() != "Lookup" || gjson.GetBytes(out, "tools.#").Int() != 0 {
+					t.Fatalf("deferred tool definition was lost or leaked to top-level tools: %s", out)
+				}
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证未知引用和不可表示的搜索结果返回协议能力错误
+ * @param t 测试上下文
+ */
+func TestRegistryAnthropicRejectsInvalidDeferredToolReferences(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, block := range []string{
+		`{"type":"tool_reference","tool_name":"missing"}`,
+		`{"type":"tool_reference"}`,
+		`{"type":"tool_search_tool_result","content":{"tool_references":[{"type":"tool_reference","name":"missing"}]}}`,
+		`{"type":"tool_search_tool_result","content":{"tool_references":{}}}`,
+		`{"type":"tool_search_tool_result","content":{"tool_references":[{"type":"text","text":"unsupported reference"}]}}`,
+	} {
+		for _, stream := range []bool{false, true} {
+			raw := []byte(`{"messages":[{"role":"user","content":[` + block + `]}]}`)
+			_, err := reg.TranslateRequest(protocol.Anthropic, protocol.Codex, "target", raw, stream)
+			if _, ok := errors.AsType[*protocol.RequestTranslationError](err); !ok {
+				t.Fatalf("invalid reference %s did not return a translation error: %v", block, err)
+			}
+		}
+	}
+	raw := []byte(`{"tools":[{"name":"Lookup","defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"system","content":[{"type":"tool_reference","name":"Lookup"}]}]}`)
+	if _, err := reg.TranslateRequest(protocol.Anthropic, protocol.Codex, "target", raw, false); err == nil {
+		t.Fatal("system tool reference must not be silently ignored")
+	}
+}
+
+/**
+ * @brief 验证历史工具结果内缺少当前声明的引用仍以结果文本透传
+ * @param t 测试上下文
+ */
+func TestRegistryAnthropicPreservesUnresolvedToolResultReference(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	raw := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"text","text":"found"},{"type":"tool_reference","tool_name":"Bash"}]}]}]}`)
+	for _, stream := range []bool{false, true} {
+		out, err := reg.TranslateRequest(protocol.Anthropic, protocol.Codex, "target", raw, stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items := gjson.GetBytes(out, "input").Array()
+		if len(items) != 2 || items[1].Get("type").String() != "function_call_output" || items[1].Get("output.0.text").String() != "found" || gjson.Parse(items[1].Get("output.1.text").String()).Get("tool_name").String() != "Bash" {
+			t.Fatalf("historical tool reference was lost or generated a declaration: %s", out)
+		}
+	}
+}
+
 func TestRegistryAnthropicToolResultErrors(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

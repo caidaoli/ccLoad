@@ -124,13 +124,18 @@ func startDockerPostgres(t *testing.T) *postgresTestEnv {
 	return nil
 }
 
+/**
+ * @brief 清理隔离测试数据库中的所有业务表与迁移记录
+ * @param t 测试上下文
+ * @param db 仅用于测试的 PostgreSQL 数据库连接
+ */
 func cleanupPostgresTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	tables := []string{
 		"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
 		"auth_tokens", "channel_models", "channel_model_cooldowns", "channel_protocol_transforms", "api_keys", "channel_url_states", "oauth_quota_cost_ledger",
-		"channels", "schema_migrations", "key_rr",
+		"channels", "codex_refresh_journal", "schema_migrations", "key_rr",
 	}
 	for _, table := range tables {
 		if _, err := db.Exec("DROP TABLE IF EXISTS " + table + " CASCADE"); err != nil {
@@ -157,6 +162,11 @@ func newPostgresQueryStore(t *testing.T, env *postgresTestEnv) Store {
 func TestPostgres(t *testing.T) {
 	env := setupPostgresEnv(t)
 	ctx := context.Background()
+
+	t.Run("CodexRefreshJournal", func(t *testing.T) {
+		store := newPostgresQueryStore(t, env)
+		assertCodexRefreshJournal(t, store)
+	})
 
 	t.Run("SequentialKeyPriorities", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)

@@ -132,6 +132,11 @@ func (snapshot channelCooldownSnapshot) hasActiveCooldown(channelID int64, now t
 	return false
 }
 
+/**
+ * @brief 返回过滤和分页后的渠道列表及持久化 Codex 恢复提示
+ * @param c 管理接口上下文
+ * @note 查询失败时返回 HTTP 错误，不省略无法确认的恢复状态。
+ */
 func (s *Server) handleListChannels(c *gin.Context) {
 	listSort, err := parseChannelListSort(c)
 	if err != nil {
@@ -199,7 +204,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for i, cfg := range cfgs {
 		channel := ectx.enrichChannel(cfg, metadata[i])
-		channel.CodexRequiresReauthorization = s.codexCredentials.requiresReauthorization(cfg)
+		channel.CodexRequiresReauthorization, err = s.codexCredentials.requiresReauthorization(c.Request.Context(), cfg)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
 		channel.ManagementAccount = s.managementAccountView(cfg)
 		out = append(out, channel)
 	}
@@ -884,6 +893,15 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, detail)
 }
 
+/**
+ * @brief 构建渠道详情及持久化 Codex 刷新恢复提示
+ * @param ctx 数据查询上下文
+ * @param id 渠道 ID
+ * @param cfg 当前渠道配置；会补齐显示用重定向模型
+ * @return 供管理端展示的渠道详情
+ * @return 渠道关联的 API Key 列表
+ * @return 查询失败时返回错误
+ */
 func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Config) (ChannelWithCooldown, []*model.APIKey, error) {
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
 	fillChannelRedirectModels(cfg)
@@ -905,7 +923,10 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 	metadata := []channelOAuthMetadata{channelOAuthMetadataFromCredential(cfg)}
 	s.attachChannelQuotaCosts(ctx, []*model.Config{cfg}, metadata, now)
 	detail := metadata[0].channelView(cfg)
-	detail.CodexRequiresReauthorization = s.codexCredentials.requiresReauthorization(cfg)
+	detail.CodexRequiresReauthorization, err = s.codexCredentials.requiresReauthorization(ctx, cfg)
+	if err != nil {
+		return ChannelWithCooldown{}, nil, err
+	}
 	detail.ManagementAccount = s.managementAccountView(cfg)
 	detail.KeyStrategy = channelKeyStrategy(apiKeys)
 	detail.ModelCooldowns = activeModelCooldownInfos(allModelCooldowns[id], now)

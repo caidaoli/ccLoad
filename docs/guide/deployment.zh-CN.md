@@ -235,6 +235,8 @@ Hugging Face Spaces 提供免费的 Docker 托管和自动 HTTPS，适合个人�
 - ✅ **统计缓存**: 智能 TTL 缓存，减少重复聚合查询
 - 配置方法: 在 Secrets 中添加一个主库 DSN（`CCLOAD_MYSQL` 或 `CCLOAD_POSTGRES`），再加 `CCLOAD_ENABLE_SQLITE_REPLICA=1`
 
+使用 Codex OAuth 时，混合模式还需持久保存本地 SQLite 中的刷新记录；仅从远端配置副本恢复会要求重新授权。无法保留本地数据库的部署可使用下面的纯外部数据库模式，让凭据和刷新记录一起持久保存。
+
 **Dockerfile**：沿用步骤 3 的 Dockerfile，去掉 `SQLITE_PATH` 一行即可，DSN 在 Secrets 中配置。
 
 **方案二：纯外部数据库模式**

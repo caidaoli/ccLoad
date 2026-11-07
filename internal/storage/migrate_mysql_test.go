@@ -134,7 +134,11 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 	return nil
 }
 
-// cleanupMySQLTables 清理所有表（用于测试前重置）
+/**
+ * @brief 清理隔离测试数据库中的所有业务表与迁移记录
+ * @param t 测试上下文
+ * @param db 仅用于测试的 MySQL 数据库连接
+ */
 func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
@@ -142,7 +146,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "oauth_quota_cost_ledger", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "oauth_quota_cost_ledger", "codex_refresh_journal", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -159,6 +163,16 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
  */
 func TestMySQL(t *testing.T) {
 	env := setupMySQLEnv(t)
+
+	t.Run("CodexRefreshJournal", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		assertCodexRefreshJournal(t, store)
+	})
 
 	// 子测试共享同一个容器
 	t.Run("SequentialKeyPriorities", func(t *testing.T) {

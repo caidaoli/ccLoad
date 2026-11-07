@@ -9,9 +9,9 @@ import (
 	"ccLoad/internal/util"
 )
 
-// Store 数据持久化接口
-// [REFACTOR] 2025-12：合并子接口，所有方法平铺
-// 理由：8个子接口无任何地方被独立使用，所有消费者都依赖完整 Store
+/**
+ * @brief 网关配置、鉴权与运行数据的持久化接口
+ */
 type Store interface {
 	// === Channel Management ===
 	ListConfigs(ctx context.Context) ([]*model.Config, error)
@@ -22,6 +22,33 @@ type Store interface {
 	UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
+	/**
+	 * @brief 在发送 Codex 刷新请求前永久申领该授权，阻止同一授权重放
+	 * @param ctx 数据库操作上下文
+	 * @param key 客户端身份与刷新令牌的 SHA-256 十六进制摘要
+	 * @return 仅首次申领返回 true；已申领或已完成返回 false
+	 * @return 数据库执行、读取影响行数或上下文取消时返回错误
+	 * @note 并发安全；记录不随渠道删除或凭据重导入清理
+	 */
+	RefreshClaim(ctx context.Context, key string) (bool, error)
+	/**
+	 * @brief 读取 Codex 刷新最终回执
+	 * @param ctx 数据库操作上下文
+	 * @param key 已申领授权的 SHA-256 十六进制摘要
+	 * @return 原始回执；未申领或结果未知时为 nil
+	 * @return 记录存在时为 true；未申领时为 false
+	 * @return 数据库查询或上下文取消时返回错误
+	 */
+	RefreshRead(ctx context.Context, key string) ([]byte, bool, error)
+	/**
+	 * @brief 为已申领且未完成的 Codex 刷新授权保存唯一最终回执
+	 * @param ctx 数据库操作上下文
+	 * @param key 已申领授权的 SHA-256 十六进制摘要
+	 * @param receipt 刷新交换结果序列化的私密回执
+	 * @return 数据库执行、上下文取消、未申领或已完成时返回错误
+	 * @note 并发安全；已有回执不可覆盖
+	 */
+	RefreshComplete(ctx context.Context, key string, receipt []byte) error
 	// CompareAndSwapOAuthUsage persists a validated quota sample; costs come from OAuthQuotaCostViews.
 	CompareAndSwapOAuthUsage(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
 	OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error)

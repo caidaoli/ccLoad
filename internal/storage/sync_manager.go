@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/codexauth"
+	"ccLoad/internal/model"
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
@@ -34,12 +36,13 @@ func NewSyncManager(primary, sqlite *sqlstore.SQLStore) *SyncManager {
 	}
 }
 
-// RestoreOnStartup 启动时恢复数据（从主库恢复到 SQLite）
-//
-// logDays 参数：
-//   - -1 = 全量恢复（慎用，启动慢）
-//   - 0 = 仅恢复配置表，不恢复 logs
-//   - 7 = 恢复配置表 + 最近 7 天 logs
+/**
+ * @brief 首次初始化时从主库快照恢复配置，并封锁无法确认刷新历史的 Codex 授权
+ * @param ctx 恢复上下文
+ * @param logDays 日志恢复天数；-1 为全部，0 跳过日志，正数为最近天数
+ * @return 配置快照读取、凭据解析或 SQLite 恢复事务失败时返回错误
+ * @note 配置与 Codex 刷新申领在同一事务提交；不清理已有刷新记录
+ */
 func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error {
 	start := time.Now()
 
@@ -79,6 +82,9 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 			return fmt.Errorf("恢复表 %s 失败: %w", table, err)
 		}
 	}
+	if err := blockRestoredCodexRefreshGrants(ctx, sqliteTx); err != nil {
+		return fmt.Errorf("封锁恢复的 Codex 刷新授权失败: %w", err)
+	}
 	if err := primaryTx.Commit(); err != nil {
 		return fmt.Errorf("提交主库配置快照失败: %w", err)
 	}
@@ -96,6 +102,39 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 
 	log.Printf("[INFO] 数据恢复完成，总耗时: %v", time.Since(start))
 	return nil
+}
+
+/**
+ * @brief 为恢复的 Codex OAuth 凭据预置申领，防止旧主库凭据重放未知结果的刷新
+ * @param ctx 恢复事务上下文
+ * @param tx 包含恢复后渠道数据的 SQLite 事务
+ * @return 渠道查询、凭据解析或刷新申领插入失败时返回错误
+ * @note 仅用于主库首次恢复；保留访问令牌、PAT 与已有刷新回执
+ */
+func blockRestoredCodexRefreshGrants(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT oauth_credential FROM channels WHERE auth_type = ?`, model.AuthTypeCodexOAuth)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		credential, err := codexauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return fmt.Errorf("解析恢复的 Codex 凭据: %w", err)
+		}
+		if credential.RefreshToken == "" {
+			continue
+		}
+		key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, credential.RefreshToken)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO codex_refresh_journal (grant_key) VALUES (?) ON CONFLICT(grant_key) DO NOTHING`, key); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // RestoreLogsOnStartup 从主库增量补齐 SQLite 日志尾部。

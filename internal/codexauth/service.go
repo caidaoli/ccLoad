@@ -105,17 +105,23 @@ func (e *tokenEndpointError) StatusCode() int {
 	return e.statusCode
 }
 
-// IsTerminalRefreshError reports a rejected Codex refresh grant. Client
-// configuration errors such as invalid_client do not invalidate a user's grant.
+/**
+ * @brief 判断上游或持久化回执是否明确拒绝了 Codex 刷新 grant
+ * @param err 刷新错误
+ * @return 明确拒绝时返回 true；不确定结果或客户端配置错误不视为个人凭据失效
+ */
 func IsTerminalRefreshError(err error) bool {
+	if IsRefreshOutcomeUnknown(err) {
+		return false
+	}
+	if _, rejected := errors.AsType[*refreshGrantRejectedError](err); rejected {
+		return true
+	}
 	var endpoint *tokenEndpointError
 	if !errors.As(err, &endpoint) || endpoint == nil {
 		return false
 	}
-	if endpoint.statusCode == http.StatusUnauthorized {
-		return true
-	}
-	if endpoint.statusCode != http.StatusBadRequest && endpoint.statusCode != http.StatusForbidden {
+	if endpoint.statusCode != http.StatusBadRequest && endpoint.statusCode != http.StatusForbidden && endpoint.statusCode != http.StatusUnauthorized {
 		return false
 	}
 	var payload struct {
@@ -123,7 +129,7 @@ func IsTerminalRefreshError(err error) bool {
 		Code  string          `json:"code"`
 	}
 	if json.Unmarshal([]byte(endpoint.responseBody), &payload) != nil {
-		return false
+		return endpoint.statusCode == http.StatusUnauthorized
 	}
 	code := payload.Code
 	var errorCode string
@@ -142,7 +148,14 @@ func IsTerminalRefreshError(err error) bool {
 			}
 		}
 	}
-	switch strings.ToLower(strings.TrimSpace(code)) {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if code == "invalid_client" {
+		return false
+	}
+	if endpoint.statusCode == http.StatusUnauthorized {
+		return true
+	}
+	switch code {
 	case "invalid_grant", "invalid_token", "invalid_refresh_token", "refresh_token_expired",
 		"refresh_token_revoked", "expired_token", "refresh_token_reused", "refresh_token_invalidated", "token_revoked":
 		return true
@@ -299,8 +312,18 @@ func (s *Service) AuthorizationLink(state string, pkce PKCE) (string, error) {
 	return parsed.String(), nil
 }
 
-// ExchangeCode exchanges one authorization code for a persistent credential.
+/**
+ * @brief 将授权码交换为可持久化的 Codex 凭据
+ * @param ctx 交换上下文
+ * @param code OAuth 授权码
+ * @param pkce 授权会话对应的 PKCE 验证信息
+ * @return 交换成功的凭据；失败时返回 nil
+ * @return 配置、授权输入或上游交换错误
+ */
 func (s *Service) ExchangeCode(ctx context.Context, code string, pkce PKCE) (*Credential, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(code) == "" {
 		return nil, errors.New("authorization code is required")
 	}
@@ -314,15 +337,31 @@ func (s *Service) ExchangeCode(ctx context.Context, code string, pkce PKCE) (*Cr
 		"redirect_uri":  {s.RedirectURI},
 		"code_verifier": {pkce.Verifier},
 	}
-	return s.requestToken(ctx, "application/x-www-form-urlencoded", []byte(form.Encode()))
+	return s.requestToken(ctx, "application/x-www-form-urlencoded", []byte(form.Encode()), false)
 }
 
-// Refresh exchanges a refresh token for a new access token. The request matches
-// native Codex (rust-v0.157.1 request_chatgpt_token_refresh): a JSON body
-// without scope, unlike the form-encoded authorization-code exchange.
-func (s *Service) Refresh(ctx context.Context, refreshToken string) (*Credential, error) {
+/**
+ * @brief 在持久化提交权与回执保护下交换 Codex 刷新 token
+ * @param ctx 请求上下文；取消不能撤销已记录的提交权
+ * @param refreshToken 已规范化的刷新 token
+ * @param journal 权威凭据存储，与凭据一同备份和恢复
+ * @return 新凭据或已记录的未过期轮换结果；失败时返回 nil
+ * @return 明确拒绝返回永久错误，提交或结果无法确认时返回 RefreshOutcomeUnknownError
+ * @note 同一 grant 只能提交一次；无回执或回执过期时必须恢复结果或重新授权。
+ * @details 与原生 Codex 一致，刷新使用不含 scope 的 JSON 请求，授权码交换继续使用表单。
+ */
+func (s *Service) Refresh(ctx context.Context, refreshToken string, journal RefreshJournal) (*Credential, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, errors.New("refresh token is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	payload, err := json.Marshal(map[string]string{
 		"client_id":     s.ClientID,
@@ -332,7 +371,39 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*Credential
 	if err != nil {
 		return nil, fmt.Errorf("encode Codex refresh request: %w", err)
 	}
-	return s.requestToken(ctx, "application/json", payload)
+	key := RefreshGrantKey(s.ClientID, refreshToken)
+	claimed, err := journal.RefreshClaim(ctx, key)
+	if err != nil {
+		return nil, &RefreshOutcomeUnknownError{stage: "claim", cause: err}
+	}
+	if !claimed {
+		credential, exists, err := readRefreshReceipt(ctx, journal, key, s.ClientID)
+		if !exists && err == nil {
+			return nil, &RefreshOutcomeUnknownError{stage: "pending"}
+		}
+		return credential, err
+	}
+	credential, refreshErr := s.requestToken(ctx, "application/json", payload, true)
+	receipt := refreshReceipt{Credential: credential}
+	if refreshErr != nil {
+		if unknown, ok := errors.AsType[*RefreshOutcomeUnknownError](refreshErr); ok {
+			receipt.Stage = unknown.stage
+		} else {
+			receipt.Rejected = true
+		}
+	} else if credential.RefreshToken == "" {
+		credential.RefreshToken = refreshToken
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return nil, &RefreshOutcomeUnknownError{stage: "receipt_encode", cause: err}
+	}
+	receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultTokenTimeout)
+	defer cancel()
+	if err := journal.RefreshComplete(receiptCtx, key, raw); err != nil {
+		return nil, &RefreshOutcomeUnknownError{stage: "receipt_write", cause: err}
+	}
+	return credential, refreshErr
 }
 
 func (s *Service) validate() error {
@@ -349,19 +420,31 @@ func (s *Service) validate() error {
 	return nil
 }
 
-func (s *Service) requestToken(ctx context.Context, contentType string, payload []byte) (*Credential, error) {
-	if err := s.validate(); err != nil {
-		return nil, err
-	}
+/**
+ * @brief 执行授权码或刷新交换，并在刷新时保留不可重放的失败阶段
+ * @param ctx 交换上下文
+ * @param contentType OAuth 请求的内容类型
+ * @param payload 已编码的授权请求
+ * @param refreshing 是否执行已 claim 的 refresh grant
+ * @return 上游颁发的凭据，失败时返回 nil
+ * @return 请求、响应或校验错误；刷新时除明确拒绝外均返回 RefreshOutcomeUnknownError
+ */
+func (s *Service) requestToken(ctx context.Context, contentType string, payload []byte, refreshing bool) (*Credential, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	tokenCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
 	defer cancel()
+	tokenError := func(stage string, cause error) error {
+		if refreshing {
+			return &RefreshOutcomeUnknownError{stage: stage, cause: cause}
+		}
+		return cause
+	}
 
 	req, err := http.NewRequestWithContext(tokenCtx, http.MethodPost, s.TokenURL, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build Codex token request: %w", err)
+		return nil, tokenError("request_create", fmt.Errorf("build Codex token request: %w", err))
 	}
 	// Native Codex sends token requests through its default client: reqwest's
 	// Accept plus the originator and User-Agent it sends everywhere.
@@ -370,17 +453,27 @@ func (s *Service) requestToken(ctx context.Context, contentType string, payload 
 	req.Header.Set("Originator", DefaultOriginator)
 	req.Header.Set("User-Agent", DefaultUserAgent)
 
-	resp, err := s.Client.Do(req)
+	client := s.Client
+	if refreshing {
+		isolated := *client
+		isolated.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &isolated
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("codex token request: %w", err)
+		return nil, tokenError("transport", fmt.Errorf("codex token request: %w", err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("read Codex token response: %w", err)
+		return nil, tokenError("response_read", fmt.Errorf("read Codex token response: %w", err))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
+		endpointErr := &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
+		if refreshing && !IsTerminalRefreshError(endpointErr) {
+			return nil, tokenError("response_status", endpointErr)
+		}
+		return nil, endpointErr
 	}
 
 	var token struct {
@@ -390,13 +483,13 @@ func (s *Service) requestToken(ctx context.Context, contentType string, payload 
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &token); err != nil {
-		return nil, fmt.Errorf("decode Codex token response: %w", err)
+		return nil, tokenError("response_decode", fmt.Errorf("decode Codex token response: %w", err))
 	}
 	if strings.TrimSpace(token.AccessToken) == "" {
-		return nil, errors.New("codex token response is missing access_token")
+		return nil, tokenError("response_validate", errors.New("codex token response is missing access_token"))
 	}
 	if token.ExpiresIn <= 0 {
-		return nil, errors.New("codex token response has invalid expires_in")
+		return nil, tokenError("response_validate", errors.New("codex token response has invalid expires_in"))
 	}
 
 	credential := &Credential{

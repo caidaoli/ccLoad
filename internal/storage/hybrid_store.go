@@ -248,6 +248,43 @@ func (h *HybridStore) CompareAndSwapOAuthUsage(
 	return updated, err
 }
 
+/**
+ * @brief 仅在 SQLite 权威库申领 Codex 刷新授权
+ * @param ctx 数据库操作上下文
+ * @param key 客户端身份与刷新令牌的 SHA-256 十六进制摘要
+ * @return 首次申领返回 true；已存在时返回 false
+ * @return SQLite 操作或上下文取消时返回错误
+ * @note 不复制到主库，也不在 SQLite 失败时回退主库
+ */
+func (h *HybridStore) RefreshClaim(ctx context.Context, key string) (bool, error) {
+	return h.sqlite.RefreshClaim(ctx, key)
+}
+
+/**
+ * @brief 仅从 SQLite 权威库读取 Codex 刷新回执
+ * @param ctx 数据库操作上下文
+ * @param key 已申领授权的 SHA-256 十六进制摘要
+ * @return 原始回执；未申领或结果未知时为 nil
+ * @return 记录存在时为 true；未申领或查询失败时为 false
+ * @return SQLite 查询或上下文取消时返回错误
+ * @note SQLite 失败时禁止回退主库
+ */
+func (h *HybridStore) RefreshRead(ctx context.Context, key string) ([]byte, bool, error) {
+	return h.sqlite.RefreshRead(ctx, key)
+}
+
+/**
+ * @brief 仅在 SQLite 权威库完成 Codex 刷新授权并保留唯一回执
+ * @param ctx 数据库操作上下文
+ * @param key 已申领授权的 SHA-256 十六进制摘要
+ * @param receipt 刷新交换结果序列化的私密回执
+ * @return SQLite 操作、上下文取消、未申领或已完成时返回错误
+ * @note 不复制到主库，也不在 SQLite 失败时回退主库
+ */
+func (h *HybridStore) RefreshComplete(ctx context.Context, key string, receipt []byte) error {
+	return h.sqlite.RefreshComplete(ctx, key, receipt)
+}
+
 // OAuthQuotaCostViews 读 SQLite 权威库；主库账本异步落后。
 func (h *HybridStore) OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error) {
 	return h.sqlite.OAuthQuotaCostViews(ctx, usages, at)

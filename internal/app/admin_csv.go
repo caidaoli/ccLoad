@@ -1289,7 +1289,7 @@ func (s *Server) validateCSVImportOAuthCredential(
 			clone.Client = client
 			service = &clone
 		}
-		completed, err := completeImportedCodexCredential(ctx, service, credential)
+		completed, err := completeImportedCodexCredential(ctx, service, credential, s.store)
 		if err != nil {
 			return "", err
 		}

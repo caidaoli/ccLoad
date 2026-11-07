@@ -457,6 +457,15 @@ func (s *Server) runOAuthCredentialImport(
 	return summary, !stopped && next == len(batch.Files)
 }
 
+/**
+ * @brief 校验一份导入文件并准备渠道写入，Codex 刷新共享持久化 grant 记录
+ * @param ctx 导入上下文
+ * @param batch 已解析的导入批次
+ * @param index 批次中的文件索引
+ * @param existingNames 已存在的规范化渠道名与显示名
+ * @return 待提交的渠道或包含失败、跳过原因的文件结果
+ * @note 上游校验可能交换并持久化刷新回执，但不在此写入渠道。
+ */
 func (s *Server) prepareOAuthCredentialImportFile(
 	ctx context.Context,
 	batch *oauthCredentialImportBatch,
@@ -520,7 +529,7 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		if service == nil && s.client != nil {
 			service = codexauth.NewService(s.client)
 		}
-		credential, err = completeImportedCodexCredential(ctx, service, credential)
+		credential, err = completeImportedCodexCredential(ctx, service, credential, s.store)
 		if err != nil {
 			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
 			return prepared
@@ -792,10 +801,20 @@ func writeSSEEvent(c *gin.Context, eventName string, payload any) error {
 	return nil
 }
 
+/**
+ * @brief 验证导入的 Codex 凭据，并对需要刷新的 grant 使用全局持久化防重放记录
+ * @param ctx 导入上下文
+ * @param service Codex 认证服务
+ * @param credential 已解析的导入凭据
+ * @param journal 与渠道共享的权威刷新记录
+ * @return 经上游验证的凭据；失败时返回 nil
+ * @return 输入、上游验证或刷新失败时返回错误
+ */
 func completeImportedCodexCredential(
 	ctx context.Context,
 	service *codexauth.Service,
 	credential *codexauth.Credential,
+	journal codexauth.RefreshJournal,
 ) (*codexauth.Credential, error) {
 	if credential == nil {
 		return nil, errors.New("codex credential is nil")
@@ -828,7 +847,7 @@ func completeImportedCodexCredential(
 		}
 	}
 
-	refreshed, err := service.Refresh(ctx, credential.RefreshToken)
+	refreshed, err := service.Refresh(ctx, credential.RefreshToken, journal)
 	if err != nil {
 		return nil, fmt.Errorf("%w: Codex refresh failed: %v", errOAuthCredentialUnusable, err)
 	}

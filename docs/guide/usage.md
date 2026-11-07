@@ -217,7 +217,9 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ## Channel Management
 
-If a Codex OAuth channel reports that automatic renewal has failed, reauthorize the account. Its current access token can continue serving requests while valid, but the rejected refresh credential will no longer be retried. Once the access token expires or is rejected upstream, the channel is disabled and requests move to another available channel. Successful reauthorization restores the channel. This warning is held in memory and checked again after a restart.
+If a Codex OAuth channel reports that automatic renewal has failed, reauthorize the account. Its current access token can continue serving requests while valid. When a refresh outcome is uncertain, such as a response lost after the provider processed the exchange, ccLoad persistently records the attempt and stops resubmitting that refresh token. Restarting, deleting the channel, or importing the same credential does not clear the restriction. Reauthorization with a new grant restores automatic renewal.
+
+Back up and restore the complete authoritative database, including credentials and refresh records. In hybrid storage mode, back up the local SQLite database. If it is lost and only the remote configuration replica is restored, the restored Codex OAuth channels require reauthorization; their access tokens remain usable while valid.
 
 Manage channels via Web interface `/web/channels.html` or API:
 

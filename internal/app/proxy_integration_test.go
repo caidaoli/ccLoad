@@ -7942,6 +7942,97 @@ func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) 
 }
 
 /**
+ * @brief 验证 token 端点的客户端 401 错误不会被刷新未知结果错误链误判为个人凭据终态
+ * @param t 测试上下文
+ */
+func TestProxy_CodexUnknownClientFailureKeepsChannelEnabled(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"access rejected"}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-invalid-client", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType: model.AuthTypeCodexOAuth, oauthCredential: codexProxyTestCredential(t, "old-access", "old-grant", "account"),
+	}}, map[int]string{0: upstream.URL})
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"invalid_client"}`)), Request: req}, nil
+	})}
+	env.server.codexCredentials.service = codexauth.NewService(client)
+	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return client }
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-test", "input": "hello", "stream": false}, nil)
+	if response.Code != http.StatusUnauthorized || calls.Load() != 1 {
+		t.Fatalf("client failure status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || !configs[0].Enabled {
+		t.Fatalf("unknown client failure disabled channel: configs=%+v err=%v", configs, err)
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil || cooldowns[configs[0].ID].IsZero() || cooldowns[configs[0].ID].After(time.Now().Add(time.Hour)) {
+		t.Fatalf("unknown client failure caused long cooldown: %v %v", cooldowns, err)
+	}
+}
+
+/**
+ * @brief 验证另一个刷新 owner 的 pending 状态仅触发短冷却，成功回执不会被永久内存状态遮蔽
+ * @param t 测试上下文
+ */
+func TestProxy_CodexPendingRefreshUsesShortCooldown(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"old access rejected"}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-pending", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType: model.AuthTypeCodexOAuth, oauthCredential: expiredProxyOAuthCredential(t, model.AuthTypeCodexOAuth, "old-access"),
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs=%+v err=%v", configs, err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-grant","expires_in":604800}`)
+	}))
+	defer tokens.Close()
+	defer once.Do(func() { close(release) })
+	service := codexauth.NewService(tokens.Client())
+	service.TokenURL = tokens.URL
+	env.server.codexCredentials.service = service
+	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return tokens.Client() }
+	owner := &Server{store: env.store, codexCredentials: newCodexCredentialManager(service, env.store, nil, nil)}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- requestCodexRefresh(t, owner, configs[0].ID) }()
+	<-entered
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-test", "input": "hello", "stream": false}, nil)
+	if response.Code != http.StatusUnauthorized || calls.Load() != 1 {
+		t.Fatalf("pending status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+	}
+	once.Do(func() { close(release) })
+	if response := <-done; response.Code != http.StatusOK {
+		t.Fatalf("owner status=%d body=%s", response.Code, response.Body.String())
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil || cooldowns[configs[0].ID].IsZero() || cooldowns[configs[0].ID].After(time.Now().Add(time.Hour)) {
+		t.Fatalf("pending refresh left long cooldown: %v %v", cooldowns, err)
+	}
+}
+
+/**
  * @brief 验证被拒绝的 PAT 只禁用匹配快照，认证类型已切换的渠道继续可用。
  * @param t 当前测试上下文。
  * @details 普通编辑接口禁止切换认证类型；在隔离测试库模拟旧请求返回 401 前身份已变化，通过持久状态和后续代理响应验证防御性保护。

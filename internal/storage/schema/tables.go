@@ -1,5 +1,15 @@
 package schema
 
+/**
+ * @brief 定义不随渠道生命周期清理的 Codex 刷新申领与最终回执表
+ * @return 使用 SHA-256 授权摘要主键、可空回执的永久表定义
+ */
+func DefineCodexRefreshJournalTable() *TableBuilder {
+	return NewTable("codex_refresh_journal").
+		Column("grant_key VARCHAR(64) PRIMARY KEY").
+		Column("receipt TEXT NULL")
+}
+
 // DefineOAuthQuotaCostLedgerTable 定义独立于日志保留期的 OAuth 周期额度成本账本。
 func DefineOAuthQuotaCostLedgerTable() *TableBuilder {
 	return NewTable("oauth_quota_cost_ledger").

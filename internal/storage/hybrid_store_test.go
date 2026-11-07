@@ -75,6 +75,186 @@ func allLedgerRows(t *testing.T, store *sqlstore.SQLStore) []sqlstore.OAuthQuota
 	return rows
 }
 
+/**
+ * @brief 验证 SQL 存储的刷新授权原子申领、状态读取和不可覆盖回执契约
+ * @param t 测试上下文
+ * @param store 待验证的独立数据库存储
+ */
+func assertCodexRefreshJournal(t *testing.T, store Store) {
+	t.Helper()
+	ctx := context.Background()
+	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "journal-refresh")
+	if receipt, exists, err := store.RefreshRead(ctx, key); err != nil || exists || receipt != nil {
+		t.Fatalf("unknown grant = (%q, %v, %v)", receipt, exists, err)
+	}
+	if err := store.RefreshComplete(ctx, key, []byte(`{"access_token":"unclaimed"}`)); err == nil {
+		t.Fatal("unclaimed grant accepted a receipt")
+	}
+
+	var claims atomic.Int64
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for range 16 {
+		wg.Go(func() {
+			claimed, err := store.RefreshClaim(ctx, key)
+			if err != nil {
+				errs <- err
+			}
+			if claimed {
+				claims.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent claim: %v", err)
+	}
+	if got := claims.Load(); got != 1 {
+		t.Fatalf("successful claims = %d, want 1", got)
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, key); err != nil || !exists || receipt != nil {
+		t.Fatalf("pending grant = (%q, %v, %v)", receipt, exists, err)
+	}
+	want := `{"access_token":"next-access","refresh_token":"next-refresh"}`
+	if err := store.RefreshComplete(ctx, key, []byte(want)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RefreshComplete(ctx, key, []byte(`{"access_token":"overwrite"}`)); err == nil {
+		t.Fatal("completed grant accepted an overwrite")
+	}
+	if claimed, err := store.RefreshClaim(ctx, key); err != nil || claimed {
+		t.Fatalf("completed claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, key); err != nil || !exists || string(receipt) != want {
+		t.Fatalf("completed grant = (%q, %v, %v), want %q", receipt, exists, err, want)
+	}
+	otherKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "other-refresh")
+	if claimed, err := store.RefreshClaim(ctx, otherKey); err != nil || !claimed {
+		t.Fatalf("different grant claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+}
+
+/**
+ * @brief 验证 SQLite 刷新 journal 的完整存储契约
+ * @param t 测试上下文
+ */
+func TestCodexRefreshJournal_SQLite(t *testing.T) {
+	store := createTestSQLiteStore(t)
+	t.Cleanup(func() { _ = store.Close() })
+	assertCodexRefreshJournal(t, store)
+}
+
+/**
+ * @brief 验证刷新 journal 在重启及渠道删除后重导入时仍然保留
+ * @param t 测试上下文
+ */
+func TestCodexRefreshJournal_PersistsAcrossRestartAndChannelReimport(t *testing.T) {
+	path := t.TempDir() + "/refresh.db"
+	store, err := CreateSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	channelID := createCodexQuotaChannel(t, store, time.Now())
+	cfg, err := store.GetConfig(ctx, channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "refresh")
+	pendingKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "pending-refresh")
+	for _, claimKey := range []string{key, pendingKey} {
+		if claimed, err := store.RefreshClaim(ctx, claimKey); err != nil || !claimed {
+			t.Fatalf("claim = (%v, %v)", claimed, err)
+		}
+	}
+	want := `{"access_token":"durable-access","refresh_token":"durable-refresh"}`
+	if err := store.RefreshComplete(ctx, key, []byte(want)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteConfig(ctx, channelID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: cfg}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = CreateSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, key); err != nil || !exists || string(receipt) != want {
+		t.Fatalf("durable receipt = (%q, %v, %v), want %q", receipt, exists, err, want)
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, pendingKey); err != nil || !exists || receipt != nil {
+		t.Fatalf("durable pending grant = (%q, %v, %v)", receipt, exists, err)
+	}
+	for _, claimKey := range []string{key, pendingKey} {
+		if claimed, err := store.RefreshClaim(ctx, claimKey); err != nil || claimed {
+			t.Fatalf("durable claim = (%v, %v), want (false, nil)", claimed, err)
+		}
+	}
+}
+
+/**
+ * @brief 验证混合刷新 journal 只使用 SQLite，主库状态与故障不改变权威判断
+ * @param t 测试上下文
+ */
+func TestHybridStore_RefreshJournalUsesSQLiteOnly(t *testing.T) {
+	primary := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	hybrid := NewHybridStore(sqlite, primary)
+	t.Cleanup(func() { _ = hybrid.Close() })
+	ctx := context.Background()
+	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "local-refresh")
+	if claimed, err := hybrid.RefreshClaim(ctx, key); err != nil || !claimed {
+		t.Fatalf("local claim = (%v, %v)", claimed, err)
+	}
+	if receipt, exists, err := primary.RefreshRead(ctx, key); err != nil || exists || receipt != nil {
+		t.Fatalf("primary received local claim = (%q, %v, %v)", receipt, exists, err)
+	}
+	if err := primary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := hybrid.RefreshComplete(ctx, key, []byte(`{"access_token":"local"}`)); err != nil {
+		t.Fatalf("primary outage blocked local receipt: %v", err)
+	}
+	if _, exists, err := hybrid.RefreshRead(ctx, key); err != nil || !exists {
+		t.Fatalf("local receipt during primary outage = (%v, %v)", exists, err)
+	}
+	livePrimary := createTestSQLiteStore(t)
+	fallbackProbe := NewHybridStore(sqlite, livePrimary)
+	t.Cleanup(func() { _ = fallbackProbe.Close() })
+	if claimed, err := livePrimary.RefreshClaim(ctx, key); err != nil || !claimed {
+		t.Fatalf("primary probe claim = (%v, %v)", claimed, err)
+	}
+	if err := livePrimary.RefreshComplete(ctx, key, []byte(`{"access_token":"primary"}`)); err != nil {
+		t.Fatal(err)
+	}
+	pendingKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "primary-pending")
+	if claimed, err := livePrimary.RefreshClaim(ctx, pendingKey); err != nil || !claimed {
+		t.Fatalf("primary pending probe claim = (%v, %v)", claimed, err)
+	}
+	if err := sqlite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fallbackProbe.RefreshRead(ctx, key); err == nil {
+		t.Fatal("SQLite read failure did not surface")
+	}
+	if _, err := fallbackProbe.RefreshClaim(ctx, key); err == nil {
+		t.Fatal("SQLite claim failure did not surface")
+	}
+	if err := fallbackProbe.RefreshComplete(ctx, pendingKey, []byte(`{"access_token":"fallback"}`)); err == nil {
+		t.Fatal("SQLite completion failure did not surface")
+	}
+	if receipt, exists, err := livePrimary.RefreshRead(ctx, pendingKey); err != nil || !exists || receipt != nil {
+		t.Fatalf("SQLite failure mutated primary grant = (%q, %v, %v)", receipt, exists, err)
+	}
+}
+
 func TestHybridStore_SQLiteSuccessDoesNotWaitForPrimary(t *testing.T) {
 	primary := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)

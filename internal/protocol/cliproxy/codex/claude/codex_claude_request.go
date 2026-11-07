@@ -77,6 +77,12 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 	var declaredToolsByName map[string]gjson.Result
 	declaredToolsIndexed := false
 	hasAdditionalTools := false
+	emittedToolNames := make(map[string]struct{})
+	for _, tool := range toolsResult.Array() {
+		if !isClaudeWebSearchToolType(tool.Get("type").String()) && !tool.Get("defer_loading").Bool() {
+			emittedToolNames[tool.Get("name").String()] = struct{}{}
+		}
+	}
 
 	// Codex exposes top-level instructions; keep system text there instead of
 	// synthesizing a developer message so system-only requests stay minimal.
@@ -129,7 +135,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 						inputItems = append(inputItems, message)
 					}
 				}
-				if additionalTools, ok := convertClaudeSystemAdditionalTools(systemContent, toolsResult, &declaredToolsByName, &declaredToolsIndexed, toolNameMap); ok {
+				if additionalTools, ok := convertClaudeSystemAdditionalTools(systemContent, toolsResult, &declaredToolsByName, &declaredToolsIndexed, toolNameMap, emittedToolNames); ok {
 					hasAdditionalTools = true
 					if len(pendingToolUseIDs) > 0 {
 						pendingSystemReminders = append(pendingSystemReminders, additionalTools)
@@ -150,6 +156,50 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 			// Empty text is forwarded but does not count: it can hide an emptied attachment.
 			turnSendable := 0
 			bufferedSendable := 0
+			var turnDiscoveredTools [][]byte
+			remainingToolResults := 0
+			if messageContentsResult.IsArray() {
+				for _, part := range messageContentsResult.Array() {
+					if part.Get("type").String() == "tool_result" {
+						remainingToolResults++
+					}
+				}
+			}
+
+			appendDiscoveredToolByReference := func(ref gjson.Result) ([]byte, bool) {
+				refField := "tool_name"
+				refName := ref.Get(refField).String()
+				if refName == "" {
+					refField = "name"
+					refName = ref.Get(refField).String()
+				}
+				ensureClaudeDeclaredToolsIndexed(toolsResult, &declaredToolsByName, &declaredToolsIndexed)
+				def, exists := declaredToolsByName[refName]
+				if !exists || isClaudeWebSearchToolType(def.Get("type").String()) {
+					return []byte(ref.Raw), false
+				}
+				if _, emitted := emittedToolNames[refName]; !emitted {
+					emittedToolNames[refName] = struct{}{}
+					turnDiscoveredTools = append(turnDiscoveredTools, convertClaudeFunctionToolToCodex(def, toolNameMap))
+				}
+				refJSON := []byte(ref.Raw)
+				if short := toolNameMap[refName]; short != refName {
+					refJSON, _ = sjson.SetBytes(refJSON, refField, short)
+				}
+				return refJSON, true
+			}
+
+			flushTurnDiscoveredTools := func() {
+				if len(turnDiscoveredTools) == 0 || remainingToolResults > 0 {
+					return
+				}
+				item := []byte(`{"type":"additional_tools","role":"developer","tools":[]}`)
+				item, _ = sjson.SetRawBytes(item, "tools", translatorcommon.JoinRawArray(turnDiscoveredTools))
+				inputItems = append(inputItems, item)
+				turnDiscoveredTools = turnDiscoveredTools[:0]
+				hasAdditionalTools = true
+				turnSendable++
+			}
 
 			flushMessage := func() {
 				if len(contentItems) > 0 {
@@ -258,14 +308,17 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 
 					switch contentType {
 					case "text":
+						flushTurnDiscoveredTools()
 						if len(pendingSystemReminders) > 0 {
 							inputItems = append(inputItems, pendingSystemReminders...)
 							pendingSystemReminders = nil
 						}
 						appendTextContent(messageContentResult.Get("text").String())
 					case "thinking":
+						flushTurnDiscoveredTools()
 						appendReasoningContent(messageContentResult)
 					case "redacted_thinking":
+						flushTurnDiscoveredTools()
 						if messageRole != "assistant" {
 							continue
 						}
@@ -278,6 +331,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 						reasoningItem, _ = sjson.SetBytes(reasoningItem, "encrypted_content", encryptedContent)
 						inputItems = append(inputItems, reasoningItem)
 					case "image":
+						flushTurnDiscoveredTools()
 						if len(pendingSystemReminders) > 0 {
 							inputItems = append(inputItems, pendingSystemReminders...)
 							pendingSystemReminders = nil
@@ -288,6 +342,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							drops.Drop(contentType)
 						}
 					case "document", "container_upload":
+						flushTurnDiscoveredTools()
 						if len(pendingSystemReminders) > 0 {
 							inputItems = append(inputItems, pendingSystemReminders...)
 							pendingSystemReminders = nil
@@ -312,6 +367,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							drops.Drop(contentType)
 						}
 					case "tool_use":
+						flushTurnDiscoveredTools()
 						flushMessage()
 						if id := messageContentResult.Get("id").String(); id != "" {
 							pendingToolUseIDs = append(pendingToolUseIDs, id)
@@ -329,6 +385,28 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 						}
 						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "arguments", messageContentResult.Get("input").Raw)
 						inputItems = append(inputItems, functionCallMessage)
+					case "tool_reference", "tool_search_tool_result":
+						flushMessage()
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
+						refs := []gjson.Result{messageContentResult}
+						if contentType == "tool_search_tool_result" {
+							toolRefs := messageContentResult.Get("content.tool_references")
+							if !toolRefs.IsArray() {
+								return nil, fmt.Errorf("unsupported Anthropic tool_search_tool_result content: %s", messageContentResult.Get("content").Raw)
+							}
+							refs = toolRefs.Array()
+						}
+						for _, ref := range refs {
+							if ref.Get("type").String() != "tool_reference" {
+								return nil, fmt.Errorf("unsupported Anthropic tool search reference: %s", ref.Raw)
+							}
+							if _, resolved := appendDiscoveredToolByReference(ref); !resolved {
+								return nil, fmt.Errorf("anthropic %s has no matching tool declaration", ref.Get("type").String())
+							}
+						}
 					case "tool_result":
 						flushMessage()
 						functionCallOutputMessage := []byte(`{"type":"function_call_output"}`)
@@ -338,7 +416,11 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 						if contentResult.IsArray() {
 							contentResults := contentResult.Array()
 							toolResultContentItems := make([][]byte, 0, len(contentResults))
+							var rewrittenContent [][]byte
+							hasRichContent := false
 							for k := 0; k < len(contentResults); k++ {
+								part := contentResults[k]
+								var refJSON []byte
 								toolResultContentType := contentResults[k].Get("type").String()
 								switch toolResultContentType {
 								case "image":
@@ -361,28 +443,52 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 											toolResultContent := []byte(`{"type":"input_image","image_url":""}`)
 											toolResultContent, _ = sjson.SetBytes(toolResultContent, "image_url", dataURL)
 											toolResultContentItems = append(toolResultContentItems, toolResultContent)
+											hasRichContent = true
 										}
 									}
 								case "text":
 									toolResultContent := []byte(`{"type":"input_text","text":""}`)
 									toolResultContent, _ = sjson.SetBytes(toolResultContent, "text", contentResults[k].Get("text").String())
 									toolResultContentItems = append(toolResultContentItems, toolResultContent)
+									hasRichContent = true
+								case "tool_reference":
+									refJSON, _ = appendDiscoveredToolByReference(part)
+									if string(refJSON) != part.Raw && rewrittenContent == nil {
+										rewrittenContent = make([][]byte, 0, len(contentResults))
+										for _, previous := range contentResults[:k] {
+											rewrittenContent = append(rewrittenContent, []byte(previous.Raw))
+										}
+									}
+									toolResultContent := []byte(`{"type":"input_text","text":""}`)
+									toolResultContent, _ = sjson.SetBytes(toolResultContent, "text", string(refJSON))
+									toolResultContentItems = append(toolResultContentItems, toolResultContent)
+								}
+								if rewrittenContent != nil {
+									if refJSON != nil {
+										rewrittenContent = append(rewrittenContent, refJSON)
+									} else {
+										rewrittenContent = append(rewrittenContent, []byte(part.Raw))
+									}
 								}
 							}
-							if len(toolResultContentItems) > 0 {
+							if hasRichContent {
 								functionCallOutputMessage, _ = sjson.SetRawBytes(functionCallOutputMessage, "output", translatorcommon.JoinRawArray(toolResultContentItems))
+							} else if rewrittenContent != nil {
+								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", string(translatorcommon.JoinRawArray(rewrittenContent)))
 							} else {
-								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
+								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", contentResult.String())
 							}
 						} else {
 							functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
 						}
 
 						inputItems = append(inputItems, functionCallOutputMessage)
+						remainingToolResults--
 						turnSendable++
 					}
 				}
 				flushMessage()
+				flushTurnDiscoveredTools()
 				if len(pendingSystemReminders) > 0 {
 					inputItems = append(inputItems, pendingSystemReminders...)
 					pendingSystemReminders = nil
@@ -413,6 +519,10 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 		template, _ = sjson.SetRawBytes(template, "tool_choice", convertClaudeToolChoiceToCodex(rootResult.Get("tool_choice"), toolNameMap, webSearchToolNames))
 	}
 	if toolsResult.IsArray() {
+		forcedToolName := ""
+		if tc := rootResult.Get("tool_choice"); tc.Get("type").String() == "tool" {
+			forcedToolName = tc.Get("name").String()
+		}
 		toolResults := toolsResult.Array()
 		toolItems = make([][]byte, 0, len(toolResults))
 		for i := 0; i < len(toolResults); i++ {
@@ -422,6 +532,12 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 				hasWebSearchTool = true
 				toolItems = append(toolItems, convertClaudeWebSearchToolToCodex(toolResult))
 				continue
+			}
+			if toolResult.Get("defer_loading").Bool() {
+				name := toolResult.Get("name").String()
+				if _, emitted := emittedToolNames[name]; emitted || forcedToolName == "" || name != forcedToolName {
+					continue
+				}
 			}
 			toolItems = append(toolItems, convertClaudeFunctionToolToCodex(toolResult, toolNameMap))
 		}
@@ -753,7 +869,7 @@ func ensureClaudeDeclaredToolsIndexed(toolsResult gjson.Result, declaredToolsByN
 
 // convertClaudeSystemAdditionalTools converts mid-conversation tool_addition blocks
 // inside a role=system message into a Responses additional_tools input item.
-func convertClaudeSystemAdditionalTools(content, toolsResult gjson.Result, declaredToolsByName *map[string]gjson.Result, declaredToolsIndexed *bool, toolNameMap map[string]string) ([]byte, bool) {
+func convertClaudeSystemAdditionalTools(content, toolsResult gjson.Result, declaredToolsByName *map[string]gjson.Result, declaredToolsIndexed *bool, toolNameMap map[string]string, emittedToolNames map[string]struct{}) ([]byte, bool) {
 	if !content.IsArray() {
 		return nil, false
 	}
@@ -767,6 +883,7 @@ func convertClaudeSystemAdditionalTools(content, toolsResult gjson.Result, decla
 		}
 		toolSpec := part.Get("tool")
 		var def gjson.Result
+		isReference := false
 		switch toolSpec.Get("type").String() {
 		case "tool_definition":
 			def = toolSpec.Get("definition")
@@ -780,6 +897,7 @@ func convertClaudeSystemAdditionalTools(content, toolsResult gjson.Result, decla
 				}
 			}
 		case "tool_reference":
+			isReference = true
 			ensureClaudeDeclaredToolsIndexed(toolsResult, declaredToolsByName, declaredToolsIndexed)
 			refName := toolSpec.Get("name").String()
 			if refName == "" {
@@ -807,6 +925,10 @@ func convertClaudeSystemAdditionalTools(content, toolsResult gjson.Result, decla
 		if origName == "" {
 			continue
 		}
+		if _, emitted := emittedToolNames[origName]; isReference && emitted {
+			continue
+		}
+		emittedToolNames[origName] = struct{}{}
 		converted := convertClaudeFunctionToolToCodex(def, toolNameMap)
 		if indexByName == nil {
 			indexByName = make(map[string]int)
@@ -826,51 +948,75 @@ func convertClaudeSystemAdditionalTools(content, toolsResult gjson.Result, decla
 	return item, true
 }
 
-func collectClaudeDeclaredToolNames(rootResult gjson.Result, hasToolAddition bool) []string {
+func collectClaudeDeclaredToolNames(rootResult gjson.Result, hasDynamicTools bool) []string {
 	var names []string
+	var deferredNames []string
+	deferredSet := make(map[string]struct{})
 	tools := rootResult.Get("tools")
 	if tools.IsArray() {
 		arr := tools.Array()
 		names = make([]string, 0, len(arr))
 		for i := 0; i < len(arr); i++ {
 			n := arr[i].Get("name").String()
-			if n != "" {
-				names = append(names, n)
+			if n == "" {
+				continue
 			}
+			if hasDynamicTools && arr[i].Get("defer_loading").Bool() {
+				deferredNames = append(deferredNames, n)
+				deferredSet[n] = struct{}{}
+				continue
+			}
+			names = append(names, n)
 		}
 	}
-	if !hasToolAddition {
+	if !hasDynamicTools {
 		return names
 	}
-	messages := rootResult.Get("messages")
-	if !messages.IsArray() {
-		return names
-	}
-	for _, msg := range messages.Array() {
-		if msg.Get("role").String() != "system" {
-			continue
+	appendDeferredReference := func(ref gjson.Result) {
+		name := ref.Get("tool_name").String()
+		if name == "" {
+			name = ref.Get("name").String()
 		}
+		if _, deferred := deferredSet[name]; deferred {
+			names = append(names, name)
+		}
+	}
+	for _, msg := range rootResult.Get("messages").Array() {
 		content := msg.Get("content")
 		if !content.IsArray() {
 			continue
 		}
 		for _, part := range content.Array() {
-			if part.Get("type").String() != "tool_addition" {
-				continue
-			}
-			tool := part.Get("tool")
-			if tool.Get("type").String() == "tool_definition" || tool.Get("definition").IsObject() {
-				def := tool.Get("definition")
-				if isClaudeWebSearchToolType(def.Get("type").String()) {
+			switch part.Get("type").String() {
+			case "tool_addition":
+				if msg.Get("role").String() != "system" {
 					continue
 				}
-				if n := def.Get("name").String(); n != "" {
-					names = append(names, n)
+				tool := part.Get("tool")
+				def := tool.Get("definition")
+				if tool.Get("type").String() == "tool_reference" {
+					appendDeferredReference(tool)
+				} else if def.IsObject() && !isClaudeWebSearchToolType(def.Get("type").String()) {
+					if name := def.Get("name").String(); name != "" {
+						names = append(names, name)
+					}
+				}
+			case "tool_reference":
+				appendDeferredReference(part)
+			case "tool_search_tool_result":
+				for _, ref := range part.Get("content.tool_references").Array() {
+					appendDeferredReference(ref)
+				}
+			case "tool_result":
+				for _, ref := range part.Get("content").Array() {
+					if ref.Get("type").String() == "tool_reference" {
+						appendDeferredReference(ref)
+					}
 				}
 			}
 		}
 	}
-	return names
+	return append(names, deferredNames...)
 }
 
 func buildReverseMapFromClaudeOriginalToShortFromResult(rootResult gjson.Result, hasToolAddition bool) map[string]string {
@@ -883,6 +1029,8 @@ func buildReverseMapFromClaudeOriginalToShortFromResult(rootResult gjson.Result,
 
 func claudePayloadMayContainToolAddition(rawJSON []byte) bool {
 	return bytes.Contains(rawJSON, []byte("tool_addition")) ||
+		bytes.Contains(rawJSON, []byte("defer_loading")) ||
+		bytes.Contains(rawJSON, []byte("tool_reference")) ||
 		bytes.Contains(rawJSON, []byte(`\u`)) ||
 		bytes.Contains(rawJSON, []byte(`\U`))
 }

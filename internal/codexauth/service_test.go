@@ -4,15 +4,23 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
+/**
+ * @brief 验证授权 URL、授权码与刷新交换的官方请求契约
+ * @param t 测试上下文
+ */
 func TestServiceAuthorizationAndTokenContracts(t *testing.T) {
 	t.Parallel()
 
@@ -97,7 +105,7 @@ func TestServiceAuthorizationAndTokenContracts(t *testing.T) {
 		t.Fatalf("ID token metadata = %#v", credential)
 	}
 
-	refreshed, err := service.Refresh(context.Background(), credential.RefreshToken)
+	refreshed, err := service.Refresh(context.Background(), credential.RefreshToken, &testRefreshJournal{})
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -125,6 +133,10 @@ func TestServiceAuthorizationAndTokenContracts(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证缺少访问令牌的成功响应被归为不可重放的不确定结果
+ * @param t 测试上下文
+ */
 func TestServiceRejectsEmptyAccessToken(t *testing.T) {
 	t.Parallel()
 
@@ -135,9 +147,9 @@ func TestServiceRejectsEmptyAccessToken(t *testing.T) {
 	service := NewService(tokenServer.Client())
 	service.TokenURL = tokenServer.URL
 
-	_, err := service.Refresh(context.Background(), "rt")
-	if err == nil || !strings.Contains(err.Error(), "access_token") {
-		t.Fatalf("Refresh error = %v, want missing access_token", err)
+	_, err := service.Refresh(context.Background(), "rt", &testRefreshJournal{})
+	if !IsRefreshOutcomeUnknown(err) {
+		t.Fatalf("Refresh error = %v, want unknown outcome", err)
 	}
 }
 
@@ -215,6 +227,10 @@ func testIDToken(t *testing.T) string {
 	return "header." + payload + ".signature"
 }
 
+/**
+ * @brief 验证明确 grant 拒绝与客户端配置、临时响应的分类边界
+ * @param t 测试上下文
+ */
 func TestServiceTerminalRefreshErrors(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -229,6 +245,7 @@ func TestServiceTerminalRefreshErrors(t *testing.T) {
 		{"invalid grant", 400, `{"error":"invalid_grant"}`, true},
 		{"unauthorized", 401, `unauthorized`, true},
 		{"client configuration", 400, `{"error":"invalid_client"}`, false},
+		{"unauthorized client configuration", 401, `{"error":"invalid_client"}`, false},
 		{"server failure", 503, `{"error":"refresh_token_reused"}`, false},
 		{"unknown", 400, `{"error":"invalid_request","error_description":"refresh_token_reused"}`, false},
 		{"malformed", 400, `{`, false},
@@ -241,12 +258,338 @@ func TestServiceTerminalRefreshErrors(t *testing.T) {
 			defer server.Close()
 			service := NewService(server.Client())
 			service.TokenURL = server.URL
-			_, err := service.Refresh(context.Background(), "secret-refresh-token")
+			_, err := service.Refresh(context.Background(), "secret-refresh-token", &testRefreshJournal{})
 			if err == nil || IsTerminalRefreshError(err) != tc.terminal {
 				t.Fatalf("refresh error=%v terminal=%v, want %v", err, IsTerminalRefreshError(err), tc.terminal)
 			}
 			if strings.Contains(err.Error(), tc.body) || strings.Contains(err.Error(), "secret-refresh-token") {
 				t.Fatalf("refresh diagnostic exposes private data: %v", err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 提供可注入存储失败的刷新记录，用于认证服务边界测试
+ */
+type testRefreshJournal struct {
+	mu          sync.Mutex        ///< 保护并发 claim 和回执
+	entries     map[string][]byte ///< nil 回执表示未完成
+	claimErr    error             ///< claim 故障注入
+	readErr     error             ///< 回执读取故障注入
+	completeErr error             ///< 回执写入故障注入
+}
+
+/**
+ * @brief 原子取得测试 grant 的提交权
+ * @param ctx 存储上下文
+ * @param key grant 指纹
+ * @return 首次 claim 时返回 true
+ * @return 注入的存储错误
+ */
+func (j *testRefreshJournal) RefreshClaim(ctx context.Context, key string) (bool, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.claimErr != nil {
+		return false, j.claimErr
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if j.entries == nil {
+		j.entries = make(map[string][]byte)
+	}
+	if _, exists := j.entries[key]; exists {
+		return false, nil
+	}
+	j.entries[key] = nil
+	return true, nil
+}
+
+/**
+ * @brief 读取测试中的持久化回执
+ * @param ctx 存储上下文
+ * @param key grant 指纹
+ * @return 已保存的回执
+ * @return grant 是否存在
+ * @return 注入的存储错误
+ */
+func (j *testRefreshJournal) RefreshRead(ctx context.Context, key string) ([]byte, bool, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.readErr != nil {
+		return nil, false, j.readErr
+	}
+	value, exists := j.entries[key]
+	return value, exists, ctx.Err()
+}
+
+/**
+ * @brief 完成测试中的刷新回执
+ * @param ctx 存储上下文
+ * @param key grant 指纹
+ * @param receipt 私密回执
+ * @return 注入的错误或取消错误
+ */
+func (j *testRefreshJournal) RefreshComplete(ctx context.Context, key string, receipt []byte) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.completeErr != nil {
+		return j.completeErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	j.entries[key] = receipt
+	return nil
+}
+
+/**
+ * @brief 注入 OAuth HTTP 响应以验证认证服务契约
+ */
+type tokenRoundTripper func(*http.Request) (*http.Response, error)
+
+/**
+ * @brief 执行测试提供的 HTTP 响应函数
+ * @param req 待发送的 OAuth 请求
+ * @return 测试响应
+ * @return 测试传输错误
+ */
+func (f tokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+/**
+ * @brief 模拟已返回响应头但丢失响应正文
+ */
+type lostTokenBody struct{}
+
+/**
+ * @brief 模拟 token 响应正文读取失败
+ * @param p 调用方提供的读取缓冲区
+ * @return 始终返回零字节
+ * @return 始终返回 io.ErrUnexpectedEOF
+ */
+func (lostTokenBody) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+/**
+ * @brief 关闭测试正文
+ * @return 始终返回 nil
+ */
+func (lostTokenBody) Close() error { return nil }
+
+/**
+ * @brief 验证网络、正文、响应与重定向的不确定结果均不能重放 grant
+ * @param t 测试上下文
+ */
+func TestServiceRefreshUnknownOutcomesPreventReplay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"transport", 0, ""},
+		{"read", 200, ""},
+		{"decode", 200, "{"},
+		{"access token", 200, `{"expires_in":3600}`},
+		{"expiry", 200, `{"access_token":"new","expires_in":0}`},
+		{"rate limited", 429, `{"error":"unavailable"}`},
+		{"server failed", 503, `{"error":"unavailable"}`},
+		{"redirect", 307, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			journal := &testRefreshJournal{}
+			calls := 0
+			client := &http.Client{Transport: tokenRoundTripper(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if tc.status == 0 {
+					return nil, errors.New("private upstream diagnostics")
+				}
+				body := io.NopCloser(strings.NewReader(tc.body))
+				if tc.name == "read" {
+					body = lostTokenBody{}
+				}
+				return &http.Response{StatusCode: tc.status, Header: http.Header{"Location": {DefaultTokenURL + "/redirected"}}, Body: body, Request: req}, nil
+			})}
+			for range 2 {
+				_, err := NewService(client).Refresh(context.Background(), "unresolved-grant", journal)
+				if !IsRefreshOutcomeUnknown(err) || IsTerminalRefreshError(err) || calls != 1 {
+					t.Fatalf("refresh error=%v terminal=%v calls=%d", err, IsTerminalRefreshError(err), calls)
+				}
+				if strings.Contains(err.Error(), "private upstream diagnostics") || strings.Contains(err.Error(), "unresolved-grant") {
+					t.Fatalf("private diagnostics leaked: %v", err)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 claim 与回执写入失败均不能导致再次发送 grant
+ * @param t 测试上下文
+ */
+func TestServiceRefreshStorageFailuresPreventReplay(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"claim", "complete"} {
+		t.Run(stage, func(t *testing.T) {
+			journal := &testRefreshJournal{}
+			if stage == "claim" {
+				journal.claimErr = errors.New("storage unavailable")
+			} else {
+				journal.completeErr = errors.New("storage unavailable")
+			}
+			calls := 0
+			client := &http.Client{Transport: tokenRoundTripper(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"access_token":"new","refresh_token":"rotated","expires_in":3600}`)), Request: req}, nil
+			})}
+			if _, err := NewService(client).Refresh(context.Background(), "grant", journal); !IsRefreshOutcomeUnknown(err) {
+				t.Fatalf("refresh error=%v", err)
+			}
+			wantCalls := 1
+			if stage == "claim" {
+				wantCalls = 0
+			}
+			if calls != wantCalls {
+				t.Fatalf("network calls=%d, want %d", calls, wantCalls)
+			}
+			if stage == "complete" {
+				journal.completeErr = nil
+				if _, err := NewService(client).Refresh(context.Background(), "grant", journal); !IsRefreshOutcomeUnknown(err) || calls != 1 {
+					t.Fatalf("lost receipt replayed grant: err=%v calls=%d", err, calls)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证回执读取失败不会授权重发，且管理状态查询会报告存储故障
+ * @param t 测试上下文
+ */
+func TestServiceRefreshReadFailureDoesNotReplay(t *testing.T) {
+	t.Parallel()
+	journal := &testRefreshJournal{}
+	ctx := context.Background()
+	key := RefreshGrantKey(DefaultClientID, "claimed-grant")
+	if _, err := journal.RefreshClaim(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	journal.readErr = errors.New("receipt storage unavailable")
+	client := &http.Client{Transport: tokenRoundTripper(func(req *http.Request) (*http.Response, error) {
+		t.Error("receipt read failure submitted a claimed grant")
+		return nil, errors.New("unexpected network request")
+	})}
+	if _, err := NewService(client).Refresh(ctx, "claimed-grant", journal); !IsRefreshOutcomeUnknown(err) {
+		t.Fatalf("read failure error=%v", err)
+	}
+	if _, err := RefreshRecoveryRequired(ctx, journal, DefaultClientID, "claimed-grant"); err == nil {
+		t.Fatal("recovery query hid storage failure")
+	}
+}
+
+/**
+ * @brief 验证响应返回后取消调用方不会丢弃已经轮换的成功回执
+ * @param t 测试上下文
+ */
+func TestServiceRefreshSavesReceiptAfterCallerCancellation(t *testing.T) {
+	t.Parallel()
+	journal := &testRefreshJournal{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	client := &http.Client{Transport: tokenRoundTripper(func(req *http.Request) (*http.Response, error) {
+		calls++
+		cancel()
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"access_token":"new","refresh_token":"rotated","expires_in":3600}`)), Request: req}, nil
+	})}
+	if _, err := NewService(client).Refresh(ctx, "original", journal); err != nil {
+		t.Fatal(err)
+	}
+	credential, err := NewService(client).Refresh(context.Background(), "original", journal)
+	if err != nil || credential == nil || credential.RefreshToken != "rotated" || calls != 1 {
+		t.Fatalf("cancel discarded receipt: credential=%v err=%v calls=%d", credential, err, calls)
+	}
+}
+
+/**
+ * @brief 验证旧 grant 沿回执采用最新轮换，并阻止未完成的后续轮换
+ * @param t 测试上下文
+ */
+func TestServiceRefreshReceiptFollowsRotation(t *testing.T) {
+	t.Parallel()
+	journal := &testRefreshJournal{}
+	calls := 0
+	client := &http.Client{Transport: tokenRoundTripper(func(req *http.Request) (*http.Response, error) {
+		calls++
+		var grant map[string]string
+		if err := json.NewDecoder(req.Body).Decode(&grant); err != nil {
+			t.Fatal(err)
+		}
+		next := "second"
+		if grant["refresh_token"] == "second" {
+			next = "third"
+		}
+		body := fmt.Sprintf(`{"access_token":%q,"refresh_token":%q,"expires_in":3600}`, "access-"+next, next)
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}
+	service := NewService(client)
+	for _, grant := range []string{"first", "second", "first"} {
+		credential, err := service.Refresh(context.Background(), grant, journal)
+		if err != nil || credential == nil {
+			t.Fatalf("refresh %s: credential=%v err=%v", grant, credential, err)
+		}
+		if calls == 2 && credential.RefreshToken != "third" {
+			t.Fatalf("old grant returned stale rotation: %v", credential.RefreshToken)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("network calls=%d, want 2", calls)
+	}
+	if _, err := journal.RefreshClaim(context.Background(), RefreshGrantKey(DefaultClientID, "third")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Refresh(context.Background(), "first", journal); !IsRefreshOutcomeUnknown(err) || calls != 2 {
+		t.Fatalf("pending later rotation ignored: err=%v calls=%d", err, calls)
+	}
+}
+
+/**
+ * @brief 验证未轮换的 grant 只复用未过期回执，过期后必须恢复
+ * @param t 测试上下文
+ */
+func TestServiceRefreshSameGrantReceiptExpires(t *testing.T) {
+	t.Parallel()
+	for _, rotated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("returned_token=%v", rotated), func(t *testing.T) {
+			journal := &testRefreshJournal{}
+			calls := 0
+			client := &http.Client{Transport: tokenRoundTripper(func(req *http.Request) (*http.Response, error) {
+				calls++
+				body := `{"access_token":"new","expires_in":3600}`
+				if rotated {
+					body = `{"access_token":"new","refresh_token":"same","expires_in":3600}`
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})}
+			for range 2 {
+				credential, err := NewService(client).Refresh(context.Background(), "same", journal)
+				if err != nil || credential == nil || credential.RefreshToken != "same" || calls != 1 {
+					t.Fatalf("same grant refresh=%v err=%v calls=%d", credential, err, calls)
+				}
+			}
+			key := RefreshGrantKey(DefaultClientID, "same")
+			var receipt refreshReceipt
+			if err := json.Unmarshal(journal.entries[key], &receipt); err != nil {
+				t.Fatal(err)
+			}
+			receipt.Credential.Expired = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+			raw, err := json.Marshal(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal.entries[key] = raw
+			if _, err := NewService(client).Refresh(context.Background(), "same", journal); !IsRefreshOutcomeUnknown(err) || calls != 1 {
+				t.Fatalf("expired receipt renewed grant: err=%v calls=%d", err, calls)
 			}
 		})
 	}
