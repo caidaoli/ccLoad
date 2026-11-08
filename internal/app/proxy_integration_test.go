@@ -17488,6 +17488,303 @@ func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForModelCooldown(t *testing.
 	}
 }
 
+/**
+ * @brief 成功状态正文命中显式冷却规则时，在输出前冷却当前 Key 并切换同渠道 Key。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_SuccessBodyRuleRetriesKeyBeforeOutput(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string ///< 响应及客户端协议组合。
+		contentType string ///< 上游响应媒体类型。
+		stream      bool   ///< 是否返回 SSE。
+		anthropic   bool   ///< 是否转换为 Anthropic 客户端协议。
+		status      int    ///< 伪成功响应的原始状态码。
+	}{
+		{name: "sse_split_text", contentType: "text/event-stream", stream: true, status: http.StatusOK},
+		{name: "sse_openai_to_anthropic", contentType: "text/event-stream", stream: true, anthropic: true, status: http.StatusOK},
+		{name: "json_created", contentType: "application/json", status: http.StatusCreated},
+		{name: "plain_text", contentType: "text/plain", status: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var badCalls, goodCalls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				bad := r.Header.Get("Authorization") == "Bearer sk-low-balance"
+				text := "recovered answer"
+				w.Header().Set("Content-Type", tc.contentType)
+				if bad {
+					badCalls.Add(1)
+					text = "余额不够这次调用。当前余额：0"
+					w.WriteHeader(tc.status)
+				} else {
+					goodCalls.Add(1)
+				}
+				if tc.stream {
+					_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-body-rule\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+					parts := []string{text}
+					if bad {
+						parts = []string{"余额不够这次", "调用。当前余额：0"}
+					}
+					for _, part := range parts {
+						_, _ = fmt.Fprintf(w, "data: {\"id\":\"chat-body-rule\",\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\n", part)
+						w.(http.Flusher).Flush()
+					}
+					_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-body-rule\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")
+				} else if tc.contentType == "application/json" {
+					_, _ = fmt.Fprintf(w, `{"id":"chat-body-rule","object":"chat.completion","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, text)
+				} else {
+					_, _ = io.WriteString(w, text)
+				}
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
+				name: "success-body-rule", models: "gpt-4", apiKey: "sk-low-balance",
+				cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Low balance", StatusCodes: []int{tc.status},
+					MessagePattern: "^余额不够这次调用。当前余额", Scope: model.CooldownScopeKey,
+					Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}},
+			}}, map[int]string{0: upstream.URL}, map[string]string{"debug_log_enabled": "true"})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs: configs=%v err=%v", configs, err)
+			}
+			channelID := configs[0].ID
+			if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+				ChannelID: channelID, KeyIndex: 1, APIKey: "sk-recovered", Priority: -10,
+			}}); err != nil {
+				t.Fatalf("CreateAPIKeysBatch: %v", err)
+			}
+			path := "/v1/chat/completions"
+			if tc.anthropic {
+				path = "/v1/messages"
+			}
+			response := doProxyRequest(t, env.engine, path, map[string]any{
+				"model": "gpt-4", "stream": tc.stream, "max_tokens": 128,
+				"messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			var answer strings.Builder
+			if tc.stream {
+				for frame := range strings.SplitSeq(response.Body.String(), "\n\n") {
+					_, data := parseSSEEventChunk([]byte(frame))
+					if tc.anthropic {
+						answer.WriteString(gjson.GetBytes(data, "delta.text").String())
+					} else {
+						answer.WriteString(gjson.GetBytes(data, "choices.0.delta.content").String())
+					}
+				}
+			} else if tc.contentType == "application/json" {
+				answer.WriteString(gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String())
+			} else {
+				answer.Write(response.Body.Bytes())
+			}
+			if response.Code != http.StatusOK || answer.String() != "recovered answer" {
+				t.Fatalf("status=%d answer=%q body=%s, want only recovered answer", response.Code, answer.String(), response.Body.String())
+			}
+			if badCalls.Load() != 1 || goodCalls.Load() != 1 {
+				t.Fatalf("bad/good key calls=%d/%d, want 1/1", badCalls.Load(), goodCalls.Load())
+			}
+			cooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
+			if err != nil {
+				t.Fatalf("GetAllKeyCooldowns: %v", err)
+			}
+			if remaining := time.Until(cooldowns[channelID][0]); remaining < 85*time.Second || remaining > 95*time.Second {
+				t.Fatalf("old key cooldown=%v, want about 90s", remaining)
+			}
+			if until := cooldowns[channelID][1]; !until.IsZero() {
+				t.Fatalf("healthy key unexpectedly cooled until %s", until)
+			}
+			channels, err := env.store.GetAllChannelCooldowns(context.Background())
+			if err != nil || len(channels) != 0 {
+				t.Fatalf("channel cooldowns=%v err=%v, want none with a healthy key", channels, err)
+			}
+			failedLog := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+				return entry.Model == "gpt-4" && entry.StatusCode == util.StatusSSEError
+			})
+			successLog := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+				return entry.Model == "gpt-4" && entry.StatusCode == http.StatusOK
+			})
+			if failedLog == nil || successLog == nil {
+				t.Fatalf("missing rejected attempt or successful retry log: failed=%v success=%v", failedLog, successLog)
+			}
+			if !strings.Contains(failedLog.Message, "余额不够这次调用。当前余额") {
+				t.Fatalf("failed attempt lost matched body: %q", failedLog.Message)
+			}
+			debug, err := env.store.GetDebugLogByLogID(context.Background(), failedLog.ID)
+			if err != nil || debug == nil || debug.RespStatus != tc.status {
+				t.Fatalf("failed attempt debug=%+v err=%v, want original HTTP status %d", debug, err, tc.status)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 成功正文命中冷却规则且候选耗尽时，返回媒体类型与内容一致的 502 JSON 错误。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_SuccessBodyRuleExhaustedCandidatesReturnsJSON(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string ///< 上游成功响应格式。
+		contentType string ///< 原始上游媒体类型。
+		body        string ///< 余额不足正文及完整协议终态。
+	}{
+		{
+			name: "sse", contentType: "text/event-stream",
+			body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"余额不够这次调用。当前余额：0\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+		},
+		{name: "plain_text", contentType: "text/plain", body: "余额不够这次调用。当前余额：0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", tc.contentType)
+				w.Header().Set("Content-Length", strconv.Itoa(len(tc.body)))
+				w.Header().Set("Content-Encoding", "identity")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "exhausted-success-body", models: "gpt-4",
+				cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Low balance", StatusCodes: []int{http.StatusOK},
+					MessagePattern: "^余额不够这次调用。当前余额", Scope: model.CooldownScopeKey,
+					Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}},
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-4", "stream": true, "messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusBadGateway || response.Header().Get("Content-Type") != "application/json" || !json.Valid(response.Body.Bytes()) {
+				t.Fatalf("status=%d headers=%v body=%q, want 502 application/json with valid JSON", response.Code, response.Header(), response.Body.String())
+			}
+			if response.Header().Get("Content-Length") != "" || response.Header().Get("Content-Encoding") != "" {
+				t.Fatalf("replaced response retained upstream representation headers: %v", response.Header())
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("upstream calls=%d, want one rejected success response", calls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 成功响应只受显式状态及正文规则影响，未命中或不可执行时保持原始 SSE。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_SuccessBodyRulesPreserveUnmatchedResponses(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"unmatched", "no_status", "no_pattern", "disabled", "other_status", "expired_reset"} {
+		t.Run(scenario, func(t *testing.T) {
+			rule := model.CooldownDetectionRule{
+				Enabled: true, Name: "Explicit success body", StatusCodes: []int{http.StatusOK},
+				MessagePattern: "^余额不够这次调用。当前余额", Scope: model.CooldownScopeKey,
+				Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+			}
+			text := "余额不够这次调用。当前余额：0"
+			switch scenario {
+			case "unmatched":
+				text = "normal answer"
+			case "no_status":
+				rule.StatusCodes = nil
+			case "no_pattern":
+				rule.MessagePattern = ""
+			case "disabled":
+				rule.Enabled = false
+			case "other_status":
+				rule.StatusCodes = []int{http.StatusCreated}
+			case "expired_reset":
+				rule.MessagePattern = `^余额不够这次调用。当前余额：(?P<reset>\d+)`
+				rule.Mode, rule.TimeCapture, rule.TimeFormat = model.CooldownModeResetTime, "reset", model.CooldownTimeFormatUnix
+			}
+			body := fmt.Sprintf("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n", text)
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "preserve-success", models: "gpt-4",
+				cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{rule}},
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-4", "stream": true, "messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusOK || response.Body.String() != body || calls.Load() != 1 {
+				t.Fatalf("status=%d calls=%d body=%s, want unchanged upstream SSE", response.Code, calls.Load(), response.Body.String())
+			}
+			cooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
+			if err != nil || len(cooldowns) != 0 {
+				t.Fatalf("key cooldowns=%v err=%v, want none", cooldowns, err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 成功响应正文检测继承全局规则，渠道规则仍完整覆盖全局配置。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_SuccessBodyRulesGlobalFallbackAndChannelOverride(t *testing.T) {
+	t.Parallel()
+	for _, override := range []bool{false, true} {
+		t.Run(fmt.Sprintf("channel_override_%v", override), func(t *testing.T) {
+			var firstCalls, fallbackCalls atomic.Int32
+			first := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				firstCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"low-balance","choices":[{"message":{"role":"assistant","content":"余额不够这次调用。当前余额：0"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			}))
+			defer first.Close()
+			fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"global-recovered","choices":[{"message":{"role":"assistant","content":"recovered answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			}))
+			defer fallback.Close()
+			var channelRules *model.CooldownDetectionRules
+			if override {
+				channelRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Local success body", StatusCodes: []int{http.StatusOK},
+					MessagePattern: "^local maintenance", Scope: model.CooldownScopeChannel,
+					Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}}
+			}
+			env := setupProxyTestEnvWithSettings(t, []testChannel{
+				{name: "global-first", models: "gpt-4", priority: 100, cooldownDetectionRules: channelRules},
+				{name: "global-fallback", models: "gpt-4", priority: 50},
+			}, map[int]string{0: first.URL, 1: fallback.URL}, map[string]string{
+				"global_cooldown_detection_rules": `{"rules":[{"enabled":true,"name":"Global success balance","status_codes":[200],"message_pattern":"^余额不够这次调用。当前余额","scope":"channel","mode":"fixed","cooldown_seconds":90}]}`,
+			})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-4", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			wantAnswer, wantFallbackCalls := "recovered answer", int32(1)
+			if override {
+				wantAnswer, wantFallbackCalls = "余额不够这次调用。当前余额：0", 0
+			}
+			answer := gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String()
+			if response.Code != http.StatusOK || answer != wantAnswer || firstCalls.Load() != 1 || fallbackCalls.Load() != wantFallbackCalls {
+				t.Fatalf("status=%d answer=%q first/fallback=%d/%d, want answer=%q calls=1/%d", response.Code, answer, firstCalls.Load(), fallbackCalls.Load(), wantAnswer, wantFallbackCalls)
+			}
+			cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+			if err != nil {
+				t.Fatalf("GetAllChannelCooldowns: %v", err)
+			}
+			wantCooldowns := 1
+			if override {
+				wantCooldowns = 0
+			}
+			if len(cooldowns) != wantCooldowns {
+				t.Fatalf("channel cooldowns=%v, want %d cooled channels", cooldowns, wantCooldowns)
+			}
+		})
+	}
+}
+
 func TestProxy_SSEErrorRuleMatchesOriginalHTTPStatus(t *testing.T) {
 	t.Parallel()
 

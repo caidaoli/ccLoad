@@ -373,8 +373,8 @@
 
     const conditions = document.createElement('div');
     conditions.className = 'cooldown-detection-grid cooldown-detection-grid--conditions';
-    conditions.appendChild(buildTextField(t('channels.cooldownDetection.statusCodes', 'Status codes'), rule.status_codes, t('channels.cooldownDetection.statusCodesHint', '200, 429; empty = any'), (value) => { rule.status_codes = value; }, t('channels.cooldownDetection.statusCodesHelp', 'Comma-separated upstream HTTP status codes; leave blank to match any status.')));
-    const messagePattern = buildTextField(t('channels.cooldownDetection.messagePattern', 'Message regex'), rule.message_pattern, t('channels.cooldownDetection.messagePatternHint', 'Supports Go named captures'), (value) => { rule.message_pattern = value; }, t('channels.cooldownDetection.messagePatternHelp', 'Go regular expression for the upstream error message. Reset-time mode requires a named capture.'));
+    conditions.appendChild(buildTextField(t('channels.cooldownDetection.statusCodes', 'Status codes'), rule.status_codes, t('channels.cooldownDetection.statusCodesHint', '200, 429; empty = any'), (value) => { rule.status_codes = value; }, t('channels.cooldownDetection.statusCodesHelp', 'Comma-separated upstream HTTP status codes; blank matches recognized errors. Successful responses require an explicit status and a message regex.')));
+    const messagePattern = buildTextField(t('channels.cooldownDetection.messagePattern', 'Message regex'), rule.message_pattern, t('channels.cooldownDetection.messagePatternHint', 'Supports Go named captures'), (value) => { rule.message_pattern = value; }, t('channels.cooldownDetection.messagePatternHelp', 'Go regex for error messages or opening answer text with an explicit success status. Probes at most 4 KiB and 250ms after initial text. Reset-time mode requires a named capture.'));
     messagePattern.classList.add('cooldown-detection-message-pattern');
     conditions.appendChild(messagePattern);
     card.appendChild(conditions);

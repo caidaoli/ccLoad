@@ -294,10 +294,12 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	return result, reqCtx.Duration().Seconds(), nil
 }
 
-func populateFWResultFromUsageParser(result *fwResult, parser *sseUsageParser) {
-	if result == nil || parser == nil {
-		return
-	}
+/**
+ * @brief 将已读取的真实用量和协议元数据保留到转发结果，失败尝试也参与计费
+ * @param result 当前转发结果
+ * @param parser 已喂入响应数据的 JSON 或 SSE 解析器
+ */
+func populateFWResultFromUsageParser(result *fwResult, parser usageParser) {
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
 	result.ResponseModel = parser.GetResponseModel()
 	result.ReasoningTokens = parser.GetReasoningTokens()

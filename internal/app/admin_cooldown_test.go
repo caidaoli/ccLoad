@@ -9,6 +9,51 @@ import (
 	"ccLoad/internal/model"
 )
 
+/**
+ * @brief 草稿测试按成功响应回答文本匹配，保持显式状态及正文条件与代理一致
+ * @param t 当前测试上下文
+ */
+func TestHandleCooldownDetectionTestSuccessAnswer(t *testing.T) {
+	srv := newInMemoryServer(t)
+	for _, tc := range []struct {
+		name     string ///< 样本场景
+		body     string ///< 上游原始响应样本
+		statuses []int  ///< 显式配置的 HTTP 状态码
+		pattern  string ///< 正文匹配表达式
+		want     bool   ///< 是否应命中并生成可执行冷却决策
+	}{
+		{"sse", "data: {\"choices\":[{\"delta\":{\"content\":\"余额不够\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"这次调用。\"}}]}\n\ndata: [DONE]\n\n", []int{200}, "^余额不够这次调用", true},
+		{"json", `{"choices":[{"message":{"content":"余额不够这次调用。"}}]}`, []int{200}, "^余额不够这次调用", true},
+		{"plain", "余额不够这次调用。", []int{200}, "^余额不够这次调用", true},
+		{"legacy_without_status", "余额不够这次调用。", nil, "^余额不够这次调用", false},
+		{"status_only", "余额不够这次调用。", []int{200}, "", false},
+		{"normal_answer", `{"choices":[{"message":{"content":"这是正常回答。"}}]}`, []int{200}, "^余额不够这次调用", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{
+				"status_code": 200, "error_body": tc.body,
+				"cooldown_detection_rules": &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Success answer", StatusCodes: tc.statuses, MessagePattern: tc.pattern,
+					Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 60,
+				}}},
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/cooldown-detection/test", payload))
+			srv.HandleCooldownDetectionTest(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var result cooldownDetectionTestResponse
+			mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &result)
+			if result.Matched != tc.want || result.Actionable != tc.want {
+				t.Fatalf("evaluation=%+v, want matched/actionable=%t", result, tc.want)
+			}
+			if tc.want && (result.Message != "余额不够这次调用。" || result.Scope != model.CooldownScopeKey) {
+				t.Fatalf("unexpected extracted message or scope: %+v", result)
+			}
+		})
+	}
+}
+
 func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *testing.T) {
 	srv := newInMemoryServer(t)
 	ctx := context.Background()

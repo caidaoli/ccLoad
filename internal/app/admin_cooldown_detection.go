@@ -129,9 +129,11 @@ type cooldownDetectionTestResponse struct {
 	BuiltinFallbackReason string            `json:"builtin_fallback_reason,omitempty"`
 }
 
-// HandleCooldownDetectionTest evaluates unsaved cooldown rules. An empty
-// channel draft inherits the same process-level global rules as the proxy path.
-// It deliberately has no channel ID and never changes real cooldown state.
+/**
+ * @brief 测试草稿冷却规则，支持成功响应的回答文本；空渠道规则继承全局规则
+ * @param c 管理 API 上下文，接收状态码、响应体和规则草稿
+ * @note 只评估，不写入渠道、Key 或模型冷却状态；离线样本不能验证网络时间窗口
+ */
 func (s *Server) HandleCooldownDetectionTest(c *gin.Context) {
 	var req cooldownDetectionTestRequest
 	if err := BindAndValidate(c, &req); err != nil {
@@ -149,9 +151,22 @@ func (s *Server) HandleCooldownDetectionTest(c *gin.Context) {
 		}
 	}
 
+	body := []byte(req.ErrorBody)
+	if req.StatusCode >= 200 && req.StatusCode < 300 {
+		prefix := body[:min(len(body), successProbeBytes)]
+		isSSE, _ := classifySSEPrefix(prefix)
+		message, _, nonText := successResponseProbeText(prefix, isSSE, len(body) <= successProbeBytes)
+		if message != "" || nonText {
+			effectiveRules = cooldown.SuccessResponseDetectionRules(effectiveRules, req.StatusCode)
+			body, _ = json.Marshal(map[string]string{"message": message})
+			if nonText {
+				effectiveRules = nil
+			}
+		}
+	}
 	evaluation := cooldown.EvaluateCooldownDetectionRules(effectiveRules, cooldown.DetectionInput{
 		StatusCode: req.StatusCode,
-		ErrorBody:  []byte(req.ErrorBody),
+		ErrorBody:  body,
 	}, time.Now())
 
 	response := cooldownDetectionTestResponse{

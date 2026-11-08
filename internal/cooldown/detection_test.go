@@ -3,6 +3,7 @@ package cooldown
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +11,55 @@ import (
 
 	"ccLoad/internal/model"
 )
+
+/**
+ * @brief 成功响应只启用显式匹配当前 2xx 及正文的规则，并保留规则顺序与优先级
+ * @param t 测试上下文
+ */
+func TestSuccessResponseDetectionRules(t *testing.T) {
+	rules := &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{
+		{Enabled: true, Name: "implicit status", Priority: 0, MessagePattern: "quota"},
+		{Enabled: true, Name: "status only", Priority: 1, StatusCodes: []int{200}},
+		{Enabled: false, Name: "disabled", Priority: 2, StatusCodes: []int{200}, MessagePattern: "quota"},
+		{Enabled: true, Name: "other status", Priority: 3, StatusCodes: []int{201, 500}, MessagePattern: "quota"},
+		{Enabled: true, Name: "first eligible", Priority: 7, StatusCodes: []int{500, 200}, MessagePattern: "quota"},
+		{Enabled: true, Name: "second eligible", Priority: 5, StatusCodes: []int{200, 299}, MessagePattern: "balance"},
+	}}
+	tests := []struct {
+		name       string
+		rules      *model.CooldownDetectionRules
+		statusCode int
+		want       []model.CooldownDetectionRule
+	}{
+		{name: "nil rules", statusCode: 200},
+		{name: "empty rules", rules: &model.CooldownDetectionRules{}, statusCode: 200},
+		{name: "before success range", rules: rules, statusCode: 199},
+		{name: "after success range", rules: rules, statusCode: 300},
+		{name: "error status", rules: rules, statusCode: 500},
+		{name: "no eligible rule", rules: rules, statusCode: 204},
+		{name: "success rules retain order", rules: rules, statusCode: 200, want: []model.CooldownDetectionRule{rules.Rules[4], rules.Rules[5]}},
+		{name: "different success status", rules: rules, statusCode: 201, want: []model.CooldownDetectionRule{rules.Rules[3]}},
+		{name: "last success status", rules: rules, statusCode: 299, want: []model.CooldownDetectionRule{rules.Rules[5]}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SuccessResponseDetectionRules(tt.rules, tt.statusCode)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("SuccessResponseDetectionRules() = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil || !reflect.DeepEqual(got.Rules, tt.want) {
+				t.Fatalf("SuccessResponseDetectionRules() = %+v, want %+v", got, tt.want)
+			}
+			got.Rules[0].Priority = 99
+			if rules.Rules[3].Priority != 3 || rules.Rules[4].Priority != 7 || rules.Rules[5].Priority != 5 {
+				t.Fatal("returned rule slice must be independent of the configured slice")
+			}
+		})
+	}
+}
 
 func TestNormalizeCooldownDetectionRules_SortsAndRenumbersPriority(t *testing.T) {
 	rules := &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{
@@ -282,6 +332,70 @@ func TestHandleError_ConfiguredCooldownDetectionOverridesBuiltin(t *testing.T) {
 	until := time.Unix(updated.CooldownUntil, 0)
 	if until.Before(before.Add(119*time.Second)) || until.After(time.Now().Add(121*time.Second)) {
 		t.Fatalf("channel cooldown until = %v, want approximately two minutes after now", until)
+	}
+}
+
+/**
+ * @brief 已匹配的成功响应规则保持 Key 范围及截止时间，并遵守调用方确认的模型范围
+ * @param t 测试上下文
+ */
+func TestHandleError_ReusesConfiguredDetection(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg := createTestChannel(t, store, "configured-success-detection")
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "test-key-0", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "test-key-1", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch() error = %v", err)
+	}
+	rules := &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{
+		{
+			Enabled: true, Name: "existing error rule", Priority: 0, MessagePattern: "quota",
+			Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 3600,
+		},
+		{
+			Enabled: true, Name: "success response rule", Priority: 1, StatusCodes: []int{200}, MessagePattern: "quota",
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
+		},
+	}}
+	body := []byte(`{"error":{"message":"quota exhausted"}}`)
+	evaluation := EvaluateCooldownDetectionRules(SuccessResponseDetectionRules(rules, 200), DetectionInput{
+		StatusCode: 200,
+		ErrorBody:  body,
+	}, time.Now().Add(-10*time.Second).Truncate(time.Second))
+	if !evaluation.Actionable || evaluation.Scope != model.CooldownScopeKey {
+		t.Fatalf("success response evaluation = %+v, want actionable key rule", evaluation)
+	}
+	in := ErrorInput{
+		ChannelID: cfg.ID, KeyIndex: 0, Model: "test-model", StatusCode: 502, UpstreamStatusCode: 200,
+		ErrorBody: body, CooldownDetectionRules: rules, ConfiguredDetection: &evaluation,
+	}
+	manager := NewManager(store, nil)
+	if got := manager.DecideAction(ctx, in); got != ActionRetryKey {
+		t.Fatalf("DecideAction() = %v, want ActionRetryKey", got)
+	}
+	if got := manager.HandleError(ctx, in); got != ActionRetryKey {
+		t.Fatalf("HandleError() = %v, want ActionRetryKey", got)
+	}
+	key, err := store.GetAPIKey(ctx, cfg.ID, 0)
+	if err != nil {
+		t.Fatalf("GetAPIKey() error = %v", err)
+	}
+	if key.CooldownUntil != evaluation.CooldownUntil.Unix() {
+		t.Fatalf("key cooldown = %v, want original deadline %v", time.Unix(key.CooldownUntil, 0), evaluation.CooldownUntil)
+	}
+	updated, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if updated.CooldownUntil != 0 {
+		t.Fatalf("channel cooldown = %v, want no channel cooldown", updated.CooldownUntil)
+	}
+	in.ModelScoped = true
+	if got := manager.DecideAction(ctx, in); got != ActionRetryModel {
+		t.Fatalf("model-scoped DecideAction() = %v, want ActionRetryModel", got)
 	}
 }
 

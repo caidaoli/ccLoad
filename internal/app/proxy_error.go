@@ -142,11 +142,19 @@ func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
 	return models
 }
 
+/**
+ * @brief 将转发结果转换为冷却输入，保留原始状态及成功响应已命中的规则
+ * @param channelID 当前渠道 ID
+ * @param keyIndex 当前 Key 索引
+ * @param res 转发结果；nil 时生成空错误输入
+ * @return 冷却分类所需的错误与规则结果
+ */
 func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.ErrorInput {
 	if res == nil {
 		return httpErrorInputFromParts(channelID, keyIndex, 0, nil, nil)
 	}
 	in := httpErrorInputFromParts(channelID, keyIndex, res.Status, res.Body, res.Header)
+	in.ConfiguredDetection = res.ConfiguredDetection
 	if res.UpstreamStatus != 0 {
 		in.UpstreamStatusCode = res.UpstreamStatus
 	}

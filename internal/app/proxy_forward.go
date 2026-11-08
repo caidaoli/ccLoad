@@ -2559,11 +2559,19 @@ func invalidHTMLSuccessResponseResult(
 	}, reqCtx.Duration().Seconds(), err
 }
 
-// handleResponse 处理 HTTP 响应（错误或成功）
-// 从proxy.go提取，遵循SRP原则
-// upstreamProtocol 用于精确识别上游 usage 格式。
-// cfg: 渠道配置,用于提取渠道ID
-// apiKey: 使用的API Key,用于日志记录
+/**
+ * @brief 处理上游响应，在下游提交前检测内置错误和显式成功响应冷却规则
+ * @param reqCtx 请求上下文及超时控制
+ * @param resp 上游响应，处理期间会包装 Body
+ * @param w 下游响应写入端
+ * @param upstreamProtocol 实际上游协议
+ * @param cfg 当前渠道配置
+ * @param _ 保留的 API Key 参数
+ * @param observer 读取与首字节观测回调
+ * @return 转发结果及未提交的错误结果
+ * @return 请求耗时，单位秒
+ * @return 读取、转换或写入错误；规则命中本身不返回 error
+ */
 func (s *Server) handleResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -2575,6 +2583,23 @@ func (s *Server) handleResponse(
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 	readStats := &streamReadStats{}
+	rules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
+	rules = cooldown.SuccessResponseDetectionRules(rules, resp.StatusCode)
+	if rules != nil && cfg.UsesOAuth() {
+		rules.Rules = slices.DeleteFunc(rules.Rules, func(rule model.CooldownDetectionRule) bool {
+			return rule.Scope == model.CooldownScopeKey
+		})
+		if rules.IsEmpty() {
+			rules = nil
+		}
+	}
+	var probeBody *successProbeBody
+	if rules != nil {
+		probeBody = &successProbeBody{ReadCloser: resp.Body}
+		// Cancellation closes only the upstream; probe state belongs to this goroutine.
+		resp.Body = readerWithCloser{Reader: probeBody, Closer: resp.Body}
+		defer func() { _ = probeBody.Close() }()
+	}
 
 	attachFirstByteDetector(reqCtx, resp, readStats, observer)
 
@@ -2596,6 +2621,11 @@ func (s *Server) handleResponse(
 
 	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, upstreamProtocol, readStats); handled {
 		return res, duration, err
+	}
+	if rules != nil {
+		if res := probeConfiguredSuccessResponse(reqCtx, resp, probeBody, rules, readStats, upstreamProtocol); res != nil {
+			return res, reqCtx.Duration().Seconds(), nil
+		}
 	}
 
 	if !hideOAuthQuota(cfg) {

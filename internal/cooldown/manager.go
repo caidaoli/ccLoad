@@ -29,7 +29,9 @@ const (
 // 用于 HandleError 的 keyIndex 参数。
 const NoKeyIndex = -1
 
-// ErrorInput 包含错误处理所需的输入信息。
+/**
+ * @brief 包含错误分类、冷却决策与持久化所需的上游信息
+ */
 type ErrorInput struct {
 	ChannelID          int64
 	Model              string   // 实际发送给上游的模型名
@@ -45,6 +47,7 @@ type ErrorInput struct {
 	// CooldownDetectionRules belongs to the selected channel and is evaluated
 	// before built-in HTTP classification. Nil preserves the existing behavior.
 	CooldownDetectionRules *model.CooldownDetectionRules
+	ConfiguredDetection    *DetectionEvaluation ///< 已确认有效的规则匹配结果；非 nil 时复用规则及原始冷却截止时间
 }
 
 // ConfigGetter 获取渠道配置的接口（支持缓存）
@@ -202,15 +205,26 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 	return decision
 }
 
+/**
+ * @brief 将已匹配或当前评估的自定义规则转换为冷却决策
+ * @param in 上游错误及规则；已匹配结果优先，保留原始截止时间
+ * @param now 未提供已匹配结果时用于计算冷却截止时间的基准
+ * @return 规则指定的冷却决策；不可执行时返回零值
+ * @return 规则可执行且所需目标可用时为 true，否则为 false
+ */
 func configuredCooldownDecision(in ErrorInput, now time.Time) (cooldownDecision, bool) {
-	statusCode := in.UpstreamStatusCode
-	if statusCode == 0 {
-		statusCode = in.StatusCode
+	evaluation := in.ConfiguredDetection
+	if evaluation == nil {
+		statusCode := in.UpstreamStatusCode
+		if statusCode == 0 {
+			statusCode = in.StatusCode
+		}
+		detected := EvaluateCooldownDetectionRules(in.CooldownDetectionRules, DetectionInput{
+			StatusCode: statusCode,
+			ErrorBody:  in.ErrorBody,
+		}, now)
+		evaluation = &detected
 	}
-	evaluation := EvaluateCooldownDetectionRules(in.CooldownDetectionRules, DetectionInput{
-		StatusCode: statusCode,
-		ErrorBody:  in.ErrorBody,
-	}, now)
 	if !evaluation.Actionable {
 		return cooldownDecision{}, false
 	}

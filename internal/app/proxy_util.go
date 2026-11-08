@@ -226,7 +226,8 @@ type upstreamWireAliases struct {
  */
 type fwResult struct {
 	Status              int
-	UpstreamStatus      int // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
+	UpstreamStatus      int                           // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
+	ConfiguredDetection *cooldown.DetectionEvaluation ///< 成功响应探测已确认的规则与截止时间，错误处理不重新匹配
 	Header              http.Header
 	Body                []byte              // filled for non-2xx or when needed
 	upstreamRequestBody []byte              // 实际发送的 provider wire body，仅用于同请求内安全降级重试

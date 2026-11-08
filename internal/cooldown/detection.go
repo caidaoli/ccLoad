@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -287,6 +288,29 @@ func isValidCaptureName(name string) bool {
 		return false
 	}
 	return true
+}
+
+/**
+ * @brief 筛选显式检查当前成功状态码及正文的冷却规则
+ * @param rules 已配置的冷却规则；nil 表示未配置
+ * @param statusCode 当前上游 HTTP 状态码；仅处理 2xx
+ * @return 按原顺序保留的启用规则；没有适用规则时返回 nil
+ * @note 不修改原规则或优先级；返回规则的只读切片字段与原规则共享
+ */
+func SuccessResponseDetectionRules(rules *model.CooldownDetectionRules, statusCode int) *model.CooldownDetectionRules {
+	if statusCode < 200 || statusCode >= 300 || rules == nil {
+		return nil
+	}
+	var selected []model.CooldownDetectionRule
+	for _, rule := range rules.Rules {
+		if rule.Enabled && rule.MessagePattern != "" && slices.Contains(rule.StatusCodes, statusCode) {
+			selected = append(selected, rule)
+		}
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	return &model.CooldownDetectionRules{Rules: selected}
 }
 
 // EvaluateCooldownDetectionRules evaluates the configured rules in
