@@ -1,9 +1,11 @@
 package protocol_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +14,123 @@ import (
 
 	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 独立 effort 转 Chat 保留等级，显式 thinking 的预算和开关仍优先
+ * @param t 测试上下文
+ */
+func TestRegistryAnthropicStandaloneEffortToOpenAI(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name, config, want string
+	}{
+		{"standalone", `"output_config":{"effort":"high"}`, "high"},
+		{"normalized", `"output_config":{"effort":" HIGH "}`, "high"},
+		{"empty", `"output_config":{"effort":" "}`, ""},
+		{"invalid_type", `"output_config":{"effort":42}`, ""},
+		{"budget_priority", `"thinking":{"type":"enabled","budget_tokens":8192},"output_config":{"effort":"high"}`, "medium"},
+		{"enabled_effort", `"thinking":{"type":"enabled"},"output_config":{"effort":"high"}`, "high"},
+		{"enabled_default", `"thinking":{"type":"enabled"}`, "auto"},
+		{"adaptive", `"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}`, "high"},
+		{"disabled", `"thinking":{"type":"disabled"},"output_config":{"effort":"high"}`, "none"},
+		{"between_tools", `"thinking":{"type":"between_tools"},"output_config":{"effort":"high"}`, ""},
+		{"null_thinking", `"thinking":null,"output_config":{"effort":"high"}`, ""},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				raw := []byte(`{` + tc.config + `,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+				out, err := reg.TranslateRequest(protocol.Anthropic, protocol.OpenAI, "gpt-5.4", raw, stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := gjson.GetBytes(out, "reasoning_effort").String(); got != tc.want {
+					t.Fatalf("reasoning_effort=%q, want %q: %s", got, tc.want, out)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief Chat 空白思考不得创建 Claude 内容块，但保留思考块内部的空白
+ * @param t 测试上下文
+ */
+func TestRegistryOpenAIWhitespaceReasoningNonStream(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name, message string
+		want          []string
+	}{
+		{"reasoning_content", `{"content":"Hi","reasoning_content":" \n\t"}`, []string{"text:Hi"}},
+		{"reasoning", `{"content":"Hi","reasoning":" \n\t"}`, []string{"text:Hi"}},
+		{"reasoning_details", `{"content":"Hi","reasoning_details":[{"type":"reasoning.text","text":" "}]}`, []string{"text:Hi"}},
+		{"thinking_part", `{"content":[{"type":"thinking","thinking":" "},{"type":"text","text":"Hi"}]}`, []string{"text:Hi"}},
+		{"thinking_parts", `{"content":[{"type":"thinking","thinking":"a"},{"type":"reasoning","text":" "},{"type":"thinking","thinking":"b"},{"type":"text","text":"Hi"}]}`, []string{"thinking:a b", "text:Hi"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"id":"c1","model":"m","choices":[{"index":0,"message":` + tc.message + `,"finish_reason":"stop"}]}`)
+			out, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "m", nil, nil, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, block := range gjson.GetBytes(out, "content").Array() {
+				got = append(got, block.Get("type").String()+":"+block.Get("thinking").String()+block.Get("text").String())
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("blocks=%q, want %q: %s", got, tc.want, out)
+			}
+		})
+	}
+}
+
+/**
+ * @brief Chat 流式及工具缓冲思考只允许非空白片段创建 Claude thinking 块
+ * @param t 测试上下文
+ */
+func TestRegistryOpenAIWhitespaceReasoningStream(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	toolCall := `{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":"{}"}}]}`
+	for _, tc := range []struct {
+		name   string
+		deltas []string
+		want   []string
+	}{
+		{"whitespace_only", []string{`{"reasoning_content":" \n\t"}`, `{"content":"Hi"}`}, []string{"text:Hi"}},
+		{"inside_thought", []string{`{"reasoning_content":"a"}`, `{"reasoning_content":"\n\n"}`, `{"reasoning_content":"b"}`}, []string{"thinking:a\n\nb"}},
+		{"after_text", []string{`{"reasoning_content":"a"}`, `{"content":"x"}`, `{"reasoning_content":" "}`, `{"content":"y"}`}, []string{"thinking:a", "text:xy"}},
+		{"tool_whitespace", []string{toolCall, `{"reasoning_content":" "}`}, []string{"tool_use:"}},
+		{"tool_thought", []string{toolCall, `{"reasoning_content":"a"}`, `{"reasoning_content":" "}`, `{"reasoning_content":"b"}`}, []string{"tool_use:", "thinking:a b"}},
+		{"typed_parts", []string{`{"content":[{"type":"thinking","thinking":" "},{"type":"text","text":"Hi"}]}`}, []string{"text:Hi"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var chunks []string
+			for _, delta := range tc.deltas {
+				chunks = append(chunks, "data: "+`{"id":"c1","model":"m","choices":[{"index":0,"delta":`+delta+`,"finish_reason":null}]}`+"\n\n")
+			}
+			chunks = append(chunks, "data: "+`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n", "data: [DONE]\n\n")
+			stream := translateResponseStreamChunks(t, reg, protocol.OpenAI, protocol.Anthropic, "m", chunks...)
+			var got []string
+			var stopCount int
+			for _, event := range parseSSEEvents(t, stream) {
+				switch event.Event {
+				case "content_block_start":
+					got = append(got, gjson.Get(event.RawData, "content_block.type").String()+":")
+				case "content_block_delta":
+					got[len(got)-1] += gjson.Get(event.RawData, "delta.thinking").String() + gjson.Get(event.RawData, "delta.text").String()
+				case "message_stop":
+					stopCount++
+				}
+			}
+			if !slices.Equal(got, tc.want) || stopCount != 1 {
+				t.Fatalf("blocks=%q, want %q; message_stop=%d: %s", got, tc.want, stopCount, stream)
+			}
+		})
+	}
+}
 
 func TestRegistryAnthropicMidConversationEffort(t *testing.T) {
 	reg := protocol.NewRegistry()

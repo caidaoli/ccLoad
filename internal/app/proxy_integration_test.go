@@ -2699,6 +2699,215 @@ func TestProxy_AnthropicLegacyModelRejectsMidConversationSystemLocally(t *testin
 	}
 }
 
+/**
+ * @brief 验证 Responses 中途指令在 Anthropic 真实出站保持历史缓存前缀及旧模型兼容路径。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_ResponsesAnthropicMidSessionSystemPreservesPromptPrefix(t *testing.T) {
+	t.Parallel()
+	for _, modelName := range []string{"claude-opus-5", "claude-haiku-5-5", "claude-sonnet-4-5"} {
+		t.Run(modelName, func(t *testing.T) {
+			requests := make(chan []byte, 2)
+			betaHeaders := make(chan string, 2)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Errorf("read upstream body: %v", err)
+				}
+				requests <- body
+				betaHeaders <- normalizedAnthropicBetaHeader(request.Header)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"msg_prefix","type":"message","role":"assistant","model":"`+modelName+`","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "anthropic-prefix", upstreamProtocol: "anthropic", models: modelName, apiKey: "sk-ant-test",
+			}}, map[int]string{0: upstream.URL})
+			input := []any{
+				map[string]any{"role": "developer", "content": "base instructions"},
+				map[string]any{"role": "user", "content": "first request"},
+				map[string]any{"role": "assistant", "content": "first answer"},
+				map[string]any{"role": "user", "content": "second request"},
+			}
+			var outgoing []gjson.Result
+			var outgoingBetas []string
+			for turn := range 2 {
+				response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+					"model": modelName, "instructions": "top instructions", "input": input,
+				}, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("turn %d status=%d response=%s", turn, response.Code, response.Body.String())
+				}
+				outgoing = append(outgoing, gjson.ParseBytes(<-requests))
+				outgoingBetas = append(outgoingBetas, <-betaHeaders)
+				input = append(input,
+					map[string]any{"role": "assistant", "content": "second answer"},
+					map[string]any{"role": "developer", "content": "new-time-context"},
+					map[string]any{"role": "user", "content": "third request"},
+				)
+			}
+			first, next := outgoing[0], outgoing[1]
+			const midSystemBeta = "mid-conversation-system-2026-04-07"
+			if modelName == "claude-haiku-5-5" && slices.Contains(strings.Split(outgoingBetas[0], ","), midSystemBeta) {
+				t.Fatalf("Haiku helper without system messages acquired mid-system beta: %s", outgoingBetas[0])
+			}
+			if modelName == "claude-sonnet-4-5" {
+				if strings.Contains(next.Get("messages.#.role").Raw, "system") ||
+					!strings.Contains(next.Get("messages.0").Raw, "new-time-context") {
+					t.Fatalf("legacy system placement changed: %s", next.Raw)
+				}
+				return
+			}
+			if !slices.Contains(strings.Split(outgoingBetas[1], ","), midSystemBeta) {
+				t.Fatalf("mid-session system message lacks required beta: %s", outgoingBetas[1])
+			}
+			if first.Get("system").Raw != next.Get("system").Raw {
+				t.Fatalf("upstream system prefix changed: %s -> %s", first.Get("system").Raw, next.Get("system").Raw)
+			}
+			// The final user turn's rolling cache marker moves forward each turn;
+			// all completed history before it must remain the same wire prefix.
+			for index := 0; index < len(first.Get("messages").Array())-1; index++ {
+				path := fmt.Sprintf("messages.%d", index)
+				if first.Get(path).Raw != next.Get(path).Raw {
+					t.Fatalf("upstream %s changed: %s -> %s", path, first.Get(path).Raw, next.Get(path).Raw)
+				}
+			}
+			messages := next.Get("messages").Array()
+			last := messages[len(messages)-1]
+			if last.Get("role").String() != "system" || last.Get("content.0.text").String() != "new-time-context" ||
+				messages[len(messages)-2].Get("role").String() != "user" {
+				t.Fatalf("mid-session instruction moved from the final user turn: %s", next.Get("messages").Raw)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 OpenCode 与 Z.ai 不支持中途 system 的出站保持原顶层指令顺序及并行工具结果配对。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_ResponsesAnthropicProviderKeepsTopLevelSystem(t *testing.T) {
+	t.Parallel()
+	zai := newZAITestChannel()
+	for _, endpoint := range []string{"https://opencode.ai/zen", "https://opencode.ai/zen/go", zai.URLs[0].URL} {
+		t.Run(endpoint, func(t *testing.T) {
+			channel := testChannel{name: "provider-system", upstreamProtocol: "anthropic", models: "claude-haiku-5-5", apiKey: "sk-ant-test"}
+			wantBetas := "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+			if endpoint == zai.URLs[0].URL {
+				channel.models = "glm-5"
+				channel.authType = zai.AuthType
+				channel.oauthCredential = zai.OAuthCredential
+				wantBetas = ""
+			}
+			env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: endpoint})
+			var outgoing gjson.Result
+			var betas string
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				outgoing = gjson.ParseBytes(body)
+				betas = normalizedAnthropicBetaHeader(request.Header)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+					Body: io.NopCloser(strings.NewReader(`{"id":"msg_provider","type":"message","role":"assistant","model":"` + channel.models + `","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+			})}
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": channel.models, "instructions": "top instructions", "max_output_tokens": 128,
+				"tools": []any{map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}}},
+				"input": []any{
+					map[string]any{"role": "developer", "content": "base instructions"},
+					map[string]any{"role": "user", "content": "first request"},
+					map[string]any{"type": "function_call", "call_id": "call_a", "name": "lookup", "arguments": "{}"},
+					map[string]any{"type": "function_call", "call_id": "call_b", "name": "lookup", "arguments": "{}"},
+					map[string]any{"role": "developer", "content": "before results"},
+					map[string]any{"type": "function_call_output", "call_id": "call_a", "output": "result a"},
+					map[string]any{"role": "system", "content": []any{map[string]any{"type": "input_text", "text": "between results", "cache_control": map[string]any{"type": "ephemeral"}}}},
+					map[string]any{"type": "function_call_output", "call_id": "call_b", "output": "result b"},
+					map[string]any{"role": "assistant", "content": "answer"},
+					map[string]any{"role": "developer", "content": "tail context"},
+				},
+			}, nil)
+			if response.Code != http.StatusOK || !outgoing.Exists() {
+				t.Fatalf("status=%d response=%s", response.Code, response.Body.String())
+			}
+			if betas != wantBetas {
+				t.Fatalf("provider beta changed: got %q want %q", betas, wantBetas)
+			}
+			var systemTexts []string
+			for _, block := range outgoing.Get("system").Array() {
+				systemTexts = append(systemTexts, block.Get("text").String())
+			}
+			if !slices.Equal(systemTexts, []string{"top instructions", "base instructions", "before results", "between results", "tail context"}) {
+				t.Fatalf("provider top-level system order changed: %s", outgoing.Raw)
+			}
+			messages := outgoing.Get("messages").Array()
+			for _, message := range messages {
+				if message.Get("role").String() == "system" {
+					t.Fatalf("provider acquired unsupported system turn: %s", outgoing.Get("messages").Raw)
+				}
+			}
+			if len(messages) < 3 || messages[0].Get("role").String() != "user" || messages[1].Get("role").String() != "assistant" ||
+				messages[2].Get("role").String() != "user" ||
+				messages[2].Get("content.0.tool_use_id").String() != "call_a" || messages[2].Get("content.1.tool_use_id").String() != "call_b" {
+				t.Fatalf("provider conversation or tool-result pairing changed: %s", outgoing.Get("messages").Raw)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证同一渠道配置 OpenCode 时，实际普通上游仍保留 Responses 中途 system 能力。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_ResponsesAnthropicSystemPlacementUsesSelectedURL(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "mixed-provider", upstreamProtocol: "anthropic", models: "claude-haiku-5-5", apiKey: "sk-ant-test",
+	}}, map[int]string{0: "https://anthropic-gateway.example/v1"})
+	ctx := context.Background()
+	cfg, err := env.store.GetConfig(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.URLs = append(cfg.URLs, model.ChannelURL{URL: "https://opencode.ai/zen", Protocols: []string{"anthropic"}})
+	env.server.urlSelector.DisableURL(cfg.ID, "https://opencode.ai/zen")
+	if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var outgoing gjson.Result
+	var betas string
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Hostname() != "anthropic-gateway.example" {
+			t.Fatalf("wrong selected upstream: %s", request.URL)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		outgoing = gjson.ParseBytes(body)
+		betas = normalizedAnthropicBetaHeader(request.Header)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"id":"msg_selected","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "claude-haiku-5-5", "input": []any{
+			map[string]any{"role": "user", "content": "first request"},
+			map[string]any{"role": "assistant", "content": "answer"},
+			map[string]any{"role": "developer", "content": "selected upstream context"},
+			map[string]any{"role": "user", "content": "second request"},
+		},
+	}, nil)
+	if response.Code != http.StatusOK || !outgoing.Exists() {
+		t.Fatalf("status=%d response=%s", response.Code, response.Body.String())
+	}
+	messages := outgoing.Get("messages").Array()
+	last := messages[len(messages)-1]
+	if last.Get("role").String() != "system" || last.Get("content.0.text").String() != "selected upstream context" ||
+		!slices.Contains(strings.Split(betas, ","), "mid-conversation-system-2026-04-07") {
+		t.Fatalf("OpenCode settings leaked to ordinary selected URL: body=%s betas=%s", outgoing.Raw, betas)
+	}
+}
+
 func TestProxy_AnthropicCompatibleGatewayOwnsLegacySystemTurns(t *testing.T) {
 	t.Parallel()
 	var upstreamCalls atomic.Int32

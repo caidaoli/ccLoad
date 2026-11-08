@@ -8,7 +8,53 @@ import (
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief Gemini 多 Part 的正文与思考按各自顺序累计，签名载体不产生内容
+ * @param t 测试上下文
+ */
+func TestRegistryGeminiToOpenAIMultiPartContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name, parts, text, reasoning string
+	}{
+		{"text", `[{"text":"Hello "},{"text":"world"}]`, "Hello world", ""},
+		{"reasoning", `[{"text":"step one ","thought":true},{"text":"step two","thought":true}]`, "", "step one step two"},
+		{"mixed", `[{"text":"first ","thought":true},{"text":"Hello "},{"text":"second","thought":true},{"text":"world"}]`, "Hello world", "first second"},
+		{"text_signature", `[{"text":"answer"},{"text":"","thoughtSignature":"sig"}]`, "answer", ""},
+		{"reasoning_signature", `[{"text":"thought","thought":true},{"text":"","thought":true,"thought_signature":"sig"}]`, "", "thought"},
+		{"signature_only", `[{"text":"","thoughtSignature":"sig"}]`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"candidates":[{"index":0,"content":{"parts":` + tc.parts + `},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`)
+			out, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.OpenAI, "gemini-2.5-pro", nil, nil, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for path, want := range map[string]string{"content": tc.text, "reasoning_content": tc.reasoning} {
+				value := gjson.GetBytes(out, "choices.0.message."+path)
+				if value.String() != want || (want == "" && value.Type != gjson.Null) {
+					t.Errorf("non-stream %s=%s, want %q: %s", path, value.Raw, want, out)
+				}
+			}
+			stream := translateResponseStreamChunks(t, reg, protocol.Gemini, protocol.OpenAI, "gemini-2.5-pro", "data: "+string(raw)+"\n\n")
+			events := parseSSEEvents(t, stream)
+			if len(events) != 1 {
+				t.Fatalf("expected one candidate chunk, got %d: %s", len(events), stream)
+			}
+			for path, want := range map[string]string{"content": tc.text, "reasoning_content": tc.reasoning} {
+				value := gjson.Get(events[0].RawData, "choices.0.delta."+path)
+				if value.String() != want || (want == "" && value.Type != gjson.Null) {
+					t.Errorf("stream %s=%s, want %q: %s", path, value.Raw, want, stream)
+				}
+			}
+		})
+	}
+}
 
 func TestRegistry_TranslateRequest_GeminiToOpenAI(t *testing.T) {
 	reg := protocol.NewRegistry()

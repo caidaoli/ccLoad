@@ -51,9 +51,13 @@ const advancedSettingKeys = new Set([
   'model_fuzzy_match'
 ]);
 
+/**
+ * @brief 以 MiB 编辑、以整数字节持久化的设置键
+ */
 const byteSettingKeys = new Set([
   'max_body_bytes',
   'max_image_body_bytes',
+  'request_body_memory_budget_bytes',
   'responses_ws_max_transcript_bytes'
 ]);
 const oauthBaseURLSettingKeys = new Set([
@@ -93,11 +97,15 @@ const selectSettingOptions = new Map([
   ]]
 ]);
 
+/**
+ * @brief 数值设置在编辑单位下的取值范围
+ */
 const numericSettingConstraints = new Map([
   ['max_key_retries', { min: 1 }],
   ['max_concurrency', { min: 1 }],
   ['max_body_bytes', { min: 1 / bytesPerMiB }],
   ['max_image_body_bytes', { min: 1 / bytesPerMiB }],
+  ['request_body_memory_budget_bytes', { min: 1 / bytesPerMiB }],
   ['http_read_timeout_seconds', { min: 0, max: maxDurationSeconds }],
   ['log_retention_days', { min: -1, max: 365 }],
   ['cooldown_auth_seconds', { min: 1, max: maxDurationSeconds }],
@@ -2205,6 +2213,11 @@ async function loadRuntimeMetrics(options) {
   }
 }
 
+/**
+ * @brief 获取设置所属的界面分组
+ * @param key 系统设置键
+ * @return 分组标识、翻译名称与顺序；未匹配时归入高级设置
+ */
 function getSettingGroupInfo(key) {
   const k = String(key || '').toLowerCase();
 
@@ -2216,7 +2229,7 @@ function getSettingGroupInfo(key) {
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
     { id: 'stream-timeout', nameKey: 'settings.group.streamTimeout', order: 20, match: () => k === 'stream_timeout' || k.endsWith('stream_idle_timeout') || k.endsWith('_first_byte_timeout') },
     { id: 'non-stream-timeout', nameKey: 'settings.group.nonStreamTimeout', order: 21, match: () => k === 'non_stream_timeout' || k.endsWith('_non_stream_timeout') },
-    { id: 'limits', nameKey: 'settings.group.limits', order: 26, match: () => k === 'max_concurrency' || k.endsWith('_body_bytes') || k === 'http_read_timeout_seconds' },
+    { id: 'limits', nameKey: 'settings.group.limits', order: 26, match: () => k === 'max_concurrency' || k.endsWith('_body_bytes') || k === 'request_body_memory_budget_bytes' || k === 'http_read_timeout_seconds' },
     { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k.includes('ttfb') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'billing', nameKey: 'settings.group.billing', order: 35, match: () => k === modelCustomPricingSettingKey },
     { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') || k === globalCooldownRulesSettingKey },
@@ -2230,6 +2243,11 @@ function getSettingGroupInfo(key) {
   return { id: 'advanced', nameKey: 'settings.group.advanced', name: t('settings.group.advanced'), order: 70 };
 }
 
+/**
+ * @brief 获取设置在所属分组内的展示顺序
+ * @param key 系统设置键
+ * @return 设置顺序；未登记时返回 1000
+ */
 function getSettingOrder(key) {
   const orders = {
     upstream_connection_reuse_limit_seconds: 90,
@@ -2253,7 +2271,8 @@ function getSettingOrder(key) {
     max_concurrency: 200,
     max_body_bytes: 201,
     max_image_body_bytes: 202,
-    http_read_timeout_seconds: 203,
+    request_body_memory_budget_bytes: 203,
+    http_read_timeout_seconds: 204,
     cooldown_fallback_enabled: 300,
     cooldown_auth_seconds: 301,
     cooldown_server_seconds: 302,

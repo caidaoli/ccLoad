@@ -1628,6 +1628,120 @@ func TestConvertOpenAIResponsesRequestToClaude_SystemOnlyInputBecomesUserPrompt(
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemKeepsPromptPrefix(t *testing.T) {
+	firstInput := `[
+		{"role":"developer","content":"base instructions"},
+		{"role":"system","content":[{"type":"input_text","text":"leading context"}]},
+		{"role":"user","content":"first request"},
+		{"role":"assistant","content":"first answer"},
+		{"role":"developer","content":"time context"},
+		{"role":"user","content":"second request"}
+	]`
+	nextInput := strings.TrimSuffix(strings.TrimSpace(firstInput), "]") + `,
+		{"role":"assistant","content":"second answer"},
+		{"role":"system","content":[{"type":"input_text","text":"new skills"}]},
+		{"role":"user","content":"third request"}
+	]`
+	for _, model := range []string{"claude-opus-5", "provider/claude-opus-5-5", "claude-sonnet-5"} {
+		t.Run(model, func(t *testing.T) {
+			convert := func(input string) gjson.Result {
+				t.Helper()
+				out, err := ConvertOpenAIResponsesRequestToClaude(model, []byte(`{"instructions":"top instructions","input":`+input+`}`), false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return gjson.ParseBytes(out)
+			}
+			first, next := convert(firstInput), convert(nextInput)
+			if got := next.Get("system.#.text").Raw; got != `["top instructions","base instructions","leading context"]` {
+				t.Fatalf("leading instructions = %s", got)
+			}
+			if first.Get("system").Raw != next.Get("system").Raw {
+				t.Fatalf("system prefix changed: %s -> %s", first.Get("system").Raw, next.Get("system").Raw)
+			}
+			for index, message := range first.Get("messages").Array() {
+				if got := next.Get(fmt.Sprintf("messages.%d", index)).Raw; got != message.Raw {
+					t.Fatalf("messages[%d] changed: %s -> %s", index, message.Raw, got)
+				}
+			}
+			if got := next.Get("messages.#.role").Raw; got != `["user","assistant","user","system","assistant","user","system"]` {
+				t.Fatalf("roles = %s", got)
+			}
+			if next.Get("messages.3.content.0.text").String() != "time context" ||
+				next.Get("messages.6.content.0.text").String() != "new skills" {
+				t.Fatalf("mid-session instructions misplaced: %s", next.Get("messages").Raw)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemPreservesToolResultsAndCache(t *testing.T) {
+	input := `{"input":[
+		{"role":"user","content":"run both"},
+		{"type":"function_call","call_id":"call_a","name":"shell","arguments":"{}"},
+		{"type":"function_call","call_id":"call_b","name":"shell","arguments":"{}"},
+		{"role":"developer","content":"before results"},
+		{"type":"function_call_output","call_id":"call_a","output":"a"},
+		{"role":"system","cache_control":{"type":"ephemeral","ttl":"1h"},"content":[
+			{"type":"input_text","text":"between results"},
+			{"type":"input_text","text":" ","cache_control":{"type":"ephemeral","ttl":"5m"}}
+		]},
+		{"type":"function_call_output","call_id":"call_b","output":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"next"}
+	]}`
+	result, err := ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := gjson.ParseBytes(result)
+	if root.Get("system").Exists() {
+		t.Fatalf("mid-session instructions reached prefix: %s", root.Get("system").Raw)
+	}
+	if got := root.Get("messages.#.role").Raw; got != `["user","assistant","user","system","system","assistant","user"]` {
+		t.Fatalf("roles = %s", got)
+	}
+	results := root.Get("messages.2.content").Array()
+	if len(results) != 2 || results[0].Get("tool_use_id").String() != "call_a" || results[0].Get("content").String() != "a" ||
+		results[1].Get("tool_use_id").String() != "call_b" || results[1].Get("content.0.type").String() != "image" {
+		t.Fatalf("parallel results separated or changed: %s", root.Get("messages.2").Raw)
+	}
+	if root.Get("messages.3.content.0.text").String() != "before results" ||
+		root.Get("messages.4.content.0.text").String() != "between results" ||
+		root.Get("messages.4.content.#").Int() != 1 ||
+		root.Get("messages.4.content.0.cache_control.ttl").String() != "5m" {
+		t.Fatalf("instruction order or cache marker changed: %s", root.Get("messages").Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemFallbacksKeepSourceOrder(t *testing.T) {
+	input := `{"instructions":"top","text":{"format":{"type":"json_schema","name":"facts","schema":{"type":"object","properties":{"facts":{"type":"string"}}}}},"input":[
+		{"role":"user","content":"hello"},
+		{"type":"custom_note","role":"developer","content":"typed note"},
+		{"role":"system","content":[{"type":"input_text","text":"image context"},{"type":"input_image","image_url":"https://example.com/a.png"}]},
+		{"role":"assistant","content":"answer"},
+		{"role":"developer","content":"trailing instruction"},
+		{"type":"custom_note","role":"developer","content":"trailing note"}
+	]}`
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(input), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := gjson.ParseBytes(out)
+	system := root.Get("system").Array()
+	if len(system) != 7 || root.Get("system.#.type").Raw != `["text","text","text","input_image","text","text","text"]` {
+		t.Fatalf("fallback system = %s", root.Get("system").Raw)
+	}
+	for index, text := range map[int]string{0: "top", 1: "typed note", 2: "image context", 4: "trailing instruction", 5: "trailing note"} {
+		if got := system[index].Get("text").String(); got != text {
+			t.Fatalf("system[%d] = %q, want %q", index, got, text)
+		}
+	}
+	if !strings.Contains(system[6].Get("text").String(), "facts") || strings.Contains(root.Get("messages.#.role").Raw, "system") {
+		t.Fatalf("fallback order changed: %s", out)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_SystemNonTextPartKeptAsTypedMarker(t *testing.T) {
 	inputJSON := `{
 		"model": "gpt-4.1",

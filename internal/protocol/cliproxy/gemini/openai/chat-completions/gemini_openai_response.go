@@ -222,6 +222,10 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 			if partsResult.IsArray() {
 				partResults := partsResult.Array()
+				var textContent strings.Builder
+				var reasoningContent strings.Builder
+				hasTextContent := false
+				hasReasoningContent := false
 				for i := 0; i < len(partResults); i++ {
 					partResult := partResults[i]
 					partTextResult := partResult.Get("text")
@@ -243,7 +247,8 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 					}
 
 					hasThoughtSignature := thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != ""
-					hasContentPayload := partTextResult.Exists() || functionCallResult.Exists() || inlineDataResult.Exists()
+					hasTextPayload := partTextResult.Exists() && partTextResult.String() != ""
+					hasContentPayload := hasTextPayload || functionCallResult.Exists() || inlineDataResult.Exists()
 
 					if active := p.ActiveToolCall[candidateIndex]; active != nil && (partTextResult.String() != "" || (functionCallResult.Exists() && !active.CanContinueWith(functionCallResult))) {
 						p.SetToolInputError(fmt.Errorf("upstream Gemini content or call identity interrupted incomplete tool arguments"))
@@ -254,6 +259,9 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 					// Skip pure thoughtSignature parts but keep any actual payload in the same part.
 					if hasThoughtSignature && !hasContentPayload {
+						if p.ActiveToolCall[candidateIndex] != nil {
+							sawNoopFunctionCall = true
+						}
 						continue
 					}
 
@@ -266,9 +274,11 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 						setAssistantRole()
 						// Handle text content, distinguishing between regular content and reasoning/thoughts.
 						if partResult.Get("thought").Bool() {
-							template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", text)
+							hasReasoningContent = true
+							reasoningContent.WriteString(text)
 						} else {
-							template, _ = sjson.SetBytes(template, "choices.0.delta.content", text)
+							hasTextContent = true
+							textContent.WriteString(text)
 						}
 					} else if functionCallResult.Exists() {
 						// Handle function call content.
@@ -399,6 +409,12 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 						setAssistantRole()
 						template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
 					}
+				}
+				if hasTextContent {
+					template, _ = sjson.SetBytes(template, "choices.0.delta.content", textContent.String())
+				}
+				if hasReasoningContent {
+					template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", reasoningContent.String())
 				}
 			}
 
@@ -539,12 +555,25 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 					if !inlineDataResult.Exists() {
 						inlineDataResult = partResult.Get("inline_data")
 					}
+					thoughtSignatureResult := partResult.Get("thoughtSignature")
+					if !thoughtSignatureResult.Exists() {
+						thoughtSignatureResult = partResult.Get("thought_signature")
+					}
 
 					// Speech-to-text models (gemini-3.5-transcribe) deliver the
 					// transcript in an audioTranscription part instead of text.
 					audioTranscriptionResult := partResult.Get("audioTranscription")
 					if audioTranscriptionResult.Exists() && !partTextResult.Exists() {
 						partTextResult = audioTranscriptionResult.Get("text")
+					}
+
+					hasThoughtSignature := thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != ""
+					hasTextPayload := partTextResult.Exists() && partTextResult.String() != ""
+					hasContentPayload := hasTextPayload || functionCallResult.Exists() || inlineDataResult.Exists()
+
+					// Skip pure thoughtSignature parts but keep any actual payload in the same part.
+					if hasThoughtSignature && !hasContentPayload {
+						continue
 					}
 
 					if partTextResult.Exists() {

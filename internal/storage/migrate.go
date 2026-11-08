@@ -568,6 +568,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"http_read_timeout_seconds", "0", "duration", "下游请求读取超时(秒,覆盖请求头+请求体的整段读取,0=使用内建默认值120秒)", "0"},
 		{"max_body_bytes", "33554432", "int", "请求体最大字节数(默认32MB)", "33554432"},
 		{"max_image_body_bytes", "20971520", "int", "Images API 请求体最大字节数(默认20MB)", "20971520"},
+		{config.RequestBodyMemoryBudgetSettingKey, strconv.Itoa(config.DefaultRequestBodyMemoryBudgetBytes), "int", "HTTP代理请求正文共享内存预算(正整数字节数,默认512MiB,不足返回503,重启生效)", strconv.Itoa(config.DefaultRequestBodyMemoryBudgetBytes)},
 		{"cooldown_auth_seconds", "300", "int", "认证错误(401/402/403)初始冷却时间(秒)", "300"},
 		{"cooldown_server_seconds", "120", "int", "服务器错误(5xx)初始冷却时间(秒)", "120"},
 		{"cooldown_timeout_seconds", "60", "int", "超时错误(597/598)初始冷却时间(秒)", "60"},

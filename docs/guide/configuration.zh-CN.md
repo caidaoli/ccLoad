@@ -76,6 +76,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `http_read_timeout_seconds` | `0` | 下游请求读取超时（秒）；`0` 使用内建 120 秒。覆盖请求头和请求体的完整读取，超时返回 408，与请求体大小限制独立。 |
 | `max_body_bytes` | `33554432` | 请求体最大字节数，默认 32MB |
 | `max_image_body_bytes` | `20971520` | Images API 请求体最大字节数，默认 20MB |
+| `request_body_memory_budget_bytes` | `536870912` | HTTP 代理请求正文共享内存预算，默认 512 MiB；须为正整数字节数，在限额组以 MiB 编辑，保存后重启生效 |
 | `cooldown_auth_seconds` | `300` | 认证错误（401/402/403）初始冷却时间（秒） |
 | `cooldown_server_seconds` | `120` | 服务器错误（5xx）初始冷却时间（秒） |
 | `cooldown_timeout_seconds` | `60` | 超时错误（597/598）初始冷却时间（秒） |
@@ -134,6 +135,8 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `ANTHROPIC_BASE_URL` | 空 | Anthropic OAuth 渠道的全局 API 根地址（官方默认 `https://api.anthropic.com`） |
 | `XAI_BASE_URL` | 空 | xAI OAuth 渠道的全局 API 根地址（通常以 `/v1` 结尾；官方默认 `https://cli-chat-proxy.grok.com/v1`） |
 | `ANTIGRAVITY_URL` | 空 | Antigravity OAuth 渠道的全局上游地址（官方默认 `https://daily-cloudcode-pa.googleapis.com`，备用 `https://cloudcode-pa.googleapis.com`） |
+
+`request_body_memory_budget_bytes` 由所有进行中的 HTTP 代理请求共用，计入保留至 handler 完成的正文缓冲、读取扩容瞬间的新旧缓冲，以及按请求内容编码预留的解码工作区。预算不足返回 HTTP 503 和 `Retry-After: 1`；单请求体积超限仍返回 413。即使未超过单请求上限，请求仍可能超过共享预算。默认 512 MiB 可按部署内存调整。该预算不含协议改写、响应或 WebSocket 会话记录（已有独立预算），也不是进程总堆内存上限。
 
 分协议超时按“实际转发到的上游协议”生效：协议转换后转发到 OpenAI，就读取 `openai_*_timeout`；对应值为 `0` 时回退全局超时。
 

@@ -2799,6 +2799,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 					)
 				}
 			}
+			translatedBody = preserveResponsesTopLevelSystemItems(cfg, baseURL, plan.ClientProtocol, plan.UpstreamProtocol, translatedBody)
 			var err error
 			translatedBody, err = s.protocolRegistry.TranslateRequest(
 				plan.ClientProtocol,

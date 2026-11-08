@@ -138,11 +138,12 @@ type Server struct {
 	anthropicPassiveUsageDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries    int // 单个渠道内最大Key重试次数
-	bodyLimits       requestBodyLimits
-	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
-	httpReadTimeout  time.Duration // 下游请求读取超时（HTTP Server ReadTimeout）
-	streamTimeout    time.Duration // 流式请求总超时
+	maxKeyRetries     int // 单个渠道内最大Key重试次数
+	bodyLimits        requestBodyLimits
+	requestBodyMemory requestBodyMemoryBudget ///< 所有 HTTP 代理请求共享的正文缓冲预算。
+	firstByteTimeout  time.Duration           // 上游首字节超时（流式请求）
+	httpReadTimeout   time.Duration           // 下游请求读取超时（HTTP Server ReadTimeout）
+	streamTimeout     time.Duration           // 流式请求总超时
 	// 流式请求上游连续无数据超时（可按协议覆盖）
 	streamIdleTimeout time.Duration
 	nonStreamTimeout  time.Duration // 非流式请求超时
@@ -300,6 +301,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		// 运行时配置（启动时加载，修改后重启生效）
 		maxKeyRetries:            runtimeCfg.MaxKeyRetries,
 		bodyLimits:               bodyLimits,
+		requestBodyMemory:        requestBodyMemoryBudget{limit: int64(runtimeCfg.RequestBodyMemoryBudgetBytes)},
 		firstByteTimeout:         runtimeCfg.FirstByteTimeout,
 		httpReadTimeout:          runtimeCfg.HTTPReadTimeout,
 		streamTimeout:            runtimeCfg.StreamTimeout,
@@ -711,6 +713,7 @@ type serverRuntimeConfig struct {
 	MaxConcurrency               int
 	MaxBodyBytes                 int
 	MaxImageBodyBytes            int
+	RequestBodyMemoryBudgetBytes int ///< HTTP 代理正文缓冲的实例级预算，单位字节。
 	HTTPReadTimeout              time.Duration
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
@@ -852,6 +855,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
 		MaxBodyBytes:                 loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
 		MaxImageBodyBytes:            loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
+		RequestBodyMemoryBudgetBytes: loadPositiveInt(cs, config.RequestBodyMemoryBudgetSettingKey, config.DefaultRequestBodyMemoryBudgetBytes),
 		HTTPReadTimeout:              loadHTTPReadTimeout(cs),
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,

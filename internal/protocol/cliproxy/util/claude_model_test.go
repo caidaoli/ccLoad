@@ -62,3 +62,25 @@ func TestIsClaudeModel(t *testing.T) {
 		})
 	}
 }
+
+func TestIsClaudeLegacySystemReminderModel(t *testing.T) {
+	for _, model := range []string{
+		"claude-3-5-haiku-20241022", "claude-3-5-haiku-latest",
+		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest",
+		"claude-haiku-4-5", "claude-haiku-4-5-20251001",
+		"claude-opus-4", "claude-opus-4-20250514", "claude-opus-4-1",
+		"claude-opus-4-1-20250805", "claude-opus-4-5", "claude-opus-4-5-20251101",
+		"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4",
+		"claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6",
+		" provider/Claude-Sonnet-4-5 ",
+	} {
+		if !IsClaudeLegacySystemReminderModel(model) {
+			t.Errorf("legacy model %q must retain its system reminder path", model)
+		}
+	}
+	for _, model := range []string{"claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-fable-5-1", "provider/claude-opus-5", ""} {
+		if IsClaudeLegacySystemReminderModel(model) {
+			t.Errorf("model %q unexpectedly uses legacy system reminders", model)
+		}
+	}
+}

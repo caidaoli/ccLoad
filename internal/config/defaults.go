@@ -16,6 +16,14 @@ const (
 	CodexMap429To503SettingKey = "codex_map_429_to_503"
 )
 
+/**
+ * @brief HTTP 代理请求正文共享内存预算的配置键与默认值
+ */
+const (
+	RequestBodyMemoryBudgetSettingKey   = "request_body_memory_budget_bytes" ///< 系统设置键，值为正整数字节数
+	DefaultRequestBodyMemoryBudgetBytes = 512 * 1024 * 1024                  ///< 默认 512 MiB，覆盖正文缓冲及解码工作区
+)
+
 // HTTP服务器配置常量
 const (
 	// DefaultMaxConcurrency 默认最大并发请求数

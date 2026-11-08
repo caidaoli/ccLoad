@@ -1,18 +1,26 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/util"
 
@@ -23,8 +31,9 @@ import (
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 	srv := &Server{
-		concurrencySem: make(chan struct{}, 1),
-		activeRequests: newActiveRequestManager(),
+		requestBodyMemory: requestBodyMemoryBudget{limit: config.DefaultRequestBodyMemoryBudgetBytes},
+		concurrencySem:    make(chan struct{}, 1),
+		activeRequests:    newActiveRequestManager(),
 	}
 
 	body := bytes.NewBufferString(`{"model":"gpt-4"}`)
@@ -207,7 +216,7 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 			c, _ := newTestContext(t, req)
 
-			incoming, err := parseIncomingRequest(c, requestBodyLimits{})
+			incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
 
 			if tt.expectError && err == nil {
 				t.Errorf("期望错误但未发生")
@@ -246,7 +255,7 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	_, err := parseIncomingRequest(c, bodyLimits)
+	_, err := parseIncomingRequest(c, bodyLimits, testRequestBodyMemory(t))
 
 	if err != errBodyTooLarge {
 		t.Errorf("期望errBodyTooLarge错误, 实际: %v", err)
@@ -276,7 +285,7 @@ func TestParseIncomingRequest_DecodesContentEncoding(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", contentEncoding)
 		c, _ := newTestContext(t, req)
-		incoming, err := parseIncomingRequest(c, limits)
+		incoming, err := parseIncomingRequest(c, limits, testRequestBodyMemory(t))
 		return c, incoming, err
 	}
 
@@ -587,7 +596,7 @@ func TestParseIncomingRequest_MultipartModel(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c, requestBodyLimits{})
+	incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
@@ -603,7 +612,7 @@ func TestParseIncomingRequest_RejectsMalformedMultipartFraming(t *testing.T) {
 	req := newRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString("not a multipart payload"))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
 	c, _ := newTestContext(t, req)
-	if _, err := parseIncomingRequest(c, requestBodyLimits{}); err == nil {
+	if _, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t)); err == nil {
 		t.Fatal("malformed multipart framing was accepted")
 	}
 }
@@ -616,7 +625,7 @@ func TestParseIncomingRequest_ImagesJSON(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c, requestBodyLimits{})
+	incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
@@ -645,11 +654,280 @@ func TestParseIncomingRequest_ImagesLargerBodyAllowed(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c, requestBodyLimits{})
+	incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
 	if err != nil {
 		t.Fatalf("images 路径 15MB 请求体不应报错, 实际: %v", err)
 	}
 	if incoming.originalModel != "gpt-image-1" {
 		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", incoming.originalModel)
+	}
+}
+
+/**
+ * @brief 为请求解析测试创建独立预算，并在测试结束时释放正文预留。
+ * @param t 当前测试上下文。
+ * @return 使用默认容量的请求预留。
+ */
+func testRequestBodyMemory(t *testing.T) *requestBodyMemoryReservation {
+	t.Helper()
+	memory := &requestBodyMemoryReservation{budget: &requestBodyMemoryBudget{limit: config.DefaultRequestBodyMemoryBudgetBytes}}
+	t.Cleanup(memory.close)
+	return memory
+}
+
+/**
+ * @brief HTTP 正文预算由并发请求共享，直到上游响应处理完成后才允许新请求复用。
+ * @param t 当前测试上下文。
+ */
+func TestHandleProxyRequest_BodyMemoryBudgetSharedUntilResponseEnds(t *testing.T) {
+	for _, knownLength := range []bool{true, false} {
+		t.Run(fmt.Sprintf("known_length_%t", knownLength), func(t *testing.T) {
+			entered := make(chan struct{})
+			resume := make(chan struct{})
+			var resumeOnce sync.Once
+			release := func() { resumeOnce.Do(func() { close(resume) }) }
+			defer release()
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if calls.Add(1) == 1 {
+					close(entered)
+					<-resume
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+			}))
+			env := setupProxyTestEnvWithSettings(t,
+				[]testChannel{{name: "budget", models: "budget-model"}},
+				map[int]string{0: upstream.URL},
+				map[string]string{config.RequestBodyMemoryBudgetSettingKey: "512"})
+			request := func() *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"budget-model","messages":[{"role":"user","content":"hi"}]}`))
+				if !knownLength {
+					req.ContentLength = -1
+				}
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer test-api-key")
+				w := httptest.NewRecorder()
+				env.engine.ServeHTTP(w, req)
+				return w
+			}
+			first := make(chan *httptest.ResponseRecorder, 1)
+			go func() { first <- request() }()
+			select {
+			case <-entered:
+			case result := <-first:
+				t.Fatalf("first request failed before upstream: %d: %s", result.Code, result.Body.String())
+			case <-time.After(5 * time.Second):
+				t.Fatal("first request did not reach upstream")
+			}
+			rejected := request()
+			if rejected.Code != http.StatusServiceUnavailable || rejected.Header().Get("Retry-After") != "1" {
+				t.Fatalf("budget rejection = %d, headers %v, body %s", rejected.Code, rejected.Header(), rejected.Body.String())
+			}
+			if got := gjson.GetBytes(rejected.Body.Bytes(), "error").String(); !strings.Contains(got, config.RequestBodyMemoryBudgetSettingKey) {
+				t.Fatalf("budget error message = %q", got)
+			}
+			if calls.Load() != 1 {
+				t.Fatal("rejected request reached upstream")
+			}
+			release()
+			select {
+			case result := <-first:
+				if result.Code != http.StatusOK {
+					t.Fatalf("first response = %d: %s", result.Code, result.Body.String())
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("first handler did not finish")
+			}
+			if result := request(); result.Code != http.StatusOK {
+				t.Fatalf("budget was not released: %d: %s", result.Code, result.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 解析、解压、读取及取消失败都归还预算，不使后续有效请求被错误拒绝。
+ * @param t 当前测试上下文。
+ */
+func TestHandleProxyRequest_BodyMemoryBudgetReleasedAfterFailures(t *testing.T) {
+	for _, failure := range []string{"invalid-json", "oversize", "chunked-oversize", "growth-budget", "read-timeout", "cancelled", "compressed-workspace", "corrupt-gzip", "unsupported-encoding"} {
+		t.Run(failure, func(t *testing.T) {
+			budget := int64(512)
+			if failure == "corrupt-gzip" {
+				budget += 256 << 10
+			}
+			maxBody := 512
+			if failure == "growth-budget" {
+				budget = 1024
+				maxBody = 2048
+			}
+			srv := &Server{
+				requestBodyMemory: requestBodyMemoryBudget{limit: budget},
+				bodyLimits:        newRequestBodyLimits(maxBody, maxBody),
+				concurrencySem:    make(chan struct{}, 1),
+				activeRequests:    newActiveRequestManager(),
+			}
+			var body io.Reader = strings.NewReader(`{"model":`)
+			status := http.StatusBadRequest
+			switch failure {
+			case "oversize", "chunked-oversize":
+				body = strings.NewReader(strings.Repeat("x", 513))
+				status = http.StatusRequestEntityTooLarge
+			case "read-timeout":
+				body = io.MultiReader(strings.NewReader(`{"model":`), &errorReader{err: os.ErrDeadlineExceeded})
+				status = http.StatusRequestTimeout
+			case "compressed-workspace":
+				status = http.StatusServiceUnavailable
+			case "growth-budget":
+				body = strings.NewReader(strings.Repeat("x", 513))
+				status = http.StatusServiceUnavailable
+			case "unsupported-encoding":
+				status = http.StatusUnsupportedMediaType
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/unknown", body)
+			req.Header.Set("Content-Type", "application/json")
+			switch failure {
+			case "chunked-oversize", "growth-budget":
+				req.ContentLength = -1
+			case "cancelled":
+				ctx, cancel := context.WithCancel(req.Context())
+				defer cancel()
+				req = req.WithContext(ctx)
+				// 先进入 handler 再取消，确保已经取得并发槽。
+				req.Body = io.NopCloser(&cancelBodyReader{cancel: cancel})
+			case "compressed-workspace", "corrupt-gzip":
+				req.Header.Set("Content-Encoding", "gzip")
+			case "unsupported-encoding":
+				req.Header.Set("Content-Encoding", "compress")
+			}
+			c, w := newTestContext(t, req)
+			srv.HandleProxyRequest(c)
+			if w.Code != status {
+				t.Fatalf("failure status = %d, want %d: %s", w.Code, status, w.Body.String())
+			}
+			var nextBody io.Reader = strings.NewReader(`{"model":"valid"}`)
+			if failure == "growth-budget" {
+				nextBody = strings.NewReader(`{"model":"valid"}` + strings.Repeat(" ", 700))
+			}
+			if failure == "corrupt-gzip" {
+				var compressed bytes.Buffer
+				encoder := gzip.NewWriter(&compressed)
+				_, _ = io.WriteString(encoder, `{"model":"valid"}`)
+				_ = encoder.Close()
+				nextBody = &compressed
+			}
+			next := httptest.NewRequest(http.MethodPost, "/v1/unknown", nextBody)
+			next.Header.Set("Content-Type", "application/json")
+			if failure == "corrupt-gzip" {
+				next.Header.Set("Content-Encoding", "gzip")
+			}
+			c, w = newTestContext(t, next)
+			srv.HandleProxyRequest(c)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("next request should parse and reach routing: %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 首次正文读取时模拟客户端取消，覆盖已进入 handler 的资源释放。
+ */
+type cancelBodyReader struct {
+	cancel  context.CancelFunc ///< 模拟客户端断开的取消函数。
+	started bool               ///< 已读取首字节并分配正文缓冲。
+}
+
+/**
+ * @brief 首字节正常读取，后续读取模拟客户端取消。
+ * @param p 调用方提供的读取缓冲。
+ * @return 首次返回一字节，其余为零。
+ * @return 首次返回 nil，后续返回 context.Canceled。
+ */
+func (r *cancelBodyReader) Read(p []byte) (int, error) {
+	if !r.started {
+		r.started = true
+		p[0] = '{'
+		return 1, nil
+	}
+	r.cancel()
+	return 0, context.Canceled
+}
+
+/**
+ * @brief HTTP/1 慢上传在预算不足时立即收到 503，不等待剩余正文或读取超时。
+ * @param t 当前测试上下文。
+ */
+func TestHandleProxyRequest_BodyMemoryBudgetRejectsSlowUpload(t *testing.T) {
+	for _, encoding := range []string{"identity", "gzip"} {
+		t.Run(encoding, func(t *testing.T) {
+			srv := &Server{
+				requestBodyMemory: requestBodyMemoryBudget{limit: 512},
+				bodyLimits:        newRequestBodyLimits(4096, 4096),
+				concurrencySem:    make(chan struct{}, 1),
+				activeRequests:    newActiveRequestManager(),
+			}
+			engine := gin.New()
+			engine.POST("/v1/unknown", srv.HandleProxyRequest)
+			server := httptest.NewUnstartedServer(engine)
+			server.Config.ReadTimeout = 10 * time.Second
+			server.Start()
+			defer server.Close()
+			conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), 2*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fmt.Fprintf(conn, "POST /v1/unknown HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1024\r\nContent-Encoding: %s\r\n\r\n", encoding); err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatalf("budget rejection waited for the unfinished upload: %v", err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" || !response.Close {
+				t.Fatalf("rejection = %d, headers %v, close=%t", response.StatusCode, response.Header, response.Close)
+			}
+			if _, err := io.Copy(io.Discard, response.Body); err != nil {
+				t.Fatal(err)
+			}
+			// 下一连接应重新取得并发槽和正文预算，并正常走到未支持路由。
+			next, err := server.Client().Post(server.URL+"/v1/unknown", "application/json", strings.NewReader(`{"model":"valid"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = next.Body.Close() }()
+			if next.StatusCode != http.StatusNotFound {
+				t.Fatalf("next request status = %d", next.StatusCode)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 无长度正文恰好占满预算时，EOF 探测不额外申请缓冲。
+ * @param t 当前测试上下文。
+ */
+func TestHandleProxyRequest_BodyMemoryBudgetExactCapacity(t *testing.T) {
+	srv := &Server{
+		requestBodyMemory: requestBodyMemoryBudget{limit: 512},
+		bodyLimits:        newRequestBodyLimits(4096, 4096),
+		concurrencySem:    make(chan struct{}, 1),
+		activeRequests:    newActiveRequestManager(),
+	}
+	body := `{"model":"valid"}`
+	body += strings.Repeat(" ", 512-len(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/unknown", strings.NewReader(body))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	c, w := newTestContext(t, req)
+	srv.HandleProxyRequest(c)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("full buffer should parse and reach routing: %d: %s", w.Code, w.Body.String())
 	}
 }

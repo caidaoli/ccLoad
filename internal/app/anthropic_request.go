@@ -7,10 +7,57 @@ import (
 	"strconv"
 	"strings"
 
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 将 Responses 系统项按原顺序前置，使不支持中途 system 的 Anthropic wire 保持顶层指令契约。
+ * @param cfg 当前渠道配置。
+ * @param target 本次实际选择的上游地址。
+ * @param client 客户端协议。
+ * @param upstream 上游协议。
+ * @param body 尚未转换的 Responses 请求正文。
+ * @return 仅调整 input 系统项位置后的请求正文。
+ */
+func preserveResponsesTopLevelSystemItems(cfg *model.Config, target string, client, upstream protocol.Protocol, body []byte) []byte {
+	if client != protocol.Codex || upstream != protocol.Anthropic ||
+		(!isOpenCodeAPIKeyEndpoint(cfg, target) && !cfg.UsesZAIOAuth()) {
+		return body
+	}
+	return prependResponsesSystemItems(body)
+}
+
+/**
+ * @brief 前置 Responses 系统项，保持系统指令和其余会话项各自的原始顺序。
+ * @param body 尚未转换的 Responses 请求正文。
+ * @return 前置系统项后的正文；没有需要移动的系统项时返回原正文。
+ */
+func prependResponsesSystemItems(body []byte) []byte {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	var systemItems, otherItems []string
+	moved := false
+	for _, item := range input.Array() {
+		switch strings.ToLower(strings.TrimSpace(item.Get("role").String())) {
+		case "system", "developer":
+			systemItems = append(systemItems, item.Raw)
+			moved = moved || len(otherItems) > 0
+		default:
+			otherItems = append(otherItems, item.Raw)
+		}
+	}
+	if !moved {
+		return body
+	}
+	return setJSONRaw(body, "input", joinJSONRaw(append(systemItems, otherItems...)))
+}
 
 // Anthropic 线协议改写全程以 []byte 为唯一表示：gjson 读、sjson 就地写。
 //
@@ -63,7 +110,7 @@ func normalizeAnthropicMessagesRequest(body []byte) []byte {
 
 func validateAnthropicLegacySystemMessages(body []byte) error {
 	modelName := jsonStringValue(gjson.GetBytes(body, "model"))
-	if !anthropicUsesLegacySystemReminder(modelName) {
+	if !cliproxyutil.IsClaudeLegacySystemReminderModel(modelName) {
 		return nil
 	}
 	messages := gjson.GetBytes(body, "messages")

@@ -49,7 +49,12 @@ func decodeAnthropicResponse(resp *http.Response) error {
 	if strings.TrimSpace(contentEncoding) == "" {
 		return nil
 	}
-	decoded, err := decodeContentEncodingBody(resp.Body, contentEncoding)
+	encodings, _, err := parseContentEncodings(contentEncoding)
+	if err != nil {
+		_ = resp.Body.Close()
+		return err
+	}
+	decoded, err := decodeContentEncodingBody(resp.Body, encodings)
 	if err != nil {
 		return err
 	}
@@ -61,13 +66,48 @@ func decodeAnthropicResponse(resp *http.Response) error {
 	return nil
 }
 
-// decodeContentEncodingBody 按 Content-Encoding 逆序叠加解码器；空值与 identity
-// 原样返回 body。失败时 body 已关闭。
-func decodeContentEncodingBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
+/**
+ * @brief 校验内容编码，并为每层解码器计算有界工作区预留。
+ * @param contentEncoding 网络请求或响应中的 Content-Encoding 字段。
+ * @return 按声明顺序排列的规范编码，不包含 identity。
+ * @return 解码期间预留的工作区字节数，包含窗口及块缓冲余量。
+ * @return 不支持的编码返回 errUnsupportedContentEncoding，否则返回 nil。
+ */
+func parseContentEncodings(contentEncoding string) ([]string, int64, error) {
+	var encodings []string
+	var workspace int64
+	for encoding := range strings.SplitSeq(contentEncoding, ",") {
+		encoding = strings.ToLower(strings.TrimSpace(encoding))
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip", "deflate":
+			workspace += 256 << 10
+		case "br":
+			// Brotli 的 24-bit 窗口之外，还需保留块解码缓冲。
+			workspace += 32 << 20
+		case "zstd":
+			// 拼接帧切换窗口时可能同时持有新旧 ring，另需块与序列表空间。
+			workspace += 4 * zstdContentEncodingMaxWindow
+		default:
+			return nil, 0, fmt.Errorf("%w %q", errUnsupportedContentEncoding, encoding)
+		}
+		encodings = append(encodings, encoding)
+	}
+	return encodings, workspace, nil
+}
+
+/**
+ * @brief 按已校验的 Content-Encoding 逆序叠加解码器。
+ * @param body 原始网络正文。
+ * @param encodings parseContentEncodings 返回的规范编码。
+ * @return 解码后的正文，调用方须关闭；无编码时原样返回 body。
+ * @return 构造解码器失败时返回错误，并关闭已构造的解码器与 body。
+ */
+func decodeContentEncodingBody(body io.ReadCloser, encodings []string) (io.ReadCloser, error) {
 	if body == nil {
 		return nil, fmt.Errorf("content-encoded body is nil")
 	}
-	encodings := strings.Split(contentEncoding, ",")
 	reader := io.Reader(body)
 	decoderClosers := make([]func() error, 0, len(encodings))
 	cleanup := func() {
@@ -77,9 +117,7 @@ func decodeContentEncodingBody(body io.ReadCloser, contentEncoding string) (io.R
 		_ = body.Close()
 	}
 	for _, encoding := range slices.Backward(encodings) {
-		switch encoding := strings.TrimSpace(strings.ToLower(encoding)); encoding {
-		case "", "identity":
-			continue
+		switch encoding {
 		case "gzip":
 			decoder, err := gzip.NewReader(reader)
 			if err != nil {
@@ -111,9 +149,6 @@ func decodeContentEncodingBody(body io.ReadCloser, contentEncoding string) (io.R
 				decoder.Close()
 				return nil
 			})
-		default:
-			cleanup()
-			return nil, fmt.Errorf("%w %q", errUnsupportedContentEncoding, encoding)
 		}
 	}
 	if len(decoderClosers) == 0 && reader == body {

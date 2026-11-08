@@ -477,12 +477,15 @@ func emitStreamingThinkingDelta(param *ConvertOpenAIResponseToAnthropicParams, r
 	if param.OpenToolCallIndex != -1 {
 		if n := len(param.InterleavedContentChunks); n > 0 && param.InterleavedContentChunks[n-1].Type == "thinking" {
 			param.InterleavedContentChunks[n-1].Text += reasoningText
-		} else {
+		} else if strings.TrimSpace(reasoningText) != "" {
 			param.InterleavedContentChunks = append(param.InterleavedContentChunks, InterleavedContentChunk{
 				Type: "thinking",
 				Text: reasoningText,
 			})
 		}
+		return
+	}
+	if !param.ThinkingContentBlockStarted && strings.TrimSpace(reasoningText) == "" {
 		return
 	}
 	stopTextContentBlock(param, results)
@@ -789,7 +792,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 
 		if message := choice.Get("message"); message.Exists() {
 			for _, reasoningText := range collectOpenAIObjectReasoningTexts(message) {
-				if reasoningText == "" {
+				if strings.TrimSpace(reasoningText) == "" {
 					continue
 				}
 				block := []byte(`{"type":"thinking","thinking":""}`)
@@ -855,7 +858,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 								})
 							}
 						case "reasoning", "thinking":
-							if thinking := extractOpenAIContentPartThinkingText(item); thinking != "" {
+							if thinking := extractOpenAIContentPartThinkingText(item); thinkingBuilder.Len() > 0 || strings.TrimSpace(thinking) != "" {
 								flushText()
 								thinkingBuilder.WriteString(thinking)
 							}

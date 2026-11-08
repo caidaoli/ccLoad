@@ -1574,6 +1574,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.max_concurrency': '最大并发请求数(限制同时处理的代理请求数量)',
   'settings.desc.max_body_bytes': '请求体大小上限（单位 MiB，默认 32 MiB）',
   'settings.desc.max_image_body_bytes': 'Images API 请求体大小上限（单位 MiB，默认 20 MiB）',
+  'settings.desc.request_body_memory_budget_bytes': 'HTTP 代理请求正文共享内存预算（MiB，须大于 0，默认 512 MiB，可按部署内存调整）。计入保留至请求结束的正文缓冲、扩容瞬时占用与解码工作区；不足返回 503，Retry-After: 1。不含协议改写、响应和 WebSocket 会话记录，不是进程总堆上限；重启生效',
   'settings.desc.http_read_timeout_seconds': '下游请求读取超时（秒，覆盖请求头与请求体的整段读取；0 表示使用内建默认值 120 秒）。上传大请求体被中途切断时应调整此项，而不是请求体大小上限',
   'settings.desc.upstream_connection_reuse_limit_seconds': '上游连接最长复用时间（秒，适用于 HTTP/1.1、HTTP/2 和 WebSocket；0 表示不限制；达到时限后不再接收新请求，在途请求完成后关闭）',
   'settings.desc.CODEX_BASE_URL': 'Codex OAuth 完整 Responses URL；留空时使用渠道 URL，填写后覆盖渠道 URL',

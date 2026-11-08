@@ -16,6 +16,8 @@
 - OpenAI Chat JSON/SSE 的 DeepSeek `prompt_cache_hit_tokens` 在自有 `builtin/cliproxy_adapter.go` 边界归一化到 `prompt_tokens_details.cached_tokens`，标准数字字段含 0 优先；不修改 CLIProxyAPI 快照，同协议原文继续透传，app 计量独立识别同一字段。
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
+- Gemini/Antigravity 转 Chat 时，同一 SSE 帧中的多个正文和思考 Part 分别按源顺序累计；空文本签名载体不清空之前的内容。partialArgs 未完成时的正文中断校验仍先于聚合。
+- Responses 转 Claude 时，支持中途系统消息的模型将会话开始后的纯文本 system/developer 项放在下一个输出的 user／完整工具结果组之后，保留缓存前缀、内容块和 cache_control；初始 instructions、旧模型、不支持的内容及无可放置 user 回合的项保持顶层路径。模型判定由 cliproxy/util 与 app 共用；API Key Haiku 仅实际携带中途 system 时补对应 beta，OpenCode、Z.ai 与 Zed Anthropic wire 在转换前保持原顶层路径，Zed 的 messages 仅接受 user/assistant。不导入上游 executor 上下文。
 - Responses 并行工具结果之间的 developer/system 提醒不能拆散同一批结果；按 call_id 恢复调用顺序并保留图片附件，提醒放到结果组之后；不得跨越真实 user/assistant 回合、新工具调用或 reasoning 边界收集结果，也不得把孤立结果跨提醒搬移。
 - Gemini 工具参数转换为 JSON Schema 时，将 minLength/maxLength、minItems/maxItems、minProperties/maxProperties 的规范非负整数字符串转为 JSON 数字；仅遍历 Schema 子结构，不改 default、enum、examples 或扩展元数据中的普通字符串。普通 Gemini 同协议请求仍遵循原样透传契约。
 - Antigravity Gemini 历史含多余工具结果时，优先按调用 ID 选择当前组结果，再按名称及顺序补齐；当前待配对组已全部完成后的多余结果丢弃，不得带入后续 model turn。
@@ -35,6 +37,7 @@
 - 跨协议 `custom apply_patch` 转函数工具时，保留补丁语法并使用唯一字符串 `input` 参数；反向转换按原始获胜声明识别工具，普通同名 function 不升级为 custom。OpenAI Chat 嵌套 `custom` 声明与 tool_choice 转 Codex 时拍平为 Responses 形状；这类工具的调用以原生 `type:"custom"` tool_calls 和原始 input 返回，扁平声明保持函数包装。补丁正文的空白、转义和 Unicode 必须在历史回放、增量、done 与最终 output 中一致。
 - 上游补丁参数非法、身份冲突或流缺少源协议终态时，转换边界传播工具输入错误，不得伪造成功；已开始的 Responses 流最多发送一次 `response.failed`。EOF 时上游已有语义终态（如 OpenAI `finish_reason`）则先补终止事件，再检查转换状态；启用补丁转换且缺少语义终态的流不得用合成终态掩盖截断。传输错误、取消与上游错误事件保留原错误，不改判为工具参数错误。普通工具与同协议透传保持原契约。
 - OpenAI → Claude 接收 reasoning_content、reasoning、reasoning_details 的首个有效表示；JSON/SSE 的 content 数组按顺序转换 text、thinking 与 reasoning 块，工具参数期间的内容沿用串行块缓冲，不把数组输出为 JSON 文本或丢弃思考。工具流保留 length/content_filter，累计参数不是有效对象时不得标成正常 tool_use。单条 system 输入继续作为原始用户提示，不包中途提醒。流式 `finish_reason` 块不发 `message_delta`/`message_stop`，等尾部 usage 块或 `[DONE]`（含网关补喂）再用权威 usage 收尾。
+- OpenAI 的纯空白 reasoning 不创建 Claude thinking 块，已有 thinking 内的空白仍保留；Claude 转 Chat 时缺省 thinking 的独立 output_config.effort 仍映射到 reasoning_effort，显式预算与 disabled 等现有优先级不变。
 - Gemini 原生搜索仅查询静态模型能力；响应转换以实际发出的 googleSearch 请求判断搜索模式，不引入动态模型注册或探测。
 - Claude→Codex 的 `defer_loading` 工具不提前放入顶层 `tools`，由工具结果中的 `tool_reference`、独立引用块或 `tool_search_tool_result` 在发现位置引入 `additional_tools`；跨轮去重并保留混合结果中的引用。显式 `tool_choice` 强制选择尚未发现的工具时，保留其顶层声明。常驻工具优先分配短名，新增延迟工具不得改变已有名称或缓存前缀。工具结果中的历史引用即使缺少当前声明也作为文本保留；无法解析且不能表示的独立引用返回 `RequestTranslationError`。已有 `tool_addition` 契约保留。这与反方向的 Responses `tool_search` 开关无关。
 - Codex 客户端 `tool_search_call`/`tool_search_output` 只由 OpenAI Chat 与 Gemini 桥接往返；转 Chat 时 `tool_choice.type=tool_search` 映射到保留的 `tool_search` function。普通工具占用该保留名称仍明确拒绝，hosted search 与非法参数校验保持不变。Anthropic 桥接仍拒绝（Claude 开关保持关闭）。Registry 层的 `compaction` 条目只有 OpenAI 桥接接受。

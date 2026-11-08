@@ -478,6 +478,76 @@ func TestFinalizeZedResponsesBodySelectsNativeProvider(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Zed Anthropic 将中途系统指令保留在顶层，且不拆散并行工具结果。
+ * @param t 当前测试上下文。
+ */
+func TestFinalizeZedResponsesBodyAnthropicKeepsTopLevelSystem(t *testing.T) {
+	t.Parallel()
+	for _, modelName := range []string{"claude-sonnet-5", "claude-haiku-5-5", "claude-sonnet-4-6"} {
+		for _, role := range []string{"system", "developer"} {
+			t.Run(modelName+"/"+role, func(t *testing.T) {
+				body := []byte(`{"model":"` + modelName + `","instructions":"top instructions",
+					"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+					"input":[
+						{"role":"developer","content":"base instructions"},
+						{"role":"user","content":"first request"},
+						{"type":"function_call","call_id":"call_a","name":"lookup","arguments":"{}"},
+						{"type":"function_call","call_id":"call_b","name":"lookup","arguments":"{}"},
+						{"role":"` + role + `","content":"before results"},
+						{"type":"function_call_output","call_id":"call_a","output":"result a"},
+						{"role":"` + role + `","content":[{"type":"input_text","text":"between results"}]},
+						{"type":"function_call_output","call_id":"call_b","output":"result b"},
+						{"role":"assistant","content":"answer"},
+						{"role":"` + role + `","content":"tail context"},
+						{"role":"user","content":"next request"}
+					]}`)
+				out, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				root := gjson.ParseBytes(out)
+				if root.Get("provider").String() != zedauth.ProviderAnthropic {
+					t.Fatalf("unexpected provider: %s", out)
+				}
+				system := root.Get("provider_request.system").Array()
+				wantSystem := []string{"top instructions", "base instructions", "before results", "between results", "tail context"}
+				if len(system) != len(wantSystem) {
+					t.Fatalf("system instructions changed: %s", out)
+				}
+				for index, want := range wantSystem {
+					if system[index].Get("text").String() != want {
+						t.Fatalf("system[%d] = %s, want %q", index, system[index].Raw, want)
+					}
+				}
+				messages := root.Get("provider_request.messages").Array()
+				wantRoles := []string{"user", "assistant", "user", "assistant", "user"}
+				if len(messages) != len(wantRoles) {
+					t.Fatalf("conversation changed: %s", out)
+				}
+				for index, want := range wantRoles {
+					if messages[index].Get("role").String() != want {
+						t.Fatalf("messages[%d] = %s, want role %q", index, messages[index].Raw, want)
+					}
+				}
+				if messages[0].Get("content.0.text").String() != "first request" ||
+					messages[3].Get("content.0.text").String() != "answer" ||
+					messages[4].Get("content.0.text").String() != "next request" ||
+					messages[1].Get("content.#").Int() != 2 || messages[2].Get("content.#").Int() != 2 {
+					t.Fatalf("conversation content changed: %s", out)
+				}
+				for index, id := range []string{"call_a", "call_b"} {
+					if messages[1].Get(fmt.Sprintf("content.%d.id", index)).String() != id ||
+						messages[2].Get(fmt.Sprintf("content.%d.tool_use_id", index)).String() != id ||
+						messages[2].Get(fmt.Sprintf("content.%d.content", index)).String() != []string{"result a", "result b"}[index] {
+						t.Fatalf("tool result pairing changed: %s", out)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestFinalizeZedAnthropicProviderRequestNormalizesNativeFields(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-6","system":"rules","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"kept"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"},{"type":"tool_result","tool_use_id":"toolu_2","content":"failed","is_error":true}]}],"tools":[{"name":"lookup","description":"look up"}],"stream":true}`)
 	originalAnthropicRequest := []byte(`{"cache_control":{"type":"ephemeral"},"system":[{"type":"text","text":"rules","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"lookup","cache_control":{"type":"ephemeral","ttl":"1h"}}]}`)

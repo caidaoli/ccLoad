@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/privacy"
@@ -1777,6 +1778,10 @@ func TestMigrateChannelModelsSchema_SQLite(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证新库设置默认值及重复初始化时用户值的保留
+ * @param t 测试上下文
+ */
 func TestInitDefaultSettings_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -1793,6 +1798,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"ANTHROPIC_BASE_URL",
 		"log_retention_days",
 		"max_key_retries",
+		config.RequestBodyMemoryBudgetSettingKey,
 		"upstream_first_byte_timeout",
 		"upstream_connection_reuse_limit_seconds",
 		"stream_timeout",
@@ -1846,6 +1852,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if strings.HasPrefix(key, "responses_ws_") && (val != "0" || defaultValue != "0") {
 			t.Errorf("setting %q initial/default value = %q/%q, want 0/0", key, val, defaultValue)
 		}
+		if key == config.RequestBodyMemoryBudgetSettingKey && (val != "536870912" || defaultValue != "536870912") {
+			t.Errorf("setting %q initial/default value = %q/%q, want 536870912/536870912", key, val, defaultValue)
+		}
 		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL" || key == "ANTHROPIC_BASE_URL") && val != "" {
 			t.Errorf("setting %q default = %q, want empty", key, val)
 		}
@@ -1867,10 +1876,32 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 	if valueType != "string" {
 		t.Fatalf("auto_update_channel value_type = %q, want string", valueType)
 	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT value_type FROM system_settings WHERE key=?", config.RequestBodyMemoryBudgetSettingKey,
+	).Scan(&valueType); err != nil {
+		t.Fatalf("query request body memory budget value_type: %v", err)
+	}
+	if valueType != "int" {
+		t.Fatalf("request body memory budget value_type = %q, want int", valueType)
+	}
+	if _, err := db.ExecContext(ctx,
+		"UPDATE system_settings SET value='1073741824' WHERE key=?", config.RequestBodyMemoryBudgetSettingKey,
+	); err != nil {
+		t.Fatalf("customize request body memory budget: %v", err)
+	}
 
 	// 验证 idempotent：再次 init 不应报错
 	if err := initDefaultSettings(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("initDefaultSettings (second call): %v", err)
+	}
+	var budget, defaultBudget string
+	if err := db.QueryRowContext(ctx,
+		"SELECT value, default_value FROM system_settings WHERE key=?", config.RequestBodyMemoryBudgetSettingKey,
+	).Scan(&budget, &defaultBudget); err != nil {
+		t.Fatalf("query customized request body memory budget: %v", err)
+	}
+	if budget != "1073741824" || defaultBudget != "536870912" {
+		t.Fatalf("request body memory budget initial/default value = %q/%q, want 1073741824/536870912", budget, defaultBudget)
 	}
 }
 

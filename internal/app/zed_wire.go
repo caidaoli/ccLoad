@@ -38,9 +38,16 @@ type zedWirePlan struct {
 	toolIdentities    map[string]cliproxyutil.ResponsesToolIdentity
 }
 
-// finalizeZedResponsesBodyWithOptions 把标准 Responses body 装配成 Zed envelope。
-// preserveReasoning 由调用方判定：渠道 body 规则显式覆盖 reasoning 时必须保留它，
-// 否则本函数会把转换器凭空填入的默认值当成客户端意图删掉。
+/**
+ * @brief 按模型提供商将 Responses 请求装配为 Zed envelope，Anthropic 系统指令仅放在顶层。
+ * @param registry 提供商协议转换器；非 OpenAI 提供商必须可用。
+ * @param body 已应用渠道规则的 Responses 请求正文。
+ * @param originalClientRequest 客户端原文，用于保留显式思考设置与缓存控制。
+ * @param preserveReasoning 渠道规则显式设置 reasoning 时为 true，避免被当成转换器默认值删除。
+ * @return Zed 出站正文；失败时为 nil。
+ * @return 响应转换所需的提供商计划；失败时为 nil。
+ * @return 正文无效、模型不支持或协议转换失败时返回错误。
+ */
 func finalizeZedResponsesBodyWithOptions(
 	registry *protocol.Registry,
 	body, originalClientRequest []byte,
@@ -75,10 +82,13 @@ func finalizeZedResponsesBodyWithOptions(
 	body = setJSONValue(body, "stream", true)
 	body = normalizeZedCodexInput(body)
 	body = stripZedEncryptedContent(body)
-	if provider == zedauth.ProviderAnthropic && !preserveReasoning && !zedClientRequestedThinking(originalClientRequest) {
-		// OpenAI→Codex 转换在缺少 reasoning_effort 时默认 medium。Zed Anthropic
-		// 再把它变成 thinking.budget_tokens=8192，和保守 max_tokens=8192 撞车。
-		body = deleteJSONPath(body, "reasoning")
+	if provider == zedauth.ProviderAnthropic {
+		body = prependResponsesSystemItems(body)
+		if !preserveReasoning && !zedClientRequestedThinking(originalClientRequest) {
+			// OpenAI→Codex 转换在缺少 reasoning_effort 时默认 medium。Zed Anthropic
+			// 再把它变成 thinking.budget_tokens=8192，和保守 max_tokens=8192 撞车。
+			body = deleteJSONPath(body, "reasoning")
+		}
 	}
 	originalRequest := body
 

@@ -74,6 +74,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `http_read_timeout_seconds` | `0` | Downstream request read timeout in seconds; `0` uses the built-in 120-second default. It covers the complete request header/body read, returns 408 on timeout, and is independent of body-size limits. |
 | `max_body_bytes` | `33554432` | Max request body bytes, 32MB by default |
 | `max_image_body_bytes` | `20971520` | Max Images API request body bytes, 20MB by default |
+| `request_body_memory_budget_bytes` | `536870912` | Shared HTTP proxy request body memory budget (512 MiB); positive integer bytes, edited in MiB in the Limits group; restart required after saving |
 | `cooldown_auth_seconds` | `300` | Auth error (401/402/403) initial cooldown in seconds |
 | `cooldown_server_seconds` | `120` | Server error (5xx) initial cooldown in seconds |
 | `cooldown_timeout_seconds` | `60` | Timeout error (597/598) initial cooldown in seconds |
@@ -132,6 +133,8 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `ANTHROPIC_BASE_URL` | Empty | Global API root for Anthropic OAuth channels (official default `https://api.anthropic.com`) |
 | `XAI_BASE_URL` | Empty | Global API root for xAI OAuth channels (usually ends with `/v1`; official default `https://cli-chat-proxy.grok.com/v1`) |
 | `ANTIGRAVITY_URL` | Empty | Global upstream address for Antigravity OAuth channels (official default `https://daily-cloudcode-pa.googleapis.com`, backup `https://cloudcode-pa.googleapis.com`) |
+
+`request_body_memory_budget_bytes` is shared by all in-flight HTTP proxy requests. It accounts for retained request body buffers until their handlers finish, both old and new buffers during growth, and decoding workspace reserved for the request's content encodings. Insufficient budget returns HTTP 503 with `Retry-After: 1`; individual body-size limits still return 413. A request may exceed the budget even when it fits its individual limit. Adjust the default 512 MiB to suit deployment memory. This budget excludes protocol rewriting, responses, and WebSocket transcripts (which have their own budget), and does not cap the process's total heap.
 
 Per-protocol timeouts apply to the runtime upstream protocol: if a transformed request is forwarded to OpenAI, ccLoad reads `openai_*_timeout`; when that value is `0`, it falls back to the global timeout.
 

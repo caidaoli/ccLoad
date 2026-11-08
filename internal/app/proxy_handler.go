@@ -114,7 +114,15 @@ func isRequestReadTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomingRequest, error) {
+/**
+ * @brief 读取并解析代理请求，单请求大小限制与共享内存预算分别校验。
+ * @param c 下游请求上下文。
+ * @param bodyLimits 普通和 Images 路径的解码后大小上限。
+ * @param memory 当前 handler 持有并负责释放的正文内存预留。
+ * @return 已解析的请求；错误时返回零值。
+ * @return 大小超限、预算耗尽、读取超时、未知编码或正文格式错误。
+ */
+func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits, memory *requestBodyMemoryReservation) (incomingRequest, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
@@ -122,23 +130,38 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	// 上限约束解码后的字节，解压炸弹与明文超限同样返回 errBodyTooLarge。
 	maxBody := bodyLimits.maxForPath(requestPath)
 	contentEncoding := strings.Join(c.Request.Header.Values("Content-Encoding"), ",")
-	body, err := decodeContentEncodingBody(c.Request.Body, contentEncoding)
+	encodings, workspace, err := parseContentEncodings(contentEncoding)
+	if err != nil {
+		_ = c.Request.Body.Close()
+		return incomingRequest{}, err
+	}
+	if err := memory.reserve(workspace); err != nil {
+		stopRejectedRequestUpload(c)
+		_ = c.Request.Body.Close()
+		return incomingRequest{}, err
+	}
+	defer memory.release(workspace)
+	body, err := decodeContentEncodingBody(c.Request.Body, encodings)
 	var all []byte
 	if err == nil {
-		all, err = io.ReadAll(io.LimitReader(body, maxBody+1))
+		contentLength := c.Request.ContentLength
+		if len(encodings) != 0 {
+			contentLength = -1
+		}
+		all, err = memory.read(c.Request.Context(), body, maxBody, contentLength)
+		if errors.Is(err, errRequestBodyMemoryBudget) {
+			stopRejectedRequestUpload(c)
+		}
 		_ = body.Close()
 	}
 	if err != nil {
 		if isRequestReadTimeout(err) {
 			return incomingRequest{}, fmt.Errorf("%w: %v", errBodyReadTimeout, err)
 		}
-		if errors.Is(err, errUnsupportedContentEncoding) {
+		if errors.Is(err, errBodyTooLarge) || errors.Is(err, errRequestBodyMemoryBudget) {
 			return incomingRequest{}, err
 		}
 		return incomingRequest{}, fmt.Errorf("failed to read body: %w", err)
-	}
-	if int64(len(all)) > maxBody {
-		return incomingRequest{}, errBodyTooLarge
 	}
 	if strings.TrimSpace(contentEncoding) != "" {
 		// 后续只转发明文：残留的编码头会让上游按压缩数据解析，也会让出站压缩
@@ -459,7 +482,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	requestMethod := c.Request.Method
 
-	incoming, err := parseIncomingRequest(c, s.bodyLimits)
+	memory := requestBodyMemoryReservation{budget: &s.requestBodyMemory}
+	defer memory.close()
+	incoming, err := parseIncomingRequest(c, s.bodyLimits, &memory)
 	if err != nil {
 		switch {
 		case errors.Is(err, errBodyTooLarge):
@@ -467,6 +492,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		case errors.Is(err, errBodyReadTimeout):
 			// 408 而不是 400：请求本身没问题，是客户端没在读取超时内传完。
 			writeLocalProxyError(c, http.StatusRequestTimeout, err.Error())
+		case errors.Is(err, errRequestBodyMemoryBudget):
+			c.Header("Retry-After", "1")
+			writeLocalProxyError(c, http.StatusServiceUnavailable, err.Error())
 		case errors.Is(err, errUnsupportedContentEncoding):
 			writeLocalProxyError(c, http.StatusUnsupportedMediaType, err.Error())
 		default:

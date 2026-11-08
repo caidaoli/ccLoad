@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/storage"
@@ -222,6 +223,10 @@ func TestAdminUpdateModelCatalogSyncIntervalSetting(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证设置 API 拒绝非法值并仅在合法值持久化后触发重启
+ * @param t 测试上下文
+ */
 func TestAdminSettingContractValidation(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
@@ -239,6 +244,12 @@ func TestAdminSettingContractValidation(t *testing.T) {
 		value    string
 		wantCode int
 	}{
+		{name: "body memory budget default", key: config.RequestBodyMemoryBudgetSettingKey, value: "536870912", wantCode: http.StatusOK},
+		{name: "body memory budget below body size limit", key: config.RequestBodyMemoryBudgetSettingKey, value: "1", wantCode: http.StatusOK},
+		{name: "body memory budget above duration limit", key: config.RequestBodyMemoryBudgetSettingKey, value: "10737418240", wantCode: http.StatusOK},
+		{name: "body memory budget zero", key: config.RequestBodyMemoryBudgetSettingKey, value: "0", wantCode: http.StatusBadRequest},
+		{name: "body memory budget negative", key: config.RequestBodyMemoryBudgetSettingKey, value: "-1", wantCode: http.StatusBadRequest},
+		{name: "body memory budget fractional bytes", key: config.RequestBodyMemoryBudgetSettingKey, value: "1.5", wantCode: http.StatusBadRequest},
 		{name: "antigravity empty array", key: "antigravity_sensitive_words", value: `[]`, wantCode: http.StatusOK},
 		{name: "antigravity null", key: "antigravity_sensitive_words", value: `null`, wantCode: http.StatusBadRequest},
 		{name: "antigravity non-string array", key: "antigravity_sensitive_words", value: `[1]`, wantCode: http.StatusBadRequest},

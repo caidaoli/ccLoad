@@ -8,6 +8,10 @@ import (
 	"ccLoad/internal/config"
 )
 
+/**
+ * @brief 覆盖系统设置值类型与各配置键的取值约束
+ * @param t 测试上下文
+ */
 func TestValidateSettingValue(t *testing.T) {
 	t.Parallel()
 
@@ -49,6 +53,12 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "int_max_body_bytes_reject_negative", key: "max_body_bytes", valueType: "int", value: "-1", wantErr: true},
 		{name: "int_max_body_bytes_ok", key: "max_body_bytes", valueType: "int", value: "10485760", wantErr: false},
 		{name: "int_max_image_body_bytes_ok", key: "max_image_body_bytes", valueType: "int", value: "20971520", wantErr: false},
+		{name: "int_body_memory_budget_reject_zero", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "0", wantErr: true},
+		{name: "int_body_memory_budget_reject_negative", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "-1", wantErr: true},
+		{name: "int_body_memory_budget_reject_fraction", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "1.5", wantErr: true},
+		{name: "int_body_memory_budget_one_byte", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "1", wantErr: false},
+		{name: "int_body_memory_budget_default", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "536870912", wantErr: false},
+		{name: "int_body_memory_budget_above_duration_limit", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "10737418240", wantErr: false},
 		{name: "int_cooldown_auth_reject_0", key: "cooldown_auth_seconds", valueType: "int", value: "0", wantErr: true},
 		{name: "int_cooldown_auth_ok", key: "cooldown_auth_seconds", valueType: "int", value: "300", wantErr: false},
 		{name: "int_cooldown_min_reject_0", key: "cooldown_min_seconds", valueType: "int", value: "0", wantErr: true},

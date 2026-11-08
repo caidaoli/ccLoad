@@ -833,14 +833,17 @@ test('字节型设置以 MiB 数值编辑并以字节保存', async (t) => {
   const transcriptKey = 'responses_ws_max_transcript_bytes';
   const bodyKey = 'max_body_bytes';
   const imageBodyKey = 'max_image_body_bytes';
+  const bodyBudgetKey = 'request_body_memory_budget_bytes';
   const page = await loadSettingsPage(t, [
     { key: transcriptKey, value: '134217728', value_type: 'int', description: '' },
     { key: bodyKey, value: '10485760', value_type: 'int', description: '' },
-    { key: imageBodyKey, value: '20971520', value_type: 'int', description: '' }
+    { key: imageBodyKey, value: '20971520', value_type: 'int', description: '' },
+    { key: bodyBudgetKey, value: '268435456', value_type: 'int', description: '' }
   ], {
     [transcriptKey]: '128',
     [bodyKey]: '10',
-    [imageBodyKey]: '20'
+    [imageBodyKey]: '20',
+    [bodyBudgetKey]: '256'
   });
   page.setAllowSave(true);
 
@@ -854,6 +857,7 @@ test('字节型设置以 MiB 数值编辑并以字节保存', async (t) => {
   page.inputs[transcriptKey].value = '256';
   page.inputs[bodyKey].value = '12';
   page.inputs[imageBodyKey].value = '24';
+  page.inputs[bodyBudgetKey].value = '128.5';
   page.saveButton.click();
   await flushAsyncWork();
 
@@ -862,11 +866,13 @@ test('字节型设置以 MiB 数值编辑并以字节保存', async (t) => {
   assert.deepEqual(JSON.parse(requests[0].options.body), {
     [transcriptKey]: '268435456',
     [bodyKey]: '12582912',
-    [imageBodyKey]: '25165824'
+    [imageBodyKey]: '25165824',
+    [bodyBudgetKey]: '134742016'
   });
   assert.equal(page.inputs[transcriptKey].value, '256');
   assert.equal(page.inputs[bodyKey].value, '12');
   assert.equal(page.inputs[imageBodyKey].value, '24');
+  assert.equal(page.inputs[bodyBudgetKey].value, '128.5');
 });
 
 test('五个 WebSocket 设置允许显式保存 0', async (t) => {
@@ -901,30 +907,28 @@ test('五个 WebSocket 设置允许显式保存 0', async (t) => {
   });
 });
 
-test('空字节输入和舍入为零的正数不会提交', async (t) => {
-  const key = 'max_body_bytes';
-  const page = await loadSettingsPage(t, [{
-    key,
-    value: '10485760',
-    default_value: '10485760',
-    value_type: 'int',
-    description: ''
-  }], { [key]: '10' });
-  page.setAllowSave(true);
+test('正字节设置拒绝空输入、零、负数及不足一字节的大小', async (t) => {
+  for (const key of ['max_body_bytes', 'request_body_memory_budget_bytes']) {
+    await t.test(key, async (t) => {
+      const page = await loadSettingsPage(t, [{
+        key,
+        value: '10485760',
+        default_value: '10485760',
+        value_type: 'int',
+        description: ''
+      }], { [key]: '10' });
+      page.setAllowSave(true);
 
-  page.inputs[key].value = '';
-  page.saveButton.click();
-  await flushAsyncWork();
-  assert.equal(saveRequests(page).length, 0);
-  assert.equal(page.prompts.length, 0);
-  assert.equal(page.errors.length, 1);
-
-  page.inputs[key].value = '0.0000001';
-  page.saveButton.click();
-  await flushAsyncWork();
-  assert.equal(saveRequests(page).length, 0);
-  assert.equal(page.prompts.length, 0);
-  assert.equal(page.errors.length, 2);
+      for (const [index, value] of ['', '0', '-1', '0.0000001'].entries()) {
+        page.inputs[key].value = value;
+        page.saveButton.click();
+        await flushAsyncWork();
+        assert.equal(saveRequests(page).length, 0);
+        assert.equal(page.prompts.length, 0);
+        assert.equal(page.errors.length, index + 1);
+      }
+    });
+  }
 });
 
 test('WebSocket 恢复默认写入 0，且只在保存所有更改后提交', async (t) => {

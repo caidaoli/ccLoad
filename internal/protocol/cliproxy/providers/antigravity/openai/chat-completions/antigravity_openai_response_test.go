@@ -9,6 +9,34 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestAntigravityMultiPartContent(t *testing.T) {
+	for _, tc := range []struct {
+		name, parts, text, reasoning string
+	}{
+		{"text", `[{"text":"Hello "},{"text":"world"}]`, "Hello world", ""},
+		{"reasoning", `[{"text":"step one ","thought":true},{"text":"step two","thought":true}]`, "", "step one step two"},
+		{"mixed", `[{"text":"first ","thought":true},{"text":"Hello "},{"text":"second","thought":true},{"text":"world"}]`, "Hello world", "first second"},
+		{"text_signature", `[{"text":"answer"},{"text":"","thoughtSignature":"sig"}]`, "answer", ""},
+		{"reasoning_signature", `[{"text":"thought","thought":true},{"text":"","thought":true,"thought_signature":"sig"}]`, "", "thought"},
+		{"signature_only", `[{"text":"","thoughtSignature":"sig"}]`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"response":{"candidates":[{"content":{"parts":` + tc.parts + `}}]}}`)
+			var state any
+			chunks := ConvertAntigravityResponseToOpenAI(context.Background(), "gemini-2.5-pro", nil, nil, raw, &state)
+			if len(chunks) != 1 {
+				t.Fatalf("expected one chunk, got %d", len(chunks))
+			}
+			for path, want := range map[string]string{"content": tc.text, "reasoning_content": tc.reasoning} {
+				value := gjson.GetBytes(chunks[0], "choices.0.delta."+path)
+				if value.String() != want || (want == "" && value.Type != gjson.Null) {
+					t.Errorf("%s=%s, want %q: %s", path, value.Raw, want, chunks[0])
+				}
+			}
+		})
+	}
+}
+
 func TestFinishReasonToolCallsNotOverwritten(t *testing.T) {
 	ctx := context.Background()
 	var param any

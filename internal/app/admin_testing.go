@@ -569,6 +569,9 @@ func (s *Server) buildChannelTestRequestPlan(
 			transformPlan.Streaming,
 		)
 	} else {
+		transformPlan.TranslatedBody = preserveResponsesTopLevelSystemItems(
+			cfgForBuild, upstreamURL, transformPlan.ClientProtocol, transformPlan.UpstreamProtocol, transformPlan.TranslatedBody,
+		)
 		translatedBody, err = s.protocolRegistry.TranslateRequest(
 			transformPlan.ClientProtocol,
 			transformPlan.UpstreamProtocol,

@@ -25,6 +25,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -2329,6 +2330,14 @@ func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 		if anthropicRequestHasCacheControl(body, func(cache gjson.Result) bool { return cache.Get("scope").Exists() }) {
 			betas = append(betas, "prompt-caching-scope-2026-01-05")
 		}
+		if !cliproxyutil.IsClaudeLegacySystemReminderModel(modelName) {
+			for _, message := range gjson.GetBytes(body, "messages").Array() {
+				if strings.EqualFold(strings.TrimSpace(jsonStringValue(message.Get("role"))), "system") {
+					betas = append(betas, "mid-conversation-system-2026-04-07")
+					break
+				}
+			}
+		}
 		if gjson.GetBytes(body, "output_config.effort").Exists() {
 			betas = append(betas, "effort-2025-11-24")
 		}
@@ -2346,7 +2355,7 @@ func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 			betas = append(betas, "interleaved-thinking-2025-05-14", "thinking-token-count-2026-05-13")
 		}
 		betas = append(betas, "context-management-2025-06-27", "prompt-caching-scope-2026-01-05")
-		midConversation := !anthropicUsesLegacySystemReminder(modelName)
+		midConversation := !cliproxyutil.IsClaudeLegacySystemReminderModel(modelName)
 		if midConversation {
 			betas = append(betas, "mid-conversation-system-2026-04-07")
 		}
@@ -2419,7 +2428,7 @@ func anthropicModelSupportsEffort(modelName string) bool {
 func anthropicModelAcceptsTemperature(modelName string) bool {
 	modelName = anthropicCanonicalModelName(modelName)
 	return strings.HasPrefix(modelName, "claude-3-") ||
-		anthropicUsesLegacySystemReminder(modelName) && !strings.HasPrefix(modelName, "claude-opus-4-7")
+		cliproxyutil.IsClaudeLegacySystemReminderModel(modelName) && !strings.HasPrefix(modelName, "claude-opus-4-7")
 }
 
 // anthropicClaudeCodeDefaultMaxTokens 是 Claude Code 模型目录的 max_output_tokens
@@ -2455,22 +2464,6 @@ func anthropicHasMessageOutputConfig(body []byte) bool {
 		}
 	}
 	return false
-}
-
-func anthropicUsesLegacySystemReminder(modelName string) bool {
-	switch anthropicCanonicalModelName(modelName) {
-	case "claude-3-5-haiku-20241022", "claude-3-5-haiku-latest",
-		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest",
-		"claude-haiku-4-5", "claude-haiku-4-5-20251001",
-		"claude-opus-4", "claude-opus-4-20250514", "claude-opus-4-1",
-		"claude-opus-4-1-20250805", "claude-opus-4-5", "claude-opus-4-5-20251101",
-		"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4",
-		"claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
-		"claude-sonnet-4-6":
-		return true
-	default:
-		return false
-	}
 }
 
 // applyAnthropicClaudeCodeHeaders 重建模拟路径的 CLI 头。流式请求也不发

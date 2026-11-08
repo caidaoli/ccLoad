@@ -328,7 +328,13 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 	}
 }
 
-// validateSettingValue 验证配置值的合法性
+/**
+ * @brief 验证系统设置的值类型和各项取值约束
+ * @param key 系统设置键
+ * @param valueType 已登记的设置值类型
+ * @param value 待持久化的设置值
+ * @return 值合法时为 nil；格式或取值范围错误时返回错误
+ */
 func validateSettingValue(key, valueType, value string) error {
 	if key == globalCooldownDetectionRulesSettingKey {
 		_, err := parseGlobalCooldownDetectionRules(value)
@@ -347,9 +353,9 @@ func validateSettingValue(key, valueType, value string) error {
 		}
 		// 按配置项定义具体约束
 		switch key {
-		case "max_key_retries":
+		case "max_key_retries", config.RequestBodyMemoryBudgetSettingKey:
 			if intVal < 1 {
-				return fmt.Errorf("max_key_retries must be >= 1")
+				return fmt.Errorf("%s must be >= 1", key)
 			}
 		case "log_retention_days":
 			if intVal != LogRetentionDaysDisabled && (intVal < LogRetentionDaysMin || intVal > LogRetentionDaysMax) {

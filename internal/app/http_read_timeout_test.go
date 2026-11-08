@@ -63,7 +63,7 @@ func TestParseIncomingRequestSeparatesReadTimeoutFromSizeLimit(t *testing.T) {
 	limits := newRequestBodyLimits(16, 16)
 
 	oversized := newParseRequestContext(t, strings.NewReader(strings.Repeat("x", 64)))
-	_, err := parseIncomingRequest(oversized, limits)
+	_, err := parseIncomingRequest(oversized, limits, testRequestBodyMemory(t))
 	if !errors.Is(err, errBodyTooLarge) {
 		t.Fatalf("oversized body error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestParseIncomingRequestSeparatesReadTimeoutFromSizeLimit(t *testing.T) {
 	}
 
 	timedOut := newParseRequestContext(t, &errorReader{err: os.ErrDeadlineExceeded})
-	_, err = parseIncomingRequest(timedOut, limits)
+	_, err = parseIncomingRequest(timedOut, limits, testRequestBodyMemory(t))
 	if !errors.Is(err, errBodyReadTimeout) {
 		t.Fatalf("timed out body error = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestParseIncomingRequestSeparatesReadTimeoutFromSizeLimit(t *testing.T) {
 
 	// A plain I/O failure stays a generic read failure.
 	broken := newParseRequestContext(t, &errorReader{err: errors.New("connection reset by peer")})
-	_, err = parseIncomingRequest(broken, limits)
+	_, err = parseIncomingRequest(broken, limits, testRequestBodyMemory(t))
 	if errors.Is(err, errBodyReadTimeout) || errors.Is(err, errBodyTooLarge) {
 		t.Fatalf("generic read failure = %v", err)
 	}

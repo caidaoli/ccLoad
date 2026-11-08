@@ -24,6 +24,35 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-08)
+
+These targeted fixes use the local CLIProxyAPI checkout at official `v8.0.60`,
+`91e0dee827abf476f9f86246f68c500a112f7155`. The synchronized baseline remains
+official `v8.0.51`; this is not a full snapshot update.
+
+- Adapt `c5251b57b3fa5dcbc689f514f4aa166daacb4481`: concatenate Gemini and
+  Antigravity text/thought parts within each streamed Chat chunk. Empty
+  signature carriers cannot erase earlier text. Keep ccLoad's partial-argument
+  validation before emitting content.
+- Adapt `277628193f54d99b2eeca57ecd7f9ff9b349a996`: keep eligible mid-session
+  Responses system/developer items after the next emitted Claude user turn,
+  preserving the leading prompt-cache prefix. Normalize parallel tool outputs
+  before placement so reminders follow the complete result group. Share the
+  existing legacy-model allowlist with the app; preserve top-level placement
+  for legacy models, unsupported content and items without a following user
+  turn. App-owned OpenCode and Z.ai wire paths also retain top-level placement;
+  API-key Haiku requests add the mid-system beta only when those messages are
+  present. No upstream executor context wrapper is imported.
+- Adapt `e6931d51e328343088d5902e5cbd06edbe4d8633`: preserve standalone Claude
+  `output_config.effort` when translating to Chat, while retaining existing
+  budget and disabled-thinking precedence.
+- Adapt `69637a662a05aebc64805760be960284b2459cb2`: do not open Claude thinking
+  blocks for whitespace-only OpenAI reasoning. Preserve whitespace within an
+  already started thinking block and keep streaming/tool-buffer order.
+
+Provider provenance and the license remain unchanged. Registry/provider tests
+and a real HTTP outbound-prefix regression cover the adapted semantics.
+
 ## Post-snapshot compatibility fixes (2026-11-07)
 
 The targeted `v8.0.58` fixes use the local CLIProxyAPI checkout at
