@@ -33,8 +33,13 @@ type ImageGenerationOptions struct {
 	ImageSize   string
 }
 
-// TestChannelRequest 渠道测试请求结构
+/**
+ * @brief 管理检测输入与请求内的实际模型、套餐身份；内部身份字段不接受 JSON 输入。
+ */
 type TestChannelRequest struct {
+	ZAIWireModel      string                  `json:"-"` ///< 实际 ZCode wire 模型，仅用于计费，不改变 Trial 选路身份。
+	ZAITrial          bool                    `json:"-"` ///< 最终请求使用体验端点，冷却与付费账号隔离。
+	ZAILocalPlanError bool                    `json:"-"` ///< 本地套餐拒绝，不写入上游故障冷却。
 	Model             string                  `json:"model" binding:"required"`
 	TargetModel       string                  `json:"redirect_model,omitempty"`  // 可选：只测试指定配置行的目标
 	MaxTokens         int                     `json:"max_tokens,omitempty"`      // 可选，默认512

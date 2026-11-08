@@ -960,7 +960,18 @@ func (s *Server) runProxyAttemptLoop(
 	return s.runProxyAttemptLoopWithFailureBoundary(ctx, cands, reqCtx, w, nil)
 }
 
-func (s *Server) runProxyAttemptLoopWithFailureBoundary(
+/**
+ * @brief 保留公共候选遍历，ZAI 等待状态由专属接入维护。
+ * @param ctx 控制候选尝试及取消的请求上下文。
+ * @param cands 本轮候选渠道，排序不修改传入切片。
+ * @param reqCtx 本轮共享请求状态，会随尝试更新。
+ * @param w 客户端响应写入器。
+ * @param stopAfterFailure 当前失败后是否停止遍历的回调；nil 时沿用正常规则。
+ * @return 本轮成功结果或最近应保留的失败结果；尚无结果时为 nil。
+ * @return 是否已完成成功响应。
+ * @note 可能发送响应、记录尝试日志并应用冷却。
+ */
+func (s *Server) runProxyAttemptPass(
 	ctx context.Context,
 	cands []*model.Config,
 	reqCtx *proxyRequestContext,
@@ -1002,7 +1013,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 				continue
 			}
 		}
-		result, err := s.tryChannelWithSameChannelRetries(ctx, cfg, reqCtx, w)
+		result, err := s.tryChannelWithZAIStartRouting(ctx, cfg, reqCtx, w)
 		if errors.Is(err, errNoAvailableModelRow) {
 			continue
 		}
@@ -1045,7 +1056,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 				return result, true
 			}
 
-			lastResult = result
+			lastResult = selectZAIStartResult(lastResult, result)
 			if result.operatorAborted {
 				operatorSkipped[cfg.ID] = true
 			}
@@ -1137,10 +1148,12 @@ func (s *Server) tryChannelWithSameChannelRetries(
 	if cfg.SameChannelRetries <= 0 {
 		return s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 	}
+	var zaiFailure zaiRetryFailure
 	for attempt := 0; ; attempt++ {
 		pending := &pendingSameChannelCooldowns{}
 		result, err := s.tryChannelWithKeys(context.WithValue(ctx, pendingSameChannelCooldownsKey{}, pending), cfg, reqCtx, w)
-		if attempt < cfg.SameChannelRetries && err == nil && len(pending.inputs) > 0 && ctx.Err() == nil &&
+		localAfterFailure := zaiFailure.reconcile(cfg, &result, pending, &attempt)
+		if !localAfterFailure && attempt < cfg.SameChannelRetries && err == nil && len(pending.inputs) > 0 && ctx.Err() == nil &&
 			result != nil && !result.succeeded && !result.isClientCanceled && !result.operatorAborted {
 			log.Printf("[RETRY] 渠道 %s (ID=%d) 同渠道重试 %d/%d (status=%d)",
 				cfg.Name, cfg.ID, attempt+1, cfg.SameChannelRetries, result.status)
@@ -1186,6 +1199,8 @@ func (s *Server) writeFinalProxyResponse(
 	msg := "exhausted backends"
 	if lastResult != nil && lastResult.isClientCanceled {
 		msg = "client closed request (context canceled)"
+	} else if lastResult != nil && lastResult.zaiLocalPlanKind != "" {
+		msg = "local ZAI Trial admission: " + lastResult.zaiLocalPlanKind
 	} else if lastResult != nil && lastResult.status == 499 && finalStatus != 499 {
 		// 上游返回 499 没有任何“客户端取消”的语义价值：对外统一视为网关错误。
 		msg = "upstream returned 499 (mapped)"
@@ -1200,7 +1215,7 @@ func (s *Server) writeFinalProxyResponse(
 	// - 客户端错误（400）：已在渠道级日志记录，汇总日志冗余
 	// - 候选池 ≤1：实际只尝试了 1 个渠道，渠道级日志已完整反映失败原因，汇总日志冗余
 	skipLog := lastResult != nil && (lastResult.isClientCanceled || finalStatus == http.StatusBadRequest)
-	skipLog = skipLog || candidateCount <= 1
+	skipLog = skipLog || (candidateCount <= 1 && (lastResult == nil || lastResult.zaiLocalPlanKind == ""))
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: reqCtx.startTime},

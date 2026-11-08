@@ -1028,6 +1028,9 @@ func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err e
 		if err != nil {
 			return "", "", err
 		}
+		if credential.APIKey == "" {
+			return credential.JWTToken, "ZCode 登录", nil
+		}
 		return credential.APIKey, "Z.ai Coding Plan Key", nil
 	case cfg.UsesCursorOAuth():
 		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -2396,6 +2399,10 @@ func (s *Server) disableChannelIfOAuthSnapshotMatches(
 	return true, nil
 }
 
+/**
+ * @brief 清理已删除渠道的运行态，释放凭证、套餐与调度缓存。
+ * @param cfg 已从存储删除的渠道快照。
+ */
 func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	id := cfg.ID
 	s.protocolCapabilities.clearChannels(id)
@@ -2423,6 +2430,10 @@ func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	if s.zedCredentials != nil {
 		s.zedCredentials.invalidate(id)
 	}
+	if s.zaiCredentials != nil {
+		s.zaiCredentials.invalidate(id)
+	}
+	s.invalidateZAIPlans(id)
 	if s.vertexCredentials != nil {
 		s.vertexCredentials.invalidate(id)
 	}

@@ -37,11 +37,22 @@ func cooldownWriteContext(ctx context.Context) (context.Context, context.CancelF
 	return context.WithTimeout(context.WithoutCancel(ctx), cooldownWriteTimeout)
 }
 
+/**
+ * @brief 应用冷却决策；ZCode 体验错误先使用套餐规则，避免通用故障分类误冻 Trial。
+ * @param ctx 当前请求及延迟冷却上下文。
+ * @param cfg 当前渠道配置与错误处理规则。
+ * @param in 本次错误及实际模型身份。
+ * @return 换 Key、模型、渠道或返回客户端的后续动作。
+ * @note 同渠道重试可暂存冷却输入；公共冷却写入断开请求取消链并限时执行，写入后失效相关缓存。
+ */
 func (s *Server) applyCooldownDecision(
 	ctx context.Context,
 	cfg *model.Config,
 	in cooldown.ErrorInput,
 ) cooldown.Action {
+	if cfg.UsesZAIOAuth() && isZAITrialModel(in.Model) {
+		return s.applyZAITrialCooldown(ctx, cfg, in)
+	}
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
@@ -71,11 +82,21 @@ func (s *Server) applyCooldownDecision(
 	return action
 }
 
+/**
+ * @brief 无副作用地选择错误后的动作，体验故障使用独立套餐分类。
+ * @param ctx 当前请求上下文。
+ * @param cfg 当前渠道配置与错误处理规则。
+ * @param in 本次错误及实际模型身份。
+ * @return 换 Key、模型、渠道或返回客户端的后续动作。
+ */
 func (s *Server) decideCooldownAction(
 	ctx context.Context,
 	cfg *model.Config,
 	in cooldown.ErrorInput,
 ) cooldown.Action {
+	if cfg.UsesZAIOAuth() && isZAITrialModel(in.Model) {
+		return zaiTrialErrorAction(in)
+	}
 	in = s.completeCooldownInput(cfg, in)
 	return s.cooldownManager.DecideAction(ctx, in)
 }
@@ -255,6 +276,9 @@ func buildProxyLogEntry(
 	res *fwResult,
 	errMsg string,
 ) *model.LogEntry {
+	if res != nil && res.zaiModel != "" {
+		actualModel = res.zaiModel
+	}
 	responseModel := ""
 	if res != nil && statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices && res.ResponseModel != "" {
 		responseModel = res.ResponseModel
@@ -311,6 +335,9 @@ func (s *Server) updateTokenStatsForProxy(
 		requestPath = reqCtx.requestPath
 	}
 	billingModel := resolveProxyBillingModel(requestPath, actualModel, requestModel)
+	if res != nil && res.zaiModel != "" {
+		billingModel = resolveProxyBillingModel(requestPath, res.zaiModel, requestModel)
+	}
 	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, reqCtx.attemptModelPrice, outcome, duration, reqCtx.isStreaming, res, billingModel)
 }
 
@@ -447,8 +474,11 @@ func (s *Server) handleNetworkError(
 		return failure, cooldown.ActionReturnClient
 	}
 	failure.isNetworkError = true
-
 	input := cooldownInputForModel(networkErrorInput(cfg.ID, keyIndex, statusCode), actualModel)
+	if cfg.UsesZAIOAuth() && res != nil && res.zaiTrial {
+		input.Model = zaiTrialModelKey(actualModel)
+		failure.zaiTrial = true
+	}
 	input.ModelScoped = util.IsModelScopedNetworkError(err)
 	if deferChannelCooldown {
 		action := s.decideCooldownAction(ctx, cfg, input)
@@ -660,7 +690,7 @@ func (s *Server) handleProxySuccess(
 
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
-	if !cfg.AntigravityCredits && !reqCtx.countTokens() {
+	if !cfg.AntigravityCredits && !reqCtx.countTokens() && !(cfg.UsesZAIOAuth() && res.zaiTrial) {
 		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
 			count := cooldownClearChannelFailCount.Add(1)
 			if count%100 == 1 {
@@ -735,6 +765,9 @@ func (s *Server) handleStreamingErrorNoRetry(
 	reqCtx *proxyRequestContext,
 ) (*proxyResult, cooldown.Action) {
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
+	if cfg.UsesZAIOAuth() && res.zaiTrial {
+		input.Model = zaiTrialModelKey(actualModel)
+	}
 	// 记录错误日志；已提交的部分 usage 上游已收费，照常计入令牌费用
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 	s.updateTokenStatsForProxy(reqCtx, model.TokenStatsFailure, duration, res, actualModel)
@@ -840,6 +873,10 @@ func (s *Server) handleProxyErrorResponse(
 	forceReturnClient bool,
 	modelCapacityRateLimited bool,
 ) (*proxyResult, cooldown.Action) {
+	if failure := zaiLocalPlanFailure(cfg, res, forceReturnClient); failure != nil {
+		return failure, failure.nextAction
+	}
+
 	if reqCtx.countTokens() {
 		s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, "")
 		return countTokensUpstreamErrorResult(cfg, res, duration)
@@ -847,6 +884,9 @@ func (s *Server) handleProxyErrorResponse(
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
 	if cfg.UsesZedOAuth() && zedModelPlanRejected(res.Status, res.Body) {
 		input.ModelScoped = true
+	}
+	if cfg.UsesZAIOAuth() && res.zaiTrial {
+		input.Model = zaiTrialModelKey(actualModel)
 	}
 	if isAntigravityModelNotFound(cfg, res.Status) {
 		input.ModelScoped = true
@@ -874,6 +914,7 @@ func (s *Server) handleProxyErrorResponse(
 		duration:           duration,
 		succeeded:          false,
 		upstreamErrorEvent: len(res.SSEErrorEvent) > 0,
+		zaiTrial:           res.zaiTrial,
 	}
 	deferAntigravityFallbackLog := cfg.UsesAntigravityOAuth() && deferChannelCooldown &&
 		shouldFallbackAntigravityBaseURL(res.Status, res.Body)
@@ -888,7 +929,6 @@ func (s *Server) handleProxyErrorResponse(
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient
 	}
-
 	if modelCapacityRateLimited {
 		// The original 503 already installed the model cooldown before URL retry.
 		// Only decide where to continue; applying this converted 429 again would

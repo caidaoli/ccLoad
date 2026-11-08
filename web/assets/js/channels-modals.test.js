@@ -1370,6 +1370,93 @@ test('editing an xAI channel loads its full credential into read-only mode and k
   }
 });
 
+test('Loomy copy saves an independent session channel by source ID and ordinary editing clears the copy draft', async () => {
+  const channel = {
+    id: 91, name: 'Loomy', auth_type: 'loomy_session', enabled: true,
+    urls: [{ url: 'https://api.loomy.com/api/v1/chat/completions', exact: true, protocols: ['openai'] }],
+    models: [{ model: 'chat', redirect_model: '' }], protocol_transform_mode: 'local',
+    priority: 12, max_concurrency: 3, proxy_url: 'http://127.0.0.1:7890'
+  };
+  const fixture = installEditChannelGlobals(channel, { codexCredential: { session: 'private-session', user_id: 'verified-user' } });
+  const requests = [];
+  const previous = new Map();
+  const setGlobal = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  try {
+    global.channels = [channel];
+    setGlobal('getValidInlineURLConfigs', () => channel.urls);
+    setGlobal('getValidInlineKeyRows', () => { throw new Error('session channel must not collect API keys'); });
+    setGlobal('fetchAPIWithAuth', async (url, options) => {
+      requests.push({ url, method: options.method, body: JSON.parse(options.body) });
+      return { success: false, error: 'captured' };
+    });
+    const { copyChannel, editChannel, saveChannel } = loadChannelsModals();
+    // 复制真实模型配置会走非空表格分支，补齐该分支依赖的 DOM 容器。
+    global.document.createDocumentFragment = () => ({ appendChild() {} });
+    await copyChannel(channel.id, channel.name);
+    assert.equal(global.editingChannelId, null);
+    assert.equal(global.editingChannelAuthType, 'loomy_session');
+    assert.notEqual(fixture.getElement('channelName').value, channel.name);
+    await saveChannel({ preventDefault() {} });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/admin/channels/91/loomy-copy');
+    assert.equal(requests[0].method, 'POST');
+    assert.equal(requests[0].body.auth_type, 'loomy_session');
+    assert.deepEqual(requests[0].body.urls, channel.urls);
+    assert.equal(requests[0].body.max_concurrency, 3);
+    assert.equal(requests[0].body.proxy_url, channel.proxy_url);
+    assert.equal(requests[0].body.api_key, '');
+    assert.deepEqual(requests[0].body.api_keys, []);
+    for (const key of ['oauth_credential', 'session', 'user_id', 'management_account']) {
+      assert.equal(Object.hasOwn(requests[0].body, key), false);
+    }
+    await editChannel(channel.id);
+    await saveChannel({ preventDefault() {} });
+    assert.equal(requests[1].url, '/admin/channels/91');
+    assert.equal(requests[1].method, 'PUT');
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
+    fixture.restore();
+  }
+});
+
+test('saving a ZAI account without models still submits its configuration', async () => {
+  const channel = {
+    id: 92, name: 'zai-pending', auth_type: 'zai_oauth', models: [], enabled: true,
+    urls: [{ url: 'https://zcode.z.ai/api/v1/ultra-zai/anthropic', protocols: ['anthropic'] }]
+  };
+  const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
+  const previous = new Map(['getValidInlineURLConfigs', 'fetchAPIWithAuth'].map(key => [key, Object.getOwnPropertyDescriptor(global, key)]));
+  let submitted;
+  try {
+    const { editChannel, saveChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    fixture.getElement('channelName').value = 'renamed';
+    global.getValidInlineURLConfigs = () => channel.urls;
+    global.fetchAPIWithAuth = async (url, options) => {
+      submitted = { url, method: options.method, body: JSON.parse(options.body) };
+      return { success: false, error: 'captured' };
+    };
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.url, '/admin/channels/92');
+    assert.equal(submitted.method, 'PUT');
+    assert.equal(submitted.body.name, 'renamed');
+    assert.equal(submitted.body.auth_type, 'zai_oauth');
+    assert.deepEqual(submitted.body.models, []);
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
+    fixture.restore();
+  }
+});
+
 test('saving an xAI editor preserves xai_oauth and submits no key material', async () => {
   const channel = {
     id: 77,

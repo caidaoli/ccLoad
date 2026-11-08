@@ -12,12 +12,15 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
+	"ccLoad/internal/zaiauth"
 )
 
 // ==================== 共享数据结构 ====================
 // 从admin.go提取共享类型,遵循SRP原则
 
-// ChannelRequest 渠道创建/更新请求结构
+/**
+ * @brief 渠道创建/更新输入；ZAI 账号允许在套餐提供模型前保存空目录。
+ */
 type ChannelRequest struct {
 	Name                          string                        `json:"name" binding:"required"`
 	AuthType                      string                        `json:"auth_type,omitempty"`
@@ -29,9 +32,9 @@ type ChannelRequest struct {
 	KeyStrategy                   string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
 	URLs                          model.ChannelURLs             `json:"urls" binding:"required,min=1"`
 	Priority                      int                           `json:"priority"`
-	RPMLimit                      int                           `json:"rpm_limit"`                       // 每分钟请求数限制，0表示无限制
-	MaxConcurrency                int                           `json:"max_concurrency"`                 // 最大并发请求数，0表示无限制
-	Models                        []model.ModelEntry            `json:"models" binding:"required,min=1"` // 模型配置（包含重定向）
+	RPMLimit                      int                           `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
+	MaxConcurrency                int                           `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+	Models                        []model.ModelEntry            `json:"models"`          ///< 模型配置；最少数量按认证类型校验。
 	Enabled                       bool                          `json:"enabled"`
 	ScheduledCheckEnabled         bool                          `json:"scheduled_check_enabled"`
 	ScheduledCheckModel           string                        `json:"scheduled_check_model"`
@@ -223,8 +226,7 @@ func validateChannelBaseURL(raw, authType string) (string, error) {
 	// xAI OAuth 是提供商例外：其固定 base URL 本身以 /v1 结尾，运行时只追加 /responses。
 	isXAIVersionedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeXAIOAuth &&
 		strings.HasSuffix(strings.TrimRight(u.Path, "/"), "/v1")
-	// Z.ai Coding Plan is a second exception: ZCode publishes the routed
-	// endpoint (…/api/v1/ultra-zai/anthropic) and runtime appends /v1/messages.
+	// 允许读取旧 ZCode 付费地址；URL 列表校验会将其归一为站点直连地址。
 	isZAIRoutedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeZAIOAuth
 	// Vertex publisher bases are versioned (…/v1/projects/{p}/locations/{l}/publishers/google
 	// or …/v1/publishers/google); runtime appends /models/{model}:{action}.
@@ -263,6 +265,13 @@ func normalizeChannelProxyURL(raw string) (string, error) {
 	}
 }
 
+/**
+ * @brief 校验独立 URL 副本，并将 ZCode 旧付费端点归一为直连地址。
+ * @param urls 待校验的渠道地址列表，不修改传入切片。
+ * @param authType 当前认证类型，用于选择地址规则。
+ * @return 已归一化的独立地址副本；失败时为 nil。
+ * @return 地址为空、格式非法或不符合认证类型规则时返回错误；成功时为 nil。
+ */
 func validateChannelURLConfigs(urls model.ChannelURLs, authType string) (model.ChannelURLs, error) {
 	urls = urls.Clone()
 	if len(urls) == 0 {
@@ -282,6 +291,9 @@ func validateChannelURLConfigs(urls model.ChannelURLs, authType string) (model.C
 		}
 		urls[i].Exact = model.HasExactUpstreamURLMarker(normalized)
 		urls[i].URL = model.StripExactUpstreamURLMarker(normalized)
+		if model.NormalizeAuthType(authType) == model.AuthTypeZAIOAuth {
+			urls[i].URL = zaiauth.NormalizeCodingPlanURL(urls[i].URL)
+		}
 	}
 	if err := urls.Normalize(); err != nil {
 		return nil, err
@@ -340,7 +352,7 @@ func (cr *ChannelRequest) Validate() error {
 			return fmt.Errorf("api_keys[%d].cost_multiplier must be finite and >= 0 (got %v)", i, *key.CostMultiplier)
 		}
 	}
-	if len(cr.Models) == 0 {
+	if len(cr.Models) == 0 && authType != model.AuthTypeZAIOAuth {
 		return fmt.Errorf("models cannot be empty")
 	}
 	normalizedModels, validationErr := model.ValidateModelEntries(cr.Models)

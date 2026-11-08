@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -16,7 +17,235 @@ import (
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/vertexauth"
+	"ccLoad/internal/zaiauth"
 )
+
+/**
+ * @brief CSV 新建和覆盖均接受零模型体验账号，验证身份但不要求套餐已发放。
+ * @param t 测试上下文。
+ * @note 通过导入 API 检查持久化、失败不写入及凭证元数据保留。
+ */
+func TestAdminAPI_CSVImportZAITrial(t *testing.T) {
+	for _, outcome := range []string{"new", "empty", "pending", "legacy", "models", "unauthorized", "business_error", "network_error", "non_zai", "mixed_valid", "mixed_unauthorized"} {
+		t.Run(outcome, func(t *testing.T) {
+			server := newInMemoryServer(t)
+			ctx := context.Background()
+			original, err := server.store.CreateConfig(ctx, &model.Config{
+				Name: "ZAI CSV", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: `{"jwt_token":"old-jwt"}`,
+				URLs:         model.ChannelURLs{{URL: zaiauth.CodingPlanAPIBaseURL}},
+				ModelEntries: []model.ModelEntry{{Model: "original"}}, Enabled: false,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/models") {
+					return jsonResponse(r, `{"data":[]}`)
+				}
+				if r.URL.Path == "/api/biz/subscription/list" {
+					return jsonResponse(r, `{"code":0,"data":[]}`)
+				}
+				calls++
+				if r.URL.Path != "/api/v1/zcode-plan/billing/balance" || r.Header.Get("Authorization") != "Bearer imported-jwt" {
+					t.Errorf("unexpected credential probe: %s", r.URL.Path)
+				}
+				status, body := 200, `{"code":0,"data":{"plans":[],"balances":[]}}`
+				switch outcome {
+				case "pending":
+					body = `{"code":0,"data":{"plans":[{"plan_id":"future","status":"active","starts_at":4102444800,"entitlements":[{"entitlement_id":"e","effective_at":4102444800,"grant_units":300}]}],"balances":[]}}`
+				case "unauthorized", "mixed_unauthorized":
+					status = 401
+				case "business_error":
+					body = `{"code":401,"success":false,"data":{"plans":[]}}`
+				case "network_error":
+					return nil, errors.New("unavailable")
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})}
+			name, column, models, auth := original.Name, "model_entries_json", "[]", model.AuthTypeZAIOAuth
+			if outcome == "new" {
+				name = "New trial"
+			}
+			if outcome == "legacy" {
+				column, models = "models", ""
+			}
+			if outcome == "models" {
+				models = `[{"model":"GLM-5.3-Trial"}]`
+			}
+			if outcome == "non_zai" {
+				auth = model.AuthTypeAPIKey
+			}
+			credential := `{"jwt_token":"imported-jwt","free_first":false,"oauth_usage":{"test_marker":123}}`
+			wantKey := ""
+			if strings.HasPrefix(outcome, "mixed_") {
+				wantKey = "valid-key"
+				credential = `{"api_key":"valid-key","jwt_token":"imported-jwt","free_first":false,"oauth_usage":{"test_marker":123}}`
+			}
+			apiKey := ""
+			if outcome == "non_zai" {
+				credential, apiKey = "", "valid-api-key"
+			}
+			var csvBody, body bytes.Buffer
+			if err := csv.NewWriter(&csvBody).WriteAll([][]string{
+				{"name", "urls", column, "auth_type", "oauth_credential", "enabled", "api_key"},
+				{name, `[{"url":"https://zcode.z.ai/api/v1/ultra-zai/anthropic"}]`, models, auth, credential, "true", apiKey},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", "zai.csv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(csvBody.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := newRequest(http.MethodPost, "/admin/channels/import", &body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			c, response := newTestContext(t, req)
+			server.HandleImportChannelsCSV(c)
+			summary := mustParseAPIResponse[ChannelImportSummary](t, response.Body.Bytes()).Data
+			failed := outcome == "unauthorized" || outcome == "mixed_unauthorized" || outcome == "business_error" || outcome == "network_error" || outcome == "non_zai"
+			current, err := server.store.GetConfig(ctx, original.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failed {
+				if summary.Updated != 0 || summary.Created != 0 || len(summary.Errors) == 0 || current.OAuthCredential != original.OAuthCredential || !current.SupportsModel("original") {
+					t.Fatalf("rejected import changed account: %+v", summary)
+				}
+				return
+			}
+			if response.Code != 200 || summary.Updated+summary.Created != 1 || len(summary.Errors) != 0 {
+				t.Fatalf("import failed: %s", response.Body.String())
+			}
+			if outcome == "new" {
+				configs, err := server.store.ListConfigs(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, cfg := range configs {
+					if cfg.Name == name {
+						current = cfg
+					}
+				}
+			} else if calls != 1 {
+				t.Fatalf("identity probes=%d", calls)
+			}
+			if len(current.URLs) != 1 || current.URLs[0].URL != "https://api.z.ai/api/anthropic" {
+				t.Fatalf("CSV retained the old paid endpoint: %+v", current.URLs)
+			}
+			parsed, err := zaiauth.ParseCredential([]byte(current.OAuthCredential))
+			if err != nil || parsed.JWTToken != "imported-jwt" || parsed.APIKey != wantKey || parsed.FreeFirst == nil || *parsed.FreeFirst || string(parsed.OAuthUsage) != `{"test_marker":123}` {
+				t.Fatalf("credential metadata lost: %+v err=%v", parsed, err)
+			}
+			if outcome != "models" && len(current.ModelEntries) != 0 {
+				t.Fatalf("unexpected models: %+v", current.ModelEntries)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 空模型账号的 CSV 可原样恢复到新库或覆盖原渠道，且保留站点及凭证偏好。
+ * @param t 测试上下文。
+ */
+func TestAdminAPI_CSVRoundTripZAIEmptyModels(t *testing.T) {
+	for _, site := range []zaiauth.Site{zaiauth.SiteZAI, zaiauth.SiteBigModel} {
+		t.Run(string(site), func(t *testing.T) {
+			ctx := context.Background()
+			source := newInMemoryServer(t)
+			freeFirst := false
+			credential := &zaiauth.Credential{Site: site, JWTToken: "trial-jwt", FreeFirst: &freeFirst}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = source.store.CreateConfig(ctx, &model.Config{
+				Name: "Empty trial", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: raw,
+				URLs:    model.ChannelURLs{{URL: site.CodingPlanBaseURL(), Protocols: []string{"anthropic"}}},
+				Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exportC, exportW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
+			source.HandleExportChannelsCSV(exportC)
+			if exportW.Code != http.StatusOK {
+				t.Fatalf("export: status=%d body=%s", exportW.Code, exportW.Body.String())
+			}
+			records, err := csv.NewReader(bytes.NewReader(exportW.Body.Bytes())).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 2 {
+				t.Fatalf("export rows=%d, want header and one channel", len(records))
+			}
+			index := slices.Index(records[0], "model_entries_json")
+			if index < 0 {
+				t.Fatal("export missing model_entries_json")
+			}
+			var entries []model.ModelEntry
+			if err := json.Unmarshal([]byte(records[1][index]), &entries); err != nil || entries == nil || len(entries) != 0 {
+				t.Fatalf("export must contain an empty model array: %q err=%v", records[1][index], err)
+			}
+			for _, overwrite := range []bool{false, true} {
+				target := source
+				wantCreated, wantUpdated := 0, 1
+				if !overwrite {
+					target = newInMemoryServer(t)
+					wantCreated, wantUpdated = 1, 0
+				}
+				target.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path != "/api/v1/zcode-plan/billing/balance" || r.Header.Get("Authorization") != "Bearer trial-jwt" {
+						t.Errorf("unexpected credential probe: %s", r.URL.Path)
+					}
+					return jsonResponse(r, `{"code":0,"data":{"plans":[],"balances":[]}}`)
+				})}
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				part, err := writer.CreateFormFile("file", "export.csv")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// 使用导出的原始字节，避免测试重写 CSV 后掩盖序列化问题。
+				if _, err := part.Write(exportW.Body.Bytes()); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				request := newRequest(http.MethodPost, "/admin/channels/import", &body)
+				request.Header.Set("Content-Type", writer.FormDataContentType())
+				importC, importW := newTestContext(t, request)
+				target.HandleImportChannelsCSV(importC)
+				if importW.Code != http.StatusOK {
+					t.Fatalf("import: status=%d body=%s", importW.Code, importW.Body.String())
+				}
+				summary := mustParseAPIResponse[ChannelImportSummary](t, importW.Body.Bytes()).Data
+				if summary.Created != wantCreated || summary.Updated != wantUpdated || summary.Skipped != 0 || len(summary.Errors) != 0 {
+					t.Fatalf("overwrite=%v: %+v", overwrite, summary)
+				}
+				configs, err := target.store.ListConfigs(ctx)
+				if err != nil || len(configs) != 1 {
+					t.Fatalf("restored channels=%d err=%v", len(configs), err)
+				}
+				restored := configs[0]
+				if restored.Name != "Empty trial" || restored.AuthType != model.AuthTypeZAIOAuth || len(restored.ModelEntries) != 0 {
+					t.Fatalf("restored channel mismatch: %+v", restored)
+				}
+				parsed, err := zaiauth.ParseCredential([]byte(restored.OAuthCredential))
+				if err != nil || parsed.Site != site || parsed.JWTToken != credential.JWTToken || parsed.FreeFirst == nil || *parsed.FreeFirst {
+					t.Fatalf("restored credential mismatch: %+v err=%v", parsed, err)
+				}
+			}
+		})
+	}
+}
 
 /**
  * @brief 验证 Loomy CSV 覆盖导入接受有效会话，拒绝失效、不可确认或格式无效的凭证。

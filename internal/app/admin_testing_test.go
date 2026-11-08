@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"ccLoad/internal/anthropicauth"
@@ -3415,6 +3416,10 @@ func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *t
 	}
 }
 
+/**
+ * @brief 反重力模型不存在时仅冷却模型，明确 model_not_found 也不能直接返回而跳过冷却。
+ * @param t 测试上下文。
+ */
 func TestHandleChannelTest_AntigravityNotFoundCoolsModelNotChannel(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{model.ProtocolTransformModeLocal, model.ProtocolTransformModeAuto, model.ProtocolTransformModeUpstream} {
@@ -3423,6 +3428,10 @@ func TestHandleChannelTest_AntigravityNotFoundCoolsModelNotChannel(t *testing.T)
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusNotFound)
+				if mode == model.ProtocolTransformModeAuto {
+					_, _ = io.WriteString(w, `{"error":{"code":"model_not_found","message":"model not found"}}`)
+					return
+				}
 				_, _ = io.WriteString(w, `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`)
 			}))
 			t.Cleanup(upstream.Close)
@@ -7258,6 +7267,351 @@ func TestChannelTestLogIdentityStripsThinkingSuffix(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 管理检测的本地体验拒绝不占 RPM，后台等待容量时后续付费检测仍可立即发送。
+ * @param t 测试上下文。
+ */
+func TestAdminZAIPlanRPMBoundary(t *testing.T) {
+	for _, exact := range []bool{false, true} {
+		for _, wait := range []bool{false, true} {
+			t.Run(fmt.Sprintf("wait=%v/exact=%t", wait, exact), func(t *testing.T) {
+				srv := newInMemoryServer(t)
+				var clockOffset atomic.Int64
+				srv.channelRPMLimiter = newRPMLimiter(func() time.Time {
+					return time.Now().Add(time.Duration(clockOffset.Load()))
+				})
+				var inference atomic.Int32
+				srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					var body string
+					switch r.URL.Path {
+					case "/api/biz/subscription/list":
+						body = `{"code":0,"data":[{"status":"VALID"}]}`
+					case "/api/v1/zcode-plan/billing/balance":
+						body = `{"code":0,"data":{"plans":[],"balances":[]}}`
+					case "/v1/messages", "/relay/messages":
+						inference.Add(1)
+						body = `{"id":"paid","type":"message","role":"assistant","model":"GLM-5.3","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+					default:
+						t.Errorf("unexpected endpoint: %s", r.URL.Path)
+						return nil, fmt.Errorf("unexpected endpoint: %s", r.URL.Path)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				})}
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				target := "https://paid.test"
+				if exact {
+					target += "/relay/messages"
+				}
+				cfg, err := srv.store.CreateConfig(ctx, &model.Config{
+					Name: "trial rpm", AuthType: model.AuthTypeZAIOAuth,
+					OAuthCredential: `{"api_key":"key.secret","jwt_token":"jwt"}`, Enabled: true,
+					RPMLimit: 1, MaxConcurrency: 1,
+					URLs:         model.ChannelURLs{{URL: target, Exact: exact, Protocols: []string{"anthropic"}}},
+					ModelEntries: []model.ModelEntry{{Model: "GLM-5.3"}, {Model: "GLM-5.3-Trial"}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := &testutil.TestChannelRequest{Model: "GLM-5.3-Trial", Content: "hello", ClientProtocol: "anthropic", WaitForCapacity: wait}
+				first := srv.executeChannelTestWithCooldown(ctx, cfg, cooldown.NoKeyIndex, "key.secret", request, true)
+				status, _ := getResultInt(first["status_code"])
+				if first["success"] != false || status != http.StatusBadRequest || inference.Load() != 0 {
+					t.Fatalf("local trial rejection: result=%+v calls=%d", first, inference.Load())
+				}
+				request.Model = "GLM-5.3"
+				second := srv.executeChannelTestWithCooldown(ctx, cfg, cooldown.NoKeyIndex, "key.secret", request, true)
+				if second["success"] != true || inference.Load() != 1 {
+					t.Fatalf("local rejection blocked paid test: result=%+v calls=%d", second, inference.Load())
+				}
+				if wait {
+					// 排队约 150ms 后 RPM 窗口到期，超过 50ms 的协议超时仍应能成功发送。
+					clockOffset.Store(int64(time.Minute - 150*time.Millisecond))
+					srv.protocolTimeouts = map[string]protocolTimeoutConfig{"anthropic": {NonStreamTimeout: 50 * time.Millisecond}}
+					third := srv.executeChannelTestWithCooldown(ctx, cfg, cooldown.NoKeyIndex, "key.secret", request, true)
+					if third["success"] != true || inference.Load() != 2 {
+						t.Fatalf("capacity wait consumed upstream timeout: result=%+v calls=%d", third, inference.Load())
+					}
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 后台体验检测在响应头后超时时停止回放，付费请求仍可使用已释放的并发槽。
+ * @param t 测试上下文。
+ */
+func TestAdminZAIPlanResponseTimeoutDoesNotReplayPaid(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var trialCalls, paidCalls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/biz/subscription/list":
+					_, _ = io.WriteString(w, `{"code":0,"data":[{"status":"VALID"}]}`)
+				case "/api/v1/zcode-plan/billing/balance":
+					_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"trial","status":"active"}],"balances":[{"plan_id":"trial","show_name":"GLM-5.3","remaining_units":10}]}}`)
+				case "/api/v1/zcode-plan/anthropic/v1/messages":
+					trialCalls.Add(1)
+					w.WriteHeader(status)
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+				case "/v1/messages":
+					paidCalls.Add(1)
+					_, _ = io.WriteString(w, `{"id":"paid","type":"message","role":"assistant","model":"GLM-5.3","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+				default:
+					t.Errorf("unexpected endpoint: %s", r.URL.Path)
+				}
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{name: "response timeout", upstreamProtocol: "anthropic", models: "GLM-5.3", authType: model.AuthTypeZAIOAuth, oauthCredential: `{"api_key":"key.secret","jwt_token":"jwt"}`}}, map[int]string{0: upstream.URL})
+			env.server.zaiService.OAuthBaseURL = upstream.URL + "/api/v1"
+			env.server.zaiService.BizBaseURL = upstream.URL
+			env.server.protocolTimeouts = map[string]protocolTimeoutConfig{"anthropic": {NonStreamTimeout: 50 * time.Millisecond}}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := configs[0]
+			cfg.MaxConcurrency = 1
+			request := &testutil.TestChannelRequest{Model: "GLM-5.3", Content: "hello", ClientProtocol: "anthropic", WaitForCapacity: true}
+			first := env.server.executeChannelTestWithCooldown(ctx, cfg, cooldown.NoKeyIndex, "key.secret", request, false)
+			gotStatus, _ := getResultInt(first["status_code"])
+			if first["success"] != false || gotStatus != http.StatusGatewayTimeout || trialCalls.Load() != 1 || paidCalls.Load() != 0 {
+				t.Fatalf("timed-out trial replayed: result=%+v trial=%d paid=%d", first, trialCalls.Load(), paidCalls.Load())
+			}
+			cfg.OAuthCredential = `{"api_key":"key.secret"}`
+			second := env.server.executeChannelTestWithCooldown(ctx, cfg, cooldown.NoKeyIndex, "key.secret", request, false)
+			if second["success"] != true || paidCalls.Load() != 1 {
+				t.Fatalf("timed-out response leaked capacity: result=%+v paid=%d", second, paidCalls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 管理检测与聊天只对体验额度错误暂停 Trial，其他故障保留错误且不重派生付费 Key 或重试付费 URL。
+ * @param t 测试上下文。
+ */
+func TestAdminZAITrialFailureIsolation(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		for _, outcome := range []string{"unauthorized", "forbidden", "server", "busy", "soft_quota", "network", "read", "read_probe", "read_quota", "cancel", "method", "notfound", "pending", "upstream_plan_error", "long_prompt", "bad_image"} {
+			t.Run(fmt.Sprintf("chat=%v/%s", chat, outcome), func(t *testing.T) {
+				srv := newInMemoryServer(t)
+				// 忙拒绝完整重试六次；等待区间由 Trial 专属测试验证，此处只验证发送隔离。
+				srv.zaiStart.wait = func(context.Context, time.Duration) error { return nil }
+				if outcome == "long_prompt" || outcome == "bad_image" {
+					srv.globalCooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+						Enabled: true, Name: "broad client error", StatusCodes: []int{400},
+						Scope: model.CooldownScopeModel, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
+					}}}
+				}
+				var trialCalls, unexpected atomic.Int32
+				srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					body := `{"code":0,"data":{"plans":[{"plan_id":"trial","status":"active"}],"balances":[{"plan_id":"trial","show_name":"GLM-5.3","remaining_units":10}]}}`
+					status := 200
+					switch r.URL.Path {
+					case "/api/v1/zcode-plan/billing/balance":
+						if outcome == "pending" {
+							body = `{"code":0,"data":{"plans":[{"plan_id":"trial","status":"active","starts_at":4102444800,"entitlements":[{"show_name":"GLM-5.3","effective_at":4102444800}]}],"balances":[]}}`
+						}
+					case "/api/v1/zcode-plan/anthropic/v1/messages":
+						trialCalls.Add(1)
+						if outcome == "network" {
+							return nil, errors.New("connection refused")
+						}
+						if outcome == "read" || outcome == "read_probe" || outcome == "read_quota" || outcome == "cancel" {
+							readErr := io.ErrUnexpectedEOF
+							prefix := strings.Repeat(" ", 8192)
+							if outcome == "read_probe" || outcome == "read_quota" {
+								// 在探测窗口内截断额度错误，验证网络错误优先于额度分类。
+								prefix = `{"code":1113`
+								if outcome == "read_quota" {
+									status = http.StatusTooManyRequests
+								}
+							}
+							if outcome == "cancel" {
+								readErr = context.Canceled
+							}
+							return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(io.MultiReader(strings.NewReader(prefix), iotest.ErrReader(readErr))), Request: r}, nil
+						}
+						status, body = 401, `{"type":"error","error":{"type":"authentication_error","message":"invalid trial JWT"}}`
+						switch outcome {
+						case "forbidden":
+							status = http.StatusForbidden
+						case "server":
+							status = http.StatusInternalServerError
+						case "busy":
+							status, body = 429, `{"code":3008,"msg":"concurrency limit exceeded"}`
+						case "soft_quota":
+							status, body = 200, `{"code":1113,"msg":"no resource package"}`
+						case "method":
+							status = http.StatusMethodNotAllowed
+						case "notfound":
+							status = http.StatusNotFound
+						case "upstream_plan_error":
+							status, body = 429, `{"type":"error","error":{"type":"zcode_trial_error","message":"quota exhausted"}}`
+						case "long_prompt":
+							status, body = 400, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}`
+						case "bad_image":
+							status, body = 400, `{"type":"error","error":{"type":"invalid_request_error","param":"messages.1.content.0","message":"messages.1.content.0: Could not process image"}}`
+						}
+					default:
+						unexpected.Add(1)
+						status, body = 500, `{"error":"unexpected paid request"}`
+					}
+					return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				})}
+				cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{Name: "trial admin", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: `{"jwt_token":"jwt"}`, Enabled: true, URLs: model.ChannelURLs{{URL: "https://paid-one.test", Protocols: []string{"anthropic"}}, {URL: "https://paid-two.test", Protocols: []string{"anthropic"}}}, ModelEntries: []model.ModelEntry{{Model: "GLM-5.3"}, {Model: "GLM-5.3-Trial"}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := "/admin/channels/" + strconv.FormatInt(cfg.ID, 10) + "/test"
+				if chat {
+					path = "/admin/channels/" + strconv.FormatInt(cfg.ID, 10) + "/chat"
+				}
+				req := newRequest(http.MethodPost, path, strings.NewReader(`{"model":"GLM-5.3","content":"hello","client_protocol":"anthropic"}`))
+				req.Header.Set("Content-Type", "application/json")
+				c, response := newTestContext(t, req)
+				c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+				if chat {
+					srv.HandleChannelChat(c)
+				} else {
+					srv.HandleChannelTest(c)
+				}
+				wantCalls := int32(1)
+				switch outcome {
+				case "pending":
+					wantCalls = 0
+				case "busy":
+					wantCalls = 7
+				}
+				if trialCalls.Load() != wantCalls || unexpected.Load() != 0 {
+					t.Fatalf("trial=%d unexpected=%d response=%s", trialCalls.Load(), unexpected.Load(), response.Body.String())
+				}
+				if outcome == "bad_image" {
+					var message string
+					if chat {
+						body := response.Body.Bytes()
+						for len(body) > 0 {
+							end := firstSSEEventEnd(body)
+							if end < 0 {
+								t.Fatalf("incomplete chat event: %s", body)
+							}
+							_, data := parseSSEEventChunk(body[:end])
+							if value := gjson.GetBytes(data, "error"); value.Type == gjson.String {
+								message = value.String()
+							}
+							body = body[end:]
+						}
+					} else {
+						result := mustParseAPIResponse[map[string]any](t, response.Body.Bytes()).Data
+						message, _ = result["error"].(string)
+					}
+					if message != "messages.0.content.0: Could not process image" {
+						t.Fatalf("admin error position not restored: %q", message)
+					}
+				}
+				cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
+				if err != nil || cooldowns[cfg.ID]["GLM-5.3-Trial"].After(time.Now()) != (outcome == "upstream_plan_error" || outcome == "soft_quota") || cooldowns[cfg.ID]["GLM-5.3"].After(time.Now()) {
+					t.Fatalf("wrong model cooldowns: %+v err=%v response=%s", cooldowns, err, response.Body.String())
+				}
+				current, err := srv.store.GetConfig(context.Background(), cfg.ID)
+				if err != nil || current.CooldownUntil != 0 || !current.Enabled {
+					t.Fatalf("trial failure affected account: %+v %v", current, err)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 管理测试和聊天按 ZAI 实际出站模型计费，Trial 别名价格不覆盖实际模型，渠道价格仍优先。
+ * @param t 测试上下文。
+ */
+func TestAdminZAIWireModelBilling(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			for _, customPrice := range []bool{false, true} {
+				t.Run(fmt.Sprintf("chat=%v/stream=%v/channel_price=%v", chat, stream, customPrice), func(t *testing.T) {
+					srv := newInMemoryServer(t)
+					// 刻意给选路别名不同价格，避免模糊价格匹配掩盖实际模型丢失。
+					if err := util.InstallCustomModelPricingJSON(`{"glm-4.7":{"input_price":1,"output_price":2},"glm-4.7-Trial":{"input_price":99,"output_price":99}}`); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+					var sent atomic.Int32
+					srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+						contentType := "application/json"
+						body := `{"code":0,"data":{"plans":[{"plan_id":"trial","status":"active"}],"balances":[{"plan_id":"trial","show_name":"glm-4.7","remaining_units":10}]}}`
+						switch r.URL.Path {
+						case "/api/v1/zcode-plan/billing/balance":
+						case "/api/v1/zcode-plan/anthropic/v1/messages":
+							sent.Add(1)
+							var request struct {
+								Model string `json:"model"` ///< 实际出站模型，不能含 Trial 选路后缀。
+							}
+							if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "GLM-4.7" {
+								t.Errorf("wire model=%q err=%v", request.Model, err)
+							}
+							body = `{"id":"m","type":"message","role":"assistant","model":"glm-4.7","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1000,"output_tokens":200}}`
+							if stream {
+								contentType = "text/event-stream"
+								body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-4.7\",\"content\":[],\"usage\":{\"input_tokens\":1000,\"output_tokens\":0}}}\n\n" +
+									"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+									"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":200}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+							}
+						default:
+							return nil, fmt.Errorf("unexpected request: %s", r.URL.Path)
+						}
+						return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+					})}
+					entry := model.ModelEntry{Model: "glm-4.7-Trial"}
+					wantCost := float64(1000+200*2) / 1e6
+					if customPrice {
+						entry.Pricing = channelPrice(3, 4)
+						wantCost = float64(1000*3+200*4) / 1e6
+					}
+					cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{
+						Name: "trial billing", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: `{"jwt_token":"jwt"}`, Enabled: true,
+						URLs: model.ChannelURLs{{URL: "https://paid.test", Protocols: []string{"anthropic"}}}, ModelEntries: []model.ModelEntry{entry},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					endpoint := "test"
+					if chat {
+						endpoint = "chat"
+					}
+					req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/%s", cfg.ID, endpoint), map[string]any{
+						"model": entry.Model, "content": "hello", "client_protocol": "anthropic", "stream": stream,
+					})
+					c, response := newTestContext(t, req)
+					c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+					if chat {
+						srv.HandleChannelChat(c)
+					} else {
+						srv.HandleChannelTest(c)
+					}
+					if response.Code != http.StatusOK || sent.Load() != 1 {
+						t.Fatalf("status=%d sent=%d body=%s", response.Code, sent.Load(), response.Body.String())
+					}
+					logs, err := srv.store.ListLogs(context.Background(), time.Time{}, 10, 0, &model.LogFilter{LogSource: model.LogSourceAll})
+					if err != nil || len(logs) != 1 {
+						t.Fatalf("logs=%+v err=%v", logs, err)
+					}
+					if logs[0].InputTokens != 1000 || logs[0].OutputTokens != 200 || math.Abs(logs[0].Cost-wantCost) > 1e-12 {
+						t.Fatalf("log=%+v, want tokens=1000/200 cost=%v", logs[0], wantCost)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	t.Parallel()
 	srv := newInMemoryServer(t)
@@ -7268,7 +7622,7 @@ func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	}
 
 	cfgForBuild, plan, err := srv.buildTestUpstreamRequestPlan(
-		context.Background(), cfg, "key-id.secret", testReq, testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanProxyBaseURL,
+		context.Background(), cfg, "key-id.secret", testReq, testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanAPIBaseURL,
 	)
 	if err != nil {
 		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
@@ -7296,8 +7650,8 @@ func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	if got := headerValueFold(req.Header, "x-session-id"); got == "" {
 		t.Fatal("x-session-id missing")
 	}
-	if got := headerValueFold(req.Header, "Authorization"); got != "" {
-		t.Fatalf("Authorization = %q, ZCode authenticates with x-api-key only", got)
+	if got := headerValueFold(req.Header, "Authorization"); got != "Bearer key-id.secret" {
+		t.Fatalf("Authorization = %q, want the channel's paid Key", got)
 	}
 }
 

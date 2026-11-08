@@ -107,6 +107,8 @@ type Server struct {
 	anthropicCredentials          *anthropicCredentialManager
 	anthropicOAuth                *codexOAuthManager
 	zaiService                    *zaiauth.Service
+	zaiPlans                      zaiPlanCache  ///< ZCode 套餐短期缓存，不持久化。
+	zaiStart                      zaiStartGuard ///< 仅 Trial 使用的活动账号、并发和风控暂停。
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
 	codeBuddyService              *codebuddyauth.Service
@@ -445,11 +447,11 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.zaiOAuth = newZAIOAuthManager(
 		s.baseCtx,
 		s.zaiService,
-		func(ctx context.Context, options oauthLoginOptions, accessToken string) (*zaiauth.Credential, error) {
-			return s.buildZAICredential(ctx, zaiCredentialImportRequest{AccessToken: accessToken}, options)
+		func(ctx context.Context, options zaiOAuthOptions, accessToken string) (*zaiauth.Credential, error) {
+			return s.buildZAICredential(ctx, zaiCredentialImportRequest{AccessToken: accessToken, Site: options.site}, options.oauthLoginOptions)
 		},
-		func(ctx context.Context, options oauthLoginOptions, credential *zaiauth.Credential) (int64, string, error) {
-			cfg, _, err := s.commitZAICredential(ctx, credential, options)
+		func(ctx context.Context, options zaiOAuthOptions, credential *zaiauth.Credential) (int64, string, error) {
+			cfg, _, err := s.commitZAICredential(ctx, credential, options.oauthLoginOptions)
 			if err != nil {
 				return 0, "", err
 			}
@@ -1896,6 +1898,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/loomy/login/send-code", s.HandleLoomySendCode)
 		admin.POST("/loomy/login/verify", s.HandleLoomyLogin)
 		admin.POST("/channels/:id/loomy-checkin", s.HandleLoomyCheckin)
+		admin.POST("/channels/:id/loomy-copy", s.HandleCopyLoomyChannel)
 		admin.GET("/codebuddy/oauth/status", s.HandleCodeBuddyOAuthStatus)
 		admin.POST("/codebuddy/oauth/cancel", s.HandleCancelCodeBuddyOAuth)
 		admin.POST("/codebuddy/credentials/import", s.HandleImportCodeBuddyCredential)
@@ -1909,6 +1912,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
 		admin.POST("/channels/:id/zai-credential/refresh", s.HandleRefreshZAICredential)
+		admin.PATCH("/channels/:id/zai-options", s.HandleZAIOptions)
 		admin.POST("/zed/oauth/start", s.HandleStartZedOAuth)
 		admin.GET("/zed/oauth/status", s.HandleZedOAuthStatus)
 		admin.POST("/zed/oauth/cancel", s.HandleCancelZedOAuth)

@@ -164,9 +164,19 @@ func channelRPMRetryAfter(err error) time.Duration {
 	return 0
 }
 
+/**
+ * @brief 完成本地套餐选择后快速预留容量并发送上游请求。
+ * @param cfg 渠道配置与容量限制。
+ * @param req 已构造的出站请求，其上下文控制等待和传输取消。
+ * @return 上游或本地套餐响应；非 nil 响应体由调用方关闭。
+ * @return 套餐准备、容量预留或传输失败时返回错误，成功时为 nil。
+ * @note 预留容量在失败时释放，成功时绑定响应体生命周期。
+ */
 func (s *Server) doUpstreamRequest(cfg *model.Config, req *http.Request) (*http.Response, error) {
-	release, err := s.reserveUpstreamRequest(cfg)
-	return s.doReservedUpstreamRequest(cfg, req, release, err)
+	return s.doUpstreamRequestWithSender(cfg, req, func(outbound *http.Request) (*http.Response, error) {
+		release, err := s.reserveUpstreamRequest(cfg)
+		return s.doReservedUpstreamRequest(cfg, outbound, release, err)
+	})
 }
 
 /**

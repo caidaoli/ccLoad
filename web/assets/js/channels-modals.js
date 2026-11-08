@@ -1,3 +1,8 @@
+/**
+ * @brief 当前复制草稿的源渠道，仅在保存时由服务端读取其已验证会话。
+ */
+let copyingChannelId = null;
+
 function setChannelModalTitle(i18nKey) {
   const titleEl = document.getElementById('modalTitle');
   if (!titleEl) return;
@@ -567,9 +572,15 @@ async function continueOpenCodeChannel(event) {
   await fetchModelsFromAPI({ markDirty: false });
 }
 
-// 认证方式由新建入口决定（API Key / System One），创建后不可改；OAuth 渠道由登录或导入创建。
+/**
+ * @brief 打开新建渠道表单；OAuth 渠道通过登录或导入创建。
+ * @param authType 新建入口指定的认证方式，创建后不可改。
+ * @param channelPreset 可选的渠道预设名称。
+ * @return 表单初始化完成的 Promise。
+ */
 async function showAddModal(authType = 'api_key', channelPreset = '') {
   const preset = openCodeChannelPresets[channelPreset];
+  copyingChannelId = null;
   editingChannelId = null;
   editingChannelAuthType = authType === 'system_one' ? 'system_one' : 'api_key';
   currentChannelKeyCooldowns = [];
@@ -627,11 +638,12 @@ async function showAddModal(authType = 'api_key', channelPreset = '') {
 /**
  * @brief 从专用编辑接口加载一致的渠道配置与可见凭证。
  * @param id 要编辑的持久化渠道 ID。
+ * @param options copy 为 true 时将源配置填入 Loomy 复制草稿，保存时创建新渠道。
  * @return Promise<void>：完成编辑器数据填充或显示加载错误。
  * @throw Error 后续下拉或编辑器依赖初始化失败且未被本函数捕获时。
  * @note 打开并更新编辑弹窗；凭证模式使用公共能力判断。
  */
-async function editChannel(id) {
+async function editChannel(id, { copy = false } = {}) {
   let editorData;
   try {
     editorData = await fetchDataWithAuth(`/admin/channels/${id}/editor`);
@@ -657,15 +669,16 @@ async function editChannel(id) {
 
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
-  editingChannelId = id;
+  editingChannelId = copy ? null : id;
+  copyingChannelId = copy ? id : null;
   editingChannelAuthType = channel.auth_type === 'system_one' || isCredentialChannelAuthType(channel.auth_type)
     ? channel.auth_type
     : 'api_key';
   clearChannelDuplicateHint();
 
-  setChannelModalTitle('channels.editChannel');
-  renderChannelDrawerIdentity(channel);
-  document.getElementById('channelName').value = channel.name;
+  setChannelModalTitle(copy ? 'channels.copyChannel' : 'channels.editChannel');
+  if (!copy) renderChannelDrawerIdentity(channel);
+  document.getElementById('channelName').value = copy ? generateCopyName(channel.name) : channel.name;
   setInlineURLTableData(channel.urls);
   applyURLStats(urlStats);
 
@@ -703,7 +716,7 @@ async function editChannel(id) {
     applyChannelAuthEditorMode(
       editingChannelAuthType,
       editorData.oauth_credential || null,
-      channel,
+      copy ? { ...channel, id: null } : channel,
       editorData.oauth_credential_info || null
     );
   }
@@ -711,7 +724,7 @@ async function editChannel(id) {
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
   document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
-  document.getElementById('channelEnabled').checked = channel.enabled;
+  document.getElementById('channelEnabled').checked = copy || channel.enabled;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
   const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
@@ -829,7 +842,11 @@ function bindChannelEditorScrollSpy(main) {
   }, { passive: true });
 }
 
-// 无未保存更改时同步关闭（async 函数在首个 await 前同步执行），保存成功后的关闭不受影响
+/**
+ * @brief 关闭渠道编辑窗口，有未保存修改时先确认。
+ * @return 关闭或取消关闭后完成的 Promise。
+ * @note 无未保存修改时同步关闭；关闭会使旧编辑会话失效。
+ */
 async function closeModal() {
   if (channelFormDirty && !await window.showConfirm({ message: window.t('channels.unsavedChanges'), danger: true })) {
     return;
@@ -839,6 +856,7 @@ async function closeModal() {
   clearChannelRequiredFieldMarks();
   invokeChannelEditorAction('discardAdvancedSettingsDraft');
   editingChannelId = null;
+  copyingChannelId = null;
   clearChannelDuplicateHint();
   resetChannelFormDirty();
 }
@@ -1163,12 +1181,13 @@ async function saveChannel(event) {
     name: !formData.name,
     urls: formData.urls.length === 0,
     keys: !isOAuth && !formData.api_key,
-    models: formData.models.length === 0
+    // ZAI 已授权账号可能尚无套餐模型，仍需允许编辑名称、代理等配置。
+    models: formData.models.length === 0 && editingChannelAuthType !== 'zai_oauth'
   })) return;
 
   setChannelSavePending(true);
   try {
-    if (!editingChannelId) {
+    if (!editingChannelId && !copyingChannelId) {
       const dupes = await checkChannelDuplicate(validURLConfigs);
       if (dupes.length > 0 && !await confirmDuplicateChannel(dupes)) return;
     }
@@ -1179,7 +1198,7 @@ async function saveChannel(event) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(formData)
         })
-      : await fetchAPIWithAuth('/admin/channels', {
+      : await fetchAPIWithAuth(copyingChannelId ? `/admin/channels/${copyingChannelId}/loomy-copy` : '/admin/channels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(formData)
@@ -2178,20 +2197,18 @@ function batchRefreshSelectedChannelsReplace() {
  * @brief 为可克隆类型加载源配置并准备新渠道编辑表单。
  * @param id 源渠道 ID。
  * @param name 源渠道名称，用于生成克隆名称。
- * @return Promise<void>：完成克隆表单准备；Loomy 或源不存在时不创建。
+ * @return Promise<void>：完成克隆表单准备；源不存在或加载失败时不创建。
  * @throw Error 后续下拉或表单依赖初始化失败且未被捕获时。
- * @note Loomy 账号须通过短信验证并去重，拒绝通过克隆绕过。
+ * @note Loomy 复用会话编辑器并引用已验证源渠道，保存时不将会话降级为 API Key。
  */
 async function copyChannel(id, name) {
-  if (channels.find(channel => Number(channel.id) === Number(id))?.auth_type === 'loomy_session') {
-    window.showError(window.t('channels.loomy.copyUnsupported'));
-    return;
-  }
-  const channel = channels.find(c => c.id === id);
+  const channel = channels.find(c => Number(c.id) === Number(id));
   if (!channel) return;
+  if (channel.auth_type === 'loomy_session') return editChannel(channel.id, { copy: true });
 
   const copiedName = generateCopyName(name);
 
+  copyingChannelId = null;
   editingChannelId = null;
   editingChannelAuthType = channel.auth_type === 'system_one' ? 'system_one' : 'api_key';
   clearChannelDuplicateHint();
@@ -4179,6 +4196,7 @@ if (typeof module !== 'undefined' && module.exports) {
     deleteRedirectModelsAtIndices,
     discoverQuickAddChannelSetup,
     editChannel,
+    copyChannel,
     exportChannelModels,
     fetchModelsFromAPI,
     fetchKeyRate,

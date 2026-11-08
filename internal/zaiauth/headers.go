@@ -25,14 +25,15 @@ func SourceHeaders() [][2]string {
 	return append(headers, PlatformHeaders()...)
 }
 
-// PlatformHeaders describes the host ccLoad runs on, the same way ZCode
-// describes the machine it runs on.
+/**
+ * @brief 用 ZCode 的 Node 平台拼写与内核版本描述当前网关宿主机。
+ * @return 可直接用于请求的平台头。
+ */
 func PlatformHeaders() [][2]string {
 	headers := make([][2]string, 0, 3)
-	if platform := headerValue(runtime.GOOS); platform != "" {
-		if arch := headerValue(runtime.GOARCH); arch != "" {
-			headers = append(headers, [2]string{"X-Platform", platform + "-" + arch})
-		}
+	headers = append(headers, [2]string{"X-Platform", ClientPlatform()})
+	if release := headerValue(hostRelease()); release != "" {
+		headers = append(headers, [2]string{"X-Os-Version", release})
 	}
 	headers = append(headers, [2]string{"X-Os-Category", OSCategory()})
 	return headers

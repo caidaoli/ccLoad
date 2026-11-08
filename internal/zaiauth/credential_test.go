@@ -6,6 +6,37 @@ import (
 	"testing"
 )
 
+/**
+ * @brief 站点随凭证持久化，未知站点与跨站刷新必须拒绝。
+ * @param t 测试上下文。
+ */
+func TestCredentialSiteIsolation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ input, want Site }{{"", SiteZAI}, {" BIGMODEL ", SiteBigModel}, {SiteZAI, SiteZAI}} {
+		credential := &Credential{Site: tc.input, APIKey: "key"}
+		raw, err := credential.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := ParseCredential([]byte(raw))
+		if err != nil || parsed.Site != tc.want {
+			t.Fatalf("round trip: %+v %v", parsed, err)
+		}
+	}
+	if _, err := ParseCredential([]byte(`{"site":"unknown","api_key":"key"}`)); err == nil {
+		t.Fatal("accepted invalid site")
+	}
+	preference := false
+	domestic := &Credential{Site: SiteBigModel, APIKey: "old", FreeFirst: &preference}
+	merged, err := domestic.MergeRefresh(&Credential{Site: SiteBigModel, APIKey: "new"})
+	if err != nil || merged.Site != SiteBigModel || merged.APIKey != "new" || merged.FreeFirst == nil || *merged.FreeFirst {
+		t.Fatalf("same-site merge: %+v %v", merged, err)
+	}
+	if _, err := domestic.MergeRefresh(&Credential{Site: SiteZAI, APIKey: "other"}); err == nil {
+		t.Fatal("merged different sites")
+	}
+}
+
 func TestParseCredentialNormalizesAndDerivesDeviceID(t *testing.T) {
 	t.Parallel()
 	credential, err := ParseCredential([]byte(`{"api_key":" key-id.secret ","email":" User@Example.com ","user_id":"u-1"}`))
@@ -103,5 +134,32 @@ func TestIdentityMatches(t *testing.T) {
 	}
 	if (Identity{}).Matches(Identity{}) || !(Identity{}).IsZero() {
 		t.Fatal("empty identities must never match")
+	}
+}
+
+/**
+ * @brief 体验账号无需付费 Key，渠道偏好经过刷新与序列化仍保留。
+ * @param t 测试上下文。
+ */
+func TestTrialCredentialAndPreferenceSurviveRefresh(t *testing.T) {
+	t.Parallel()
+	current, err := ParseCredential([]byte(`{"jwt_token":"trial-session","user_id":"trial-user","free_first":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := current.MergeRefresh(&Credential{JWTToken: "new-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := merged.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["free_first"] != false || saved["jwt_token"] != "new-session" || saved["device_id"] == "" {
+		t.Fatalf("trial credential lost its preference or identity: %v", saved)
 	}
 }

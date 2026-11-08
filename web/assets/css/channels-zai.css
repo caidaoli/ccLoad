@@ -1,0 +1,32 @@
+/* ZAI 字段与套餐明细的布局规则不影响其他渠道。 */
+#channelZAIFreeFirstField[hidden] { display: none; }
+    /* 套餐只增加分组层级，模型额度继续复用公共行和进度条。 */
+    .ch-oauth-usage__plan {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .ch-oauth-usage__plan + .ch-oauth-usage__plan {
+      margin-top: 2px;
+      padding-top: 7px;
+      border-top: 1px solid var(--surface-border);
+    }
+
+    .ch-oauth-usage__plan-name {
+      overflow: hidden;
+      color: var(--neutral-500);
+      font-size: 11px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ch-oauth-usage__plan .ch-oauth-usage__tooltip-line {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+
+.ch-oauth-usage__plan .ch-oauth-usage__summary:hover .ch-oauth-usage__tooltip,
+.ch-oauth-usage__plan .ch-oauth-usage__trigger:focus-visible + .ch-oauth-usage__tooltip { pointer-events: none; }

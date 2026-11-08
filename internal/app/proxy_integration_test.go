@@ -3883,6 +3883,10 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 反重力模型不存在按模型冷却，保留多 URL 尝试且不影响其他模型。
+ * @param t 测试上下文。
+ */
 func TestProxy_AntigravityNotFoundCoolsModelNotChannel(t *testing.T) {
 	t.Parallel()
 	const requestModel = "claude-sonnet-4-6"
@@ -3901,6 +3905,10 @@ func TestProxy_AntigravityNotFoundCoolsModelNotChannel(t *testing.T) {
 				calls.Add(1)
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusNotFound)
+				if tc.mode == model.ProtocolTransformModeAuto {
+					_, _ = io.WriteString(w, `{"error":{"code":"model_not_found","message":"model not found"}}`)
+					return
+				}
 				_, _ = io.WriteString(w, `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`)
 			}))
 			urls := upstream.URL

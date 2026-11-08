@@ -20,6 +20,34 @@ func TestChannelRequestValidateRejectsZedWebsocket(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 编辑输入转换旧 ZCode 付费地址，保留协议与精确模式，拒绝归一后的重复地址。
+ * @param t 测试上下文。
+ */
+func TestChannelRequestValidate_ZAIDirectURLs(t *testing.T) {
+	t.Parallel()
+	req := ChannelRequest{
+		Name: "ZCode", AuthType: model.AuthTypeZAIOAuth,
+		URLs: model.ChannelURLs{
+			{URL: "https://zcode.z.ai/api/v1/ultra/anthropic", Protocols: []string{"anthropic"}},
+			{URL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages", Exact: true, Protocols: []string{"anthropic"}},
+			{URL: "https://custom.example.com/anthropic"},
+		},
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if req.URLs[0].URL != "https://open.bigmodel.cn/api/anthropic" || req.URLs[0].Protocols[0] != "anthropic" ||
+		req.URLs[1].URL != "https://api.z.ai/api/anthropic/v1/messages" || !req.URLs[1].Exact ||
+		req.URLs[2].URL != "https://custom.example.com/anthropic" {
+		t.Fatalf("normalized URLs: %+v", req.URLs)
+	}
+	req.URLs = append(req.URLs, model.ChannelURL{URL: "https://zcode.z.ai/api/v1/ultra/anthropic"})
+	if err := req.Validate(); err == nil {
+		t.Fatal("duplicate direct URL accepted")
+	}
+}
+
 func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
 	t.Parallel()
 

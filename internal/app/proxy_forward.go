@@ -2844,6 +2844,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// 2.5 发送请求。原生 Codex WS 会在持锁后决定发送增量请求还是完整回放请求。
 	var resp *http.Response
 	var sentBody []byte
+	var zaiRepairBody []byte
 	var wsReplayBody []byte
 	usedNativeWebsocket := false
 	if native != nil && native.session != nil {
@@ -2912,6 +2913,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		req = cloneRequestWithBody(req, sentBody)
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
+	req, sentBody, zaiRepairBody = captureZAIForwardRequest(cfg, resp, req, sentBody)
+
 	if observer != nil && observer.OnUpstreamWebsocket != nil {
 		observer.OnUpstreamWebsocket(usedNativeWebsocket)
 	}
@@ -3005,6 +3008,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		errRes, errDur, errErr := s.handleRequestError(reqCtx, cfg, err)
 		dc.captureUpstreamError(errErr)
 		if errRes != nil {
+			annotateZAIForwardResult(cfg, errRes, resp, sentBody, err)
 			errRes.DebugData, errRes.PrivacyMasked = dc.buildEntry(resp), privacyMasked
 			if usedNativeWebsocket {
 				annotateNativeWebsocketDebug(errRes.DebugData, websocketDebug)
@@ -3027,12 +3031,16 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	if res != nil {
 		res.RetryStrategy = reqCtx.anthropicThinkingOmitStrategy
+		annotateZAIForwardResult(cfg, res, resp, sentBody, nil)
 	}
 	reqCtx.antigravityReplay.finish(res, err)
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
 		res.Status == http.StatusBadGateway && isCodexEncryptedFunctionOutputError(res.Body) ||
 		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
+		if len(zaiRepairBody) > 0 {
+			res.upstreamRequestBody = bytes.Clone(zaiRepairBody)
+		}
 		if usedNativeWebsocket {
 			res.upstreamReplayBody = bytes.Clone(wsReplayBody)
 		}
@@ -3811,6 +3819,7 @@ func (s *Server) forwardAttempt(
 	openCodeProtocolUnsupported := !res.ResponseCommitted &&
 		isOpenCodeModelProtocolUnsupported(cfg, baseURL, res.Status, res.Body)
 	if openCodeProtocolUnsupported || (cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
+		!res.zaiTrial && // 固定体验端点的拒绝不能用于推断配置 URL 的协议能力。
 		!isAntigravityModelNotFound(cfg, res.Status) &&
 		isProtocolEndpointMissing(res)) {
 		logged := s.logProtocolCapabilityFallback(
@@ -4944,7 +4953,12 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
 		}
 	}
-	selectedModel, selectErr := s.selectChannelModelRow(ctx, cfg, reqCtx.originalModel, string(reqCtx.clientProtocol), reqCtx.routingSession, apiKeys)
+	// 仅本地排队的 Trial 复用原模型，唤醒不得推进模型组轮转。
+	selectedModel, pinned := zaiStartPinnedModel(reqCtx, cfg.ID)
+	var selectErr error
+	if !pinned {
+		selectedModel, selectErr = s.selectChannelModelRow(ctx, cfg, reqCtx.originalModel, string(reqCtx.clientProtocol), reqCtx.routingSession, apiKeys)
+	}
 	if selectErr != nil {
 		return nil, selectErr
 	}
@@ -5445,16 +5459,23 @@ func (s *Server) tryZAIOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	if reqCtx.zaiStart == nil {
+		reqCtx.zaiStart = &zaiStartRequest{}
+	}
+	// 只给 ZAI 尝试附加身份，防止跨渠道重试重复计入全局忙拒绝窗口。
+	ctx = context.WithValue(ctx, zaiStartRequestKey{}, reqCtx.zaiStart)
 	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Z.ai", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
 		credential, err := s.zaiCredentials.credential(ctx, cfg, forceRefresh)
 		if credential == nil {
 			return cfg, "", err
 		}
-		runtimeCfg := cfg.Clone()
-		runtimeCfg.ZAIDeviceID = credential.DeviceID
-		return runtimeCfg, credential.APIKey, err
+		runtimeCfg, key, encodeErr := zaiRuntimeConfig(cfg, credential)
+		if encodeErr != nil {
+			return cfg, "", encodeErr
+		}
+		return runtimeCfg, key, err
 	}, func(result *proxyResult) bool {
-		return result != nil && !result.succeeded && zaiCredentialRejected(result.status)
+		return result != nil && !result.succeeded && !result.zaiTrial && !isZAITrialModel(reqCtx.attemptModelOrOriginal()) && zaiCredentialRejected(result.status)
 	})
 }
 

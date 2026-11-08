@@ -202,6 +202,7 @@ function initChannelFormDirtyTracking() {
   form.dataset.dirtyTracking = '1';
 
   const uiOnlyIDs = new Set([
+    'channelZAIFreeFirst', // 独立接口即时保存，不属于渠道表单草稿。
     'channelApiKey',
     'selectAllURLs',
     'selectAllKeys',

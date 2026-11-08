@@ -152,7 +152,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 				return
 			}
 			lastResult = attempt.result
-			if !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
+			if (cfg.UsesZAIOAuth() && testReq.ZAITrial) || !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -178,10 +178,13 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		if !hasNextURL {
 			break
 		}
+		if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+			// 体验使用固定端点，不能因协议能力回退而重复发送。
+			break
+		}
 		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 			continue
 		}
-
 		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
@@ -193,7 +196,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		if capacity, _ := lastResult["antigravity_model_capacity"].(bool); capacity {
+		if capacity, _ := lastResult["antigravity_model_capacity"].(bool); capacity || (cfg.UsesZAIOAuth() && testReq.ZAITrial) {
 			lastResult = s.applyChannelTestResultCooldown(
 				c.Request.Context(), cfg, keySelection.keyIndex, &testReq,
 				keySelection.updatePersistedCooldown, lastResult,
@@ -483,6 +486,19 @@ func (w *cursorChatResponseWriter) Unwrap() http.ResponseWriter {
 	return w.c.Writer
 }
 
+/**
+ * @brief 对指定 URL 执行一次聊天请求，保留真实套餐身份用于外层处理。
+ * @param c 管理聊天请求及事件输出上下文。
+ * @param cfg 待检测的渠道配置。
+ * @param keySelection 本次认证材料及持久化冷却目标。
+ * @param testReq 检测参数，会回传实际套餐标记。
+ * @param clientProtocol 聊天输入协议。
+ * @param upstreamProtocol 本次上游协议。
+ * @param selectedURL 已选定的上游地址。
+ * @param originalModel 原始路由模型名。
+ * @return 本次尝试结果；handled 为 true 时已输出响应，不再回退。
+ * @note 发送聊天事件并清理本次超时和响应体。
+ */
 func (s *Server) streamChatWithURLForProtocol(
 	c *gin.Context,
 	cfg *model.Config,
@@ -492,10 +508,15 @@ func (s *Server) streamChatWithURLForProtocol(
 	originalModel string,
 ) (out chatURLAttemptResult) {
 	attemptReq := *testReq
+	callerReq := testReq
+	attemptReq.ZAITrial, attemptReq.ZAIWireModel = false, ""
+	attemptReq.ZAILocalPlanError = false
 	selected, _ := s.firstModelRow(cfg, originalModel)
 	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, upstreamProtocol)
 	testReq = &attemptReq
 	defer func() {
+		callerReq.ZAITrial, callerReq.ZAIWireModel = attemptReq.ZAITrial, attemptReq.ZAIWireModel
+		callerReq.ZAILocalPlanError = attemptReq.ZAILocalPlanError
 		out.actualModel = attemptReq.Model
 		if out.result == nil {
 			return
@@ -525,6 +546,7 @@ func (s *Server) streamChatWithURLForProtocol(
 
 	start := time.Now()
 	resp, err := s.doUpstreamRequest(cfg, req)
+	s.syncZAIChannelTestRequest(cfg, requestPlan, resp, testReq, err)
 	if err != nil {
 		result := chatRequestErrorResult(start, testReq, requestPlan.timeout, err)
 		if requestThinking != "" {
@@ -649,6 +671,14 @@ func chatSSEErrorResult(start time.Time, upstreamStatus int, errorEvent []byte) 
 	}
 }
 
+/**
+ * @brief 归一化聊天网络错误，体验传输失败保留分类、取消不冷却。
+ * @param start 请求开始时间，用于计算耗时。
+ * @param testReq 检测参数及套餐标记，允许 nil。
+ * @param timeout 协议超时状态，允许 nil。
+ * @param err 实际请求错误，必须非 nil。
+ * @return 统一的网络、限流、取消或超时结果，不写入冷却。
+ */
 func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) map[string]any {
 	isStream := testReq != nil && testReq.Stream
 
@@ -701,6 +731,7 @@ func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelReques
 	if statusCode > 0 {
 		result["status_code"] = statusCode
 	}
+	annotateZAITrialTestError(result, testReq, err)
 	return result
 }
 
@@ -717,6 +748,21 @@ func chatErrorMessageFromResult(result map[string]any) string {
 	return "渠道测试失败"
 }
 
+/**
+ * @brief 将非流式结果输出为聊天事件，体验结果同步更新对应模型冷却。
+ * @param c 聊天事件输出上下文。
+ * @param resp 待读取的上游响应。
+ * @param requestPlan 响应解析、超时及调试计划。
+ * @param testReq 检测参数及实际套餐标记。
+ * @param contentType 响应媒体类型。
+ * @param start 请求开始时间，用于计算耗时。
+ * @param cfg 待检测的渠道配置。
+ * @param keySelection 本次认证材料及持久化冷却目标。
+ * @param requestThinking 请求的思考等级。
+ * @param originalModel 原始路由模型名。
+ * @return 是否成功取得可显示文本；错误或空内容时为 false。
+ * @note 读取响应体、输出事件并记录日志，Trial 失败可写模型冷却；响应体由调用方关闭。
+ */
 func (s *Server) streamChatNonStreamResponse(
 	c *gin.Context,
 	resp *http.Response,
@@ -731,6 +777,10 @@ func (s *Server) streamChatNonStreamResponse(
 ) bool {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+			failure := chatRequestErrorResult(start, testReq, requestPlan.timeout, err)
+			s.applyChannelTestResultCooldown(c.Request.Context(), cfg, keySelection.keyIndex, testReq, keySelection.updatePersistedCooldown, failure)
+		}
 		errorMsg := "读取响应失败: " + err.Error()
 		if _, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
 			errorMsg = timeoutMsg
@@ -750,6 +800,9 @@ func (s *Server) streamChatNonStreamResponse(
 		result["thinking_effort"] = requestThinking
 	}
 	result = s.parseTestNonStreamResponse(c.Request.Context(), requestPlan, testReq, resp, contentType, start, respBody, result)
+	if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+		result = s.applyChannelTestResultCooldown(c.Request.Context(), cfg, keySelection.keyIndex, testReq, keySelection.updatePersistedCooldown, result)
+	}
 	result = attachTestDebugData(requestPlan, resp, result)
 	succeeded, _ := result["success"].(bool)
 	responseText, _ := result["response_text"].(string)
@@ -872,6 +925,9 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	}
 	result["client_protocol"] = sr.clientProtocol
 	result["upstream_protocol"] = sr.upstreamProtocol
+	if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+		result = s.applyChannelTestResultCooldown(c.Request.Context(), cfg, keySelection.keyIndex, testReq, keySelection.updatePersistedCooldown, result)
+	}
 	annotateChannelTestCapacityRetries(result, sr.capacityRetries)
 	if !sr.firstContentTime.IsZero() {
 		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()

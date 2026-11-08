@@ -663,6 +663,12 @@ func parseTestStreamResponseBytes(
 	return result
 }
 
+/**
+ * @brief 执行管理检测；体验认证拒绝不触发付费 Key 刷新。
+ * @param c 管理请求及 JSON 响应上下文。
+ * @param requireBaseURL 是否必须指定检测地址；false 时禁止指定地址。
+ * @note 可能发送检测请求、刷新认证、记录日志并应用冷却。
+ */
 func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -746,7 +752,8 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		keySelection.keyIndex, keySelection.updatePersistedCooldown,
 	)
 	statusCode, _ := getResultInt(testResult["status_code"])
-	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized && canRemintOAuthChannelTest(cfg) {
+	trial := cfg.UsesZAIOAuth() && (testReq.ZAITrial || isZAITrialModel(testReq.Model))
+	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized && canRemintOAuthChannelTest(cfg) && !trial {
 		refreshedCfg, refreshedSelection, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(
 			c.Request.Context(), cfg, oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection),
 		)
@@ -1133,9 +1140,11 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			}
 			return nil, selection, true, fmt.Errorf("加载 Z.ai Coding Plan 凭证失败: %w", err)
 		}
-		selection.requestCredential = credential.APIKey
-		runtimeCfg := cfg.Clone()
-		runtimeCfg.ZAIDeviceID = credential.DeviceID
+		runtimeCfg, key, encodeErr := zaiRuntimeConfig(cfg, credential)
+		if encodeErr != nil {
+			return nil, selection, true, fmt.Errorf("加载 Z.ai Coding Plan 凭证失败: %w", encodeErr)
+		}
+		selection.requestCredential = key
 		if err != nil {
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Z.ai Coding Plan 凭证失败: %w", err)
 		}
@@ -1296,6 +1305,9 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
  */
 func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.Config, keyIndex int, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool, result map[string]any) map[string]any {
 	actualModel := channelTestActualModel(result, testReq.Model)
+	if cfg.UsesZAIOAuth() && (testReq.ZAITrial || isZAITrialModel(actualModel) || testReq.ZAILocalPlanError) {
+		return s.applyZAIChannelTestCooldown(ctx, cfg, keyIndex, testReq, updatePersistedCooldown, result, actualModel)
+	}
 	if success, ok := result["success"].(bool); ok && success {
 		if updatePersistedCooldown {
 			if keyIndex != cooldown.NoKeyIndex {
@@ -1442,6 +1454,17 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	return s.testChannelAPIWithCooldownTarget(reqCtx, cfg, apiKey, testReq, cooldown.NoKeyIndex, false)
 }
 
+/**
+ * @brief 在候选协议和 URL 上执行检测，固定体验端点的失败不重试付费 URL。
+ * @param reqCtx 检测上下文，取消时中止请求。
+ * @param cfg 待检测的渠道配置。
+ * @param apiKey 本次请求使用的认证材料。
+ * @param testReq 检测参数，会更新实际套餐标记。
+ * @param keyIndex 持久化 Key 序号；cooldown.NoKeyIndex 表示没有目标。
+ * @param updatePersistedCooldown 是否允许写入持久化冷却。
+ * @return 结构化的成功或失败检测结果。
+ * @note 按候选协议和 URL 发送请求；允许持久化时可更新冷却。
+ */
 func (s *Server) testChannelAPIWithCooldownTarget(
 	reqCtx context.Context,
 	cfg *model.Config,
@@ -1546,7 +1569,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 				}
 				return lastResult
 			}
-			if !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
+			if (cfg.UsesZAIOAuth() && testReq.ZAITrial) || !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -1570,10 +1593,13 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 		if !hasNextURL {
 			break
 		}
+		if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+			// 体验使用固定端点，换配置 URL 或协议仍会重复相同请求。
+			return lastResult
+		}
 		if capabilityExhausted && (testReq.UseURLProtocol || cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream) {
 			continue
 		}
-
 		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
@@ -1752,6 +1778,18 @@ func (s *Server) testCursorOAuthChannel(
 	return result
 }
 
+/**
+ * @brief 发送一次指定协议的检测，并将实际套餐身份回传外层重试与冷却流程。
+ * @param reqCtx 检测上下文，取消时中止请求。
+ * @param cfg 待检测的渠道配置。
+ * @param apiKey 本次请求使用的认证材料。
+ * @param testReq 检测参数，会回传实际套餐、wire 模型及本地拒绝标记。
+ * @param clientProtocol 检测输入协议。
+ * @param upstreamProtocol 本次上游协议。
+ * @param selectedURL 已选定的上游地址。
+ * @return 含状态、协议与实际模型的成功或失败检测结果。
+ * @note 负责清理超时、响应体及请求容量。
+ */
 func (s *Server) testChannelAPIWithURLForProtocol(
 	reqCtx context.Context,
 	cfg *model.Config,
@@ -1761,6 +1799,9 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 ) (result map[string]any) {
 	requestedModel := testReq.Model
 	attemptReq := *testReq
+	callerReq := testReq
+	attemptReq.ZAITrial, attemptReq.ZAIWireModel = false, ""
+	attemptReq.ZAILocalPlanError = false
 	selected, _ := s.firstModelRow(cfg, requestedModel)
 	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, upstreamProtocol)
 	if attemptReq.Model != requestedModel {
@@ -1768,6 +1809,8 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	testReq = &attemptReq
 	defer func() {
+		callerReq.ZAITrial, callerReq.ZAIWireModel = attemptReq.ZAITrial, attemptReq.ZAIWireModel
+		callerReq.ZAILocalPlanError = attemptReq.ZAILocalPlanError
 		if result == nil {
 			return
 		}
@@ -1791,11 +1834,17 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		cfgForBuild, requestPlan, err = s.buildTestUpstreamRequestPlan(
 			reqCtx, cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL,
 		)
-		if err == nil {
+		// ZAI 先检查套餐资格，再在实际发送边界等待容量。
+		if err == nil && !cfg.UsesZAIOAuth() {
 			capacityRelease, err = s.waitForUpstreamRequest(reqCtx, cfg)
 		}
 		if err == nil {
-			req, cancel, err = s.newTestUpstreamRequest(reqCtx, cfgForBuild, testReq, requestPlan)
+			if cfg.UsesZAIOAuth() {
+				req, err = s.buildTestUpstreamHTTPRequest(reqCtx, cfgForBuild, testReq, requestPlan)
+				cancel = func() {}
+			} else {
+				req, cancel, err = s.newTestUpstreamRequest(reqCtx, cfgForBuild, testReq, requestPlan)
+			}
 		}
 		if err != nil && capacityRelease != nil {
 			capacityRelease()
@@ -1816,7 +1865,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		}
 		return result
 	}
-	defer cancel()
+	defer func() { cancel() }()
 	ctx := req.Context()
 	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && !cfg.UsesZedOAuth() && testReq.Stream &&
 		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
@@ -1874,9 +1923,12 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		resp, err = s.doChannelTestCodexWebsocket(ctx, cfg, websocketSession, req, requestPlan.requestBody, capacityRelease)
 	} else if capacityRelease != nil {
 		resp, err = s.doReservedUpstreamRequest(cfg, req, capacityRelease, nil)
+	} else if testReq.WaitForCapacity {
+		resp, err, cancel = s.sendZAIChannelTest(reqCtx, cfg, testReq, requestPlan, req, cancel)
 	} else {
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
+	s.syncZAIChannelTestRequest(cfg, requestPlan, resp, testReq, err)
 	if err != nil {
 		if errors.Is(err, ErrChannelRPMExceeded) {
 			result := channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
@@ -1903,6 +1955,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 			result["status_code"] = statusCode
 		}
 		result["is_streaming"] = testReq.Stream
+		annotateZAITrialTestError(result, testReq, err)
 		return attachTestDebugData(requestPlan, nil, result)
 	}
 	s.persistDetectionCodexPassiveUsage(ctx, cfg, resp, gjson.GetBytes(requestPlan.requestBody, "model").String())
@@ -2060,6 +2113,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		if testReq.ImageGeneration != nil {
 			captureImageGenerationFailureDebug(requestPlan, failureResult, respBody, nil)
 		}
+		annotateZAITrialTestError(failureResult, testReq, err)
 		return attachTestDebugData(requestPlan, resp, failureResult)
 	}
 	return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result))
@@ -2268,6 +2322,10 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	requestPath := downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
+	if cfgForBuild.UsesZAIOAuth() && upstreamProtocolValue == protocol.Anthropic {
+		// 管理测试已选定 Messages 协议，自定义完整 URL 只决定传输地址。
+		requestPath = buildAnthropicMessagesPath()
+	}
 	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) && !isOpenCodeAPIKeyEndpoint(cfgForBuild, selectedURL) {
 		// name.txt 的轻量请求结构用于正常问答；不注入主循环 billing/system/cache，
 		// 指纹与账号身份仍由共享 wire 层生成，避免模板硬编码版本与身份。
@@ -2436,10 +2494,28 @@ func (s *Server) newTestUpstreamRequest(
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
 	requestPlan.timeout = timeout
-	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
+	req, err := s.buildTestUpstreamHTTPRequest(ctx, cfgForBuild, testReq, requestPlan)
 	if err != nil {
 		timeout.cancelAll()
-		return nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
+		return nil, nil, err
+	}
+	return req, timeout.cancelAll, nil
+}
+
+/**
+ * @brief 按测试计划构造完整出站请求，容量等待调用者可在发送前另行启动协议超时。
+ * @param ctx 请求上下文，不在此处增加超时。
+ * @param cfgForBuild 用于认证及请求头规则的运行时配置。
+ * @param testReq 测试协议、流式模式及业务参数。
+ * @param requestPlan 已生成的测试计划，将记录最终请求体及调试状态。
+ * @return 可直接发送或交给套餐选择的请求。
+ * @return URL、认证头或请求体最终化失败时返回错误。
+ * @note 修改 requestPlan 的请求体、请求头及调试记录。
+ */
+func (s *Server) buildTestUpstreamHTTPRequest(ctx context.Context, cfgForBuild *model.Config, testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("创建HTTP请求失败: %w", err)
 	}
 
 	sourceHeaders := cloneHeaders(requestPlan.headers)
@@ -2472,8 +2548,7 @@ func (s *Server) newTestUpstreamRequest(
 		wireRebuilt = true
 	} else if cfgForBuild.UsesCodeBuddyOAuth() {
 		if err := injectCodeBuddyHeaders(req, cfgForBuild, requestPlan.apiKey); err != nil {
-			timeout.cancelAll()
-			return nil, nil, err
+			return nil, err
 		}
 		requestPlan.fullURL = req.URL.String()
 		wireRebuilt = true
@@ -2536,8 +2611,7 @@ func (s *Server) newTestUpstreamRequest(
 		isAnthropicCountTokensRequest(requestProtocol, requestPlan.endpointPath) {
 		requestPlan.requestBody, err = applyFinalAnthropicBetaBodyPolicy(req, requestPlan.requestBody)
 		if err != nil {
-			timeout.cancelAll()
-			return nil, nil, err
+			return nil, err
 		}
 	}
 	// Anthropic 与代理链路共用显式响应解压，保留 provider 的压缩协商头。
@@ -2553,7 +2627,7 @@ func (s *Server) newTestUpstreamRequest(
 		requestPlan.debugCapture.markProtocolTransform(extractRequestPath(requestPlan.clientURL), originalHeaders, requestPlan.clientBody)
 	}
 
-	return req, timeout.cancelAll, nil
+	return req, nil
 }
 
 // setAdminTestAcceptEncoding 让管理测试拿到上游原始响应体：部分兼容网关解压响应后
@@ -3017,6 +3091,9 @@ func channelTestCostFromUsage(testReq *testutil.TestChannelRequest, actualModel,
 	requestModel := testReq.RequestModel
 	if requestModel == "" {
 		requestModel = testReq.Model
+	}
+	if testReq.ZAIWireModel != "" {
+		actualModel = testReq.ZAIWireModel
 	}
 	billingModel := util.ResolveBillingModel(model.RoutingModelName(actualModel), model.RoutingModelName(requestModel))
 	serviceTier := resolveBillingServiceTier(requestedServiceTier, usage.ServiceTier)

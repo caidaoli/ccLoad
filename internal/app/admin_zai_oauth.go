@@ -15,18 +15,40 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Hosted Z.ai (ZCode) login.
-//
-// ZCode's CLI flow is poll-based: ccLoad opens an authorization URL, then polls
-// until the account approves it. The poll therefore belongs to the server
-// lifecycle, not to the admin HTTP request that started it — closing the
-// browser tab or the admin page must not abandon a half-finished login.
-
 const (
 	zaiOAuthSessionTTL      = 15 * time.Minute
 	zaiOAuthTerminalTTL     = 2 * time.Minute
 	zaiOAuthJanitorInterval = 30 * time.Second
 )
+
+/**
+ * @brief ZCode 授权入口的站点和代理选择。
+ */
+type zaiOAuthStartRequest struct {
+	oauthLoginStartRequest              ///< 通用会话代理。
+	Site                   zaiauth.Site `json:"site"` ///< 国际版 zai 或国内版 bigmodel。
+}
+
+/**
+ * @brief 在任何上游请求前验证站点及代理。
+ * @return 站点或代理非法时返回错误。
+ */
+func (r *zaiOAuthStartRequest) Validate() error {
+	site, err := zaiauth.NormalizeSite(r.Site)
+	if err != nil {
+		return err
+	}
+	r.Site = site
+	return r.oauthLoginStartRequest.Validate()
+}
+
+/**
+ * @brief 授权会话固定的站点及出口，贯穿轮询、Key 派生及持久化。
+ */
+type zaiOAuthOptions struct {
+	oauthLoginOptions              ///< 固定代理配置。
+	site              zaiauth.Site ///< 开始授权时确定的账号站点。
+}
 
 type zaiOAuthStartResponse struct {
 	URL    string `json:"url"`
@@ -70,29 +92,41 @@ type zaiOAuthSession struct {
 	finishedAt       time.Time
 }
 
+/**
+ * @brief 管理两站授权会话；站点和出口在启动时固定，后台轮询不受请求结束影响。
+ */
 type zaiOAuthManager struct {
-	mu       sync.Mutex
-	service  *zaiauth.Service
-	resolve  func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error)
-	commit   func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error)
-	baseCtx  context.Context
-	now      func() time.Time
-	sleep    func(context.Context, time.Duration)
-	sessions map[string]*zaiOAuthSession
+	mu       sync.Mutex                                                                         ///< 共享状态锁。
+	service  *zaiauth.Service                                                                   ///< 公共控制面服务。
+	resolve  func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error)        ///< 付费 Key 派生。
+	commit   func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) ///< 渠道持久化。
+	baseCtx  context.Context                                                                    ///< 服务生命周期。
+	now      func() time.Time                                                                   ///< 会话时钟。
+	sleep    func(context.Context, time.Duration)                                               ///< 可取消轮询间隔。
+	sessions map[string]*zaiOAuthSession                                                        ///< 按状态 ID 保存会话。
 	// activeByID keeps one live login per administrator.
-	activeByID  map[string]string
-	stopJanitor chan struct{}
-	janitorDone chan struct{}
-	closeOnce   sync.Once
-	closed      bool
-	pollers     sync.WaitGroup
+	activeByID  map[string]string ///< 管理员当前会话。
+	stopJanitor chan struct{}     ///< 通知清理协程退出。
+	janitorDone chan struct{}     ///< 清理协程完成通知。
+	closeOnce   sync.Once         ///< 关闭操作幂等。
+	closed      bool              ///< 禁止新建会话。
+	pollers     sync.WaitGroup    ///< 等待后台轮询结束。
 }
 
+/**
+ * @brief 创建 ZCode 授权会话管理器。
+ * @param baseCtx 服务生命周期上下文；nil 使用后台上下文。
+ * @param service 公共控制面客户端。
+ * @param resolve 按所选站点派生付费 Key。
+ * @param commit 保存账号的回调；无套餐也可提交。
+ * @return 启动了清理协程的管理器，必须 close。
+ * @note 启动后台清理协程。
+ */
 func newZAIOAuthManager(
 	baseCtx context.Context,
 	service *zaiauth.Service,
-	resolve func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error),
-	commit func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error),
+	resolve func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error),
+	commit func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error),
 ) *zaiOAuthManager {
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -116,7 +150,16 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, options oauthLoginOptions) (zaiOAuthStartResponse, error) {
+/**
+ * @brief 为管理员启动固定站点的授权，同一管理员旧会话会被取消。
+ * @param ctx 初始化请求上下文。
+ * @param adminSessionHash 管理员会话标识。
+ * @param options 固定站点及代理出口。
+ * @return 授权链接和轮询状态。
+ * @return 缺少管理员、服务不可用或上游初始化失败时返回错误。
+ * @note 初始化成功后启动后台轮询协程。
+ */
+func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, options zaiOAuthOptions) (zaiOAuthStartResponse, error) {
 	if m == nil || m.service == nil || m.resolve == nil || m.commit == nil {
 		return zaiOAuthStartResponse{}, errors.New("z.ai OAuth is unavailable")
 	}
@@ -128,8 +171,7 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, op
 	if err != nil {
 		return zaiOAuthStartResponse{}, err
 	}
-	service := *m.service
-	service.Client = options.clientOr(service.Client)
+	service := m.service.ForSite(options.site, options.client)
 	flow, err := service.InitFlow(ctx, pollToken)
 	if err != nil {
 		return zaiOAuthStartResponse{}, err
@@ -154,17 +196,25 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, op
 	m.pollers.Add(1)
 	m.mu.Unlock()
 
-	go m.run(session, &service, flow, pollToken, options)
+	go m.run(session, service, flow, pollToken, options)
 	return zaiOAuthStartResponse{URL: flow.AuthorizeURL, State: session.state, Status: "pending"}, nil
 }
 
-// run owns one authorization from the browser hand-off to the committed channel.
+/**
+ * @brief 使用初始化时的站点和出口轮询至授权提交或终止。
+ * @param session 受管理器保护的会话。
+ * @param service 固定站点的服务副本。
+ * @param flow 上游登录信息和期限。
+ * @param pollToken 仅用于该登录的轮询令牌。
+ * @param options 固定的登录选项。
+ * @note 由 start 启动；终止时释放 pollers 计数。
+ */
 func (m *zaiOAuthManager) run(
 	session *zaiOAuthSession,
 	service *zaiauth.Service,
 	flow *zaiauth.Flow,
 	pollToken string,
-	options oauthLoginOptions,
+	options zaiOAuthOptions,
 ) {
 	defer m.pollers.Done()
 	interval := zaiauth.PollInterval
@@ -206,7 +256,14 @@ func (m *zaiOAuthManager) run(
 	}
 }
 
-func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result *zaiauth.PollResult, options oauthLoginOptions) {
+/**
+ * @brief 完成登录并提交账号；付费 Key 派生失败时仍允许有效体验 JWT。
+ * @param session 待提交的授权会话。
+ * @param result 上游确认的登录身份及令牌。
+ * @param options 本次登录的代理配置。
+ * @note 会话先转为 committing，再于持久化完成后结束，避免重复提交。
+ */
+func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result *zaiauth.PollResult, options zaiOAuthOptions) {
 	m.mu.Lock()
 	if session.status != "pending" {
 		m.mu.Unlock()
@@ -218,12 +275,20 @@ func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result
 	}
 	m.mu.Unlock()
 
-	credential, err := m.resolve(session.ctx, options, result.AccessToken)
-	if err != nil {
+	credential := &zaiauth.Credential{}
+	var err error
+	if result.AccessToken != "" {
+		credential, err = m.resolve(session.ctx, options, result.AccessToken)
+	}
+	if err != nil && result.JWTToken == "" {
 		m.finish(session, "error", err.Error(), 0, "")
 		return
 	}
+	if credential == nil {
+		credential = &zaiauth.Credential{}
+	}
 	credential.AccessToken = result.AccessToken
+	credential.Site = options.site
 	credential.JWTToken = result.JWTToken
 	if credential.UserID == "" {
 		credential.UserID = result.Identity.UserID
@@ -368,7 +433,10 @@ func (m *zaiOAuthManager) close() {
 	})
 }
 
-// HandleStartZAIOAuth opens one hosted ZCode authorization.
+/**
+ * @brief 启动所选国内或国际站点的 ZCode 授权。
+ * @param c 管理端 HTTP 上下文。
+ */
 func (s *Server) HandleStartZAIOAuth(c *gin.Context) {
 	adminSessionHash, ok := xaiAdminSessionHash(c)
 	if !ok {
@@ -379,16 +447,16 @@ func (s *Server) HandleStartZAIOAuth(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "z.ai OAuth is unavailable")
 		return
 	}
-	var request oauthLoginStartRequest
+	var request zaiOAuthStartRequest
 	if !bindOAuthLoginStart(c, &request) {
 		return
 	}
-	options, err := s.oauthLoginOptions(request, false)
+	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
 	if err != nil {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	response, err := s.zaiOAuth.start(c.Request.Context(), adminSessionHash, options)
+	response, err := s.zaiOAuth.start(c.Request.Context(), adminSessionHash, zaiOAuthOptions{oauthLoginOptions: options, site: request.Site})
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, zaiauth.ErrOAuthFlowUnavailable) {
