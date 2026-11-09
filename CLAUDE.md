@@ -78,3 +78,16 @@ type credential struct {
 | Admin API、管理账户与定时任务 | `admin_types.go` → `admin_<feature>.go` → `server.go:SetupRoutes`；账户核心为 `channel_management_service.go`；[管理与定时任务](.claude/agent-guide/runtime-storage.md#渠道管理与定时检测) |
 | 发布、容器与进程内更新 | [.agents/skills/ccload-release/SKILL.md](.agents/skills/ccload-release/SKILL.md)；[更新机制](.claude/agent-guide/runtime-storage.md#发布与更新) |
 | 管理后台 / 独立介绍站 | `web/` 是管理后台；`www/` 是独立介绍站，`make www-setup` 复制共享资源后可独立部署 |
+## Agent skills
+
+### Issue tracker
+
+事项和规格使用本地 Markdown；创建、读取或更新事项前，读 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五个默认 triage 状态；分类事项前，读 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+采用 single-context 布局；探索业务代码前，按 `docs/agents/domain.md` 读取领域文档。

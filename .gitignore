@@ -63,6 +63,7 @@ dist
 *.bak
 docs/*
 !docs/guide/
+!docs/agents/
 .worktrees/
 # 步骤1：忽略所有目录下的 claude.md
 **/claude.md
