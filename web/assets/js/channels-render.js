@@ -1360,6 +1360,7 @@ function toggleOAuthUsageWindows(btn) {
   btn.textContent = oauthUsageWindowsToggleLabel(expanded, Number(btn.dataset.hiddenCount) || 0);
 }
 
+
 /**
  * @brief 按公共额度能力和当前操作状态渲染渠道额度区域。
  * @param channel 渠道及持久额度快照。
@@ -1376,6 +1377,7 @@ function buildOAuthUsageStatusHtml(channel) {
   }
   const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
+  const isZAI = channel?.auth_type === 'zai_oauth';
   const refresh = {
     action: 'refresh-oauth-usage',
     channelID: channel.id,
@@ -1385,7 +1387,10 @@ function buildOAuthUsageStatusHtml(channel) {
   const anthropicCreditsHtml = channel?.auth_type === 'anthropic_oauth'
     ? buildAnthropicResetCreditsHtml(channel.id) : '';
   if (!state) {
-    return `<div class="ch-oauth-usage">${buildQuotaRefreshPlaceholder(refresh)}${anthropicCreditsHtml}${checkinHtml}</div>`;
+    const placeholder = isZAI
+      ? buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(window.t('channels.zai.plansNotQueried')))
+      : buildQuotaRefreshPlaceholder(refresh);
+    return `<div class="ch-oauth-usage">${placeholder}${anthropicCreditsHtml}${checkinHtml}</div>`;
   }
   if (state.status === 'loading') {
     return `<div class="ch-oauth-usage">${buildQuotaLoadingHtml(window.t('channels.oauth.usageRefreshing'))}${anthropicCreditsHtml}${checkinHtml}</div>`;
@@ -1474,18 +1479,40 @@ function buildOAuthUsageStatusHtml(channel) {
     }
   }
   if (codeBuddyCreditsHtml) rows.push(codeBuddyCreditsHtml);
+  const zaiRows = isZAI ? [buildZAIPlanGroupsHtml(state.data?.zai_plans, refresh, {
+    formatOAuthUsageResetAt, formatOAuthUsagePercent, buildOAuthUsageWindowHtml, oauthUsageTooltipID, escapeChannelRefreshText
+  })].filter(Boolean) : [];
+  // 空套餐须同时确认体验和付费均不存在；查询失败不能当成没有套餐。
+  if (isZAI) {
+    const plans = state.data?.zai_plans;
+    const messageKey = state.data?.display_message === 'zai_login_required'
+      ? 'channels.zai.loginRequiredForQuota'
+      : !plans ? 'channels.zai.plansNotQueried'
+        : !plans.gift_known ? 'channels.zai.giftQueryFailed'
+          : !plans.gifts?.length && plans.paid_known && !plans.paid && windows.length === 0
+            ? 'channels.zai.noPlansReturned' : '';
+    if (messageKey) zaiRows.push(buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(window.t(messageKey))));
+  }
   // 每条额度行都是刷新入口；一条都没有时由占位符承担。
-  if (rows.length === 0) rows.push(buildQuotaRefreshPlaceholder(refresh));
+  if (rows.length === 0 && zaiRows.length === 0) {
+    // 未知套餐沿用横杆，不把占位符伪装成已确认的付费套餐。
+    (isZAI ? zaiRows : rows).push(buildQuotaRefreshPlaceholder(refresh));
+  }
   const notice = isCursor
     ? formatCursorUsageNotice(state.data?.display_message)
     : isZed
       ? formatZedUsageNotice(state.data)
-      : String(state.data?.display_message || '').trim();
+      : state.data?.display_message === 'zai_login_required' ? '' : String(state.data?.display_message || '').trim();
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';
+  // 体验套餐不随付费窗口折叠，未生效状态和时间必须直接可见。
+  const windowRows = buildOAuthUsageRowsHtml(channel.id, rows);
+  const paidName = state.data?.zai_plans?.paid_name || window.t('channels.zai.paidPlan');
   return `<div class="ch-oauth-usage">
-    ${buildOAuthUsageRowsHtml(channel.id, rows)}
+    ${isZAI && rows.length ? `<section class="ch-oauth-usage__plan" aria-label="${escapeChannelRefreshText(paidName)}">
+      <div class="ch-oauth-usage__plan-name" title="${escapeChannelRefreshText(paidName)}">${escapeChannelRefreshText(paidName)}</div>${windowRows}</section>` : windowRows}
+    ${zaiRows.join('')}
     ${anthropicCreditsHtml}
     ${isCodex ? (buildCodexResetCreditsHtml(state.data, state, channel.id) || buildCodexPurchasedCreditsHtml(state.data)) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
@@ -1716,7 +1743,7 @@ function buildChannelHealthHtml(channel, stats) {
  * @brief 按公共渠道能力生成卡片与可执行的管理操作。
  * @param channel 用于构建卡片的渠道快照。
  * @return 返回渠道卡片 DOM 节点。
- * @note Loomy 通过已验证账号去重，不提供克隆入口。
+ * @note 复制入口交给各认证类型的复制保存流程处理。
  */
 function createChannelCard(channel) {
   const isCooldown = channel.cooldown_remaining_ms > 0;
@@ -1769,10 +1796,7 @@ function createChannelCard(channel) {
     mobileLabelActions: window.t('channels.table.actions')
   };
 
-  const card = TemplateEngine.render('tpl-channel-card', cardData);
-  // Loomy 必须由短信登录绑定账号，不展示点击后必然报错的克隆入口。
-  if (channel.auth_type === 'loomy_session') card?.querySelector('[data-action="copy"]')?.remove();
-  return card;
+  return TemplateEngine.render('tpl-channel-card', cardData);
 }
 
 async function editChannelCoolingKeys(channelId) {
@@ -2023,7 +2047,15 @@ function buildChannelSortHeader(key, className, label) {
   return `<th class="${className} sortable${active ? ' sorted' : ''}" data-sort-key="${key}"${active ? ` data-sort-order="${channelsSort.order}"` : ''} aria-sort="${ariaSort}" tabindex="0">${label}<span class="sort-indicator" aria-hidden="true"></span></th>`;
 }
 
+/**
+ * @brief 渲染渠道列表，并为可见 ZAI 套餐安排到点显示更新。
+ * @param channelsToRender 当前显示的渠道，缺省为全部渠道。
+ */
 function renderChannels(channelsToRender = channels) {
+  scheduleZAIUsageDisplayUpdate(channelsToRender || [], {
+    getState: id => typeof getOAuthUsageState === 'function' ? getOAuthUsageState(id) : null,
+    renderCell: channel => buildOAuthUsageStatusHtml(channel) + buildManagementAccountStatusHtml(channel)
+  });
   const el = document.getElementById('channels-container');
   if ((!channelsToRender || channelsToRender.length === 0) && typeof channelsLoadFailed !== 'undefined' && channelsLoadFailed) {
     el.innerHTML = `<div class="glass-card channels-load-error" role="alert">

@@ -10,25 +10,22 @@ import (
 	"time"
 )
 
-// Credential is the private Z.ai Coding Plan payload persisted on a channel.
-//
-// APIKey is the only field required to forward traffic: Z.ai Coding Plan keys
-// are long-lived, so there is no rotating access token on the request path.
-// AccessToken is the ZCode OAuth token that minted APIKey; it is kept so a
-// rejected key can be re-resolved without a new browser authorization.
+/**
+ * @brief 保存 ZCode 登录、付费 Key 和渠道使用偏好；体验调用使用 JWT。
+ */
 type Credential struct {
-	Type        string `json:"type"`
-	APIKey      string `json:"api_key"`
-	AccessToken string `json:"access_token,omitempty"`
-	JWTToken    string `json:"jwt_token,omitempty"`
-	// DeviceID is the stable per-credential fingerprint ZCode reports in
-	// metadata.user_id. It is derived from the account identity when absent.
-	DeviceID    string          `json:"device_id,omitempty"`
-	UserID      string          `json:"user_id,omitempty"`
-	Email       string          `json:"email,omitempty"`
-	Name        string          `json:"name,omitempty"`
-	LastRefresh string          `json:"last_refresh,omitempty"`
-	OAuthUsage  json.RawMessage `json:"oauth_usage,omitempty"`
+	Site        Site            `json:"site,omitempty"`         ///< 登录站点；缺省国际版。
+	Type        string          `json:"type"`                   ///< 归一后的凭证类型。
+	APIKey      string          `json:"api_key"`                ///< 付费 Coding Plan Key；仅体验账号可为空。
+	AccessToken string          `json:"access_token,omitempty"` ///< 所选站点账号令牌，用于重新派生 Key。
+	JWTToken    string          `json:"jwt_token,omitempty"`    ///< ZCode 体验登录令牌。
+	FreeFirst   *bool           `json:"free_first,omitempty"`   ///< nil 默认体验优先，false 仅关闭普通模型的体验优先。
+	DeviceID    string          `json:"device_id,omitempty"`    ///< 稳定设备指纹；缺失时由身份派生。
+	UserID      string          `json:"user_id,omitempty"`      ///< 所选站点内的账号 ID。
+	Email       string          `json:"email,omitempty"`        ///< 账号邮箱，去重时必须同时比较站点。
+	Name        string          `json:"name,omitempty"`         ///< 账号显示名称。
+	LastRefresh string          `json:"last_refresh,omitempty"` ///< 最近凭证更新时间，RFC3339 UTC。
+	OAuthUsage  json.RawMessage `json:"oauth_usage,omitempty"`  ///< 现有凭证中的额度快照。
 }
 
 // Identity is the account this credential belongs to.
@@ -59,11 +56,19 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	return &credential, nil
 }
 
-// Normalize validates and canonicalizes a credential in place.
+/**
+ * @brief 就地归一凭证，允许只有体验登录的账号。
+ * @return 缺少两种认证材料、类型或字段格式非法时返回错误。
+ */
 func (c *Credential) Normalize() error {
 	if c == nil {
 		return errors.New("z.ai credential is nil")
 	}
+	site, err := NormalizeSite(c.Site)
+	if err != nil {
+		return err
+	}
+	c.Site = site
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	if c.Type == "" || c.Type == "zcode" || c.Type == "z.ai" {
 		c.Type = ChannelType
@@ -79,11 +84,11 @@ func (c *Credential) Normalize() error {
 	c.Email = strings.TrimSpace(c.Email)
 	c.Name = strings.TrimSpace(c.Name)
 	c.LastRefresh = strings.TrimSpace(c.LastRefresh)
-	if c.APIKey == "" {
-		return errors.New("z.ai credential is missing api_key")
+	if c.APIKey == "" && c.JWTToken == "" {
+		return errors.New("z.ai credential is missing api_key or jwt_token")
 	}
-	if strings.ContainsAny(c.APIKey, " \r\n\t") {
-		return errors.New("z.ai credential has an invalid api_key")
+	if strings.ContainsAny(c.APIKey+c.JWTToken+c.AccessToken, " \r\n\t") {
+		return errors.New("z.ai credential contains invalid authentication material")
 	}
 	if c.LastRefresh != "" {
 		parsed, err := time.Parse(time.RFC3339, c.LastRefresh)
@@ -93,7 +98,11 @@ func (c *Credential) Normalize() error {
 		c.LastRefresh = parsed.UTC().Format(time.RFC3339)
 	}
 	if c.DeviceID == "" {
-		c.DeviceID = DeriveDeviceID(c.Identity(), c.APIKey)
+		fallback := c.APIKey
+		if fallback == "" {
+			fallback = c.JWTToken
+		}
+		c.DeviceID = DeriveDeviceID(c.Identity(), fallback)
 	}
 	return nil
 }
@@ -140,18 +149,39 @@ func DeriveDeviceID(identity Identity, fallback string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", digest[0:4], digest[4:6], digest[6:8], digest[8:10], digest[10:16])
 }
 
-// MergeRefresh keeps identity metadata that a re-resolved credential omits.
+/**
+ * @brief 合并新认证材料并保留渠道偏好、身份和额度快照。
+ * @param refreshed 新的登录或重派生结果。
+ * @return 独立的合并凭证。
+ * @return 任一凭证为空、站点不同或结果非法时返回错误。
+ */
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	if c == nil || refreshed == nil {
 		return nil, errors.New("z.ai refresh credential is nil")
 	}
+	currentSite, err := NormalizeSite(c.Site)
+	if err != nil {
+		return nil, err
+	}
+	nextSite, err := NormalizeSite(refreshed.Site)
+	if err != nil {
+		return nil, err
+	}
+	if currentSite != nextSite {
+		return nil, errors.New("ZCode credential cannot merge different sites")
+	}
 	merged := *refreshed
+	if c.FreeFirst != nil {
+		value := *c.FreeFirst
+		merged.FreeFirst = &value
+	}
 	preserve := func(target *string, previous string) {
 		if strings.TrimSpace(*target) == "" {
 			*target = previous
 		}
 	}
 	preserve(&merged.AccessToken, c.AccessToken)
+	preserve(&merged.APIKey, c.APIKey)
 	preserve(&merged.JWTToken, c.JWTToken)
 	preserve(&merged.DeviceID, c.DeviceID)
 	preserve(&merged.UserID, c.UserID)

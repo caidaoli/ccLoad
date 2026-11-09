@@ -110,6 +110,19 @@ type Store interface {
 	GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error)
 	BumpModelCooldown(ctx context.Context, channelID int64, model string, now time.Time, statusCode int) (time.Duration, error)
 	SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error
+	/**
+	 * @brief 仅在事务内确认 OAuth 凭证未改变时设置模型冷却。
+	 * @param ctx 存储操作上下文，取消时终止操作。
+	 * @param channelID 目标渠道 ID。
+	 * @param expectedAuthType 预期的 OAuth 认证类型，不接受 API Key 类型。
+	 * @param expectedCredential 预期的完整凭证 JSON，按原文精确比较且不得为空。
+	 * @param model 冷却模型名称，不得为空。
+	 * @param until 冷却截止时间。
+	 * @return 写入成功返回 true；false 且 error 为 nil 表示渠道不存在或身份不匹配，未写入冷却。
+	 * @return 参数无效、上下文取消或存储操作失败时返回错误，否则 nil。
+	 * @note 身份核对与冷却写入具有原子性；Hybrid 存储仅在写入成功后安排副本同步。
+	 */
+	SetModelCooldownIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, model string, until time.Time) (bool, error)
 	ResetModelCooldown(ctx context.Context, channelID int64, model string) error
 
 	// === Log Management ===

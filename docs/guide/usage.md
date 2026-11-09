@@ -284,9 +284,13 @@ curl -X POST http://localhost:8080/admin/channels \
 
 ### Z.ai Coding Plan (ZCode)
 
-In the channel manager, choose **Z.ai Coding Plan** and either complete the browser authorization flow or import an existing Coding Plan API key. API-key import remains available when the provider's browser OAuth flow is unavailable.
+In the channel manager, choose **Z.ai Coding Plan**, select **International Z.ai** or **China BigModel**, then authorize in the browser or import a Coding Plan API key for that site. Accounts from different sites are saved separately, even when they share the same email address. API-key import remains available when the provider's browser OAuth flow is unavailable.
 
-ccLoad loads the Coding Plan model catalog from the account when creating or refreshing the channel, falls back to models.dev, then uses its built-in list only as a last resort. The channel card can also refresh and show the Coding Plan quota windows.
+Browser authorization supports both ZCode trial plans and paid Coding Plan subscriptions, including accounts with only a trial plan. Paid models come from the account catalog, with models.dev and the built-in list as fallbacks. Trial models come from the account's actual plans and include `-Trial` aliases. The channel card shows paid quota windows and trial balances with their start and expiry times.
+
+In the Z.ai channel credential editor, **Prefer trial quota** is enabled by default and saves immediately when toggled. Ordinary models use eligible trial quota first and may fall back to paid service if the trial request fails before output starts. Turn it off to prefer paid service; accounts with only a trial plan still use their trial quota. Explicit `-Trial` models never fall back to paid service. This preference uses the existing credential JSON and requires no database migration.
+
+API keys alone only provide paid access. Trial access requires a ZCode login, which must be renewed when it expires. Reauthorizing an existing channel adds newly discovered models; you can also refresh the model list manually.
 
 ### Cursor
 

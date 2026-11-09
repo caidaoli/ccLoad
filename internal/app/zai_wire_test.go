@@ -15,7 +15,7 @@ func newZAITestChannel() *model.Config {
 	return &model.Config{
 		ID: 7, Name: "Z.ai-test", AuthType: model.AuthTypeZAIOAuth,
 		OAuthCredential: `{"type":"zai","api_key":"key-id.secret","user_id":"u-1","email":"user@example.com"}`,
-		URLs:            model.ChannelURLs{{URL: zaiauth.CodingPlanProxyBaseURL, Protocols: []string{"anthropic"}}},
+		URLs:            model.ChannelURLs{{URL: zaiauth.CodingPlanAPIBaseURL, Protocols: []string{"anthropic"}}},
 		ZAIDeviceID:     "11111111-2222-4333-8444-555555555555",
 	}
 }
@@ -100,7 +100,7 @@ func TestFinalizeZAICodingPlanBodyRejectsInvalidJSON(t *testing.T) {
 func TestInjectZAICodingPlanHeadersReplicatesZCodeIdentity(t *testing.T) {
 	t.Parallel()
 	cfg := newZAITestChannel()
-	request, err := http.NewRequest(http.MethodPost, zaiauth.CodingPlanProxyBaseURL+"/v1/messages", nil)
+	request, err := http.NewRequest(http.MethodPost, zaiauth.CodingPlanAPIBaseURL+"/v1/messages", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +112,8 @@ func TestInjectZAICodingPlanHeadersReplicatesZCodeIdentity(t *testing.T) {
 
 	injectZAICodingPlanHeaders(request, cfg, "key-id.secret", []byte(`{"messages":[]}`), incoming)
 
-	if anthropicHeaderValue(request.Header, "Authorization") != "" {
-		t.Fatal("ZCode authenticates with x-api-key only")
+	if got := anthropicHeaderValue(request.Header, "Authorization"); got != "Bearer key-id.secret" {
+		t.Fatalf("Authorization = %q, want the channel's paid Key", got)
 	}
 	if got := anthropicHeaderValue(request.Header, "x-api-key"); got != "key-id.secret" {
 		t.Fatalf("x-api-key = %q", got)
@@ -154,7 +154,7 @@ func hasRawHeaderName(headers http.Header, name string) bool {
 
 func TestInjectZAICodingPlanHeadersKeepsClientAnthropicVersion(t *testing.T) {
 	t.Parallel()
-	request, err := http.NewRequest(http.MethodPost, zaiauth.CodingPlanProxyBaseURL+"/v1/messages", nil)
+	request, err := http.NewRequest(http.MethodPost, zaiauth.CodingPlanAPIBaseURL+"/v1/messages", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,8 +252,10 @@ func TestNormalizeZAIUsageRejectsEmptyQuota(t *testing.T) {
 	}
 }
 
-// The usage snapshot must round-trip through the credential so the channel list
-// can render it without another upstream call.
+/**
+ * @brief 付费窗口、未来权益与实际余额桶通过凭证快照持久化，列表读取不丢失分组和额度语义。
+ * @param t 测试上下文。
+ */
 func TestZAIUsageSnapshotPersistsOnCredential(t *testing.T) {
 	t.Parallel()
 	cfg := newZAITestChannel()
@@ -266,7 +268,9 @@ func TestZAIUsageSnapshotPersistsOnCredential(t *testing.T) {
 	}
 	snapshot := []byte(`{"requested_at":"2026-08-18T00:00:00Z","sampled_at":"2026-08-18T00:00:01Z",` +
 		`"summary":{"provider":"zai","windows":[{"limit_name":"five_hour","kind":"tokens","used_percent":42.5,` +
-		`"remaining_percent":57.5,"limit_window_seconds":18000,"reset_at":1787040000}]}}`)
+		`"remaining_percent":57.5,"limit_window_seconds":18000,"reset_at":1787040000}],` +
+		`"zai_plans":{"gift_known":true,"gifts":[{"id":"future","plan_key":"trial/one","entitlement_id":"flash","name":"Trial","display_name":"GLM-5.3-Flash","status":"pending","starts_at":1800000000,"expires_at":1800100000,"grant_units":300000000,"unit_type":"token","models":[]},` +
+		`{"id":"active","plan_key":"trial/two","entitlement_id":"glm","bucket_id":"bucket","name":"Trial","status":"active","unit_type":"token","total":100,"remaining":30,"models":["glm-5.3","glm-4.7"]}]}}}`)
 	payload, err := state.encode(snapshot, nil)
 	if err != nil {
 		t.Fatalf("encode() error = %v", err)
@@ -278,5 +282,19 @@ func TestZAIUsageSnapshotPersistsOnCredential(t *testing.T) {
 	usage, _, _ := persistedOAuthUsage(stored.OAuthUsage, zaiauth.ChannelType)
 	if usage == nil || len(usage.Windows) != 1 || usage.Windows[0].LimitName != "five_hour" {
 		t.Fatalf("persisted usage = %+v", usage)
+	}
+	if usage.ZAIPlans == nil || !usage.ZAIPlans.GiftKnown || len(usage.ZAIPlans.Gifts) != 2 {
+		t.Fatalf("persisted plans = %+v", usage.ZAIPlans)
+	}
+	gift := usage.ZAIPlans.Gifts[0]
+	if gift.Status != "pending" || gift.StartsAt != 1800000000 || gift.DisplayName != "GLM-5.3-Flash" || len(gift.Models) != 0 || gift.Total != nil || gift.Used != nil || gift.Remaining != nil {
+		t.Fatalf("persisted pending plan = %+v", gift)
+	}
+	if gift.PlanKey != "trial/one" || gift.EntitlementID != "flash" || gift.ExpiresAt != 1800100000 || gift.UnitType != "token" || gift.GrantUnits == nil || *gift.GrantUnits != 300000000 {
+		t.Fatalf("persisted planned quota = %+v", gift)
+	}
+	active := usage.ZAIPlans.Gifts[1]
+	if active.PlanKey != "trial/two" || active.EntitlementID != "glm" || active.BucketID != "bucket" || active.UnitType != "token" || len(active.Models) != 2 || active.Total == nil || *active.Total != 100 || active.Remaining == nil || *active.Remaining != 30 {
+		t.Fatalf("persisted shared bucket = %+v", active)
 	}
 }

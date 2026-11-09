@@ -1131,7 +1131,10 @@ func (s *Server) fetchZAIOAuthModels(
 	if err != nil {
 		return nil, fmt.Errorf("模型发现: 解析 Z.ai 凭证失败: %w", err)
 	}
-	if live, listErr := s.zaiCodingPlanModels(ctx, cfg, credential.APIKey); listErr != nil {
+	if live, listErr := s.zaiAvailableModels(ctx, cfg, credential); listErr != nil {
+		if credential.JWTToken != "" {
+			return nil, listErr
+		}
 		log.Printf("[WARN] Z.ai 模型目录不可用，回退内置列表 (channel=%d): %v", cfg.ID, listErr)
 	} else {
 		names, source = live, "api"
@@ -1157,13 +1160,12 @@ func (s *Server) fetchZAIOAuthModels(
 // zaiCodingPlanModels resolves the Coding Plan lineup, newest source first:
 // the account catalog (authoritative), then models.dev (keyless, tracks the
 // plan without a ccLoad release), and only then the built-in lineup.
-func (s *Server) zaiCodingPlanModels(ctx context.Context, cfg *model.Config, apiKey string) ([]string, error) {
+func (s *Server) zaiCodingPlanModels(ctx context.Context, cfg *model.Config, credential *zaiauth.Credential) ([]string, error) {
 	if s == nil || s.zaiService == nil {
 		return nil, errors.New("z.ai model discovery is unavailable")
 	}
-	service := *s.zaiService
-	service.Client = s.getClientForChannel(cfg)
-	models, err := service.ListModels(ctx, apiKey)
+	service := s.zaiPlanService(cfg, credential)
+	models, err := service.ListModels(ctx, credential.APIKey)
 	if err == nil && len(models) > 0 {
 		return models, nil
 	}

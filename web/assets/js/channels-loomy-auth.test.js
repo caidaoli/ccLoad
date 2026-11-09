@@ -17,7 +17,7 @@ function loadLoomy() {
     document: { querySelector: () => null }
   });
   // 与页面相同，加载共用额度流程，避免测试自行构造另一套状态。
-  for (const file of ['channels-codex-auth.js', 'channels-loomy-auth.js']) {
+  for (const file of ['channels-zai.js', 'channels-codex-auth.js', 'channels-loomy-auth.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, file), 'utf8'), context);
   }
   vm.runInContext('Object.assign(globalThis, { oauthUsageStateByChannelID }); rerenderOAuthUsage = () => {};', context);

@@ -1,9 +1,12 @@
+const { saveZAIFreeFirst, syncZAIOptions } = require('./channels-zai.js');
+Object.assign(global, require('./channels-zai.js'));
 const test = require('node:test');
 const assert = require('node:assert/strict');
 global.isCredentialChannelAuthType = require('./channels-render.js').isCredentialChannelAuthType;
 global.channelShowsOAuthUsage = require('./channels-render.js').channelShowsOAuthUsage;
 
 const {
+  submitZAICodingPlanKey,
   applyChannelAuthEditorMode,
   cancelOAuth,
   cancelOAuthCredentialCleanup,
@@ -44,6 +47,47 @@ const {
   submitVertexCredential,
   submitOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('ZCode preference sends only its boolean and rejects invalid input', async () => {
+  const calls = [];
+  const fetcher = async (url, options) => { calls.push({ url, options }); return { free_first: false }; };
+  assert.deepEqual(await saveZAIFreeFirst(42, false, fetcher), { free_first: false });
+  assert.equal(calls[0].url, '/admin/channels/42/zai-options');
+  assert.equal(calls[0].options.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { free_first: false });
+  await assert.rejects(() => saveZAIFreeFirst(0, true, fetcher));
+  await assert.rejects(() => saveZAIFreeFirst(42, 'false', fetcher));
+  assert.equal(calls.length, 1);
+});
+
+test('ZCode preference restores failures and ignores responses from a previous editor', async () => {
+  const previous = { document: global.document, window: global.window, fetcher: global.fetchDataWithAuth };
+  const elements = new Map(['channelZAIFreeFirstField', 'channelZAIFreeFirst', 'channelZAIFreeFirstHint'].map(id => [id, {}]));
+  global.document = { getElementById: id => elements.get(id) };
+  global.window = { t: key => key, showError() {} };
+  const input = elements.get('channelZAIFreeFirst');
+  try {
+    global.fetchDataWithAuth = async () => { throw new Error('save failed'); };
+    syncZAIOptions('zai_oauth', { jwt_token: 'jwt' }, { id: 1 });
+    input.checked = false;
+    await input.onchange();
+    assert.equal(input.checked, true);
+    assert.equal(input.disabled, false);
+    let resolve;
+    global.fetchDataWithAuth = () => new Promise(done => { resolve = done; });
+    input.checked = false;
+    const saving = input.onchange();
+    syncZAIOptions('zai_oauth', { free_first: true, jwt_token: 'other' }, { id: 2 });
+    resolve({ free_first: false });
+    await saving;
+    assert.equal(input.checked, true);
+    assert.equal(input.disabled, false);
+  } finally {
+    global.document = previous.document;
+    global.window = previous.window;
+    global.fetchDataWithAuth = previous.fetcher;
+  }
+});
 
 async function loadAnthropicUsage(channelID, fetcher) {
   return refreshOAuthUsage(channelID, async () => ({
@@ -472,10 +516,164 @@ test('OAuth login start submits the session proxy and Zed installation identity'
       proxy_url: 'socks5://127.0.0.1:1080', system_id: '9d4b8c17-12ae-4091-96bc-1a79ce2de601'
     });
     assert.deepEqual(JSON.parse(oauthStartOptions('codex', { systemID: 'ignored' }).body), { proxy_url: '' });
+    for (const site of ['zai', 'bigmodel']) {
+      assert.deepEqual(JSON.parse(oauthStartOptions('zai', { site }).body), { proxy_url: '', site });
+    }
+    assert.deepEqual(JSON.parse(oauthStartOptions('zai').body), { proxy_url: '', site: 'zai' });
+    assert.deepEqual(JSON.parse(oauthStartOptions('codex', { site: 'bigmodel' }).body), { proxy_url: '' });
     assert.throws(() => oauthStartOptions('zed', { systemID: 'not-a-uuid' }), /channels\.zed\.systemIDInvalid/);
   } finally {
     global.window = previousWindow;
   }
+});
+
+test('ZCode key import preserves the selected site and clears the submitted secret', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  try {
+    for (const site of ['zai', 'bigmodel']) {
+      const input = { value: ' key.secret ', removeAttribute() {}, setAttribute() {} };
+      const controller = new AbortController();
+      await submitZAICodingPlanKey(input, async (url, options) => {
+        assert.equal(url, '/admin/zai/credentials/import');
+        assert.deepEqual(JSON.parse(options.body), { api_key: 'key.secret', proxy_url: 'http://proxy.local:8080', site });
+        assert.equal(options.signal, controller.signal);
+        assert.equal(input.value, '');
+        return { channel_id: 1 };
+      }, controller.signal, ' http://proxy.local:8080 ', site);
+    }
+  } finally { global.window = previousWindow; }
+});
+
+test('ZCode cancellation keeps its site locked until the server acknowledges cancellation', async () => {
+  const saved = { document: global.document, window: global.window, fetch: global.fetchDataWithAuth };
+  const target = properties => ({ dataset: {}, listeners: {}, addEventListener(type, listener) { this.listeners[type] = listener; }, ...properties });
+  const dialog = target({ open: true, close() { this.open = false; } });
+  const form = target({});
+  const site = target({ value: 'bigmodel', disabled: false });
+  const button = target({ disabled: false, setAttribute() {} });
+  const elements = new Map([
+    ['oauthLoginDialog', dialog], ['oauthLoginForm', form], ['zaiOAuthSite', site],
+    ['oauthProviderSelect', target({ value: 'zai' })], ['zaiOAuthMethod', target({ value: 'oauth' })],
+    ['oauthAuthorizeButton', button], ['oauthLoginDialogStatus', target({})]
+  ]);
+  let finishInit, finishCancel;
+  const requests = [];
+  global.document = { getElementById: id => elements.get(id) || null, querySelectorAll: () => [] };
+  global.window = { t: key => key };
+  global.fetchDataWithAuth = (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    if (url.endsWith('/start')) return new Promise(resolve => { finishInit = resolve; });
+    return new Promise(resolve => { finishCancel = resolve; });
+  };
+  try {
+    setupOAuthActions();
+    const submission = form.listeners.submit({ preventDefault() {} });
+    assert.equal(site.disabled, true);
+    assert.equal(requests[0].body.site, 'bigmodel');
+    dialog.listeners.cancel({ preventDefault() {} });
+    finishInit({ url: 'https://bigmodel.cn/login', state: 'cn-flow' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests[1].url, '/admin/zai/oauth/cancel');
+    assert.deepEqual(requests[1].body, { state: 'cn-flow' });
+    assert.equal(site.disabled, true);
+    assert.equal(button.disabled, true);
+    assert.equal(dialog.open, true);
+    finishCancel({});
+    await submission;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(site.disabled, false);
+    assert.equal(button.disabled, false);
+    assert.equal(dialog.open, false);
+  } finally {
+    global.document = saved.document; global.window = saved.window; global.fetchDataWithAuth = saved.fetch;
+  }
+});
+
+test('ZCode resumes the same login after cancellation fails, including an in-flight terminal result', async () => {
+  const saved = { document: global.document, window: global.window, fetch: global.fetchDataWithAuth, reload: global.reloadChannelsList };
+  try {
+    for (const stage of ['starting', 'polling']) {
+      for (const terminal of ['complete', 'error', 'cancelled']) {
+        for (const failure of ['conflict', 'network']) {
+          const target = properties => ({ dataset: {}, listeners: {}, addEventListener(type, listener) { this.listeners[type] = listener; }, ...properties });
+          const dialog = target({ open: true, close() { this.open = false; } });
+          const form = target({});
+          const site = target({ value: 'bigmodel', disabled: false });
+          const button = target({ disabled: false, setAttribute() {} });
+          const elements = new Map([
+            ['oauthLoginDialog', dialog], ['oauthLoginForm', form], ['zaiOAuthSite', site],
+            ['oauthProviderSelect', target({ value: 'zai' })], ['zaiOAuthMethod', target({ value: 'oauth' })],
+            ['oauthAuthorizeButton', button], ['oauthLoginDialogStatus', target({})],
+            ...['oauthSessionFields', 'oauthAuthorizationURL', 'oauthOpenLink', 'oauthCallbackURL'].map(id => [id, target({})])
+          ]);
+          let finishInit, failCancel, finishStatus, reloads = 0;
+          const requests = [];
+          const errors = [];
+          const tick = () => new Promise(resolve => setImmediate(resolve));
+          global.document = { getElementById: id => elements.get(id) || null, querySelectorAll: () => [] };
+          global.window = { t: key => key, showError: message => errors.push(message) };
+          global.reloadChannelsList = async () => { reloads++; };
+          global.fetchDataWithAuth = (url, options) => {
+            requests.push({ url, body: options?.body ? JSON.parse(options.body) : null });
+            if (url.endsWith('/start')) return new Promise(resolve => { finishInit = resolve; });
+            if (url.endsWith('/cancel')) return new Promise((resolve, reject) => { failCancel = reject; });
+            assert.equal(url, '/admin/zai/oauth/status?state=cn-flow');
+            return new Promise(resolve => { finishStatus = resolve; });
+          };
+          setupOAuthActions();
+          const submission = form.listeners.submit({ preventDefault() {} });
+          if (stage === 'starting') dialog.listeners.cancel({ preventDefault() {} });
+          finishInit({ url: 'https://bigmodel.cn/login', state: 'cn-flow' });
+          await tick();
+          if (stage === 'polling') {
+            dialog.listeners.cancel({ preventDefault() {} });
+            // 终态先于取消结果到达时，不能丢弃已经收到的结果或另启轮询。
+            finishStatus({ status: terminal, error: 'login rejected' });
+            await tick();
+          }
+          assert.equal(site.disabled, true);
+          assert.equal(button.disabled, true);
+          assert.equal(dialog.open, true);
+          failCancel(failure === 'network' ? new TypeError('Failed to fetch') : new Error('session cannot be cancelled while complete'));
+          await tick();
+          if (stage === 'starting') finishStatus({ status: terminal, error: 'login rejected' });
+          await submission;
+          await tick();
+          assert.equal(site.disabled, false);
+          assert.equal(button.disabled, false);
+          assert.equal(reloads, terminal === 'complete' ? 1 : 0);
+          assert.equal(errors.length, terminal === 'complete' ? 0 : 1);
+          assert.equal(requests.filter(request => request.url.endsWith('/start')).length, 1);
+          assert.equal(requests.filter(request => request.url.includes('/status?')).length, 1);
+          assert.deepEqual(requests.find(request => request.url.endsWith('/cancel')).body, { state: 'cn-flow' });
+          dialog.listeners.cancel({ preventDefault() {} });
+          await tick();
+          assert.equal(dialog.open, false);
+          assert.equal(requests.filter(request => request.url.endsWith('/cancel')).length, 1);
+        }
+      }
+    }
+  } finally {
+    global.document = saved.document; global.window = saved.window; global.fetchDataWithAuth = saved.fetch; global.reloadChannelsList = saved.reload;
+  }
+});
+
+test('ZCode keeps polling a committing login until completion', async () => {
+  const states = ['committing', 'complete'];
+  const paths = [];
+  let delays = 0;
+  const result = await pollOAuthStatus('zai', 'existing-state', {
+    fetchStatus: async path => {
+      paths.push(path);
+      return { status: states.shift(), channel_id: 7 };
+    },
+    delay: async () => { delays++; }
+  });
+  assert.equal(result.status, 'complete');
+  assert.equal(result.channel_id, 7);
+  assert.equal(delays, 1);
+  assert.deepEqual(paths, Array(2).fill('/admin/zai/oauth/status?state=existing-state'));
 });
 
 test('Cursor credential import accepts only a user API key', async () => {

@@ -259,6 +259,88 @@ func TestLoomyChannelEditorCredentialVisibility(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 复制 Loomy 创建独立渠道并保留服务端会话，拒绝客户端替换身份和错误来源。
+ * @param t 当前测试上下文。
+ */
+func TestCopyLoomyChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	raw := `{"session":"verified-session","user_id":"verified-user","last_checkin_day":"2026-11-05","onboarding_completed_at":"2026-11-05T00:00:00Z"}`
+	source, err := store.CreateConfig(ctx, &model.Config{
+		Name: "loomy-source", AuthType: model.AuthTypeLoomySession, OAuthCredential: raw,
+		URLs:         model.ChannelURLs{{URL: loomyauth.CompletionsURL, Exact: true, Protocols: []string{util.ProtocolOpenAI}}},
+		ModelEntries: []model.ModelEntry{{Model: "chat"}}, CostMultiplier: 2.5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.CreateConfig(ctx, &model.Config{Name: "other", AuthType: model.AuthTypeAPIKey, URLs: source.URLs, ModelEntries: source.ModelEntries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		id        int64
+		authType  string
+		forbidden string
+		status    int
+	}{
+		{"copy", source.ID, model.AuthTypeLoomySession, "", http.StatusCreated},
+		{"missing source", 999999, model.AuthTypeLoomySession, "", http.StatusNotFound},
+		{"wrong source", other.ID, model.AuthTypeLoomySession, "", http.StatusBadRequest},
+		{"wrong target", source.ID, model.AuthTypeAPIKey, "", http.StatusBadRequest},
+		{"credential injection", source.ID, model.AuthTypeLoomySession, "oauth_credential", http.StatusConflict},
+		{"management injection", source.ID, model.AuthTypeLoomySession, "management_account", http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := gin.H{"name": "loomy-copy", "auth_type": tc.authType, "urls": source.URLs, "models": []model.ModelEntry{{Model: "alias", RedirectModel: "chat"}},
+				"protocol_transform_mode": "local", "priority": 123, "max_concurrency": 2, "proxy_url": "http://127.0.0.1:7890", "enabled": true,
+				"api_keys": []gin.H{{"api_key": "masked-placeholder", "cost_multiplier": 3}}}
+			if tc.forbidden != "" {
+				input[tc.forbidden] = nil
+			}
+			id := fmt.Sprint(tc.id)
+			c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/loomy-copy", input))
+			c.Params = gin.Params{{Key: "id", Value: id}}
+			server.HandleCopyLoomyChannel(c)
+			if response.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.status, response.Body.String())
+			}
+			if tc.status != http.StatusCreated {
+				return
+			}
+			data := mustParseAPIResponse[map[string]any](t, response.Body.Bytes()).Data
+			for _, key := range []string{"oauth_credential", "session", "user_id", "api_key", "api_keys"} {
+				if _, exposed := data[key]; exposed {
+					t.Fatalf("copy response exposes %s", key)
+				}
+			}
+			copyID := int64(data["id"].(float64))
+			copied, err := store.GetConfig(ctx, copyID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if copyID == source.ID || copied.Name != "loomy-copy" || !copied.UsesLoomySession() || copied.OAuthCredential != raw || copied.Priority != 123 || copied.MaxConcurrency != 2 || copied.CostMultiplier != 3 || copied.ProtocolTransformMode != "local" || copied.ProxyURL != "http://127.0.0.1:7890" || copied.ModelEntries[0].RedirectModel != "chat" || !copied.URLs[0].Exact {
+				t.Fatalf("copy did not preserve configured behavior: id=%d type=%s", copyID, copied.AuthType)
+			}
+			keys, err := store.GetAPIKeys(ctx, copyID)
+			if err != nil || len(keys) != 0 {
+				t.Fatalf("synthetic key was persisted: count=%d err=%v", len(keys), err)
+			}
+		})
+	}
+	unchanged, err := store.GetConfig(ctx, source.ID)
+	if err != nil || unchanged.Name != source.Name || unchanged.OAuthCredential != raw || unchanged.CostMultiplier != 2.5 {
+		t.Fatal("source channel was modified")
+	}
+	configs, err := store.ListConfigs(ctx)
+	if err != nil || len(configs) != 3 {
+		t.Fatalf("rejected requests created channels: count=%d err=%v", len(configs), err)
+	}
+}
+
 func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

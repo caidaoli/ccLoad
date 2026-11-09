@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -49,11 +50,19 @@ func (u *zaiOAuthTestUpstream) handler(t *testing.T) http.Handler {
 	})
 }
 
+/**
+ * @brief 构造可轮询的模拟授权管理器。
+ * @param t 测试上下文。
+ * @param upstream 模拟的授权状态。
+ * @param resolve 凭证派生回调。
+ * @param commit 持久化回调。
+ * @return 测试结束时自动关闭的管理器。
+ */
 func newZAIOAuthTestManager(
 	t *testing.T,
 	upstream *zaiOAuthTestUpstream,
-	resolve func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error),
-	commit func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error),
+	resolve func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error),
+	commit func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error),
 ) *zaiOAuthManager {
 	t.Helper()
 	server := httptest.NewServer(upstream.handler(t))
@@ -64,6 +73,56 @@ func newZAIOAuthTestManager(
 	manager.sleep = func(context.Context, time.Duration) {}
 	t.Cleanup(manager.close)
 	return manager
+}
+
+/**
+ * @brief 国内体验登录无需付费 Key 或套餐即可提交，站点不可退回国际版。
+ * @param t 测试上下文。
+ */
+func TestZAIOAuthBigModelTrialOnly(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/init") {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"flow_id":"domestic","authorize_url":"https://bigmodel.cn/login"}}`))
+		} else {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"status":"ready","token":"trial-jwt"}}`))
+		}
+	}))
+	defer upstream.Close()
+	service := zaiauth.NewService(upstream.Client())
+	service.OAuthBaseURL = upstream.URL
+	var saved *zaiauth.Credential
+	manager := newZAIOAuthManager(context.Background(), service,
+		func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) {
+			t.Error("trial-only login must not derive a paid key")
+			return nil, errors.New("unexpected resolution")
+		},
+		func(_ context.Context, options zaiOAuthOptions, credential *zaiauth.Credential) (int64, string, error) {
+			if options.site != zaiauth.SiteBigModel {
+				t.Errorf("lost session site: %q", options.site)
+			}
+			saved = credential
+			return 1, "BigModel", nil
+		})
+	defer manager.close()
+	started, err := manager.start(context.Background(), "admin", zaiOAuthOptions{site: zaiauth.SiteBigModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := waitForZAIOAuthStatus(t, manager, "admin", started.State)
+	if status.Status != "complete" || saved == nil || saved.Site != zaiauth.SiteBigModel || saved.APIKey != "" || saved.JWTToken != "trial-jwt" {
+		t.Fatalf("trial-only login: %+v %+v", status, saved)
+	}
+	for _, site := range []zaiauth.Site{"invalid", "https://example.com"} {
+		request := zaiOAuthStartRequest{Site: site}
+		if request.Validate() == nil {
+			t.Fatalf("accepted invalid site %q", site)
+		}
+		imported := zaiCredentialImportRequest{Site: site, APIKey: "key"}
+		if imported.Validate() == nil {
+			t.Fatalf("accepted invalid import site %q", site)
+		}
+	}
 }
 
 func waitForZAIOAuthStatus(t *testing.T, manager *zaiOAuthManager, session, state string) zaiOAuthStatusResponse {
@@ -80,27 +139,35 @@ func waitForZAIOAuthStatus(t *testing.T, manager *zaiOAuthManager, session, stat
 	return zaiOAuthStatusResponse{}
 }
 
+/**
+ * @brief 授权完成持久化身份和凭证。
+ * @param t 测试上下文。
+ */
 func TestZAIOAuthManagerCommitsAuthorizedAccount(t *testing.T) {
 	t.Parallel()
 	upstream := &zaiOAuthTestUpstream{readyAfter: 2}
 	var resolvedToken string
 	var committed *zaiauth.Credential
 	manager := newZAIOAuthTestManager(t, upstream,
-		func(_ context.Context, _ oauthLoginOptions, accessToken string) (*zaiauth.Credential, error) {
+		func(_ context.Context, _ zaiOAuthOptions, accessToken string) (*zaiauth.Credential, error) {
 			resolvedToken = accessToken
 			return &zaiauth.Credential{APIKey: "key.secret"}, nil
 		},
-		func(_ context.Context, _ oauthLoginOptions, credential *zaiauth.Credential) (int64, string, error) {
+		func(_ context.Context, _ zaiOAuthOptions, credential *zaiauth.Credential) (int64, string, error) {
 			committed = credential
 			return 42, "Z.ai-user@example.com", nil
 		},
 	)
 
-	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
+	started, err := manager.start(context.Background(), "admin-1", zaiOAuthOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
-	if started.URL != "https://zcode.z.ai/oauth/authorize" || started.State != "flow-1" || started.Status != "pending" {
+	authorize, parseErr := url.Parse(started.URL)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if authorize.Host != "zcode.z.ai" || authorize.Path != "/oauth/authorize" || started.State != "flow-1" || started.Status != "pending" {
 		t.Fatalf("start = %+v", started)
 	}
 	status := waitForZAIOAuthStatus(t, manager, "admin-1", started.State)
@@ -124,20 +191,24 @@ func TestZAIOAuthManagerCommitsAuthorizedAccount(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 上游拒绝不能提交账号。
+ * @param t 测试上下文。
+ */
 func TestZAIOAuthManagerReportsUpstreamRejection(t *testing.T) {
 	t.Parallel()
 	upstream := &zaiOAuthTestUpstream{failed: true}
 	manager := newZAIOAuthTestManager(t, upstream,
-		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) {
+		func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) {
 			t.Error("a rejected authorization must not resolve a key")
 			return nil, nil
 		},
-		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) {
 			t.Error("a rejected authorization must not create a channel")
 			return 0, "", nil
 		},
 	)
-	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
+	started, err := manager.start(context.Background(), "admin-1", zaiOAuthOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -147,17 +218,21 @@ func TestZAIOAuthManagerReportsUpstreamRejection(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 持久化失败返回终态错误。
+ * @param t 测试上下文。
+ */
 func TestZAIOAuthManagerSurfacesCommitFailure(t *testing.T) {
 	t.Parallel()
 	manager := newZAIOAuthTestManager(t, &zaiOAuthTestUpstream{},
-		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) {
+		func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) {
 			return &zaiauth.Credential{APIKey: "key.secret"}, nil
 		},
-		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) {
 			return 0, "", errors.New("channel write failed")
 		},
 	)
-	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
+	started, err := manager.start(context.Background(), "admin-1", zaiOAuthOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -167,19 +242,22 @@ func TestZAIOAuthManagerSurfacesCommitFailure(t *testing.T) {
 	}
 }
 
-// One administrator owns one live login; sessions are never readable by another.
+/**
+ * @brief 授权会话只对所属管理员可见。
+ * @param t 测试上下文。
+ */
 func TestZAIOAuthManagerScopesSessionsToAdministrator(t *testing.T) {
 	t.Parallel()
 	upstream := &zaiOAuthTestUpstream{readyAfter: 1 << 30}
 	manager := newZAIOAuthTestManager(t, upstream,
-		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) {
+		func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) {
 			return nil, errors.New("unused")
 		},
-		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) {
 			return 0, "", nil
 		},
 	)
-	started, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
+	started, err := manager.start(context.Background(), "admin-1", zaiOAuthOptions{})
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -201,21 +279,27 @@ func TestZAIOAuthManagerScopesSessionsToAdministrator(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 匿名请求不能创建授权会话。
+ * @param t 测试上下文。
+ */
 func TestZAIOAuthManagerRejectsAnonymousStart(t *testing.T) {
 	t.Parallel()
 	manager := newZAIOAuthTestManager(t, &zaiOAuthTestUpstream{},
-		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) { return nil, nil },
-		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) { return nil, nil },
+		func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) {
 			return 0, "", nil
 		},
 	)
-	if _, err := manager.start(context.Background(), "  ", oauthLoginOptions{}); err == nil {
+	if _, err := manager.start(context.Background(), "  ", zaiOAuthOptions{}); err == nil {
 		t.Fatal("start() must require an administrator session")
 	}
 }
 
-// The hosted flow is enabled per ZCode release; an empty 404 must be reported
-// as an upstream availability fact so the UI can offer the key path instead.
+/**
+ * @brief 上游不提供登录时返回可识别的不可用错误。
+ * @param t 测试上下文。
+ */
 func TestZAIOAuthManagerReportsUnavailableFlow(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -225,13 +309,13 @@ func TestZAIOAuthManagerReportsUnavailableFlow(t *testing.T) {
 	service := zaiauth.NewService(server.Client())
 	service.OAuthBaseURL = server.URL + "/api/v1"
 	manager := newZAIOAuthManager(context.Background(), service,
-		func(context.Context, oauthLoginOptions, string) (*zaiauth.Credential, error) { return nil, nil },
-		func(context.Context, oauthLoginOptions, *zaiauth.Credential) (int64, string, error) {
+		func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) { return nil, nil },
+		func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) {
 			return 0, "", nil
 		},
 	)
 	t.Cleanup(manager.close)
-	_, err := manager.start(context.Background(), "admin-1", oauthLoginOptions{})
+	_, err := manager.start(context.Background(), "admin-1", zaiOAuthOptions{})
 	if !errors.Is(err, zaiauth.ErrOAuthFlowUnavailable) {
 		t.Fatalf("start() error = %v", err)
 	}

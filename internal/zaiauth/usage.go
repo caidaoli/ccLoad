@@ -80,7 +80,13 @@ func (q QuotaLimit) Name() string {
 	return "unknown"
 }
 
-// FetchQuotaLimits reads the Coding Plan allowance windows for one key.
+/**
+ * @brief 查询所选站点的付费额度窗口，国内接口使用裸 Key。
+ * @param ctx 请求上下文。
+ * @param apiKey 付费套餐 Key。
+ * @return 上游额度窗口。
+ * @return 配置、认证、网络或响应解析失败时返回错误。
+ */
 func (s *Service) FetchQuotaLimits(ctx context.Context, apiKey string) ([]QuotaLimit, error) {
 	if s == nil || s.Client == nil || strings.TrimSpace(s.QuotaLimitURL) == "" {
 		return nil, errors.New("z.ai quota endpoint is unavailable")
@@ -96,6 +102,9 @@ func (s *Service) FetchQuotaLimits(ctx context.Context, apiKey string) ([]QuotaL
 		return nil, fmt.Errorf("build z.ai quota request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+apiKey)
+	if s.Site == SiteBigModel {
+		request.Header.Set("Authorization", apiKey)
+	}
 	request.Header.Set("Accept", "application/json")
 	ApplySourceHeaders(request.Header)
 	response, err := s.Client.Do(request)

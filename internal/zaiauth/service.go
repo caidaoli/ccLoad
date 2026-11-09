@@ -16,21 +16,27 @@ import (
 	"time"
 )
 
-// Service talks to the ZCode and Z.ai control planes. It never persists
-// anything and never returns a secret inside an error.
+/**
+ * @brief 访问 ZCode 公共控制面及所选站点的业务接口，不持久化凭证。
+ */
 type Service struct {
-	Client          *http.Client
-	OAuthBaseURL    string
-	BizBaseURL      string
-	CodingModelsURL string
-	ModelsURL       string
-	AgentConfigsURL string
-	CommunityURL    string
-	QuotaLimitURL   string
-	Now             func() time.Time
+	Site                Site             ///< 已验证的账号站点。
+	SubscriptionBaseURL string           ///< 付费订阅根地址；空值沿用 BizBaseURL。
+	Client              *http.Client     ///< 请求出口。
+	OAuthBaseURL        string           ///< 两站共用的 ZCode 控制面。
+	BizBaseURL          string           ///< 账号项目与 Key 业务根地址。
+	CodingModelsURL     string           ///< 付费 Coding Plan 模型目录。
+	ModelsURL           string           ///< 通用模型目录及 Key 验证。
+	CommunityURL        string           ///< 公共 models.dev 目录。
+	QuotaLimitURL       string           ///< 付费额度窗口。
+	Now                 func() time.Time ///< 可注入的查询时钟。
 }
 
-// NewService returns the production Z.ai service.
+/**
+ * @brief 创建国际站控制面服务；付费推理地址由站点固定配置提供。
+ * @param client 请求出口；nil 使用默认 HTTP 客户端。
+ * @return 独立服务配置，可用 ForSite 切换账号所属站点。
+ */
 func NewService(client *http.Client) *Service {
 	if client == nil {
 		client = http.DefaultClient
@@ -38,7 +44,7 @@ func NewService(client *http.Client) *Service {
 	return &Service{
 		Client: client, OAuthBaseURL: OAuthAPIBaseURL, BizBaseURL: BizBaseURL,
 		CodingModelsURL: CodingModelsURL, ModelsURL: ModelsURL,
-		AgentConfigsURL: AgentConfigsURL, CommunityURL: CommunityCatalogURL,
+		CommunityURL:  CommunityCatalogURL,
 		QuotaLimitURL: QuotaLimitURL, Now: time.Now,
 	}
 }
@@ -86,7 +92,13 @@ func GeneratePollToken() (string, error) {
 	return hex.EncodeToString(random), nil
 }
 
-// InitFlow starts one hosted ZCode authorization bound to pollToken.
+/**
+ * @brief 按站点启动 ZCode 授权并设置对应的浏览器回跳参数。
+ * @param ctx 请求上下文。
+ * @param pollToken 绑定本次登录的轮询令牌。
+ * @return 上游登录会话。
+ * @return 配置、网络或登录响应非法时返回错误。
+ */
 func (s *Service) InitFlow(ctx context.Context, pollToken string) (*Flow, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
@@ -94,7 +106,11 @@ func (s *Service) InitFlow(ctx context.Context, pollToken string) (*Flow, error)
 	if strings.TrimSpace(pollToken) == "" {
 		return nil, errors.New("z.ai poll token is required")
 	}
-	payload, err := json.Marshal(map[string]string{"provider": OAuthProvider})
+	site, err := NormalizeSite(s.Site)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]string{"provider": string(site)})
 	if err != nil {
 		return nil, fmt.Errorf("encode z.ai OAuth init request: %w", err)
 	}
@@ -116,16 +132,32 @@ func (s *Service) InitFlow(ctx context.Context, pollToken string) (*Flow, error)
 	if strings.TrimSpace(flow.FlowID) == "" || strings.TrimSpace(flow.AuthorizeURL) == "" {
 		return nil, errors.New("z.ai OAuth init response is incomplete")
 	}
-	if _, err := url.Parse(flow.AuthorizeURL); err != nil {
+	authorizeURL, err := url.Parse(flow.AuthorizeURL)
+	if err != nil || authorizeURL.Scheme != "https" || authorizeURL.Host == "" {
 		return nil, errors.New("z.ai OAuth init response has an invalid authorize_url")
 	}
+	back := "https://zcode.z.ai/app/oauth/login?" + url.Values{"redirect": {"zcode://oauth/callback"}, "app_version": {AppVersion}}.Encode()
+	redirectParam := "redirect_uri"
+	if site == SiteBigModel {
+		redirectParam = "redirect"
+	}
+	query := authorizeURL.Query()
+	query.Set(redirectParam, back)
+	authorizeURL.RawQuery = query.Encode()
 	return &Flow{
-		FlowID: flow.FlowID, AuthorizeURL: flow.AuthorizeURL,
+		FlowID: flow.FlowID, AuthorizeURL: authorizeURL.String(),
 		ExpiresAt: flow.ExpiresAt, PollIntervalSec: flow.PollIntervalSec,
 	}, nil
 }
 
-// Poll reads the current state of one pending authorization.
+/**
+ * @brief 读取登录轮询状态，ready 可以仅包含体验 JWT。
+ * @param ctx 轮询上下文。
+ * @param flowID 上游登录会话 ID。
+ * @param pollToken 会话轮询令牌。
+ * @return 当前登录状态与认证材料。
+ * @return 网络、响应格式或 ready 缺少全部认证材料时返回错误。
+ */
 func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResult, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
@@ -149,9 +181,20 @@ func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResu
 		ZAI struct {
 			AccessToken string `json:"access_token"`
 		} `json:"zai"`
+		BigModel struct {
+			AccessToken string `json:"access_token"` ///< 国内授权令牌。
+			Alias       string `json:"accessToken"`  ///< 国内接口的驼峰别名。
+		} `json:"bigmodel"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, fmt.Errorf("decode z.ai OAuth poll response: %w", err)
+	}
+	accessToken := strings.TrimSpace(payload.ZAI.AccessToken)
+	if s.Site == SiteBigModel {
+		accessToken = strings.TrimSpace(payload.BigModel.AccessToken)
+		if accessToken == "" {
+			accessToken = strings.TrimSpace(payload.BigModel.Alias)
+		}
 	}
 	switch PollStatus(strings.TrimSpace(payload.Status)) {
 	case PollPending:
@@ -159,12 +202,12 @@ func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResu
 	case PollFailed:
 		return &PollResult{Status: PollFailed}, nil
 	case PollReady:
-		if strings.TrimSpace(payload.ZAI.AccessToken) == "" {
-			return nil, errors.New("z.ai OAuth poll response is missing access_token")
+		if accessToken == "" && strings.TrimSpace(payload.Token) == "" {
+			return nil, errors.New("z.ai OAuth poll response is missing access_token and token")
 		}
 		return &PollResult{
 			Status:      PollReady,
-			AccessToken: strings.TrimSpace(payload.ZAI.AccessToken),
+			AccessToken: accessToken,
 			JWTToken:    strings.TrimSpace(payload.Token),
 			Identity: Identity{
 				UserID: strings.TrimSpace(payload.User.UserID),
@@ -323,9 +366,12 @@ func parseModelCatalog(body []byte) ([]string, error) {
 	return models, nil
 }
 
-// ListCommunityModels reads the Coding Plan lineup from models.dev. It needs no
-// account key, so it answers even when the account catalog is unreachable or
-// the key was rejected.
+/**
+ * @brief 按账号站点读取无需 Key 的 models.dev Coding Plan 目录。
+ * @param ctx 查询上下文。
+ * @return 按发布日期排序的模型名称。
+ * @return 请求失败、响应非法或所选站点目录为空时返回错误。
+ */
 func (s *Service) ListCommunityModels(ctx context.Context) ([]string, error) {
 	if s == nil || s.Client == nil || strings.TrimSpace(s.CommunityURL) == "" {
 		return nil, errors.New("z.ai community catalog is unavailable")
@@ -349,7 +395,7 @@ func (s *Service) ListCommunityModels(ctx context.Context) ([]string, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("z.ai community catalog returned HTTP %d", response.StatusCode)
 	}
-	return parseCommunityCatalog(body, CommunityCatalogProvider)
+	return parseCommunityCatalog(body, s.Site.config().catalog)
 }
 
 // parseCommunityCatalog returns the provider's models newest first, so a
@@ -427,69 +473,22 @@ func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) error {
 	}
 }
 
-// ResolveProxyBaseURL returns the Coding Plan endpoint ZCode currently routes
-// to. Callers fall back to CodingPlanProxyBaseURL when the table is
-// unavailable: routing is an optimization, never a hard dependency.
-func (s *Service) ResolveProxyBaseURL(ctx context.Context) (string, error) {
-	if err := s.validate(); err != nil {
-		return "", err
-	}
-	requestCtx, cancel := requestContext(ctx)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, s.AgentConfigsURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("build z.ai routing request: %w", err)
-	}
-	request.Header.Set("Accept", "application/json")
-	ApplySourceHeaders(request.Header)
-	response, err := s.Client.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("z.ai routing request: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
-	if err != nil {
-		return "", fmt.Errorf("read z.ai routing response: %w", err)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("z.ai routing returned HTTP %d", response.StatusCode)
-	}
-	var payload struct {
-		Data struct {
-			ProxyEndpoint struct {
-				Mapping []struct {
-					From string `json:"from"`
-					To   string `json:"to"`
-				} `json:"mapping"`
-			} `json:"proxyEndpoint"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", fmt.Errorf("decode z.ai routing response: %w", err)
-	}
-	const messagesPath = "/v1/messages"
-	source := CodingPlanAPIBaseURL + messagesPath
-	for _, mapping := range payload.Data.ProxyEndpoint.Mapping {
-		if !strings.EqualFold(strings.TrimSpace(mapping.From), source) {
-			continue
-		}
-		target := strings.TrimSpace(mapping.To)
-		parsed, parseErr := url.Parse(target)
-		if parseErr != nil || !strings.EqualFold(parsed.Scheme, "https") ||
-			!strings.HasSuffix(parsed.Path, messagesPath) {
-			return "", errors.New("z.ai routing table has an unusable Coding Plan endpoint")
-		}
-		return strings.TrimSuffix(target, messagesPath), nil
-	}
-	return "", errors.New("z.ai routing table has no Coding Plan endpoint")
-}
-
 type customerSelection struct {
 	organizationID string
 	projectID      string
 }
 
+/**
+ * @brief 国际版交换业务令牌，国内版直接使用授权返回的业务令牌。
+ * @param ctx 请求上下文。
+ * @param accessToken 已验证的账号授权材料。
+ * @return 未加认证前缀的业务令牌。
+ * @return 国际版交换失败或响应缺少令牌时返回错误。
+ */
 func (s *Service) bizToken(ctx context.Context, accessToken string) (string, error) {
+	if s.Site == SiteBigModel {
+		return strings.TrimSpace(accessToken), nil
+	}
 	payload, err := json.Marshal(map[string]string{"token": accessToken})
 	if err != nil {
 		return "", fmt.Errorf("encode z.ai business login request: %w", err)
@@ -516,6 +515,14 @@ func (s *Service) bizToken(ctx context.Context, accessToken string) (string, err
 	return resolved, nil
 }
 
+/**
+ * @brief 查找个人账号项目；团队项目不能作为个人 Coding Plan 的 Key 来源。
+ * @param ctx 请求上下文。
+ * @param bizToken 所选站点的业务令牌。
+ * @return 默认个人项目，缺省时使用首个可用个人项目。
+ * @return 上游确认的账号身份。
+ * @return 业务查询失败、响应非法或没有个人项目时返回错误。
+ */
 func (s *Service) customerInfo(ctx context.Context, bizToken string) (customerSelection, Identity, error) {
 	data, err := s.bizRequest(ctx, http.MethodGet,
 		strings.TrimRight(s.BizBaseURL, "/")+"/api/biz/customer/getCustomerInfo", bizToken, nil, "customer info")
@@ -529,40 +536,48 @@ func (s *Service) customerInfo(ctx context.Context, bizToken string) (customerSe
 			OrganizationID   string `json:"organizationId"`
 			OrganizationName string `json:"organizationName"`
 			Projects         []struct {
-				ProjectID   string `json:"projectId"`
-				ProjectName string `json:"projectName"`
+				ProjectID   string          `json:"projectId"`
+				ProjectName string          `json:"projectName"`
+				ProjectType json.RawMessage `json:"projectType"` ///< 2 表示团队项目，兼容数字或字符串。
 			} `json:"projects"`
 		} `json:"organizations"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return customerSelection{}, Identity{}, fmt.Errorf("decode z.ai customer info response: %w", err)
 	}
-	if len(payload.Organizations) == 0 {
-		return customerSelection{}, Identity{}, errors.New("z.ai account has no organization")
-	}
-	organization := payload.Organizations[0]
-	for _, candidate := range payload.Organizations {
-		if strings.Contains(candidate.OrganizationName, defaultOrganizationName) {
-			organization = candidate
+	var selection customerSelection
+	for _, organization := range payload.Organizations {
+		organizationID := strings.TrimSpace(organization.OrganizationID)
+		if organizationID == "" {
+			continue
+		}
+		projectID := ""
+		for _, project := range organization.Projects {
+			id := strings.TrimSpace(project.ProjectID)
+			if id == "" || strings.Trim(string(project.ProjectType), "\" \t\r\n") == "2" {
+				continue
+			}
+			isDefault := strings.Contains(project.ProjectName, defaultProjectName)
+			if projectID == "" || isDefault {
+				projectID = id
+			}
+			if isDefault {
+				break
+			}
+		}
+		if projectID == "" {
+			continue
+		}
+		isDefault := strings.Contains(organization.OrganizationName, defaultOrganizationName)
+		if selection.organizationID == "" || isDefault {
+			selection = customerSelection{organizationID: organizationID, projectID: projectID}
+		}
+		if isDefault {
 			break
 		}
 	}
-	if len(organization.Projects) == 0 {
-		return customerSelection{}, Identity{}, errors.New("z.ai organization has no project")
-	}
-	project := organization.Projects[0]
-	for _, candidate := range organization.Projects {
-		if strings.Contains(candidate.ProjectName, defaultProjectName) {
-			project = candidate
-			break
-		}
-	}
-	selection := customerSelection{
-		organizationID: strings.TrimSpace(organization.OrganizationID),
-		projectID:      strings.TrimSpace(project.ProjectID),
-	}
-	if selection.organizationID == "" || selection.projectID == "" {
-		return customerSelection{}, Identity{}, errors.New("z.ai customer info is missing organization or project")
+	if selection.projectID == "" {
+		return customerSelection{}, Identity{}, errors.New("ZCode account has no personal project for an API key")
 	}
 	identity := Identity{UserID: strings.TrimSpace(payload.UserID), Email: strings.TrimSpace(payload.Email)}
 	return selection, identity, nil
@@ -622,14 +637,24 @@ func (s *Service) copyAPIKeySecret(ctx context.Context, bizToken, keysURL, apiKe
 	return strings.TrimSpace(payload.SecretKey), nil
 }
 
-// envelopeRequest performs one ZCode `{code,msg,data}` request.
+/**
+ * @brief 使用 Bearer 轮询令牌访问两站共用的 ZCode 登录接口。
+ * @param ctx 请求上下文。
+ * @param method HTTP 方法。
+ * @param target 完整地址。
+ * @param bearer 无前缀的轮询令牌。
+ * @param payload 请求 JSON；nil 表示无请求体。
+ * @param operation 错误上下文。
+ * @return 信封中的 data。
+ * @return 网络或上游拒绝时返回错误，接口不可用可匹配 ErrOAuthFlowUnavailable。
+ */
 func (s *Service) envelopeRequest(
 	ctx context.Context,
 	method, target, bearer string,
 	payload []byte,
 	operation string,
 ) (json.RawMessage, error) {
-	body, status, err := s.do(ctx, method, target, bearer, payload, operation)
+	body, status, err := s.do(ctx, method, target, "Bearer "+strings.TrimSpace(bearer), payload, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -650,15 +675,28 @@ func (s *Service) envelopeRequest(
 	return envelope.Data, nil
 }
 
-// bizRequest performs one Z.ai business API request. The business API answers
-// with the same envelope but tolerates several success codes.
+/**
+ * @brief 按站点认证契约访问业务接口，国内令牌不加 Bearer。
+ * @param ctx 请求上下文。
+ * @param method HTTP 方法。
+ * @param target 完整地址。
+ * @param bearer 原始业务令牌；空值表示无需认证。
+ * @param payload 请求 JSON；nil 表示无请求体。
+ * @param operation 错误上下文。
+ * @return 信封中的 data。
+ * @return 网络、响应解析或上游拒绝时返回错误。
+ */
 func (s *Service) bizRequest(
 	ctx context.Context,
 	method, target, bearer string,
 	payload []byte,
 	operation string,
 ) (json.RawMessage, error) {
-	body, status, err := s.do(ctx, method, target, bearer, payload, operation)
+	authorization := strings.TrimSpace(bearer)
+	if authorization != "" && s.Site != SiteBigModel {
+		authorization = "Bearer " + authorization
+	}
+	body, status, err := s.do(ctx, method, target, authorization, payload, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -676,9 +714,21 @@ func (s *Service) bizRequest(
 	return envelope.Data, nil
 }
 
+/**
+ * @brief 发送完整认证值，避免把国内业务认证与公共 OAuth 认证混用。
+ * @param ctx 请求上下文。
+ * @param method HTTP 方法。
+ * @param target 完整地址。
+ * @param authorization 已按接口约定设置前缀的认证值；空值不发送。
+ * @param payload 请求 JSON；nil 表示无请求体。
+ * @param operation 错误上下文。
+ * @return 响应正文。
+ * @return HTTP 状态码；未取得响应时为零。
+ * @return 构造请求、网络或读取失败时返回错误。
+ */
 func (s *Service) do(
 	ctx context.Context,
-	method, target, bearer string,
+	method, target, authorization string,
 	payload []byte,
 	operation string,
 ) ([]byte, int, error) {
@@ -692,8 +742,8 @@ func (s *Service) do(
 	if err != nil {
 		return nil, 0, fmt.Errorf("build z.ai %s request: %w", operation, err)
 	}
-	if strings.TrimSpace(bearer) != "" {
-		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearer))
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
 	}
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -742,13 +792,17 @@ func envelopeCodeSucceeded(code json.RawMessage) bool {
 	}
 }
 
+/**
+ * @brief 拒绝不完整的服务配置及未知站点。
+ * @return 缺少客户端、端点或站点非法时返回错误。
+ */
 func (s *Service) validate() error {
 	if s == nil || s.Client == nil || strings.TrimSpace(s.OAuthBaseURL) == "" ||
-		strings.TrimSpace(s.BizBaseURL) == "" || strings.TrimSpace(s.ModelsURL) == "" ||
-		strings.TrimSpace(s.AgentConfigsURL) == "" {
+		strings.TrimSpace(s.BizBaseURL) == "" || strings.TrimSpace(s.ModelsURL) == "" {
 		return errors.New("z.ai service is unavailable")
 	}
-	return nil
+	_, err := NormalizeSite(s.Site)
+	return err
 }
 
 func requestContext(ctx context.Context) (context.Context, context.CancelFunc) {

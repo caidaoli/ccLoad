@@ -225,6 +225,10 @@ type upstreamWireAliases struct {
  * @brief 上游转发结果，真实用量参与计费，估算用量仅供日志展示。
  */
 type fwResult struct {
+	zaiLocalPlanError   bool   ///< 本地资格拒绝，未请求推理上游，不能产生故障冷却。
+	zaiLocalPlanKind    string ///< 可信本地拒绝类别，区分排队与终态。
+	zaiModel            string ///< ZCode 实际 wire 模型，独立于 -Trial 路由身份。
+	zaiTrial            bool   ///< 实际体验请求注入了日期消息，修复错误位置需减一。
 	Status              int
 	UpstreamStatus      int                           // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
 	ConfiguredDetection *cooldown.DetectionEvaluation ///< 成功响应探测已确认的规则与截止时间，错误处理不重新匹配
@@ -306,6 +310,7 @@ type ForwardObserver struct {
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
+	zaiStart                *zaiStartRequest        ///< ZAI Trial 忙拒绝按下游请求去重，跨渠道保留。
 	abortChannel            context.CancelCauseFunc // 覆盖当前渠道所有 Key/URL 和重试等待
 	antigravityCreditsTried map[string]bool
 	antigravityRateRetried  map[string]bool
@@ -405,7 +410,9 @@ type proxyResult struct {
 	// 本地转换无法表示本次请求，不代表端点能力；回退成功后也不写能力缓存。
 	requestScopedProtocolMiss bool
 	websocketTargetCooling    bool
-	upstreamErrorEvent        bool ///< 错误来自 SSE/原生 WS 事件，而非 HTTP 错误响应体
+	upstreamErrorEvent        bool   ///< 错误来自 SSE/原生 WS 事件，而非 HTTP 错误响应体
+	zaiTrial                  bool   ///< 最终响应来自体验套餐，不能据此刷新付费 Key。
+	zaiLocalPlanKind          string ///< 本地 Trial 拒绝，不计入渠道上游故障。
 	responsesTurn             responsesWebsocketTurnResult
 	hasResponsesTurn          bool
 }

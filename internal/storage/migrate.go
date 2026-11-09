@@ -378,6 +378,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		}
 	}
 
+	// URL 禁用状态表也已就绪，付费地址和状态必须在同一事务切换。
+	if err := migrateZAICodingPlanURLs(ctx, db, dialect); err != nil {
+		return fmt.Errorf("migrate ZCode paid URLs: %w", err)
+	}
+
 	// 旧管理员会话不携带身份作用域，不能迁移为新的 Web 会话。
 	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS admin_sessions"); err != nil {
 		return fmt.Errorf("drop obsolete admin_sessions table: %w", err)

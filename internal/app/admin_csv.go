@@ -174,7 +174,12 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			keyStrategy = apiKeys[0].KeyStrategy
 		}
 
-		modelEntriesJSON, err := json.Marshal(cfg.ModelEntries)
+		modelEntries := cfg.ModelEntries
+		// ZAI 可暂时没有套餐模型，空目录导出为 []；其他渠道沿用原表示。
+		if cfg.UsesZAIOAuth() && modelEntries == nil {
+			modelEntries = []model.ModelEntry{}
+		}
+		modelEntriesJSON, err := json.Marshal(modelEntries)
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize model entries for channel %d: %w", cfg.ID, err))
 			return
@@ -613,7 +618,7 @@ func (s *Server) parseChannelImportRow(
 	_, hasModelEntriesJSON := columnIndex["model_entries_json"]
 	if hasModelEntriesJSON && modelEntriesJSONRaw == "" {
 		missing = append(missing, "model_entries_json")
-	} else if !hasModelEntriesJSON && modelsRaw == "" {
+	} else if !hasModelEntriesJSON && modelsRaw == "" && authType != model.AuthTypeZAIOAuth {
 		missing = append(missing, "models")
 	}
 	if len(missing) > 0 {
@@ -686,7 +691,7 @@ func (s *Server) parseChannelImportRow(
 	var models []string
 	if !hasModelEntriesJSON {
 		models = parseImportModels(modelsRaw)
-		if len(models) == 0 {
+		if len(models) == 0 && authType != model.AuthTypeZAIOAuth {
 			return nil, fmt.Sprintf("第%d行模型格式无效", lineNo), true
 		}
 	}
@@ -845,7 +850,7 @@ func (s *Server) parseChannelImportRow(
 	// 构建模型条目（合并models和modelRedirects）
 	modelEntries := make([]model.ModelEntry, 0, len(models))
 	if hasModelEntriesJSON {
-		if err := json.Unmarshal([]byte(modelEntriesJSONRaw), &modelEntries); err != nil || len(modelEntries) == 0 {
+		if err := json.Unmarshal([]byte(modelEntriesJSONRaw), &modelEntries); err != nil || modelEntries == nil || (len(modelEntries) == 0 && authType != model.AuthTypeZAIOAuth) {
 			return nil, fmt.Sprintf("第%d行 model_entries_json 无效: %v", lineNo, err), true
 		}
 	} else {
@@ -1372,14 +1377,7 @@ func (s *Server) validateCSVImportOAuthCredential(
 		return credential.JSON()
 
 	case model.AuthTypeZAIOAuth:
-		credential, err := zaiauth.ParseCredential([]byte(imported.OAuthCredential))
-		if err != nil {
-			return "", err
-		}
-		if _, err := requestZAIUsage(ctx, s.zaiUsageService(existing), credential.APIKey); err != nil {
-			return "", err
-		}
-		return credential.JSON()
+		return s.validateImportedZAICredential(ctx, existing, imported.OAuthCredential)
 
 	case model.AuthTypeCursorOAuth:
 		credential, err := cursorauth.ParseCredential([]byte(imported.OAuthCredential))

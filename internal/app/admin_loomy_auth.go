@@ -275,6 +275,54 @@ func (s *Server) commitLoomyCredential(ctx context.Context, credential *loomyaut
 }
 
 /**
+ * @brief 用已有 Loomy 渠道的已验证会话创建独立配置，凭证始终从服务端读取。
+ * @param c 管理员请求上下文，路径 id 指定源渠道，JSON 为复制表单配置。
+ * @note 创建新渠道并失效列表缓存；不修改源渠道，不保存合成 API Key，不在响应中返回会话。
+ */
+func (s *Server) HandleCopyLoomyChannel(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	var req ChannelRequest
+	if err := BindAndValidate(c, &req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	if req.forbiddenCredentialFields || req.managementAccountSet {
+		RespondErrorMsg(c, http.StatusConflict, "copied credentials must come from the source channel")
+		return
+	}
+	source, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	if !source.UsesLoomySession() || req.AuthType != model.AuthTypeLoomySession {
+		RespondErrorMsg(c, http.StatusBadRequest, "source and copy must be Loomy session channels")
+		return
+	}
+	if _, err := loomyauth.ParseCredential([]byte(source.OAuthCredential)); err != nil {
+		RespondErrorMsg(c, http.StatusConflict, "source Loomy credential is invalid")
+		return
+	}
+	// 表单决定配置，可信源决定账号；新渠道不继承调用统计、冷却或 API Key 行。
+	cfg := req.ToConfig()
+	cfg.OAuthCredential = source.OAuthCredential
+	if len(req.APIKeys) == 0 || req.APIKeys[0].CostMultiplier == nil {
+		cfg.CostMultiplier = source.CostMultiplier
+	}
+	created, err := s.store.CreateConfig(c.Request.Context(), cfg)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusCreated, created)
+}
+
+/**
  * @brief 将账号状态变更合并到最新凭证，避免覆盖并发额度或登录更新。
  * @param ctx 本次操作的取消与截止时间上下文。
  * @param source 确定渠道和账号身份的原始配置快照。

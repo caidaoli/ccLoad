@@ -15,35 +15,56 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// zaiCredentialManager owns the Coding Plan key of every Z.ai channel.
-//
-// Coding Plan keys do not expire, so there is no scheduled refresh. Re-resolution
-// replays the ZCode key derivation with the stored account access token after an
-// upstream 401 or an admin force-refresh.
+/**
+ * @brief 管理按渠道与凭证快照隔离的 Coding Plan 凭证及并发刷新。
+ * @details 付费 Key 无定时刷新；上游 401 或管理员强制刷新时重新解析凭证。
+ */
 type zaiCredentialManager struct {
-	mu               sync.RWMutex
-	entries          map[int64]*zaiauth.Credential
-	refreshes        singleflight.Group
-	refreshTracker   *oauthCredentialRefreshTracker
-	store            storage.Store
-	clientFor        func(*model.Config) *http.Client
-	invalidateConfig func(int64)
-	now              func() time.Time
+	mu               sync.RWMutex                      ///< 保护缓存条目。
+	entries          map[int64]zaiCredentialCacheEntry ///< 每渠道保留一个已解析快照。
+	refreshes        singleflight.Group                ///< 合并相同身份的刷新。
+	refreshTracker   *oauthCredentialRefreshTracker    ///< 跟踪服务生命周期内的刷新。
+	store            storage.Store                     ///< 凭证持久存储。
+	clientFor        func(*model.Config) *http.Client  ///< 渠道出口客户端。
+	invalidateConfig func(int64)                       ///< 落库后失效配置缓存。
+	now              func() time.Time                  ///< 刷新时间来源。
 }
 
+/**
+ * @brief 绑定原始凭证快照，防止在途旧请求的回填被新配置复用。
+ */
+type zaiCredentialCacheEntry struct {
+	source     string              ///< 对应的持久凭证 JSON，包含套餐偏好。
+	credential *zaiauth.Credential ///< 只读缓存副本，对外返回前深拷贝。
+}
+
+/**
+ * @brief 创建独立的渠道凭证缓存和刷新管理器。
+ * @param store 凭证持久存储。
+ * @param clientFor 渠道客户端工厂；nil 时使用默认客户端。
+ * @param invalidate 刷新落库后的配置缓存失效回调；允许 nil。
+ * @return 未加载凭证的管理器。
+ */
 func newZAICredentialManager(
 	store storage.Store,
 	clientFor func(*model.Config) *http.Client,
 	invalidate func(int64),
 ) *zaiCredentialManager {
 	return &zaiCredentialManager{
-		entries: make(map[int64]*zaiauth.Credential), store: store,
+		entries: make(map[int64]zaiCredentialCacheEntry), store: store,
 		clientFor: clientFor, invalidateConfig: invalidate, now: time.Now,
 	}
 }
 
-// credential returns the channel's Coding Plan credential. forceRefresh
-// re-resolves the API key from the stored account access token.
+/**
+ * @brief 读取渠道凭证，强制刷新时使用原站点账号重新派生 Key。
+ * @param ctx 等待上下文，取消不会中断其他等待者的刷新。
+ * @param cfg 当前渠道快照。
+ * @param forceRefresh 是否重新派生 Key。
+ * @return 独立凭证；刷新失败时尽量返回旧凭证。
+ * @return 配置缺失、取消或上游派生失败时返回错误。
+ * @note 同渠道同站点的刷新合并，并以 CAS 防止覆盖新凭证。
+ */
 func (m *zaiCredentialManager) credential(
 	ctx context.Context,
 	cfg *model.Config,
@@ -69,7 +90,7 @@ func (m *zaiCredentialManager) credential(
 	}
 	rejectedKey := credential.APIKey
 
-	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, rejectedKey, true), func() (any, error) {
+	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, string(credential.Site)+"/"+rejectedKey, true), func() (any, error) {
 		refreshCtx := context.Background()
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
@@ -91,9 +112,9 @@ func (m *zaiCredentialManager) credential(
 		}
 		// One re-resolution flight is bound to one rejected key. If the stored
 		// key already changed, consume that winner instead of minting another.
-		if current.APIKey != rejectedKey {
-			m.cache(currentCfg.ID, current)
-			return oauthCredentialRefreshRedirect{}, nil
+		if current.Site != credential.Site || current.APIKey != rejectedKey || current.AccessToken != credential.AccessToken {
+			m.cache(currentCfg.ID, currentCfg.OAuthCredential, current)
+			return current, nil
 		}
 		if current.AccessToken == "" {
 			return nil, errors.New("z.ai credential has no account authorization to re-resolve with")
@@ -102,11 +123,12 @@ func (m *zaiCredentialManager) credential(
 		if m.clientFor != nil {
 			client = m.clientFor(currentCfg)
 		}
-		apiKey, identity, resolveErr := zaiauth.NewService(client).ResolveCodingPlanAPIKey(refreshCtx, current.AccessToken)
+		apiKey, identity, resolveErr := zaiauth.NewService(client).ForSite(current.Site, client).ResolveCodingPlanAPIKey(refreshCtx, current.AccessToken)
 		if resolveErr != nil {
 			return nil, fmt.Errorf("re-resolve z.ai Coding Plan key for channel %d: %w", currentCfg.ID, resolveErr)
 		}
 		resolved := &zaiauth.Credential{
+			Site:   current.Site,
 			APIKey: apiKey, UserID: identity.UserID, Email: identity.Email,
 			LastRefresh: m.now().UTC().Format(time.RFC3339),
 		}
@@ -126,16 +148,20 @@ func (m *zaiCredentialManager) credential(
 	if result.Err != nil {
 		return cloneZAICredential(credential), result.Err
 	}
-	if _, redirected := result.Val.(oauthCredentialRefreshRedirect); redirected {
-		winner, winnerErr := m.cachedOrParse(cfg)
-		if winnerErr != nil {
-			return nil, winnerErr
-		}
-		return cloneZAICredential(winner), nil
-	}
-	return result.Val.(*zaiauth.Credential), nil
+	// singleflight 的结果由等待者共享，运行时编码会就地归一，必须先隔离副本。
+	return cloneZAICredential(result.Val.(*zaiauth.Credential)), nil
 }
 
+/**
+ * @brief 以 CAS 保存派生结果，站点或账号已变更时返回最新凭证。
+ * @param ctx 存储操作上下文。
+ * @param cfg 派生时的渠道快照。
+ * @param resolvedFrom 派生所用的认证材料。
+ * @param resolved 新派生结果。
+ * @return 实际生效的独立凭证。
+ * @return 合并、存储或凭证解析失败时返回错误。
+ * @note 成功写入后更新凭证缓存并失效渠道缓存。
+ */
 func (m *zaiCredentialManager) persistResolvedKey(
 	ctx context.Context,
 	cfg *model.Config,
@@ -145,8 +171,8 @@ func (m *zaiCredentialManager) persistResolvedKey(
 	currentCfg := cfg
 	current := resolvedFrom
 	for {
-		if current.APIKey != resolvedFrom.APIKey {
-			m.cache(currentCfg.ID, current)
+		if current.Site != resolvedFrom.Site || current.APIKey != resolvedFrom.APIKey || current.AccessToken != resolvedFrom.AccessToken {
+			m.cache(currentCfg.ID, currentCfg.OAuthCredential, current)
 			return cloneZAICredential(current), nil
 		}
 		merged, err := current.MergeRefresh(resolved)
@@ -164,7 +190,7 @@ func (m *zaiCredentialManager) persistResolvedKey(
 			return nil, err
 		}
 		if updated {
-			m.cache(currentCfg.ID, merged)
+			m.cache(currentCfg.ID, payload, merged)
 			if m.invalidateConfig != nil {
 				m.invalidateConfig(currentCfg.ID)
 			}
@@ -184,30 +210,38 @@ func (m *zaiCredentialManager) persistResolvedKey(
 	}
 }
 
-func (m *zaiCredentialManager) cache(channelID int64, credential *zaiauth.Credential) {
+/**
+ * @brief 缓存独立凭证副本并绑定其来源快照。
+ * @param channelID 渠道 ID。
+ * @param source 与凭证对应的持久 JSON。
+ * @param credential 已解析的凭证。
+ * @note 持锁替换条目；旧快照回填不会命中新快照的读取。
+ */
+func (m *zaiCredentialManager) cache(channelID int64, source string, credential *zaiauth.Credential) {
 	m.mu.Lock()
-	m.entries[channelID] = cloneZAICredential(credential)
+	m.entries[channelID] = zaiCredentialCacheEntry{source: source, credential: cloneZAICredential(credential)}
 	m.mu.Unlock()
 }
 
+/**
+ * @brief 读取与请求配置完全匹配的凭证，快照变化时重新解析。
+ * @param cfg 请求持有的渠道快照。
+ * @return 独立凭证，不共享缓存中的可变字段。
+ * @return 快照中的凭证 JSON 非法时返回解析错误。
+ * @note 并发安全；缓存只复用相同 JSON，包含套餐偏好和站点。
+ */
 func (m *zaiCredentialManager) cachedOrParse(cfg *model.Config) (*zaiauth.Credential, error) {
 	m.mu.RLock()
-	credential := m.entries[cfg.ID]
+	entry, ok := m.entries[cfg.ID]
 	m.mu.RUnlock()
-	if credential != nil {
-		return cloneZAICredential(credential), nil
+	if ok && entry.source == cfg.OAuthCredential {
+		return cloneZAICredential(entry.credential), nil
 	}
 	parsed, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
 		return nil, fmt.Errorf("parse z.ai credential for channel %d: %w", cfg.ID, err)
 	}
-	m.mu.Lock()
-	if existing := m.entries[cfg.ID]; existing != nil {
-		parsed = cloneZAICredential(existing)
-	} else {
-		m.entries[cfg.ID] = cloneZAICredential(parsed)
-	}
-	m.mu.Unlock()
+	m.cache(cfg.ID, cfg.OAuthCredential, parsed)
 	return parsed, nil
 }
 
@@ -220,11 +254,43 @@ func (m *zaiCredentialManager) invalidate(channelID int64) {
 	m.mu.Unlock()
 }
 
+/**
+ * @brief 深拷贝可变偏好与额度快照，避免修改缓存中的凭证。
+ * @param credential 来源凭证，允许 nil。
+ * @return 独立副本；输入 nil 时为 nil。
+ */
 func cloneZAICredential(credential *zaiauth.Credential) *zaiauth.Credential {
 	if credential == nil {
 		return nil
 	}
 	clone := *credential
+	if credential.FreeFirst != nil {
+		value := *credential.FreeFirst
+		clone.FreeFirst = &value
+	}
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	return &clone
+}
+
+/**
+ * @brief 将实际凭证投影到请求配置，供代理与管理检测共用。
+ * @param cfg 原始渠道快照，不修改。
+ * @param credential 已归一的实际凭证。
+ * @return 包含设备身份及凭证的配置副本；编码失败时为 nil。
+ * @return 优先 API Key，否则使用 JWT。
+ * @return 凭证无法编码时返回错误。
+ */
+func zaiRuntimeConfig(cfg *model.Config, credential *zaiauth.Credential) (*model.Config, string, error) {
+	raw, err := credential.JSON()
+	if err != nil {
+		return nil, "", err
+	}
+	runtimeCfg := cfg.Clone()
+	runtimeCfg.ZAIDeviceID = credential.DeviceID
+	runtimeCfg.OAuthCredential = raw
+	key := credential.APIKey
+	if key == "" {
+		key = credential.JWTToken
+	}
+	return runtimeCfg, key, nil
 }

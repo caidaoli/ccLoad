@@ -200,6 +200,7 @@ type oauthUsageWindow struct {
  * @details 保留原生积分与未知值，不将积分解释为 token。
  */
 type oauthUsageSummary struct {
+	zaiIdentity [32]byte ///< 实际 ZAI 采样身份，仅供回写校验，不持久化。
 	// 请求元数据来自实际使用的凭证，不持久化，也不暴露给客户端。
 	codexAccountID   string
 	codexRequestedAt time.Time
@@ -211,6 +212,7 @@ type oauthUsageSummary struct {
 	// other OAuth providers, so retain the provider-native value.
 	CodeBuddyCredits *codeBuddyCredits  `json:"codebuddy_credits,omitempty"`
 	LoomyCredits     *loomyauth.Balance `json:"loomy_credits,omitempty"` ///< Loomy 原生积分及每日总额，nil 表示尚无快照。
+	ZAIPlans         *zaiauth.Plans     `json:"zai_plans,omitempty"`     ///< ZCode 原生套餐与余额，复用现有 JSON 快照。
 	// Partial means omitted windows were not observed, rather than retired.
 	Partial               bool                    `json:"-"`
 	Provider              string                  `json:"provider"`
@@ -1678,6 +1680,13 @@ func (s *Server) persistOAuthUsage(
 		if state.provider != summary.Provider {
 			return nil, errors.New("OAuth credential changed provider while persisting usage")
 		}
+		if cfg.UsesZAIOAuth() {
+			// 每次 CAS 重试都核对实际采样身份；重读新凭证不会让旧采样变新。
+			current, parseErr := zaiauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil || summary.zaiIdentity != zaiPlanIdentity(currentCfg, current) {
+				return nil, errors.New("ZCode credential changed while persisting usage")
+			}
+		}
 		if cfg.UsesLoomySession() {
 			original, parseErr := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
 			if parseErr != nil || original.UserID != state.accountID {
@@ -2047,14 +2056,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		return nil, errors.New("usage: xAI credential was rejected")
 	case cfg.UsesZAIOAuth():
-		if s.zaiCredentials == nil {
-			return nil, errZAIUsageManagerUnavailable
-		}
-		credential, err := s.zaiCredentials.credential(ctx, cfg, false)
-		if err != nil {
-			return nil, oauthUsageCredentialRefreshError(err, "usage: Z.ai credential refresh failed")
-		}
-		return requestZAIUsage(ctx, s.zaiUsageService(cfg), credential.APIKey)
+		return s.fetchZAIUsage(ctx, cfg)
 	case cfg.UsesCursorOAuth():
 		if s.cursorCredentials == nil {
 			return nil, errCursorUsageManagerUnavailable
@@ -2121,16 +2123,6 @@ func requestCodeBuddyUsage(
 		Windows:          []oauthUsageWindow{},
 		CodeBuddyCredits: usage,
 	}, nil
-}
-
-// zaiUsageService reuses the channel's transport so a channel proxy applies to
-// quota reads too.
-func (s *Server) zaiUsageService(cfg *model.Config) *zaiauth.Service {
-	service := zaiauth.NewService(s.getClientForChannel(cfg))
-	if s.zaiService != nil {
-		service.QuotaLimitURL = s.zaiService.QuotaLimitURL
-	}
-	return service
 }
 
 // requestZAIUsage reads the Coding Plan allowance windows.

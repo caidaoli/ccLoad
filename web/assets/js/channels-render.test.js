@@ -1,3 +1,5 @@
+const { zaiGiftDisplayStatus } = require('./channels-zai.js');
+Object.assign(global, require('./channels-zai.js'));
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -15,6 +17,11 @@ const {
   isOpenCodeChannel,
   channelShowsOAuthUsage
 } = require('./channels-render.js');
+
+test('ZAI 停用状态不被本地到期时间覆盖', () => {
+  const gift = { status: 'inactive', expires_at: 1000 };
+  assert.equal(zaiGiftDisplayStatus(gift, 2000 * 1000), 'inactive');
+});
 
 test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () => {
   const previousWindow = global.window;

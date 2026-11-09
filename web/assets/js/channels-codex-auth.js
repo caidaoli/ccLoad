@@ -279,6 +279,9 @@ function applyChannelAuthEditorMode(
   const xaiOAuth = authType === 'xai_oauth';
   const anthropicOAuth = authType === 'anthropic_oauth';
   const zaiOAuth = authType === 'zai_oauth';
+  syncZAIOptions(authType, credential, channel, freeFirst => {
+    if (currentOAuthCredential) renderOAuthCredential({ ...currentOAuthCredential, free_first: freeFirst }, currentOAuthCredentialInfo, currentOAuthCredentialView);
+  });
   const credentialVisible = isCredentialChannelAuthType(authType);
   const oauth = credentialVisible;
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -586,6 +589,11 @@ function openOAuthLoginDialog(trigger = null, provider = 'codex') {
   if (codebuddyEditionSelect) {
     codebuddyEditionSelect.value = 'domestic';
     codebuddyEditionSelect.disabled = false;
+  }
+  const zaiSite = document.getElementById('zaiOAuthSite');
+  if (zaiSite) {
+    zaiSite.value = 'zai';
+    zaiSite.disabled = false;
   }
   authorizeButton.disabled = false;
   if (loginActions) loginActions.hidden = false;
@@ -930,14 +938,14 @@ async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
 
 // submitZAICodingPlanKey imports a Coding Plan key without a browser round trip.
 // The secret is cleared from the page before the request is awaited.
-async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal = undefined, proxyURL = '') {
+async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal = undefined, proxyURL = '', site = 'zai') {
   let apiKey = String(input?.value || '').trim();
   if (!apiKey) {
     input?.setAttribute?.('aria-invalid', 'true');
     input?.focus?.();
     throw new Error(window.t('channels.zai.apiKeyRequired'));
   }
-  let body = JSON.stringify({ api_key: apiKey, proxy_url: String(proxyURL || '').trim() });
+  let body = JSON.stringify({ api_key: apiKey, proxy_url: String(proxyURL || '').trim(), site });
   apiKey = '';
   clearZAICodingPlanKey(input);
   try {
@@ -1185,8 +1193,13 @@ async function pollOAuthStatus(provider, state, options = {}) {
   throw new Error(window.t(`${config.i18n}.oauthTimedOut`));
 }
 
-async function startOAuth(provider, button) {
+async function startOAuth(provider, button, site = undefined) {
   const config = oauthProviderConfig(provider);
+  if (config.provider === 'zai') return startZAIOAuth(button, site, {
+    config, getActive: () => activeCodexOAuthFlow, setActive: flow => { activeCodexOAuthFlow = flow; },
+    setCodexAuthStatus, oauthStartOptions, oauthProxyURLValue, showOAuthSession,
+    setCodexOAuthDialogStatus, pollOAuthStatus, closeOAuthLoginDialogElement
+  });
   let resolveReady;
   let rejectReady;
   const ready = new Promise((resolve, reject) => {
@@ -1234,10 +1247,8 @@ async function startOAuth(provider, button) {
       rejectReady(error);
     }
     if (flow.cancelling) return null;
-    const unavailable = config.provider === 'zai' && /unavailable/i.test(error?.message);
-    const message = unavailable
-      ? window.t(`${config.i18n}.oauthUnavailable`)
-      : (error?.message || window.t(`${config.i18n}.oauthFailed`));
+    // ZAI 在入口交给独立登录流程处理，此处保留其他提供商原有错误提示。
+    const message = error?.message || window.t(`${config.i18n}.oauthFailed`);
     setCodexAuthStatus(message, 'error');
     setCodexOAuthDialogStatus(message, 'error');
     if (window.showError) window.showError(message);
@@ -1256,8 +1267,9 @@ function oauthProxyURLValue() {
 
 // oauthStartOptions builds the start request; the proxy carries the whole login
 // and is saved on the channel it creates.
-function oauthStartOptions(provider, { proxyURL = '', systemID = '' } = {}) {
+function oauthStartOptions(provider, { proxyURL = '', systemID = '', site = 'zai' } = {}) {
   const body = { proxy_url: String(proxyURL || '').trim() };
+  if (provider === 'zai') body.site = site;
   if (provider === 'zed') {
     body.system_id = String(systemID || '').trim();
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1370,6 +1382,9 @@ function stopActiveZAIKeyImport() {
   clearZAICodingPlanKey(flow?.input);
   const method = document.getElementById('zaiOAuthMethod');
   if (method) method.disabled = false;
+  // 浏览器授权仍存在时，取消 Key 导入不能解锁该授权的站点。
+  const site = document.getElementById('zaiOAuthSite');
+  if (site && activeCodexOAuthFlow?.provider !== 'zai') site.disabled = false;
 }
 
 function stopActiveCodexPersonalAccessToken() {
@@ -1389,6 +1404,10 @@ function stopActiveCodexPersonalAccessToken() {
 }
 
 async function stopActiveCodexOAuth(options = {}) {
+  if (activeCodexOAuthFlow?.provider === 'zai') return stopZAIOAuth(activeCodexOAuthFlow, options, {
+    getActive: () => activeCodexOAuthFlow, setActive: flow => { activeCodexOAuthFlow = flow; },
+    cancelOAuth, setCodexOAuthDialogStatus, closeOAuthLoginDialogElement, setCodexAuthStatus
+  });
   const closeDialog = options.closeDialog !== false;
   if (codexOAuthStopPromise) return codexOAuthStopPromise;
 
@@ -1441,12 +1460,13 @@ async function closeOAuthLoginDialog() {
 
 async function restartOAuth(provider, button) {
   const config = oauthProviderConfig(provider);
+  const site = activeCodexOAuthFlow?.site ?? document.getElementById('zaiOAuthSite')?.value ?? 'zai';
   try {
     if (button) button.disabled = true;
     await stopActiveOAuth({ closeDialog: false });
     setCodexOAuthDialogStatus(window.t(`${config.i18n}.oauthRestarting`));
     const authorizeButton = document.getElementById('oauthAuthorizeButton');
-    const completion = startOAuth(config.provider, authorizeButton);
+    const completion = startOAuth(config.provider, authorizeButton, site);
     const newFlow = activeCodexOAuthFlow;
     if (newFlow?.ready) await newFlow.ready;
     void completion;
@@ -3077,14 +3097,16 @@ function setupOAuthActions() {
         }
       } else if (providerSelect.value === 'zai' && zaiMethod?.value === 'api_key') {
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
-        const flow = { button: authorizeButton, input: zaiCodingPlanKey, cancelling: false, controller };
+        const siteSelect = document.getElementById('zaiOAuthSite');
+        const flow = { button: authorizeButton, input: zaiCodingPlanKey, site: siteSelect?.value || 'zai', cancelling: false, controller };
         activeZAIKeyFlow = flow;
+        if (siteSelect) siteSelect.disabled = true;
         zaiMethod.disabled = true;
         authorizeButton.disabled = true;
         authorizeButton.setAttribute?.('aria-busy', 'true');
         try {
           setCodexOAuthDialogStatus(window.t('channels.zai.apiKeyValidating'));
-          const result = await submitZAICodingPlanKey(zaiCodingPlanKey, fetchDataWithAuth, controller?.signal, oauthProxyURLValue());
+          const result = await submitZAICodingPlanKey(zaiCodingPlanKey, fetchDataWithAuth, controller?.signal, oauthProxyURLValue(), flow.site);
           if (flow.cancelling || activeZAIKeyFlow !== flow) return;
           closeOAuthLoginDialogElement();
           const message = window.t('channels.zai.apiKeyComplete', { channel: result?.channel_name || '' });
@@ -3099,10 +3121,13 @@ function setupOAuthActions() {
           setCodexOAuthDialogStatus(message, 'error');
           if (window.showError) window.showError(message);
         } finally {
-          if (activeZAIKeyFlow === flow) activeZAIKeyFlow = null;
-          zaiMethod.disabled = false;
-          authorizeButton.disabled = false;
-          authorizeButton.removeAttribute?.('aria-busy');
+          if (activeZAIKeyFlow === flow) {
+            activeZAIKeyFlow = null;
+            zaiMethod.disabled = false;
+            if (siteSelect) siteSelect.disabled = false;
+            authorizeButton.disabled = false;
+            authorizeButton.removeAttribute?.('aria-busy');
+          }
         }
       } else {
         await startOAuth(selectedOAuthProvider(providerSelect.value), authorizeButton);

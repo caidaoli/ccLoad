@@ -5,6 +5,9 @@ package zaiauth
 
 import "time"
 
+/**
+ * @brief ZCode 控制面、国际站默认端点、客户端指纹与请求边界。
+ */
 const (
 	// ChannelType is the provider type stored in Z.ai credentials.
 	ChannelType = "zai"
@@ -15,16 +18,8 @@ const (
 	OAuthProvider = "zai"
 
 	// BizBaseURL is the Z.ai business API root used to mint Coding Plan API keys.
-	BizBaseURL = "https://api.z.ai"
-	// CodingPlanAPIBaseURL is the public Coding Plan Anthropic-compatible origin.
-	// ZCode never calls it directly: it rewrites the endpoint through
-	// AgentConfigsURL, so this value is only the routing lookup key.
-	CodingPlanAPIBaseURL = "https://api.z.ai/api/anthropic"
-	// CodingPlanProxyBaseURL is the ZCode-routed Coding Plan endpoint. Requests
-	// billed through it are the ones ZCode itself issues.
-	CodingPlanProxyBaseURL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic"
-	// AgentConfigsURL publishes the current ZCode endpoint routing table.
-	AgentConfigsURL = "https://zcode.z.ai/api/v1/agent/configs"
+	BizBaseURL           = "https://api.z.ai"
+	CodingPlanAPIBaseURL = "https://api.z.ai/api/anthropic" ///< 国际站付费 Anthropic 端点；国内站由站点配置提供，体验请求走 ZCode。
 	// CodingModelsURL is the Coding Plan model catalog. It is the plan's own
 	// endpoint, so it lists models that ship to Coding Plan before the general
 	// API exposes them.
@@ -44,10 +39,8 @@ const (
 	// Coding Plan (api.z.ai/api/coding/paas/v4).
 	CommunityCatalogProvider = "zai-coding-plan"
 
-	// AppVersion is the ZCode client version ccLoad reports upstream.
-	AppVersion = "3.7.7"
-	// SourceTitle is ZCode's X-Title value.
-	SourceTitle = "Z Code@cli"
+	AppVersion  = "3.17.2"          ///< 上报的 ZCode 客户端版本。
+	SourceTitle = "Z Code@electron" ///< 桌面客户端 X-Title 指纹。
 	// AgentHeaderValue is ZCode's X-ZCode-Agent value.
 	AgentHeaderValue = "glm"
 	// RefererValue is ZCode's HTTP-Referer value.
