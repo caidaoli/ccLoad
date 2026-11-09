@@ -339,6 +339,50 @@ func TestCopyLoomyChannel(t *testing.T) {
 	if err != nil || len(configs) != 3 {
 		t.Fatalf("rejected requests created channels: count=%d err=%v", len(configs), err)
 	}
+
+	// 重新登录同步全部共享会话的渠道；登录代理只落到源渠道，复制渠道保留自身代理。
+	// 真实回环服务同时充当登录代理，验证代理写入而不依赖外部网络。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"chat","type":"chat"}]}`))
+	}))
+	defer upstream.Close()
+	server.loomyService = &loomyauth.Service{BaseURL: upstream.URL}
+	for _, cfg := range configs {
+		if cfg.UsesLoomySession() {
+			if _, err := store.UpdateChannelEnabled(ctx, cfg.ID, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	loginProxy := upstream.URL
+	updated, created, err := server.commitLoomyCredential(ctx, &loomyauth.Credential{Session: "fresh-session", UserID: "verified-user"}, loginProxy)
+	if err != nil || created || updated.ID != source.ID {
+		t.Fatalf("relogin updated=%v created=%v err=%v", updated, created, err)
+	}
+	for _, cfg := range configs {
+		if !cfg.UsesLoomySession() {
+			continue
+		}
+		stored, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential, err := loomyauth.ParseCredential([]byte(stored.OAuthCredential))
+		if err != nil || credential.Session != "fresh-session" || !stored.Enabled {
+			t.Fatalf("channel %d missed relogin: session=%q enabled=%v err=%v", cfg.ID, credential.Session, stored.Enabled, err)
+		}
+		wantProxy := "http://127.0.0.1:7890"
+		if cfg.ID == source.ID {
+			wantProxy = loginProxy
+		}
+		if stored.ProxyURL != wantProxy {
+			t.Fatalf("channel %d proxy=%q want=%q", cfg.ID, stored.ProxyURL, wantProxy)
+		}
+	}
 }
 
 func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {

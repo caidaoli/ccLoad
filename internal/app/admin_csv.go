@@ -850,8 +850,12 @@ func (s *Server) parseChannelImportRow(
 	// 构建模型条目（合并models和modelRedirects）
 	modelEntries := make([]model.ModelEntry, 0, len(models))
 	if hasModelEntriesJSON {
-		if err := json.Unmarshal([]byte(modelEntriesJSONRaw), &modelEntries); err != nil || modelEntries == nil || (len(modelEntries) == 0 && authType != model.AuthTypeZAIOAuth) {
+		if err := json.Unmarshal([]byte(modelEntriesJSONRaw), &modelEntries); err != nil {
 			return nil, fmt.Sprintf("第%d行 model_entries_json 无效: %v", lineNo, err), true
+		}
+		// null 解码成功但不是模型数组；空数组只允许尚未发放套餐的 ZAI 账号。
+		if modelEntries == nil || (len(modelEntries) == 0 && authType != model.AuthTypeZAIOAuth) {
+			return nil, fmt.Sprintf("第%d行 model_entries_json 必须是非空模型数组", lineNo), true
 		}
 	} else {
 		for _, m := range models {

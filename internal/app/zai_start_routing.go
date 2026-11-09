@@ -165,20 +165,28 @@ func zaiStartQueueFailure(status int, kind, message string) *proxyResult {
  * @brief 重新核对未发送候选，固定账号和完整模型行，禁止唤醒时改变请求目标。
  * @param ctx 请求上下文。
  * @param reqCtx 请求状态，含本轮等待候选。
- * @return 仍合法且未改变模型配置的候选；空表示等待失效。
- * @note 刷新等待账号集合，移除失效候选，避免阻挡后续请求。
+ * @return 仍合法且未改变模型配置的候选；空表示等待失效。冷却读取失败时原样返回当前候选。
+ * @note 刷新等待账号集合，移除失效候选，避免阻挡后续请求；冷却读取失败时不修改等待状态。
  */
 func (s *Server) refreshZAIStartPending(ctx context.Context, reqCtx *proxyRequestContext) []*model.Config {
 	logical := reqCtx.zaiStart
+	modelCooldowns, modelErr := s.getAllModelCooldowns(ctx)
+	channelCooldowns, channelErr := s.getAllChannelCooldowns(ctx)
+	if modelErr != nil || channelErr != nil {
+		// 冷却读取的瞬时故障不代表候选失效；保留原候选与固定模型，下次复核或排队超时再决定。
+		cands := make([]*model.Config, 0, len(logical.pending))
+		for _, pending := range logical.pending {
+			cands = append(cands, pending.cfg)
+		}
+		return cands
+	}
 	logical.models = make(map[int64]modelRoutingSelection)
 	var cands []*model.Config
 	waiting := make(map[[32]byte]bool)
-	modelCooldowns, modelErr := s.getAllModelCooldowns(ctx)
-	channelCooldowns, channelErr := s.getAllChannelCooldowns(ctx)
 	now := time.Now()
 	for _, pending := range logical.pending {
 		cfg, err := s.store.GetConfig(ctx, pending.cfg.ID)
-		if err != nil || modelErr != nil || channelErr != nil || !cfg.Enabled || !cfg.UsesZAIOAuth() || !cfg.IsAvailableAt(now) || channelCooldowns[cfg.ID].After(now) {
+		if err != nil || !cfg.Enabled || !cfg.UsesZAIOAuth() || !cfg.IsAvailableAt(now) || channelCooldowns[cfg.ID].After(now) {
 			continue
 		}
 		// 二级重定向和请求规则也影响最终模型；变化时让客户端重新选路。

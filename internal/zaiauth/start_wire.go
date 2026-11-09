@@ -54,23 +54,25 @@ func WireModel(name string) string {
  * @brief 重建体验请求头，不携带付费 Key 或其他客户端的 beta 头。
  * @param jwt ZCode 登录凭证。
  * @param session 对话 ID，与 metadata.user_id 保持一致。
- * @return 独立的上游头集合。
+ * @return 独立的上游头集合，键保持官方客户端的精确大小写。
+ * @note 后写的 User-Agent 覆盖控制面身份，追加 ai-sdk 标识。
  */
 func StartHeaders(jwt, session string) http.Header {
 	h := make(http.Header)
-	ApplySourceHeaders(h)
-	h.Set("Authorization", "Bearer "+jwt)
-	h.Set("Content-Type", "application/json")
-	h.Set("anthropic-version", "2023-06-01")
-	h.Set("User-Agent", "ZCode/"+AppVersion+" ai-sdk/anthropic/3.0.81")
-	h.Set("X-Release-Channel", "production")
-	h.Set("X-Client-Language", "en-US")
-	h.Set("X-Client-Timezone", clientTimezone())
-	h.Set("X-Platform", ClientPlatform())
-	h.Set("X-Os-Version", hostRelease())
-	h.Set("x-session-id", session)
-	h.Set("x-zcode-session-type", "main")
-	h.Set("x-zcode-query-source", "main_turn")
+	for _, entry := range append(SourceHeaders(),
+		[2]string{"Authorization", "Bearer " + jwt},
+		[2]string{"Content-Type", "application/json"},
+		[2]string{"anthropic-version", "2023-06-01"},
+		[2]string{"User-Agent", "ZCode/" + AppVersion + " ai-sdk/anthropic/3.0.81"},
+		[2]string{"X-Release-Channel", "production"},
+		[2]string{"X-Client-Language", "en-US"},
+		[2]string{"X-Client-Timezone", clientTimezone()},
+		[2]string{"x-session-id", session},
+		[2]string{"x-zcode-session-type", "main"},
+		[2]string{"x-zcode-query-source", "main_turn"},
+	) {
+		h[entry[0]] = []string{entry[1]}
+	}
 	return h
 }
 

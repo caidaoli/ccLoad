@@ -752,7 +752,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		keySelection.keyIndex, keySelection.updatePersistedCooldown,
 	)
 	statusCode, _ := getResultInt(testResult["status_code"])
-	trial := cfg.UsesZAIOAuth() && (testReq.ZAITrial || isZAITrialModel(testReq.Model))
+	trial := cfg.UsesZAIOAuth() && (testReq.ZAI.Trial || isZAITrialModel(testReq.Model))
 	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized && canRemintOAuthChannelTest(cfg) && !trial {
 		refreshedCfg, refreshedSelection, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(
 			c.Request.Context(), cfg, oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection),
@@ -1308,7 +1308,7 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
  */
 func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.Config, keyIndex int, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool, result map[string]any) map[string]any {
 	actualModel := channelTestActualModel(result, testReq.Model)
-	if cfg.UsesZAIOAuth() && (testReq.ZAITrial || isZAITrialModel(actualModel) || testReq.ZAILocalPlanError) {
+	if cfg.UsesZAIOAuth() && (testReq.ZAI.Trial || isZAITrialModel(actualModel) || testReq.ZAI.LocalPlanError) {
 		return s.applyZAIChannelTestCooldown(ctx, cfg, keyIndex, testReq, updatePersistedCooldown, result, actualModel)
 	}
 	if success, ok := result["success"].(bool); ok && success {
@@ -1572,7 +1572,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 				}
 				return lastResult
 			}
-			if (cfg.UsesZAIOAuth() && testReq.ZAITrial) || !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
+			if (cfg.UsesZAIOAuth() && testReq.ZAI.Trial) || !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -1596,7 +1596,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 		if !hasNextURL {
 			break
 		}
-		if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+		if cfg.UsesZAIOAuth() && testReq.ZAI.Trial {
 			// 体验使用固定端点，换配置 URL 或协议仍会重复相同请求。
 			return lastResult
 		}
@@ -1803,8 +1803,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	requestedModel := testReq.Model
 	attemptReq := *testReq
 	callerReq := testReq
-	attemptReq.ZAITrial, attemptReq.ZAIWireModel = false, ""
-	attemptReq.ZAILocalPlanError = false
+	attemptReq.ZAI = testutil.ZAITestOutcome{}
 	selected, _ := s.firstModelRow(cfg, requestedModel)
 	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, upstreamProtocol)
 	if attemptReq.Model != requestedModel {
@@ -1812,8 +1811,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	testReq = &attemptReq
 	defer func() {
-		callerReq.ZAITrial, callerReq.ZAIWireModel = attemptReq.ZAITrial, attemptReq.ZAIWireModel
-		callerReq.ZAILocalPlanError = attemptReq.ZAILocalPlanError
+		callerReq.ZAI = attemptReq.ZAI
 		if result == nil {
 			return
 		}
@@ -3095,8 +3093,8 @@ func channelTestCostFromUsage(testReq *testutil.TestChannelRequest, actualModel,
 	if requestModel == "" {
 		requestModel = testReq.Model
 	}
-	if testReq.ZAIWireModel != "" {
-		actualModel = testReq.ZAIWireModel
+	if testReq.ZAI.WireModel != "" {
+		actualModel = testReq.ZAI.WireModel
 	}
 	billingModel := util.ResolveBillingModel(model.RoutingModelName(actualModel), model.RoutingModelName(requestModel))
 	serviceTier := resolveBillingServiceTier(requestedServiceTier, usage.ServiceTier)

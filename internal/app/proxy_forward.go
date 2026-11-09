@@ -3037,10 +3037,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
 		res.Status == http.StatusBadGateway && isCodexEncryptedFunctionOutputError(res.Body) ||
 		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
-		res.upstreamRequestBody = bytes.Clone(sentBody)
+		repairBody := sentBody
 		if len(zaiRepairBody) > 0 {
-			res.upstreamRequestBody = bytes.Clone(zaiRepairBody)
+			repairBody = zaiRepairBody
 		}
+		res.upstreamRequestBody = bytes.Clone(repairBody)
 		if usedNativeWebsocket {
 			res.upstreamReplayBody = bytes.Clone(wsReplayBody)
 		}

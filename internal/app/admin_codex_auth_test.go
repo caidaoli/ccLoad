@@ -2383,7 +2383,7 @@ func TestOAuthReauthorizationReactivatesChannel(t *testing.T) {
 		{name: "Z.ai", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
 			channel, _, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{
 				APIKey: token + ".secret", AccessToken: "access", Email: "same@example.com", UserID: "user",
-			}, "", nil, "")
+			}, nil, "")
 			return channel, err
 		}},
 		{name: "Cursor", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {

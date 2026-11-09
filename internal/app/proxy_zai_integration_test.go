@@ -806,7 +806,7 @@ func TestProxy_ZAIStartCapacityFallback(t *testing.T) {
 				if scenario == "api_key" {
 					wantKey = "fallback-key"
 				}
-				if anthropicHeaderValue(req.Header, "x-api-key") != wantKey || req.Header.Get("x-query-id") != "" {
+				if anthropicHeaderValue(req.Header, "x-api-key") != wantKey || anthropicHeaderValue(req.Header, "x-query-id") != "" {
 					t.Error("fallback used another account or retained Trial headers")
 				}
 				if scenario == "paid_failure" {
@@ -1142,7 +1142,7 @@ func TestProxy_ZAIStartBusyWindow(t *testing.T) {
 		calls++
 		if sentBody == nil {
 			sentBody, sentHeader = raw, req.Header.Clone()
-		} else if string(sentBody) != string(raw) || sentHeader.Get("x-query-id") != req.Header.Get("x-query-id") || sentHeader.Get("x-request-id") != req.Header.Get("x-request-id") || sentHeader.Get("x-zcode-trace-id") != req.Header.Get("x-zcode-trace-id") {
+		} else if string(sentBody) != string(raw) || anthropicHeaderValue(sentHeader, "x-query-id") != anthropicHeaderValue(req.Header, "x-query-id") || anthropicHeaderValue(sentHeader, "x-request-id") != anthropicHeaderValue(req.Header, "x-request-id") || anthropicHeaderValue(sentHeader, "x-zcode-trace-id") != anthropicHeaderValue(req.Header, "x-zcode-trace-id") {
 			t.Error("retry changed body or attribution headers")
 		}
 		return zaiStartTestResponse(req, 429, `{"code":3008,"msg":"busy"}`), nil
@@ -1690,6 +1690,67 @@ func TestProxy_ZAIStartStaleEligibility(t *testing.T) {
 				checkReserve(http.StatusOK)
 			})
 		}
+	}
+}
+
+/**
+ * @brief 单个 Trial 模型冷却只拒绝该模型，不能退役仍可服务其他模型的活动账号。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIStartModelCooldownKeepsAccount(t *testing.T) {
+	env, configs := newZAIStartHarness(t)
+	send := func(req *http.Request) (*http.Response, error) {
+		return zaiStartTestResponse(req, http.StatusOK, `{}`), nil
+	}
+	call := func(index int) (int, string) {
+		t.Helper()
+		resp, err := callZAIStart(context.Background(), env.server, configs[index], "GLM-5.3-Flash-Trial", send)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, gjson.GetBytes(raw, "error.type").String()
+	}
+	for _, index := range []int{0, 1} {
+		if status, _ := call(index); status != http.StatusOK {
+			t.Fatalf("warm account %d: status=%d", index, status)
+		}
+	}
+	if err := env.store.SetModelCooldown(context.Background(), configs[0].ID, "GLM-5.3-Flash-Trial", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateChannelRelatedCache(configs[0].ID)
+	// 重复渠道自身未冷却，须由账号级准入识别同账号的模型冷却。
+	if status, kind := call(3); status != http.StatusTooManyRequests || kind != "zcode_trial_cooling" {
+		t.Fatalf("cooled model: status=%d type=%q", status, kind)
+	}
+	if status, kind := call(2); status != http.StatusTooManyRequests || kind != "zcode_trial_reserve" {
+		t.Fatalf("model cooldown retired active account: status=%d type=%q", status, kind)
+	}
+}
+
+/**
+ * @brief 管理检测与独立发送可指定已停用渠道，其 Trial 准入只看账号余额资格。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIStartStandaloneIgnoresRoutingState(t *testing.T) {
+	env, configs := newZAIStartHarness(t)
+	configs[1].Enabled = false
+	if _, err := env.store.UpdateConfig(context.Background(), configs[1].ID, configs[1]); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	resp, err := callZAIStart(context.Background(), env.server, configs[1], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
+		return zaiStartTestResponse(req, http.StatusOK, `{}`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || !isZAITrialResponse(resp) {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("disabled channel test rejected locally: status=%d body=%s", resp.StatusCode, raw)
 	}
 }
 
@@ -2518,8 +2579,8 @@ func TestProxy_ZAITrialRouting(t *testing.T) {
 						t.Errorf("invalid trial request: %s %s", r.URL, body.Model)
 					}
 					// Trial 必须复刻 ZCode Electron 的查询身份，不能退回 CLI 或无轮次标识。
-					if r.Header.Get("X-Title") != "Z Code@electron" || r.Header.Get("x-query-id") == "" {
-						t.Errorf("invalid trial identity: title=%q query=%q", r.Header.Get("X-Title"), r.Header.Get("x-query-id"))
+					if r.Header.Get("X-Title") != "Z Code@electron" || anthropicHeaderValue(r.Header, "x-query-id") == "" {
+						t.Errorf("invalid trial identity: title=%q query=%q", r.Header.Get("X-Title"), anthropicHeaderValue(r.Header, "x-query-id"))
 					}
 					var blocks []struct {
 						Text string `json:"text"`

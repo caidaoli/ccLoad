@@ -280,9 +280,13 @@ func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result
 	if result.AccessToken != "" {
 		credential, err = m.resolve(session.ctx, options, result.AccessToken)
 	}
-	if err != nil && result.JWTToken == "" {
-		m.finish(session, "error", err.Error(), 0, "")
-		return
+	if err != nil {
+		if result.JWTToken == "" {
+			m.finish(session, "error", err.Error(), 0, "")
+			return
+		}
+		// 体验 JWT 仍可完成登录，但付费额度不可用，须留下管理员可排查的线索。
+		log.Printf("[WARN] ZCode 付费 Key 派生失败，账号仅保存体验登录: %v", err)
 	}
 	if credential == nil {
 		credential = &zaiauth.Credential{}

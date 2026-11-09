@@ -1,11 +1,13 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -214,10 +216,11 @@ func (s *Server) HandleLoomyLogin(c *gin.Context) {
  * @param ctx 本次操作的取消与截止时间上下文。
  * @param credential 短信登录接口确认的账号身份与会话。
  * @param proxy 已校验归一的渠道代理地址，空值使用默认传输策略。
- * @return 创建或更新后的渠道；失败时可能为 nil。
+ * @return 创建的渠道或最早创建的同账号渠道；失败时可能为 nil。
  * @return 进入新建渠道分支时为 true，包含新建失败；更新已有渠道或此前失败时为 false。
  * @return 凭证校验、账号锁、读写存储或重新启用失败时返回错误；会话失效可用 errors.Is 检查 loomyauth.ErrSessionExpired，成功为 nil。
- * @note 按账号加锁去重；重新登录保留签到、任务与积分状态，替换会话、更新代理、清理下次尝试时间并重新启用。
+ * @note 按账号加锁去重；重新登录同步更新全部同账号渠道（含复制渠道）：保留签到、任务与积分状态，
+ *       替换会话、清理下次尝试时间并重新启用；登录代理只应用于最早创建的渠道，复制渠道保留各自代理。
  */
 func (s *Server) commitLoomyCredential(ctx context.Context, credential *loomyauth.Credential, proxy string) (*model.Config, bool, error) {
 	service, err := s.loomyClient(&model.Config{ProxyURL: proxy})
@@ -237,26 +240,43 @@ func (s *Server) commitLoomyCredential(ctx context.Context, credential *loomyaut
 	if err != nil {
 		return nil, false, err
 	}
+	var matches []*model.Config
 	for _, cfg := range configs {
 		if !cfg.UsesLoomySession() {
 			continue
 		}
 		current, parseErr := loomyauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil || current.UserID != credential.UserID {
-			continue
+		if parseErr == nil && current.UserID == credential.UserID {
+			matches = append(matches, cfg)
 		}
-		_, err = s.mergeLoomyCredential(ctx, cfg, func(next *loomyauth.Credential) {
-			next.Session = credential.Session
-			next.NextCheckinAttemptAt = time.Time{}
-		})
-		if err != nil {
-			return nil, false, err
+	}
+	if len(matches) > 0 {
+		defer s.InvalidateChannelListCache()
+		// 列表按优先级排序；登录代理只应用于最早创建的源渠道，复制渠道保留各自配置。
+		slices.SortFunc(matches, func(a, b *model.Config) int { return cmp.Compare(a.ID, b.ID) })
+		var first *model.Config
+		for i, cfg := range matches {
+			if _, err := s.mergeLoomyCredential(ctx, cfg, func(next *loomyauth.Credential) {
+				next.Session = credential.Session
+				next.NextCheckinAttemptAt = time.Time{}
+			}); err != nil {
+				return nil, false, err
+			}
+			s.loomyState.retryAfter.Delete(cfg.ID)
+			channelProxy := proxy
+			if i > 0 {
+				channelProxy = ""
+			}
+			updated, err := reactivateReauthorizedChannel(ctx, s.store, cfg.ID, channelProxy)
+			s.invalidateChannelRelatedCache(cfg.ID)
+			if err != nil {
+				return nil, false, err
+			}
+			if first == nil {
+				first = updated
+			}
 		}
-		s.loomyState.retryAfter.Delete(cfg.ID)
-		updated, err := reactivateReauthorizedChannel(ctx, s.store, cfg.ID, proxy)
-		s.invalidateChannelRelatedCache(cfg.ID)
-		s.InvalidateChannelListCache()
-		return updated, false, err
+		return first, false, nil
 	}
 	payload, err := credential.JSON()
 	if err != nil {

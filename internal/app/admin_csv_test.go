@@ -26,7 +26,7 @@ import (
  * @note 通过导入 API 检查持久化、失败不写入及凭证元数据保留。
  */
 func TestAdminAPI_CSVImportZAITrial(t *testing.T) {
-	for _, outcome := range []string{"new", "empty", "pending", "legacy", "models", "unauthorized", "business_error", "network_error", "non_zai", "mixed_valid", "mixed_unauthorized"} {
+	for _, outcome := range []string{"new", "empty", "pending", "legacy", "models", "unauthorized", "business_error", "network_error", "non_zai", "null_models", "mixed_valid", "mixed_unauthorized"} {
 		t.Run(outcome, func(t *testing.T) {
 			server := newInMemoryServer(t)
 			ctx := context.Background()
@@ -76,6 +76,9 @@ func TestAdminAPI_CSVImportZAITrial(t *testing.T) {
 			if outcome == "non_zai" {
 				auth = model.AuthTypeAPIKey
 			}
+			if outcome == "null_models" {
+				models = "null"
+			}
 			credential := `{"jwt_token":"imported-jwt","free_first":false,"oauth_usage":{"test_marker":123}}`
 			wantKey := ""
 			if strings.HasPrefix(outcome, "mixed_") {
@@ -109,7 +112,7 @@ func TestAdminAPI_CSVImportZAITrial(t *testing.T) {
 			c, response := newTestContext(t, req)
 			server.HandleImportChannelsCSV(c)
 			summary := mustParseAPIResponse[ChannelImportSummary](t, response.Body.Bytes()).Data
-			failed := outcome == "unauthorized" || outcome == "mixed_unauthorized" || outcome == "business_error" || outcome == "network_error" || outcome == "non_zai"
+			failed := outcome == "unauthorized" || outcome == "mixed_unauthorized" || outcome == "business_error" || outcome == "network_error" || outcome == "non_zai" || outcome == "null_models"
 			current, err := server.store.GetConfig(ctx, original.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -117,6 +120,9 @@ func TestAdminAPI_CSVImportZAITrial(t *testing.T) {
 			if failed {
 				if summary.Updated != 0 || summary.Created != 0 || len(summary.Errors) == 0 || current.OAuthCredential != original.OAuthCredential || !current.SupportsModel("original") {
 					t.Fatalf("rejected import changed account: %+v", summary)
+				}
+				if outcome == "null_models" && (len(summary.Errors) != 1 || !strings.Contains(summary.Errors[0], "model_entries_json 必须是非空模型数组")) {
+					t.Fatalf("null model entries error = %q", summary.Errors)
 				}
 				return
 			}

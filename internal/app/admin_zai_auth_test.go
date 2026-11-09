@@ -20,12 +20,12 @@ import (
 )
 
 /**
- * @brief 账号渠道默认使用站点直连地址，并保留自定义地址和实际模型目录。
+ * @brief 账号渠道使用调用方给出的站点地址，并保留实际模型目录。
  * @param t 测试上下文。
  */
 func TestNewZAIOAuthChannelUsesSiteEndpoint(t *testing.T) {
 	t.Parallel()
-	channel := newZAIOAuthChannel("Z.ai-user@example.com", `{"type":"zai","api_key":"key.secret"}`, "", zaiauth.DefaultModels)
+	channel := newZAIOAuthChannel("Z.ai-user@example.com", `{"type":"zai","api_key":"key.secret"}`, zaiauth.CodingPlanAPIBaseURL, zaiauth.DefaultModels)
 	if channel.AuthType != model.AuthTypeZAIOAuth || !channel.Enabled || channel.CostMultiplier != 1 {
 		t.Fatalf("channel = %+v", channel)
 	}
@@ -76,7 +76,7 @@ func TestZAIReauthorizationAddsTrialModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := newZAIOAuthChannel("existing", raw, "", []string{"GLM-4.7"})
+	cfg := newZAIOAuthChannel("existing", raw, zaiauth.CodingPlanAPIBaseURL, []string{"GLM-4.7"})
 	cfg.ModelEntries[0].Disabled = true
 	created, err := store.CreateConfig(context.Background(), cfg)
 	if err != nil {
@@ -335,7 +335,7 @@ func TestZAIOptionsPersistsWithoutReplacingCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := store.CreateConfig(ctx, newZAIOAuthChannel("options", raw, "", []string{"GLM-5.3"}))
+	cfg, err := store.CreateConfig(ctx, newZAIOAuthChannel("options", raw, zaiauth.CodingPlanAPIBaseURL, []string{"GLM-5.3"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 	ctx := context.Background()
 
 	first := &zaiauth.Credential{APIKey: "key-1.secret", AccessToken: "access-1", Email: "user@example.com", UserID: "u-1"}
-	created, isNew, err := createOrUpdateZAIChannel(ctx, store, first, "", nil, "")
+	created, isNew, err := createOrUpdateZAIChannel(ctx, store, first, nil, "")
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateZAIChannel() created=%v err=%v", isNew, err)
 	}
@@ -413,7 +413,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 
 	// The same account reauthorizing must land on the same channel.
 	second := &zaiauth.Credential{APIKey: "key-2.secret", Email: "USER@example.com"}
-	updated, isNew, err := createOrUpdateZAIChannel(ctx, store, second, "", nil, "")
+	updated, isNew, err := createOrUpdateZAIChannel(ctx, store, second, nil, "")
 	if err != nil || isNew {
 		t.Fatalf("reauthorization created=%v err=%v", isNew, err)
 	}
@@ -433,7 +433,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 
 	// A different account gets its own channel.
 	other := &zaiauth.Credential{APIKey: "key-3.secret", Email: "other@example.com", UserID: "u-2"}
-	otherChannel, isNew, err := createOrUpdateZAIChannel(ctx, store, other, "", nil, "")
+	otherChannel, isNew, err := createOrUpdateZAIChannel(ctx, store, other, nil, "")
 	if err != nil || !isNew {
 		t.Fatalf("second account created=%v err=%v", isNew, err)
 	}
@@ -442,7 +442,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 	}
 	domestic := *first
 	domestic.Site = zaiauth.SiteBigModel
-	cn, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, "", nil, "")
+	cn, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, nil, "")
 	if err != nil || !isNew || cn.ID == created.ID {
 		t.Fatalf("cross-site save: %+v %v %v", cn, isNew, err)
 	}
@@ -450,7 +450,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 		t.Fatalf("domestic route: %+v", cn)
 	}
 	domestic.APIKey = "domestic-rotated"
-	cnAgain, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, "", nil, "")
+	cnAgain, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, nil, "")
 	if err != nil || isNew || cnAgain.ID != cn.ID {
 		t.Fatalf("domestic reauth: %+v %v %v", cnAgain, isNew, err)
 	}
@@ -471,14 +471,14 @@ func TestCreateOrUpdateZAIChannelMatchesAnonymousKey(t *testing.T) {
 	ctx := context.Background()
 
 	credential := &zaiauth.Credential{APIKey: "key-1.secret"}
-	created, isNew, err := createOrUpdateZAIChannel(ctx, store, credential, "", nil, "")
+	created, isNew, err := createOrUpdateZAIChannel(ctx, store, credential, nil, "")
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateZAIChannel() created=%v err=%v", isNew, err)
 	}
 	if !strings.HasPrefix(created.Name, "Z.ai-") {
 		t.Fatalf("name = %q", created.Name)
 	}
-	again, isNew, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{APIKey: "key-1.secret"}, "", nil, "")
+	again, isNew, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{APIKey: "key-1.secret"}, nil, "")
 	if err != nil || isNew {
 		t.Fatalf("re-import created=%v err=%v", isNew, err)
 	}
@@ -534,7 +534,7 @@ func TestHandleRefreshZAICredentialReResolvesAPIKey(t *testing.T) {
 				t.Fatal(err)
 			}
 			channel, err := store.CreateConfig(context.Background(), newZAIOAuthChannel(
-				"Z.ai-user@example.com", raw, "", []string{"glm-5.3"},
+				"Z.ai-user@example.com", raw, zaiauth.CodingPlanAPIBaseURL, []string{"glm-5.3"},
 			))
 			if err != nil {
 				t.Fatal(err)
@@ -616,7 +616,7 @@ func TestHandleRefreshZAICredentialRejectsKeyOnlyImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	channel, err := store.CreateConfig(context.Background(), newZAIOAuthChannel(
-		"Z.ai-key-only", raw, "", []string{"glm-5.3"},
+		"Z.ai-key-only", raw, zaiauth.CodingPlanAPIBaseURL, []string{"glm-5.3"},
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -686,7 +686,7 @@ func TestZAIImportMixedCredentials(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newInMemoryServer(t)
 			original := `{"api_key":"valid-key","jwt_token":"good-jwt","user_id":"account"}`
-			cfg, err := s.store.CreateConfig(context.Background(), newZAIOAuthChannel("existing", original, "", []string{"GLM-5.3-Trial"}))
+			cfg, err := s.store.CreateConfig(context.Background(), newZAIOAuthChannel("existing", original, zaiauth.CodingPlanAPIBaseURL, []string{"GLM-5.3-Trial"}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -771,7 +771,7 @@ func TestZAIUsageConcurrentCredentialChange(t *testing.T) {
 			case "preference":
 				replacement = `{"jwt_token":"old-jwt","user_id":"account-a","free_first":false}`
 			}
-			cfg, err := s.store.CreateConfig(context.Background(), newZAIOAuthChannel("existing", original, "", []string{"GLM-5.3-Trial"}))
+			cfg, err := s.store.CreateConfig(context.Background(), newZAIOAuthChannel("existing", original, zaiauth.CodingPlanAPIBaseURL, []string{"GLM-5.3-Trial"}))
 			if err != nil {
 				t.Fatal(err)
 			}

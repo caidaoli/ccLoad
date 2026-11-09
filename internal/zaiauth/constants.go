@@ -14,9 +14,6 @@ const (
 
 	// OAuthAPIBaseURL is the ZCode service root that owns the CLI OAuth flow.
 	OAuthAPIBaseURL = "https://zcode.z.ai/api/v1"
-	// OAuthProvider selects the Z.ai identity provider inside the CLI OAuth flow.
-	OAuthProvider = "zai"
-
 	// BizBaseURL is the Z.ai business API root used to mint Coding Plan API keys.
 	BizBaseURL           = "https://api.z.ai"
 	CodingPlanAPIBaseURL = "https://api.z.ai/api/anthropic" ///< 国际站付费 Anthropic 端点；国内站由站点配置提供，体验请求走 ZCode。

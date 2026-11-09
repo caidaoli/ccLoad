@@ -189,7 +189,9 @@ func (s *Server) buildZAICredential(
 			return nil, err
 		}
 		// 派生失败保留显式 Key，随后独立验证，不能以空结果覆盖用户材料。
-		if err == nil {
+		if err != nil {
+			log.Printf("[WARN] ZCode 导入时付费 Key 派生失败，沿用已提供的凭证: %v", err)
+		} else {
 			credential.APIKey = apiKey
 			credential.UserID, credential.Email = identity.UserID, identity.Email
 			validateKey = false
@@ -223,8 +225,8 @@ func (s *Server) buildZAICredential(
  * @param options 登录代理设置。
  * @return 已保存的渠道；失败时为 nil。
  * @return 是否新建渠道。
- * @return 上下文取消、存储或并发身份变更时返回错误。
- * @note 写入后失效凭证、套餐及渠道列表缓存。
+ * @return 上下文取消或凭证写入失败时返回错误；凭证落库后的模型追加失败只记日志。
+ * @note 凭证落库后无论模型追加是否成功，都失效凭证、套餐及渠道列表缓存。
  */
 func (s *Server) commitZAICredential(
 	ctx context.Context,
@@ -245,60 +247,75 @@ func (s *Server) commitZAICredential(
 	} else {
 		names = s.zaiChannelModels(ctx, credential, options.proxyURL)
 	}
-	cfg, created, err := createOrUpdateZAIChannel(
-		ctx, s.store, credential,
-		credential.Site.CodingPlanBaseURL(), names,
-		options.proxyURL,
-	)
+	cfg, created, err := createOrUpdateZAIChannel(ctx, s.store, credential, names, options.proxyURL)
 	if err != nil {
 		return nil, false, err
 	}
-	if !created {
-		committed, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
-			return nil, false, parseErr
+	// 凭证与启用状态已落库；模型追加失败也须失效缓存，否则旧的禁用或冷却状态会继续选路。
+	defer func(id int64) {
+		s.zaiCredentials.invalidate(id)
+		s.invalidateZAIPlans(id)
+		s.invalidateChannelRelatedCache(id)
+		s.InvalidateChannelListCache()
+	}(cfg.ID)
+	if created {
+		return cfg, true, nil
+	}
+	latest, err := s.appendZAIChannelModels(ctx, cfg, names)
+	if err != nil {
+		// 授权已经生效，模型可在渠道编辑页补齐，不能因此向用户报告授权失败。
+		log.Printf("[WARN] ZCode 渠道 %d 已更新授权，追加套餐模型失败: %v", cfg.ID, err)
+		return cfg, false, nil
+	}
+	return latest, false, nil
+}
+
+/**
+ * @brief 把新发现的套餐模型并入已有渠道，保留既有模型的禁用状态与偏好。
+ * @param ctx 操作上下文；取消时停止 CAS 重试。
+ * @param cfg 刚写入凭证的渠道快照。
+ * @param names 本次发现的模型。
+ * @return 最新渠道快照；无需追加时为 cfg。
+ * @return 凭证解析、存储读写、上下文取消或期间凭证被并发替换时返回错误。
+ */
+func (s *Server) appendZAIChannelModels(ctx context.Context, cfg *model.Config, names []string) (*model.Config, error) {
+	committed, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; ; attempt++ {
+		next := model.CloneModelEntries(cfg.ModelEntries)
+		seen := make(map[string]bool)
+		for _, entry := range next {
+			seen[strings.ToLower(entry.Model)] = true
 		}
-		for attempt := 0; ; attempt++ {
-			next := model.CloneModelEntries(cfg.ModelEntries)
-			seen := make(map[string]bool)
-			for _, entry := range next {
-				seen[strings.ToLower(entry.Model)] = true
+		for _, name := range names {
+			if !seen[strings.ToLower(name)] {
+				next = append(next, model.ModelEntry{Model: name})
+				seen[strings.ToLower(name)] = true
 			}
-			for _, name := range names {
-				if !seen[strings.ToLower(name)] {
-					next = append(next, model.ModelEntry{Model: name})
-					seen[strings.ToLower(name)] = true
-				}
-			}
-			if len(next) == len(cfg.ModelEntries) {
-				break
-			}
-			matched, updateErr := s.store.UpdateModelStateIfSnapshotMatches(ctx, cfg, next, cfg.ScheduledCheckModel, nil)
-			if updateErr != nil {
-				return nil, false, updateErr
-			}
-			latest, loadErr := s.store.GetConfig(ctx, cfg.ID)
-			if loadErr != nil {
-				return nil, false, loadErr
-			}
-			cfg = latest
-			if matched {
-				break
-			}
-			current, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
-			if parseErr != nil || current.Site != committed.Site || current.JWTToken != committed.JWTToken || current.APIKey != committed.APIKey {
-				return nil, false, errors.New("ZCode credential changed while updating models")
-			}
-			if retryErr := waitOAuthCASRetry(ctx, attempt); retryErr != nil {
-				return nil, false, retryErr
-			}
+		}
+		if len(next) == len(cfg.ModelEntries) {
+			return cfg, nil
+		}
+		matched, err := s.store.UpdateModelStateIfSnapshotMatches(ctx, cfg, next, cfg.ScheduledCheckModel, nil)
+		if err != nil {
+			return nil, err
+		}
+		if cfg, err = s.store.GetConfig(ctx, cfg.ID); err != nil {
+			return nil, err
+		}
+		if matched {
+			return cfg, nil
+		}
+		current, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil || current.Site != committed.Site || current.JWTToken != committed.JWTToken || current.APIKey != committed.APIKey {
+			return nil, errors.New("ZCode credential changed while updating models")
+		}
+		if err := waitOAuthCASRetry(ctx, attempt); err != nil {
+			return nil, err
 		}
 	}
-	s.zaiCredentials.invalidate(cfg.ID)
-	s.invalidateZAIPlans(cfg.ID)
-	s.invalidateChannelRelatedCache(cfg.ID)
-	s.InvalidateChannelListCache()
-	return cfg, created, nil
 }
 
 /**
@@ -323,7 +340,6 @@ func createOrUpdateZAIChannel(
 	ctx context.Context,
 	store storage.Store,
 	credential *zaiauth.Credential,
-	baseURL string,
 	models []string,
 	proxyURL string,
 ) (*model.Config, bool, error) {
@@ -344,7 +360,7 @@ func createOrUpdateZAIChannel(
 	if existing, found, updateErr := updateExistingZAIChannel(ctx, store, configs, credential, proxyURL); found || updateErr != nil {
 		return existing, false, updateErr
 	}
-	channel := newZAIOAuthChannel(uniqueZAIChannelName(configs, zaiChannelBaseName(credential)), credentialJSON, baseURL, models)
+	channel := newZAIOAuthChannel(uniqueZAIChannelName(configs, zaiChannelBaseName(credential)), credentialJSON, credential.Site.CodingPlanBaseURL(), models)
 	channel.ProxyURL = proxyURL
 	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
@@ -454,17 +470,11 @@ func uniqueZAIChannelName(configs []*model.Config, base string) string {
  * @brief 创建账号渠道；空目录保留为空，不为尚无套餐模型的账号填入付费目录。
  * @param name 渠道名称。
  * @param credentialJSON 已验证的凭证 JSON。
- * @param baseURL 上游地址；空值使用默认地址。
+ * @param baseURL 上游地址。
  * @param modelNames 实际发现的模型；付费目录回退由调用者处理。
  * @return 尚未持久化的渠道配置。
  */
 func newZAIOAuthChannel(name, credentialJSON, baseURL string, modelNames []string) *model.Config {
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = zaiauth.CodingPlanAPIBaseURL
-		if credential, err := zaiauth.ParseCredential([]byte(credentialJSON)); err == nil {
-			baseURL = credential.Site.CodingPlanBaseURL()
-		}
-	}
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeZAIOAuth, OAuthCredential: credentialJSON,
 		URLs:                  model.ChannelURLs{{URL: baseURL, Protocols: []string{"anthropic"}}},

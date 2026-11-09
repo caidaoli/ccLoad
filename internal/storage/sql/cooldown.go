@@ -289,14 +289,40 @@ func (s *SQLStore) GetAllModelCooldowns(ctx context.Context) (map[int64]map[stri
 
 // SetModelCooldown 设置指定渠道的实际上游模型冷却截止时间。
 func (s *SQLStore) SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error {
-	model, err := normalizeCooldownModel(model)
+	query, args, err := s.modelCooldownUpsert(channelID, model, until)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	durationMs := util.CalculateCooldownDuration(until, now)
+	if _, err := s.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("set model cooldown: %w", err)
+	}
+	return nil
+}
 
-	var query string
+/**
+ * @brief 构造模型冷却 upsert，普通写入与凭证条件写入共用同一份方言 SQL。
+ * @param channelID 冷却所属渠道 ID。
+ * @param model 模型冷却键，会先归一化。
+ * @param until 冷却截止时间。
+ * @return 按当前方言选择的 upsert 语句。
+ * @return 语句参数，持续时长与更新时间以调用时刻计算。
+ * @return 模型键为空时返回 normalizeCooldownModel 的错误。
+ */
+func (s *SQLStore) modelCooldownUpsert(channelID int64, model string, until time.Time) (string, []any, error) {
+	model, err := normalizeCooldownModel(model)
+	if err != nil {
+		return "", nil, err
+	}
+	now := time.Now()
+	query := `
+		INSERT INTO channel_model_cooldowns
+			(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			cooldown_until = VALUES(cooldown_until),
+			cooldown_duration_ms = VALUES(cooldown_duration_ms),
+			updated_at = VALUES(updated_at)
+	`
 	if s.supportsONConflict() {
 		query = `
 			INSERT INTO channel_model_cooldowns
@@ -307,22 +333,8 @@ func (s *SQLStore) SetModelCooldown(ctx context.Context, channelID int64, model 
 				cooldown_duration_ms = excluded.cooldown_duration_ms,
 				updated_at = excluded.updated_at
 		`
-	} else {
-		query = `
-			INSERT INTO channel_model_cooldowns
-				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE
-				cooldown_until = VALUES(cooldown_until),
-				cooldown_duration_ms = VALUES(cooldown_duration_ms),
-				updated_at = VALUES(updated_at)
-		`
 	}
-
-	if _, err := s.ExecContext(ctx, query, channelID, model, timeToUnix(until), durationMs, timeToUnix(now)); err != nil {
-		return fmt.Errorf("set model cooldown: %w", err)
-	}
-	return nil
+	return query, []any{channelID, model, timeToUnix(until), util.CalculateCooldownDuration(until, now), timeToUnix(now)}, nil
 }
 
 // ResetModelCooldown 清除指定渠道模型的冷却状态。

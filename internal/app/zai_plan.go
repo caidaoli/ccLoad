@@ -598,11 +598,11 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 	}
 	// 套餐选择只依据本渠道采样；跨渠道最新余额仅在 Trial 准入时否决请求。
 	onlyGift := !plans.CanUsePaid(credential)
-	raw, available := plans.GiftModel(name, time.Unix(plans.ObservedAt, 0))
+	raw, available := plans.GiftModel(name)
 	useGift := onlyGift || forced || ((credential.FreeFirst == nil || *credential.FreeFirst) && available)
 	if useGift {
+		// 模型冷却只拒绝当前模型；账号仍可服务其他体验模型，不退役活动席位。
 		if cooldowns, err := s.getAllModelCooldowns(req.Context()); err == nil && cooldowns[cfg.ID][zaiTrialModelKey(name)].After(time.Now()) {
-			s.zaiStart.retire(zaiStartIdentity(credential))
 			if onlyGift || forced {
 				return zaiPlanError(req, http.StatusTooManyRequests, "zcode_trial_cooling", "ZCode 该模型体验入口暂时冷却，请稍后重试"), nil
 			}
@@ -615,7 +615,7 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 	if !useGift {
 		return sendPaid(req)
 	}
-	if credential.JWTToken == "" || zaiauth.JWTExpired(credential.JWTToken, time.Now()) {
+	if credential.JWTToken == "" || plans.JWTRejected || zaiauth.JWTExpired(credential.JWTToken, time.Now()) {
 		s.zaiStart.retire(zaiStartIdentity(credential))
 		if !forced && !onlyGift {
 			return sendPaid(req)
@@ -649,10 +649,10 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 	trial.Header = zaiauth.StartHeaders(credential.JWTToken, session)
 	// 同一用户轮次的工具续调用必须复用查询 ID，下一条真实用户输入才换值。
 	if queryID := zaiauth.StartQueryID(body, session); queryID != "" {
-		trial.Header.Set("x-query-id", queryID)
+		setRawHeader(trial.Header, "x-query-id", queryID)
 	}
-	trial.Header.Set("x-request-id", uuid.NewString())
-	trial.Header.Set("x-zcode-trace-id", uuid.NewString())
+	setRawHeader(trial.Header, "x-request-id", uuid.NewString())
+	setRawHeader(trial.Header, "x-zcode-trace-id", uuid.NewString())
 	applyHeaderRules(trial.Header, cfg.HeaderRules())
 	// 每次 Trial 准入统一清理失效席位；付费请求无需操作 Trial 活动池。
 	release, rejected, err := s.waitZAIStart(trial, zaiStartIdentity(credential), name)
@@ -709,9 +709,6 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 	if sendErr != nil {
 		// 截断响应属于读取故障，不能用残缺的 429 错误体判定额度耗尽。
 		sendErr = &zaiTrialRequestError{error: sendErr, model: zaiauth.WireModel(raw)}
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
 	}
 	if req.Context().Err() == nil && sendErr == nil && resp != nil && !isZAILocalPlanResponse(resp) && resp.StatusCode >= 400 &&
 		zaiTrialAccountFailed(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, resp.StatusCode, rawError, resp.Header)) {
@@ -826,7 +823,7 @@ func zaiLocalPlanKind(resp *http.Response) string {
  * @param err 原始传输或读取错误。
  */
 func annotateZAITrialTestError(result map[string]any, testReq *testutil.TestChannelRequest, err error) {
-	if testReq == nil || !testReq.ZAITrial || err == nil {
+	if testReq == nil || !testReq.ZAI.Trial || err == nil {
 		return
 	}
 	status, _, retry := util.ClassifyError(err)

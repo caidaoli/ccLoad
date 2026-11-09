@@ -161,16 +161,22 @@ func (g *zaiStartGuard) retire(key [32]byte) {
 
 /**
  * @brief 判断账号是否已确认没有任何可用体验模型，单个付费模型无体验不代表账号失效。
- * @param plans 套餐快照；nil 或查询失败不作为失效依据。
- * @return 已确认全部体验不可用时为 true，否则为 false。
+ * @param plans 套餐快照；nil 或查询失败不作为失效依据，登录被拒绝视为失效。
+ * @return 已确认全部体验不可用或登录被拒绝时为 true，否则为 false。
  */
 func zaiStartPlansUnavailable(plans *zaiauth.Plans) bool {
-	if plans == nil || !plans.GiftKnown {
+	if plans == nil {
+		return false
+	}
+	if plans.JWTRejected {
+		return true
+	}
+	if !plans.GiftKnown {
 		return false
 	}
 	for _, gift := range plans.Gifts {
 		for _, name := range gift.Models {
-			if _, available := plans.GiftModel(name, time.Unix(plans.ObservedAt, 0)); available {
+			if _, available := plans.GiftModel(name); available {
 				return false
 			}
 		}
@@ -184,9 +190,10 @@ func zaiStartPlansUnavailable(plans *zaiauth.Plans) bool {
  * @param key 实际账号摘要。
  * @param name 当前 Trial 模型名。
  * @return 幂等释放函数；拒绝时为 nil。
- * @return 资格失效、暂停或 reserve 的本地响应，否则 nil。
+ * @return 资格失效、模型冷却、模型额度耗尽、暂停或 reserve 的本地响应，否则 nil。
  * @return 请求取消时返回上下文错误。
- * @note 读取失败或套餐资格未知时保留活动池；不新增上游查询，不修改公共选路状态。
+ * @note 读取失败或套餐资格未知时保留活动池；模型冷却只拒绝当前模型，不退役账号；
+ *       管理检测与独立发送不受渠道停用、冷却或时段约束，只按余额资格准入。
  */
 func (s *Server) acquireZAIStart(req *http.Request, key [32]byte, name string) (func(), *http.Response, error) {
 	if s.channelCache == nil {
@@ -220,24 +227,36 @@ func (s *Server) acquireZAIStart(req *http.Request, key [32]byte, name string) (
 			latestPlans[entry.account] = entry
 		}
 	}
+	cooling := false
 	for _, cfg := range configs {
-		if !cfg.UsesZAIOAuth() || !cfg.Enabled || channelCooldowns[cfg.ID].After(now) || !cfg.IsAvailableAt(now) || cooldowns[cfg.ID][zaiTrialModelKey(name)].After(now) {
+		if !cfg.UsesZAIOAuth() || !cfg.Enabled || channelCooldowns[cfg.ID].After(now) || !cfg.IsAvailableAt(now) {
 			continue
 		}
 		credential, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr == nil && credential.JWTToken != "" && !zaiauth.JWTExpired(credential.JWTToken, now) {
-			key := zaiStartIdentity(credential)
-			usable[key] = true
+			identity := zaiStartIdentity(credential)
+			usable[identity] = true
+			// 模型冷却已传播到同账号全部重复渠道，任一命中即可拒绝本模型。
+			if identity == key && cooldowns[cfg.ID][zaiTrialModelKey(name)].After(now) {
+				cooling = true
+			}
 		}
 	}
-	for key, entry := range latestPlans {
+	// 管理检测可指定停用、冷却或时段外的渠道；其资格只由余额决定，不受选路状态约束。
+	if logical, _ := req.Context().Value(zaiStartRequestKey{}).(*zaiStartRequest); !logical.routing {
+		usable[key] = true
+	}
+	for identity, entry := range latestPlans {
 		if zaiStartPlansUnavailable(entry.plans) {
-			delete(usable, key)
+			delete(usable, identity)
 		}
 	}
-	// 排队期间余额也可能更新；只拒绝当前模型，不退役仍有其他模型额度的账号。
+	// 模型冷却与单模型余额耗尽都只拒绝当前模型，不退役仍可服务其他模型的账号。
+	if cooling {
+		return nil, zaiPlanError(req, http.StatusTooManyRequests, "zcode_trial_cooling", "ZCode 该模型体验入口暂时冷却，请稍后重试"), nil
+	}
 	if entry, ok := latestPlans[key]; ok {
-		if _, available := entry.plans.GiftModel(name, time.Unix(entry.plans.ObservedAt, 0)); !available && !zaiStartPlansUnavailable(entry.plans) {
+		if _, available := entry.plans.GiftModel(name); !available && !zaiStartPlansUnavailable(entry.plans) {
 			return nil, zaiPlanError(req, http.StatusTooManyRequests, "zcode_trial_error", "ZCode 该模型体验额度已耗尽"), nil
 		}
 	}
@@ -449,9 +468,6 @@ func (g *zaiStartGuard) send(req *http.Request, send func(*http.Request) (*http.
 		return nil, nil, err
 	}
 	logical, _ := req.Context().Value(zaiStartRequestKey{}).(*zaiStartRequest)
-	if logical == nil {
-		logical = &zaiStartRequest{}
-	}
 	waits := [...]time.Duration{250, 500, 900, 1600, 2800, 4000}
 	for attempt := 0; ; attempt++ {
 		if err := req.Context().Err(); err != nil {

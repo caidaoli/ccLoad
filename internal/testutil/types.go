@@ -34,12 +34,19 @@ type ImageGenerationOptions struct {
 }
 
 /**
- * @brief 管理检测输入与请求内的实际模型、套餐身份；内部身份字段不接受 JSON 输入。
+ * @brief ZAI 管理检测单次尝试的实际套餐结果，每次尝试开始时清零并回写给调用方。
+ */
+type ZAITestOutcome struct {
+	WireModel      string ///< 实际 ZCode wire 模型，仅用于计费，不改变 Trial 选路身份。
+	Trial          bool   ///< 最终请求使用体验端点，冷却与付费账号隔离。
+	LocalPlanError bool   ///< 本地套餐拒绝，不写入上游故障冷却。
+}
+
+/**
+ * @brief 管理检测输入与请求内的实际模型、套餐身份；内部结果字段不接受 JSON 输入。
  */
 type TestChannelRequest struct {
-	ZAIWireModel      string                  `json:"-"` ///< 实际 ZCode wire 模型，仅用于计费，不改变 Trial 选路身份。
-	ZAITrial          bool                    `json:"-"` ///< 最终请求使用体验端点，冷却与付费账号隔离。
-	ZAILocalPlanError bool                    `json:"-"` ///< 本地套餐拒绝，不写入上游故障冷却。
+	ZAI               ZAITestOutcome          `json:"-"` ///< 最近一次尝试的 ZAI 套餐结果。
 	Model             string                  `json:"model" binding:"required"`
 	TargetModel       string                  `json:"redirect_model,omitempty"`  // 可选：只测试指定配置行的目标
 	MaxTokens         int                     `json:"max_tokens,omitempty"`      // 可选，默认512

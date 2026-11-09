@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,10 +150,10 @@ func TestFetchPlansAdvancesGiftTimeWhileWaiting(t *testing.T) {
 	if plans.Gifts[2].Granted || plans.Gifts[2].Remaining != nil {
 		t.Fatal("activation invented an issued balance")
 	}
-	if _, available := plans.GiftModel("glm-future", time.Unix(plans.ObservedAt, 0)); !available {
+	if _, available := plans.GiftModel("glm-future"); !available {
 		t.Fatal("issued bucket remained pending")
 	}
-	if _, available := plans.GiftModel("glm-expired", time.Unix(plans.ObservedAt, 0)); available {
+	if _, available := plans.GiftModel("glm-expired"); available {
 		t.Fatal("expired bucket remained available")
 	}
 }
@@ -343,11 +344,11 @@ func TestFetchPlansSeparatesSubscriptionAndGiftBuckets(t *testing.T) {
 	if plans.ObservedAt != 2000 || plans.Paid || !plans.PaidKnown || !plans.GiftKnown || len(plans.Gifts) != 4 {
 		t.Fatalf("plans=%+v", plans)
 	}
-	if raw, ok := plans.GiftModel("GLM-5.3-Trial", time.Unix(2000, 0)); !ok || raw != "glm-5.3" {
+	if raw, ok := plans.GiftModel("GLM-5.3-Trial"); !ok || raw != "glm-5.3" {
 		t.Fatalf("available bucket was hidden: %q %v", raw, ok)
 	}
 	for _, name := range []string{"GLM-4.7", "old"} {
-		if _, ok := plans.GiftModel(name, time.Unix(2000, 0)); ok {
+		if _, ok := plans.GiftModel(name); ok {
 			t.Fatalf("inactive gift %s was usable", name)
 		}
 	}
@@ -406,7 +407,7 @@ func TestFetchPlansWithoutBalanceBuckets(t *testing.T) {
 			if tc.status == "pending" && gift.StartsAt != 2500 {
 				t.Fatalf("start time lost: %+v", gift)
 			}
-			if _, usable := plans.GiftModel("GLM-4.7", time.Unix(2000, 0)); usable {
+			if _, usable := plans.GiftModel("GLM-4.7"); usable {
 				t.Fatal("plan without a model balance must not authorize inference")
 			}
 		})
@@ -478,7 +479,7 @@ func TestFetchPlansEntitlementEffectiveAt(t *testing.T) {
 			if !tc.bucket && (gift.Total != nil || gift.Used != nil || gift.Remaining != nil) {
 				t.Fatalf("grant_units is not a balance: %+v", gift)
 			}
-			if _, usable := plans.GiftModel("GLM-5.3-Flash-Trial", time.Unix(tc.now, 0)); usable != tc.usable {
+			if _, usable := plans.GiftModel("GLM-5.3-Flash-Trial"); usable != tc.usable {
 				t.Fatalf("usable=%v want=%v", usable, tc.usable)
 			}
 		})
@@ -502,11 +503,59 @@ func TestFetchPlansSeparatesEntitlements(t *testing.T) {
 	if plans.Gifts[0].Status != "active" || plans.Gifts[0].StartsAt != 1500 || plans.Gifts[1].Status != "pending" || plans.Gifts[1].StartsAt != 3000 {
 		t.Fatalf("entitlements = %+v", plans.Gifts)
 	}
-	if _, usable := plans.GiftModel("GLM-4.7", time.Unix(2000, 0)); !usable {
+	if _, usable := plans.GiftModel("GLM-4.7"); !usable {
 		t.Fatal("active entitlement was hidden")
 	}
-	if _, usable := plans.GiftModel("GLM-5.3-Flash", time.Unix(2000, 0)); usable {
+	if _, usable := plans.GiftModel("GLM-5.3-Flash"); usable {
 		t.Fatal("future entitlement was usable")
+	}
+}
+
+/**
+ * @brief 权益缺少 effective_at 时沿用套餐开始时间，未开始的套餐不能用于推理。
+ * @param t 测试上下文。
+ */
+func TestFetchPlansEntitlementWithoutEffectiveAtUsesPlanStart(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Date", time.Unix(2000, 0).UTC().Format(http.TimeFormat))
+		_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"trial","status":"active","starts_at":3000,"entitlements":[{"entitlement_id":"first","show_name":"GLM-4.7"}]}],"balances":[{"plan_id":"trial","entitlement_id":"first","bucket_id":"one","show_name":"GLM-4.7","remaining_units":10}]}}`)
+	}))
+	plans, err := service.FetchPlans(context.Background(), &Credential{JWTToken: "jwt"})
+	if err != nil || len(plans.Gifts) != 1 || plans.Gifts[0].StartsAt != 3000 || plans.Gifts[0].Status != "pending" {
+		t.Fatalf("plans=%+v err=%v", plans, err)
+	}
+	if _, usable := plans.GiftModel("GLM-4.7"); usable {
+		t.Fatal("plan that has not started authorized inference")
+	}
+}
+
+/**
+ * @brief 体验控制面以 401/403 拒绝 JWT 时提示重新登录，其他失败仍按可重试的查询失败处理。
+ * @param t 测试上下文。
+ */
+func TestFetchPlansReportsRejectedLogin(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		status   int
+		rejected bool
+		warning  string
+	}{
+		{http.StatusUnauthorized, true, "ZCode 登录已失效，请重新登录"},
+		{http.StatusForbidden, true, "ZCode 登录已失效，请重新登录"},
+		{http.StatusBadGateway, false, "体验套餐查询失败"},
+	} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
+			t.Parallel()
+			service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"code":401,"msg":"token revoked"}`)
+			}))
+			plans, err := service.FetchPlans(context.Background(), &Credential{JWTToken: "jwt"})
+			if err != nil || plans.GiftKnown || plans.JWTRejected != tc.rejected || !slices.Contains(plans.Warnings, tc.warning) {
+				t.Fatalf("plans=%+v err=%v", plans, err)
+			}
+		})
 	}
 }
 
@@ -529,7 +578,7 @@ func TestFetchPlansBucketWindows(t *testing.T) {
 		if gift.Status != status || !gift.Granted {
 			t.Fatalf("gift=%+v want=%s", gift, status)
 		}
-		if _, usable := plans.GiftModel(gift.Models[0], time.Unix(2000, 0)); usable != (status == "active") {
+		if _, usable := plans.GiftModel(gift.Models[0]); usable != (status == "active") {
 			t.Fatalf("model %s usable=%v", gift.Models[0], usable)
 		}
 	}
@@ -626,7 +675,7 @@ func TestFetchPlansRequiresUniqueBucketOwner(t *testing.T) {
 			if assigned != tc.assigned || (len(plans.Warnings) > 1) != tc.warning {
 				t.Fatalf("assigned=%d plans=%+v", assigned, plans)
 			}
-			if _, usable := plans.GiftModel("glm-5.3", time.Now()); usable != (tc.assigned > 0) {
+			if _, usable := plans.GiftModel("glm-5.3"); usable != (tc.assigned > 0) {
 				t.Fatalf("ambiguous bucket authorized inference: %v", usable)
 			}
 		})
@@ -649,7 +698,7 @@ func TestInitFlowAndPollFollowZCodeContract(t *testing.T) {
 		case "/api/v1/oauth/cli/init":
 			body, _ := io.ReadAll(r.Body)
 			var payload map[string]string
-			if json.Unmarshal(body, &payload) != nil || payload["provider"] != OAuthProvider {
+			if json.Unmarshal(body, &payload) != nil || payload["provider"] != "zai" {
 				t.Errorf("init body = %s", body)
 			}
 			_, _ = io.WriteString(w, `{"code":0,"data":{"flow_id":"flow-1","poll_token":"poll-token","authorize_url":"https://zcode.z.ai/oauth/x","expires_at":1800000000,"poll_interval_sec":2}}`)

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -239,13 +238,14 @@ func zaiCredentialRejected(status int) bool {
  * @param body 改名前的发送体，用于保持修复重试的工具名称边界。
  * @return 实际发送请求；无法取得时返回 req。
  * @return 实际 wire 请求体；无法读取时返回 body。
- * @return 独立的原始修复体快照；非 ZAI 或缺少响应请求时为 nil。
+ * @return 原始修复体，与入参 body 共享底层数组；非 ZAI 或缺少响应请求时为 nil。
  */
 func captureZAIForwardRequest(cfg *model.Config, resp *http.Response, req *http.Request, body []byte) (*http.Request, []byte, []byte) {
 	if !cfg.UsesZAIOAuth() || resp == nil || resp.Request == nil {
 		return req, body, nil
 	}
-	original := bytes.Clone(body)
+	// 实际 wire 体由 GetBody 重新生成，原发送体不再被改写，可直接作为修复体。
+	original := body
 	req = resp.Request
 	if actual, err := zaiRequestBody(req); err == nil {
 		body = actual

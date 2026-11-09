@@ -25,6 +25,11 @@ const StartPlanBaseURL = OAuthAPIBaseURL + "/zcode-plan/anthropic"
 var giftObservationSequence atomic.Uint64
 
 /**
+ * @brief 控制面以 HTTP 401/403 拒绝认证材料；调用方据此提示重新登录而非重试。
+ */
+var errPlanUnauthorized = errors.New("z.ai plan request unauthorized")
+
+/**
  * @brief 一个体验套餐的模型余额，单位保持上游原义。
  */
 type GiftBalance struct {
@@ -57,6 +62,7 @@ type Plans struct {
 	GiftKnown       bool          `json:"gift_known"`          ///< 是否成功查询体验套餐。
 	GiftObservation uint64        `json:"-"`                   ///< 体验余额接收序号，用于跨渠道排序，不受付费查询耗时影响。
 	Warnings        []string      `json:"warnings,omitempty"`  ///< 查询失败信息，不包含凭证。
+	JWTRejected     bool          `json:"jwt_rejected"`        ///< 体验控制面以 401/403 拒绝登录 JWT，须重新登录。
 	ObservedAt      int64         `json:"observed_at"`         ///< 上游服务器时间或本地采样时间。
 }
 
@@ -151,7 +157,11 @@ func (s *Service) FetchPlans(ctx context.Context, credential *Credential) (*Plan
 			// 以体验服务器时钟为基准推进等待时间，再判断生效/到期；不伪造余额桶。
 			giftErr = p.readGifts(giftRaw, giftObserved, time.Since(giftReceived))
 		}
-		if giftErr != nil {
+		if errors.Is(giftErr, errPlanUnauthorized) {
+			// 未到期的 JWT 也可能已被吊销，重试查询无法恢复，只能重新登录。
+			p.JWTRejected = true
+			p.Warnings = append(p.Warnings, "ZCode 登录已失效，请重新登录")
+		} else if giftErr != nil {
 			p.Warnings = append(p.Warnings, "体验套餐查询失败")
 		} else {
 			p.GiftKnown = true
@@ -179,7 +189,7 @@ func (p *Plans) CanUsePaid(credential *Credential) bool {
  * @param device 体验余额查询的设备 ID，付费查询为空。
  * @return 信封中的 data。
  * @return HTTP Date 指示的服务器时间；缺失或非法时为零值。
- * @return 网络、HTTP、业务状态或响应格式非法时返回错误。
+ * @return 网络、HTTP、业务状态或响应格式非法时返回错误；HTTP 401/403 返回 errPlanUnauthorized。
  */
 func (s *Service) planRequest(ctx context.Context, target, authorization, device string) (json.RawMessage, time.Time, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -199,6 +209,9 @@ func (s *Service) planRequest(ctx context.Context, target, authorization, device
 		return nil, time.Time{}, errors.New("z.ai plan request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, time.Time{}, errPlanUnauthorized
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil || len(raw) > maxResponseSize {
 		return nil, time.Time{}, errors.New("z.ai plan response is unreadable")
@@ -320,8 +333,10 @@ func (p *Plans) readGifts(raw []byte, observed time.Time, elapsed time.Duration)
 			gift.UnitType = entitlement.UnitType
 			gift.GrantUnits = planNumber(entitlement.GrantUnits)
 			// 套餐已开始不代表模型权益已生效；没有余额桶也必须读取 effective_at。
-			effective, _ := entitlement.EffectiveAt.Int64()
-			gift.StartsAt = effective
+			// 缺少 effective_at 时沿用套餐开始时间，不能把未开始的套餐当作已生效。
+			if effective, _ := entitlement.EffectiveAt.Int64(); effective > 0 {
+				gift.StartsAt = effective
+			}
 			gift.DisplayName = strings.TrimSpace(entitlement.ShowName)
 			if gift.DisplayName == "" {
 				gift.DisplayName = strings.Join(planModels(entitlement.Capabilities, ""), ", ")
@@ -463,11 +478,11 @@ func planNumber(value *json.Number) *float64 {
 /**
  * @brief 查找模型的体验额度，任一有效桶可用即可使用。
  * @param model 请求模型，允许 -Trial 后缀。
- * @param now 当前时间。
  * @return 上游模型原名；不存在时为空。
- * @return 是否存在尚未到期且未耗尽的额度。
+ * @return 是否存在采样时已生效、未到期且未耗尽的额度。
+ * @note 状态按采样时刻计算；调用方的缓存在权益边界到达时过期，无需再按当前时间复核。
  */
-func (p *Plans) GiftModel(model string, now time.Time) (string, bool) {
+func (p *Plans) GiftModel(model string) (string, bool) {
 	name := model
 	if strings.HasSuffix(strings.ToLower(name), "-trial") {
 		name = name[:len(name)-6]
@@ -482,7 +497,7 @@ func (p *Plans) GiftModel(model string, now time.Time) (string, bool) {
 				continue
 			}
 			found = raw
-			if gift.Status == "active" && (gift.ExpiresAt == 0 || gift.ExpiresAt > now.Unix()) {
+			if gift.Status == "active" {
 				return raw, true
 			}
 		}

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 )
 
 /**
@@ -29,11 +28,12 @@ func (s *SQLStore) SetModelCooldownIfOAuthCredential(ctx context.Context, channe
 	if authType == "" || model.UsesAPIKeyCredentials(authType) || strings.TrimSpace(expectedCredential) == "" {
 		return false, errors.New("invalid expected OAuth identity")
 	}
-	if _, err := normalizeCooldownModel(name); err != nil {
+	query, args, err := s.modelCooldownUpsert(channelID, name, until)
+	if err != nil {
 		return false, err
 	}
 	matched := false
-	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		matched = false
 		currentAuthType, currentCredential, err := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -45,8 +45,8 @@ func (s *SQLStore) SetModelCooldownIfOAuthCredential(ctx context.Context, channe
 		if currentAuthType != authType || currentCredential != expectedCredential {
 			return nil
 		}
-		if err := s.setZAIModelCooldownTx(ctx, tx, channelID, name, until); err != nil {
-			return err
+		if _, err := s.execTx(ctx, tx, query, args...); err != nil {
+			return fmt.Errorf("set model cooldown: %w", err)
 		}
 		matched = true
 		return nil
@@ -55,53 +55,4 @@ func (s *SQLStore) SetModelCooldownIfOAuthCredential(ctx context.Context, channe
 		return false, err
 	}
 	return matched, nil
-}
-
-/**
- * @brief 复用模型冷却 SQL；条件写入使用持有渠道身份锁的事务。
- * @param ctx 数据库操作上下文。
- * @param tx 已持有渠道身份锁的事务。
- * @param channelID 冷却所属渠道 ID。
- * @param model 模型冷却键，不得为空。
- * @param until 冷却截止时间。
- * @return 模型非法或 SQL 执行失败时返回错误；成功时为 nil。
- * @note 不校验身份；调用方负责持锁以及事务提交或回滚。
- */
-func (s *SQLStore) setZAIModelCooldownTx(ctx context.Context, tx *sql.Tx, channelID int64, model string, until time.Time) error {
-	model, err := normalizeCooldownModel(model)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	durationMs := util.CalculateCooldownDuration(until, now)
-
-	var query string
-	if s.supportsONConflict() {
-		query = `
-			INSERT INTO channel_model_cooldowns
-				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(channel_id, model) DO UPDATE SET
-				cooldown_until = excluded.cooldown_until,
-				cooldown_duration_ms = excluded.cooldown_duration_ms,
-				updated_at = excluded.updated_at
-		`
-	} else {
-		query = `
-			INSERT INTO channel_model_cooldowns
-				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE
-				cooldown_until = VALUES(cooldown_until),
-				cooldown_duration_ms = VALUES(cooldown_duration_ms),
-				updated_at = VALUES(updated_at)
-		`
-	}
-
-	args := []any{channelID, model, timeToUnix(until), durationMs, timeToUnix(now)}
-	_, err = s.execTx(ctx, tx, query, args...)
-	if err != nil {
-		return fmt.Errorf("set model cooldown: %w", err)
-	}
-	return nil
 }

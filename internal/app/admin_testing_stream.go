@@ -152,7 +152,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 				return
 			}
 			lastResult = attempt.result
-			if (cfg.UsesZAIOAuth() && testReq.ZAITrial) || !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
+			if (cfg.UsesZAIOAuth() && testReq.ZAI.Trial) || !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -178,7 +178,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		if !hasNextURL {
 			break
 		}
-		if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+		if cfg.UsesZAIOAuth() && testReq.ZAI.Trial {
 			// 体验使用固定端点，不能因协议能力回退而重复发送。
 			break
 		}
@@ -196,7 +196,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		if capacity, _ := lastResult["antigravity_model_capacity"].(bool); capacity || (cfg.UsesZAIOAuth() && testReq.ZAITrial) {
+		if capacity, _ := lastResult["antigravity_model_capacity"].(bool); capacity || (cfg.UsesZAIOAuth() && testReq.ZAI.Trial) {
 			lastResult = s.applyChannelTestResultCooldown(
 				c.Request.Context(), cfg, keySelection.keyIndex, &testReq,
 				keySelection.updatePersistedCooldown, lastResult,
@@ -509,14 +509,12 @@ func (s *Server) streamChatWithURLForProtocol(
 ) (out chatURLAttemptResult) {
 	attemptReq := *testReq
 	callerReq := testReq
-	attemptReq.ZAITrial, attemptReq.ZAIWireModel = false, ""
-	attemptReq.ZAILocalPlanError = false
+	attemptReq.ZAI = testutil.ZAITestOutcome{}
 	selected, _ := s.firstModelRow(cfg, originalModel)
 	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, upstreamProtocol)
 	testReq = &attemptReq
 	defer func() {
-		callerReq.ZAITrial, callerReq.ZAIWireModel = attemptReq.ZAITrial, attemptReq.ZAIWireModel
-		callerReq.ZAILocalPlanError = attemptReq.ZAILocalPlanError
+		callerReq.ZAI = attemptReq.ZAI
 		out.actualModel = attemptReq.Model
 		if out.result == nil {
 			return
@@ -777,7 +775,7 @@ func (s *Server) streamChatNonStreamResponse(
 ) bool {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+		if cfg.UsesZAIOAuth() && testReq.ZAI.Trial {
 			failure := chatRequestErrorResult(start, testReq, requestPlan.timeout, err)
 			s.applyChannelTestResultCooldown(c.Request.Context(), cfg, keySelection.keyIndex, testReq, keySelection.updatePersistedCooldown, failure)
 		}
@@ -800,7 +798,7 @@ func (s *Server) streamChatNonStreamResponse(
 		result["thinking_effort"] = requestThinking
 	}
 	result = s.parseTestNonStreamResponse(c.Request.Context(), requestPlan, testReq, resp, contentType, start, respBody, result)
-	if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+	if cfg.UsesZAIOAuth() && testReq.ZAI.Trial {
 		result = s.applyChannelTestResultCooldown(c.Request.Context(), cfg, keySelection.keyIndex, testReq, keySelection.updatePersistedCooldown, result)
 	}
 	result = attachTestDebugData(requestPlan, resp, result)
@@ -925,7 +923,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	}
 	result["client_protocol"] = sr.clientProtocol
 	result["upstream_protocol"] = sr.upstreamProtocol
-	if cfg.UsesZAIOAuth() && testReq.ZAITrial {
+	if cfg.UsesZAIOAuth() && testReq.ZAI.Trial {
 		result = s.applyChannelTestResultCooldown(c.Request.Context(), cfg, keySelection.keyIndex, testReq, keySelection.updatePersistedCooldown, result)
 	}
 	annotateChannelTestCapacityRetries(result, sr.capacityRetries)

@@ -46,7 +46,7 @@ func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Con
 		result["cooldown_action"] = "request_key_no_cooldown"
 		return result
 	}
-	if testReq.ZAILocalPlanError {
+	if testReq.ZAI.LocalPlanError {
 		result["cooldown_action"] = "local_plan_no_cooldown"
 		return result
 	}
@@ -112,9 +112,9 @@ func (s *Server) syncZAIChannelTestRequest(cfg *model.Config, plan *channelTestR
 		// 先同步响应，再以真实传输错误覆盖 Trial 标记及无响应时的模型归因。
 		defer func() {
 			var trialErr *zaiTrialRequestError
-			testReq.ZAITrial = errors.As(sendErr, &trialErr)
-			if testReq.ZAITrial {
-				testReq.ZAIWireModel = trialErr.model
+			testReq.ZAI.Trial = errors.As(sendErr, &trialErr)
+			if testReq.ZAI.Trial {
+				testReq.ZAI.WireModel = trialErr.model
 			}
 		}()
 	}
@@ -127,9 +127,11 @@ func (s *Server) syncZAIChannelTestRequest(cfg *model.Config, plan *channelTestR
 	}
 	plan.requestBody = body
 	if testReq != nil {
-		testReq.ZAIWireModel = gjson.GetBytes(body, "model").String()
-		testReq.ZAITrial = isZAITrialResponse(resp)
-		testReq.ZAILocalPlanError = isZAILocalPlanResponse(resp)
+		testReq.ZAI = testutil.ZAITestOutcome{
+			WireModel:      gjson.GetBytes(body, "model").String(),
+			Trial:          isZAITrialResponse(resp),
+			LocalPlanError: isZAILocalPlanResponse(resp),
+		}
 	}
 	plan.fullURL = resp.Request.URL.String()
 	plan.upstreamHeaders = resp.Request.Header.Clone()
