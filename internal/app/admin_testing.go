@@ -761,6 +761,9 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 			refreshErr = errors.New("OAuth credential refresh is unavailable")
 		}
 		if refreshErr != nil {
+			if errors.Is(refreshErr, errZAICredentialSiteChanged) {
+				testResult["cooldown_action"] = "credential_changed_no_cooldown"
+			}
 			message := "刷新 OAuth 凭证失败: " + refreshErr.Error()
 			if original := strings.TrimSpace(getResultString(testResult, "error")); original != "" {
 				message = original + "; " + message
@@ -1924,7 +1927,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	} else if capacityRelease != nil {
 		resp, err = s.doReservedUpstreamRequest(cfg, req, capacityRelease, nil)
 	} else if testReq.WaitForCapacity {
-		resp, err, cancel = s.sendZAIChannelTest(reqCtx, cfg, testReq, requestPlan, req, cancel)
+		resp, cancel, err = s.sendZAIChannelTest(reqCtx, cfg, testReq, requestPlan, req, cancel)
 	} else {
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
@@ -3123,7 +3126,18 @@ func channelTestLogIdentity(requestedModel, fallbackThinking string) (logModel, 
 	return logModel, thinkingEffort
 }
 
-// parseTestNativeSSEResponse 处理客户端协议与上游协议一致时的原生 SSE 解析。
+/**
+ * @brief 解析原生协议 SSE 检测结果，保留上游错误和真实读取故障的分类。
+ * @param ctx 当前检测上下文。
+ * @param requestPlan 实际发送计划及协议超时状态。
+ * @param testReq 检测请求及套餐身份。
+ * @param resp 尚未读取完成的上游响应。
+ * @param contentType 上游声明的媒体类型。
+ * @param start 检测开始时间。
+ * @param result 待补充的检测结果映射。
+ * @return 原地补充内容、用量或失败详情的检测结果。
+ * @note 消费响应体；调用方负责关闭。Trial 取消错误不会触发冷却或账号退役。
+ */
 func (s *Server) parseTestNativeSSEResponse(
 	ctx context.Context,
 	requestPlan *channelTestRequestPlan,
@@ -3167,6 +3181,7 @@ func (s *Server) parseTestNativeSSEResponse(
 		result["duration_ms"] = time.Since(start).Milliseconds()
 		result["error"] = errorMsg
 		result["raw_response"] = collector.rawResponse()
+		annotateZAITrialTestError(result, testReq, err)
 		return result
 	}
 	if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, ctx.Err()); ok {

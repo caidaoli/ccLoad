@@ -122,7 +122,7 @@ func TestDoUpstreamRequestNonZAICancellationReservation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -174,7 +174,7 @@ func TestDoUpstreamRequestNonZAIRedirectRequestIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.Request == nil || resp.Request.URL.Path != "/final" || resp.Request.Method != http.MethodGet {
 		t.Fatalf("final request identity overwritten: %+v", resp.Request)
 	}

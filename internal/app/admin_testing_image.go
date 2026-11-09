@@ -251,6 +251,9 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 			refreshErr = errors.New("OAuth credential refresh is unavailable")
 		}
 		if refreshErr != nil {
+			if errors.Is(refreshErr, errZAICredentialSiteChanged) {
+				result["cooldown_action"] = "credential_changed_no_cooldown"
+			}
 			message := "刷新 OAuth 凭证失败: " + refreshErr.Error()
 			if original := strings.TrimSpace(getResultString(result, "error")); original != "" {
 				message = original + "; " + message

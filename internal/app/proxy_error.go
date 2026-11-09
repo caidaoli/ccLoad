@@ -672,9 +672,20 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 	}
 }
 
-// handleProxySuccess 处理代理成功响应（业务逻辑层）
-// 使用 cooldownManager 统一管理冷却状态清除
-// 注意：与 handleSuccessResponse（HTTP层）不同
+/**
+ * @brief 记录代理成功结果、计费用量并清除对应渠道冷却。
+ * @param ctx 当前请求上下文。
+ * @param cfg 实际成功渠道。
+ * @param keyIndex 实际使用的 Key 索引。
+ * @param actualModel 实际上游模型。
+ * @param selectedKey 实际使用的凭证。
+ * @param res 成功响应及用量。
+ * @param duration 本次尝试耗时，单位秒。
+ * @param reqCtx 当前代理请求状态。
+ * @return 已记账的成功结果。
+ * @return 返回客户端的动作。
+ * @note Trial 成功不清除付费冷却；冷却写入断开请求取消链并限时执行。
+ */
 func (s *Server) handleProxySuccess(
 	ctx context.Context,
 	cfg *model.Config,
@@ -690,7 +701,7 @@ func (s *Server) handleProxySuccess(
 
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
-	if !cfg.AntigravityCredits && !reqCtx.countTokens() && !(cfg.UsesZAIOAuth() && res.zaiTrial) {
+	if !cfg.AntigravityCredits && !reqCtx.countTokens() && (!cfg.UsesZAIOAuth() || !res.zaiTrial) {
 		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
 			count := cooldownClearChannelFailCount.Add(1)
 			if count%100 == 1 {

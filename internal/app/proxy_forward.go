@@ -5157,6 +5157,10 @@ func (s *Server) tryOAuthChannel(
 			runtimeCfg = cfg
 		}
 		if credentialErr != nil {
+			if errors.Is(credentialErr, errZAICredentialSiteChanged) {
+				rejectedResult.nextAction = cooldown.ActionRetryChannel
+				return rejectedResult, nil
+			}
 			if errors.Is(credentialErr, errAntigravityCreditsUnavailable) {
 				return nil, nil
 			}

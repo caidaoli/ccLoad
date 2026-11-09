@@ -16,6 +16,11 @@ import (
 )
 
 /**
+ * @brief 标记在途刷新已被另一个站点的账号替换，当前请求必须停止以免向旧地址发送新凭证。
+ */
+var errZAICredentialSiteChanged = errors.New("z.ai credential site changed during re-resolution")
+
+/**
  * @brief 管理按渠道与凭证快照隔离的 Coding Plan 凭证及并发刷新。
  * @details 付费 Key 无定时刷新；上游 401 或管理员强制刷新时重新解析凭证。
  */
@@ -61,8 +66,8 @@ func newZAICredentialManager(
  * @param ctx 等待上下文，取消不会中断其他等待者的刷新。
  * @param cfg 当前渠道快照。
  * @param forceRefresh 是否重新派生 Key。
- * @return 独立凭证；刷新失败时尽量返回旧凭证。
- * @return 配置缺失、取消或上游派生失败时返回错误。
+ * @return 独立凭证；刷新失败时尽量返回旧凭证，站点已变更时为 nil。
+ * @return 配置缺失、取消或上游派生失败时返回错误；站点变更返回可由 errors.Is 识别的 errZAICredentialSiteChanged。
  * @note 同渠道同站点的刷新合并，并以 CAS 防止覆盖新凭证。
  */
 func (m *zaiCredentialManager) credential(
@@ -82,11 +87,6 @@ func (m *zaiCredentialManager) credential(
 	}
 	if !forceRefresh {
 		return cloneZAICredential(credential), nil
-	}
-	if credential.AccessToken == "" {
-		return cloneZAICredential(credential), errors.New(
-			"z.ai Coding Plan key was rejected and cannot be re-resolved without an account authorization",
-		)
 	}
 	rejectedKey := credential.APIKey
 
@@ -117,7 +117,7 @@ func (m *zaiCredentialManager) credential(
 			return current, nil
 		}
 		if current.AccessToken == "" {
-			return nil, errors.New("z.ai credential has no account authorization to re-resolve with")
+			return nil, errors.New("z.ai Coding Plan key was rejected and cannot be re-resolved without an account authorization")
 		}
 		client := http.DefaultClient
 		if m.clientFor != nil {
@@ -148,8 +148,12 @@ func (m *zaiCredentialManager) credential(
 	if result.Err != nil {
 		return cloneZAICredential(credential), result.Err
 	}
+	resolved := result.Val.(*zaiauth.Credential)
+	if resolved.Site != credential.Site {
+		return nil, errZAICredentialSiteChanged
+	}
 	// singleflight 的结果由等待者共享，运行时编码会就地归一，必须先隔离副本。
-	return cloneZAICredential(result.Val.(*zaiauth.Credential)), nil
+	return cloneZAICredential(resolved), nil
 }
 
 /**

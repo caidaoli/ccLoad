@@ -7529,6 +7529,111 @@ func TestAdminZAITrialFailureIsolation(t *testing.T) {
 }
 
 /**
+ * @brief 管理检测和聊天的最终体验故障释放活动席位，并发忙和客户端取消保留活动账号。
+ * @param t 测试上下文。
+ */
+func TestAdminZAIStartFinalFailureRetiresAccount(t *testing.T) {
+	const success = `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	const prefix = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"GLM-5.3-Flash\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"
+	for _, endpoint := range []string{"test", "chat"} {
+		for _, tc := range []struct {
+			name    string ///< 终态故障或例外场景。
+			body    string ///< 首个业务事件之后的完整流。
+			readErr error  ///< 业务输出后的读取故障；nil 表示正常 EOF。
+			retire  bool   ///< 是否允许备用账号接替。
+		}{
+			{"late-sse-error", prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"backend failed after output\"}}\n\n", nil, true},
+			{"read-error", prefix, io.ErrUnexpectedEOF, true},
+			{"late-concurrency-error", prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"3008\",\"message\":\"concurrency limit exceeded\"}}\n\n", nil, false},
+			{"client-canceled", prefix, context.Canceled, false},
+		} {
+			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
+				env, configs := newZAIStartHarness(t)
+				controlClient := env.server.client
+				var fail atomic.Bool
+				var calls [3]atomic.Int32
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(req.URL.Path, "/messages") {
+						return controlClient.Do(req)
+					}
+					account := anthropicHeaderValue(req.Header, "Authorization")
+					index := slices.Index([]string{"Bearer jwt-a", "Bearer jwt-b", "Bearer jwt-c"}, account)
+					if index < 0 {
+						return nil, fmt.Errorf("unexpected inference account: %s", account)
+					}
+					calls[index].Add(1)
+					if fail.Load() && index < 2 {
+						resp := zaiStartTestResponse(req, http.StatusOK, tc.body)
+						resp.Header.Set("Content-Type", "text/event-stream")
+						if tc.readErr != nil {
+							resp.Body = io.NopCloser(io.MultiReader(strings.NewReader(tc.body), iotest.ErrReader(tc.readErr)))
+						}
+						return resp, nil
+					}
+					return zaiStartTestResponse(req, http.StatusOK, success), nil
+				})}
+				router := gin.New()
+				router.POST("/admin/channels/:id/test", env.server.HandleChannelTest)
+				router.POST("/admin/channels/:id/chat", env.server.HandleChannelChat)
+				request := func(index int, stream bool) *httptest.ResponseRecorder {
+					req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/%s", configs[index].ID, endpoint), map[string]any{
+						"model": "GLM-5.3-Flash-Trial", "stream": stream, "content": "hello", "client_protocol": "anthropic",
+					})
+					response := httptest.NewRecorder()
+					router.ServeHTTP(response, req)
+					return response
+				}
+				for _, index := range []int{0, 1} {
+					if response := request(index, false); response.Code != http.StatusOK || calls[index].Load() != 1 {
+						t.Fatalf("warm account %d: calls=%d status=%d body=%s", index, calls[index].Load(), response.Code, response.Body.String())
+					}
+				}
+				fail.Store(true)
+				for _, index := range []int{0, 1} {
+					response := request(index, true)
+					if calls[index].Load() != 2 {
+						t.Fatalf("failure did not reach account %d: calls=%d body=%s", index, calls[index].Load(), response.Body.String())
+					}
+					if endpoint == "test" {
+						result := mustParseAPIResponse[map[string]any](t, response.Body.Bytes()).Data
+						if result["success"] != false {
+							t.Fatalf("failed stream reported success: %v", result)
+						}
+					} else {
+						var text string
+						for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+							_, data := parseSSEEventChunk([]byte(event + "\n\n"))
+							text += gjson.GetBytes(data, "delta").String()
+						}
+						if text != "partial" {
+							t.Fatalf("chat did not deliver text before failure: %q", text)
+						}
+					}
+				}
+				response := request(2, false)
+				wantCalls := int32(0)
+				if tc.retire {
+					wantCalls = 1
+				}
+				if calls[2].Load() != wantCalls {
+					t.Fatalf("reserve calls=%d want=%d status=%d body=%s", calls[2].Load(), wantCalls, response.Code, response.Body.String())
+				}
+				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+				if err != nil || len(cooldowns) != 0 {
+					t.Fatalf("non-quota Trial failure changed model cooldowns: %v %v", cooldowns, err)
+				}
+				channelCooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+				if err != nil || len(channelCooldowns) != 0 {
+					t.Fatalf("Trial failure changed paid channel cooldowns: %v %v", channelCooldowns, err)
+				}
+			})
+		}
+	}
+}
+
+/**
  * @brief 管理测试和聊天按 ZAI 实际出站模型计费，Trial 别名价格不覆盖实际模型，渠道价格仍优先。
  * @param t 测试上下文。
  */

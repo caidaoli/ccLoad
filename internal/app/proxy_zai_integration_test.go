@@ -70,6 +70,196 @@ func newZAIStartHarness(t *testing.T) (*proxyTestEnv, []*model.Config) {
 }
 
 /**
+ * @brief 流终态故障或模型故障让备用 Trial 账号接替，客户端错误和并发忙保留活动账号。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIStartFinalFailureRetiresAccount(t *testing.T) {
+	const success = `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	const prefix = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"GLM-5.3-Flash\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"
+	for _, tc := range []struct {
+		name   string
+		status int
+		stream bool
+		body   string
+		retire bool
+	}{
+		{"late-sse-error", 200, true, prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"backend failed after output\"}}\n\n", true},
+		{"incomplete-stream", 200, true, prefix, true},
+		{"model-not-found", 404, false, `{"type":"error","error":{"type":"not_found_error","message":"model not found"}}`, true},
+		{"bad-request", 400, false, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215000 tokens > 200000 maximum"}}`, false},
+		{"late-concurrency-error", 200, true, prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"3008\",\"message\":\"concurrency limit exceeded\"}}\n\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			controlClient := env.server.client
+			var fail atomic.Bool
+			var reserveCalls atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return controlClient.Do(req)
+				}
+				account := anthropicHeaderValue(req.Header, "Authorization")
+				if account == "Bearer jwt-c" {
+					reserveCalls.Add(1)
+				}
+				if fail.Load() && (account == "Bearer jwt-a" || account == "Bearer jwt-b") {
+					resp := zaiStartTestResponse(req, tc.status, tc.body)
+					if tc.stream {
+						resp.Header.Set("Content-Type", "text/event-stream")
+					}
+					return resp, nil
+				}
+				return zaiStartTestResponse(req, http.StatusOK, success), nil
+			})}
+			request := func(index int, stream bool) *httptest.ResponseRecorder {
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+					"model": "GLM-5.3-Flash-Trial", "stream": stream, "max_tokens": 16,
+					"messages": []map[string]string{{"role": "user", "content": "hello"}},
+				}, map[string]string{"X-CCLoad-Channel": configs[index].Name})
+			}
+			for _, index := range []int{0, 1} {
+				if response := request(index, false); response.Code != http.StatusOK {
+					t.Fatalf("warm account %d: %d %s", index, response.Code, response.Body.String())
+				}
+			}
+			fail.Store(true)
+			for _, index := range []int{0, 1} {
+				response := request(index, tc.stream)
+				if tc.stream {
+					var text string
+					for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+						_, data := parseSSEEventChunk([]byte(event + "\n\n"))
+						text += gjson.GetBytes(data, "delta.text").String()
+					}
+					if text != "partial" {
+						t.Fatalf("account %d did not commit text before failure: %q", index, text)
+					}
+				}
+			}
+			response := request(2, false)
+			if tc.retire {
+				if response.Code != http.StatusOK || reserveCalls.Load() != 1 {
+					t.Fatalf("reserve must take over: calls=%d status=%d body=%s", reserveCalls.Load(), response.Code, response.Body.String())
+				}
+			} else if response.Code != http.StatusTooManyRequests || reserveCalls.Load() != 0 || gjson.GetBytes(response.Body.Bytes(), "error.type").String() != "zcode_trial_reserve" {
+				t.Fatalf("active accounts must retain seats: calls=%d status=%d body=%s", reserveCalls.Load(), response.Code, response.Body.String())
+			}
+			cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+			if err != nil || len(cooldowns) != 0 {
+				t.Fatalf("Trial failure must not cool paid channels: %v %v", cooldowns, err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief CSV 跨站点替换与认证重试竞争时停止旧尝试，后续请求使用完整的新站点配置。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAICrossSiteReplacementRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		oldSite       zaiauth.Site
+		newSite       zaiauth.Site
+		accountToken  string
+		duringRefresh bool
+		admin         bool
+	}{
+		{"before-refresh", zaiauth.SiteZAI, zaiauth.SiteBigModel, "old-access", false, false},
+		{"api-key-only", zaiauth.SiteZAI, zaiauth.SiteBigModel, "", false, false},
+		{"during-refresh", zaiauth.SiteBigModel, zaiauth.SiteZAI, "old-access", true, false},
+		{"admin-before-refresh", zaiauth.SiteZAI, zaiauth.SiteBigModel, "old-access", false, true},
+		{"admin-api-key-only", zaiauth.SiteZAI, zaiauth.SiteBigModel, "", false, true},
+		{"admin-during-refresh", zaiauth.SiteBigModel, zaiauth.SiteZAI, "old-access", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldCredential := fmt.Sprintf(`{"site":%q,"api_key":"old.secret","access_token":%q}`, tc.oldSite, tc.accountToken)
+			env := setupProxyTestEnv(t, []testChannel{{name: "cross-site", authType: model.AuthTypeZAIOAuth, oauthCredential: oldCredential, models: "GLM-5.3", upstreamProtocol: "anthropic"}}, map[int]string{0: tc.oldSite.CodingPlanBaseURL()})
+			ctx := context.Background()
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("list configs: %v", err)
+			}
+			original := configs[0]
+			replace := func() error {
+				imported := original.Clone()
+				imported.ID = 0
+				imported.URLs = model.ChannelURLs{{URL: tc.newSite.CodingPlanBaseURL(), Protocols: []string{"anthropic"}}}
+				imported.OAuthCredential = fmt.Sprintf(`{"site":%q,"api_key":"replacement.secret"}`, tc.newSite)
+				batch := []*model.ChannelWithKeys{{Config: imported}}
+				if err := env.server.prepareCSVImportOAuthCredentials(ctx, batch); err != nil {
+					return fmt.Errorf("validate CSV: %w", err)
+				}
+				created, updated, err := env.store.ImportChannelBatch(ctx, batch)
+				if err != nil || created != 0 || updated != 1 {
+					return fmt.Errorf("import CSV created=%d updated=%d: %v", created, updated, err)
+				}
+				env.server.invalidateOAuthCredential(imported.ID, model.AuthTypeZAIOAuth)
+				env.server.InvalidateChannelListCache()
+				return nil
+			}
+			var sends []string
+			env.server.client = &http.Client{Transport: oauthUsageRoundTripper(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/api/paas/v4/models":
+					return jsonResponse(req, `{"data":[{"id":"GLM-5.3"}]}`)
+				case "/api/biz/customer/getCustomerInfo":
+					return jsonResponse(req, `{"code":0,"data":{"userId":"user","organizations":[{"organizationId":"org","projects":[{"projectId":"project"}]}]}}`)
+				case "/api/biz/v1/organization/org/projects/project/api_keys":
+					return jsonResponse(req, `{"code":0,"data":[{"name":"zcode-api-key","apiKey":"resolved"}]}`)
+				case "/api/biz/v1/organization/org/projects/project/api_keys/copy/resolved":
+					if err := replace(); err != nil {
+						return nil, err
+					}
+					return jsonResponse(req, `{"code":0,"data":{"secretKey":"secret"}}`)
+				}
+				if !strings.HasSuffix(req.URL.Path, "/v1/messages") {
+					return nil, fmt.Errorf("unexpected request: %s", req.URL)
+				}
+				key := anthropicHeaderValue(req.Header, "x-api-key")
+				sends = append(sends, req.URL.String()+" key="+key)
+				if len(sends) == 1 {
+					if !tc.duringRefresh {
+						if err := replace(); err != nil {
+							return nil, err
+						}
+					}
+					return jsonResponseStatus(req, http.StatusUnauthorized, `{"type":"error","error":{"type":"authentication_error","message":"invalid api key"}}`)
+				}
+				return jsonResponse(req, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			})}
+			request := func() *httptest.ResponseRecorder {
+				if tc.admin {
+					id := fmt.Sprint(original.ID)
+					c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/test", map[string]any{
+						"model": "GLM-5.3", "content": "hello", "client_protocol": "anthropic", "stream": false,
+					}))
+					c.Params = gin.Params{{Key: "id", Value: id}}
+					env.server.HandleChannelTest(c)
+					return response
+				}
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": "GLM-5.3", "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, nil)
+			}
+			request()
+			if len(sends) != 1 {
+				t.Fatalf("old attempt sent replacement credential: %v", sends)
+			}
+			cooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+			if err != nil || len(cooldowns) != 0 {
+				t.Fatalf("replacement account was cooled: %v %v", cooldowns, err)
+			}
+			response := request()
+			want := tc.newSite.CodingPlanBaseURL() + "/v1/messages key=replacement.secret"
+			if response.Code != http.StatusOK || len(sends) != 2 || sends[1] != want {
+				t.Fatalf("new request must use replacement site: status=%d sends=%v body=%s", response.Code, sends, response.Body.String())
+			}
+		})
+	}
+}
+
+/**
  * @brief 从公共发送分流边界发起一次逻辑请求，不绕过套餐选择。
  * @param ctx 请求上下文。
  * @param s 服务器。
@@ -482,14 +672,17 @@ func TestProxy_ZAIStartBusyAccountRemainsActive(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 	}
-	_, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(*http.Request) (*http.Response, error) {
+	resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(*http.Request) (*http.Response, error) {
 		return nil, ErrChannelConcurrencyExceeded
 	})
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if !errors.Is(err, ErrChannelConcurrencyExceeded) {
 		t.Fatalf("capacity rejection=%v", err)
 	}
 	calls := 0
-	resp, err := callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
+	resp, err = callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
 		calls++
 		return send(req)
 	})
@@ -761,8 +954,8 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 				}
 			}
 			env.server.InvalidateChannelListCache()
-			var held []*http.Response
-			for i := 0; i < 2; i++ {
+			var held []io.ReadCloser
+			for i := range 2 {
 				if i == 1 && !multiple {
 					break
 				}
@@ -770,8 +963,8 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				held = append(held, resp)
 				defer func() { _ = resp.Body.Close() }()
+				held = append(held, resp.Body)
 			}
 			admin := gin.New()
 			admin.GET("/admin/active-requests", env.server.HandleActiveRequests)
@@ -846,13 +1039,13 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 				if next := waitQueued(configs[1].ID); next.ID != active.ID {
 					t.Error("waiting request identity changed")
 				}
-				_ = held[0].Body.Close()
-				_ = held[1].Body.Close()
+				_ = held[0].Close()
+				_ = held[1].Close()
 				result(200)
 				wantAccount = "Bearer jwt-b"
 			} else {
 				result(502)
-				_ = held[0].Body.Close()
+				_ = held[0].Close()
 				launch()
 				result(200)
 			}
@@ -1447,12 +1640,13 @@ func TestProxy_ZAIStartStaleEligibility(t *testing.T) {
 					t.Fatal(err)
 				}
 				// 渠道退出候选不代表它刚取得的账号余额失真，重复渠道仍应遵守最新事实。
-				if source == "cooled" {
+				switch source {
+				case "cooled":
 					if err := env.store.SetModelCooldown(context.Background(), configs[0].ID, "GLM-5.3-Flash-Trial", time.Now().Add(time.Minute)); err != nil {
 						t.Fatal(err)
 					}
 					env.server.invalidateChannelRelatedCache(configs[0].ID)
-				} else if source == "disabled" {
+				case "disabled":
 					configs[0].Enabled = false
 					if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
 						t.Fatal(err)
@@ -3288,7 +3482,7 @@ func TestZAIQuotaIdentityWriteRace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			replacement, err := env.store.GetConfig(context.Background(), configs[0].ID)
 			if err != nil {
 				t.Fatal(err)
@@ -3305,7 +3499,7 @@ func TestZAIQuotaIdentityWriteRace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tc.status || calls != tc.calls {
 				t.Fatalf("account cooldown isolation: status=%d upstream_calls=%d", resp.StatusCode, calls)
 			}
@@ -3337,7 +3531,7 @@ func TestZAIPaidDuplicateCacheIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			warm.Body.Close()
+			_ = warm.Body.Close()
 			if isZAITrialResponse(warm) {
 				t.Fatal("warmup was not paid")
 			}
@@ -3351,7 +3545,7 @@ func TestZAIPaidDuplicateCacheIsolation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			if tc.freeFirst {
 				paidCfg.OAuthCredential = `{"api_key":"key-a.secret","jwt_token":"jwt-a","user_id":"a","free_first":true}`
@@ -3363,7 +3557,7 @@ func TestZAIPaidDuplicateCacheIsolation(t *testing.T) {
 			calls := 0
 			resp, err := callZAIStart(ctx, env.server, paidCfg, "GLM-5.3-Flash", func(req *http.Request) (*http.Response, error) { calls++; return send(req) })
 			if resp != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			if err != nil || calls != 1 {
 				t.Fatalf("paid request delayed by duplicate Trial invalidation: calls=%d err=%v", calls, err)
@@ -3417,7 +3611,7 @@ func TestZAILatestModelEligibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if calls != 1 || resp.StatusCode != 200 {
 		t.Fatalf("other model incorrectly rejected: calls=%d status=%d", calls, resp.StatusCode)
 	}

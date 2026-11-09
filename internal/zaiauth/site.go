@@ -85,8 +85,8 @@ func NormalizeCodingPlanURL(raw string) string {
 	}
 	path := strings.TrimSuffix(u.Path, "/")
 	suffix := ""
-	if strings.HasSuffix(path, "/v1/messages") {
-		path = strings.TrimSuffix(path, "/v1/messages")
+	if basePath, found := strings.CutSuffix(path, "/v1/messages"); found {
+		path = basePath
 		suffix = "/v1/messages"
 	}
 	var base string

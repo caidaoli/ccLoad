@@ -153,14 +153,27 @@ func zaiTrialErrorAction(in cooldown.ErrorInput) cooldown.Action {
 }
 
 /**
- * @brief 真实额度错误按账号共享一分钟 Trial 模型冷却，不影响付费或公共渠道冷却。
+ * @brief 判断最终体验上游故障是否应让备用账号接替活动席位。
+ * @param in 实际体验上游的最终错误，不含本地拒绝或调用方取消。
+ * @return 非并发忙且非确定性客户端错误时返回 true；网络故障同样退役。
+ */
+func zaiTrialAccountFailed(in cooldown.ErrorInput) bool {
+	return !zaiConcurrencyError(in.ErrorBody) && zaiTrialErrorAction(in) != cooldown.ActionReturnClient
+}
+
+/**
+ * @brief 最终体验故障退役实际账号；真实额度错误另共享一分钟 Trial 模型冷却。
  * @param ctx 当前操作上下文。
  * @param cfg 发生错误的渠道。
  * @param in 真实体验错误；网络故障不解释为额度不足。
  * @return 后续路由动作，非额度故障同样可以切换渠道。
- * @note 独立串行检查与写入，直接读存储防止缓存旧值延长暂停；持久化失败记录日志。
+ * @note 取消不退役；不影响付费或公共渠道冷却。额度写入独立串行，直接读存储防止旧缓存延长暂停，持久化失败记录日志。
  */
 func (s *Server) applyZAITrialCooldown(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) cooldown.Action {
+	credential, credentialErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if ctx.Err() == nil && credentialErr == nil && zaiTrialAccountFailed(in) {
+		s.zaiStart.retire(zaiStartIdentity(credential))
+	}
 	if !in.IsNetworkError && zaiGiftQuotaError(in.StatusCode, in.ErrorBody) {
 		name := zaiTrialModelKey(in.Model)
 		// 额度错误的读改写不占用套餐缓存锁，正常请求和取消无需等待写库。
@@ -170,7 +183,6 @@ func (s *Server) applyZAITrialCooldown(ctx context.Context, cfg *model.Config, i
 		defer cancel()
 		now := time.Now()
 		targets := []*model.Config{cfg}
-		credential, credentialErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if credentialErr == nil {
 			// 额度属于账号。只有真实额度错误才枚举重复渠道，热路径不增加数据库全表读取。
 			configs, err := s.store.ListConfigs(cooldownCtx)
@@ -498,7 +510,7 @@ func (s *Server) HandleZAIOptions(c *gin.Context) {
  * @param send 实际发送回调，每次调用独立预留 RPM 和并发并负责释放。
  * @return 最终响应，Request 指向实际发送的请求。
  * @return 本地准备、取消、预留或传输错误。
- * @note 所有本地资格拒绝在调用 send 之前完成，不消耗推理容量。
+ * @note 所有本地资格拒绝在调用 send 之前完成，不消耗推理容量；最终体验上游故障退役实际账号，调用方取消不退役。
  */
 func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send func(*http.Request) (*http.Response, error)) (result *http.Response, resultErr error) {
 	logical, _ := req.Context().Value(zaiStartRequestKey{}).(*zaiStartRequest)
@@ -701,11 +713,11 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 			_ = resp.Body.Close()
 		}
 	}
-	if sendErr == nil && resp != nil && !isZAILocalPlanResponse(resp) && resp.StatusCode >= 400 &&
-		(zaiGiftQuotaError(resp.StatusCode, rawError) || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 405 || resp.StatusCode >= 500 || zaiGiftRefused.Match(rawError)) {
+	if req.Context().Err() == nil && sendErr == nil && resp != nil && !isZAILocalPlanResponse(resp) && resp.StatusCode >= 400 &&
+		zaiTrialAccountFailed(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, resp.StatusCode, rawError, resp.Header)) {
 		s.zaiStart.retire(zaiStartIdentity(credential))
 	}
-	if sendErr != nil && !errors.Is(sendErr, context.Canceled) && !errors.Is(sendErr, context.DeadlineExceeded) {
+	if req.Context().Err() == nil && sendErr != nil && !errors.Is(sendErr, context.Canceled) && !errors.Is(sendErr, context.DeadlineExceeded) {
 		s.zaiStart.retire(zaiStartIdentity(credential))
 	}
 	if req.Context().Err() != nil || errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded) || forced || onlyGift || (sendErr == nil && resp != nil && resp.StatusCode < 400) {

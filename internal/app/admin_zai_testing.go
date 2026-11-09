@@ -22,7 +22,7 @@ import (
  * @param result 待标注的检测结果映射，必须非 nil。
  * @param actualModel 实际请求模型，用于选择对应 Trial 冷却键。
  * @return 原结果映射，补充 cooldown_action。
- * @note 原地修改 result；真实额度错误可写 Trial 模型冷却并失效缓存。
+ * @note 原地修改 result；真实最终故障退役活动账号，只有额度错误写 Trial 模型冷却并失效缓存。
  */
 func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Config, keyIndex int, testReq *testutil.TestChannelRequest, persist bool, result map[string]any, actualModel string) map[string]any {
 	if success, _ := result["success"].(bool); success {
@@ -51,11 +51,13 @@ func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Con
 		return result
 	}
 	status, body, headers := buildTestFailureClassificationInput(result)
-	if network, _ := result["network_error"].(bool); network || !zaiGiftQuotaError(status, body) {
+	input := cooldownInputForModel(httpErrorInputFromParts(cfg.ID, keyIndex, status, body, headers), zaiTrialModelKey(actualModel))
+	input.IsNetworkError, _ = result["network_error"].(bool)
+	s.applyZAITrialCooldown(ctx, cfg, input)
+	if input.IsNetworkError || !zaiGiftQuotaError(status, body) {
 		result["cooldown_action"] = "trial_error_no_cooldown"
 		return result
 	}
-	s.applyZAITrialCooldown(ctx, cfg, cooldownInputForModel(httpErrorInputFromParts(cfg.ID, keyIndex, status, body, headers), zaiTrialModelKey(actualModel)))
 	result["cooldown_action"] = "model_cooldown_applied"
 	return result
 }
@@ -69,11 +71,11 @@ func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Con
  * @param req 已构造的上游请求，包含套餐选择所需的上下文标记。
  * @param cancel 已有清理函数，必须非 nil；返回函数会包含该清理责任。
  * @return 最终上游或本地套餐拒绝响应；失败时可能为 nil，非 nil 响应体须关闭。
- * @return 套餐准备、容量等待、发送或取消错误；成功时为 nil。
  * @return 完整清理函数；无论成功或失败，调用方均须在响应处理结束后执行。
+ * @return 套餐准备、容量等待、发送或取消错误；成功时为 nil。
  * @note 多次实际发送会累积超时清理函数；返回的清理函数不能代替关闭响应体。
  */
-func (s *Server) sendZAIChannelTest(reqCtx context.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan, req *http.Request, cancel context.CancelFunc) (*http.Response, error, context.CancelFunc) {
+func (s *Server) sendZAIChannelTest(reqCtx context.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan, req *http.Request, cancel context.CancelFunc) (*http.Response, context.CancelFunc, error) {
 	resp, err := s.doUpstreamRequestWithSender(cfg, req, func(outbound *http.Request) (*http.Response, error) {
 		release, err := s.waitForUpstreamRequest(reqCtx, cfg)
 		if err != nil {
@@ -91,7 +93,7 @@ func (s *Server) sendZAIChannelTest(reqCtx context.Context, cfg *model.Config, t
 		}
 		return s.doReservedUpstreamRequest(cfg, outbound.WithContext(sendCtx), release, nil)
 	})
-	return resp, err, cancel
+	return resp, cancel, err
 }
 
 /**
