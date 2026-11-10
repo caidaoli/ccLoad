@@ -358,15 +358,18 @@ func (s *Server) buildProxyRequest(
 	}
 	// Channel rules and wire repairs may introduce new text. Mask their final
 	// result before signing, compression, debug capture or either transport.
-	if reqCtx != nil {
+	if reqCtx != nil && !isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
 		body, err = maskPrivacyBodyFromContext(reqCtx.ctx, body, hdr.Get("Content-Type"))
 		if err != nil {
 			return nil, err
 		}
 	}
-	body, err = refreshAnthropicCallerCCH(body, callerBody, callerWire)
-	if err != nil {
-		return nil, err
+	// ZAI 在选择套餐后执行最终隐私/CCH，其他渠道仍在原位置处理。
+	if !isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+		body, err = refreshAnthropicCallerCCH(body, callerBody, callerWire)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) && !isOpenCodeAPIKeyEndpoint(cfg, parsedUpstreamURL.String())
@@ -473,8 +476,11 @@ func (s *Server) buildProxyRequest(
 		injectAnthropicOAuthHeadersWithFingerprint(req, cfg, apiKey, body, callerOwnsAnthropicWire, oauthFingerprint, hdr)
 		wireRebuilt = true
 	} else if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
-		injectZAICodingPlanHeaders(req, cfg, apiKey, body, hdr)
-		wireRebuilt = true
+		captureZAISources(req, apiKey, hdr, callerBody, callerWire)
+		// 流式 timer 不体现在 context.Deadline 中；busy 等待仍必须遵守原预算。
+		if reqCtx.isStreaming {
+			zaiState(req).retryDeadline = zaiRetryDeadline(req.Context(), reqCtx.startTime, reqCtx.firstByteTimeout, reqCtx.streamTimeout, reqCtx.streamIdleTimeout)
+		}
 	} else if anthropicClaudeCodeWire {
 		injectAnthropicAPIKeyHeaders(req, cfg, apiKey, body, callerOwnsAnthropicWire, hdr)
 		wireRebuilt = true
@@ -532,9 +538,24 @@ func (s *Server) buildProxyRequest(
 	return req, nil
 }
 
-// prepareTranslatedUpstreamBody 是协议转换后的统一 body 最终化入口。
-// 正常代理和管理测试必须共用它，否则同一转换器会产生两套实际上游契约。
-// requestModel 是实际上游模型（TransformPlan.RequestModel）；Antigravity 用它查目录上限，禁止从路径刮名。
+/**
+ * @brief 正常代理和管理测试共用的协议转换后正文准备入口。
+ * @param cfg 当前渠道配置。
+ * @param upstreamProtocol 上游协议。
+ * @param requestPath 上游请求路径。
+ * @param requestModel 实际路由模型，用于模型默认值与目录上限。
+ * @param body 转换后的正文。
+ * @param sourceBody 调用方正文，保留显式参数和身份来源。
+ * @param apiKey 当前上游凭据。
+ * @param headers 出站请求头。
+ * @param anthropicAlreadyFinalized 是否已完成 Anthropic wire 最终化。
+ * @param target 上游地址，可为空。
+ * @param wireBodyRulesApplied 是否重放已应用规则的 wire；跳过默认注入与规则。
+ * @param callerBodyIsAnthropic 原始调用方是否使用 Anthropic 协议。
+ * @return 准备后的正文。
+ * @return 思考省略策略；空字符串表示未指定。
+ * @return JSON 或提供商正文校验失败时返回错误。
+ */
 func (s *Server) prepareTranslatedUpstreamBody(
 	cfg *model.Config,
 	upstreamProtocol protocol.Protocol,
@@ -593,6 +614,10 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
 		body = prepareCodeBuddyDefaults(body, sourceBody)
 	}
+	if !wireBodyRulesApplied && isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+		// 渠道规则可以覆盖默认值；修复重放不重复增加思考额度。
+		body = prepareZAIThinkingDefaults(body, sourceBody, requestModel)
+	}
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
 	if !wireBodyRulesApplied {
 		body = normalizeOpenAIChatMaxTokens(upstreamProtocol, requestPath, body)
@@ -626,8 +651,12 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	} else if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		var err error
 		switch {
+		case isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath):
+			// 套餐尚未确定，保留 GLM 候选参数；付费在私有最终化中复用原归一。
+			if !isAnthropicJSONObject(body) {
+				return nil, "", errors.New("prepare ZAI request: invalid JSON body")
+			}
 		case !isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath):
-			// Z.ai Coding Plan 自带 ZCode 指纹，只做 Anthropic 线协议归一。
 			body, err = normalizeAnthropicMessagesBody(body)
 		case anthropicAlreadyFinalized:
 			// 重试重放已经是完整 wire，请求修复后的 body 不再重判原生身份。
@@ -647,15 +676,6 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		}
 	}
 	body = injectAnyrouterClaudeCodeFallbackTools(cfg, upstreamProtocol, requestPath, headers, callerBody, body)
-	// Z.ai Coding Plan 的 ZCode 设备指纹走 body 的 metadata.user_id。必须留在这个
-	// 共享入口里：挂在代理链路的独立分支上，管理测试就会发出没有指纹的请求。
-	if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
-		var err error
-		body, err = finalizeZAICodingPlanBody(body, cfg)
-		if err != nil {
-			return nil, "", err
-		}
-	}
 	if !wireBodyRulesApplied && cfg != nil && cfg.UsesAntigravityOAuth() {
 		var err error
 		body, err = prepareAntigravityRequestBody(
@@ -2918,6 +2938,10 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		req = cloneRequestWithBody(req, sentBody)
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
+	// 后移的套餐最终化仍遵守隐私失败先于 Debug 与外发统计的契约。
+	if errors.Is(err, errPrivacyMasking) {
+		return nil, reqCtx.Duration().Seconds(), err
+	}
 	req, sentBody, zaiRepairBody = captureZAIForwardRequest(cfg, resp, req, sentBody)
 
 	if observer != nil && observer.OnUpstreamWebsocket != nil {
@@ -3671,6 +3695,11 @@ func (s *Server) forwardAttempt(
 			retryBodyRulesApplied,
 			res.wireAliases,
 		)
+		if errors.Is(err, errPrivacyMasking) {
+			s.privacyStats.blocked.Add(1)
+			result := &proxyResult{status: http.StatusBadRequest, body: []byte(errPrivacyMasking.Error()), nextAction: cooldown.ActionReturnClient}
+			return result, result.nextAction, nil
+		}
 		bodyRepaired = true
 		plan = retryPlan
 		if res != nil {
@@ -4014,6 +4043,17 @@ func isInvalidResponsesRequestError(body []byte) bool {
 	return strings.Contains(strings.ToLower(payload.Error.Message), "invalid_responses_request")
 }
 
+/**
+ * @brief 为可修复的上游拒绝生成重发正文；明确的 Trial 验证与风控拒绝不重放。
+ * @param upstreamProtocol 当前尝试的上游协议。
+ * @param cfg 当前渠道；允许为空的通用修复不依赖渠道配置。
+ * @param target 当前尝试的目标地址。
+ * @param plan 当前请求的正文修复基准。
+ * @param res 上游结果；为空或不可修复时不生成正文。
+ * @return 修复后的正文；没有修复时为 nil。
+ * @return 实际采用的修复策略；没有修复时为空。
+ * @return 允许按修复正文重发时为 true。
+ */
 func retryBodyForRejectedRequest(
 	upstreamProtocol protocol.Protocol,
 	cfg *model.Config,
@@ -4021,6 +4061,13 @@ func retryBodyForRejectedRequest(
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
+	if res != nil && res.zaiTrial {
+		body, _ := forwardResultErrorPayload(res)
+		// 业务终态优先于正文校验文案，避免修复器绕过账号风控或人机验证。
+		if code := zaiErrorCode(body); code == "3007" || code == "3012" {
+			return nil, "", false
+		}
+	}
 	if retryBody, ok := antigravityThinkingSignatureRetryBody(cfg, plan, res); ok {
 		return retryBody, stripAntigravityInvalidThinkingSignatureStrategy, true
 	}

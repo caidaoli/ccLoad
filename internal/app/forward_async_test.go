@@ -549,7 +549,10 @@ func TestHandleRequestError(t *testing.T) {
 	}
 }
 
-// TestForwardOnceAsync_Integration 集成测试
+/**
+ * @brief 验证异步转发成功及认证失败，成功请求必须记录首字节且总耗时非负
+ * @param t 测试上下文
+ */
 func TestForwardOnceAsync_Integration(t *testing.T) {
 	t.Parallel()
 	// 创建测试服务器
@@ -602,8 +605,9 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			t.Errorf("status = %d, want 200", result.Status)
 		}
 
-		if duration <= 0 {
-			t.Error("duration should be > 0")
+		// 总耗时是实际测量值，同一时钟刻度内完成时允许为零。
+		if duration < 0 {
+			t.Error("duration should be >= 0")
 		}
 
 		if result.FirstByteTime <= 0 {

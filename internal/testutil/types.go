@@ -3,6 +3,7 @@ package testutil
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"ccLoad/internal/util"
 )
@@ -37,9 +38,10 @@ type ImageGenerationOptions struct {
  * @brief ZAI 管理检测单次尝试的实际套餐结果，每次尝试开始时清零并回写给调用方。
  */
 type ZAITestOutcome struct {
-	WireModel      string ///< 实际 ZCode wire 模型，仅用于计费，不改变 Trial 选路身份。
-	Trial          bool   ///< 最终请求使用体验端点，冷却与付费账号隔离。
-	LocalPlanError bool   ///< 本地套餐拒绝，不写入上游故障冷却。
+	Started        time.Time ///< 最近一次实际体验发送时间，用于保护并发写入的新冷却。
+	WireModel      string    ///< 实际 ZCode wire 模型，仅用于计费，不改变 Trial 选路身份。
+	Trial          bool      ///< 最终请求使用体验端点，冷却与付费账号隔离。
+	LocalPlanError bool      ///< 本地套餐拒绝，不写入上游故障冷却。
 }
 
 /**

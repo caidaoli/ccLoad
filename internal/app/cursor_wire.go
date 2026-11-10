@@ -91,6 +91,7 @@ func (s *Server) tryCursorOAuthChannel(
  * @return 当前轮代理结果，包含成功响应或可分类的上游失败。
  * @return 已分类失败通过代理结果返回，此处始终为 nil。
  * @details SDK 独立 usage 和终态补差都可能包含历史工具轮；恢复轮的客户端用量始终按本次请求估算，累计量仅用于计费。
+ * @details 首内容耗时至少记为 1ns，避免时钟精度使已收到内容与尚未收到内容共用零值；心跳不计入首内容。
  * @note 写入客户端响应、代理日志和令牌统计；重放结果不重复记账。
  */
 func (s *Server) forwardCursorAgent(
@@ -340,7 +341,7 @@ func (s *Server) forwardCursorAgent(
 			_, _ = debugCapture.respBuf.Write([]byte("\n"))
 		}
 		if firstByte == 0 && (event.Delta != "" || event.ThinkingDelta != "" || event.Text != "" || event.ToolCall != nil || (event.Done && event.Err == nil)) {
-			firstByte = time.Since(started)
+			firstByte = positiveDuration(time.Since(started))
 			timeoutCtx.stopFirstByteTimer()
 			if s.activeRequests != nil {
 				s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, firstByte)

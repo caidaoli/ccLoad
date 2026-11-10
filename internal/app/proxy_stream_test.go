@@ -852,37 +852,53 @@ func TestStreamTransformSSEEventsUntil_ReassemblesLongLinesAndMultipleEvents(t *
 	}
 }
 
+/**
+ * @brief 验证畸形 Codex 流修复后以独立事件转发，并保留 LF 或 CRLF 的线上分隔。
+ * @param t 测试上下文。
+ */
 func TestCodexFramingReaderFeedsSSETransformDistinctEvents(t *testing.T) {
-	input := readCodexMalformedSSEFixture(t)
-	var events [][]byte
-	recorder := newRecorder()
-	err := streamTransformSSEEventsUntil(
-		context.Background(),
-		newCodexSSEFramingReader(bytes.NewReader(input)),
-		recorder,
-		func(rawEvent []byte) error {
-			events = append(events, bytes.Clone(rawEvent))
-			return nil
-		},
-		func(rawEvent []byte) ([][]byte, error) { return [][]byte{rawEvent}, nil },
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("streamTransformSSEEventsUntil() error = %v", err)
+	// 样例可能被 Git 转成 CRLF；显式构造两种合法换行，避免测试依赖检出配置。
+	fixture := bytes.ReplaceAll(readCodexMalformedSSEFixture(t), []byte("\r\n"), []byte("\n"))
+	wantTypes := []string{
+		"response.created", "response.in_progress", "response.output_item.added",
+		"response.reasoning_summary_part.added", "response.reasoning_summary_text.delta",
+		"response.reasoning_summary_text.done",
 	}
-	if len(events) != 6 {
-		t.Fatalf("event count=%d, want 6", len(events))
-	}
-	for i, event := range events {
-		if !bytes.HasSuffix(event, []byte("\n\n")) {
-			t.Fatalf("event %d is not independently framed: %q", i, event)
-		}
-		if !bytes.Contains(event, []byte("event: response.")) || !bytes.Contains(event, []byte("data: {")) {
-			t.Fatalf("event %d missing Codex event/data fields: %q", i, event)
-		}
-	}
-	if got := strings.Count(recorder.Body.String(), "\n\n"); got != 6 {
-		t.Fatalf("output frame count=%d, want 6; body=%q", got, recorder.Body.String())
+	for _, newline := range []struct{ name, value string }{{"LF", "\n"}, {"CRLF", "\r\n"}} {
+		t.Run(newline.name, func(t *testing.T) {
+			input := bytes.ReplaceAll(fixture, []byte("\n"), []byte(newline.value))
+			var events [][]byte
+			recorder := newRecorder()
+			err := streamTransformSSEEventsUntil(
+				context.Background(),
+				newCodexSSEFramingReader(bytes.NewReader(input)),
+				recorder,
+				func(rawEvent []byte) error {
+					events = append(events, bytes.Clone(rawEvent))
+					return nil
+				},
+				func(rawEvent []byte) ([][]byte, error) { return [][]byte{rawEvent}, nil },
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("streamTransformSSEEventsUntil() error = %v", err)
+			}
+			if len(events) != len(wantTypes) {
+				t.Fatalf("event count=%d, want %d", len(events), len(wantTypes))
+			}
+			for i, event := range events {
+				if !bytes.HasSuffix(event, []byte(newline.value+newline.value)) || firstSSEEventEnd(event) != len(event) {
+					t.Fatalf("event %d is not independently framed: %q", i, event)
+				}
+				eventType, data := parseSSEEventChunk(event)
+				if eventType != wantTypes[i] || !gjson.ValidBytes(data) || gjson.GetBytes(data, "type").String() != wantTypes[i] {
+					t.Fatalf("event %d type=%q data=%s, want %q", i, eventType, data, wantTypes[i])
+				}
+			}
+			if !bytes.Equal(recorder.Body.Bytes(), bytes.Join(events, nil)) {
+				t.Fatalf("forwarded stream differs from the independently framed events: %q", recorder.Body.Bytes())
+			}
+		})
 	}
 }
 

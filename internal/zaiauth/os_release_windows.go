@@ -13,6 +13,27 @@ import (
 var defaultTimeZone = windows.NewLazySystemDLL("icu.dll").NewProc("ucal_getDefaultTimeZone")
 
 /**
+ * @brief 复用系统 locale 过程；不缓存返回值，以反映运行期间的用户语言设置。
+ */
+var defaultLocaleName = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetUserDefaultLocaleName")
+
+/**
+ * @brief 读取 Windows 用户默认 locale，不依赖固定英语值。
+ * @return 规范语言标签，系统调用失败时为 unknown。
+ */
+func clientLocale() string {
+	var name [85]uint16
+	if err := defaultLocaleName.Find(); err != nil {
+		return "unknown"
+	}
+	n, _, _ := defaultLocaleName.Call(uintptr(unsafe.Pointer(&name[0])), uintptr(len(name)))
+	if n == 0 || n > uintptr(len(name)) {
+		return "unknown"
+	}
+	return normalizeClientLocale(windows.UTF16ToString(name[:n]))
+}
+
+/**
  * @brief 获取 ZCode 请求头的 IANA 时区，无法识别时返回 unknown。
  * @return 本地 IANA 时区名；ICU 不可用或读取失败时返回 unknown。
  */

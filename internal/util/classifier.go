@@ -568,7 +568,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			return classification
 		}
 		if IsTransientCapacityError(responseBody) {
-			if until, ok := parseRateLimitRetryAfter(headers, now); ok {
+			if until, ok := ParseRetryAfter(headers, now); ok {
 				classification.ModelCooldownUntil = until
 				classification.HasModelCooldownUntil = true
 				classification.ModelCooldownReason = "retry_after"
@@ -718,7 +718,14 @@ func IsTransientCapacityError(body []byte) bool {
 	return false
 }
 
-func parseRateLimitRetryAfter(headers map[string][]string, now time.Time) (time.Time, bool) {
+/**
+ * @brief 解析 Retry-After 秒数或 HTTP 日期，不接受溢出、非正秒数或无效日期。
+ * @param headers 上游响应头，名称不区分大小写。
+ * @param now 相对秒数的起算时间。
+ * @return 恢复时间；无效值为零，已过期的合法日期仍返回原日期。
+ * @return 恢复时间严格晚于 now 时为 true，否则为 false。
+ */
+func ParseRetryAfter(headers map[string][]string, now time.Time) (time.Time, bool) {
 	value := strings.TrimSpace(firstHeaderValueFold(headers, "Retry-After"))
 	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
 		if seconds > 0 && seconds <= int64((1<<63-1)/time.Second) {

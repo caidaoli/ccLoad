@@ -1691,6 +1691,7 @@ func (s *Server) refreshChannelUsage(ctx context.Context, channelID int64) (stri
  * @param requestedAt 额度请求开始的绝对时间，用于判断并发更新顺序。
  * @param sampledAt 额度采样完成的绝对时间。
  * @return 返回最终采用的额度快照；旧采样可返回已有快照，读取、编码、身份变更或写入失败返回错误。
+ * @details 请求时间相等时，只有起始额度快照已被并发更新才保留现有采样；顺序刷新仍可更新同一时钟刻度内的余额。
  * @note 使用条件更新保留并发登录、签到和任务状态；写入冲突统一执行公共 OAuth 有界退避，不重复远程请求。
  */
 func (s *Server) persistOAuthUsage(
@@ -1705,6 +1706,10 @@ func (s *Server) persistOAuthUsage(
 	}
 	if !cfg.UsesOAuth() {
 		return summary, nil
+	}
+	sourceState, err := parseOAuthUsageCredentialState(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	// 凭证刷新可能先开纪元；采用刷新完成后真正发出的额度请求时间。
@@ -1759,7 +1764,9 @@ func (s *Server) persistOAuthUsage(
 				return nil, errors.New("usage: Codex quota epoch changed during request")
 			}
 		}
-		if persisted != nil && !persistedRequestAt.Before(requestedAt) {
+		// 相同时间不能证明响应过时；起始快照变化才说明已有并发请求完成，CAS 重试也沿用原快照。
+		if persisted != nil && (persistedRequestAt.After(requestedAt) ||
+			(persistedRequestAt.Equal(requestedAt) && !bytes.Equal(state.oauthUsage, sourceState.oauthUsage))) {
 			s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
 			s.InvalidateChannelListCache()
 			return attachOAuthQuotaCostUsage(persisted, s.oauthQuotaCostView(ctx, currentCfg.ID, state, time.Now())), nil

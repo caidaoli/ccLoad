@@ -83,6 +83,43 @@ type PollResult struct {
 // an upstream availability fact rather than a ccLoad misconfiguration.
 var ErrOAuthFlowUnavailable = errors.New("z.ai CLI OAuth flow is unavailable upstream")
 
+/**
+ * @brief ZAI 授权错误保留 HTTP 状态和失败阶段，轮询不用字符串匹配。
+ */
+type OAuthError struct {
+	StatusCode int    ///< 未取得 HTTP 响应时为零。
+	Stage      string ///< build、transport、read、http、parse、envelope 或 state。
+	Err        error  ///< 原始原因，支持 errors.Is/As。
+}
+
+/**
+ * @brief 返回原始诊断，不包含额外凭证信息。
+ * @return 错误文本。
+ */
+func (e *OAuthError) Error() string { return e.Err.Error() }
+
+/**
+ * @brief 暴露底层错误身份。
+ * @return 原始错误。
+ */
+func (e *OAuthError) Unwrap() error { return e.Err }
+
+/**
+ * @brief 判断 poll 是否在原期限内继续；不用于初始化或 Key 创建重试。
+ * @return 明确非 408/429 的 4xx、构造及状态错误返回 false。
+ */
+func (e *OAuthError) Retryable() bool {
+	if e.StatusCode >= 400 && e.StatusCode < 500 && e.StatusCode != 408 && e.StatusCode != 429 {
+		return false
+	}
+	switch e.Stage {
+	case "transport", "read", "http", "parse", "envelope":
+		return true
+	default:
+		return false
+	}
+}
+
 // GeneratePollToken returns the client-side bearer that binds one CLI flow.
 func GeneratePollToken() (string, error) {
 	random := make([]byte, pollTokenBytes)
@@ -96,10 +133,11 @@ func GeneratePollToken() (string, error) {
  * @brief 按站点启动 ZCode 授权并设置对应的浏览器回跳参数。
  * @param ctx 请求上下文。
  * @param pollToken 绑定本次登录的轮询令牌。
+ * @param deviceID 初始化生成的本次登录设备。
  * @return 上游登录会话。
  * @return 配置、网络或登录响应非法时返回错误。
  */
-func (s *Service) InitFlow(ctx context.Context, pollToken string) (*Flow, error) {
+func (s *Service) InitFlow(ctx context.Context, pollToken, deviceID string) (*Flow, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -115,7 +153,7 @@ func (s *Service) InitFlow(ctx context.Context, pollToken string) (*Flow, error)
 		return nil, fmt.Errorf("encode z.ai OAuth init request: %w", err)
 	}
 	data, err := s.envelopeRequest(ctx, http.MethodPost,
-		strings.TrimRight(s.OAuthBaseURL, "/")+"/oauth/cli/init", pollToken, payload, "OAuth init")
+		strings.TrimRight(s.OAuthBaseURL, "/")+"/oauth/cli/init", pollToken, payload, "OAuth init", deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -155,10 +193,12 @@ func (s *Service) InitFlow(ctx context.Context, pollToken string) (*Flow, error)
  * @param ctx 轮询上下文。
  * @param flowID 上游登录会话 ID。
  * @param pollToken 会话轮询令牌。
+ * @param deviceID 初始化时的同一设备。
  * @return 当前登录状态与认证材料。
- * @return 网络、响应格式或 ready 缺少全部认证材料时返回错误。
+ * @return 配置或参数无效时返回普通校验错误；请求构造、传输、读取、HTTP、解析、业务信封及状态错误可用 errors.As 提取 *OAuthError。
+ * @note 调用方须先检查 ctx 取消，再通过 OAuthError.Retryable 判断是否在原期限内继续轮询；明确非 408/429 的 4xx、构造或状态错误不可重试。
  */
-func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResult, error) {
+func (s *Service) Poll(ctx context.Context, flowID, pollToken, deviceID string) (*PollResult, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -166,9 +206,12 @@ func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResu
 		return nil, errors.New("z.ai flow id and poll token are required")
 	}
 	target := strings.TrimRight(s.OAuthBaseURL, "/") + "/oauth/cli/poll/" + url.PathEscape(flowID)
-	data, err := s.envelopeRequest(ctx, http.MethodGet, target, pollToken, nil, "OAuth poll")
+	data, err := s.envelopeRequest(ctx, http.MethodGet, target, pollToken, nil, "OAuth poll", deviceID)
 	if err != nil {
 		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return &PollResult{Status: PollPending}, nil
 	}
 	var payload struct {
 		Status string `json:"status"`
@@ -187,7 +230,7 @@ func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResu
 		} `json:"bigmodel"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, fmt.Errorf("decode z.ai OAuth poll response: %w", err)
+		return nil, &OAuthError{StatusCode: http.StatusOK, Stage: "parse", Err: fmt.Errorf("decode z.ai OAuth poll response: %w", err)}
 	}
 	accessToken := strings.TrimSpace(payload.ZAI.AccessToken)
 	if s.Site == SiteBigModel {
@@ -197,13 +240,13 @@ func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResu
 		}
 	}
 	switch PollStatus(strings.TrimSpace(payload.Status)) {
-	case PollPending:
+	case "", PollPending:
 		return &PollResult{Status: PollPending}, nil
 	case PollFailed:
 		return &PollResult{Status: PollFailed}, nil
 	case PollReady:
 		if accessToken == "" && strings.TrimSpace(payload.Token) == "" {
-			return nil, errors.New("z.ai OAuth poll response is missing access_token and token")
+			return nil, &OAuthError{StatusCode: http.StatusOK, Stage: "state", Err: errors.New("z.ai OAuth poll response is missing access_token and token")}
 		}
 		return &PollResult{
 			Status:      PollReady,
@@ -216,7 +259,7 @@ func (s *Service) Poll(ctx context.Context, flowID, pollToken string) (*PollResu
 			Name: strings.TrimSpace(payload.User.Name),
 		}, nil
 	default:
-		return nil, errors.New("z.ai OAuth poll response has an unknown status")
+		return nil, &OAuthError{StatusCode: http.StatusOK, Stage: "state", Err: errors.New("z.ai OAuth poll response has an unknown status")}
 	}
 }
 
@@ -645,6 +688,7 @@ func (s *Service) copyAPIKeySecret(ctx context.Context, bizToken, keysURL, apiKe
  * @param bearer 无前缀的轮询令牌。
  * @param payload 请求 JSON；nil 表示无请求体。
  * @param operation 错误上下文。
+ * @param deviceID 本次登录设备，不添加到其他业务 API。
  * @return 信封中的 data。
  * @return 网络或上游拒绝时返回错误，接口不可用可匹配 ErrOAuthFlowUnavailable。
  */
@@ -653,10 +697,22 @@ func (s *Service) envelopeRequest(
 	method, target, bearer string,
 	payload []byte,
 	operation string,
+	deviceID string,
 ) (json.RawMessage, error) {
-	body, status, err := s.do(ctx, method, target, "Bearer "+strings.TrimSpace(bearer), payload, operation)
+	body, status, err := s.do(ctx, method, target, "Bearer "+strings.TrimSpace(bearer), payload, operation, deviceID)
 	if err != nil {
 		return nil, err
+	}
+	// 已取得的 HTTP 拒绝优先于正文解析，404 坏 JSON 也不能成为暂态。
+	if status < 200 || status >= 300 {
+		cause := fmt.Errorf("z.ai %s failed: HTTP %d", operation, status)
+		if status == http.StatusNotFound {
+			cause = fmt.Errorf("z.ai %s: %w", operation, ErrOAuthFlowUnavailable)
+		}
+		return nil, &OAuthError{StatusCode: status, Stage: "http", Err: cause}
+	}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, &OAuthError{StatusCode: status, Stage: "parse", Err: errors.New("z.ai OAuth response must be an object")}
 	}
 	var envelope struct {
 		Code json.RawMessage `json:"code"`
@@ -664,13 +720,10 @@ func (s *Service) envelopeRequest(
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		if status == http.StatusNotFound {
-			return nil, fmt.Errorf("z.ai %s: %w", operation, ErrOAuthFlowUnavailable)
-		}
-		return nil, fmt.Errorf("decode z.ai %s response: %w", operation, err)
+		return nil, &OAuthError{StatusCode: status, Stage: "parse", Err: fmt.Errorf("decode z.ai %s response: %w", operation, err)}
 	}
 	if err := checkEnvelopeCode(envelope.Code, envelope.Msg, status, operation); err != nil {
-		return nil, err
+		return nil, &OAuthError{StatusCode: status, Stage: "envelope", Err: err}
 	}
 	return envelope.Data, nil
 }
@@ -696,7 +749,7 @@ func (s *Service) bizRequest(
 	if authorization != "" && s.Site != SiteBigModel {
 		authorization = "Bearer " + authorization
 	}
-	body, status, err := s.do(ctx, method, target, authorization, payload, operation)
+	body, status, err := s.do(ctx, method, target, authorization, payload, operation, "")
 	if err != nil {
 		return nil, err
 	}
@@ -722,6 +775,7 @@ func (s *Service) bizRequest(
  * @param authorization 已按接口约定设置前缀的认证值；空值不发送。
  * @param payload 请求 JSON；nil 表示无请求体。
  * @param operation 错误上下文。
+ * @param deviceID OAuth 设备标识，空值不发送该头。
  * @return 响应正文。
  * @return HTTP 状态码；未取得响应时为零。
  * @return 构造请求、网络或读取失败时返回错误。
@@ -731,6 +785,7 @@ func (s *Service) do(
 	method, target, authorization string,
 	payload []byte,
 	operation string,
+	deviceID string,
 ) ([]byte, int, error) {
 	requestCtx, cancel := requestContext(ctx)
 	defer cancel()
@@ -740,7 +795,7 @@ func (s *Service) do(
 	}
 	request, err := http.NewRequestWithContext(requestCtx, method, target, reader)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build z.ai %s request: %w", operation, err)
+		return nil, 0, &OAuthError{Stage: "build", Err: fmt.Errorf("build z.ai %s request: %w", operation, err)}
 	}
 	if authorization != "" {
 		request.Header.Set("Authorization", authorization)
@@ -750,17 +805,20 @@ func (s *Service) do(
 	}
 	request.Header.Set("Accept", "application/json")
 	ApplySourceHeaders(request.Header)
+	if deviceID != "" {
+		request.Header.Set("X-Device-Mid", deviceID)
+	}
 	response, err := s.Client.Do(request)
 	if err != nil {
-		return nil, 0, fmt.Errorf("z.ai %s request: %w", operation, err)
+		return nil, 0, &OAuthError{Stage: "transport", Err: fmt.Errorf("z.ai %s request: %w", operation, err)}
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
 	if err != nil {
-		return nil, response.StatusCode, fmt.Errorf("read z.ai %s response: %w", operation, err)
+		return nil, response.StatusCode, &OAuthError{StatusCode: response.StatusCode, Stage: "read", Err: fmt.Errorf("read z.ai %s response: %w", operation, err)}
 	}
 	if response.StatusCode == http.StatusNotFound && len(bytes.TrimSpace(body)) == 0 {
-		return nil, response.StatusCode, fmt.Errorf("z.ai %s: %w", operation, ErrOAuthFlowUnavailable)
+		return nil, response.StatusCode, &OAuthError{StatusCode: response.StatusCode, Stage: "http", Err: fmt.Errorf("z.ai %s: %w", operation, ErrOAuthFlowUnavailable)}
 	}
 	return body, response.StatusCode, nil
 }

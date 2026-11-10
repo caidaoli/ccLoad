@@ -35,10 +35,15 @@ func TestEmbeddedBridgeManifestMatchesPinnedVersion(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证宿主平台的归档校验、安装内容、许可证与安装复用
+ * @param t 测试上下文
+ */
 func TestBridgeInstallerInstallsVerifiedArchiveOnce(t *testing.T) {
 	t.Parallel()
 
-	spec, err := bridgeArchiveForPlatform("darwin", "arm64")
+	// 文件复用依赖宿主文件系统的执行权限语义，安装平台须与宿主一致。
+	spec, err := bridgeArchiveForPlatform(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		t.Fatalf("bridgeArchiveForPlatform() error = %v", err)
 	}
@@ -58,8 +63,8 @@ func TestBridgeInstallerInstallsVerifiedArchiveOnce(t *testing.T) {
 
 	stateRoot := filepath.Join(t.TempDir(), "cursor-sdk")
 	installer := bridgeInstaller{
-		goos:       "darwin",
-		goarch:     "arm64",
+		goos:       runtime.GOOS,
+		goarch:     runtime.GOARCH,
 		stateRoot:  stateRoot,
 		installDir: filepath.Join(stateRoot, "bin", BridgeVersion),
 		baseURL:    server.URL,
@@ -85,14 +90,14 @@ func TestBridgeInstallerInstallsVerifiedArchiveOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat installed bridge: %v", err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("installed bridge mode = %v, want executable", info.Mode())
 	}
 	rootInfo, err := os.Stat(stateRoot)
 	if err != nil {
 		t.Fatalf("stat state root: %v", err)
 	}
-	if rootInfo.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && rootInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("state root mode = %v, want 0700", rootInfo.Mode())
 	}
 	license, err := os.ReadFile(filepath.Join(installer.installDir, "LICENSE"))
@@ -192,46 +197,66 @@ func TestBridgeInstallerForceReplacesBrokenManagedBinary(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 可执行文件路径或权限错误触发备用目录安装，且不强制替换备用文件
+ * @param t 测试上下文
+ */
 func TestEnsureBridgeInStateRootsFallsBackAfterExecutableStartFailure(t *testing.T) {
 	t.Parallel()
 
-	cacheRoot := filepath.Join("cache", "cursor-sdk")
-	temporaryRoot := filepath.Join("tmp", "ccload", "cursor-sdk")
+	root := t.TempDir()
+	cacheRoot := filepath.Join(root, "cache", "cursor-sdk")
+	temporaryRoot := filepath.Join(root, "tmp", "ccload", "cursor-sdk")
 	cachePath := filepath.Join(cacheRoot, "bin", BridgeVersion, "cursor-sdk-bridge")
-	var installs []string
-	path, err := ensureBridgeInStateRoots(
-		context.Background(),
-		[]bridgeInstallLocation{
-			{stateRoot: cacheRoot, force: true},
-			{stateRoot: temporaryRoot},
-		},
-		func(_ context.Context, stateRoot string, force bool) (string, error) {
-			installs = append(installs, stateRoot)
-			if stateRoot == temporaryRoot && force {
-				t.Fatal("existing temporary fallback was needlessly replaced")
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "host_start_error"},
+		{name: "executable_lookup", err: &exec.Error{Name: cachePath, Err: exec.ErrNotFound}},
+		{name: "missing_path", err: &os.PathError{Op: "fork/exec", Path: cachePath, Err: os.ErrNotExist}},
+		{name: "permission", err: &os.PathError{Op: "fork/exec", Path: cachePath, Err: os.ErrPermission}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var installs []string
+			path, err := ensureBridgeInStateRoots(
+				context.Background(),
+				[]bridgeInstallLocation{
+					{stateRoot: cacheRoot, force: true},
+					{stateRoot: temporaryRoot},
+				},
+				func(_ context.Context, stateRoot string, force bool) (string, error) {
+					installs = append(installs, stateRoot)
+					if stateRoot == temporaryRoot && force {
+						t.Fatal("existing temporary fallback was needlessly replaced")
+					}
+					return filepath.Join(stateRoot, "bin", BridgeVersion, "cursor-sdk-bridge"), nil
+				},
+				func(_ context.Context, path string) error {
+					if path != cachePath {
+						return nil
+					}
+					startErr := test.err
+					if startErr == nil {
+						startErr = exec.Command(path).Start()
+						if startErr == nil {
+							t.Fatalf("starting missing bridge %q unexpectedly succeeded", path)
+						}
+					}
+					return fmt.Errorf("%w: start %s: %w", ErrAgentMissing, path, startErr)
+				},
+			)
+			if err != nil {
+				t.Fatalf("ensureBridgeInStateRoots() error = %v", err)
 			}
-			return filepath.Join(stateRoot, "bin", BridgeVersion, "cursor-sdk-bridge"), nil
-		},
-		func(_ context.Context, path string) error {
-			if path == cachePath {
-				startErr := exec.Command(path).Start()
-				if startErr == nil {
-					t.Fatalf("starting missing bridge %q unexpectedly succeeded", path)
-				}
-				return fmt.Errorf("%w: start %s: %w", ErrAgentMissing, path, startErr)
+			wantPath := filepath.Join(temporaryRoot, "bin", BridgeVersion, "cursor-sdk-bridge")
+			if path != wantPath {
+				t.Fatalf("ensureBridgeInStateRoots() path = %q, want %q", path, wantPath)
 			}
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("ensureBridgeInStateRoots() error = %v", err)
-	}
-	wantPath := filepath.Join(temporaryRoot, "bin", BridgeVersion, "cursor-sdk-bridge")
-	if path != wantPath {
-		t.Fatalf("ensureBridgeInStateRoots() path = %q, want %q", path, wantPath)
-	}
-	if !slices.Equal(installs, []string{cacheRoot, temporaryRoot}) {
-		t.Fatalf("install roots = %v, want cache then temporary fallback", installs)
+			if !slices.Equal(installs, []string{cacheRoot, temporaryRoot}) {
+				t.Fatalf("install roots = %v, want cache then temporary fallback", installs)
+			}
+		})
 	}
 }
 

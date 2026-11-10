@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/privacy"
@@ -28,6 +29,39 @@ func newSession(t *testing.T, e *privacy.Engine, scope string, cfg privacy.Confi
 		t.Fatal(err)
 	}
 	return e.Session(scope, p)
+}
+
+/**
+ * @brief 同一时钟刻度内完成的文本和 JSON 扫描也应有计时，停用时保持未扫描
+ * @param t 测试上下文
+ */
+func TestMaskDurationRecordsScansWithinClockTick(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		text := newSession(t, privacy.NewEngine(), "text", enabled())
+		if _, err := text.MaskText("ordinary text"); err != nil {
+			t.Fatal(err)
+		}
+		if text.MaskDuration() <= 0 {
+			t.Fatal("completed text scan reported no scan time")
+		}
+		object := newSession(t, privacy.NewEngine(), "json", enabled())
+		if _, err := object.MaskJSON([]byte(`{"content":"ordinary text"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if object.MaskDuration() <= 0 {
+			t.Fatal("completed JSON scan reported no scan time")
+		}
+		disabled := newSession(t, privacy.NewEngine(), "disabled", privacy.DefaultConfig())
+		if _, err := disabled.MaskText("ordinary text"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := disabled.MaskJSON([]byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+		if disabled.MaskDuration() != 0 {
+			t.Fatal("disabled masking reported scan time")
+		}
+	})
 }
 
 func TestDefaultAndConfig(t *testing.T) {

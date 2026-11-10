@@ -8,11 +8,125 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"ccLoad/internal/zaiauth"
 )
+
+/**
+ * @brief 登录设备贯穿所有请求及保存，暂态按间隔恢复，明确 4xx 立即终止。
+ * @param t 测试上下文。
+ */
+func TestZAIOAuthPollingRecoveryAndDevice(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(map[bool]string{false: "recover", true: "terminal_404"}[reject], func(t *testing.T) {
+			var waits, polls atomic.Int32
+			var mu sync.Mutex
+			device := ""
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				if strings.HasSuffix(r.URL.Path, "/init") {
+					device = r.Header.Get("X-Device-Mid")
+				}
+				if device == "" || r.Header.Get("X-Device-Mid") != device {
+					t.Error("device changed during login")
+				}
+				mu.Unlock()
+				if strings.HasSuffix(r.URL.Path, "/init") {
+					_, _ = w.Write([]byte(`{"code":0,"data":{"flow_id":"flow","authorize_url":"https://zcode.z.ai/login"}}`))
+					return
+				}
+				n := polls.Add(1)
+				if waits.Load() != n {
+					t.Errorf("poll %d occurred without one preceding wait", n)
+				}
+				if reject {
+					w.WriteHeader(404)
+					_, _ = w.Write([]byte("bad json"))
+					return
+				}
+				switch n {
+				case 1:
+					_, _ = w.Write([]byte("bad json"))
+				case 2:
+					_, _ = w.Write([]byte(`{"code":123,"msg":"temporary"}`))
+				case 3:
+					_, _ = w.Write([]byte(`{"code":0,"data":null}`))
+				default:
+					_, _ = w.Write([]byte(`{"code":0,"data":{"status":"ready","token":"jwt","user":{"user_id":"user"}}}`))
+				}
+			}))
+			defer upstream.Close()
+			service := zaiauth.NewService(upstream.Client())
+			service.OAuthBaseURL = upstream.URL
+			var saved atomic.Bool
+			manager := newZAIOAuthManager(context.Background(), service,
+				func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) {
+					t.Error("JWT-only login attempted paid resolution")
+					return nil, errors.New("unexpected")
+				},
+				func(_ context.Context, options zaiOAuthOptions, c *zaiauth.Credential) (int64, string, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					if c.DeviceID != device || c.DeviceID != options.deviceID {
+						t.Error("saved device differs from authorized device")
+					}
+					saved.Store(true)
+					return 1, "test", nil
+				})
+			manager.sleep = func(_ context.Context, d time.Duration) {
+				if d < time.Second {
+					t.Error("poll interval below one second")
+				}
+				waits.Add(1)
+			}
+			defer manager.close()
+			started, err := manager.start(context.Background(), "admin", zaiOAuthOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := waitForZAIOAuthStatus(t, manager, "admin", started.State)
+			if reject {
+				if status.Status != "error" || polls.Load() != 1 || saved.Load() {
+					t.Fatalf("terminal rejection: %+v polls=%d", status, polls.Load())
+				}
+			} else if status.Status != "complete" || polls.Load() != 4 || !saved.Load() {
+				t.Fatalf("recovery: %+v polls=%d", status, polls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 首轮等待后到期不发送 poll，不把期限扩展到新一轮。
+ * @param t 测试上下文。
+ */
+func TestZAIOAuthExpiryAfterFirstWait(t *testing.T) {
+	upstream := &zaiOAuthTestUpstream{}
+	manager := newZAIOAuthTestManager(t, upstream, func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error) {
+		t.Error("unexpected resolve")
+		return nil, errors.New("unexpected")
+	}, func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error) {
+		t.Error("unexpected commit")
+		return 0, "", nil
+	})
+	var elapsed atomic.Int64
+	start := time.Now()
+	manager.now = func() time.Time { return start.Add(time.Duration(elapsed.Load())) }
+	manager.sleep = func(context.Context, time.Duration) { elapsed.Store(int64(zaiauth.PollTimeout)) }
+	started, err := manager.start(context.Background(), "admin", zaiOAuthOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := waitForZAIOAuthStatus(t, manager, "admin", started.State)
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	if status.Status != "error" || upstream.polls != 0 {
+		t.Fatalf("expired status=%s polls=%d", status.Status, upstream.polls)
+	}
+}
 
 type zaiOAuthTestUpstream struct {
 	mu         sync.Mutex

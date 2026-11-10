@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,6 +88,10 @@ func TestModelCatalogCachePathExplicitPathNeverFallsBack(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证目录缓存持久化与 ETag 条件同步，POSIX 权限仅在支持的平台检查
+ * @param t 测试上下文
+ */
 func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
@@ -144,7 +149,8 @@ func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat cache: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	// Windows 的文件模式不表达 POSIX 访问权限，仍保留其余持久化检查。
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("cache mode = %o, want 600", got)
 	}
 
@@ -160,6 +166,10 @@ func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 同步结果包含状态与目录元数据，耗时允许同一时钟刻度内的零值
+ * @param t 测试上下文
+ */
 func TestModelCatalogSyncReportsStructuredResultMetadata(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
@@ -188,7 +198,7 @@ func TestModelCatalogSyncReportsStructuredResultMetadata(t *testing.T) {
 	}
 	if updated.Status != ModelCatalogSyncUpdated || updated.ModelCount != len(util.ModelsDevOfficialProviders) ||
 		updated.ProviderCount != len(util.ModelsDevOfficialProviders) || updated.SkippedModelCount != 1 ||
-		updated.ETag != etag || updated.Duration <= 0 {
+		updated.ETag != etag || updated.Duration < 0 {
 		t.Fatalf("updated result = %#v", updated)
 	}
 
@@ -198,7 +208,7 @@ func TestModelCatalogSyncReportsStructuredResultMetadata(t *testing.T) {
 	}
 	if notModified.Status != ModelCatalogSyncNotModified || notModified.ModelCount != updated.ModelCount ||
 		notModified.ProviderCount != updated.ProviderCount || notModified.SkippedModelCount != updated.SkippedModelCount ||
-		notModified.ETag != etag || notModified.Duration <= 0 {
+		notModified.ETag != etag || notModified.Duration < 0 {
 		t.Fatalf("not-modified result = %#v", notModified)
 	}
 
@@ -206,7 +216,7 @@ func TestModelCatalogSyncReportsStructuredResultMetadata(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid catalog Sync returned nil error")
 	}
-	if failed.Status != ModelCatalogSyncFailed || failed.Stage != "parse" || failed.Err == nil || failed.Duration <= 0 {
+	if failed.Status != ModelCatalogSyncFailed || failed.Stage != "parse" || failed.Err == nil || failed.Duration < 0 {
 		t.Fatalf("failed result = %#v, error = %v", failed, err)
 	}
 }
