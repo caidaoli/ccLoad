@@ -41,6 +41,10 @@ func newJSONResponse(status int, body string) *http.Response {
 // Anthropic 模型获取器测试
 // ============================================================
 
+/**
+ * @brief 验证 Anthropic 模型目录请求与响应解析。
+ * @param t 测试上下文
+ */
 func TestAnthropicModelsFetcher(t *testing.T) {
 	responseBody, err := json.Marshal(map[string]any{
 		"data": []map[string]any{
@@ -87,7 +91,7 @@ func TestAnthropicModelsFetcher(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, "https://anthropic.test", "test-api-key")
+	models, err := fetcher.FetchModels(ctx, "https://anthropic.test", "test-api-key", nil)
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}
@@ -119,6 +123,10 @@ func TestAnthropicModelsFetcher(t *testing.T) {
 // OpenAI 模型获取器测试
 // ============================================================
 
+/**
+ * @brief 验证 OpenAI 模型目录请求与响应解析。
+ * @param t 测试上下文
+ */
 func TestOpenAIModelsFetcher(t *testing.T) {
 	fetcher := &OpenAIModelsFetcher{
 		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
@@ -139,7 +147,7 @@ func TestOpenAIModelsFetcher(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, "https://openai.test", "test-key")
+	models, err := fetcher.FetchModels(ctx, "https://openai.test", "test-key", nil)
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}
@@ -163,6 +171,10 @@ func TestOpenAIModelsFetcher(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 System One 模型目录地址与响应解析。
+ * @param t 测试上下文
+ */
 func TestSystemOneModelsFetcher(t *testing.T) {
 	for _, tc := range []struct{ baseURL, wantPath string }{
 		{"https://api.typesafe.test", "/v1/models"},
@@ -175,13 +187,17 @@ func TestSystemOneModelsFetcher(t *testing.T) {
 			}
 			return newJSONResponse(http.StatusOK, `{"models":[{"name":"jev-latest","description":"stable","release_date":"2026-01-01"},{"name":""},{"name":"jev-preview"}]}`), nil
 		}))
-		models, err := fetcher.FetchModels(context.Background(), tc.baseURL, "ts-key")
+		models, err := fetcher.FetchModels(context.Background(), tc.baseURL, "ts-key", nil)
 		if err != nil || !reflect.DeepEqual(models, []string{"jev-latest", "jev-preview"}) {
 			t.Fatalf("FetchModels(%s) = (%v, %v)", tc.baseURL, models, err)
 		}
 	}
 }
 
+/**
+ * @brief 验证模型目录上游 HTTP 错误传播。
+ * @param t 测试上下文
+ */
 func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 	fetcher := &OpenAIModelsFetcher{
 		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
@@ -193,7 +209,7 @@ func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	_, err := fetcher.FetchModels(ctx, "https://openai.test", "invalid-key")
+	_, err := fetcher.FetchModels(ctx, "https://openai.test", "invalid-key", nil)
 	if err == nil {
 		t.Fatal("期望返回错误，但成功了")
 	}
@@ -208,6 +224,10 @@ func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 // Gemini 模型获取器测试
 // ============================================================
 
+/**
+ * @brief 验证 Gemini 模型目录请求与模型名称归一。
+ * @param t 测试上下文
+ */
 func TestGeminiModelsFetcher(t *testing.T) {
 	apiKey := "test+key&scope=models"
 	fetcher := &GeminiModelsFetcher{
@@ -232,7 +252,7 @@ func TestGeminiModelsFetcher(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, "https://gemini.test", apiKey)
+	models, err := fetcher.FetchModels(ctx, "https://gemini.test", apiKey, nil)
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}
@@ -260,6 +280,10 @@ func TestGeminiModelsFetcher(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Gemini 网络错误不泄露认证凭据。
+ * @param t 测试上下文
+ */
 func TestGeminiModelsFetcherTransportErrorDoesNotLeakAPIKey(t *testing.T) {
 	const apiKey = "gemini-secret-that-must-not-leak"
 	fetcher := &GeminiModelsFetcher{
@@ -268,7 +292,7 @@ func TestGeminiModelsFetcherTransportErrorDoesNotLeakAPIKey(t *testing.T) {
 		}),
 	}
 
-	_, err := fetcher.FetchModels(context.Background(), "https://gemini.test", apiKey)
+	_, err := fetcher.FetchModels(context.Background(), "https://gemini.test", apiKey, nil)
 	if err == nil {
 		t.Fatal("expected transport error")
 	}

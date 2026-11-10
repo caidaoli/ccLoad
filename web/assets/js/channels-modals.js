@@ -3784,7 +3784,7 @@ async function fetchedKeyModelApplyAccepted(changedCount, isSingleKeyChannel) {
  * @brief 根据当前渠道认证能力发现模型并更新模型编辑区。
  * @param markDirty 解构选项：是否将模型变化标记为未保存，默认 true。
  * @return Promise<void>：模型已更新或错误已在界面反馈。
- * @note 已有凭证渠道通过后端发现模型，不从合成 Key 读取认证材料。
+ * @note 普通 Key 渠道携带当前未保存的请求改写规则；已有凭证渠道通过后端发现模型，不从合成 Key 读取认证材料。
  */
 async function fetchModelsFromAPI({ markDirty = true } = {}) {
   let endpoint;
@@ -3832,6 +3832,7 @@ async function fetchModelsFromAPI({ markDirty = true } = {}) {
         api_keys: availableKeys,
         per_key: true,
         auth_type: editingChannelAuthType,
+        custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null,
         ...(proxyURL ? { proxy_url: proxyURL } : {})
       })
     };

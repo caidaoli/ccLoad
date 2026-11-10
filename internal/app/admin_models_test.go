@@ -24,6 +24,7 @@ import (
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
+	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -460,6 +461,278 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+}
+
+/**
+ * @brief 模型预览、已保存渠道与批量刷新共用默认 UA 和渠道请求头规则，并保留协议认证头。
+ * @param t 测试上下文。
+ */
+func TestAdminModels_DiscoveryRequestHeaders(t *testing.T) {
+	defaultUA := "ccLoad/" + version.Version
+	for _, tc := range []struct {
+		name, mode, protocol, action, wantUA string
+		perKey                               bool
+	}{
+		{name: "preview default", mode: "preview", protocol: "openai", wantUA: defaultUA},
+		{name: "preview override", mode: "preview", protocol: "anthropic", action: model.RuleActionOverride, wantUA: "catalog-client/1.0"},
+		{name: "preview remove", mode: "preview", protocol: "openai", action: model.RuleActionRemove},
+		{name: "preview per key", mode: "preview", protocol: "gemini", action: model.RuleActionOverride, wantUA: "catalog-client/1.0", perKey: true},
+		{name: "saved default", mode: "saved", protocol: "codex", wantUA: defaultUA},
+		{name: "saved override", mode: "saved", protocol: "anthropic", action: model.RuleActionOverride, wantUA: "catalog-client/1.0"},
+		{name: "saved per key remove", mode: "saved", protocol: "openai", action: model.RuleActionRemove, perKey: true},
+		{name: "batch override", mode: "batch", protocol: "openai", action: model.RuleActionOverride, wantUA: "catalog-client/1.0", perKey: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keys := []string{"sk-first"}
+			if tc.perKey {
+				keys = append(keys, "sk-second")
+			}
+			headers := make(chan http.Header, len(keys))
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headers <- r.Header.Clone()
+				w.Header().Set("Content-Type", "application/json")
+				if tc.protocol == "gemini" {
+					_, _ = io.WriteString(w, `{"models":[{"name":"models/discovered-model"}]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"data":[{"id":"discovered-model"}]}`)
+			}))
+			t.Cleanup(upstream.Close)
+			util.SetModelsFetcherHTTPClientForTesting(upstream.Client())
+			t.Cleanup(func() { util.SetModelsFetcherHTTPClientForTesting(sharedTestHTTPClient) })
+			server, store, cleanup := setupAdminTestServer(t)
+			t.Cleanup(cleanup)
+			rules := &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+				{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer injected"},
+				{Action: model.RuleActionOverride, Name: "x-api-key", Value: "injected"},
+				{Action: model.RuleActionOverride, Name: "x-goog-api-key", Value: "injected"},
+				{Action: model.RuleActionAppend, Name: "X-Refresh-Token", Value: "injected"},
+			}}
+			if tc.action != "" {
+				rules.Headers = append(rules.Headers, model.CustomHeaderRule{Action: tc.action, Name: "User-Agent", Value: tc.wantUA},
+					model.CustomHeaderRule{Action: model.RuleActionOverride, Name: "X-Catalog", Value: "first"},
+					model.CustomHeaderRule{Action: model.RuleActionAppend, Name: "X-Catalog", Value: "second"})
+			}
+			urls := model.ChannelURLs{{URL: upstream.URL, Protocols: []string{tc.protocol}}}
+			var response *httptest.ResponseRecorder
+			if tc.mode == "preview" {
+				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", map[string]any{
+					"urls": urls, "protocol": tc.protocol, "api_keys": keys, "per_key": tc.perKey, "custom_request_rules": rules,
+				}))
+				server.HandleFetchModelsPreview(c)
+				response = w
+			} else {
+				ctx := context.Background()
+				cfg, err := store.CreateConfig(ctx, &model.Config{
+					Name: tc.name, Enabled: true, URLs: urls, CustomRequestRules: rules,
+					ModelEntries: []model.ModelEntry{{Model: "old-model"}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				apiKeys := make([]*model.APIKey, len(keys))
+				for i, key := range keys {
+					apiKeys[i] = &model.APIKey{ChannelID: cfg.ID, KeyIndex: i, APIKey: key}
+				}
+				if err := store.CreateAPIKeysBatch(ctx, apiKeys); err != nil {
+					t.Fatal(err)
+				}
+				if tc.mode == "batch" {
+					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", BatchRefreshModelsRequest{
+						ChannelIDs: []int64{cfg.ID}, Mode: "replace",
+					}))
+					server.HandleBatchRefreshModels(c)
+					result := mustParseAPIResponse[struct {
+						Results []BatchRefreshModelsItem `json:"results"`
+					}](t, w.Body.Bytes())
+					if w.Code != http.StatusOK || !result.Success || len(result.Data.Results) != 1 || result.Data.Results[0].Status != "updated" {
+						t.Fatalf("batch status=%d body=%s", w.Code, w.Body.String())
+					}
+					stored, err := store.GetConfig(ctx, cfg.ID)
+					if err != nil || len(stored.ModelEntries) != 1 || stored.ModelEntries[0].Model != "discovered-model" {
+						t.Fatalf("batch persisted models=%+v error=%v", stored, err)
+					}
+				} else {
+					server.channelCache = storage.NewChannelCache(store, time.Minute)
+					c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch?per_key=%t", cfg.ID, tc.perKey), nil))
+					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+					server.HandleFetchModels(c)
+					response = w
+				}
+			}
+			if response != nil {
+				result := mustParseAPIResponse[FetchModelsResponse](t, response.Body.Bytes())
+				if response.Code != http.StatusOK || !result.Success || result.Data.Source != "api" || len(result.Data.Models) != 1 || result.Data.Models[0].Model != "discovered-model" {
+					t.Fatalf("fetch status=%d body=%s", response.Code, response.Body.String())
+				}
+				if tc.perKey && len(result.Data.KeyModels) != len(keys) {
+					t.Fatalf("key models=%+v, want %d keys", result.Data.KeyModels, len(keys))
+				}
+			}
+			if len(headers) != len(keys) {
+				t.Fatalf("upstream requests=%d, want %d", len(headers), len(keys))
+			}
+			seenKeys := make([]string, 0, len(keys))
+			for range keys {
+				header := <-headers
+				if got := header.Get("User-Agent"); got != tc.wantUA {
+					t.Errorf("User-Agent=%q, want %q", got, tc.wantUA)
+				}
+				if tc.action == model.RuleActionRemove {
+					if _, present := header["User-Agent"]; present {
+						t.Errorf("removed User-Agent was sent: %v", header.Values("User-Agent"))
+					}
+				}
+				if tc.action != "" && !slices.Equal(header.Values("X-Catalog"), []string{"first", "second"}) {
+					t.Errorf("X-Catalog=%v, want ordered override and append values", header.Values("X-Catalog"))
+				}
+				key := strings.TrimPrefix(header.Get("Authorization"), "Bearer ")
+				if tc.protocol == "gemini" {
+					key = header.Get("X-Goog-Api-Key")
+				}
+				seenKeys = append(seenKeys, key)
+				for _, name := range []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key", "X-Refresh-Token"} {
+					want := ""
+					if name == "Authorization" && tc.protocol != "gemini" {
+						want = "Bearer " + key
+					}
+					if name == "X-Api-Key" && tc.protocol == "anthropic" || name == "X-Goog-Api-Key" && tc.protocol == "gemini" {
+						want = key
+					}
+					if got := header.Get(name); got != want {
+						t.Errorf("%s=%q, want %q", name, got, want)
+					}
+				}
+			}
+			slices.Sort(seenKeys)
+			if !slices.Equal(seenKeys, keys) {
+				t.Fatalf("upstream credentials=%v, want %v", seenKeys, keys)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 未保存渠道的模型预览在发起上游请求前拒绝非法请求头规则。
+ * @param t 测试上下文。
+ */
+func TestAdminModels_DiscoveryRejectsInvalidHeaderRules(t *testing.T) {
+	var requests atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"unexpected-model"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	server, _, cleanup := setupAdminTestServer(t)
+	t.Cleanup(cleanup)
+	for _, rule := range []model.CustomHeaderRule{
+		{Action: model.RuleActionOverride, Name: "X-Test\r\nInjected", Value: "value"},
+		{Action: model.RuleActionOverride, Name: "User-Agent", Value: "client\r\nX-Injected: value"},
+	} {
+		t.Run(rule.Name, func(t *testing.T) {
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", map[string]any{
+				"urls": model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}}, "api_keys": []string{"sk-test"},
+				"custom_request_rules": &model.CustomRequestRules{Headers: []model.CustomHeaderRule{rule}},
+			}))
+			server.HandleFetchModelsPreview(c)
+			result := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+			if w.Code != http.StatusBadRequest || result.Success || !strings.Contains(result.Error, "custom_request_rules.headers[0]") {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("invalid rules reached upstream %d times", got)
+	}
+}
+
+/**
+ * @brief 模型发现最终错误保留 Cloudflare 验证和 HTTP 状态，不向管理端回显验证页。
+ * @param t 测试上下文。
+ */
+func TestAdminModels_DiscoveryCloudflareChallenge(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		challenge  bool
+		perKey     bool
+	}{
+		{name: "preview", mode: "preview", challenge: true},
+		{name: "preview per key", mode: "preview", challenge: true, perKey: true},
+		{name: "saved", mode: "saved", challenge: true},
+		{name: "saved per key", mode: "saved", challenge: true, perKey: true},
+		{name: "batch", mode: "batch", challenge: true},
+		{name: "ordinary forbidden", mode: "preview"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.challenge {
+					w.Header().Set("cf-mitigated", "challenge")
+				}
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `<html>challenge-page-private-marker</html>`)
+			}))
+			t.Cleanup(upstream.Close)
+			server, store, cleanup := setupAdminTestServer(t)
+			t.Cleanup(cleanup)
+			urls := model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}}
+			var response *httptest.ResponseRecorder
+			var message string
+			if tc.mode == "preview" {
+				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", map[string]any{
+					"urls": urls, "api_keys": []string{"sk-first", "sk-second"}, "per_key": tc.perKey,
+				}))
+				server.HandleFetchModelsPreview(c)
+				response = w
+			} else {
+				ctx := context.Background()
+				cfg, err := store.CreateConfig(ctx, &model.Config{Name: tc.name, Enabled: true, URLs: urls, ModelEntries: []model.ModelEntry{{Model: "old-model"}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-first"}, {ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-second"}}); err != nil {
+					t.Fatal(err)
+				}
+				if tc.mode == "batch" {
+					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", BatchRefreshModelsRequest{ChannelIDs: []int64{cfg.ID}}))
+					server.HandleBatchRefreshModels(c)
+					result := mustParseAPIResponse[struct {
+						Results []BatchRefreshModelsItem `json:"results"`
+					}](t, w.Body.Bytes())
+					if w.Code != http.StatusOK || !result.Success || len(result.Data.Results) != 1 || result.Data.Results[0].Status != "failed" {
+						t.Fatalf("batch status=%d body=%s", w.Code, w.Body.String())
+					}
+					message = result.Data.Results[0].Error
+				} else {
+					server.channelCache = storage.NewChannelCache(store, time.Minute)
+					c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch?per_key=%t", cfg.ID, tc.perKey), nil))
+					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+					server.HandleFetchModels(c)
+					response = w
+				}
+			}
+			if response != nil {
+				result := mustParseAPIResponse[FetchModelsResponse](t, response.Body.Bytes())
+				if response.Code != http.StatusOK || result.Success {
+					t.Fatalf("fetch status=%d body=%s", response.Code, response.Body.String())
+				}
+				message = result.Error
+			}
+			if !strings.Contains(message, "HTTP 403") {
+				t.Fatalf("upstream status lost: %q", message)
+			}
+			if tc.challenge && (strings.Contains(message, "challenge-page-private-marker") || strings.Contains(message, "<html>")) {
+				t.Fatalf("challenge response leaked: %q", message)
+			}
+			if got := strings.Contains(message, "Cloudflare"); got != tc.challenge {
+				t.Fatalf("Cloudflare classification=%t, want %t: %q", got, tc.challenge, message)
+			}
+			if tc.challenge && !strings.Contains(message, "验证") {
+				t.Fatalf("challenge error lacks actionable explanation: %q", message)
+			}
+		})
+	}
 }
 
 func TestAdminModels_FetchModelsUsesChannelProxy(t *testing.T) {

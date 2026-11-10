@@ -51,16 +51,19 @@ const (
 // Admin API: 获取渠道可用模型列表
 // ============================================================
 
-// FetchModelsRequest 获取模型列表请求参数
+/**
+ * @brief 获取模型列表的临时渠道配置。
+ */
 type FetchModelsRequest struct {
-	URLs                   model.ChannelURLs `json:"urls" binding:"required,min=1"`
-	Protocol               string            `json:"protocol,omitempty"`
-	APIKeys                []string          `json:"api_keys" binding:"required,min=1"`
-	ProxyURL               string            `json:"proxy_url,omitempty"`
-	PerKey                 bool              `json:"per_key,omitempty"`
-	LowercaseModels        bool              `json:"lowercase_models,omitempty"`
-	StripModelSourcePrefix bool              `json:"strip_model_source_prefix,omitempty"`
-	AuthType               string            `json:"auth_type,omitempty"` // 空值按 api_key；system_one 固定走决策模型接口
+	URLs                   model.ChannelURLs         `json:"urls" binding:"required,min=1"`
+	Protocol               string                    `json:"protocol,omitempty"`
+	APIKeys                []string                  `json:"api_keys" binding:"required,min=1"`
+	ProxyURL               string                    `json:"proxy_url,omitempty"`
+	PerKey                 bool                      `json:"per_key,omitempty"`
+	LowercaseModels        bool                      `json:"lowercase_models,omitempty"`
+	StripModelSourcePrefix bool                      `json:"strip_model_source_prefix,omitempty"`
+	AuthType               string                    `json:"auth_type,omitempty"`            // 空值按 api_key；system_one 固定走决策模型接口
+	CustomRequestRules     *model.CustomRequestRules `json:"custom_request_rules,omitempty"` ///< 复用渠道规则；模型发现仅应用请求头改写
 }
 
 // FetchModelsResponse 获取模型列表响应
@@ -164,8 +167,11 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// HandleFetchModelsPreview 支持未保存的渠道配置直接测试模型列表
-// 路由: POST /admin/channels/models/fetch
+/**
+ * @brief 使用未保存的渠道配置获取模型目录。
+ * @param c POST /admin/channels/models/fetch 的请求上下文
+ * @note 校验渠道请求规则后仅应用请求头；不保存配置或应用请求体规则。
+ */
 func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 	var req FetchModelsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -209,13 +215,18 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateCustomRequestRules(req.CustomRequestRules); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var response *FetchModelsResponse
-	client := s.modelDiscoveryClient(&model.Config{ProxyURL: req.ProxyURL})
+	cfg := &model.Config{ProxyURL: req.ProxyURL, CustomRequestRules: req.CustomRequestRules}
+	client := s.modelDiscoveryClient(cfg)
 	if req.PerKey {
-		response, err = s.fetchModelsPerKeyWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, perKeyAPIKeys, client)
+		response, err = s.fetchModelsPerKeyWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, perKeyAPIKeys, client, cfg.HeaderRules())
 	} else {
-		response, err = s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys, client)
+		response, err = s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys, client, cfg.HeaderRules())
 	}
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
@@ -913,8 +924,9 @@ func normalizeModelFetchKeys(apiKeys []string) []string {
  * @param cfg 本次操作使用的渠道配置及私有凭证快照。
  * @param overrideProtocol 显式模型发现协议；空值使用渠道默认协议。
  * @param keyMode 模型发现使用的 Key 选择策略。
- * @return 返回模型目录；渠道缺失、协议不支持、凭证不可用或上游请求失败时返回错误。
- * @note 可能访问上游及刷新受支持的 OAuth 凭证。
+ * @return 模型目录；失败时为 nil。
+ * @return 渠道缺失、协议不支持、凭证不可用或上游请求失败时返回错误。
+ * @note API Key 请求应用渠道请求头规则；OAuth 沿用提供商专属身份，可能刷新凭证。
  */
 func (s *Server) fetchModelsForChannel(
 	ctx context.Context,
@@ -977,13 +989,13 @@ func (s *Server) fetchModelsForChannel(
 		if len(probeKeys) == 0 {
 			return nil, fmt.Errorf("该渠道没有可用的API Key")
 		}
-		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, probeKeys, client)
+		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, probeKeys, client, cfg.HeaderRules())
 	}
 	apiKeys := availableModelFetchKeys(keys, time.Now())
 	if len(apiKeys) == 0 {
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
-	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys, client)
+	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys, client, cfg.HeaderRules())
 }
 
 // modelDiscoveryProtocol 决定模型发现的上游协议：决策渠道固定走 System One，
@@ -1593,8 +1605,19 @@ func (s *Server) modelDiscoveryClient(cfg *model.Config) *http.Client {
 	return s.getClientForChannel(cfg)
 }
 
-// fetchModelsWithURLFallback 按URL排序顺序抓取模型列表。
-// 设计目标：多URL渠道下，单个URL异常不应导致整个管理操作失败。
+/**
+ * @brief 按渠道 URL、协议和 Key 顺序发现模型目录。
+ * @param ctx 本次发现的取消与截止时间上下文
+ * @param channelID 渠道 ID；0 表示未保存的预览配置
+ * @param configuredURLs 渠道配置的 URL 与协议
+ * @param overrideProtocol 指定协议；空值按 URL 声明探测
+ * @param apiKeys 可用于探测的 API Key
+ * @param client 渠道客户端；nil 使用模型发现默认客户端
+ * @param headerRules 已校验的渠道请求头改写规则
+ * @return 首个成功的模型目录；失败时为 nil
+ * @return 配置不可用或所有探测失败时返回错误，保留上游错误链
+ * @note 已保存渠道会更新 URL 延迟或冷却状态。
+ */
 func (s *Server) fetchModelsWithURLFallback(
 	ctx context.Context,
 	channelID int64,
@@ -1602,6 +1625,7 @@ func (s *Server) fetchModelsWithURLFallback(
 	overrideProtocol string,
 	apiKeys []string,
 	client *http.Client,
+	headerRules []model.CustomHeaderRule,
 ) (*FetchModelsResponse, error) {
 	if len(configuredURLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
@@ -1650,7 +1674,7 @@ func (s *Server) fetchModelsWithURLFallback(
 		for _, upstreamProtocol := range protocols {
 			for _, apiKey := range apiKeys {
 				start := time.Now()
-				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey, client)
+				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey, client, headerRules)
 				if err == nil {
 					if selectorEnabled {
 						latency := time.Since(start)
@@ -1683,6 +1707,19 @@ func (s *Server) fetchModelsWithURLFallback(
 	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
 }
 
+/**
+ * @brief 并发发现各 Key 的模型目录，按 Key 顺序聚合结果。
+ * @param ctx 所有 Key 共享的取消与截止时间上下文
+ * @param channelID 渠道 ID；0 表示预览配置
+ * @param configuredURLs 渠道配置的 URL 与协议
+ * @param overrideProtocol 指定协议；空值按 URL 声明探测
+ * @param apiKeys 待探测的 Key 行
+ * @param client 渠道客户端；nil 使用模型发现默认客户端
+ * @param headerRules 已校验的渠道请求头改写规则，只读共享
+ * @return 合并目录及逐 Key 结果；全部失败时为 nil
+ * @return 无可用 Key 或所有 Key 探测失败时返回安全错误
+ * @note 启动有界并发探测，并等待全部请求结束。
+ */
 func (s *Server) fetchModelsPerKeyWithURLFallback(
 	ctx context.Context,
 	channelID int64,
@@ -1690,6 +1727,7 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 	overrideProtocol string,
 	apiKeys []*model.APIKey,
 	client *http.Client,
+	headerRules []model.CustomHeaderRule,
 ) (*FetchModelsResponse, error) {
 	if len(apiKeys) == 0 {
 		return nil, fmt.Errorf("API Key为空")
@@ -1714,7 +1752,7 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 		wg.Go(func() {
 			defer func() { <-sem }()
 			probes[i].fetched, probes[i].err = s.fetchModelsWithURLFallback(
-				ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey}, client,
+				ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey}, client, headerRules,
 			)
 		})
 	}
@@ -1777,11 +1815,19 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 	return response, nil
 }
 
+/**
+ * @brief 生成不包含上游正文的模型发现提示，保留 Cloudflare 验证原因。
+ * @param err 探测错误；nil 返回通用失败提示
+ * @return 可直接展示给管理员的错误描述
+ */
 func publicFetchModelsError(err error) string {
 	if err == nil {
 		return "模型探测失败"
 	}
-	if statusCode, _, ok := parseFetchModelsStatus(err.Error()); ok {
+	if statusCode, headers, body, ok := parseFetchModelsStatus(err); ok {
+		if util.ClassifyHTTPResponseWithMeta(statusCode, headers, []byte(body)).ChannelCooldownReason == "cloudflare_challenge" {
+			return fmt.Sprintf("模型探测失败: 上游触发 Cloudflare 验证 (HTTP %d)", statusCode)
+		}
 		return fmt.Sprintf("模型探测失败: 上游返回 HTTP %d", statusCode)
 	}
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
@@ -1790,28 +1836,38 @@ func publicFetchModelsError(err error) string {
 	return "模型探测失败"
 }
 
+/**
+ * @brief 判断模型发现失败是否仅与当前 Key 有关。
+ * @param err 探测错误；nil 不切换 Key
+ * @return 仅 Key 级错误返回 true，Cloudflare 验证返回 false
+ */
 func shouldTryNextKeyOnFetchModelsError(err error) bool {
 	if err == nil {
 		return false
 	}
-	statusCode, body, ok := parseFetchModelsStatus(err.Error())
+	statusCode, headers, body, ok := parseFetchModelsStatus(err)
 	if !ok {
 		return false
 	}
-	classification := util.ClassifyHTTPResponseWithMeta(statusCode, nil, []byte(body))
+	classification := util.ClassifyHTTPResponseWithMeta(statusCode, headers, []byte(body))
 	return classification.Level == util.ErrorLevelKey
 }
 
+/**
+ * @brief 判断模型发现失败是否需要冷却渠道 URL。
+ * @param err 探测错误；nil 不冷却
+ * @return 渠道级 HTTP 错误或网络失败返回 true
+ */
 func shouldCooldownURLOnFetchModelsError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errMsg := err.Error()
-	if statusCode, body, ok := parseFetchModelsStatus(errMsg); ok {
+	if statusCode, headers, body, ok := parseFetchModelsStatus(err); ok {
 		if isAntigravityModelCapacityExhausted(statusCode, []byte(body)) {
 			return false
 		}
-		classification := util.ClassifyHTTPResponseWithMeta(statusCode, nil, []byte(body))
+		classification := util.ClassifyHTTPResponseWithMeta(statusCode, headers, []byte(body))
 		return classification.Level == util.ErrorLevelChannel
 	}
 
@@ -1833,15 +1889,27 @@ func shouldCooldownURLOnFetchModelsError(err error) bool {
 	return false
 }
 
-func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool) {
+/**
+ * @brief 提取模型发现 HTTP 错误元数据，保留其他提供商已有的文本错误解析。
+ * @param err 非 nil 的探测错误，可包含包装链
+ * @return 上游状态码；无法识别时为 0
+ * @return 上游响应头；文本错误没有响应头时为 nil
+ * @return 上游错误正文；无法识别时为空
+ * @return 是否识别出 HTTP 状态码
+ */
+func parseFetchModelsStatus(err error) (statusCode int, headers http.Header, body string, ok bool) {
+	if statusErr, ok := errors.AsType[*util.ModelsHTTPError](err); ok {
+		return statusErr.StatusCode, statusErr.Header, string(statusErr.Body), true
+	}
+	errMsg := err.Error()
 	matches := fetchModelsHTTPStatusPattern.FindStringSubmatch(errMsg)
 	if len(matches) < 2 {
-		return 0, "", false
+		return 0, nil, "", false
 	}
 
 	code, err := strconv.Atoi(matches[1])
 	if err != nil {
-		return 0, "", false
+		return 0, nil, "", false
 	}
 
 	body = errMsg
@@ -1850,10 +1918,21 @@ func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool
 			body = strings.TrimLeft(after, "): \t")
 		}
 	}
-	return code, strings.TrimSpace(body), true
+	return code, nil, strings.TrimSpace(body), true
 }
 
-func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, client *http.Client) (*FetchModelsResponse, error) {
+/**
+ * @brief 使用单个 URL 和 Key 获取模型目录，并应用渠道请求头规则。
+ * @param ctx 本次发现的取消与截止时间上下文
+ * @param upstreamProtocol 上游模型发现协议
+ * @param channelURL 上游基础地址
+ * @param apiKey 用于认证的 API Key
+ * @param client 渠道客户端；nil 使用模型发现默认客户端
+ * @param headerRules 已校验的请求头规则，在默认 UA 和认证头设置后执行
+ * @return 模型目录；失败时为 nil
+ * @return 协议无目录或上游请求失败时返回错误，保留上游错误链
+ */
+func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, client *http.Client, headerRules []model.CustomHeaderRule) (*FetchModelsResponse, error) {
 	official := isOpenCodeOfficialEndpoint(channelURL)
 	// OpenCode has no System One catalog; its jev-* models sit in the OpenAI one.
 	systemOne := official && util.NormalizeProtocol(upstreamProtocol) == util.ProtocolSystemOne
@@ -1884,7 +1963,9 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		fetcher := util.NewModelsFetcher(fetchProtocol, client)
 		fetcherStr = fmt.Sprintf("%T", fetcher)
 
-		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey)
+		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey, func(req *http.Request) {
+			applyHeaderRules(req.Header, headerRules)
+		})
 		if err != nil {
 			return nil, fmt.Errorf(
 				"获取模型列表失败(上游协议:%s, 规范化协议:%s, 数据来源:%s): %w",

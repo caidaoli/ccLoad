@@ -9,12 +9,24 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"ccLoad/internal/version"
 )
 
-// ModelsFetcher 模型列表获取器接口
-// 不同上游协议有不同的 API 实现。
+/**
+ * @brief 按上游协议获取模型目录。
+ */
 type ModelsFetcher interface {
-	FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error)
+	/**
+	 * @brief 以渠道身份读取上游模型目录。
+	 * @param ctx 请求上下文，取消时中止请求
+	 * @param baseURL 上游基础地址
+	 * @param apiKey 上游 API Key
+	 * @param prepareRequest 可选请求改写，在默认头和认证头设置后调用
+	 * @return 上游返回的模型 ID，允许为空
+	 * @return 请求或解析失败时返回错误；HTTP 失败可通过 errors.As 取得 ModelsHTTPError
+	 */
+	FetchModels(ctx context.Context, baseURL string, apiKey string, prepareRequest func(*http.Request)) ([]string, error)
 }
 
 // NewModelsFetcher 根据上游协议创建对应的 Fetcher。
@@ -60,11 +72,49 @@ func SetModelsFetcherHTTPClientForTesting(client *http.Client) {
 	defaultModelsFetcherClient = client
 }
 
-// doHTTPRequest 执行HTTP GET请求并返回响应体
-// 封装公共的HTTP请求、错误处理、超时控制逻辑
-func doHTTPRequest(client *http.Client, req *http.Request) ([]byte, error) {
+/**
+ * @brief 保留模型发现失败响应，供管理端分类并生成安全提示。
+ */
+type ModelsHTTPError struct {
+	StatusCode int         ///< 上游 HTTP 状态码
+	Header     http.Header ///< 上游响应头，用于识别 Cloudflare 验证
+	Body       []byte      ///< 上游错误正文
+}
+
+/**
+ * @brief 格式化模型发现失败，Cloudflare 验证不回显 HTML 正文。
+ * @return 包含状态码及错误原因的描述
+ */
+func (e *ModelsHTTPError) Error() string {
+	if ClassifyHTTPResponseWithMeta(e.StatusCode, e.Header, e.Body).ChannelCooldownReason == "cloudflare_challenge" {
+		return fmt.Sprintf("上游触发 Cloudflare 验证 (HTTP %d)", e.StatusCode)
+	}
+	if e.StatusCode >= 400 && e.StatusCode < 500 {
+		return fmt.Sprintf("上游配置错误 (HTTP %d): %s", e.StatusCode, e.Body)
+	}
+	return fmt.Sprintf("上游服务器错误 (HTTP %d): %s", e.StatusCode, e.Body)
+}
+
+/**
+ * @brief 应用模型发现默认 UA 和渠道改写，然后读取上游响应。
+ * @param client 渠道客户端；nil 使用共享模型发现客户端
+ * @param req 已初始化认证头的请求
+ * @param prepareRequest 可选请求改写，在默认 UA 设置后调用
+ * @return 完整响应正文；失败时为 nil
+ * @return 网络、读取失败或可通过 errors.As 获取的 ModelsHTTPError
+ * @note 改写 req 的请求头；始终关闭上游响应体。
+ */
+func doHTTPRequest(client *http.Client, req *http.Request, prepareRequest func(*http.Request)) ([]byte, error) {
 	if client == nil {
 		client = defaultModelsFetcherClient
+	}
+	req.Header.Set("User-Agent", "ccLoad/"+version.Version)
+	if prepareRequest != nil {
+		prepareRequest(req)
+	}
+	if req.Header.Get("User-Agent") == "" {
+		// 显式空值阻止 net/http 在渠道删除 UA 后补回 Go 默认值。
+		req.Header.Set("User-Agent", "")
 	}
 
 	resp, err := client.Do(req)
@@ -79,11 +129,7 @@ func doHTTPRequest(client *http.Client, req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// [INFO] 修复：区分4xx和5xx错误，便于上层返回正确的HTTP状态码
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			return nil, fmt.Errorf("上游配置错误 (HTTP %d): %s", resp.StatusCode, string(body))
-		}
-		return nil, fmt.Errorf("上游服务器错误 (HTTP %d): %s", resp.StatusCode, string(body))
+		return nil, &ModelsHTTPError{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
 	}
 
 	return body, nil
@@ -106,8 +152,16 @@ type anthropicModelsResponse struct {
 	LastID  string `json:"last_id"`
 }
 
-// FetchModels 从 Anthropic API 获取可用模型列表。
-func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+/**
+ * @brief 获取 Anthropic 上游模型目录。
+ * @param ctx 请求上下文，取消时中止请求
+ * @param baseURL 上游基础地址
+ * @param apiKey 上游 API Key
+ * @param prepareRequest 可选请求改写，在默认头和认证头设置后调用
+ * @return 上游返回的模型 ID，允许为空
+ * @return 请求或解析失败时返回错误；HTTP 失败可通过 errors.As 取得 ModelsHTTPError
+ */
+func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string, prepareRequest func(*http.Request)) ([]string, error) {
 	// Anthropic Models API: https://docs.claude.com/en/api/models-list
 	endpoint := baseURL + "/v1/models"
 
@@ -123,7 +177,7 @@ func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(f.client, req)
+	body, err := doHTTPRequest(f.client, req, prepareRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +208,16 @@ type openAIModelsResponse struct {
 	} `json:"data"`
 }
 
-// FetchModels 从 OpenAI API 获取可用模型列表。
-func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+/**
+ * @brief 获取 OpenAI 上游模型目录。
+ * @param ctx 请求上下文，取消时中止请求
+ * @param baseURL 上游基础地址
+ * @param apiKey 上游 API Key
+ * @param prepareRequest 可选请求改写，在默认头和认证头设置后调用
+ * @return 上游返回的模型 ID，允许为空
+ * @return 请求或解析失败时返回错误；HTTP 失败可通过 errors.As 取得 ModelsHTTPError
+ */
+func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string, prepareRequest func(*http.Request)) ([]string, error) {
 	// OpenAI Models API: https://platform.openai.com/docs/api-reference/models/list
 	endpoint := baseURL + "/v1/models"
 
@@ -167,7 +229,7 @@ func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(f.client, req)
+	body, err := doHTTPRequest(f.client, req, prepareRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -198,8 +260,16 @@ type geminiModelsResponse struct {
 	} `json:"models"`
 }
 
-// FetchModels 从 Gemini API 获取可用模型列表。
-func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+/**
+ * @brief 获取 Gemini 上游模型目录。
+ * @param ctx 请求上下文，取消时中止请求
+ * @param baseURL 上游基础地址
+ * @param apiKey 上游 API Key
+ * @param prepareRequest 可选请求改写，在默认头和认证头设置后调用
+ * @return 上游返回的模型 ID，允许为空
+ * @return 请求或解析失败时返回错误；HTTP 失败可通过 errors.As 取得 ModelsHTTPError
+ */
+func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string, prepareRequest func(*http.Request)) ([]string, error) {
 	// Gemini Models API: https://ai.google.dev/api/rest/v1beta/models/list
 	endpoint, err := url.Parse(baseURL + "/v1beta/models")
 	if err != nil {
@@ -213,7 +283,7 @@ func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	req.Header.Set("X-Goog-Api-Key", apiKey)
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(f.client, req)
+	body, err := doHTTPRequest(f.client, req, prepareRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -241,10 +311,18 @@ type CodexModelsFetcher struct {
 	client *http.Client
 }
 
-// FetchModels 从 Codex API 获取可用模型列表（使用 OpenAI 兼容接口）。
-func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+/**
+ * @brief 获取 Codex 上游模型目录。
+ * @param ctx 请求上下文，取消时中止请求
+ * @param baseURL 上游基础地址
+ * @param apiKey 上游 API Key
+ * @param prepareRequest 可选请求改写，在默认头和认证头设置后调用
+ * @return 上游返回的模型 ID，允许为空
+ * @return 请求或解析失败时返回错误；HTTP 失败可通过 errors.As 取得 ModelsHTTPError
+ */
+func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string, prepareRequest func(*http.Request)) ([]string, error) {
 	openAIFetcher := &OpenAIModelsFetcher{client: f.client}
-	return openAIFetcher.FetchModels(ctx, baseURL, apiKey)
+	return openAIFetcher.FetchModels(ctx, baseURL, apiKey, prepareRequest)
 }
 
 // SystemOneModelsFetcher 实现 TypeSafe System One 决策渠道的模型列表获取。
@@ -258,8 +336,16 @@ type systemOneModelsResponse struct {
 	} `json:"models"`
 }
 
-// FetchModels 从 System One API 获取可用模型（别名）列表。
-func (f *SystemOneModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+/**
+ * @brief 获取 SystemOne 上游模型目录。
+ * @param ctx 请求上下文，取消时中止请求
+ * @param baseURL 上游基础地址
+ * @param apiKey 上游 API Key
+ * @param prepareRequest 可选请求改写，在默认头和认证头设置后调用
+ * @return 上游返回的模型 ID，允许为空
+ * @return 请求或解析失败时返回错误；HTTP 失败可通过 errors.As 取得 ModelsHTTPError
+ */
+func (f *SystemOneModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string, prepareRequest func(*http.Request)) ([]string, error) {
 	// System One Models API: https://docs.typesafe.ai/models
 	// 与决策调用一致：基础 URL 已以 /v1 结尾时只追加 /models。
 	endpoint := strings.TrimRight(strings.TrimSuffix(baseURL, "#"), "/")
@@ -275,7 +361,7 @@ func (f *SystemOneModelsFetcher) FetchModels(ctx context.Context, baseURL string
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	body, err := doHTTPRequest(f.client, req)
+	body, err := doHTTPRequest(f.client, req, prepareRequest)
 	if err != nil {
 		return nil, err
 	}

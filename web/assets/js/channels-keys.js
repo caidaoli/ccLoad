@@ -444,6 +444,11 @@ function filterKeyModelScopeOptions(query) {
   updateKeyModelScopeSelectionCount();
 }
 
+/**
+ * @brief 使用当前渠道配置及未保存的请求改写规则探测单个 Key 的模型范围。
+ * @return Promise<void>：匹配结果已更新到范围选择区，或错误已在弹窗反馈。
+ * @note 结果仅应用于仍打开的同一 Key 范围会话，确认后才写入渠道草稿。
+ */
 async function detectKeyModelScope() {
   if (keyModelScopeEditingIndex < 0) return;
   const detectionIndex = keyModelScopeEditingIndex;
@@ -473,6 +478,7 @@ async function detectKeyModelScope() {
         urls,
         api_keys: [row.api_key],
         per_key: true,
+        custom_request_rules: window.collectCustomRulesForSubmit(),
         ...(proxyURL ? { proxy_url: proxyURL } : {})
       })
     });

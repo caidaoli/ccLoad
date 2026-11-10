@@ -23,12 +23,26 @@ const { applyURLStats, normalizeInlineURLConfigs } = require('./channels-urls.js
 const { isOpenCodeChannel } = require('./channels-render.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
-function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key', proxyURL = '' }) {
+/**
+ * @brief 为模型发现请求安装当前渠道编辑草稿及网络替身。
+ * @param rows 当前 Key 草稿。
+ * @param states Key 冷却和禁用状态。
+ * @param onFetch 发现请求的响应替身。
+ * @param onError 错误提示回调。
+ * @param onWarning 警告提示回调。
+ * @param channelId 已保存渠道 ID，null 表示新建渠道。
+ * @param authType 当前渠道认证类型。
+ * @param proxyURL 当前代理地址草稿。
+ * @param customRules 当前未保存的请求改写规则，null 表示未配置。
+ * @return 恢复原有全局状态的函数。
+ */
+function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key', proxyURL = '', customRules = null }) {
 	const globals = {
 		window: {
 			t: key => key,
       showError: onError,
-      showWarning: onWarning
+      showWarning: onWarning,
+      collectCustomRulesForSubmit: () => customRules
     },
     document: {
       querySelector: () => null,
@@ -526,7 +540,7 @@ test('per-Key model detection handles stale sessions, model variants, redirect m
   const detectedBodies = [];
   const modals = loadChannelsModals();
   const globals = {
-    window: { t: key => key },
+    window: { t: key => key, collectCustomRulesForSubmit: () => null },
     document: {
       activeElement: { focus() {} },
       addEventListener() {},
@@ -572,9 +586,13 @@ test('per-Key model detection handles stale sessions, model variants, redirect m
     assert.equal(openKeyModelScopeModal(0), true);
     const staleDetection = detectKeyModelScope();
     assert.equal(detectedBodies[0]?.proxy_url, 'socks5://127.0.0.1:1080');
+    assert.equal(detectedBodies[0].custom_request_rules, null);
     closeKeyModelScopeModal(false);
     assert.equal(openKeyModelScopeModal(0), true);
+    const customRules = { headers: [{ action: 'override', name: 'User-Agent', value: 'unsaved-client/1.0' }] };
+    global.window.collectCustomRulesForSubmit = () => customRules;
     const currentDetection = detectKeyModelScope();
+    assert.deepEqual(detectedBodies[1].custom_request_rules, customRules);
 
     pending[0]({
       success: true,
@@ -2256,7 +2274,34 @@ test('fetchModelsFromAPI sends every available API key', async () => {
   assert.equal(requestBody.api_key, undefined);
   assert.equal(requestBody.per_key, true);
   assert.equal(requestBody.proxy_url, undefined);
+  assert.equal(requestBody.custom_request_rules, null);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
+});
+
+test('fetchModelsFromAPI submits the current unsaved request rules', async () => {
+  let requestBody;
+  const customRules = {
+    headers: [{ action: 'override', name: 'User-Agent', value: 'unsaved-client/2.0' }],
+    body: [{ action: 'override', path: 'model', value: 'forced-model' }]
+  };
+  const restore = installFetchModelsGlobals({
+    rows: [{ api_key: 'enabled-key' }],
+    states: [],
+    customRules,
+    onFetch: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { success: false, error: 'stop after request capture' };
+    },
+    onError: () => {}
+  });
+
+  try {
+    await loadFetchModelsFromAPI()();
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(requestBody.custom_request_rules, customRules);
 });
 
 test('fetchModelsFromAPI sends the channel proxy', async () => {
@@ -3308,6 +3353,27 @@ test('quick add falls back from OpenAI to Anthropic model discovery', async () =
   assert.deepEqual(setup.models, [
     { model: 'claude-test', redirect_model: 'claude-test', disabled: false }
   ]);
+});
+
+test('quick add model discovery omits request rules from the existing channel editor', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  global.window = {
+    collectCustomRulesForSubmit: () => ({
+      headers: [{ action: 'override', name: 'User-Agent', value: 'stale-client/1.0' }]
+    })
+  };
+  let requestBody;
+  try {
+    const { discoverQuickAddChannelSetup } = loadChannelsModals();
+    await discoverQuickAddChannelSetup('URL=https://gateway.example.com\nAPI_KEY=sk-new', async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { success: true, data: { models: [{ model: 'new-model' }] } };
+    });
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+  assert.equal(Object.hasOwn(requestBody, 'custom_request_rules'), false);
 });
 
 test('quick add rejects invalid discovery without producing partial setup', async () => {
