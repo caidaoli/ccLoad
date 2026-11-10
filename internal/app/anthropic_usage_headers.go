@@ -124,11 +124,19 @@ func stampAnthropicPassiveWindow(window *anthropicauth.PassiveUsageWindow, sampl
 	}
 }
 
+/**
+ * @brief 采集单个额度窗口，将上游超额使用率归一为已耗尽，丢弃非有限值和负数。
+ * @param headers 上游响应头
+ * @param utilizationHeader 使用率响应头名，数值以 1 表示 100%
+ * @param resetHeader 重置时间响应头名，支持 Unix 秒或毫秒
+ * @return 采集的窗口；使用率和重置时间均无效或缺失时返回 nil
+ */
 func sampleAnthropicPassiveWindow(headers http.Header, utilizationHeader, resetHeader string) *anthropicauth.PassiveUsageWindow {
 	window := &anthropicauth.PassiveUsageWindow{}
 	if raw := strings.TrimSpace(headers.Get(utilizationHeader)); raw != "" {
 		if value, err := strconv.ParseFloat(raw, 64); err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) &&
-			value >= 0 && value <= 1 {
+			value >= 0 {
+			value = min(value, 1)
 			window.Utilization = &value
 		}
 	}

@@ -8387,6 +8387,78 @@ func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t 
 	}
 }
 
+/**
+ * @brief 超额 429 必须更新耗尽的 5h 额度，并保留独立的总周和 Fable 周读数。
+ * @param t 测试上下文
+ */
+func TestAnthropicOverLimitResponseUpdatesChannelQuota(t *testing.T) {
+	t.Parallel()
+	for _, cached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cached=%t", cached), func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			now := time.Now().UTC()
+			reset5h := now.Add(3 * time.Hour).Unix()
+			reset7d := now.Add(3 * 24 * time.Hour).Unix()
+			credential := &anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: "overlimit-access", RefreshToken: "overlimit-refresh",
+				Expired: now.Add(time.Hour).Format(time.RFC3339), AccountUUID: "overlimit-account",
+			}
+			if cached {
+				previous := 0.22
+				credential.PassiveUsage = &anthropicauth.PassiveUsage{
+					FiveHour:  &anthropicauth.PassiveUsageWindow{Utilization: &previous, ResetAt: &reset5h},
+					SampledAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+				}
+			}
+			payload, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-overlimit", payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store, nil, nil)
+			response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+			response.Header.Set(anthropicRateLimit5hStatus, "rejected")
+			response.Header.Set(anthropicRateLimit5hUtilization, "1.05")
+			response.Header.Set(anthropicRateLimit5hReset, strconv.FormatInt(reset5h, 10))
+			response.Header.Set(anthropicRateLimit7dUtilization, "0.69")
+			response.Header.Set(anthropicRateLimit7dReset, strconv.FormatInt(reset7d, 10))
+			response.Header.Set(anthropicRateLimit7dOIUsage, "0.22")
+			response.Header.Set(anthropicRateLimit7dOIReset, strconv.FormatInt(reset7d, 10))
+			server.persistDetectionAnthropicPassiveUsage(context.Background(), channel, response)
+
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(c)
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil {
+				t.Fatalf("missing channel usage: %#v", list.Data)
+			}
+			windows := list.Data[0].OAuthUsage.Windows
+			if len(windows) != 3 {
+				t.Fatalf("expected 5h, total weekly and Fable weekly windows, got %#v", windows)
+			}
+			want := map[string]float64{"|five_hour": 100, "|seven_day": 69, "claude fable|seven_day_fable": 22}
+			for _, window := range windows {
+				key := oauthcost.Key(window.LimitName, window.Kind)
+				used, ok := want[key]
+				if !ok || math.Abs(window.UsedPercent-used) > 1e-9 || math.Abs(window.RemainingPercent-(100-used)) > 1e-9 {
+					t.Errorf("window %s: used=%g remaining=%g, want used=%g remaining=%g", key, window.UsedPercent, window.RemainingPercent, used, 100-used)
+				}
+				wantReset := reset7d
+				if window.Kind == "five_hour" {
+					wantReset = reset5h
+				}
+				if window.ResetAt != wantReset {
+					t.Errorf("window %s reset=%d, want %d", key, window.ResetAt, wantReset)
+				}
+			}
+		})
+	}
+}
+
 func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *testing.T) {
 	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
@@ -9276,6 +9348,10 @@ func TestRequestAnthropicUsageSamplesBeforeProfileLookupCompletes(t *testing.T) 
 	}
 }
 
+/**
+ * @brief 拒绝非法额度值；Anthropic 响应头中的有限超额比例由耗尽额度回归覆盖。
+ * @param t 测试上下文
+ */
 func TestOAuthQuotaNormalizersRejectInvalidUsagePercent(t *testing.T) {
 	t.Parallel()
 	for _, value := range []float64{-1, 101, math.NaN(), math.Inf(1)} {
@@ -9310,15 +9386,16 @@ func TestOAuthQuotaNormalizersRejectInvalidUsagePercent(t *testing.T) {
 			}, "weekly credits"); ok {
 				t.Fatalf("xAI accepted invalid usage %v: %#v", value, window)
 			}
-
-			headers := http.Header{}
-			headers.Set(anthropicRateLimit5hUtilization, strconv.FormatFloat(value/100, 'g', -1, 64))
-			headers.Set(anthropicRateLimit5hReset, "1893542400")
-			update, ok := sampleAnthropicPassiveUsage(headers, time.Now().UTC())
-			if !ok || update.FiveHour == nil || update.FiveHour.Utilization != nil {
-				t.Fatalf("Anthropic passive invalid utilization was not rejected: %#v, %t", update, ok)
-			}
 		})
+	}
+	for _, value := range []string{"-0.01", "NaN", "+Inf", "-Inf", "invalid"} {
+		headers := http.Header{}
+		headers.Set(anthropicRateLimit5hUtilization, value)
+		headers.Set(anthropicRateLimit5hReset, "1893542400")
+		update, ok := sampleAnthropicPassiveUsage(headers, time.Now().UTC())
+		if !ok || update.FiveHour == nil || update.FiveHour.Utilization != nil {
+			t.Fatalf("Anthropic passive invalid utilization %q was not rejected: %#v, %t", value, update, ok)
+		}
 	}
 
 	negative := -1.0
