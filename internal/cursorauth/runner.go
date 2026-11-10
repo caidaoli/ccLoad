@@ -32,15 +32,16 @@ func (u *Usage) Add(other *Usage) {
 }
 
 /**
- * @brief Cursor 推理事件；Text 是当前输出，Delta 是新增文本，真实 Usage 是尚未发出的增量。
+ * @brief Cursor 推理事件；Text 是当前正文，Delta 是新增正文，ThinkingDelta 是独立思考增量。
  * @details 工具边界可携带上下文估算；真实逐轮用量立即发出，终态只补齐累计用量的差额。
  * RawResponse 在启用捕获时携带单个 RunStreamMessage 的标准 protobuf JSON。
  */
 type Event struct {
-	Delta    string
-	Text     string
-	ToolCall *ToolCall
-	Usage    *Usage
+	Delta         string
+	ThinkingDelta string ///< 上游思考文本增量，不并入正文或生成签名。
+	Text          string
+	ToolCall      *ToolCall
+	Usage         *Usage
 	// UsageEstimated marks a local context estimate. Estimated usage is exposed
 	// to the client for context management and logged separately from real usage.
 	// It must not be billed or included in actual token totals.

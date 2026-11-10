@@ -58,7 +58,7 @@ func (s *sdkRunState) consume(message *sdkv1.RunStreamMessage) ([]Event, error) 
 }
 
 /**
- * @brief 将 SDK 消息转换为文本、运行状态和逐轮真实用量事件。
+ * @brief 将 SDK 消息转换为独立思考、正文、运行状态和逐轮真实用量事件。
  * @param message 上游 SDK 消息。
  * @return 本条消息产生的事件；无客户端事件时为 nil。
  * @return 会话身份改变或 usage 结构非法时返回错误。
@@ -100,6 +100,12 @@ func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, err
 		}
 		if strings.EqualFold(firstString(payload, "status"), "RUNNING") {
 			return []Event{{Ping: true}}, nil
+		}
+		return nil, nil
+	}
+	if message.GetType() == "thinking" {
+		if delta := firstString(payload, "text"); delta != "" {
+			return []Event{{ThinkingDelta: delta}}, nil
 		}
 		return nil, nil
 	}

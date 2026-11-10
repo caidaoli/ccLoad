@@ -17,6 +17,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+
+	"github.com/tidwall/gjson"
 )
 
 /**
@@ -60,6 +62,340 @@ func (r cursorUsageEventsRunner) Run(
 	}
 	close(events)
 	return events, nil
+}
+
+/**
+ * @brief Cursor 思考增量经四种 HTTP 协议返回时保留空白与 Unicode，并与正文分离。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthThinkingAcrossProtocols(t *testing.T) {
+	t.Parallel()
+	for _, clientProtocol := range []string{"anthropic", "openai", "responses", "gemini"} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", clientProtocol, streaming), func(t *testing.T) {
+				t.Parallel()
+				credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+				if err != nil {
+					t.Fatalf("encode Cursor credential: %v", err)
+				}
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: "cursor-thinking", upstreamProtocol: "openai", models: "composer-2.5",
+					authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+				}}, map[int]string{0: "https://unused.invalid"})
+				env.server.cursorRunner = cursorUsageEventsRunner{
+					{Ping: true}, {ThinkingDelta: "先"}, {ThinkingDelta: "\n  "}, {ThinkingDelta: "想🧠"},
+					{Delta: "答", Text: "答"}, {Delta: "案", Text: "答案"}, {Done: true, Text: "答案"},
+				}
+				path := "/v1/chat/completions"
+				body := map[string]any{
+					"model": "composer-2.5", "stream": streaming, "max_tokens": 256,
+					"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+				}
+				switch clientProtocol {
+				case "anthropic":
+					path = "/v1/messages"
+				case "responses":
+					path = "/v1/responses"
+					body = map[string]any{"model": "composer-2.5", "stream": streaming, "input": "hello"}
+				case "gemini":
+					path = "/v1beta/models/composer-2.5:generateContent"
+					if streaming {
+						path = "/v1beta/models/composer-2.5:streamGenerateContent?alt=sse"
+					}
+					body = map[string]any{"contents": []any{map[string]any{
+						"role": "user", "parts": []any{map[string]any{"text": "hello"}},
+					}}}
+				}
+				response := doProxyRequest(t, env.engine, path, body, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+				}
+				var thinking, text strings.Builder
+				if streaming {
+					for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+						eventType, data := parseSSEEventChunk(block)
+						if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+							continue
+						}
+						if !gjson.ValidBytes(data) {
+							t.Fatalf("invalid SSE JSON: %s", data)
+						}
+						payload := gjson.ParseBytes(data)
+						switch clientProtocol {
+						case "anthropic":
+							if payload.Get("delta.type").String() == "thinking_delta" {
+								thinking.WriteString(payload.Get("delta.thinking").String())
+							} else if payload.Get("delta.type").String() == "text_delta" {
+								text.WriteString(payload.Get("delta.text").String())
+							}
+						case "openai":
+							thinking.WriteString(payload.Get("choices.0.delta.reasoning_content").String())
+							text.WriteString(payload.Get("choices.0.delta.content").String())
+						case "responses":
+							switch eventType {
+							case "response.reasoning_summary_text.delta":
+								thinking.WriteString(payload.Get("delta").String())
+							case "response.output_text.delta":
+								text.WriteString(payload.Get("delta").String())
+							}
+						case "gemini":
+							for _, part := range payload.Get("candidates.0.content.parts").Array() {
+								if part.Get("thought").Bool() {
+									thinking.WriteString(part.Get("text").String())
+								} else {
+									text.WriteString(part.Get("text").String())
+								}
+							}
+						}
+					}
+				} else {
+					if !gjson.ValidBytes(response.Body.Bytes()) {
+						t.Fatalf("invalid response JSON: %s", response.Body.String())
+					}
+					payload := gjson.ParseBytes(response.Body.Bytes())
+					switch clientProtocol {
+					case "anthropic":
+						for _, block := range payload.Get("content").Array() {
+							if block.Get("type").String() == "thinking" {
+								thinking.WriteString(block.Get("thinking").String())
+							} else if block.Get("type").String() == "text" {
+								text.WriteString(block.Get("text").String())
+							}
+						}
+					case "openai":
+						thinking.WriteString(payload.Get("choices.0.message.reasoning_content").String())
+						text.WriteString(payload.Get("choices.0.message.content").String())
+					case "responses":
+						for _, item := range payload.Get("output").Array() {
+							if item.Get("type").String() == "reasoning" {
+								for _, summary := range item.Get("summary").Array() {
+									thinking.WriteString(summary.Get("text").String())
+								}
+							} else if item.Get("type").String() == "message" {
+								for _, content := range item.Get("content").Array() {
+									text.WriteString(content.Get("text").String())
+								}
+							}
+						}
+					case "gemini":
+						for _, part := range payload.Get("candidates.0.content.parts").Array() {
+							if part.Get("thought").Bool() {
+								thinking.WriteString(part.Get("text").String())
+							} else {
+								text.WriteString(part.Get("text").String())
+							}
+						}
+					}
+				}
+				if thinking.String() != "先\n  想🧠" || text.String() != "答案" {
+					t.Fatalf("thinking=%q text=%q body=%s", thinking.String(), text.String(), response.Body.String())
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief Anthropic 思考、正文和工具块保持 SDK 事件顺序，SSE 索引与块生命周期合法。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthAnthropicThinkingBlockOrder(t *testing.T) {
+	t.Parallel()
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", streaming), func(t *testing.T) {
+			t.Parallel()
+			credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+			if err != nil {
+				t.Fatalf("encode Cursor credential: %v", err)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "cursor-thinking-order", upstreamProtocol: "anthropic", models: "composer-2.5",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+			}}, map[int]string{0: "https://unused.invalid"})
+			env.server.cursorRunner = cursorUsageEventsRunner{
+				{Ping: true}, {ThinkingDelta: "想1"}, {Delta: "答1", Text: "答1"},
+				{ThinkingDelta: "想2"}, {Delta: "答2", Text: "答1答2"},
+				{ToolCall: &cursorauth.ToolCall{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{"q":"中文"}`)}},
+				{Done: true, Text: "答1答2"},
+			}
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "composer-2.5", "stream": streaming, "max_tokens": 256,
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+				"tools":    []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+			}
+			wantTypes := []string{"thinking", "text", "thinking", "text", "tool_use"}
+			wantText := []string{"想1", "答1", "想2", "答2"}
+			if !streaming {
+				payload := gjson.ParseBytes(response.Body.Bytes())
+				blocks := payload.Get("content").Array()
+				if len(blocks) != len(wantTypes) || payload.Get("stop_reason").String() != "tool_use" {
+					t.Fatalf("invalid Anthropic message: %s", response.Body.String())
+				}
+				for index, block := range blocks {
+					if block.Get("type").String() != wantTypes[index] || block.Get("signature").Exists() {
+						t.Fatalf("block %d type/signature: %s", index, block.Raw)
+					}
+					if index < len(wantText) && block.Get(wantTypes[index]).String() != wantText[index] {
+						t.Fatalf("block %d content: %s", index, block.Raw)
+					}
+				}
+				if blocks[4].Get("id").String() != "call_lookup" || blocks[4].Get("name").String() != "lookup" ||
+					blocks[4].Get("input.q").String() != "中文" {
+					t.Fatalf("tool block=%s", blocks[4].Raw)
+				}
+				return
+			}
+			active := -1
+			var blockTypes, blockText []string
+			var started, stopped bool
+			for chunk := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+				eventType, data := parseSSEEventChunk(chunk)
+				if len(data) == 0 {
+					continue
+				}
+				if !gjson.ValidBytes(data) {
+					t.Fatalf("invalid SSE JSON: %s", data)
+				}
+				payload := gjson.ParseBytes(data)
+				if stopped || payload.Get("type").String() != eventType {
+					t.Fatalf("invalid event after stop or mismatched event type: %s", chunk)
+				}
+				switch eventType {
+				case "message_start":
+					if started || len(blockTypes) != 0 {
+						t.Fatalf("late/duplicate message_start: %s", chunk)
+					}
+					started = true
+				case "content_block_start", "content_block_delta", "content_block_stop":
+					index := payload.Get("index")
+					if !started || index.Type != gjson.Number {
+						t.Fatalf("content event without message/index: %s", chunk)
+					}
+					if eventType == "content_block_start" {
+						blockType := payload.Get("content_block.type").String()
+						if active != -1 || int(index.Int()) != len(blockTypes) || len(blockTypes) >= len(wantTypes) ||
+							blockType != wantTypes[len(blockTypes)] || payload.Get("content_block.signature").Exists() {
+							t.Fatalf("invalid block start: %s", chunk)
+						}
+						active = int(index.Int())
+						blockTypes = append(blockTypes, blockType)
+						blockText = append(blockText, payload.Get("content_block."+blockType).String())
+						if blockType == "tool_use" && (payload.Get("content_block.id").String() != "call_lookup" ||
+							payload.Get("content_block.name").String() != "lookup") {
+							t.Fatalf("invalid tool block: %s", chunk)
+						}
+						continue
+					}
+					if active == -1 || int(index.Int()) != active {
+						t.Fatalf("delta/stop outside active block: %s", chunk)
+					}
+					if eventType == "content_block_stop" {
+						active = -1
+						continue
+					}
+					key, deltaType := blockTypes[active], blockTypes[active]+"_delta"
+					if key == "tool_use" {
+						key, deltaType = "partial_json", "input_json_delta"
+					}
+					if payload.Get("delta.type").String() != deltaType {
+						t.Fatalf("delta type does not match active block: %s", chunk)
+					}
+					blockText[active] += payload.Get("delta." + key).String()
+				case "message_delta":
+					if active != -1 || payload.Get("delta.stop_reason").String() != "tool_use" {
+						t.Fatalf("invalid message_delta: %s", chunk)
+					}
+				case "message_stop":
+					if active != -1 {
+						t.Fatalf("message stopped with open block: %s", chunk)
+					}
+					stopped = true
+				}
+			}
+			if !started || !stopped || active != -1 || len(blockTypes) != len(wantTypes) {
+				t.Fatalf("incomplete block lifecycle: types=%v active=%d body=%s", blockTypes, active, response.Body.String())
+			}
+			for index, want := range wantText {
+				if blockText[index] != want {
+					t.Fatalf("block %d text=%q want=%q", index, blockText[index], want)
+				}
+			}
+			if !gjson.Valid(blockText[4]) || gjson.Get(blockText[4], "q").String() != "中文" {
+				t.Fatalf("tool input=%s", blockText[4])
+			}
+		})
+	}
+}
+
+/**
+ * @brief 思考已输出后取消或失败必须保留思考，且不能生成成功的流终态。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthThinkingInterrupted(t *testing.T) {
+	t.Parallel()
+	for _, clientProtocol := range []string{"anthropic", "responses"} {
+		for _, canceled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/canceled=%t", clientProtocol, canceled), func(t *testing.T) {
+				t.Parallel()
+				credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
+				if err != nil {
+					t.Fatalf("encode Cursor credential: %v", err)
+				}
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: "cursor-thinking-interrupted", upstreamProtocol: "openai", models: "composer-2.5",
+					authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+				}}, map[int]string{0: "https://unused.invalid"})
+				runErr := errors.New("thinking run failed")
+				if canceled {
+					runErr = context.Canceled
+				}
+				env.server.cursorRunner = cursorUsageEventsRunner{
+					{Ping: true}, {ThinkingDelta: "中"}, {ThinkingDelta: "断前 "}, {Done: true, Err: runErr},
+				}
+				path := "/v1/messages"
+				body := map[string]any{
+					"model": "composer-2.5", "stream": true, "max_tokens": 256,
+					"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+				}
+				if clientProtocol == "responses" {
+					path = "/v1/responses"
+					body = map[string]any{"model": "composer-2.5", "stream": true, "input": "hello"}
+				}
+				response := doProxyRequest(t, env.engine, path, body, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+				}
+				var thinking strings.Builder
+				var failed bool
+				for chunk := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+					eventType, data := parseSSEEventChunk(chunk)
+					if len(data) == 0 {
+						continue
+					}
+					if bytes.Equal(data, []byte("[DONE]")) || !gjson.ValidBytes(data) {
+						t.Fatalf("unexpected success terminator or invalid SSE JSON: %s", chunk)
+					}
+					payload := gjson.ParseBytes(data)
+					if eventType == "message_stop" || eventType == "response.completed" ||
+						payload.Get("delta.stop_reason").String() != "" || payload.Get("response.status").String() == "completed" {
+						t.Fatalf("interrupted thinking emitted successful terminal event: %s", chunk)
+					}
+					if payload.Get("delta.type").String() == "thinking_delta" {
+						thinking.WriteString(payload.Get("delta.thinking").String())
+					} else if eventType == "response.reasoning_summary_text.delta" {
+						thinking.WriteString(payload.Get("delta").String())
+					}
+					failed = failed || payload.Get("error").Exists() || payload.Get("response.error").Exists()
+				}
+				if thinking.String() != "中断前 " || (!canceled && !failed) {
+					t.Fatalf("thinking=%q failed=%t body=%s", thinking.String(), failed, response.Body.String())
+				}
+			})
+		}
+	}
 }
 
 type cursorRefreshOnceRunner struct {

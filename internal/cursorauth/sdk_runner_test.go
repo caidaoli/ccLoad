@@ -796,6 +796,150 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 	}
 }
 
+/**
+ * @brief SDK thinking 消息独立于正文逐片发出，终态不重复已有增量。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerSeparatesThinkingFromAssistantText(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Hello!")
+		result.GetResult().GetResult().Usage = &sdkv1.TokenUsage{
+			InputTokens: 11, OutputTokens: 7, TotalTokens: 18, ReasoningTokens: new(int64(2)),
+		}
+		for _, message := range []*sdkv1.RunStreamMessage{
+			sdkMessage(t, "status", map[string]any{
+				"agent_id": "agent-1", "run_id": "run-1", "status": "RUNNING", "type": "status",
+			}),
+			sdkMessage(t, "thinking", map[string]any{
+				"agent_id": "agent-1", "run_id": "run-1", "text": "I should", "type": "thinking",
+			}),
+			sdkMessage(t, "thinking", map[string]any{
+				"agent_id": "agent-1", "run_id": "run-1", "text": " check. ", "type": "thinking",
+			}),
+			sdkMessage(t, "assistant", map[string]any{
+				"agent_id": "agent-1", "run_id": "run-1",
+				"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "Hello"}}},
+			}),
+			result, runDone("agent-1", "run-1"),
+		} {
+			if err := stream.Send(message); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	runner := newTestSDKRunner(t, handler)
+	events, err := runner.Run(context.Background(), &Credential{APIKey: "key"}, Request{Model: "model-1", Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var thinking, deltas, kinds []string
+	var final Event
+	for event := range events {
+		if event.Ping {
+			kinds = append(kinds, "ping")
+		}
+		if event.ThinkingDelta != "" {
+			thinking = append(thinking, event.ThinkingDelta)
+			kinds = append(kinds, "thinking")
+			if event.Delta != "" || event.Text != "" || event.Done {
+				t.Fatalf("thinking mixed with assistant text or terminal event: %+v", event)
+			}
+		}
+		if event.Delta != "" {
+			deltas = append(deltas, event.Delta)
+			kinds = append(kinds, "assistant")
+		}
+		if event.Done {
+			kinds = append(kinds, "done")
+			final = event
+		}
+	}
+	if !reflect.DeepEqual(thinking, []string{"I should", " check. "}) {
+		t.Fatalf("thinking deltas = %#v", thinking)
+	}
+	if !reflect.DeepEqual(deltas, []string{"Hello", "!"}) {
+		t.Fatalf("assistant deltas = %#v", deltas)
+	}
+	if !reflect.DeepEqual(kinds, []string{"ping", "thinking", "thinking", "assistant", "assistant", "done"}) {
+		t.Fatalf("event order = %#v", kinds)
+	}
+	if final.Err != nil || !final.Done || final.Text != "Hello!" || final.ThinkingDelta != "" {
+		t.Fatalf("terminal event = %+v", final)
+	}
+	if final.Usage == nil || *final.Usage != (Usage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18, ReasoningTokens: 2}) {
+		t.Fatalf("terminal usage = %+v", final.Usage)
+	}
+}
+
+/**
+ * @brief 取消或上游失败之前收到的 thinking 仍可见，且不会成为正文。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerPreservesThinkingOnTermination(t *testing.T) {
+	for _, callerCancels := range []bool{false, true} {
+		name := "upstream error"
+		if callerCancels {
+			name = "caller cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			handler := &testAgentHandler{}
+			handler.sendFn = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				if err := stream.Send(sdkMessage(t, "thinking", map[string]any{
+					"agent_id": "agent-1", "run_id": "run-1", "text": "Still checking.", "type": "thinking",
+				})); err != nil {
+					return err
+				}
+				if callerCancels {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "")
+				code := "upstream failed"
+				result.GetResult().ErrorCode = &code
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}
+			runner := newTestSDKRunner(t, handler)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			events, err := runner.Run(ctx, &Credential{APIKey: "key"}, Request{Model: "model-1", Prompt: "hello"})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			var thinking []string
+			var final Event
+			for event := range events {
+				if event.Delta != "" || event.Text != "" {
+					t.Fatalf("thinking became assistant text: %+v", event)
+				}
+				if event.ThinkingDelta != "" {
+					thinking = append(thinking, event.ThinkingDelta)
+					if callerCancels {
+						cancel()
+					}
+				}
+				if event.Done {
+					final = event
+				}
+			}
+			if !reflect.DeepEqual(thinking, []string{"Still checking."}) || !final.Done || final.Err == nil {
+				t.Fatalf("thinking=%#v terminal=%+v", thinking, final)
+			}
+			if callerCancels {
+				if !errors.Is(final.Err, context.Canceled) {
+					t.Fatalf("cancellation error = %v", final.Err)
+				}
+			} else if !strings.Contains(final.Err.Error(), "upstream failed") {
+				t.Fatalf("upstream error = %v", final.Err)
+			}
+		})
+	}
+}
+
 func TestSDKRunnerDoesNotReplaySendAfterStreamTransportFailure(t *testing.T) {
 	handler := &testAgentHandler{}
 	handler.sendFn = func(_ context.Context, _ *connect.ServerStream[sdkv1.RunStreamMessage]) error {

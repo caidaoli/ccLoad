@@ -254,6 +254,9 @@ func (s *Server) forwardCursorAgent(
 			modelID, originalResponseBody, body, nil, &responseTransformState)
 	}
 	var out bytes.Buffer
+	var thinking strings.Builder
+	var content []map[string]any
+	var anthropicStream cursorAnthropicStream
 	full := ""
 	firstByte := time.Duration(0)
 	wroteHeader := false
@@ -279,14 +282,18 @@ func (s *Server) forwardCursorAgent(
 			_, _ = w.Write(cursorAnthropicStart(msgID, modelID))
 		}
 	}
-	writeStream := func(chunk string) {
+	writeStream := func(chunk, kind string) {
 		if !streaming || chunk == "" || responseTransformErr != nil {
 			return
 		}
 		ensureStream()
-		payload := cursorOpenAIChunk(msgID, modelID, chunk, "", nil)
+		var payload []byte
 		if format == "anthropic" {
-			payload = cursorAnthropicDelta(chunk)
+			payload = anthropicStream.delta(chunk, kind)
+		} else if kind == "thinking" {
+			payload = cursorOpenAIChunk(msgID, modelID, "", chunk, "", nil)
+		} else {
+			payload = cursorOpenAIChunk(msgID, modelID, chunk, "", "", nil)
 		}
 		if translatedClient != "" {
 			responseTransformErr = writeCursorTranslatedStream(
@@ -311,6 +318,17 @@ func (s *Server) forwardCursorAgent(
 		flush()
 	}
 
+	appendContent := func(chunk, kind string) {
+		if streaming || format != "anthropic" || chunk == "" {
+			return
+		}
+		if last := len(content) - 1; last >= 0 && content[last]["type"] == kind {
+			content[last][kind] = content[last][kind].(string) + chunk
+		} else {
+			content = append(content, map[string]any{"type": kind, kind: chunk})
+		}
+	}
+
 	var runErr error
 	var usage *cursorauth.Usage
 	var turnUsage *cursorauth.Usage
@@ -321,7 +339,7 @@ func (s *Server) forwardCursorAgent(
 			_, _ = debugCapture.respBuf.Write(event.RawResponse)
 			_, _ = debugCapture.respBuf.Write([]byte("\n"))
 		}
-		if firstByte == 0 && (event.Delta != "" || event.Text != "" || event.ToolCall != nil || (event.Done && event.Err == nil)) {
+		if firstByte == 0 && (event.Delta != "" || event.ThinkingDelta != "" || event.Text != "" || event.ToolCall != nil || (event.Done && event.Err == nil)) {
 			firstByte = time.Since(started)
 			timeoutCtx.stopFirstByteTimer()
 			if s.activeRequests != nil {
@@ -335,12 +353,17 @@ func (s *Server) forwardCursorAgent(
 			out.WriteString(event.Delta)
 			full = out.String()
 		}
+		if !streaming {
+			thinking.WriteString(event.ThinkingDelta)
+		}
+		appendContent(event.ThinkingDelta, "thinking")
+		textDelta := event.Delta
+		if textDelta == "" && strings.HasPrefix(full, previousFull) {
+			textDelta = full[len(previousFull):]
+		}
+		appendContent(textDelta, "text")
 		if s.activeRequests != nil {
-			received := len(event.Delta)
-			if received == 0 && event.Text != "" && strings.HasPrefix(event.Text, previousFull) {
-				received = len(event.Text) - len(previousFull)
-			}
-			s.activeRequests.AddBytes(reqCtx.activeReqID, int64(received))
+			s.activeRequests.AddBytes(reqCtx.activeReqID, int64(len(textDelta)+len(event.ThinkingDelta)))
 		}
 		if event.Err != nil {
 			runErr = event.Err
@@ -376,8 +399,11 @@ func (s *Server) forwardCursorAgent(
 			timeoutCtx.stopFirstByteTimer()
 			writePing()
 		}
+		if streaming && event.ThinkingDelta != "" && responseTransformErr == nil {
+			writeStream(event.ThinkingDelta, "thinking")
+		}
 		if streaming && event.Delta != "" && responseTransformErr == nil {
-			writeStream(event.Delta)
+			writeStream(event.Delta, "text")
 			streamedPlain += len(event.Delta)
 		}
 		if responseTransformErr != nil {
@@ -457,13 +483,13 @@ func (s *Server) forwardCursorAgent(
 		if format == "anthropic" {
 			ensureStream()
 			if streamedPlain == 0 && plain != "" {
-				writeStream(plain)
+				writeStream(plain, "text")
 			}
-			_, _ = w.Write(cursorAnthropicStreamFinish(calls, usage))
+			_, _ = w.Write(anthropicStream.finish(calls, usage))
 		} else {
 			ensureStream()
 			if len(plain) > streamedPlain {
-				writeStream(plain[streamedPlain:])
+				writeStream(plain[streamedPlain:], "text")
 				streamedPlain = len(plain)
 			}
 			finish := cursorOpenAIFinish(msgID, modelID, plain, calls, streamedPlain > 0, usage)
@@ -490,9 +516,9 @@ func (s *Server) forwardCursorAgent(
 		header = w.Header()
 	} else {
 		if format == "anthropic" {
-			responseBody = cursorAnthropicMessage(msgID, modelID, plain, calls, usage)
+			responseBody = cursorAnthropicMessage(msgID, modelID, content, calls, usage)
 		} else {
-			responseBody = cursorOpenAIMessage(msgID, modelID, plain, calls, usage)
+			responseBody = cursorOpenAIMessage(msgID, modelID, plain, thinking.String(), calls, usage)
 		}
 		if translatedClient != "" {
 			responseBody, responseTransformErr = s.protocolRegistry.TranslateResponseNonStream(
@@ -613,6 +639,12 @@ func cursorErrorResult(cfg *model.Config, status int, message string, action coo
 	}
 }
 
+/**
+ * @brief 开始 Anthropic 消息，内容块等到首个正文或思考增量时创建。
+ * @param id 消息标识。
+ * @param modelID 上游模型标识。
+ * @return message_start SSE。
+ */
 func cursorAnthropicStart(id, modelID string) []byte {
 	start, _ := json.Marshal(map[string]any{
 		"type": "message_start",
@@ -622,20 +654,56 @@ func cursorAnthropicStart(id, modelID string) []byte {
 			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},
 	})
-	block, _ := json.Marshal(map[string]any{
-		"type": "content_block_start", "index": 0,
-		"content_block": map[string]any{"type": "text", "text": ""},
-	})
-	return []byte("event: message_start\ndata: " + string(start) + "\n\n" +
-		"event: content_block_start\ndata: " + string(block) + "\n\n")
+	return []byte("event: message_start\ndata: " + string(start) + "\n\n")
 }
 
-func cursorAnthropicDelta(text string) []byte {
+/**
+ * @brief 跟踪 Cursor Anthropic 流当前内容块，按上游顺序切换思考与正文。
+ */
+type cursorAnthropicStream struct {
+	index int    ///< 当前内容块或下一个待创建块的索引。
+	kind  string ///< 当前打开块的类型；空字符串表示没有打开的块。
+}
+
+/**
+ * @brief 结束当前块并推进索引；尚未打开内容块时不输出事件。
+ * @return 当前块的停止事件；没有打开的块时为 nil。
+ * @note 修改流的块索引与类型。
+ */
+func (s *cursorAnthropicStream) closeBlock() []byte {
+	if s.kind == "" {
+		return nil
+	}
+	payload, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": s.index})
+	s.index++
+	s.kind = ""
+	return []byte("event: content_block_stop\ndata: " + string(payload) + "\n\n")
+}
+
+/**
+ * @brief 按内容类型创建或切换块，并输出增量；不为 SDK 未提供的思考签名生成占位值。
+ * @param text 非空内容增量。
+ * @param kind 内容类型，仅为 text 或 thinking。
+ * @return 顺序排列的块边界与增量 SSE。
+ * @note 修改流的块索引与类型。
+ */
+func (s *cursorAnthropicStream) delta(text, kind string) []byte {
+	var b bytes.Buffer
+	if s.kind != kind {
+		b.Write(s.closeBlock())
+		start, _ := json.Marshal(map[string]any{
+			"type": "content_block_start", "index": s.index,
+			"content_block": map[string]any{"type": kind, kind: ""},
+		})
+		b.WriteString("event: content_block_start\ndata: " + string(start) + "\n\n")
+		s.kind = kind
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"type": "content_block_delta", "index": 0,
-		"delta": map[string]any{"type": "text_delta", "text": text},
+		"type": "content_block_delta", "index": s.index,
+		"delta": map[string]any{"type": kind + "_delta", kind: text},
 	})
-	return []byte("event: content_block_delta\ndata: " + string(payload) + "\n\n")
+	b.WriteString("event: content_block_delta\ndata: " + string(payload) + "\n\n")
+	return b.Bytes()
 }
 
 func cursorStreamPing(format string) []byte {
@@ -653,14 +721,19 @@ func normalizedCursorToolArguments(raw json.RawMessage) json.RawMessage {
 	return json.RawMessage(bytes.Clone(raw))
 }
 
-func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
+/**
+ * @brief 关闭当前内容块，输出工具调用及本轮终态。
+ * @param calls 当前轮工具调用，按接收顺序排列。
+ * @param usage 当前轮用量；nil 时输出零计数。
+ * @return 工具内容块及消息结束 SSE。
+ * @note 修改流索引，调用后当前轮已结束。
+ */
+func (s *cursorAnthropicStream) finish(calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
 	var b bytes.Buffer
-	stop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": 0})
-	b.WriteString("event: content_block_stop\ndata: ")
-	b.Write(stop)
-	b.WriteString("\n\n")
-	for i, call := range calls {
-		blockIndex := i + 1
+	b.Write(s.closeBlock())
+	for _, call := range calls {
+		blockIndex := s.index
+		s.index++
 		input := normalizedCursorToolArguments(call.Arguments)
 		start, _ := json.Marshal(map[string]any{
 			"type": "content_block_start", "index": blockIndex,
@@ -700,10 +773,18 @@ func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall, usage *cursorauth.
 	return b.Bytes()
 }
 
-func cursorAnthropicMessage(id, modelID, text string, calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
-	content := make([]any, 0, 1+len(calls))
-	if text != "" || len(calls) == 0 {
-		content = append(content, map[string]any{"type": "text", "text": text})
+/**
+ * @brief 生成保留思考与正文顺序的 Anthropic 非流响应。
+ * @param id 消息标识。
+ * @param modelID 上游模型标识。
+ * @param content 当前轮按顺序累计的思考与正文块。
+ * @param calls 当前轮工具调用。
+ * @param usage 当前轮用量；nil 时输出零计数。
+ * @return Anthropic 消息 JSON。
+ */
+func cursorAnthropicMessage(id, modelID string, content []map[string]any, calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
+	if len(content) == 0 && len(calls) == 0 {
+		content = append(content, map[string]any{"type": "text", "text": ""})
 	}
 	for _, call := range calls {
 		input := normalizedCursorToolArguments(call.Arguments)
@@ -723,11 +804,24 @@ func cursorAnthropicMessage(id, modelID, text string, calls []cursorauth.ToolCal
 	return body
 }
 
-func cursorOpenAIChunk(id, modelID, content, finish string, usage *cursorauth.Usage) []byte {
+/**
+ * @brief 编码独立的 OpenAI 正文与思考增量，以及可选终态和用量。
+ * @param id 消息标识。
+ * @param modelID 上游模型标识。
+ * @param content 正文增量；空字符串时省略。
+ * @param thinking 思考增量；空字符串时省略。
+ * @param finish 结束原因；空字符串时表示未结束。
+ * @param usage 当前轮用量；nil 时省略。
+ * @return OpenAI chat completion SSE。
+ */
+func cursorOpenAIChunk(id, modelID, content, thinking, finish string, usage *cursorauth.Usage) []byte {
 	delta := map[string]any{}
 	var finishReason any
 	if content != "" {
 		delta["content"] = content
+	}
+	if thinking != "" {
+		delta["reasoning_content"] = thinking
 	}
 	if finish != "" {
 		finishReason = finish
@@ -744,10 +838,20 @@ func cursorOpenAIChunk(id, modelID, content, finish string, usage *cursorauth.Us
 	return []byte("data: " + string(payload) + "\n\n")
 }
 
+/**
+ * @brief 输出尚未发送的正文、当前轮工具调用和 OpenAI 终态。
+ * @param id 消息标识。
+ * @param modelID 上游模型标识。
+ * @param text 当前轮正文。
+ * @param calls 当前轮工具调用。
+ * @param textAlreadyStreamed 正文是否已通过增量发送。
+ * @param usage 当前轮用量；nil 时省略。
+ * @return 不含 DONE 标记的 OpenAI 收尾 SSE。
+ */
 func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, textAlreadyStreamed bool, usage *cursorauth.Usage) []byte {
 	var b bytes.Buffer
 	if !textAlreadyStreamed && text != "" && len(calls) == 0 {
-		b.Write(cursorOpenAIChunk(id, modelID, text, "", nil))
+		b.Write(cursorOpenAIChunk(id, modelID, text, "", "", nil))
 	}
 	for i, call := range calls {
 		args := "{}"
@@ -773,12 +877,25 @@ func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, t
 	if len(calls) > 0 {
 		finish = "tool_calls"
 	}
-	b.Write(cursorOpenAIChunk(id, modelID, "", finish, usage))
+	b.Write(cursorOpenAIChunk(id, modelID, "", "", finish, usage))
 	return b.Bytes()
 }
 
-func cursorOpenAIMessage(id, modelID, text string, calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
+/**
+ * @brief 生成正文与思考分离的 OpenAI 非流响应。
+ * @param id 消息标识。
+ * @param modelID 上游模型标识。
+ * @param text 当前轮正文。
+ * @param thinking 当前轮思考；为空时省略 reasoning_content。
+ * @param calls 当前轮工具调用。
+ * @param usage 当前轮用量；nil 时输出零计数。
+ * @return OpenAI chat completion JSON。
+ */
+func cursorOpenAIMessage(id, modelID, text, thinking string, calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
 	message := map[string]any{"role": "assistant", "content": text}
+	if thinking != "" {
+		message["reasoning_content"] = thinking
+	}
 	finish := "stop"
 	if len(calls) > 0 {
 		finish = "tool_calls"

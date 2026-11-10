@@ -779,12 +779,18 @@ func TestForwardCursorAgentMapsAnthropicToolCalls(t *testing.T) {
 		t.Fatalf("tool input was re-encoded: got %s, want %s", got, want)
 	}
 }
+
+/**
+ * @brief Anthropic 工具收尾将非法参数编码为空对象，避免输出不可解析的工具参数。
+ * @param t 测试上下文。
+ */
 func TestCursorAnthropicStreamFinishEmitsEmptyObjectForInvalidToolArguments(t *testing.T) {
 	t.Parallel()
 	calls := []cursorauth.ToolCall{{
 		ID: "call_bash", Name: "bash", Arguments: json.RawMessage("this is not json"),
 	}}
-	raw := cursorAnthropicStreamFinish(calls, nil)
+	var stream cursorAnthropicStream
+	raw := stream.finish(calls, nil)
 
 	var partialJSON string
 	for event := range strings.SplitSeq(string(raw), "\n\n") {

@@ -72,7 +72,7 @@ func (h *nativeToolAgentHandler) CreateAgent(
 }
 
 /**
- * @brief 每轮报告用量并等待客户端工具结果，最后返回累计快照可补查的终态。
+ * @brief 每轮报告思考与用量并等待客户端工具结果，最后返回累计快照可补查的终态。
  * @param ctx 上游请求上下文。
  * @param request Send 请求。
  * @param stream SDK 响应流。
@@ -93,13 +93,18 @@ func (h *nativeToolAgentHandler) Send(
 	callbackURL, callbackToken := h.control.callback()
 	callback := sdkv1connect.NewSdkCustomToolCallbackServiceClient(http.DefaultClient, callbackURL)
 	var result map[string]any
-	for range max(1, h.turns) {
+	for turn := range max(1, h.turns) {
 		if h.turnDelay > 0 {
 			select {
 			case <-time.After(h.turnDelay):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		}
+		if err := stream.Send(nativeSDKMessage("thinking", map[string]any{
+			"agent_id": agentID, "run_id": runID, "text": fmt.Sprintf("Check %d.", turn+1), "type": "thinking",
+		})); err != nil {
+			return err
 		}
 		if h.turnUsage != nil {
 			if err := stream.Send(nativeSDKMessage("usage", map[string]any{
@@ -125,6 +130,11 @@ func (h *nativeToolAgentHandler) Send(
 		h.mu.Unlock()
 	}
 	text := fmt.Sprintf("%s:%v", agentID, result["value"])
+	if err := stream.Send(nativeSDKMessage("thinking", map[string]any{
+		"agent_id": agentID, "run_id": runID, "text": "Finish.", "type": "thinking",
+	})); err != nil {
+		return err
+	}
 	if err := stream.Send(nativeSDKMessage("assistant", map[string]any{
 		"agent_id": agentID, "run_id": runID,
 		"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
@@ -584,7 +594,7 @@ func resumeNativeToolCall(t *testing.T, runner *SDKRunner, credential *Credentia
 }
 
 /**
- * @brief 多轮活动会话超过空闲预算仍可恢复，每轮用量及终态差额只发出一次。
+ * @brief 多轮活动会话超过空闲预算仍可恢复，各轮思考、用量及终态差额只发出一次。
  * @param t 测试上下文。
  */
 func TestSDKRunnerToolTurnsPreserveLifetimeAndIncrementalUsage(t *testing.T) {
@@ -614,6 +624,7 @@ func TestSDKRunnerToolTurnsPreserveLifetimeAndIncrementalUsage(t *testing.T) {
 		var call ToolCall
 		var actual Usage
 		var final Event
+		var thinking []string
 		for event := range events {
 			if event.Err != nil {
 				cancel()
@@ -621,6 +632,13 @@ func TestSDKRunnerToolTurnsPreserveLifetimeAndIncrementalUsage(t *testing.T) {
 			}
 			if event.ToolCall != nil {
 				call = *event.ToolCall
+			}
+			if event.ThinkingDelta != "" {
+				thinking = append(thinking, event.ThinkingDelta)
+				if event.Delta != "" || event.Text != "" {
+					cancel()
+					t.Fatalf("turn %d thinking mixed with assistant text: %+v", turn, event)
+				}
 			}
 			if event.Usage != nil && !event.UsageEstimated {
 				actual.Add(event.Usage)
@@ -631,6 +649,13 @@ func TestSDKRunnerToolTurnsPreserveLifetimeAndIncrementalUsage(t *testing.T) {
 		}
 		cancel()
 		sum.Add(&actual)
+		wantThinking := "Finish."
+		if turn < 4 {
+			wantThinking = fmt.Sprintf("Check %d.", turn+1)
+		}
+		if !reflect.DeepEqual(thinking, []string{wantThinking}) {
+			t.Fatalf("turn %d thinking=%#v, want %q", turn, thinking, wantThinking)
+		}
 		if turn < 4 {
 			if call.ID == "" || actual != (Usage{InputTokens: 10, OutputTokens: 2, CacheReadTokens: 3, CacheWriteTokens: 1, TotalTokens: 16, ReasoningTokens: 1}) {
 				t.Fatalf("turn %d call=%+v usage=%+v", turn, call, actual)
