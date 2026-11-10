@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
@@ -1334,42 +1335,135 @@ func TestAdminModels_HandleFetchModels_AntigravityDefaultEndpoints(t *testing.T)
 	}
 }
 
+/**
+ * @brief 验证管理接口使用账号凭证发现全部分页模型，并在认证失效时刷新。
+ * @param t 测试上下文
+ */
 func TestAdminModels_HandleFetchModels_AnthropicOAuthIncludesCurrentModels(t *testing.T) {
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	server.channelCache = storage.NewChannelCache(store, time.Minute)
-
-	cfg, err := store.CreateConfig(context.Background(), &model.Config{
-		Name: "Anthropic models", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: "deliberately-not-json",
-		URLs:         model.ChannelURLs{{URL: "https://api.anthropic.com", Protocols: []string{"anthropic"}}},
-		ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
-	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
-	server.HandleFetchModels(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
-	if !resp.Success || resp.Data.Protocol != "anthropic" || resp.Data.Source != "predefined" {
-		t.Fatalf("unexpected response: %s", w.Body.String())
-	}
-	for _, name := range []string{"claude-fable-5-1", "claude-haiku-5-5"} {
-		found := false
-		for _, entry := range resp.Data.Models {
-			if entry.Model == name && entry.RedirectModel == name {
-				found = true
-				break
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refresh=%t", refresh), func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			server.channelCache = storage.NewChannelCache(store, time.Minute)
+			var requests, refreshes int
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/v1/oauth/token" {
+					refreshes++
+					return jsonResponse(r, `{"access_token":"new-token","refresh_token":"new-refresh","expires_in":3600,"token_type":"Bearer"}`)
+				}
+				if r.URL.String() != "https://anthropic-models.test/v1/models" && r.URL.String() != "https://anthropic-models.test/v1/models?after_id=claude-haiku-5-5" {
+					t.Errorf("unexpected URL %s", r.URL)
+				}
+				if r.Method != http.MethodGet || r.Header.Get("anthropic-version") != "2023-06-01" || r.Header.Get("anthropic-beta") != "oauth-2025-04-20" {
+					t.Errorf("unexpected model request: method=%s headers=%v", r.Method, r.Header)
+				}
+				if r.Header.Get("x-api-key") != "" {
+					t.Error("OAuth request must use Bearer authentication")
+				}
+				requests++
+				if refresh && r.Header.Get("Authorization") == "Bearer old-token" {
+					return jsonResponseStatus(r, http.StatusUnauthorized, `{}`)
+				}
+				wantToken := "Bearer old-token"
+				if refresh {
+					wantToken = "Bearer new-token"
+				}
+				if r.Header.Get("Authorization") != wantToken {
+					t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+				}
+				if r.URL.Query().Get("after_id") == "" {
+					return jsonResponse(r, `{"data":[{"id":"claude-haiku-5-5"}],"has_more":true,"last_id":"claude-haiku-5-5"}`)
+				}
+				return jsonResponse(r, `{"data":[{"id":"claude-fable-5-2"}],"has_more":false,"last_id":"claude-fable-5-2"}`)
+			})}
+			service := anthropicauth.NewService(server.client)
+			service.TokenURL = "https://anthropic-models.test/v1/oauth/token"
+			server.anthropicCredentials = newAnthropicCredentialManager(service, store, server.getClientForChannel, nil)
+			raw, err := (&anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: "old-token", RefreshToken: "old-refresh",
+				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			}).JSON()
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if !found {
-			t.Errorf("%s missing from fetched models: %#v", name, resp.Data.Models)
-		}
+			cfg, err := store.CreateConfig(context.Background(), &model.Config{
+				Name: "Anthropic models", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: string(raw),
+				URLs:         model.ChannelURLs{{URL: "https://anthropic-models.test", Protocols: []string{"anthropic"}}},
+				ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+			server.HandleFetchModels(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+			want := []model.ModelEntry{{Model: "claude-fable-5-2", RedirectModel: "claude-fable-5-2"}, {Model: "claude-haiku-5-5", RedirectModel: "claude-haiku-5-5"}}
+			if !resp.Success || resp.Data.Protocol != "anthropic" || resp.Data.Source != "api" || !reflect.DeepEqual(resp.Data.Models, want) {
+				t.Fatalf("unexpected response: %s", w.Body.String())
+			}
+			wantRequests, wantRefreshes := 2, 0
+			if refresh {
+				wantRequests, wantRefreshes = 3, 1
+			}
+			if requests != wantRequests || refreshes != wantRefreshes {
+				t.Fatalf("requests=%d refreshes=%d", requests, refreshes)
+			}
+			persisted, err := store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(persisted.ModelEntries, cfg.ModelEntries) {
+				t.Fatal("fetching models changed channel model configuration")
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证上游目录失败和无效分页直接报错，不以预设模型掩盖错误。
+ * @param t 测试上下文
+ */
+func TestAdminModels_AnthropicOAuthCatalogErrors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{}`},
+		{name: "malformed JSON", status: http.StatusOK, body: `{`},
+		{name: "missing cursor", status: http.StatusOK, body: `{"data":[{"id":"claude-fable-5-2"}],"has_more":true}`},
+		{name: "repeated cursor", status: http.StatusOK, body: `{"data":[{"id":"claude-fable-5-2"}],"has_more":true,"last_id":"same-cursor"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			calls := 0
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return jsonResponseStatus(r, test.status, test.body)
+			})}
+			server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store, server.getClientForChannel, nil)
+			raw, err := (&anthropicauth.Credential{Type: anthropicauth.ChannelType, AccessToken: "token", RefreshToken: "refresh", Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: string(raw), URLs: model.ChannelURLs{{URL: "https://anthropic-models.test", Protocols: []string{"anthropic"}}}}
+			resp, err := server.fetchModelsForChannel(context.Background(), cfg, "", modelFetchFirstAvailableKey)
+			if err == nil || resp != nil {
+				t.Fatalf("response=%+v error=%v", resp, err)
+			}
+			wantCalls := 1
+			if test.name == "repeated cursor" {
+				wantCalls = 2
+			}
+			if calls != wantCalls {
+				t.Fatalf("calls=%d want=%d", calls, wantCalls)
+			}
+		})
 	}
 }
 

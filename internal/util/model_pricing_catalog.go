@@ -198,6 +198,10 @@ var basePricing = map[string]ModelPricing{
 		CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		CacheWritePrice: 5.00, HasCacheWritePrice: true,
 	},
+	// https://platform.claude.com/docs/en/about-claude/pricing （2026-11-10）
+	"claude-fable-5-2": {
+		InputPrice: 8.00, OutputPrice: 40.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
+	},
 	"claude-fable-5-1": {
 		InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 0.25, HasCacheReadPrice: true,
 	},

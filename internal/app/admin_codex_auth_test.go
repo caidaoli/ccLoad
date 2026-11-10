@@ -2248,7 +2248,9 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		channel, err := baseStore.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic same", payload))
+		cfg := newAnthropicOAuthChannel("Anthropic same", payload)
+		cfg.ModelEntries = []model.ModelEntry{{Model: "custom-model", RedirectModel: "claude-fable-5-2"}}
+		channel, err := baseStore.CreateConfig(context.Background(), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2261,9 +2263,12 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		store := &concurrentOAuthWinnerStore{Store: baseStore, authType: model.AuthTypeAnthropicOAuth, winnerJSON: winnerJSON}
 		incoming := *current
 		incoming.AccessToken, incoming.RefreshToken = "new-at", "new-rt"
-		updated, created, err := createOrUpdateAnthropicChannel(context.Background(), store, &incoming, "")
+		updated, created, err := createOrUpdateAnthropicChannel(context.Background(), store, nil, anthropicauth.DefaultUpstreamURL, &incoming, "")
 		if err != nil || created || updated.ID != channel.ID {
 			t.Fatalf("reauthorization = (%#v, %t, %v)", updated, created, err)
+		}
+		if !reflect.DeepEqual(updated.ModelEntries, cfg.ModelEntries) {
+			t.Fatalf("reauthorization replaced models: %+v", updated.ModelEntries)
 		}
 		persisted, err := anthropicauth.ParseCredential([]byte(updated.OAuthCredential))
 		if err != nil || persisted.AccessToken != "new-at" || persisted.RefreshToken != "new-rt" ||
@@ -2359,7 +2364,7 @@ func TestOAuthReauthorizationReactivatesChannel(t *testing.T) {
 		login func(context.Context, storage.Store, string) (*model.Config, error)
 	}{
 		{name: "Anthropic", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
-			channel, _, err := createOrUpdateAnthropicChannel(ctx, store, &anthropicauth.Credential{
+			channel, _, err := createOrUpdateAnthropicChannel(ctx, store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, &anthropicauth.Credential{
 				Type: anthropicauth.ChannelType, AccessToken: token, RefreshToken: "rt",
 				Expired: expired, AccountUUID: "account", EmailAddress: "same@example.com",
 			}, "")
@@ -2610,7 +2615,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 func TestHandleImportAnthropicClaudeCredentialUsesEmailIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store}
+	server := &Server{store: store, client: anthropicCatalogTestClient(t)}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -2648,6 +2653,9 @@ func TestHandleImportAnthropicClaudeCredentialUsesEmailIdentity(t *testing.T) {
 		t.Fatalf("channels = (%#v, %v)", channels, err)
 	}
 	channel := channels[0]
+	if !channel.SupportsModel("claude-fable-5-2") {
+		t.Fatal("imported channel is missing the discovered model")
+	}
 	if channel.Name != "Anthropic-user@example.com" {
 		t.Fatalf("channel name = %q", channel.Name)
 	}
@@ -2685,6 +2693,184 @@ func TestHandleImportAnthropicClaudeCredentialUsesEmailIdentity(t *testing.T) {
 	}
 	if identity.DeviceID == "" || identity.SessionID == "" || identity.AccountUUID != "" {
 		t.Fatalf("wire identity = %#v", identity)
+	}
+}
+
+/**
+ * @brief 验证新导入 Anthropic 账号的目录不可用时不保存半成品渠道。
+ * @param t 测试上下文
+ */
+func TestHandleImportAnthropicRejectsUnavailableModelCatalog(t *testing.T) {
+	for _, catalog := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{}`},
+		{name: "empty", status: http.StatusOK, body: `{"data":[],"has_more":false}`},
+	} {
+		t.Run(catalog.name, func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			server := &Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				return jsonResponseStatus(request, catalog.status, catalog.body)
+			})}}
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("files", "claude.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = fmt.Fprintf(part, `{"type":"claude","access_token":"at-catalog-failed","refresh_token":"rt-catalog-failed","email":"catalog-failed@example.com","expired":%q}`, time.Now().UTC().Add(time.Hour).Format(time.RFC3339))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			response := importOAuthCredentialsViaJob(t, server, request)
+			result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+			if result.Data.Created != 0 || result.Data.Failed != 1 {
+				t.Fatalf("import summary = %#v", result.Data)
+			}
+			channels, err := store.ListConfigs(context.Background())
+			if err != nil || len(channels) != 0 {
+				t.Fatalf("failed import saved channels: %v, %v", channels, err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证导入凭证刷新回执的恢复、未决提交封锁及过期回执继续轮换。
+ * @param t 测试上下文
+ */
+func TestHandleImportAnthropicRetainsRefreshedCredentialAfterCatalogFailure(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"catalog retry", "pending refresh claim", "expired refresh receipt"} {
+		t.Run(scenario, func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			var refreshes, modelRequests atomic.Int32
+			var modelsAvailable atomic.Bool
+			modelsAvailable.Store(scenario != "catalog retry")
+			wantRefreshToken := "rt-original-file"
+			if scenario == "expired refresh receipt" {
+				wantRefreshToken = "rt-expired-receipt"
+			}
+			client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				switch request.URL.Path {
+				case "/token":
+					if refreshes.Add(1) > 1 {
+						return jsonResponseStatus(request, http.StatusBadRequest, `{"error":"invalid_grant"}`)
+					}
+					var payload map[string]string
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Errorf("decode refresh request: %v", err)
+					}
+					if payload["refresh_token"] != wantRefreshToken {
+						t.Errorf("refresh token = %q, want %q", payload["refresh_token"], wantRefreshToken)
+					}
+					return jsonResponse(request, `{"access_token":"at-rotated-file","refresh_token":"rt-rotated-file","expires_in":3600,"scope":"user:inference","account":{"uuid":"catalog-retry","email_address":"catalog-retry@example.com"}}`)
+				case "/v1/models":
+					modelRequests.Add(1)
+					if request.Header.Get("Authorization") != "Bearer at-rotated-file" {
+						t.Errorf("model Authorization = %q", request.Header.Get("Authorization"))
+					}
+					if !modelsAvailable.Load() {
+						return jsonResponseStatus(request, http.StatusServiceUnavailable, `{}`)
+					}
+					return jsonResponse(request, `{"data":[{"id":"claude-fable-5-2"}],"has_more":false}`)
+				default:
+					t.Errorf("unexpected URL %s", request.URL)
+					return jsonResponseStatus(request, http.StatusNotFound, `{}`)
+				}
+			})}
+			service := anthropicauth.NewService(client)
+			service.TokenURL = "https://anthropic-refresh.test/token"
+			server := &Server{store: store, client: client, anthropicService: service}
+			original := &anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: "at-original-file", RefreshToken: "rt-original-file",
+				EmailAddress: "catalog-retry@example.com", AccountUUID: "catalog-retry", Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+			}
+			if scenario != "catalog retry" {
+				key := codexauth.RefreshGrantKey(service.ClientID, original.RefreshToken)
+				claimed, err := store.RefreshClaim(context.Background(), key)
+				if err != nil || !claimed {
+					t.Fatalf("prepare refresh claim: %t, %v", claimed, err)
+				}
+				if scenario == "expired refresh receipt" {
+					recovered := *original
+					recovered.AccessToken, recovered.RefreshToken = "at-expired-receipt", "rt-expired-receipt"
+					raw, err := recovered.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := store.RefreshComplete(context.Background(), key, []byte(raw)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			originalFile, err := original.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			importFile := func() oauthCredentialImportSummary {
+				t.Helper()
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				part, err := writer.CreateFormFile("files", "claude.json")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(part, originalFile); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+				request.Header.Set("Content-Type", writer.FormDataContentType())
+				response := importOAuthCredentialsViaJob(t, server, request)
+				if response.Code != http.StatusOK {
+					t.Fatalf("import status=%d body=%s", response.Code, response.Body.String())
+				}
+				return mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes()).Data
+			}
+			result := importFile()
+			if scenario != "expired refresh receipt" {
+				if result.Created != 0 || result.Failed != 1 {
+					t.Fatalf("first import = %+v", result)
+				}
+				channels, err := store.ListConfigs(context.Background())
+				if err != nil || len(channels) != 0 {
+					t.Fatalf("failed import created channels: %+v, %v", channels, err)
+				}
+				if scenario == "pending refresh claim" {
+					if refreshes.Load() != 0 || modelRequests.Load() != 0 {
+						t.Fatalf("pending grant replayed: refreshes=%d model requests=%d", refreshes.Load(), modelRequests.Load())
+					}
+					return
+				}
+				modelsAvailable.Store(true)
+				result = importFile()
+			}
+			wantModelRequests := int32(1)
+			if scenario == "catalog retry" {
+				wantModelRequests = 2
+			}
+			if result.Created != 1 || result.Failed != 0 || refreshes.Load() != 1 || modelRequests.Load() != wantModelRequests {
+				t.Fatalf("import = %+v refreshes=%d model requests=%d", result, refreshes.Load(), modelRequests.Load())
+			}
+			channels, err := store.ListConfigs(context.Background())
+			if err != nil || len(channels) != 1 {
+				t.Fatalf("import channels: %+v, %v", channels, err)
+			}
+			credential, err := anthropicauth.ParseCredential([]byte(channels[0].OAuthCredential))
+			if err != nil || credential.AccessToken != "at-rotated-file" || credential.RefreshToken != "rt-rotated-file" || !channels[0].SupportsModel("claude-fable-5-2") {
+				t.Fatalf("import did not persist rotated credential and discovered model: %+v, %v", credential, err)
+			}
+		})
 	}
 }
 
@@ -2858,6 +3044,9 @@ func TestHandleImportOAuthCredentialsImportsTextAndAggregateFormats(t *testing.T
 	store := newCodexAuthTestStore(t)
 	codexClient := newAcceptedCodexImportClient()
 	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == "api.anthropic.com" && request.URL.Path == "/v1/models" {
+			return jsonResponse(request, `{"data":[{"id":"claude-fable-5-2"}],"has_more":false}`)
+		}
 		if request.Method == http.MethodGet && request.URL.String() == xaiauth.CLIBaseURL+"/billing" {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -7579,7 +7768,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "account-anthropic-quota", EmailAddress: "quota@example.com",
 				PlanType: test.initialPlan, ClaudeCodeTrialEndsAt: test.initialTrial, Scope: test.scope,
 			}
-			channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
+			channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, credential, "")
 			if err != nil {
 				t.Fatalf("createOrUpdateAnthropicChannel() error = %v", err)
 			}
@@ -7705,7 +7894,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				t.Fatalf("persisted reset credits = %#v", listedCredits)
 			}
 			if wantCredits {
-				passive := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{{Kind: "five_hour", UsedPercent: 80}}}
+				passive := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{{Kind: "five_hour", UsedPercent: 80, SampledAt: time.Now().Add(time.Minute)}}}
 				merged := latestOAuthUsage(list.Data[0].OAuthUsage, time.Now(), passive, time.Now().Add(time.Minute).Format(time.RFC3339Nano), nil)
 				if merged.AnthropicResetCredits == nil || merged.AnthropicResetCredits.AvailableCount != test.wantResetCount || merged.Windows[0].UsedPercent != 80 {
 					t.Fatalf("passive merged usage = %#v", merged)
@@ -7734,7 +7923,7 @@ func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:inference user:profile",
 		AccountUUID: "reset-account", EmailAddress: "reset@example.com",
 	}
-	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7828,7 +8017,7 @@ func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *t
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:inference",
 		AccountUUID: "reset-error-account", EmailAddress: "reset-error@example.com",
 	}
-	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7854,7 +8043,7 @@ func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *t
 	credential.Scope = "user:profile"
 	credential.AccountUUID = "reset-error-account-with-scope"
 	credential.EmailAddress = "reset-error-with-scope@example.com"
-	channel, _, err = createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
+	channel, _, err = createOrUpdateAnthropicChannel(context.Background(), store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7899,7 +8088,7 @@ func TestHandleAnthropicResetCreditsRefreshesOnceAfterUnauthorized(t *testing.T)
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:profile",
 		AccountUUID: "reset-retry-account", EmailAddress: "reset-retry@example.com",
 	}
-	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential, "")
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, credential, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7974,7 +8163,7 @@ func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 					Type: anthropicauth.ChannelType, AccessToken: "expired-anthropic-access", RefreshToken: "expired-anthropic-refresh",
 					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), AccountUUID: "expired-anthropic-account",
 				}
-				channel, _, err := createOrUpdateAnthropicChannel(context.Background(), server.store, credential, "")
+				channel, _, err := createOrUpdateAnthropicChannel(context.Background(), server.store, anthropicCatalogTestClient(t), anthropicauth.DefaultUpstreamURL, credential, "")
 				if err != nil {
 					t.Fatalf("create Anthropic channel: %v", err)
 				}
@@ -8446,10 +8635,29 @@ func TestHandleOAuthUsageRejectsUnsupportedChannel(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 为不涉及模型发现的账号测试提供可用的上游目录响应。
+ * @param t 测试上下文
+ * @return 仅接受模型目录查询的 HTTP 客户端
+ */
+func anthropicCatalogTestClient(t *testing.T) *http.Client {
+	t.Helper()
+	return &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/v1/models" {
+			t.Errorf("unexpected catalog URL %s", request.URL)
+		}
+		return jsonResponse(request, `{"data":[{"id":"claude-fable-5-2"}],"has_more":false}`)
+	})}
+}
+
 func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *testing.T) {
 	t.Parallel()
 	var exchangedState string
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"claude-fable-5-2"},{"id":"claude-opus-5-5"}],"has_more":false}`)
+			return
+		}
 		var payload map[string]string
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Errorf("decode token request: %v", err)
@@ -8462,7 +8670,7 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 	service.TokenURL = tokenServer.URL
 	_, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	manager := newAnthropicOAuthManager(service, store, nil)
+	manager := newAnthropicOAuthManager(service, store, tokenServer.URL, nil)
 	defer manager.close()
 
 	_, state, err := manager.start(oauthLoginOptions{})
@@ -8486,9 +8694,9 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 				t.Fatalf("status=%+v exchanged state=%q", status, exchangedState)
 			}
 			channel, getErr := store.GetConfig(context.Background(), status.ChannelID)
-			if getErr != nil || !channel.UsesAnthropicOAuth() || !channel.SupportsModel("claude-fable-5-1") ||
+			if getErr != nil || !channel.UsesAnthropicOAuth() || !channel.SupportsModel("claude-fable-5-2") ||
 				!channel.SupportsModel("claude-opus-5-5") ||
-				len(channel.ModelEntries) != len(anthropicOAuthDefaultModels) {
+				len(channel.ModelEntries) != 2 {
 				t.Fatalf("created channel=%+v err=%v", channel, getErr)
 			}
 			break
@@ -8503,15 +8711,72 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 	}
 }
 
+/**
+ * @brief 验证首次 OAuth 登录在实时目录失败时不创建渠道。
+ * @param t 测试上下文
+ */
+func TestAnthropicOAuthManagerCatalogFailureDoesNotCreateChannel(t *testing.T) {
+	t.Parallel()
+	for _, catalog := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{}`},
+		{name: "empty", status: http.StatusOK, body: `{"data":[],"has_more":false}`},
+	} {
+		t.Run(catalog.name, func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			service := anthropicauth.NewService(&http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path == "/v1/models" {
+					return jsonResponseStatus(request, catalog.status, catalog.body)
+				}
+				return jsonResponse(request, `{"access_token":"at-login","refresh_token":"rt-login","expires_in":3600,"account":{"uuid":"failed-models","email_address":"models-failed@example.com"}}`)
+			})})
+			manager := newAnthropicOAuthManager(service, store, anthropicauth.DefaultUpstreamURL, nil)
+			defer manager.close()
+			_, state, err := manager.start(oauthLoginOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.submitAuthorizationCode(state, "code#"+state); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				status, ok := manager.status(state)
+				if !ok {
+					t.Fatal("OAuth session disappeared")
+				}
+				if status.Status == "error" {
+					break
+				}
+				if status.Status == "complete" || time.Now().After(deadline) {
+					t.Fatalf("expected login failure: %+v", status)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			channels, err := store.ListConfigs(context.Background())
+			if err != nil || len(channels) != 0 {
+				t.Fatalf("failed login saved channels: %v, %v", channels, err)
+			}
+		})
+	}
+}
+
 func TestAnthropicOAuthLoginEgressesThroughSessionProxy(t *testing.T) {
 	t.Parallel()
 	const tokenResponse = `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","token_type":"Bearer","expires_in":3600,"scope":"user:inference","organization":{"uuid":"org-1"},"account":{"uuid":"account-1","email_address":"user@example.com"}}`
 	newProxy := func(hits *atomic.Int32) *httptest.Server {
 		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			hits.Add(1)
+			if request.Host == "anthropic-models.invalid" && request.URL.Path == "/v1/models" {
+				_, _ = io.WriteString(w, `{"data":[{"id":"claude-fable-5-2"}],"has_more":false}`)
+				return
+			}
 			if request.Host != "anthropic-token.invalid" {
 				t.Errorf("proxy forwarded host %q", request.Host)
 			}
-			hits.Add(1)
 			_, _ = io.WriteString(w, tokenResponse)
 		}))
 		t.Cleanup(proxy.Close)
@@ -8529,7 +8794,7 @@ func TestAnthropicOAuthLoginEgressesThroughSessionProxy(t *testing.T) {
 	service.TokenURL = "http://anthropic-token.invalid/v1/oauth/token"
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	server.anthropicOAuth = newAnthropicOAuthManager(service, store, nil)
+	server.anthropicOAuth = newAnthropicOAuthManager(service, store, "http://anthropic-models.invalid", nil)
 	defer server.anthropicOAuth.close()
 
 	start := func(body any) *httptest.ResponseRecorder {
@@ -8579,7 +8844,7 @@ func TestAnthropicOAuthLoginEgressesThroughSessionProxy(t *testing.T) {
 	}
 
 	created := login(map[string]string{"proxy_url": " " + firstProxy.URL + " "})
-	if created.ProxyURL != firstProxy.URL || firstHits.Load() != 1 || directHits.Load() != 0 {
+	if created.ProxyURL != firstProxy.URL || firstHits.Load() != 2 || directHits.Load() != 0 {
 		t.Fatalf("created proxy=%q proxy hits=%d direct hits=%d", created.ProxyURL, firstHits.Load(), directHits.Load())
 	}
 	kept := login(nil)
@@ -9899,5 +10164,116 @@ func TestCodexRefreshPendingCallerRecoversPersistedReceipt(t *testing.T) {
 	}](t, response.Body.Bytes())
 	if result.Data.Credential.AccessToken != "new-access" || result.Data.Credential.RefreshToken != "new-grant" {
 		t.Fatalf("recovered credential=%+v", result.Data.Credential)
+	}
+}
+
+/**
+ * @brief 管理端刷新新额度格式后展示 Fable，并在后续普通响应头采样中保留其窗口。
+ * @param t 测试上下文
+ */
+func TestHandleOAuthUsageAnthropicLimitsRetainsFableAfterPassiveSample(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().UTC().Add(7 * 24 * time.Hour).Truncate(time.Second)
+	resetText := reset.Format(time.RFC3339)
+	limits := fmt.Sprintf(`"limits":[
+		{"kind":"session","percent":1,"resets_at":%q},
+		{"kind":"weekly_all","percent":56,"resets_at":%q},
+		{"kind":"weekly_scoped","percent":0,"resets_at":%q,"scope":{"model":{"id":null,"display_name":"Fable"}},"is_active":false},
+		{"kind":"weekly_scoped","percent":20,"scope":null},
+		{"kind":"weekly_scoped","percent":20,"scope":{"model":{"display_name":"Other"}}}
+	]`, resetText, resetText, resetText)
+	legacy := fmt.Sprintf(`"five_hour":{"utilization":1,"resets_at":%q},"seven_day":{"utilization":56,"resets_at":%q},"seven_day_overage_included":{"utilization":0,"resets_at":%q}`, resetText, resetText, resetText)
+	for _, test := range []struct {
+		name            string
+		body            string
+		oldPassiveFable bool
+	}{
+		{name: "limits only", body: `{` + limits + `}`},
+		{name: "limits override legacy without duplicates", body: fmt.Sprintf(`{"five_hour":{"utilization":90},"seven_day":{"utilization":90},"seven_day_overage_included":{"utilization":90},%s}`, limits), oldPassiveFable: true},
+		{name: "invalid modern percentages preserve valid legacy", body: `{` + legacy + `,"limits":[{"kind":"session","percent":null},{"kind":"weekly_all","percent":-1},{"kind":"weekly_scoped","percent":101,"scope":{"model":{"display_name":"Fable"}}}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			credential := &anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: "limits-access", RefreshToken: "limits-refresh",
+				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "limits-account", PlanType: "Pro",
+			}
+			payload, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-limits", payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				body := `{}`
+				if request.URL.Path == "/api/oauth/usage" {
+					body = test.body
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})}
+			server.anthropicCredentials = newAnthropicCredentialManager(
+				anthropicauth.NewService(server.client), store,
+				func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+			)
+			if test.oldPassiveFable {
+				older := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+				older.Header.Set(anthropicRateLimit7dOIUsage, "0.75")
+				older.Header.Set(anthropicRateLimit7dOIReset, strconv.FormatInt(reset.Unix(), 10))
+				server.persistDetectionAnthropicPassiveUsage(context.Background(), channel, older)
+			}
+			path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
+			c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+			server.HandleOAuthUsage(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+			}
+			usage := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes()).Data
+			if len(usage.Windows) != 3 {
+				t.Fatalf("expected three distinct windows, got %#v", usage.Windows)
+			}
+			want := map[string]float64{"|five_hour": 1, "|seven_day": 56, "claude fable|seven_day_fable": 0}
+			for _, window := range usage.Windows {
+				key := oauthcost.Key(window.LimitName, window.Kind)
+				used, ok := want[key]
+				if !ok || window.UsedPercent != used || window.RemainingPercent != 100-used || window.ResetAt != reset.Unix() {
+					t.Fatalf("unexpected window %s: %#v", key, window)
+				}
+			}
+			persisted, err := store.GetConfig(context.Background(), channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fable := oauthcost.Find(stored.QuotaCostUsage, "claude fable|seven_day_fable")
+			if fable == nil || fable.Family != oauthcost.FamilyFable || fable.ResetAt != reset.Unix() {
+				t.Fatalf("Fable ledger identity missing: %#v", fable)
+			}
+
+			passive := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+			passive.Header.Set(anthropicRateLimit5hUtilization, "0.12")
+			passive.Header.Set(anthropicRateLimit5hReset, strconv.FormatInt(reset.Unix(), 10))
+			passive.Header.Set(anthropicRateLimit7dUtilization, "0.57")
+			passive.Header.Set(anthropicRateLimit7dReset, strconv.FormatInt(reset.Unix(), 10))
+			server.persistDetectionAnthropicPassiveUsage(context.Background(), channel, passive)
+			listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(listContext)
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+			if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil || len(list.Data[0].OAuthUsage.Windows) != 3 {
+				t.Fatalf("passive sample removed Fable: %#v", list.Data)
+			}
+			want["|five_hour"], want["|seven_day"] = 12, 57
+			for _, window := range list.Data[0].OAuthUsage.Windows {
+				if math.Abs(window.UsedPercent-want[oauthcost.Key(window.LimitName, window.Kind)]) > 1e-9 {
+					t.Fatalf("incorrect merged window: %#v", window)
+				}
+			}
+		})
 	}
 }

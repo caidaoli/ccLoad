@@ -136,11 +136,29 @@ type anthropicUsageRawWindow struct {
 	ResetsAt    string   `json:"resets_at"`
 }
 
+/**
+ * @brief Anthropic 新额度响应中的单个使用窗口；模型作用域为空时表示共享额度。
+ */
+type anthropicUsageLimit struct {
+	Kind     string   `json:"kind"`      ///< session、weekly_all 或 weekly_scoped
+	Percent  *float64 `json:"percent"`   ///< 已使用百分比；nil 表示未提供用量
+	ResetsAt string   `json:"resets_at"` ///< 上游报告的重置时间
+	Scope    *struct {
+		Model *struct {
+			DisplayName string `json:"display_name"` ///< 上游模型族名称
+		} `json:"model"` ///< 模型族范围；nil 表示没有模型范围
+	} `json:"scope"` ///< 额度作用域；nil 表示共享窗口
+}
+
+/**
+ * @brief Anthropic OAuth 额度响应；同时接收旧窗口字段和新的 limits 列表。
+ */
 type anthropicUsagePayload struct {
 	FiveHour                *anthropicUsageRawWindow `json:"five_hour"`
 	SevenDay                *anthropicUsageRawWindow `json:"seven_day"`
 	SevenDaySonnet          *anthropicUsageRawWindow `json:"seven_day_sonnet"`
 	SevenDayOverageIncluded *anthropicUsageRawWindow `json:"seven_day_overage_included"`
+	Limits                  []anthropicUsageLimit    `json:"limits"` ///< 新接口的额度窗口
 }
 
 type anthropicProfileSubject struct {
@@ -523,18 +541,48 @@ func appendAnthropicUsageWindow(
 	})
 }
 
+/**
+ * @brief 将 Anthropic 新旧额度响应归一为稳定的窗口身份，新 limits 中的有效用量优先。
+ * @param payload 上游解码后的额度响应
+ * @return 可供展示和成本账本对账的额度窗口
+ * @return 响应为空或没有有效额度窗口时返回错误
+ */
 func normalizeAnthropicUsage(payload *anthropicUsagePayload) (*oauthUsageSummary, error) {
 	if payload == nil {
 		return nil, errors.New("usage: Anthropic response is invalid")
+	}
+	fiveHour, sevenDay := payload.FiveHour, payload.SevenDay
+	sonnet, fable := payload.SevenDaySonnet, payload.SevenDayOverageIncluded
+	for _, limit := range payload.Limits {
+		if limit.Percent == nil || !validOAuthUsedPercent(*limit.Percent) {
+			continue
+		}
+		window := &anthropicUsageRawWindow{Utilization: limit.Percent, ResetsAt: limit.ResetsAt}
+		switch limit.Kind {
+		case "session":
+			fiveHour = window
+		case "weekly_all":
+			sevenDay = window
+		case "weekly_scoped":
+			if limit.Scope == nil || limit.Scope.Model == nil {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(limit.Scope.Model.DisplayName)) {
+			case "sonnet":
+				sonnet = window
+			case "fable":
+				fable = window
+			}
+		}
 	}
 	summary := &oauthUsageSummary{
 		Provider: anthropicauth.ChannelType,
 		Windows:  make([]oauthUsageWindow, 0, 4),
 	}
-	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "", "five_hour", 5*60*60, payload.FiveHour)
-	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "", "seven_day", weeklyUsageWindowSeconds, payload.SevenDay)
-	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "Claude Sonnet", "seven_day_sonnet", weeklyUsageWindowSeconds, payload.SevenDaySonnet)
-	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "Claude Fable", "seven_day_fable", weeklyUsageWindowSeconds, payload.SevenDayOverageIncluded)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "", "five_hour", 5*60*60, fiveHour)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "", "seven_day", weeklyUsageWindowSeconds, sevenDay)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "Claude Sonnet", "seven_day_sonnet", weeklyUsageWindowSeconds, sonnet)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "Claude Fable", "seven_day_fable", weeklyUsageWindowSeconds, fable)
 	if len(summary.Windows) == 0 {
 		return nil, errors.New("usage: Anthropic response has no rate limit windows")
 	}
@@ -1819,6 +1867,15 @@ func persistedOAuthUsage(raw json.RawMessage, provider string) (*oauthUsageSumma
 	return &snapshot.Summary, sampledAt, requestedAt
 }
 
+/**
+ * @brief 选择最新额度采样；Anthropic 被动响应头未包含的主动窗口继续保留。
+ * @param active 最近一次主动查询结果
+ * @param activeSampledAt 主动采样时间
+ * @param passive 最近一次被动额度采样
+ * @param passiveSampledAt RFC3339Nano 格式的被动采样时间
+ * @param quotaUsage 已持久化的成本窗口，用于 Codex 周期合并
+ * @return 可展示的额度摘要；没有任何采样时返回 nil
+ */
 func latestOAuthUsage(
 	active *oauthUsageSummary,
 	activeSampledAt time.Time,
@@ -1838,6 +1895,26 @@ func latestOAuthUsage(
 			return mergeLatestCodexOAuthUsage(active, activeSampledAt, passive, passiveTime, quotaUsage)
 		}
 		merged := *passive
+		if active.Provider == anthropicauth.ChannelType {
+			merged.Windows = slices.Clone(active.Windows)
+			for _, window := range passive.Windows {
+				key := oauthcost.Key(window.LimitName, window.Kind)
+				index := slices.IndexFunc(merged.Windows, func(candidate oauthUsageWindow) bool {
+					return oauthcost.Key(candidate.LimitName, candidate.Kind) == key
+				})
+				if index < 0 {
+					merged.Windows = append(merged.Windows, window)
+					continue
+				}
+				sampledAt := merged.Windows[index].SampledAt
+				if sampledAt.IsZero() {
+					sampledAt = activeSampledAt
+				}
+				if window.SampledAt.After(sampledAt) {
+					merged.Windows[index] = window
+				}
+			}
+		}
 		merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
 		merged.AnthropicResetCredits = active.AnthropicResetCredits
 		return &merged

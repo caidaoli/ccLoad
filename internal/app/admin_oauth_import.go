@@ -20,6 +20,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 
@@ -622,12 +623,7 @@ func (s *Server) prepareOAuthCredentialImportFile(
 				prepared.Result.Status, prepared.Result.Error = "failed", "Anthropic credential refresh is unavailable"
 				return prepared
 			}
-			refreshed, refreshErr := s.anthropicService.Refresh(ctx, credential.RefreshToken)
-			if refreshErr != nil {
-				prepared.Result.Status, prepared.Result.Error = "failed", refreshErr.Error()
-				return prepared
-			}
-			credential, err = credential.MergeRefresh(refreshed)
+			credential, err = refreshImportedAnthropicCredential(ctx, s.store, s.anthropicService, credential)
 			if err != nil {
 				prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
 				return prepared
@@ -640,6 +636,15 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		}
 		prepared.ChannelName = baseName
 		prepared.Config = newAnthropicOAuthChannel(prepared.ChannelName, credentialJSON)
+		prepared.Config.ProxyURL = file.ProxyURL
+		runtimeCfg := s.withOAuthBaseURLOverride(prepared.Config)
+		models, err := requestAnthropicModels(ctx, s.getClientForChannel(runtimeCfg), runtimeCfg.URLs[0].RuntimeURL(), credential.AccessToken)
+		if err != nil {
+			prepared.Config = nil
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.Config.ModelEntries = models
 	case vertexauth.ChannelType:
 		credential, err := vertexauth.ParseCredential(file.Raw)
 		if err != nil {
@@ -670,6 +675,72 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		prepared.Config.ProxyURL = file.ProxyURL
 	}
 	return prepared
+}
+
+/**
+ * @brief 恢复或持久化导入时的一次性 Anthropic 凭证轮换，避免后续模型查询失败丢失新凭证。
+ * @param ctx 导入上下文
+ * @param store 权威刷新回执存储
+ * @param service Anthropic 认证服务
+ * @param credential 导入文件中的过期凭证
+ * @return 可用于后续模型查询的已刷新凭证
+ * @return 刷新、回执读写失败或已提交但无回执时返回错误；不重放已提交的 refresh token
+ * @note 回执按 OAuth client ID 和 refresh token 指纹隔离；成功轮换后即使导入取消也尝试保存回执。
+ */
+func refreshImportedAnthropicCredential(ctx context.Context, store storage.Store, service *anthropicauth.Service, credential *anthropicauth.Credential) (*anthropicauth.Credential, error) {
+	seen := make(map[string]bool)
+	for {
+		key := codexauth.RefreshGrantKey(service.ClientID, credential.RefreshToken)
+		if seen[key] {
+			return nil, errors.New("anthropic refresh receipt cycle; sign in again")
+		}
+		receipt, exists, err := store.RefreshRead(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("read Anthropic import refresh receipt: %w", err)
+		}
+		if exists {
+			if len(receipt) == 0 {
+				return nil, errors.New("anthropic refresh outcome unknown; recover refreshed credentials or sign in again")
+			}
+			recovered, err := anthropicauth.ParseCredential(receipt)
+			if err != nil {
+				return nil, fmt.Errorf("parse Anthropic import refresh receipt: %w", err)
+			}
+			needsRefresh, err := recovered.NeedsRefresh(time.Now(), anthropicauth.CredentialRefreshLead)
+			if err != nil || !needsRefresh {
+				return recovered, err
+			}
+			seen[key] = true
+			credential = recovered
+			continue
+		}
+		claimed, err := store.RefreshClaim(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("claim Anthropic import refresh: %w", err)
+		}
+		if !claimed {
+			continue
+		}
+		refreshed, err := service.Refresh(ctx, credential.RefreshToken)
+		if err != nil {
+			return nil, err
+		}
+		merged, err := credential.MergeRefresh(refreshed)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := merged.JSON()
+		if err != nil {
+			return nil, err
+		}
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = store.RefreshComplete(persistCtx, key, []byte(raw))
+		if err != nil {
+			return nil, fmt.Errorf("persist Anthropic import refresh receipt: %w", err)
+		}
+		return merged, nil
+	}
 }
 
 func (s *Server) commitPreparedOAuthCredentialImport(

@@ -430,7 +430,8 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		s.anthropicService, store, s.getClientForChannel, func(int64) { s.InvalidateChannelListCache() },
 	)
 	s.anthropicCredentials.refreshTracker = s.oauthCredentialRefreshes
-	s.anthropicOAuth = newAnthropicOAuthManager(s.anthropicService, store, func(channelID int64) {
+	anthropicModelBaseURL := s.withOAuthBaseURLOverride(newAnthropicOAuthChannel("", "")).URLs[0].RuntimeURL()
+	s.anthropicOAuth = newAnthropicOAuthManager(s.anthropicService, store, anthropicModelBaseURL, func(channelID int64) {
 		s.anthropicCredentials.invalidate(channelID)
 		s.invalidateCooldownCache()
 		s.InvalidateChannelListCache()

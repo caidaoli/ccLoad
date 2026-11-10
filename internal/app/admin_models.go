@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
@@ -940,7 +941,7 @@ func (s *Server) fetchModelsForChannel(
 		return sortOAuthFetchModels(fetchXAIOAuthModels(cfg, overrideProtocol))
 	}
 	if cfg.UsesAnthropicOAuth() {
-		return sortOAuthFetchModels(fetchAnthropicOAuthModels(cfg, overrideProtocol))
+		return sortOAuthFetchModels(s.fetchAnthropicOAuthModels(ctx, cfg, overrideProtocol))
 	}
 	if cfg.UsesZAIOAuth() {
 		return sortOAuthFetchModels(s.fetchZAIOAuthModels(ctx, cfg, overrideProtocol))
@@ -1228,31 +1229,112 @@ func (s *Server) fetchCursorOAuthModels(
 	}, nil
 }
 
-func fetchAnthropicOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
-	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
-	if overrideProtocol != "" {
-		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
-			return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
-		}
-		if util.NormalizeProtocol(overrideProtocol) != util.ProtocolAnthropic {
-			return nil, fmt.Errorf("模型发现: Anthropic OAuth 仅支持 anthropic 协议")
-		}
+/**
+ * @brief 使用渠道 OAuth 凭证获取完整的 Anthropic 模型目录。
+ * @param ctx 请求上下文；取消时停止模型分页和凭证刷新等待
+ * @param cfg 渠道配置，包含账号凭证、上游地址与代理
+ * @param overrideProtocol 可选上游协议，仅接受 Anthropic 协议
+ * @return 上游模型目录，模型名同时作为默认重定向目标
+ * @return 协议不支持、凭证刷新失败、上游请求失败或分页响应无效时返回错误
+ * @note 凭证过期或首次收到 401 时复用凭证管理器刷新并持久化；请求失败不回退静态目录。
+ */
+func (s *Server) fetchAnthropicOAuthModels(ctx context.Context, cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
+	if overrideProtocol != "" && util.NormalizeProtocol(overrideProtocol) != util.ProtocolAnthropic {
+		return nil, fmt.Errorf("模型发现: Anthropic OAuth 仅支持 anthropic 协议")
 	}
-	models := make([]model.ModelEntry, len(anthropicOAuthDefaultModels))
-	for i, name := range anthropicOAuthDefaultModels {
-		models[i] = model.ModelEntry{Model: name, RedirectModel: name}
+	if s.anthropicCredentials == nil {
+		return nil, errors.New("模型发现: Anthropic 凭证服务不可用")
 	}
-	channelURL := ""
+	credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
+	if err != nil {
+		return nil, fmt.Errorf("模型发现: 获取 Anthropic 凭证失败: %w", err)
+	}
+	channelURL := anthropicauth.DefaultUpstreamURL
 	if len(cfg.URLs) > 0 {
 		channelURL = cfg.URLs[0].RuntimeURL()
 	}
+	client := s.getClientForChannel(cfg)
+	models, err := requestAnthropicModels(ctx, client, channelURL, credential.AccessToken)
+	var statusErr *oauthUsageHTTPStatusError
+	if errors.As(err, &statusErr) && statusErr.statusCode == http.StatusUnauthorized {
+		credential, err = s.anthropicCredentials.credentialAfterUnauthorized(ctx, cfg, credential.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("模型发现: 刷新 Anthropic 凭证失败: %w", err)
+		}
+		models, err = requestAnthropicModels(ctx, client, channelURL, credential.AccessToken)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return &FetchModelsResponse{
-		Models: models, Protocol: util.ProtocolAnthropic, Source: "predefined",
+		Models: models, Protocol: util.ProtocolAnthropic, Source: "api",
 		Debug: &FetchModelsDebug{
 			NormalizedProtocol: util.ProtocolAnthropic,
 			Fetcher:            "anthropic_oauth_catalog", ChannelURL: channelURL,
 		},
 	}, nil
+}
+
+/**
+ * @brief 使用已取得的 OAuth 令牌读取完整 Anthropic 模型目录。
+ * @param ctx 请求上下文；取消时停止读取
+ * @param client 具有渠道代理与账号传输配置的 HTTP 客户端
+ * @param baseURL 渠道上游基础地址
+ * @param accessToken OAuth access token，不含 Bearer 前缀
+ * @return 完整模型目录，每项默认重定向到同名模型
+ * @return 上游请求失败、响应或分页游标无效、目录为空时返回错误
+ * @note 全部分页共用十秒请求预算；不刷新令牌、不保存渠道或回退静态目录。
+ */
+func requestAnthropicModels(ctx context.Context, client *http.Client, baseURL, accessToken string) ([]model.ModelEntry, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	endpoint := buildUpstreamURL(baseURL, "/v1/models", "")
+	models := make([]model.ModelEntry, 0)
+	cursor := ""
+	seenCursors := make(map[string]bool)
+	for {
+		req, err := newAnthropicOAuthMetadataRequest(requestCtx, endpoint, accessToken, true)
+		if err != nil {
+			return nil, fmt.Errorf("模型发现: 创建 Anthropic 请求失败: %w", err)
+		}
+		req.Header.Set("anthropic-version", "2023-06-01")
+		if cursor != "" {
+			query := req.URL.Query()
+			query.Set("after_id", cursor)
+			req.URL.RawQuery = query.Encode()
+		}
+		body, err := executeOAuthUsageRequest(client, req, "Anthropic models")
+		if err != nil {
+			return nil, fmt.Errorf("模型发现: 获取 Anthropic 模型目录失败: %w", err)
+		}
+		var page struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+			HasMore bool   `json:"has_more"`
+			LastID  string `json:"last_id"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("模型发现: 解析 Anthropic 模型目录失败: %w", err)
+		}
+		for _, entry := range page.Data {
+			if entry.ID != "" {
+				models = append(models, model.ModelEntry{Model: entry.ID, RedirectModel: entry.ID})
+			}
+		}
+		if !page.HasMore {
+			break
+		}
+		if page.LastID == "" || seenCursors[page.LastID] {
+			return nil, errors.New("模型发现: Anthropic 模型目录分页游标无效")
+		}
+		cursor = page.LastID
+		seenCursors[cursor] = true
+	}
+	if len(models) == 0 {
+		return nil, errors.New("模型发现: Anthropic 未返回任何模型")
+	}
+	return models, nil
 }
 
 func fetchXAIOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {

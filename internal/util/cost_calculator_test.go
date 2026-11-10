@@ -161,6 +161,36 @@ func TestCalculateCost_Fable51(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Fable 5.2 标准及 fast 价格，包括长上下文和两种缓存写入时长。
+ * @param t 测试上下文。
+ */
+func TestCalculateCost_Fable52(t *testing.T) {
+	for _, name := range []string{"claude-fable-5-2", "claude-fable-5-2-high"} {
+		for _, tier := range []string{"", "fast"} {
+			t.Run(name+"/"+tier, func(t *testing.T) {
+				multiplier := 1.0
+				if tier == "fast" {
+					multiplier = 2
+				}
+				got := CalculateStandardCostBreakdownWithPrice(name, tier, OpenAIRateCardAPI, nil, 250_000, 2_000, 4_000, 500, 250)
+				for _, component := range []struct {
+					got  float64
+					want float64
+				}{
+					{got.Input.Cost, 2}, {got.Output.Cost, 0.08},
+					{got.CacheRead.Cost, 0.0008}, {got.CacheWrite.Cost, 0.009},
+					{got.Total, 2.0898},
+				} {
+					if !floatEquals(component.got, component.want*multiplier, 1e-12) {
+						t.Fatalf("cost=%v, want %v; breakdown=%+v", component.got, component.want*multiplier, got)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestCalculateCost_Opus55(t *testing.T) {
 	for _, test := range []struct {
 		name                  string

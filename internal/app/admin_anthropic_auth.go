@@ -15,23 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var anthropicOAuthDefaultModels = []string{
-	"claude-fable-5-1",
-	"claude-fable-5",
-	"claude-opus-4-5-20251101",
-	"claude-opus-4-6",
-	"claude-opus-4-7",
-	"claude-opus-4-8",
-	"claude-opus-5",
-	"claude-opus-5-5",
-	"claude-sonnet-5-5",
-	"claude-sonnet-5",
-	"claude-sonnet-4-6",
-	"claude-sonnet-4-5-20250929",
-	"claude-haiku-5-5",
-	"claude-haiku-4-5-20251001",
-}
-
 type anthropicOAuthCodeRequest struct {
 	State string `json:"state"`
 	Code  string `json:"code"`
@@ -47,9 +30,18 @@ func (r *anthropicOAuthCodeRequest) Validate() error {
 	return nil
 }
 
+/**
+ * @brief 创建 Anthropic 登录管理器，新账号使用登录代理查询实时模型目录。
+ * @param service OAuth 认证服务
+ * @param store 渠道存储
+ * @param baseURL 应用全局覆盖后的模型上游基础地址
+ * @param invalidate 授权完成后的缓存失效回调
+ * @return 登录会话管理器
+ */
 func newAnthropicOAuthManager(
 	service *anthropicauth.Service,
 	store storage.Store,
+	baseURL string,
 	invalidate func(int64),
 ) *codexOAuthManager {
 	return &codexOAuthManager{
@@ -82,7 +74,7 @@ func newAnthropicOAuthManager(
 				if !ok || credential == nil {
 					return 0, errors.New("oauth: Anthropic exchange returned an invalid credential")
 				}
-				channel, _, err := createOrUpdateAnthropicChannel(ctx, store, credential, options.proxyURL)
+				channel, _, err := createOrUpdateAnthropicChannel(ctx, store, flowService.Client, baseURL, credential, options.proxyURL)
 				if err != nil {
 					return 0, err
 				}
@@ -93,9 +85,24 @@ func newAnthropicOAuthManager(
 	}
 }
 
+/**
+ * @brief 为新账号创建具有实时模型目录的渠道，或为同账号更新授权。
+ * @param ctx 请求上下文
+ * @param store 渠道存储
+ * @param client 登录会话使用的 HTTP 客户端，包含所选代理
+ * @param baseURL 应用全局覆盖后的上游基础地址
+ * @param credential 授权交换取得的账号凭证
+ * @param proxyURL 本次登录选择的代理地址
+ * @return 创建或更新后的渠道
+ * @return 新建渠道时返回 true，重新授权返回 false
+ * @return 模型目录查询、凭证编码或存储失败时返回错误；目录失败不会创建渠道
+ * @note 同账号重新授权保留已配置模型，不请求模型目录。
+ */
 func createOrUpdateAnthropicChannel(
 	ctx context.Context,
 	store storage.Store,
+	client *http.Client,
+	baseURL string,
 	credential *anthropicauth.Credential,
 	proxyURL string,
 ) (*model.Config, bool, error) {
@@ -145,7 +152,12 @@ func createOrUpdateAnthropicChannel(
 			return winner, false, reactivateErr
 		}
 	}
+	models, err := requestAnthropicModels(ctx, client, baseURL, credential.AccessToken)
+	if err != nil {
+		return nil, false, err
+	}
 	channel := newAnthropicOAuthChannel(uniqueAnthropicChannelName(configs, credential), credentialJSON)
+	channel.ModelEntries = models
 	channel.ProxyURL = proxyURL
 	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
@@ -154,12 +166,18 @@ func createOrUpdateAnthropicChannel(
 	return created, true, nil
 }
 
+/**
+ * @brief 构造 Anthropic OAuth 渠道基础配置，模型由调用方从上游目录填充。
+ * @param name 渠道名称
+ * @param credentialJSON 已校验的凭证 JSON
+ * @return 尚未持久化的渠道配置
+ */
 func newAnthropicOAuthChannel(name, credentialJSON string) *model.Config {
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON,
 		URLs:                  model.ChannelURLs{{URL: anthropicauth.DefaultUpstreamURL, Protocols: []string{"anthropic"}}},
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		Priority:              0, Enabled: true, CostMultiplier: 1, ModelEntries: oauthModelEntries(anthropicOAuthDefaultModels),
+		Priority:              0, Enabled: true, CostMultiplier: 1,
 	}
 }
 
