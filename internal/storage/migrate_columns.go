@@ -203,6 +203,11 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 	if err := ensureColumn(ctx, db, dialect, "logs", "usage_estimate", "TEXT NULL", "TEXT NULL"); err != nil {
 		return err
 	}
+	for _, column := range []string{"cache_30m_input_tokens", "cache_12h_input_tokens"} {
+		if err := ensureColumn(ctx, db, dialect, "logs", column, "BIGINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
 	switch dialect {
 	case DialectMySQL:
 		if err := ensureLogsMinuteBucketMySQL(ctx, db); err != nil {

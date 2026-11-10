@@ -229,11 +229,17 @@
     return 'image/png';
   }
 
+  /**
+   * @brief 构造图片来源，单图实际 MIME 和格式优先于批次格式
+   * @param image 上游图片数据或远程引用
+   * @param outputFormat 批次声明的输出格式
+   * @return 可显示的 HTTP(S) 或 data URL，无有效图片时为空
+   */
   function dataURLFromImage(image, outputFormat) {
     const remoteURL = safeRemoteImageURL(image?.url);
     if (remoteURL) return remoteURL;
     if (typeof image?.b64_json !== 'string' || !image.b64_json.trim()) return '';
-    return `data:${imageMIMEType(outputFormat, image?.mime_type)};base64,${image.b64_json.trim()}`;
+    return `data:${imageMIMEType(image.output_format || outputFormat, image?.mime_type)};base64,${image.b64_json.trim()}`;
   }
 
   function outputFormatFromMIMEType(value) {
@@ -555,6 +561,11 @@
     }
   }
 
+  /**
+   * @brief 渲染图片结果并按单图实际格式生成下载扩展名
+   * @param data 后台生图响应
+   * @note 替换当前结果列表与摘要
+   */
   function renderResults(data) {
     const container = element('imageGenerationResults');
     const summary = element('imageGenerationSummary');
@@ -564,7 +575,7 @@
     const outputFormat = data?.output_format || 'png';
 
     images.forEach((image, index) => {
-      const imageOutputFormat = outputFormatFromMIMEType(image?.mime_type) || outputFormat;
+      const imageOutputFormat = outputFormatFromMIMEType(image?.mime_type) || image.output_format || outputFormat;
       const source = dataURLFromImage(image, imageOutputFormat);
       const figure = root.document.createElement('figure');
       figure.className = 'image-test-result-card';

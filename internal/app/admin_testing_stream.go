@@ -936,6 +936,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
 		result["codex_has_credits"] = sr.usageParser.GetCodexHasCredits()
 		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
+		cache30m, cache12h := sr.usageParser.GetOpenAICacheBreakdown()
 		reasoningTokens := sr.usageParser.GetReasoningTokens()
 		if input+output+cacheRead+cacheCreation+reasoningTokens > 0 {
 			result["usage"] = map[string]any{
@@ -943,6 +944,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 				"reasoning_tokens":        reasoningTokens,
 				"cache_read_input_tokens": cacheRead, "cache_creation_input_tokens": cacheCreation,
 				"cache_5m_input_tokens": cache5m, "cache_1h_input_tokens": cache1h,
+				"cache_30m_input_tokens": cache30m, "cache_12h_input_tokens": cache12h,
 			}
 		}
 		if cost, ok := sr.costUSD(testReq); ok {

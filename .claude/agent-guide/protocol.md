@@ -32,7 +32,7 @@
 - Antigravity 转 Claude 将安全/过滤终止原因映射为 `refusal`，工具调用仍优先 `tool_use`；流尾部空 `finishReason` 不覆盖先前非空原因，但仍触发待发搜索内容的排空。`MALFORMED_FUNCTION_CALL` 与 Gemini 转 Claude 一致不映射为 `refusal`（Claude Code 会将其报为违规），非流仍由应用层转为错误。
 - Claude 会话中 system 消息的 `tool_addition` 转 Responses 为 `additional_tools`，转 Chat 合并工具声明；内联工具参与长名称缩短及响应反向映射。工具声明与文本提醒不能拆散待完成的调用/结果配对；不因此启用 Claude `tool_search`。
 - OpenAI Chat 转 Codex 时，`service_tier` 的 `fast`/`priority` 规范为 `priority`，保留 `ultrafast`，忽略其他值；匹配时忽略大小写与首尾空白。
-- Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。
+- Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。原生 Codex OAuth 的 HTTP/WS 共用 normalizer 也处理缺少调用引用的 `function_call_output/custom_tool_call_output`：能配对则补 call_id，否则保留文本与附件为 user 内容；显式 continuation 引用和 `codex_app` 委托输出不降级，不把 item id 当成未知远端调用引用。参照 CLIProxyAPI `05e668cf`。
 - Responses → Chat 保留 developer 角色、消息内容和相对位置；不降级为 user，无法表示附件的拒绝判定仍仅针对真实 user 回合。Claude → Responses 的长 MCP gateway 工具名保留可读的工具后缀并消除碰撞，声明、历史、tool_choice 与响应原名恢复使用一致映射。
 - 跨协议 `custom apply_patch` 转函数工具时，保留补丁语法并使用唯一字符串 `input` 参数；反向转换按原始获胜声明识别工具，普通同名 function 不升级为 custom。OpenAI Chat 嵌套 `custom` 声明与 tool_choice 转 Codex 时拍平为 Responses 形状；这类工具的调用以原生 `type:"custom"` tool_calls 和原始 input 返回，扁平声明保持函数包装。补丁正文的空白、转义和 Unicode 必须在历史回放、增量、done 与最终 output 中一致。
 - 上游补丁参数非法、身份冲突或流缺少源协议终态时，转换边界传播工具输入错误，不得伪造成功；已开始的 Responses 流最多发送一次 `response.failed`。EOF 时上游已有语义终态（如 OpenAI `finish_reason`）则先补终止事件，再检查转换状态；启用补丁转换且缺少语义终态的流不得用合成终态掩盖截断。传输错误、取消与上游错误事件保留原错误，不改判为工具参数错误。普通工具与同协议透传保持原契约。

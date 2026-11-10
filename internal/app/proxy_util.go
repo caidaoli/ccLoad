@@ -222,7 +222,7 @@ type upstreamWireAliases struct {
 }
 
 /**
- * @brief 上游转发结果，真实用量参与计费，估算用量仅供日志展示。
+ * @brief 一次上游尝试的响应、原始计费用量及诊断信息。
  */
 type fwResult struct {
 	zaiLocalPlanError   bool   ///< 本地资格拒绝，未请求推理上游，不能产生故障冷却。
@@ -247,6 +247,8 @@ type fwResult struct {
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
+	Cache30mInputTokens      int ///< OpenAI 30 分钟缓存写入。
+	Cache12hInputTokens      int ///< OpenAI 12 小时缓存写入。
 	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
 	ToolCostUSD              float64
 	ImageUsage               *util.ImageGenerationToolUsage
@@ -1349,6 +1351,8 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
 		entry.Cache5mInputTokens = res.Cache5mInputTokens
 		entry.Cache1hInputTokens = res.Cache1hInputTokens
+		entry.Cache30mInputTokens = res.Cache30mInputTokens
+		entry.Cache12hInputTokens = res.Cache12hInputTokens
 		entry.ServiceTier = res.ServiceTier
 
 		if billableResult(p.StatusCode, res) {
@@ -1406,7 +1410,7 @@ func computeRequestCostWithPrice(model string, serviceTier string, price *util.C
 		res.OutputTokens,
 		res.CacheReadInputTokens,
 		res.Cache5mInputTokens,
-		res.Cache1hInputTokens,
+		res.Cache1hInputTokens, res.Cache30mInputTokens, res.Cache12hInputTokens,
 	).Total + res.ToolCostUSD
 }
 

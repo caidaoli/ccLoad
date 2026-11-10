@@ -68,3 +68,36 @@ func TestHandleGetModelPricingReturnsSystemDefaults(t *testing.T) {
 		t.Fatalf("missing model status=%d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
+
+/**
+ * @brief 验证有效价格 API 保留双零高档价格，并可直接作为渠道价格保存。
+ * @param t 测试上下文。
+ */
+func TestHandleGetModelPricingPreservesFreeHighContextTTL(t *testing.T) {
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	if err := util.InstallCustomModelPricingJSON(`{"gpt-6-luna":{"input_price":1,"output_price":0,"input_price_high":0,"output_price_high":0,"cache_write_12h_price_high":2}}`); err != nil {
+		t.Fatal(err)
+	}
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=gpt-6-luna&effective=1", nil))
+	(&Server{}).HandleGetModelPricing(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	type payload struct {
+		Found   bool                  `json:"found"`
+		Pricing util.CustomModelPrice `json:"pricing"`
+	}
+	resp := mustParseAPIResponse[payload](t, w.Body.Bytes()).Data
+	price := &resp.Pricing
+	if !resp.Found || price.InputPriceHigh == nil || price.OutputPriceHigh == nil || *price.InputPriceHigh != 0 || *price.OutputPriceHigh != 0 || price.CacheWrite12hPriceHigh == nil || *price.CacheWrite12hPriceHigh != 2 {
+		t.Fatalf("explicit free high-context pricing lost: %+v", price)
+	}
+	if _, err := price.ModelPricing(); err != nil {
+		t.Fatalf("effective API pricing cannot be saved: %v", err)
+	}
+	before := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, nil, 0, 0, 0, 0, 0, 0, 1_000_000)
+	after := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, price, 0, 0, 0, 0, 0, 0, 1_000_000)
+	if before.Total != 4 || after.Total != before.Total {
+		t.Fatalf("effective API changed high-context TTL costs: before=%+v after=%+v", before, after)
+	}
+}

@@ -24,6 +24,23 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-10)
+
+Adapt `05e668cf2d3c58428c199e254147c92c19b45939` from the local checkout at
+`6db7d4b839d86c5b24e17bbe73bcd4db18ef1b1a`: normalize native Codex Responses
+tool outputs without a call reference. Pair them with pending calls where
+possible and preserve standalone output text and attachments as user content.
+Explicit continuation references and Codex app delegation outputs retain their
+existing semantics. The existing OAuth HTTP/WebSocket finalizer calls this
+normalizer; no executor or handler implementation is imported.
+
+The Gemini Omni entry in `19a0a8541fe173773d2c6eb9f68e678762145634` is not
+imported: Google's [model documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/omni-1-2-flash)
+lists Interactions support but no GenerateContent or Chat Completions support.
+Interactions remains outside ccLoad's conversion scope.
+
+The full snapshot baseline, provider provenance and license remain unchanged.
+
 ## Post-snapshot compatibility fixes (2026-11-08)
 
 These targeted fixes use the local CLIProxyAPI checkout at official `v8.0.60`,

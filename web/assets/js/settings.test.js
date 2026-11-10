@@ -772,8 +772,8 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
 }
 
 const customPricingFieldsForTest = [
-  'input_price', 'output_price', 'cache_read_price', 'cache_write_price',
-  'input_price_high', 'output_price_high', 'cache_read_price_high', 'cache_write_price_high'
+  'input_price', 'output_price', 'cache_read_price', 'cache_write_price', 'cache_write_12h_price',
+  'input_price_high', 'output_price_high', 'cache_read_price_high', 'cache_write_price_high', 'cache_write_12h_price_high'
 ];
 
 function saveRequests(page) {

@@ -50,6 +50,8 @@ type tokenLogEntry struct {
 	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
 	Cache5mInputTokens       int                         `json:"cache_5m_input_tokens"`
+	Cache30mInputTokens      int                         `json:"cache_30m_input_tokens"` ///< OpenAI 30 分钟缓存写入。
+	Cache12hInputTokens      int                         `json:"cache_12h_input_tokens"` ///< OpenAI 12 小时缓存写入。
 	Cache1hInputTokens       int                         `json:"cache_1h_input_tokens"`
 	Cost                     float64                     `json:"cost"`
 	EffectiveCost            float64                     `json:"effective_cost"`
@@ -137,7 +139,7 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 	billingModel := util.ResolveBillingModel(entry.ActualModel, entry.Model)
 	cache5mTokens := entry.Cache5mInputTokens
 	cache1hTokens := entry.Cache1hInputTokens
-	if cache5mTokens+cache1hTokens == 0 && entry.CacheCreationInputTokens > 0 {
+	if cache5mTokens+cache1hTokens+entry.Cache30mInputTokens+entry.Cache12hInputTokens == 0 && entry.CacheCreationInputTokens > 0 {
 		// 旧日志只有缓存创建总量；历史计费语义等同 5m 缓存创建。
 		cache5mTokens = entry.CacheCreationInputTokens
 	}
@@ -150,7 +152,7 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 		entry.OutputTokens,
 		entry.CacheReadInputTokens,
 		cache5mTokens,
-		cache1hTokens,
+		cache1hTokens, entry.Cache30mInputTokens, entry.Cache12hInputTokens,
 	)
 	return &breakdown
 }
@@ -222,6 +224,8 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			CacheCreationInputTokens: entry.CacheCreationInputTokens,
 			Cache5mInputTokens:       entry.Cache5mInputTokens,
 			Cache1hInputTokens:       entry.Cache1hInputTokens,
+			Cache30mInputTokens:      entry.Cache30mInputTokens,
+			Cache12hInputTokens:      entry.Cache12hInputTokens,
 			Cost:                     entry.Cost,
 			EffectiveCost:            entry.Cost * multiplier,
 			CostBreakdown:            buildLogCostBreakdown(entry, modelPrice),

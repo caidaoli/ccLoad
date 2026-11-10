@@ -2977,6 +2977,7 @@ func populateTestSSEUsageAndCost(
 func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
 	input, output, cacheRead, cacheCreation := parser.GetUsage()
 	cache5m, cache1h, _ := parser.GetCacheBreakdown()
+	cache30m, cache12h := parser.GetOpenAICacheBreakdown()
 	reasoningTokens := parser.GetReasoningTokens()
 	if input+output+cacheRead+cacheCreation+cache5m+cache1h+reasoningTokens == 0 {
 		return nil, false
@@ -2989,6 +2990,8 @@ func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
 		"cache_creation_input_tokens": cacheCreation,
 		"cache_5m_input_tokens":       cache5m,
 		"cache_1h_input_tokens":       cache1h,
+		"cache_30m_input_tokens":      cache30m,
+		"cache_12h_input_tokens":      cache12h,
 	}, true
 }
 
@@ -3039,6 +3042,8 @@ func populateCursorTestUsageAndCost(result map[string]any, testReq *testutil.Tes
 		"cache_creation_input_tokens": forwarded.CacheCreationInputTokens,
 		"cache_5m_input_tokens":       forwarded.Cache5mInputTokens,
 		"cache_1h_input_tokens":       forwarded.Cache1hInputTokens,
+		"cache_30m_input_tokens":      forwarded.Cache30mInputTokens,
+		"cache_12h_input_tokens":      forwarded.Cache12hInputTokens,
 	}
 	if forwarded.UsageEstimate != nil {
 		result["usage_estimate"] = forwarded.UsageEstimate
@@ -3060,6 +3065,7 @@ func populateCursorTestUsageAndCost(result map[string]any, testReq *testutil.Tes
 func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, requestedServiceTier string, parser usageParser) (float64, bool) {
 	input, output, cacheRead, cacheCreation := parser.GetUsage()
 	cache5m, cache1h, observedServiceTier := parser.GetCacheBreakdown()
+	cache30m, cache12h := parser.GetOpenAICacheBreakdown()
 	return channelTestCostFromUsage(testReq, actualModel, requestedServiceTier, &fwResult{
 		InputTokens:              input,
 		OutputTokens:             output,
@@ -3067,6 +3073,8 @@ func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, reque
 		CacheCreationInputTokens: cacheCreation,
 		Cache5mInputTokens:       cache5m,
 		Cache1hInputTokens:       cache1h,
+		Cache30mInputTokens:      cache30m,
+		Cache12hInputTokens:      cache12h,
 		ServiceTier:              observedServiceTier,
 		RateCard:                 openAIRateCard(testReq.CodexOAuth, parser.GetCodexHasCredits()),
 		ToolCostUSD:              parser.GetToolCostUSD(),

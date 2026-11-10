@@ -1,4 +1,4 @@
-// 渠道模型价格：挂在渠道模型行上的 8 项价目（美元/百万 Token），整份替换该模型的全局价格。
+// 渠道模型价格：挂在渠道模型行上的 10 项价目（美元/百万 Token），整份替换该模型的全局价格。
 (function initChannelModelPricing(root, factory) {
   const api = factory(root);
   if (typeof module !== 'undefined' && module.exports) {
@@ -9,8 +9,8 @@
     root.openChannelModelPricingModal = api.openChannelModelPricingModal;
   }
 })(typeof window !== 'undefined' ? window : globalThis, function createChannelModelPricing(root) {
-  const BASIC_FIELDS = ['input_price', 'output_price', 'cache_read_price', 'cache_write_price'];
-  const HIGH_CONTEXT_FIELDS = ['input_price_high', 'output_price_high', 'cache_read_price_high', 'cache_write_price_high'];
+  const BASIC_FIELDS = ['input_price', 'output_price', 'cache_read_price', 'cache_write_price', 'cache_write_12h_price'];
+  const HIGH_CONTEXT_FIELDS = ['input_price_high', 'output_price_high', 'cache_read_price_high', 'cache_write_price_high', 'cache_write_12h_price_high'];
   const PRICING_FIELDS = [...BASIC_FIELDS, ...HIGH_CONTEXT_FIELDS];
 
   const t = (key, params) => (typeof root?.t === 'function' ? root.t(key, params) : key);
@@ -92,7 +92,7 @@
       const grid = modal.querySelector(`[data-pricing-group="${group}"]`);
       if (!grid || grid.childElementCount > 0) continue;
       for (const field of fields) {
-        const labelKey = 'settings.customPricing.' + field.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+        const labelKey = 'settings.customPricing.' + field.replace(/_([a-z0-9])/g, (_, letter) => letter.toUpperCase());
         const label = document.createElement('label');
         label.className = 'form-label';
         const text = document.createElement('span');

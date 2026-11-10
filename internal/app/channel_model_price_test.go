@@ -349,3 +349,47 @@ func TestCSVModelPricingImportAndCarry(t *testing.T) {
 		t.Fatalf("carried pricing: channel=%#v message=%q", channel, message)
 	}
 }
+
+/**
+ * @brief 验证 Responses JSON/SSE 经原生及 Claude 入口转发后日志和费用保留真实 OpenAI TTL。
+ * @param t 测试上下文。
+ */
+func TestProxy_OpenAICacheWriteTTL(t *testing.T) {
+	for _, client := range []string{"codex", "anthropic"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", client, stream), func(t *testing.T) {
+				response := `{"id":"resp_ttl","object":"response","model":"gpt-6-luna","status":"completed","output":[{"id":"msg_ttl","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":130,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":100,"cache_write_tokens_details":{"ttl_30m_tokens":30,"ttl_12h_tokens":70}},"output_tokens":1}}`
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","item_id":"msg_ttl","output_index":0,"content_index":0,"delta":"ok"}`+"\n\n"+`data: {"type":"response.completed","response":`+response+"}\n\n")
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, response)
+				}))
+				defer upstream.Close()
+				env := setupProxyTestEnv(t, []testChannel{{name: "ttl", upstreamProtocol: "codex", modelEntries: []model.ModelEntry{{Model: "gpt-6-luna"}}}}, map[int]string{0: upstream.URL})
+				path := "/v1/responses"
+				body := map[string]any{"model": "gpt-6-luna", "input": "hello", "stream": stream}
+				if client == "anthropic" {
+					path = "/v1/messages"
+					body = map[string]any{"model": "gpt-6-luna", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "max_tokens": 100, "stream": stream}
+				}
+				out := doProxyRequest(t, env.engine, path, body, nil)
+				if out.Code != http.StatusOK {
+					t.Fatalf("response=%d %s", out.Code, out.Body.String())
+				}
+				entry := waitForProxyLogs(t, env, 1)[0]
+				want := (10*0.1 + 20*0.01 + 30*0.125 + 70*0.25 + 0.5) / 1e6
+				if entry.InputTokens != 10 || entry.CacheCreationInputTokens != 100 || entry.Cache30mInputTokens != 30 || entry.Cache12hInputTokens != 70 || entry.Cache5mInputTokens != 0 || entry.Cache1hInputTokens != 0 || math.Abs(entry.Cost-want) > 1e-12 {
+					t.Fatalf("log=%+v wantCost=%v", entry, want)
+				}
+				breakdown := buildLogCostBreakdown(entry, env.server.logModelPrices(context.Background(), []*model.LogEntry{entry}))
+				if breakdown == nil || math.Abs(breakdown.Total-want) > 1e-12 || breakdown.CacheWrite.Quantity != 100 {
+					t.Fatalf("breakdown=%+v want=%v", breakdown, want)
+				}
+			})
+		}
+	}
+}

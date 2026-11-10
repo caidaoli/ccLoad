@@ -21,9 +21,9 @@ import (
 // SSE Usage 解析器 (重构版 - 遵循SRP)
 // ============================================================================
 
-// sseUsageParser SSE流式响应的usage数据解析器
-// 设计原则（SRP）：仅负责从SSE事件流中提取token统计信息，不负责I/O
-// 采用增量解析避免重复扫描（O(n²) → O(n)）
+/**
+ * @brief 保存上游原始累计用量；Anthropic 与 OpenAI 写入时长使用独立分桶。
+ */
 type usageAccumulator struct {
 	InputTokens              int
 	OutputTokens             int
@@ -32,6 +32,8 @@ type usageAccumulator struct {
 	CacheCreationInputTokens int
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
+	Cache30mInputTokens      int ///< OpenAI 30 分钟写入，与 Anthropic 分桶互斥。
+	Cache12hInputTokens      int ///< OpenAI 12 小时写入，与 Anthropic 分桶互斥。
 	ToolCostUSD              float64
 	WebSearchRequests        int                           // Anthropic server_tool_use 累计快照，GetToolCostUSD 按次折价
 	ImageUsage               util.ImageGenerationToolUsage // Native Images usage, distinct from Responses tool usage.
@@ -122,11 +124,20 @@ type sseLargeFieldSanitizer struct {
 	dropEscape    bool
 }
 
+/**
+ * @brief 从上游响应提取原始计费用量及流语义，不依赖下游协议转换结果。
+ */
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与上游 service_tier/speed
-	GetToolCostUSD() float64                                       // 返回服务端工具调用（Responses 图像、Anthropic web_search）的额外费用
+	/**
+	 * @brief 返回由完整上游明细确定的 OpenAI 写入 token。
+	 * @return cache30m 30 分钟写入 token。
+	 * @return cache12h 12 小时写入 token。
+	 */
+	GetOpenAICacheBreakdown() (cache30m, cache12h int)
+	GetToolCostUSD() float64 // 返回服务端工具调用（Responses 图像、Anthropic web_search）的额外费用
 	GetImageUsage() util.ImageGenerationToolUsage
 	GetThinkingEffort() string
 	GetReasoningTokens() int
@@ -142,6 +153,15 @@ type usageParser interface {
 // GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
 func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) {
 	return u.Cache5mInputTokens, u.Cache1hInputTokens, u.ServiceTier
+}
+
+/**
+ * @brief 返回上游已确认的 OpenAI 缓存写入时长分桶。
+ * @return 30 分钟写入 token 数，未报告有效明细时为 0。
+ * @return 12 小时写入 token 数，未报告有效明细时为 0。
+ */
+func (u *usageAccumulator) GetOpenAICacheBreakdown() (cache30m, cache12h int) {
+	return u.Cache30mInputTokens, u.Cache12hInputTokens
 }
 
 func (u *usageAccumulator) GetToolCostUSD() float64 {
@@ -285,6 +305,8 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
 		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
+		p.Cache30mInputTokens = p.scanner.Cache30mInputTokens
+		p.Cache12hInputTokens = p.scanner.Cache12hInputTokens
 		p.WebSearchRequests = p.scanner.WebSearchRequests
 		p.ImageUsage = p.scanner.ImageUsage
 		p.scanVersion = p.scanner.usageVersion
@@ -1855,6 +1877,7 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 	} else if val, ok := usageTokenCount(usage["prompt_cache_hit_tokens"]); ok {
 		u.CacheReadInputTokens = val
 	}
+	u.applyOpenAICacheWrite(details)
 	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
 		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {
 			u.ReasoningTokens = val
@@ -1909,7 +1932,7 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 		detailedCache1h = usageInt(cacheCreation, "ephemeral_1h_input_tokens")
 	}
 	if _, present := usage["cache_creation"]; !present {
-		if total, valid := cacheCreationIterationCount(usage["cache_creation_input_tokens"]); valid && total > 0 {
+		if total, valid := cacheCreationCount(usage["cache_creation_input_tokens"]); valid && total > 0 {
 			if cache5m, cache1h, ok := cacheCreationFromIterations(usage["iterations"], total); ok {
 				detailedCache5m, detailedCache1h = cache5m, cache1h
 			}
@@ -1934,10 +1957,7 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 		}
 		// 仅在尚未拿到 Anthropic 风格 cache_creation 字段时采用 cache_write_tokens
 		if !hasAggregateCacheCreation && !hasDetailedCacheCreation {
-			if val, ok := usageTokenCount(details["cache_write_tokens"]); ok && val > 0 {
-				// OpenAI cache write 无 5m/1h 细分，按 5m 写价（1.25x）计费
-				u.setCacheCreationSnapshot(val, 0)
-			}
+			u.applyOpenAICacheWrite(details)
 		}
 	}
 
@@ -1955,6 +1975,33 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	// NewAPI 等网关在 Claude 风格 usage 外包一层 billing_usage.openai_usage，
 	// 真实 reasoning_tokens 只在 completion_tokens_details 里。
 	u.applyBillingUsageOpenAIReasoning(usage)
+}
+
+/**
+ * @brief 从上游用量采纳完整且与总量一致的 OpenAI 30m/12h 写入快照。
+ * @param details OpenAI input_tokens_details 或 prompt_tokens_details。
+ * @note 占位 0 或同总量且不带明细的帧保留快照；其余缺失或无效明细沿用通用写入价，不从请求推断时长。
+ */
+func (u *usageAccumulator) applyOpenAICacheWrite(details map[string]any) {
+	total, ok := usageTokenCount(details["cache_write_tokens"])
+	if !ok || total <= 0 {
+		return
+	}
+	_, hasDetails := details["cache_write_tokens_details"]
+	if !hasDetails && total == u.Cache30mInputTokens+u.Cache12hInputTokens {
+		return
+	}
+	u.setCacheCreationSnapshot(total, 0)
+	split, _ := details["cache_write_tokens_details"].(map[string]any)
+	short, shortOK := cacheCreationCount(split["ttl_30m_tokens"])
+	long, longOK := cacheCreationCount(split["ttl_12h_tokens"])
+	aggregate, aggregateOK := cacheCreationCount(details["cache_write_tokens"])
+	if !aggregateOK || !shortOK || !longOK || short > aggregate || long != aggregate-short {
+		return
+	}
+	u.Cache5mInputTokens = 0
+	u.Cache30mInputTokens = short
+	u.Cache12hInputTokens = long
 }
 
 // cacheCreationFromIterations 只恢复完整、与顶层累计总量一致的已知 TTL 分档。
@@ -1981,7 +2028,7 @@ func cacheCreationFromIterations(value any, total int) (cache5m, cache1h int, ok
 		aggregate, hasAggregate := iteration["cache_creation_input_tokens"]
 		iterationTotal := 0
 		if hasAggregate {
-			iterationTotal, valid = cacheCreationIterationCount(aggregate)
+			iterationTotal, valid = cacheCreationCount(aggregate)
 			if !valid {
 				return 0, 0, false
 			}
@@ -2008,7 +2055,7 @@ func cacheCreationFromIterations(value any, total int) (cache5m, cache1h int, ok
 				// 未知 TTL 没有本地写价，不能混进 5m 或 1h 分档。
 				return 0, 0, false
 			}
-			counts[index], valid = cacheCreationIterationCount(value)
+			counts[index], valid = cacheCreationCount(value)
 			if !valid {
 				return 0, 0, false
 			}
@@ -2031,8 +2078,13 @@ func cacheCreationFromIterations(value any, total int) (cache5m, cache1h int, ok
 	return cache5m, cache1h, cache5m+cache1h == total
 }
 
-// 与普通 usage 的无效数归零不同，恢复明细必须拒绝无效数，不能把它当显式 0。
-func cacheCreationIterationCount(value any) (int, bool) {
+/**
+ * @brief 校验上游缓存明细中的非负整数 token 数。
+ * @param value JSON 数值。
+ * @return 合法 token 数；无效数返回 0。
+ * @return 非负且未溢出的整数返回 true，其他类型或数值返回 false。
+ */
+func cacheCreationCount(value any) (int, bool) {
 	count, ok := value.(float64)
 	if !ok || count < 0 || count >= math.MaxInt || math.Trunc(count) != count {
 		return 0, false
@@ -2040,11 +2092,16 @@ func cacheCreationIterationCount(value any) (int, bool) {
 	return int(count), true
 }
 
-// setCacheCreationSnapshot 是缓存建立三元组的唯一写入口，保证 aggregate 恒等于 5m+1h。
-// 三个字段分开赋值必然出现互相矛盾的中间状态，而 1h 写价最贵，错一次就是钱。
+/**
+ * @brief 发布 Anthropic 分桶或既有通用写入价回退快照，并清除旧 OpenAI 分桶。
+ * @param cache5m 5 分钟或无明细的通用写入 token 数。
+ * @param cache1h Anthropic 1 小时写入 token 数。
+ */
 func (u *usageAccumulator) setCacheCreationSnapshot(cache5m, cache1h int) {
 	u.Cache5mInputTokens = cache5m
 	u.Cache1hInputTokens = cache1h
+	u.Cache30mInputTokens = 0
+	u.Cache12hInputTokens = 0
 	u.CacheCreationInputTokens = cache5m + cache1h
 }
 

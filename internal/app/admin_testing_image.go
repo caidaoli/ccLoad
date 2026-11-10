@@ -721,11 +721,7 @@ func (s *Server) testChannelImageGenerationWithURL(
 			result["error"] = readErr.Error()
 		}
 	} else {
-		requestedOutputFormat := imageReq.OutputFormat
-		if cfg.UsesXAIOAuth() {
-			requestedOutputFormat = ""
-		}
-		parseImageGenerationResponse(result, resp, responseBody, requestedOutputFormat)
+		parseImageGenerationResponse(result, resp, responseBody)
 	}
 	// 成功响应可能包含数十 MiB 的 base64。不要再复制进诊断字段；
 	// 失败响应才需要原始 body 供错误分类和手工排障。
@@ -841,7 +837,7 @@ func (s *Server) testResponsesImageGeneration(
 		if readErr != nil {
 			result["error"] = readErr.Error()
 		} else {
-			parseImageGenerationResponse(result, resp, responseBody, imageReq.OutputFormat)
+			parseImageGenerationResponse(result, resp, responseBody)
 		}
 		return annotateImageGenerationResult(result, actualModel)
 	}
@@ -881,7 +877,7 @@ func (s *Server) testResponsesImageGeneration(
 		result["error"] = err.Error()
 		return annotateImageGenerationResult(result, actualModel)
 	}
-	parseImageGenerationResponse(result, &http.Response{StatusCode: http.StatusOK, Status: "200 OK"}, imagesBody, imageReq.OutputFormat)
+	parseImageGenerationResponse(result, &http.Response{StatusCode: http.StatusOK, Status: "200 OK"}, imagesBody)
 	result["duration_ms"] = time.Since(start).Milliseconds()
 	result["first_byte_duration_ms"] = result["duration_ms"]
 	return annotateImageGenerationResult(result, actualModel)
@@ -1010,11 +1006,16 @@ func imageGenerationDiagnosticBody(body []byte) string {
 	return string(body[:imageGenerationDiagnosticBodyLimit]) + "\n... response truncated"
 }
 
+/**
+ * @brief 解析生图结果，输出格式采用实际图片或上游回报，不从请求格式推断
+ * @param result 写入成功结果或结构化错误的响应容器
+ * @param resp 上游 HTTP 状态
+ * @param body 上游 JSON 正文
+ */
 func parseImageGenerationResponse(
 	result map[string]any,
 	resp *http.Response,
 	body []byte,
-	requestedOutputFormat string,
 ) {
 	var apiResponse map[string]any
 	if err := sonic.Unmarshal(body, &apiResponse); err != nil {
@@ -1053,16 +1054,16 @@ func parseImageGenerationResponse(
 			result[key] = value
 		}
 	}
-	if _, ok := result["output_format"]; !ok && requestedOutputFormat != "" && requestedOutputFormat != "auto" {
-		result["output_format"] = requestedOutputFormat
-	}
-	if _, ok := result["output_format"]; !ok {
-		if outputFormat := imageOutputFormatFromMIMEType(getResultString(images[0], "mime_type")); outputFormat != "" {
-			result["output_format"] = outputFormat
-		}
+	if outputFormat := getResultString(images[0], "output_format"); outputFormat != "" {
+		result["output_format"] = outputFormat
 	}
 }
 
+/**
+ * @brief 提取有效图片并保留实际输出格式，已识别的图片字节优先于声明
+ * @param apiResponse 上游生图响应
+ * @return 含 URL 或 base64 的图片列表，无有效图片时为空
+ */
 func extractImageGenerationData(apiResponse map[string]any) []map[string]any {
 	rawImages, ok := apiResponse["data"].([]any)
 	if !ok {
@@ -1080,6 +1081,9 @@ func extractImageGenerationData(apiResponse map[string]any) []map[string]any {
 			continue
 		}
 		normalized := map[string]any{}
+		if outputFormat, _ := image["output_format"].(string); outputFormat != "" {
+			normalized["output_format"] = outputFormat
+		}
 		if url != "" {
 			normalized["url"] = url
 		}
@@ -1087,6 +1091,7 @@ func extractImageGenerationData(apiResponse map[string]any) []map[string]any {
 			normalized["b64_json"] = base64JSON
 			if mimeType := imageMIMETypeFromBase64(base64JSON); mimeType != "" {
 				normalized["mime_type"] = mimeType
+				normalized["output_format"] = strings.TrimPrefix(mimeType, "image/")
 			}
 		}
 		if revisedPrompt, _ := image["revised_prompt"].(string); revisedPrompt != "" {

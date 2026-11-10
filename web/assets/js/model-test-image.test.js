@@ -58,6 +58,8 @@ test('image generation response accepts URL and base64 images but rejects empty 
   assert.equal(dataURLFromImage(images[0], 'png'), 'https://example.com/image.png');
   assert.equal(dataURLFromImage(images[1], 'jpeg'), 'data:image/jpeg;base64,aW1hZ2U=');
   assert.equal(dataURLFromImage({ b64_json: 'aW1hZ2U=', mime_type: 'image/webp' }, 'png'), 'data:image/webp;base64,aW1hZ2U=');
+  assert.equal(dataURLFromImage({ b64_json: 'aW1hZ2U=', output_format: 'jpeg' }, 'png'), 'data:image/jpeg;base64,aW1hZ2U=');
+  assert.equal(dataURLFromImage({ b64_json: 'aW1hZ2U=', mime_type: 'image/png', output_format: 'jpeg' }, 'webp'), 'data:image/png;base64,aW1hZ2U=');
 });
 
 test('image option controls restore preferences and keep API capability linkage', () => {

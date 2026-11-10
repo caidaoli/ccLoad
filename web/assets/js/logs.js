@@ -1148,9 +1148,16 @@ function buildCacheCreationDisplay(entry) {
 
   const cache5m = entry.cache_5m_input_tokens || 0;
   const cache1h = entry.cache_1h_input_tokens || 0;
+  const cache30m = entry.cache_30m_input_tokens || 0;
+  const cache12h = entry.cache_12h_input_tokens || 0;
 
   let badge = '';
-  if (cache5m > 0 && cache1h === 0) {
+  if (cache30m > 0 || cache12h > 0) {
+    const labels = [];
+    if (cache30m > 0) labels.push('30m');
+    if (cache12h > 0) labels.push('12h');
+    badge = ` <sup>${labels.join('+')}</sup>`;
+  } else if (cache5m > 0 && cache1h === 0) {
     badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup>';
   } else if (cache1h > 0 && cache5m === 0) {
     badge = ' <sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">1h</sup>';

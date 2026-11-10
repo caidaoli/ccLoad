@@ -210,6 +210,16 @@ func TestMySQL(t *testing.T) {
 		verifyUsageEstimateMigrationAndRoundTrip(t, env.db, store, DialectMySQL)
 	})
 
+	t.Run("OpenAICacheWriteTTLMigrationAndRoundTrip", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		verifyOpenAICacheWriteTTLMigrationAndRoundTrip(t, env.db, store, DialectMySQL)
+	})
+
 	t.Run("FullMigration", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 

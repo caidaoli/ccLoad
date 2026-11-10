@@ -203,6 +203,16 @@ func TestPostgres(t *testing.T) {
 		verifyUsageEstimateMigrationAndRoundTrip(t, env.db, store, DialectPostgres)
 	})
 
+	t.Run("OpenAICacheWriteTTLMigrationAndRoundTrip", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		verifyOpenAICacheWriteTTLMigrationAndRoundTrip(t, env.db, store, DialectPostgres)
+	})
+
 	t.Run("FullMigration", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 

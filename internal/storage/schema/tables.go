@@ -240,7 +240,9 @@ func DefineLogsTable() *TableBuilder {
 		Column("cache_read_input_tokens INT NOT NULL DEFAULT 0").
 		Column("cache_creation_input_tokens INT NOT NULL DEFAULT 0"). // 5m+1h缓存总和（兼容字段）
 		Column("cache_5m_input_tokens INT NOT NULL DEFAULT 0").       // 5分钟缓存写入Token数（新增2025-12）
-		Column("cache_1h_input_tokens INT NOT NULL DEFAULT 0").       // 1小时缓存写入Token数（新增2025-12）
+		Column("cache_30m_input_tokens INT NOT NULL DEFAULT 0").
+		Column("cache_12h_input_tokens INT NOT NULL DEFAULT 0").
+		Column("cache_1h_input_tokens INT NOT NULL DEFAULT 0"). // 1小时缓存写入Token数（新增2025-12）
 		Column("cost DOUBLE NOT NULL DEFAULT 0.0").
 		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		Index("idx_logs_time_model", "time, model").

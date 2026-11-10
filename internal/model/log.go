@@ -79,7 +79,7 @@ type TokenUsageEstimate struct {
 }
 
 /**
- * @brief 请求日志条目，估算用量与真实用量独立保存
+ * @brief 持久化请求日志，保存真实计费用量、各提供商缓存时长及费用快照。
  */
 type LogEntry struct {
 	ID                   int64              `json:"id"`
@@ -117,8 +117,10 @@ type LogEntry struct {
 	OutputTokens             int     `json:"output_tokens"`
 	ReasoningTokens          int     `json:"reasoning_tokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"` // 5m+1h缓存总和（兼容字段）
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"` // 所有缓存写入时长的总量。
 	Cache5mInputTokens       int     `json:"cache_5m_input_tokens"`       // 5分钟缓存写入Token数（新增2025-12）
+	Cache30mInputTokens      int     `json:"cache_30m_input_tokens"`      ///< OpenAI 30 分钟缓存写入。
+	Cache12hInputTokens      int     `json:"cache_12h_input_tokens"`      ///< OpenAI 12 小时缓存写入。
 	Cache1hInputTokens       int     `json:"cache_1h_input_tokens"`       // 1小时缓存写入Token数（新增2025-12）
 	Cost                     float64 `json:"cost"`                        // 请求成本（美元，标准成本）
 	CostMultiplier           float64 `json:"cost_multiplier"`             // 写日志时快照的渠道倍率，默认1

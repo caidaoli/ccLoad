@@ -1,7 +1,9 @@
 package responses
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -891,4 +893,100 @@ func TestConvertOpenAIResponsesRequestToCodexParallelToolCalls(t *testing.T) {
 			t.Fatalf("normalized request changed:\n got: %s\nwant: %s", output, inputJSON)
 		}
 	})
+}
+
+func TestConvertOpenAIResponsesRequestToCodexSanitizesOrphanToolOutputs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "Companion Page context",
+			input: `[{"type":"function_call_output","id":"fco_1","name":"codex_apps_open_page","namespace":"agent","output":"{\"page_id\":null}"}]`,
+			want:  `[{"type":"message","role":"user","content":[{"type":"input_text","text":"Tool output from codex_apps_open_page:\n{\"page_id\":null}"}]}]`,
+		},
+		{
+			name:  "custom output retains text images and files",
+			input: `[{"type":"custom_tool_call_output","id":"fco_2","name":"custom_ctx","output":[{"type":"input_text","text":"part one"},{"type":"output_text","text":"part two"},"part three",{"type":"input_image","image_url":"https://example.com/page.png","detail":"high"},{"type":"input_file","file_id":"file_123"}]}]`,
+			want:  `[{"type":"message","role":"user","content":[{"type":"input_text","text":"Tool output from custom_ctx:\npart one\npart two\npart three"},{"type":"input_image","image_url":"https://example.com/page.png","detail":"high"},{"type":"input_file","file_id":"file_123"}]}]`,
+		},
+		{
+			name: "pairing preserves explicit output reservations and order",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call","call_id":"call_b","name":"tool_b","arguments":"{}"},
+				{"type":"function_call_output","id":"fco_b","output":"result_b"},
+				{"type":"function_call_output","tool_call_id":"call_a","output":"result_a"}
+			]`,
+			want: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call","call_id":"call_b","name":"tool_b","arguments":"{}"},
+				{"type":"function_call_output","id":"fco_b","call_id":"call_b","output":"result_b"},
+				{"type":"function_call_output","tool_call_id":"call_a","call_id":"call_a","output":"result_a"}
+			]`,
+		},
+		{
+			name:  "custom call pairing",
+			input: `[{"type":"custom_tool_call","call_id":"custom_1","name":"patch","input":"patch"},{"type":"custom_tool_call_output","output":"applied"}]`,
+			want:  `[{"type":"custom_tool_call","call_id":"custom_1","name":"patch","input":"patch"},{"type":"custom_tool_call_output","call_id":"custom_1","output":"applied"}]`,
+		},
+		{
+			name:  "continuation retains explicit references without local calls",
+			input: `[{"type":"function_call_output","call_id":"call_remote","output":"remote result"},{"type":"custom_tool_call_output","callId":"custom_remote","output":"custom result"}]`,
+			want:  `[{"type":"function_call_output","call_id":"call_remote","output":"remote result"},{"type":"custom_tool_call_output","callId":"custom_remote","call_id":"custom_remote","output":"custom result"}]`,
+		},
+		{
+			name: "delegation outputs do not consume local calls",
+			input: `[
+				{"type":"function_call","call_id":"call_local","name":"create_thread","arguments":"{}"},
+				{"type":"function_call_output","namespace":"codex_app","name":"create_thread","output":"<codex_delegation>task</codex_delegation>"},
+				{"type":"function_call_output","namespace":"codex_app","name":"send_message_to_thread","output":"<codex_delegation>follow up</codex_delegation>"},
+				{"type":"function_call_output","output":"local result"}
+			]`,
+			want: `[
+				{"type":"function_call","call_id":"call_local","name":"create_thread","arguments":"{}"},
+				{"type":"function_call_output","namespace":"codex_app","name":"create_thread","output":"<codex_delegation>task</codex_delegation>"},
+				{"type":"function_call_output","namespace":"codex_app","name":"send_message_to_thread","output":"<codex_delegation>follow up</codex_delegation>"},
+				{"type":"function_call_output","call_id":"call_local","output":"local result"}
+			]`,
+		},
+		{
+			name:  "idless call pairs retain existing validation semantics",
+			input: `[{"type":"function_call","name":"shell","arguments":"{}"},{"type":"function_call_output","output":"result"},{"type":"custom_tool_call","name":"patch","input":"patch"},{"type":"custom_tool_call_output","output":"applied"}]`,
+			want:  `[{"type":"function_call","name":"shell","arguments":"{}"},{"type":"function_call_output","output":"result"},{"type":"custom_tool_call","name":"patch","input":"patch"},{"type":"custom_tool_call_output","output":"applied"}]`,
+		},
+		{
+			name:  "blank call reference and empty output",
+			input: `[{"type":"function_call_output","call_id":" ","output":null}]`,
+			want:  `[{"type":"message","role":"user","content":[{"type":"input_text","text":"Tool output from tool:\n(empty)"}]}]`,
+		},
+		{
+			name:  "item id is not a continuation call reference",
+			input: `[{"type":"function_call_output","id":"context_1","output":{"results":[1,true]}}]`,
+			want:  `[{"type":"message","role":"user","content":[{"type":"input_text","text":"Tool output from tool:\n{\"results\":[1,true]}"}]}]`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_previous","input":` + tt.input + `}`)
+			out, err := ConvertOpenAIResponsesRequestToCodex("gpt-5.4", raw, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want any
+			if err := json.Unmarshal([]byte(gjson.GetBytes(out, "input").Raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("input = %s, want %s", gjson.GetBytes(out, "input").Raw, tt.want)
+			}
+			if previous := gjson.GetBytes(out, "previous_response_id").String(); previous != "resp_previous" {
+				t.Fatalf("previous_response_id = %q", previous)
+			}
+		})
+	}
 }

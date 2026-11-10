@@ -171,6 +171,23 @@ func TestExtractResponsesCallID(t *testing.T) {
 }
 
 func TestNormalizeResponsesToolCallOutputs(t *testing.T) {
+	t.Run("delegation outputs are not matched by name or FIFO", func(t *testing.T) {
+		for _, name := range []string{"create_thread", "send_message_to_thread"} {
+			input := `[
+				{"type":"function_call","call_id":"call_local","name":"` + name + `"},
+				{"type":"function_call_output","namespace":"codex_app","name":"` + name + `","output":"delegated"},
+				{"type":"function_call_output","output":"local result"}
+			]`
+			normalized := NormalizeResponsesToolCallOutputs(gjson.Parse(input).Array())
+			if normalized[1].Get("call_id").Exists() {
+				t.Fatalf("%s delegation consumed a local call: %s", name, normalized[1].Raw)
+			}
+			if got := normalized[2].Get("call_id").String(); got != "call_local" {
+				t.Fatalf("%s local result call_id = %q", name, got)
+			}
+		}
+	})
+
 	t.Run("preserves explicit call_id and fills missing in reverse order", func(t *testing.T) {
 		input := []byte(`[
 			{"type":"function_call","call_id":"call_a","name":"tool_a"},

@@ -2324,3 +2324,89 @@ func TestCodexCreditsUsageProtocol(t *testing.T) {
 		})
 	}
 }
+
+/**
+ * @brief 验证 JSON/SSE 的 OpenAI 写入 TTL 完整性、普通输入归一化及独立分桶。
+ * @param t 测试上下文。
+ */
+func TestOpenAICacheWriteTTLUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name, details string
+		short, long   int
+	}{
+		{"30m", `{"ttl_30m_tokens":100,"ttl_12h_tokens":0}`, 100, 0},
+		{"12h", `{"ttl_30m_tokens":0,"ttl_12h_tokens":100}`, 0, 100},
+		{"mixed", `{"ttl_30m_tokens":30,"ttl_12h_tokens":70}`, 30, 70},
+		{"partial", `{"ttl_12h_tokens":100}`, 0, 0},
+		{"inconsistent", `{"ttl_30m_tokens":30,"ttl_12h_tokens":100}`, 0, 0},
+		{"negative", `{"ttl_30m_tokens":-1,"ttl_12h_tokens":101}`, 0, 0},
+		{"fractional", `{"ttl_30m_tokens":0.5,"ttl_12h_tokens":99.5}`, 0, 0},
+		{"overflow", `{"ttl_30m_tokens":1e30,"ttl_12h_tokens":0}`, 0, 0},
+		{"string", `{"ttl_30m_tokens":"0","ttl_12h_tokens":100}`, 0, 0},
+		{"null", `null`, 0, 0},
+	} {
+		for _, route := range []string{"responses-json", "responses-sse", "chat-json", "chat-sse"} {
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				usage := `"input_tokens":130,"output_tokens":1,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":100,"cache_write_tokens_details":` + tc.details + `}`
+				proto := "codex"
+				if strings.HasPrefix(route, "chat") {
+					usage = strings.NewReplacer("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens").Replace(usage)
+					proto = "openai"
+				}
+				body := `{"usage":{` + usage + `}}`
+				var p usageParser = newJSONUsageParser(proto)
+				if strings.HasSuffix(route, "sse") {
+					p = newSSEUsageParser(proto)
+					body = "data: " + body + "\n\n"
+				}
+				if err := p.Feed([]byte(body)); err != nil {
+					t.Fatal(err)
+				}
+				input, output, read, total := p.GetUsage()
+				short, long := p.GetOpenAICacheBreakdown()
+				five, hour, _ := p.GetCacheBreakdown()
+				wantFive := 0
+				if tc.short+tc.long == 0 {
+					wantFive = 100
+				}
+				if input != 10 || output != 1 || read != 20 || total != 100 || short != tc.short || long != tc.long || five != wantFive || hour != 0 {
+					t.Fatalf("usage=%d/%d/%d/%d TTL=%d/%d fallback=%d/%d", input, output, read, total, short, long, five, hour)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 相同总量的无明细重发保留已知 TTL，变更或显式非法明细使其失效。
+ * @param t 测试上下文。
+ */
+func TestOpenAICacheWriteTTLSSESnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name, tail               string
+		short, long, five, total int
+	}{
+		{"aggregate-only", `"cache_write_tokens":100`, 0, 100, 0, 100},
+		{"placeholder-zero", `"cache_write_tokens":0`, 0, 100, 0, 100},
+		{"corrected-total", `"cache_write_tokens":80`, 0, 0, 80, 80},
+		{"invalid-details", `"cache_write_tokens":100,"cache_write_tokens_details":{"ttl_12h_tokens":100}`, 0, 0, 100, 100},
+		{"new-snapshot", `"cache_write_tokens":100,"cache_write_tokens_details":{"ttl_30m_tokens":100,"ttl_12h_tokens":0}`, 100, 0, 0, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newSSEUsageParser("codex")
+			initial := `data: {"usage":{"input_tokens":110,"output_tokens":1,"input_tokens_details":{"cache_write_tokens":100,"cache_write_tokens_details":{"ttl_30m_tokens":0,"ttl_12h_tokens":100}}}}` + "\n\n"
+			tail := `data: {"type":"response.completed","response":{"usage":{"input_tokens":110,"output_tokens":1,"input_tokens_details":{` + tc.tail + `}}}}` + "\n\n"
+			for _, frame := range []string{initial, tail} {
+				if err := p.Feed([]byte(frame)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			short, long := p.GetOpenAICacheBreakdown()
+			five, _, _ := p.GetCacheBreakdown()
+			_, _, _, total := p.GetUsage()
+			if short != tc.short || long != tc.long || five != tc.five || total != tc.total {
+				t.Fatalf("TTL=%d/%d fallback=%d total=%d", short, long, five, total)
+			}
+		})
+	}
+}

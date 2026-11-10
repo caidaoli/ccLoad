@@ -1601,6 +1601,7 @@ func (s *Server) handleSuccessResponse(
 	result.ResponseModel = parser.GetResponseModel()
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
+	result.Cache30mInputTokens, result.Cache12hInputTokens = parser.GetOpenAICacheBreakdown()
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	if jsonParser, ok := parser.(*jsonUsageParser); ok && reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyCountTokens {
 		result.InputTokens = jsonParser.countTokensResult()
@@ -1720,6 +1721,8 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
+	result.Cache30mInputTokens = parser.Cache30mInputTokens
+	result.Cache12hInputTokens = parser.Cache12hInputTokens
 	result.ServiceTier = parser.ServiceTier
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
@@ -2072,6 +2075,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
+	result.Cache30mInputTokens = parser.Cache30mInputTokens
+	result.Cache12hInputTokens = parser.Cache12hInputTokens
 	result.ServiceTier = parser.ServiceTier
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()

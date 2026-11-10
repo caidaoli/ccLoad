@@ -19,23 +19,30 @@ const (
 
 var customModelIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]*$`)
 
-// CustomModelPrice 是自定义价格的对外契约（美元/百万 Token）：全局 model_custom_pricing
-// 的单个模型条目与渠道模型条目的 pricing 共用。nil 字段表示未填写，与显式 0 语义不同。
+/**
+ * @brief 自定义价格契约（美元/百万 token）；nil 与显式 0 分别表示未配置和免费。
+ */
 type CustomModelPrice struct {
-	InputPrice          *float64 `json:"input_price,omitempty"`
-	OutputPrice         *float64 `json:"output_price,omitempty"`
-	CacheReadPrice      *float64 `json:"cache_read_price,omitempty"`
-	CacheReadPriceHigh  *float64 `json:"cache_read_price_high,omitempty"`
-	CacheWritePrice     *float64 `json:"cache_write_price,omitempty"`
-	CacheWritePriceHigh *float64 `json:"cache_write_price_high,omitempty"`
-	InputPriceHigh      *float64 `json:"input_price_high,omitempty"`
-	OutputPriceHigh     *float64 `json:"output_price_high,omitempty"`
+	InputPrice             *float64 `json:"input_price,omitempty"`
+	OutputPrice            *float64 `json:"output_price,omitempty"`
+	CacheReadPrice         *float64 `json:"cache_read_price,omitempty"`
+	CacheReadPriceHigh     *float64 `json:"cache_read_price_high,omitempty"`
+	CacheWritePrice        *float64 `json:"cache_write_price,omitempty"`
+	CacheWritePriceHigh    *float64 `json:"cache_write_price_high,omitempty"`
+	CacheWrite12hPrice     *float64 `json:"cache_write_12h_price,omitempty"`      ///< OpenAI 12h 写入价；nil 时显式通用写价继续按平价计费。
+	CacheWrite12hPriceHigh *float64 `json:"cache_write_12h_price_high,omitempty"` ///< 高上下文 OpenAI 12h 写入价。
+	InputPriceHigh         *float64 `json:"input_price_high,omitempty"`
+	OutputPriceHigh        *float64 `json:"output_price_high,omitempty"`
 }
 
-func (p *CustomModelPrice) fields() [8]*float64 {
-	return [8]*float64{
+/**
+ * @brief 按固定顺序遍历全部自定义价格字段。
+ * @return 价格指针列表；nil 元素表示未配置。
+ */
+func (p *CustomModelPrice) fields() [10]*float64 {
+	return [10]*float64{
 		p.InputPrice, p.OutputPrice, p.CacheReadPrice, p.CacheReadPriceHigh,
-		p.CacheWritePrice, p.CacheWritePriceHigh, p.InputPriceHigh, p.OutputPriceHigh,
+		p.CacheWritePrice, p.CacheWritePriceHigh, p.CacheWrite12hPrice, p.CacheWrite12hPriceHigh, p.InputPriceHigh, p.OutputPriceHigh,
 	}
 }
 
@@ -65,14 +72,16 @@ func (p *CustomModelPrice) Clone() *CustomModelPrice {
 		return &copied
 	}
 	return &CustomModelPrice{
-		InputPrice:          clonePrice(p.InputPrice),
-		OutputPrice:         clonePrice(p.OutputPrice),
-		CacheReadPrice:      clonePrice(p.CacheReadPrice),
-		CacheReadPriceHigh:  clonePrice(p.CacheReadPriceHigh),
-		CacheWritePrice:     clonePrice(p.CacheWritePrice),
-		CacheWritePriceHigh: clonePrice(p.CacheWritePriceHigh),
-		InputPriceHigh:      clonePrice(p.InputPriceHigh),
-		OutputPriceHigh:     clonePrice(p.OutputPriceHigh),
+		InputPrice:             clonePrice(p.InputPrice),
+		OutputPrice:            clonePrice(p.OutputPrice),
+		CacheReadPrice:         clonePrice(p.CacheReadPrice),
+		CacheReadPriceHigh:     clonePrice(p.CacheReadPriceHigh),
+		CacheWritePrice:        clonePrice(p.CacheWritePrice),
+		CacheWritePriceHigh:    clonePrice(p.CacheWritePriceHigh),
+		CacheWrite12hPrice:     clonePrice(p.CacheWrite12hPrice),
+		CacheWrite12hPriceHigh: clonePrice(p.CacheWrite12hPriceHigh),
+		InputPriceHigh:         clonePrice(p.InputPriceHigh),
+		OutputPriceHigh:        clonePrice(p.OutputPriceHigh),
 	}
 }
 
@@ -102,7 +111,7 @@ func (p *CustomModelPrice) ModelPricing() (ModelPricing, error) {
 		value *float64
 	}
 	required := []requiredField{{"input_price", p.InputPrice}, {"output_price", p.OutputPrice}}
-	if p.InputPriceHigh != nil || p.OutputPriceHigh != nil || p.CacheReadPriceHigh != nil || p.CacheWritePriceHigh != nil {
+	if p.InputPriceHigh != nil || p.OutputPriceHigh != nil || p.CacheReadPriceHigh != nil || p.CacheWritePriceHigh != nil || p.CacheWrite12hPriceHigh != nil {
 		required = append(required,
 			requiredField{"input_price_high", p.InputPriceHigh}, requiredField{"output_price_high", p.OutputPriceHigh})
 	}
@@ -242,6 +251,8 @@ func normalizeCustomModelPricing(raw CustomModelPrice) (ModelPricing, error) {
 		{"cache_read_price_high", raw.CacheReadPriceHigh, &pricing.CacheReadPriceHigh},
 		{"cache_write_price", raw.CacheWritePrice, &pricing.CacheWritePrice},
 		{"cache_write_price_high", raw.CacheWritePriceHigh, &pricing.CacheWritePriceHigh},
+		{"cache_write_12h_price", raw.CacheWrite12hPrice, &pricing.CacheWrite12hPrice},
+		{"cache_write_12h_price_high", raw.CacheWrite12hPriceHigh, &pricing.CacheWrite12hPriceHigh},
 		{"input_price_high", raw.InputPriceHigh, &pricing.InputPriceHigh},
 		{"output_price_high", raw.OutputPriceHigh, &pricing.OutputPriceHigh},
 	} {
@@ -263,6 +274,17 @@ func normalizeCustomModelPricing(raw CustomModelPrice) (ModelPricing, error) {
 	}
 	if raw.CacheWritePriceHigh != nil {
 		pricing.HasCacheWritePriceHigh = true
+	}
+	pricing.HasCacheWrite12hPrice = raw.CacheWrite12hPrice != nil
+	pricing.HasCacheWrite12hPriceHigh = raw.CacheWrite12hPriceHigh != nil
+	// 旧平价覆盖不因引入 TTL 明细变价；显式 0 同样保留。
+	if raw.CacheWrite12hPrice == nil && raw.CacheWritePrice != nil {
+		pricing.CacheWrite12hPrice = *raw.CacheWritePrice
+		pricing.HasCacheWrite12hPrice = true
+	}
+	if raw.CacheWrite12hPrice == nil && raw.CacheWrite12hPriceHigh == nil && raw.CacheWritePriceHigh != nil {
+		pricing.CacheWrite12hPriceHigh = *raw.CacheWritePriceHigh
+		pricing.HasCacheWrite12hPriceHigh = true
 	}
 	return pricing, nil
 }
@@ -311,7 +333,7 @@ func validateCustomPricingFieldNames(data []byte) error {
 	}
 	allowed := map[string]struct{}{
 		"input_price": {}, "output_price": {}, "cache_read_price": {}, "cache_read_price_high": {},
-		"cache_write_price": {}, "cache_write_price_high": {},
+		"cache_write_price": {}, "cache_write_price_high": {}, "cache_write_12h_price": {}, "cache_write_12h_price_high": {},
 		"input_price_high": {}, "output_price_high": {},
 	}
 	for name := range fields {
@@ -371,6 +393,7 @@ func validateCustomModelPricing(pricing ModelPricing) error {
 		"input_price": pricing.InputPrice, "output_price": pricing.OutputPrice,
 		"cache_read_price": pricing.CacheReadPrice, "cache_read_price_high": pricing.CacheReadPriceHigh,
 		"cache_write_price": pricing.CacheWritePrice, "cache_write_price_high": pricing.CacheWritePriceHigh,
+		"cache_write_12h_price": pricing.CacheWrite12hPrice, "cache_write_12h_price_high": pricing.CacheWrite12hPriceHigh,
 		"input_price_high": pricing.InputPriceHigh, "output_price_high": pricing.OutputPriceHigh,
 	} {
 		if err := validateCustomPrice(name, value); err != nil {

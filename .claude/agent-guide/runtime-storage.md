@@ -2,6 +2,8 @@
 
 修改对应运行机制时读取相关章节。渠道级限流见 [routing.md](routing.md)，Responses WebSocket 生命周期见 [proxy.md](proxy.md)；原「关键机制」中的引导期配置说明位于本文件「系统设置与连接生命周期」章节。
 
+- **OpenAI 缓存 TTL 持久化**（2026-11-10）：`logs` 及日志 API 新增 `cache_30m_input_tokens`、`cache_12h_input_tokens`，启动时沿现有列迁移为旧库补零默认值；单条、批量和混合存储同步均保留两列。旧日志不反推TTL；`cache_creation_input_tokens` 继续表示所有写入分桶总量。全局与渠道价格配置新增可选 `cache_write_12h_price`、`cache_write_12h_price_high`，缺省与显式零价不同，旧统一写入价的覆盖语义不变，详见计费契约。
+
 ## 系统设置与连接生命周期
 
 - **日志展示估算**：`logs.usage_estimate` 为可空 JSON 文本，字段为 `input_tokens`、`output_tokens`；SQLite、PostgreSQL、MySQL 的建表、迁移、单条/批量写入及混合复制必须保留。旧日志为空，不回填推测值；实际 token 与费用列、聚合查询不使用此字段。

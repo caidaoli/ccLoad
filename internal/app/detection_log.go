@@ -138,6 +138,8 @@ func normalizeDetectionUsage(usage map[string]any, upstreamProtocol string) (map
 		"cache_creation_input_tokens": cacheCreation,
 		"cache_5m_input_tokens":       accumulator.Cache5mInputTokens,
 		"cache_1h_input_tokens":       accumulator.Cache1hInputTokens,
+		"cache_30m_input_tokens":      accumulator.Cache30mInputTokens,
+		"cache_12h_input_tokens":      accumulator.Cache12hInputTokens,
 	}, true
 }
 
@@ -148,9 +150,11 @@ func populateLogEntryUsage(entry *model.LogEntry, usage map[string]any) {
 	entry.CacheReadInputTokens = getMapIntOrDefault(usage, "cache_read_input_tokens", 0)
 	entry.Cache5mInputTokens = getMapIntOrDefault(usage, "cache_5m_input_tokens", 0)
 	entry.Cache1hInputTokens = getMapIntOrDefault(usage, "cache_1h_input_tokens", 0)
-	entry.CacheCreationInputTokens = getMapIntOrDefault(usage, "cache_creation_input_tokens", entry.Cache5mInputTokens+entry.Cache1hInputTokens)
+	entry.Cache30mInputTokens = getMapIntOrDefault(usage, "cache_30m_input_tokens", 0)
+	entry.Cache12hInputTokens = getMapIntOrDefault(usage, "cache_12h_input_tokens", 0)
+	entry.CacheCreationInputTokens = getMapIntOrDefault(usage, "cache_creation_input_tokens", entry.Cache5mInputTokens+entry.Cache1hInputTokens+entry.Cache30mInputTokens+entry.Cache12hInputTokens)
 	if entry.CacheCreationInputTokens == 0 {
-		entry.CacheCreationInputTokens = entry.Cache5mInputTokens + entry.Cache1hInputTokens
+		entry.CacheCreationInputTokens = entry.Cache5mInputTokens + entry.Cache1hInputTokens + entry.Cache30mInputTokens + entry.Cache12hInputTokens
 	}
 }
 

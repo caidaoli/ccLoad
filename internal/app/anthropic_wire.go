@@ -51,6 +51,11 @@ var anthropicClaudeCLIUserAgentPattern = regexp.MustCompile(
 var anthropicFingerprintUserAgentPattern = regexp.MustCompile(
 	`(?i)^(claude-cli/)([0-9]+\.[0-9]+\.[0-9]+)(\s.*)?$`)
 
+/**
+ * @brief 校验 UA 请求扩展的 token 名及不含括号、逗号和控制字符的值。
+ */
+var anthropicUserAgentRequestFieldPattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+/[^(),\\x00-\\x1f\\x7f]+$")
+
 var anthropicBillingVersionPattern = regexp.MustCompile(`cc_version=([0-9]+\.[0-9]+\.[0-9]+)`)
 var anthropicBillingFingerprintPattern = regexp.MustCompile(`cc_version=[0-9]+\.[0-9]+\.[0-9]+\.[0-9a-fA-F]{3}\b`)
 
@@ -251,9 +256,18 @@ func anthropicUsesFirstPartyHost(cfg *model.Config, target *url.URL) bool {
 	return isOfficialAnthropicURL(target)
 }
 
-// finalizeAnthropicClaudeCodeMessagesBodyForCaller 是 Anthropic Messages 上游 body 的唯一
-// 最终化入口。原生 Claude Code 请求保留调用方 body/CCH；模拟请求生成无 CCH
-// 的 billing block。
+/**
+ * @brief 最终化 Claude Code wire；原生调用方保留正文，模拟调用方重建前缀与能力。
+ * @param body 已应用渠道正文规则的请求。
+ * @param cfg 当前渠道配置。
+ * @param apiKey 本次使用的凭据。
+ * @param headers 原始调用方请求头。
+ * @param target 本次实际目标地址。
+ * @param callerWire 改写前判定的调用方 wire。
+ * @return 可发送上游的正文。
+ * @return 历史思考省略策略，未省略时为空。
+ * @return JSON、身份生成或 CCH 签名失败时的错误。
+ */
 func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	body []byte,
 	cfg *model.Config,
@@ -274,6 +288,8 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 		return finishAnthropicPassthrough(body, false, cfg, target, headers)
 	}
 	body = normalizeAnthropicOAuthModel(body)
+	preserveThinkingBinding := anthropicUsesFirstPartyHost(cfg, target) && anthropicThinkingAllowsPreservedBinding(body)
+	body, automaticMessageCache := materializeAnthropicTopLevelCacheControl(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
 	// 保持默认 5m。Anthropic 按 tools → system → messages 顺序评估，网关注入的
 	// system breakpoint 排在调用方 block 前面，不跟随就会被
@@ -346,7 +362,7 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
 		body = ensureAnthropicMimicToolCacheBreakpoint(body, cloakCacheTTL)
 	}
-	body = ensureAnthropicCloakedCacheBreakpoints(body, messagePrefixCount, cloakCacheTTL)
+	body = ensureAnthropicCloakedCacheBreakpoints(body, messagePrefixCount, cloakCacheTTL, automaticMessageCache)
 	// Forced tool choice strips thinking during normalization. Only withdraw
 	// the object ccLoad injected; caller-owned context_management keeps its
 	// ownership and is left untouched.
@@ -361,6 +377,9 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	// Code would send one: models that accept temperature, with thinking off.
 	callerTemperature := gjson.GetBytes(body, "temperature")
 	body = encodeNormalizedAnthropicRequest(body)
+	if preserveThinkingBinding {
+		body = applyAnthropicPreservedThinkingBinding(body)
+	}
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
 		modelName := jsonStringValue(gjson.GetBytes(body, "model"))
 		if !gjson.GetBytes(body, "max_tokens").Exists() {
@@ -418,10 +437,11 @@ func applyAnthropicMessagesAPIInvariants(body []byte) []byte {
 // anthropicMaxCacheControls 是 Anthropic 允许的显式缓存断点上限。
 const anthropicMaxCacheControls = 4
 
-// sanitizeAnthropicCacheControls 删除 Anthropic 会以 400 拒收的缓存断点：延迟加载
-// 工具和 thinking/redacted_thinking 块不接受 cache_control，显式断点总数不得超过
-// 上限。非法断点先删、不占名额。原生 Claude Code 请求同样经过这里（对齐 sub2api
-// stripDeferredToolCacheControl + enforceCacheControlLimit）。
+/**
+ * @brief 删除 Anthropic 拒收的块级断点，并将顶层自动缓存计入断点上限。
+ * @param body Anthropic 请求正文。
+ * @return 清理延迟工具和思考块缓存标记后的正文，原生顶层标记仍保持顶层。
+ */
 func sanitizeAnthropicCacheControls(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"cache_control"`)) {
 		return body
@@ -429,7 +449,7 @@ func sanitizeAnthropicCacheControls(body []byte) []byte {
 	var rejected []string
 	forEachAnthropicCacheBlock(body, func(path string, block gjson.Result) bool {
 		if block.Get("cache_control").Exists() && anthropicBlockRejectsCacheControl(path, block) {
-			rejected = append(rejected, path+".cache_control")
+			rejected = append(rejected, anthropicCacheControlPath(path))
 		}
 		return true
 	})
@@ -1231,11 +1251,88 @@ func stripEmptyAnthropicTextBlocks(blocks gjson.Result) (string, bool) {
 	return "[" + strings.Join(kept, ",") + "]", true
 }
 
-// ensureAnthropicCloakedCacheBreakpoints mirrors Claude Code's independent
-// system and rolling-message selectors. OAuth tool breakpoints are handled
-// separately to cover stable tool declarations as sub2api does.
-// cacheTTL 跟随调用方声明的缓存窗口（空即默认 5m），见 anthropicCloakCacheControl。
-func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, cacheTTL string) []byte {
+/**
+ * @brief 把模拟请求的顶层自动缓存落在最后一个可缓存块上。
+ * @param body 重建 Claude Code 前缀前的请求正文。
+ * @return 顶层缓存已具象化后的正文；无有效标记或可缓存块时保留原文。
+ * @return 标记是否已落在消息中，供滚动断点注入避免重复。
+ */
+func materializeAnthropicTopLevelCacheControl(body []byte) ([]byte, bool) {
+	cache := gjson.GetBytes(body, "cache_control")
+	if !cache.IsObject() || jsonStringValue(cache.Get("type")) != "ephemeral" {
+		return body, false
+	}
+	path := ""
+	var target gjson.Result
+	messages := gjson.GetBytes(body, "messages")
+	if messages.IsArray() {
+		items := messages.Array()
+		for index, message := range slices.Backward(items) {
+			role := strings.ToLower(strings.TrimSpace(jsonStringValue(message.Get("role"))))
+			content := message.Get("content")
+			if role != "user" && role != "assistant" && (role != "system" || index != len(items)-1 || content.Type != gjson.String) {
+				continue
+			}
+			contentPath := "messages." + strconv.Itoa(index) + ".content"
+			if content.Type == gjson.String && strings.TrimSpace(content.String()) != "" {
+				path, target = contentPath, content
+				break
+			}
+			if content.IsArray() {
+				blocks := content.Array()
+				if blockIndex := anthropicRollingCacheBlockIndex(blocks, role); blockIndex >= 0 {
+					path, target = contentPath+"."+strconv.Itoa(blockIndex), blocks[blockIndex]
+					break
+				}
+			}
+		}
+	}
+	if path == "" {
+		system := gjson.GetBytes(body, "system")
+		if system.Type == gjson.String && strings.TrimSpace(system.String()) != "" {
+			path, target = "system", system
+		} else if system.IsArray() {
+			blocks := system.Array()
+			if index := anthropicRollingCacheBlockIndex(blocks, "system"); index >= 0 {
+				path, target = "system."+strconv.Itoa(index), blocks[index]
+			}
+		}
+	}
+	if path == "" {
+		tools := gjson.GetBytes(body, "tools")
+		if tools.IsArray() {
+			for index, tool := range slices.Backward(tools.Array()) {
+				if tool.IsObject() && !isAnthropicDeferredTool(tool) {
+					path, target = "tools."+strconv.Itoa(index), tool
+					break
+				}
+			}
+		}
+	}
+	if path == "" {
+		return body, false
+	}
+	if target.Type == gjson.String {
+		body = setJSONRaw(body, path, "["+anthropicTextBlockRaw(target.String(), cache.Raw)+"]")
+	} else {
+		existing := target.Get("cache_control")
+		validExisting := existing.IsObject() && jsonStringValue(existing.Get("type")) == "ephemeral"
+		if !validExisting || (jsonMemberCount(existing) == 1 && jsonMemberCount(cache) > 1) {
+			body = setJSONRaw(body, path+".cache_control", cache.Raw)
+		}
+	}
+	return deleteJSONPath(body, "cache_control"), strings.HasPrefix(path, "messages.")
+}
+
+/**
+ * @brief 给模拟请求补齐 system 和滚动消息断点，窗口跟随调用方。
+ * @param body 已重建前缀的请求正文。
+ * @param skipMessagePrefix 网关前置消息数，不在这些消息上补滚动断点。
+ * @param cacheTTL 调用方使用的缓存窗口；空字符串表示默认 5m。
+ * @param automaticMessageCache 顶层自动缓存是否已经落在消息上。
+ * @return 不重复注入末尾断点的正文。
+ */
+func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, cacheTTL string, automaticMessageCache bool) []byte {
 	cacheControl := anthropicCloakCacheControl(cacheTTL)
 	if system := gjson.GetBytes(body, "system"); system.IsArray() {
 		hasBreakpoint := false
@@ -1255,6 +1352,9 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 		if !hasBreakpoint && lastEligible >= 0 {
 			body = setJSONRaw(body, "system."+strconv.Itoa(lastEligible)+".cache_control", cacheControl)
 		}
+	}
+	if automaticMessageCache {
+		return body
 	}
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
@@ -1370,9 +1470,11 @@ func isBlankAnthropicTextBlock(block gjson.Result) bool {
 	return jsonStringValue(block.Get("type")) == "text" && strings.TrimSpace(jsonStringValue(block.Get("text"))) == ""
 }
 
-// orderAnthropicCacheControlWireShape 把每个 cache_control 的成员归一成原生键序
-// type → ttl → scope → 其余（字母序）。调用方送来的顺序是任意的，而上游按 body
-// 形态识别 Claude Code；只重排 cache_control 本身，其余字节一律不动。
+/**
+ * @brief 将缓存标记按原生 type、ttl、scope、其余字母序排列。
+ * @param body Anthropic 请求正文。
+ * @return 只改写缓存对象键序、保留其余字节的正文。
+ */
 func orderAnthropicCacheControlWireShape(body []byte) []byte {
 	var patches []anthropicRawPatch
 	forEachAnthropicCacheBlock(body, func(path string, block gjson.Result) bool {
@@ -1381,7 +1483,7 @@ func orderAnthropicCacheControlWireShape(body []byte) []byte {
 			return true
 		}
 		if ordered, changed := orderedAnthropicCacheControlRaw(cache); changed {
-			patches = append(patches, anthropicRawPatch{path: path + ".cache_control", raw: ordered})
+			patches = append(patches, anthropicRawPatch{path: anthropicCacheControlPath(path), raw: ordered})
 		}
 		return true
 	})
@@ -1482,16 +1584,24 @@ func anthropicCacheControlIsLongTTL(cache gjson.Result) bool {
 	return jsonStringValue(cache.Get("ttl")) == "1h"
 }
 
+/**
+ * @brief 将块级断点及顶层自动缓存总数限制在指定上限内。
+ * @param body Anthropic 请求正文。
+ * @param limit 允许的断点数；负数按零处理。
+ * @return 优先保留末尾工具、system 与自动缓存标记的正文。
+ */
 func enforceAnthropicCacheControlLimit(body []byte, limit int) []byte {
 	if limit < 0 {
 		limit = 0
 	}
-	var tools, system, messages []string
+	var tools, system, messages, automatic []string
 	forEachAnthropicCacheBlock(body, func(path string, block gjson.Result) bool {
 		if !block.Get("cache_control").Exists() {
 			return true
 		}
 		switch {
+		case path == "":
+			automatic = append(automatic, path)
 		case strings.HasPrefix(path, "tools."):
 			tools = append(tools, path)
 		case strings.HasPrefix(path, "system."):
@@ -1501,7 +1611,7 @@ func enforceAnthropicCacheControlLimit(body []byte, limit int) []byte {
 		}
 		return true
 	})
-	excess := len(tools) + len(system) + len(messages) - limit
+	excess := len(tools) + len(system) + len(messages) + len(automatic) - limit
 	if excess <= 0 {
 		return body
 	}
@@ -1515,7 +1625,7 @@ func enforceAnthropicCacheControlLimit(body []byte, limit int) []byte {
 				continue
 			}
 			stripped[path] = true
-			body = deleteJSONPath(body, path+".cache_control")
+			body = deleteJSONPath(body, anthropicCacheControlPath(path))
 			excess--
 		}
 	}
@@ -1530,6 +1640,7 @@ func enforceAnthropicCacheControlLimit(body []byte, limit int) []byte {
 	remove(messages)
 	remove(system)
 	remove(tools)
+	remove(automatic)
 	return body
 }
 
@@ -1764,11 +1875,17 @@ type anthropicOAuthPlatform struct {
 	Arch string
 }
 
-// anthropicRequestFingerprint accepts only a complete native software tuple.
-// The caller must classify the original request before supplying its headers.
+/**
+ * @brief 选择完整原生软件组合；回退基线时只带回本次 UA 请求扩展。
+ * @param incoming 已确认原生调用方的原始软件头，模拟调用方传空头。
+ * @return 本次请求的软件指纹，不从调用方学习账号持久平台。
+ */
 func anthropicRequestFingerprint(incoming http.Header) anthropicOAuthFingerprint {
 	fp := defaultAnthropicOAuthFingerprint()
 	ua := strings.TrimSpace(anthropicHeaderValue(incoming, "User-Agent"))
+	if fields := anthropicUserAgentRequestFields(ua); len(fields) != 0 {
+		fp.UserAgent = strings.TrimSuffix(fp.UserAgent, ")") + ", " + strings.Join(fields, ", ") + ")"
+	}
 	if !anthropicAcceptableFingerprintUserAgent(ua) {
 		return fp
 	}
@@ -1790,6 +1907,37 @@ func anthropicRequestFingerprint(incoming http.Header) anthropicOAuthFingerprint
 	fp.StainlessPackageVersion = pkg
 	fp.StainlessRuntimeVersion = runtimeVersion
 	return fp
+}
+
+/**
+ * @brief 从原生 UA 提取仅属于当前请求的扩展，排除 agent-sdk 软件身份。
+ * @param userAgent 已确认原生调用方的 UA；版本可以低于内置基线。
+ * @return 合法扩展的原始字段；UA 或扩展结构无效时返回 nil。
+ */
+func anthropicUserAgentRequestFields(userAgent string) []string {
+	if len(userAgent) > 256 || !anthropicFingerprintUserAgentPattern.MatchString(userAgent) {
+		return nil
+	}
+	_, comment, ok := strings.Cut(userAgent, "(")
+	if !ok || !strings.HasSuffix(comment, ")") {
+		return nil
+	}
+	fields := strings.Split(strings.TrimSuffix(comment, ")"), ",")
+	if len(fields) < 2 || !strings.EqualFold(strings.TrimSpace(fields[0]), "external") || strings.TrimSpace(fields[1]) == "" {
+		return nil
+	}
+	var requestFields []string
+	for _, raw := range fields[2:] {
+		field := strings.TrimSpace(raw)
+		if !anthropicUserAgentRequestFieldPattern.MatchString(field) {
+			return nil
+		}
+		name, _, _ := strings.Cut(field, "/")
+		if !strings.EqualFold(name, "agent-sdk") {
+			requestFields = append(requestFields, field)
+		}
+	}
+	return requestFields
 }
 
 func anthropicOAuthFingerprintKey(cfg *model.Config) string {
@@ -2316,12 +2464,12 @@ func applyAnthropicNativeOAuthDefaults(req *http.Request, body []byte, fingerpri
 	setRawHeader(req.Header, "Anthropic-Beta", betas)
 }
 
-// anthropicClaudeCodeMimicBetas 按 Claude Code 2.1.283 主循环（first party）的构建顺序
-// 生成模拟请求的 anthropic-beta：基础表 → per-turn → 工具搜索 → mid-conversation
-// clear-at → effort → thinking-binding → fast → extended-cache-ttl → cache-diagnosis。
-// OAuth sonnet-5 的结果与 docs/claude 抓包逐项一致；抓包里的 cache-diagnosis 只在
-// body 带 diagnostics 时声明（官方同样由开关控制，关闭时 beta 与字段一起缺席）。
-// API Key 的 Haiku 请求保持 helper 形态：不声明 claude-code，能力 beta 按 body 追加。
+/**
+ * @brief 按模拟请求的模型能力及实际字段组装 Claude Code beta。
+ * @param body 已最终化的 Anthropic 请求正文。
+ * @param oauth 是否使用 OAuth 凭据；API Key 不声明 OAuth beta。
+ * @return 保持既有基线顺序并包含 per-turn、timing、thread 所需能力的 beta 列表。
+ */
 func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 	modelName := anthropicCanonicalModelName(jsonStringValue(gjson.GetBytes(body, "model")))
 	var betas []string
@@ -2344,6 +2492,9 @@ func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 		if gjson.GetBytes(body, "context_management").Exists() {
 			betas = append(betas, "context-management-2025-06-27")
 		}
+		if anthropicModelPreservesThinking(modelName) || anthropicHasMessageOutputConfig(body) {
+			betas = append(betas, "per-turn-control-2026-07-01")
+		}
 	} else {
 		betas = []string{"claude-code-20250219"}
 		if oauth {
@@ -2359,8 +2510,11 @@ func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 		if midConversation {
 			betas = append(betas, "mid-conversation-system-2026-04-07")
 		}
-		if anthropicHasMessageOutputConfig(body) {
+		if anthropicModelPreservesThinking(modelName) || anthropicHasMessageOutputConfig(body) {
 			betas = append(betas, "per-turn-control-2026-07-01")
+		}
+		if anthropicRequestUsesPerTurnTiming(body, modelName) {
+			betas = append(betas, "timing-2026-09-09")
 		}
 		if !claude3 {
 			betas = append(betas, "advanced-tool-use-2025-11-20")
@@ -2392,7 +2546,114 @@ func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 	if gjson.GetBytes(body, "diagnostics").IsObject() {
 		betas = append(betas, "cache-diagnosis-2026-04-07")
 	}
+	if gjson.GetBytes(body, "thread").IsObject() {
+		betas = append(betas, "message-threads-2026-08-12")
+	}
 	return strings.Join(betas, ",")
+}
+
+/**
+ * @brief 匹配规范模型 ID 及其日期、上下文变体，不把相邻版本当成同一型号。
+ * @param modelName 已去 provider 前缀并转小写的模型名。
+ * @param families 本次能力对应的模型前缀。
+ * @return 模型属于任一指定型号时为 true。
+ */
+func anthropicModelMatchesFamily(modelName string, families ...string) bool {
+	for _, family := range families {
+		if modelName == family || strings.HasPrefix(modelName, family+"-") || strings.HasPrefix(modelName, family+"[") {
+			return true
+		}
+	}
+	return false
+}
+
+/**
+ * @brief 查询 2.1.321 中同时支持 preserved thinking 与 per-turn control 的模型集合。
+ * @param modelName 已规范化的 Anthropic 模型名。
+ * @return 模型采用签名前缀绑定时为 true。
+ */
+func anthropicModelPreservesThinking(modelName string) bool {
+	return anthropicModelMatchesFamily(modelName, "claude-opus-5-5", "claude-sonnet-5-5",
+		"claude-haiku-5-5", "claude-haiku-5.5", "claude-fable-5-1", "claude-fable-5.1",
+		"claude-fable-5-2", "claude-fable-5.2")
+}
+
+/**
+ * @brief 在归一化删除 disabled/off 之前判定是否允许补前缀绑定默认值。
+ * @param body 已应用调用方与渠道规则的模拟请求正文。
+ * @return 模型、思考模式与工具选择允许默认 drop_block 时为 true。
+ */
+func anthropicThinkingAllowsPreservedBinding(body []byte) bool {
+	modelName := anthropicCanonicalModelName(jsonStringValue(gjson.GetBytes(body, "model")))
+	if !anthropicModelPreservesThinking(modelName) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "tool_choice.type")))) {
+	case "any", "tool":
+		return false
+	}
+	thinking := gjson.GetBytes(body, "thinking")
+	if !thinking.Exists() {
+		return true
+	}
+	if thinking.Get("block_binding.prefix_mismatch_behavior").Exists() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(jsonStringValue(thinking.Get("type")))) {
+	case "adaptive", "auto":
+		return true
+	case "enabled":
+		return !anthropicModelMatchesFamily(modelName, "claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-5.5")
+	default:
+		return false
+	}
+}
+
+/**
+ * @brief 对重塑前缀后仍保留的官方签名历史允许上游只丢弃绑定不匹配的块。
+ * @param body 已通过模型、模式及显式策略门控并完成签名清理的模拟请求。
+ * @return 有签名历史时补 adaptive/drop_block 的正文，否则原样返回。
+ */
+func applyAnthropicPreservedThinkingBinding(body []byte) []byte {
+	for _, message := range gjson.GetBytes(body, "messages").Array() {
+		if jsonStringValue(message.Get("role")) != "assistant" {
+			continue
+		}
+		for _, block := range message.Get("content").Array() {
+			typ := jsonStringValue(block.Get("type"))
+			if (typ == "thinking" && strings.TrimSpace(jsonStringValue(block.Get("signature"))) != "") ||
+				(typ == "redacted_thinking" && strings.TrimSpace(jsonStringValue(block.Get("data"))) != "") {
+				if !gjson.GetBytes(body, "thinking").Exists() {
+					body = setJSONRaw(body, "thinking", `{"type":"adaptive"}`)
+				}
+				return setJSONRaw(body, "thinking.block_binding.prefix_mismatch_behavior", `"drop_block"`)
+			}
+		}
+	}
+	return body
+}
+
+/**
+ * @brief 按模型能力和实际 timing 字段判断是否需要 timing beta。
+ * @param body 已最终化的模拟请求正文。
+ * @param modelName 已规范化的 Anthropic 模型名。
+ * @return 非 Haiku 的受支持模型实际携带顶层或消息级 timing 时为 true。
+ */
+func anthropicRequestUsesPerTurnTiming(body []byte, modelName string) bool {
+	if anthropicModelMatchesFamily(modelName, "claude-haiku-5-5", "claude-haiku-5.5") ||
+		(!anthropicModelPreservesThinking(modelName) && !anthropicModelMatchesFamily(modelName,
+			"claude-mythos-5-1", "claude-mythos-5.1", "claude-mythos-5-2", "claude-mythos-5.2")) {
+		return false
+	}
+	if gjson.GetBytes(body, "output_config.timing").Exists() {
+		return true
+	}
+	for _, message := range gjson.GetBytes(body, "messages").Array() {
+		if message.Get("output_config.timing").Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 // anthropicCanonicalModelName 去掉 provider 前缀并小写，供按官方模型名判定能力。

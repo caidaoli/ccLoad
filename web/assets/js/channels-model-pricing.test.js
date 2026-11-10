@@ -29,3 +29,11 @@ test('prefill looks up the redirect target before the channel model name', () =>
   assert.deepEqual(channelModelPricingLookupCandidates({ model: 'alias', redirect_model: 'upstream' }), ['upstream', 'alias']);
   assert.deepEqual(channelModelPricingLookupCandidates({ model: '*' }), []);
 });
+
+test('12h prices survive editing and preserve explicit free writes', () => {
+  const pricing = { input_price: 0, output_price: 1, cache_write_price: 0, cache_write_12h_price: 2,
+    input_price_high: 0, output_price_high: 2, cache_write_12h_price_high: 0 };
+  assert.deepEqual(normalizeChannelModelPricing(pricing), pricing);
+  assert.deepEqual(parseChannelModelPricingForm(Object.fromEntries(Object.entries(pricing).map(([k, v]) => [k, String(v)]))),
+    { pricing, error: '', field: '' });
+});

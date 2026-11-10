@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -122,7 +123,7 @@ func NormalizeResponsesToolCallOutputs(items []gjson.Result) []gjson.Result {
 					expectedName := pendingCallNames[pendingID]
 					if expectedName != "" {
 						for outIdx, out := range outputs {
-							if !used[outIdx] && ExtractResponsesCallID(out) == "" {
+							if !used[outIdx] && ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
 								outName := strings.TrimSpace(out.Get("name").String())
 								if outName != "" && outName == expectedName {
 									used[outIdx] = true
@@ -141,7 +142,7 @@ func NormalizeResponsesToolCallOutputs(items []gjson.Result) []gjson.Result {
 						continue
 					}
 					for outIdx, out := range outputs {
-						if !used[outIdx] && ExtractResponsesCallID(out) == "" {
+						if !used[outIdx] && ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
 							outName := strings.TrimSpace(out.Get("name").String())
 							expectedName := pendingCallNames[pendingID]
 							if outName == "" || expectedName == "" || outName == expectedName {
@@ -177,4 +178,132 @@ func NormalizeResponsesToolCallOutputs(items []gjson.Result) []gjson.Result {
 	}
 
 	return normalized
+}
+
+// SanitizeOrphanResponsesToolOutputs pairs outputs missing call_id with pending
+// calls and rewrites remaining standalone outputs as user messages. Codex Desktop
+// Companion Page context uses this shape, which strict Responses upstreams reject.
+// Explicit call references remain valid without local history for continuations.
+func SanitizeOrphanResponsesToolOutputs(rawJSON []byte) []byte {
+	input := gjson.GetBytes(rawJSON, "input")
+	if !input.IsArray() {
+		return rawJSON
+	}
+	items := input.Array()
+	normalized := NormalizeResponsesToolCallOutputs(items)
+	pendingMissingCallIDOutputType := ""
+	for i, item := range normalized {
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if itemType == "function_call" || itemType == "custom_tool_call" {
+			if ExtractResponsesCallID(item) == "" {
+				pendingMissingCallIDOutputType = itemType + "_output"
+			} else {
+				pendingMissingCallIDOutputType = ""
+			}
+			continue
+		}
+		if itemType != "function_call_output" && itemType != "custom_tool_call_output" || isCodexDelegationToolOutput(item) {
+			pendingMissingCallIDOutputType = ""
+			continue
+		}
+		if callID := responsesToolOutputExplicitCallID(item); callID != "" {
+			pendingMissingCallIDOutputType = ""
+			if strings.TrimSpace(items[i].Get("call_id").String()) != callID {
+				rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("input.%d.call_id", i), callID)
+			}
+			continue
+		}
+		if pendingMissingCallIDOutputType == itemType &&
+			strings.TrimSpace(item.Get("name").String()) == "" &&
+			strings.TrimSpace(item.Get("id").String()) == "" {
+			pendingMissingCallIDOutputType = ""
+			continue
+		}
+		pendingMissingCallIDOutputType = ""
+		rawJSON, _ = sjson.SetRawBytes(rawJSON, fmt.Sprintf("input.%d", i), orphanResponsesToolOutputMessage(item))
+	}
+	return rawJSON
+}
+
+func responsesToolOutputExplicitCallID(item gjson.Result) string {
+	for _, key := range []string{"call_id", "tool_call_id", "callId"} {
+		value := item.Get(key)
+		if value.Type == gjson.String {
+			if callID := strings.TrimSpace(value.String()); callID != "" {
+				return callID
+			}
+		}
+	}
+	return ""
+}
+
+func isCodexDelegationToolOutput(item gjson.Result) bool {
+	if strings.TrimSpace(item.Get("type").String()) != "function_call_output" ||
+		strings.TrimSpace(item.Get("namespace").String()) != "codex_app" {
+		return false
+	}
+	switch strings.TrimSpace(item.Get("name").String()) {
+	case "create_thread", "send_message_to_thread":
+		return true
+	default:
+		return false
+	}
+}
+
+func orphanResponsesToolOutputMessage(item gjson.Result) []byte {
+	name := strings.TrimSpace(item.Get("name").String())
+	if name == "" {
+		name = "tool"
+	}
+	text, extraParts := orphanResponsesToolOutputParts(item.Get("output"))
+	if text == "" {
+		text = "(empty)"
+	}
+	message := []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`)
+	message, _ = sjson.SetBytes(message, "content.0.text", "Tool output from "+name+":\n"+text)
+	for _, part := range extraParts {
+		message, _ = sjson.SetRawBytes(message, "content.-1", part)
+	}
+	return message
+}
+
+func orphanResponsesToolOutputParts(output gjson.Result) (string, [][]byte) {
+	if !output.Exists() || output.Type == gjson.Null {
+		return "", nil
+	}
+	if output.Type == gjson.String {
+		return strings.TrimSpace(output.String()), nil
+	}
+	if output.IsArray() {
+		var texts []string
+		var extraParts [][]byte
+		for _, part := range output.Array() {
+			if part.Type == gjson.String {
+				if text := strings.TrimSpace(part.String()); text != "" {
+					texts = append(texts, text)
+				}
+				continue
+			}
+			if !part.IsObject() {
+				continue
+			}
+			matchedText := false
+			for _, key := range []string{"text", "input_text", "output_text"} {
+				if value := part.Get(key); value.Type == gjson.String {
+					matchedText = true
+					if text := strings.TrimSpace(value.String()); text != "" {
+						texts = append(texts, text)
+					}
+					break
+				}
+			}
+			if !matchedText {
+				extraParts = append(extraParts, []byte(part.Raw))
+			}
+		}
+		if len(texts) > 0 || len(extraParts) > 0 {
+			return strings.Join(texts, "\n"), extraParts
+		}
+	}
+	return strings.TrimSpace(output.Raw), nil
 }

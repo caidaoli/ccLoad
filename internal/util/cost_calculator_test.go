@@ -31,7 +31,7 @@ func TestCalculateCost_Sonnet45(t *testing.T) {
 func TestCalculateStandardCostBreakdown_ExposesFormulaComponents(t *testing.T) {
 	breakdown := CalculateStandardCostBreakdownWithPrice(
 		"claude-sonnet-4-5-20250929", "", OpenAIRateCardAPI, nil,
-		12, 73, 17_558, 278, 100,
+		12, 73, 17_558, 278, 100, 0, 0,
 	)
 
 	tests := []struct {
@@ -118,7 +118,7 @@ func TestCalculateCost_Haiku55(t *testing.T) {
 					input, output, read, five, hour = 0.50, 2.50, 0.05, 0.625, 1.00
 				}
 				// 输出不参与阈值；缓存读和两种时长的缓存写均参与。
-				got := CalculateStandardCostBreakdownWithPrice(model, "", OpenAIRateCardAPI, nil, tc.input, 2_000, tc.read, tc.five, tc.hour)
+				got := CalculateStandardCostBreakdownWithPrice(model, "", OpenAIRateCardAPI, nil, tc.input, 2_000, tc.read, tc.five, tc.hour, 0, 0)
 				wantInput := float64(tc.input) * input / 1_000_000
 				wantOutput := 2_000 * output / 1_000_000
 				wantRead := float64(tc.read) * read / 1_000_000
@@ -138,7 +138,7 @@ func TestCalculateCost_Haiku55(t *testing.T) {
 func TestCalculateCost_Fable51(t *testing.T) {
 	breakdown := CalculateStandardCostBreakdownWithPrice(
 		"claude-fable-5-1", "", OpenAIRateCardAPI, nil,
-		1_000, 2_000, 4_000, 500, 250,
+		1_000, 2_000, 4_000, 500, 250, 0, 0,
 	)
 	for _, test := range []struct {
 		name      string
@@ -173,7 +173,7 @@ func TestCalculateCost_Fable52(t *testing.T) {
 				if tier == "fast" {
 					multiplier = 2
 				}
-				got := CalculateStandardCostBreakdownWithPrice(name, tier, OpenAIRateCardAPI, nil, 250_000, 2_000, 4_000, 500, 250)
+				got := CalculateStandardCostBreakdownWithPrice(name, tier, OpenAIRateCardAPI, nil, 250_000, 2_000, 4_000, 500, 250, 0, 0)
 				for _, component := range []struct {
 					got  float64
 					want float64
@@ -205,7 +205,7 @@ func TestCalculateCost_Opus55(t *testing.T) {
 		{name: "fast", serviceTier: "fast", wantInputPrice: 8, wantOutputPrice: 40, wantCacheReadPrice: 0.4, wantCacheWritePrice: 10, wantServiceMultiplier: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdownWithPrice("claude-opus-5-5", test.serviceTier, OpenAIRateCardAPI, nil, 1_000, 1_000, 1_000, 1_000, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice("claude-opus-5-5", test.serviceTier, OpenAIRateCardAPI, nil, 1_000, 1_000, 1_000, 1_000, 0, 0, 0)
 			if breakdown.Input.PricePerMillion != test.wantInputPrice ||
 				breakdown.Output.PricePerMillion != test.wantOutputPrice ||
 				breakdown.CacheRead.PricePerMillion != test.wantCacheReadPrice ||
@@ -228,7 +228,7 @@ func TestCalculateCost_Sonnet5Pricing(t *testing.T) {
 		{model: "claude-sonnet-5-20260827", cacheReadPrice: 0.2},
 	} {
 		t.Run(test.model, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdownWithPrice(test.model, "", OpenAIRateCardAPI, nil, 1_000, 1_000, 1_000, 1_000, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice(test.model, "", OpenAIRateCardAPI, nil, 1_000, 1_000, 1_000, 1_000, 0, 0, 0)
 			if breakdown.Input.PricePerMillion != 2 ||
 				breakdown.Output.PricePerMillion != 10 ||
 				breakdown.CacheRead.PricePerMillion != test.cacheReadPrice ||
@@ -741,7 +741,7 @@ func TestCalculateCostOpenAIFastPrices(t *testing.T) {
 	} {
 		t.Run(test.model, func(t *testing.T) {
 			for _, tier := range []string{"fast", "priority", "auto"} {
-				got := CalculateStandardCostBreakdownWithPrice(test.model, tier, OpenAIRateCardAPI, nil, 1000, 1000, 1000, 0, 0)
+				got := CalculateStandardCostBreakdownWithPrice(test.model, tier, OpenAIRateCardAPI, nil, 1000, 1000, 1000, 0, 0, 0, 0)
 				want := (test.input + test.output + test.cache) / 1000
 				if !floatEquals(got.Total, want, 1e-12) || !floatEquals(got.CacheRead.PricePerMillion, test.cache, 1e-12) {
 					t.Fatalf("tier=%s breakdown=%+v, want total %v", tier, got, want)
@@ -918,7 +918,7 @@ func TestCalculateCost_UltrafastWithCustomPrices(t *testing.T) {
 		{name: "channel", price: price, want: 6 * (3 + 5 + 0.3 + 4 + 6) / 1000},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			got := CalculateStandardCostBreakdownWithPrice("gpt-5.6-sol", "ultrafast", OpenAIRateCardAPI, scenario.price, 1000, 1000, 1000, 1000, 1000)
+			got := CalculateStandardCostBreakdownWithPrice("gpt-5.6-sol", "ultrafast", OpenAIRateCardAPI, scenario.price, 1000, 1000, 1000, 1000, 1000, 0, 0)
 			if !floatEquals(got.Total, scenario.want, 1e-12) || got.ServiceTierMultiplier != 6 ||
 				!floatEquals(got.Input.Cost+got.Output.Cost+got.CacheRead.Cost+got.CacheWrite.Cost, got.Total, 1e-12) {
 				t.Fatalf("Ultrafast breakdown = %+v, want total %v and 6x", got, scenario.want)
@@ -1940,7 +1940,7 @@ func TestFastModeCost_WithCache(t *testing.T) {
 	} {
 		t.Run(test.model, func(t *testing.T) {
 			// 缓存读、5m 写、1h 写均叠加 fast 倍率；Opus 5.5 读缓存按输入价的 5%。
-			got := CalculateStandardCostBreakdownWithPrice(test.model, "fast", OpenAIRateCardAPI, nil, 1000, 500, 5000, 2000, 1000)
+			got := CalculateStandardCostBreakdownWithPrice(test.model, "fast", OpenAIRateCardAPI, nil, 1000, 500, 5000, 2000, 1000, 0, 0)
 			if !floatEquals(got.Total, test.want, 1e-12) {
 				t.Fatalf("fast cost=%v, want %v", got.Total, test.want)
 			}
@@ -1958,7 +1958,7 @@ func TestCalculateCost_Mythos(t *testing.T) {
 		{"claude-mythos-5-1-20261001", 0.25},
 	} {
 		t.Run(test.model, func(t *testing.T) {
-			got := CalculateStandardCostBreakdownWithPrice(test.model, "", OpenAIRateCardAPI, nil, 250_000, 1_000, 100_000, 1_000, 1_000)
+			got := CalculateStandardCostBreakdownWithPrice(test.model, "", OpenAIRateCardAPI, nil, 250_000, 1_000, 100_000, 1_000, 1_000, 0, 0)
 			want := 2.5 + 0.05 + 0.1*test.cacheReadPrice + 0.0125 + 0.02
 			if got.Input.PricePerMillion != 10 || got.Output.PricePerMillion != 50 ||
 				got.CacheRead.PricePerMillion != test.cacheReadPrice || !floatEquals(got.Total, want, 1e-12) {
@@ -1975,7 +1975,7 @@ func TestFastModeCost_VsStandard(t *testing.T) {
 	inputTokens := 250000
 
 	standardCost := CalculateCostDetailed("claude-opus-5", inputTokens, 1000, 0, 0, 0)
-	fastCost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, inputTokens, 1000, 0, 0, 0).Total
+	fastCost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, inputTokens, 1000, 0, 0, 0, 0, 0).Total
 
 	// 标准: 250000×$5/1M + 1000×$25/1M = $1.275
 	expectedStandard := 1.275
@@ -2009,7 +2009,7 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdownWithPrice(tt.model, "fast", OpenAIRateCardAPI, nil, 1_000, 1_000, 0, 0, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice(tt.model, "fast", OpenAIRateCardAPI, nil, 1_000, 1_000, 0, 0, 0, 0, 0)
 			if breakdown.Input.PricePerMillion != tt.wantInputPrice || breakdown.Output.PricePerMillion != tt.wantOutputPrice {
 				t.Fatalf("fast pricing for %q = input %.2f/output %.2f, want %.2f/%.2f", tt.model,
 					breakdown.Input.PricePerMillion, breakdown.Output.PricePerMillion, tt.wantInputPrice, tt.wantOutputPrice)
@@ -2019,14 +2019,14 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 }
 
 func TestFastModeCost_NegativeTokens(t *testing.T) {
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, -1, 100, 0, 0, 0).Total
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, -1, 100, 0, 0, 0, 0, 0).Total
 	if cost != 0.0 {
 		t.Errorf("负数token应返回0, 实际 %.6f", cost)
 	}
 }
 
 func TestFastModeCost_ZeroTokens(t *testing.T) {
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, 0, 0, 0, 0, 0).Total
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, 0, 0, 0, 0, 0, 0, 0).Total
 	if cost != 0.0 {
 		t.Errorf("零token应返回0, 实际 %.6f", cost)
 	}

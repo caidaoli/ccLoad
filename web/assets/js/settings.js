@@ -26,8 +26,8 @@ const hotReloadSettingKeys = new Set([modelMultimodalFallbackSettingKey, modelCu
 const maxMultimodalFallbackMappings = 64;
 const maxCustomPricingBytes = 1024 * 1024;
 const maxCustomPricingModels = 512;
-const customPricingBasicFields = ['input_price', 'output_price', 'cache_read_price', 'cache_write_price'];
-const customPricingHighContextFields = ['input_price_high', 'output_price_high', 'cache_read_price_high', 'cache_write_price_high'];
+const customPricingBasicFields = ['input_price', 'output_price', 'cache_read_price', 'cache_write_price', 'cache_write_12h_price'];
+const customPricingHighContextFields = ['input_price_high', 'output_price_high', 'cache_read_price_high', 'cache_write_price_high', 'cache_write_12h_price_high'];
 // 后端契约只接受显式列出的字段；系统价格里仅供内部使用的字段（分层表、
 // 缓存读计入分档、图像费率）在预填时必须剔除，否则保存会被拒绝。
 const customPricingContractFields = new Set([
@@ -1526,6 +1526,8 @@ const customPricingFieldLabelKeys = {
   cache_read_price: 'settings.customPricing.cacheReadPrice',
   cache_write_price: 'settings.customPricing.cacheWritePrice',
   cache_write_price_high: 'settings.customPricing.cacheWritePriceHigh',
+  cache_write_12h_price: 'settings.customPricing.cacheWrite12hPrice',
+  cache_write_12h_price_high: 'settings.customPricing.cacheWrite12hPriceHigh',
   cache_read_price_high: 'settings.customPricing.cacheReadPriceHigh',
   input_price_high: 'settings.customPricing.inputPriceHigh',
   output_price_high: 'settings.customPricing.outputPriceHigh'
@@ -1575,7 +1577,7 @@ function renderCustomPricingModel(entry, modelIndex) {
   const pricing = entry.pricing || {};
   const highContextDescription = escapeHtml(t('settings.customPricing.highContextDescription'));
 
-  // 高上下文四项与基础四价同列同序，标签由表头承担。
+  // 高上下文价与基础价同列同序，标签由表头承担。
   // 关键：输入框必须落在真正的 <td> 里，列宽由表格列算法统一决定。
   // 用 grid/flex 容器会算出与列宽无关的宽度，两行输入框永远对不齐。
   const highContextCells = customPricingHighContextFields
@@ -1597,6 +1599,7 @@ function renderCustomPricingModel(entry, modelIndex) {
       ${customPricingNumberCell('output_price', pricing.output_price)}
       ${customPricingNumberCell('cache_read_price', pricing.cache_read_price)}
       ${customPricingNumberCell('cache_write_price', pricing.cache_write_price)}
+      ${customPricingNumberCell('cache_write_12h_price', pricing.cache_write_12h_price)}
       <td class="mobile-card-no-label"><button type="button" class="btn-icon" data-action="remove-custom-pricing-model" data-model-index="${modelIndex}" aria-label="${escapeHtml(t('settings.customPricing.removeModel'))}">&times;</button></td>
     </tr>
     <tr class="custom-pricing-high-row mobile-card-row" data-model-index="${modelIndex}"${highExpanded ? '' : ' data-collapsed'}>

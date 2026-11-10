@@ -16,20 +16,28 @@ type adminTokenPricingTier struct {
 	CacheReadPrice *float64 `json:"cache_read_price,omitempty"`
 }
 
-// adminModelPricing keeps the admin API's snake_case contract separate from
-// ModelPricing's legacy persisted-cache representation.
+/**
+ * @brief 管理端使用的 snake_case 价格契约，包含 OpenAI 12h 独立写入价。
+ */
 type adminModelPricing struct {
-	InputPrice          float64                 `json:"input_price"`
-	OutputPrice         float64                 `json:"output_price"`
-	TokenPricingTiers   []adminTokenPricingTier `json:"token_pricing_tiers,omitempty"`
-	CacheReadPrice      *float64                `json:"cache_read_price,omitempty"`
-	CacheReadPriceHigh  *float64                `json:"cache_read_price_high,omitempty"`
-	CacheWritePrice     *float64                `json:"cache_write_price,omitempty"`
-	CacheWritePriceHigh *float64                `json:"cache_write_price_high,omitempty"`
-	InputPriceHigh      *float64                `json:"input_price_high,omitempty"`
-	OutputPriceHigh     *float64                `json:"output_price_high,omitempty"`
+	InputPrice             float64                 `json:"input_price"`
+	OutputPrice            float64                 `json:"output_price"`
+	TokenPricingTiers      []adminTokenPricingTier `json:"token_pricing_tiers,omitempty"`
+	CacheReadPrice         *float64                `json:"cache_read_price,omitempty"`
+	CacheReadPriceHigh     *float64                `json:"cache_read_price_high,omitempty"`
+	CacheWritePrice        *float64                `json:"cache_write_price,omitempty"`
+	CacheWrite12hPrice     *float64                `json:"cache_write_12h_price,omitempty"`
+	CacheWrite12hPriceHigh *float64                `json:"cache_write_12h_price_high,omitempty"`
+	CacheWritePriceHigh    *float64                `json:"cache_write_price_high,omitempty"`
+	InputPriceHigh         *float64                `json:"input_price_high,omitempty"`
+	OutputPriceHigh        *float64                `json:"output_price_high,omitempty"`
 }
 
+/**
+ * @brief 将生效价格序列化为管理 API 契约，保留显式零价的存在状态。
+ * @param pricing 模型价格。
+ * @return 管理端价格。
+ */
 func modelPricingForAdmin(pricing util.ModelPricing) adminModelPricing {
 	response := adminModelPricing{
 		InputPrice:  pricing.InputPrice,
@@ -47,7 +55,13 @@ func modelPricingForAdmin(pricing util.ModelPricing) adminModelPricing {
 	if pricing.HasCacheWritePriceHigh || pricing.CacheWritePriceHigh > 0 {
 		response.CacheWritePriceHigh = new(pricing.CacheWritePriceHigh)
 	}
-	if pricing.InputPriceHigh > 0 || pricing.OutputPriceHigh > 0 {
+	if pricing.HasCacheWrite12hPrice {
+		response.CacheWrite12hPrice = new(pricing.CacheWrite12hPrice)
+	}
+	if pricing.HasCacheWrite12hPriceHigh {
+		response.CacheWrite12hPriceHigh = new(pricing.CacheWrite12hPriceHigh)
+	}
+	if pricing.HasInputPriceHigh || pricing.InputPriceHigh > 0 || pricing.OutputPriceHigh > 0 {
 		response.InputPriceHigh = new(pricing.InputPriceHigh)
 		response.OutputPriceHigh = new(pricing.OutputPriceHigh)
 	}

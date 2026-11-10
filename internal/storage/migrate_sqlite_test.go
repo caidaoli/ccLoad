@@ -2771,3 +2771,72 @@ func verifyReasoningDecisionMigrationAndRoundTrip(t *testing.T, db *sql.DB, stor
 		t.Fatalf("decision metadata = %+v", got)
 	}
 }
+
+/**
+ * @brief 验证旧库新增 OpenAI 写入分桶后单条、批量与 debug 日志往返。
+ * @param t 测试上下文。
+ */
+func TestOpenAICacheWriteTTLMigrationAndRoundTripSQLite(t *testing.T) {
+	db := openTestDB(t)
+	if err := migrate(context.Background(), db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	verifyOpenAICacheWriteTTLMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+/**
+ * @brief 验证各方言旧库新增 TTL 列时不猜测历史分桶，且全部日志写入路径保留明细。
+ * @param t 测试上下文。
+ * @param db 隔离数据库。
+ * @param store 当前数据库的存储实例。
+ * @param dialect SQL 方言。
+ */
+func verifyOpenAICacheWriteTTLMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "ttl-legacy", StatusCode: 200, CacheCreationInputTokens: 100, Cache5mInputTokens: 100}); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"cache_30m_input_tokens", "cache_12h_input_tokens"} {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE logs DROP COLUMN "+column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := migrate(ctx, db, dialect); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "ttl", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeLog := func(name string) *model.LogEntry {
+		return &model.LogEntry{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: name, StatusCode: 200, InputTokens: 10, OutputTokens: 1, CacheCreationInputTokens: 100, Cache30mInputTokens: 30, Cache12hInputTokens: 70, Cost: 0.0003, CostMultiplier: 1}
+	}
+	if err := store.AddLog(ctx, makeLog("ttl-single")); err != nil {
+		t.Fatal(err)
+	}
+	debug := makeLog("ttl-debug")
+	debug.DebugData = &model.DebugLogEntry{CreatedAt: now.Unix(), ReqBody: []byte(`{}`)}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{makeLog("ttl-batch"), debug}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ttl-legacy", "ttl-single", "ttl-batch", "ttl-debug"} {
+		entries, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, &model.LogFilter{Model: name})
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("%s entries=%+v err=%v", name, entries, err)
+		}
+		entry := entries[0]
+		if name == "ttl-legacy" {
+			if entry.Cache30mInputTokens != 0 || entry.Cache12hInputTokens != 0 || entry.Cache5mInputTokens != 100 {
+				t.Fatalf("legacy TTL guessed: %+v", entry)
+			}
+			continue
+		}
+		if entry.Cache30mInputTokens != 30 || entry.Cache12hInputTokens != 70 || entry.Cache5mInputTokens != 0 || entry.Cache1hInputTokens != 0 || entry.CacheCreationInputTokens != 100 || entry.InputTokens != 10 || entry.Cost != 0.0003 {
+			t.Fatalf("%s entry=%+v", name, entry)
+		}
+	}
+}

@@ -205,8 +205,12 @@ func normalizeAnthropicSampling(body []byte) []byte {
 	return body
 }
 
-// sanitizeAnthropicBodyForBetaTokens keeps beta-gated request fields in sync
-// with the final upstream header, including channel Header rules.
+/**
+ * @brief 按最终上游 beta（含渠道规则）移除未获授权的请求字段。
+ * @param body 已最终化的 Anthropic 请求正文。
+ * @param betaHeader 实际发送的 Anthropic-Beta。
+ * @return 保留已授权能力后的正文，不改变当前轮思考模式。
+ */
 func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
 	activeBetas := make(map[string]bool)
 	for part := range strings.SplitSeq(betaHeader, ",") {
@@ -228,6 +232,8 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
 	}{
 		{"context_management", []string{"context-management-2025-06-27"}},
 		{"thinking.block_binding", []string{"thinking-binding-controls-2026-08-01"}},
+		{"output_config.timing", []string{"timing-2026-09-09"}},
+		{"thread", []string{"message-threads-2026-08-12"}},
 		{"fallbacks", []string{"server-side-fallback-2026-07-01"}},
 		{"fallback_credit_token", []string{"server-side-fallback-2026-07-01", "fallback-credit-2026-07-01", "fallback-credit-2026-06-01"}},
 	} {
@@ -236,11 +242,15 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
 		}
 	}
 	// 2.1.283 起消息级 output_config 由 per-turn-control 承载；旧 beta 名保留给旧客户端。
-	if !hasBeta("per-turn-control-2026-07-01", "mid-conversation-output-config-2026-07-01") {
-		for index, message := range gjson.GetBytes(body, "messages").Array() {
-			if message.Get("output_config").Exists() {
-				body = deleteJSONPath(body, "messages."+strconv.Itoa(index)+".output_config")
-			}
+	for index, message := range gjson.GetBytes(body, "messages").Array() {
+		if !message.Get("output_config").Exists() {
+			continue
+		}
+		path := "messages." + strconv.Itoa(index) + ".output_config"
+		if !hasBeta("per-turn-control-2026-07-01", "mid-conversation-output-config-2026-07-01") {
+			body = deleteJSONPath(body, path)
+		} else if !hasBeta("timing-2026-09-09") {
+			body = deleteJSONPath(body, path+".timing")
 		}
 	}
 	// display:"updates" needs thinking-display-updates-2026-08-18. Drop the
@@ -374,6 +384,11 @@ func anthropicTextMessageRaw(role, content string) string {
 	return `{"role":` + jsonStringifyString(role) + `,"content":` + jsonStringifyString(content) + "}"
 }
 
+/**
+ * @brief 按 Anthropic 断点评估顺序归一缓存窗口，包含末尾自动缓存标记。
+ * @param body Anthropic 请求正文。
+ * @return 删除排在 5m 断点之后的 1h TTL 后的正文。
+ */
 func normalizeAnthropicCacheControlTTL(body []byte) []byte {
 	seenFiveMinutes := false
 	var demoted []string
@@ -390,7 +405,7 @@ func normalizeAnthropicCacheControlTTL(body []byte) []byte {
 			return true
 		}
 		if seenFiveMinutes {
-			demoted = append(demoted, path+".cache_control.ttl")
+			demoted = append(demoted, anthropicCacheControlPath(path)+".ttl")
 		}
 		return true
 	})
@@ -400,13 +415,12 @@ func normalizeAnthropicCacheControlTTL(body []byte) []byte {
 	return body
 }
 
-// forEachAnthropicCacheBlock 按 Anthropic 的评估顺序（tools → system → messages）
-// 遍历所有可以挂 cache_control 的块，并把每个块的 sjson 路径交给 visit；visit 返回
-// false 即停止遍历。
-//
-// path 参数就是这个遍历器存在的理由：调用方拿到路径才能用 sjson 就地改写，不必把块
-// 解成 map 再整体回写——键序正是在那一步丢掉的。遍历读的是入参快照，所以 visit 只
-// 收集路径、由调用方在遍历结束后统一改写；只增删对象成员时路径始终有效。
+/**
+ * @brief 按 tools、system、messages、顶层自动缓存的顺序访问缓存载体。
+ * @param body Anthropic 请求正文快照。
+ * @param visit 接收载体路径及对象；顶层路径为空，返回 false 停止遍历。
+ * @note 回调只收集路径；修改正文须在遍历后执行，以保留其余 JSON 字节。
+ */
 func forEachAnthropicCacheBlock(body []byte, visit func(path string, block gjson.Result) bool) {
 	root := gjson.ParseBytes(body)
 	visitBlocks := func(container gjson.Result, prefix string) bool {
@@ -427,15 +441,29 @@ func forEachAnthropicCacheBlock(body []byte, visit func(path string, block gjson
 		return
 	}
 	messages := root.Get("messages")
-	if !messages.IsArray() {
-		return
-	}
-	for index, message := range messages.Array() {
-		if !message.IsObject() {
-			continue
+	if messages.IsArray() {
+		for index, message := range messages.Array() {
+			if !message.IsObject() {
+				continue
+			}
+			if !visitBlocks(message.Get("content"), "messages."+strconv.Itoa(index)+".content") {
+				return
+			}
 		}
-		if !visitBlocks(message.Get("content"), "messages."+strconv.Itoa(index)+".content") {
-			return
-		}
 	}
+	if root.Get("cache_control").Exists() {
+		visit("", root)
+	}
+}
+
+/**
+ * @brief 返回块级或顶层缓存标记的 JSON 路径。
+ * @param blockPath 缓存载体路径；空字符串表示请求根对象。
+ * @return cache_control 字段路径。
+ */
+func anthropicCacheControlPath(blockPath string) string {
+	if blockPath == "" {
+		return "cache_control"
+	}
+	return blockPath + ".cache_control"
 }

@@ -6205,6 +6205,87 @@ func TestHandleChannelImageGeneration_ForwardsImagesWireContract(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证图片测试结果采用实际格式且格式不符不重复生成
+ * @param t 测试生命周期
+ */
+func TestHandleChannelImageGeneration_ReportsActualFormat(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, image, reported, want string
+	}{
+		{"detected", `{"b64_json":"iVBORw0KGgoAAAANSUhEUg=="}`, "", "png"},
+		{"detected_over_reported", `{"b64_json":"iVBORw0KGgoAAAANSUhEUg==","output_format":"jpeg"}`, "jpeg", "png"},
+		{"per_image", `{"url":"https://example.com/image","output_format":"webp"}`, "", "webp"},
+		{"top_level", `{"url":"https://example.com/image"}`, "png", "png"},
+		{"unknown", `{"url":"https://example.com/image"}`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				if request["output_format"] != "jpeg" {
+					t.Errorf("requested format=%v, want jpeg", request["output_format"])
+				}
+				response := map[string]any{
+					"data":  []json.RawMessage{json.RawMessage(tc.image)},
+					"usage": map[string]int{"input_tokens": 4, "output_tokens": 7},
+				}
+				if tc.reported != "" {
+					response["output_format"] = tc.reported
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(response); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer upstream.Close()
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+				Name: "actual-image-format", Enabled: true,
+				URLs:                  model.ChannelURLs{{URL: upstream.URL, Protocols: []string{util.ProtocolOpenAI}}},
+				ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+				ModelEntries:          []model.ModelEntry{{Model: "gpt-image-2"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{ChannelID: created.ID, APIKey: "sk-image-test"}}); err != nil {
+				t.Fatal(err)
+			}
+			req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+				"generation_api": imageGenerationAPIImages, "model": "gpt-image-2",
+				"prompt": "A white cat", "output_format": "jpeg",
+			})
+			c, w := newTestContext(t, req)
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+			srv.HandleChannelImageGeneration(c)
+			response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes()).Data
+			if w.Code != http.StatusOK || response["success"] != true || calls.Load() != 1 {
+				t.Fatalf("status=%d calls=%d result=%v", w.Code, calls.Load(), response)
+			}
+			if got, _ := response["output_format"].(string); got != tc.want {
+				t.Errorf("output_format=%q, want %q", got, tc.want)
+			}
+			if tc.want == "" {
+				if _, exists := response["output_format"]; exists {
+					t.Error("unknown format must not be inferred from the requested format")
+				}
+			}
+			usage, _ := response["usage"].(map[string]any)
+			if usage["input_tokens"] != float64(4) || usage["output_tokens"] != float64(7) {
+				t.Errorf("usage=%v", usage)
+			}
+		})
+	}
+}
+
 func TestHandleChannelImageGeneration_RejectsUnsupportedOAuthChannel(t *testing.T) {
 	t.Parallel()
 	var upstreamCalls atomic.Int32

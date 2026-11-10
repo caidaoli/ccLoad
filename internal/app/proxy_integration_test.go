@@ -6778,7 +6778,7 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 func TestProxy_CodexFastModeBillsByRateCard(t *testing.T) {
 	t.Parallel()
 	const modelName = "gpt-6-astra"
-	standard := util.CalculateStandardCostBreakdownWithPrice(modelName, "", util.OpenAIRateCardAPI, nil, 1000, 100, 0, 0, 0).Total
+	standard := util.CalculateStandardCostBreakdownWithPrice(modelName, "", util.OpenAIRateCardAPI, nil, 1000, 100, 0, 0, 0, 0, 0).Total
 	for _, tc := range []struct {
 		name       string
 		authType   string

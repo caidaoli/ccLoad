@@ -304,6 +304,7 @@ func populateFWResultFromUsageParser(result *fwResult, parser usageParser) {
 	result.ResponseModel = parser.GetResponseModel()
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
+	result.Cache30mInputTokens, result.Cache12hInputTokens = parser.GetOpenAICacheBreakdown()
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()

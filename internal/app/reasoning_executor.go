@@ -469,6 +469,7 @@ func systemOneUsage(body []byte) *fwResult {
 	_ = parser.Feed(body)
 	input, output, read, creation := parser.GetUsage()
 	cache5m, cache1h, tier := parser.GetCacheBreakdown()
+	cache30m, cache12h := parser.GetOpenAICacheBreakdown()
 	return &fwResult{InputTokens: input, OutputTokens: output, CacheReadInputTokens: read, CacheCreationInputTokens: creation,
-		Cache5mInputTokens: cache5m, Cache1hInputTokens: cache1h, ReasoningTokens: parser.GetReasoningTokens(), ServiceTier: tier, ResponseModel: parser.GetResponseModel()}
+		Cache5mInputTokens: cache5m, Cache1hInputTokens: cache1h, Cache30mInputTokens: cache30m, Cache12hInputTokens: cache12h, ReasoningTokens: parser.GetReasoningTokens(), ServiceTier: tier, ResponseModel: parser.GetResponseModel()}
 }
