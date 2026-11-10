@@ -125,7 +125,9 @@ func (s *Server) evaluateZAITrialCooldown(cfg *model.Config, in cooldown.ErrorIn
 	code := zaiErrorCode(in.ErrorBody)
 	if !in.IsNetworkError && code == "3007" {
 		// 人机验证不是模型或凭证失效，换号与冷却都无法完成验证。
-		return zaiTrialDecision{Decision: cooldown.Decision{Action: cooldown.ActionReturnClient}, status: in.StatusCode}
+		var decision zaiTrialDecision
+		decision.Action, decision.status = cooldown.ActionReturnClient, in.StatusCode
+		return decision
 	}
 	message := strings.ToLower(gjson.GetBytes(in.ErrorBody, "error.message").String() + " " + gjson.GetBytes(in.ErrorBody, "message").String() + " " + gjson.GetBytes(in.ErrorBody, "msg").String())
 	risk := !in.IsNetworkError && (code == "3012" || strings.Contains(message, "unusual activity") || strings.Contains(message, "request has been blocked"))
@@ -808,7 +810,7 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		// 模型冷却只拒绝当前模型；账号仍可服务其他体验模型，不退役活动席位。
 		if cooldowns, err := s.getAllModelCooldowns(req.Context()); err == nil && cooldowns[cfg.ID][zaiTrialModelKey(name)].After(time.Now()) {
 			if onlyGift || forced {
-				return zaiCoolingError(req, "zcode_trial_cooling", "ZCode 该模型体验入口暂时冷却，请稍后重试", cooldowns[cfg.ID][zaiTrialModelKey(name)].Sub(time.Now())), nil
+				return zaiCoolingError(req, "zcode_trial_cooling", "ZCode 该模型体验入口暂时冷却，请稍后重试", time.Until(cooldowns[cfg.ID][zaiTrialModelKey(name)])), nil
 			}
 			useGift = false
 		}

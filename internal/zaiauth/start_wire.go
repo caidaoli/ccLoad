@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -285,8 +286,8 @@ func PrepareStartBody(raw []byte, model, device, session string, site Site, env 
 			last["content"] = []any{cached(content)}
 		case []any:
 			// 思考块不能作为显式缓存断点；只在末条消息内寻找合法位置。
-			for i := len(content) - 1; i >= 0; i-- {
-				block, ok := content[i].(map[string]any)
+			for _, value := range slices.Backward(content) {
+				block, ok := value.(map[string]any)
 				if !ok {
 					continue
 				}

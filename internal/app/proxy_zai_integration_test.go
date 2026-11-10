@@ -286,7 +286,7 @@ func TestProxy_ZAITrialRetryAfter(t *testing.T) {
 						}
 						_ = local.Body.Close()
 						remaining, parseErr := strconv.Atoi(local.Header.Get("Retry-After"))
-						wantRemaining := int((until.Sub(time.Now()) + time.Second - 1) / time.Second)
+						wantRemaining := int((time.Until(until) + time.Second - 1) / time.Second)
 						if local.StatusCode != 429 || parseErr != nil || remaining != wantRemaining || len(sent) != want {
 							t.Fatalf("local cooldown: status=%d Retry-After=%q want=%d sends=%d", local.StatusCode, local.Header.Get("Retry-After"), wantRemaining, len(sent))
 						}
@@ -1336,10 +1336,9 @@ func TestProxy_ZAIStartConcurrentRequests(t *testing.T) {
 			var workers sync.WaitGroup
 			defer func() { cancel(); unblock(); workers.Wait() }()
 			done := make(chan *httptest.ResponseRecorder, 3)
+			// 每个并发请求由 WaitGroup 跟踪，清理时等待全部处理结束。
 			for i := range 3 {
-				workers.Add(1)
-				go func() {
-					defer workers.Done()
+				workers.Go(func() {
 					body := fmt.Sprintf(`{"model":"GLM-5.3-Flash-Trial","max_tokens":16,"stream":%t,"messages":[{"role":"user","content":"request %d"}]}`, tc.stream, i)
 					if tc.path == "/v1/responses" {
 						body = fmt.Sprintf(`{"model":"GLM-5.3-Flash-Trial","stream":true,"input":"request %d"}`, i)
@@ -1357,7 +1356,7 @@ func TestProxy_ZAIStartConcurrentRequests(t *testing.T) {
 					response := httptest.NewRecorder()
 					env.engine.ServeHTTP(response, req)
 					done <- response
-				}()
+				})
 			}
 			for i := range 3 {
 				select {
