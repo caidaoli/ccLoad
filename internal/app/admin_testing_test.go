@@ -203,6 +203,7 @@ func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
 				if err := json.Unmarshal(raw, &want); err != nil {
 					t.Error(err)
 				}
+				want[1]["role"] = "system"
 				if enabled {
 					want[0]["content"] = "C\u034Flaude A\u034FPI C\u034Flaude"
 					want[1]["content"].([]any)[0].(map[string]any)["text"] = "c\u034Flaude A\u034FPI"

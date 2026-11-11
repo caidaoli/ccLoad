@@ -364,6 +364,9 @@ func (s *Server) buildProxyRequest(
 			return nil, err
 		}
 	}
+	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
+		body = s.codeBuddyCommas.apply(cfg, parsedUpstreamURL, body)
+	}
 	// ZAI 在选择套餐后执行最终隐私/CCH，其他渠道仍在原位置处理。
 	if !isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
 		body, err = refreshAnthropicCallerCCH(body, callerBody, callerWire)
@@ -619,7 +622,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		body = prepareZAIThinkingDefaults(body, sourceBody, requestModel)
 	}
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
-	if !wireBodyRulesApplied {
+	if !wireBodyRulesApplied && !isCodeBuddyChatRequest(cfg, upstreamProtocol) {
 		body = normalizeOpenAIChatMaxTokens(upstreamProtocol, requestPath, body)
 	}
 	// Codex OAuth 的契约归一化会删除上游不接受的字段。这类请求的自定义
@@ -1400,7 +1403,11 @@ func (s *Server) handleSuccessResponse(
 		}
 		resp.Header.Set("Content-Type", "text/event-stream")
 		if !reqCtx.isStreaming {
-			return s.handleCodeBuddyNonStream(reqCtx, resp, hdrClone, w, readStats)
+			result, duration, err := s.handleCodeBuddyNonStream(reqCtx, resp, hdrClone, w, readStats)
+			if result != nil && err == nil && len(result.SSEErrorEvent) == 0 {
+				result.codeBuddyStreamComplete = true
+			}
+			return result, duration, err
 		}
 		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
 	}
@@ -2122,6 +2129,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		result.UnterminatedTranslatedStream = &responsesCursor
 	}
 	streamComplete := translationErr == nil && toolInputErr == nil && (parser.IsStreamComplete() || translatedComplete)
+	result.codeBuddyStreamComplete = reqCtx.codeBuddyOAuth && parser.IsStreamComplete()
 
 	contentType := resp.Header.Get("Content-Type")
 	diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, contentType)
@@ -3688,6 +3696,12 @@ func (s *Server) forwardAttempt(
 			}
 		}
 		s.activeRequests.Retry(reqCtx.activeReqID)
+		var codeBuddySystemKey [32]byte
+		rememberCodeBuddyComma := false
+		if retryStrategy == pauseCodeBuddyIdentityStrategy {
+			codeBuddySystemKey = codeBuddyCommaKey(cfg, retryTarget, retrySourcePlan.TranslatedBody)
+			rememberCodeBuddyComma = codeBuddySystemKey != codeBuddyCommaKey(cfg, retryTarget, retryBody)
+		}
 		res, duration, err = s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, selectedKey, reqCtx.requestMethod,
 			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, retryAttempt, executionIdentity,
@@ -3710,6 +3724,9 @@ func (s *Server) forwardAttempt(
 		}
 		if err == nil && res != nil && res.Status >= 200 && res.Status < 300 {
 			if len(res.SSEErrorEvent) == 0 {
+				if rememberCodeBuddyComma && res.codeBuddyStreamComplete && res.StreamDiagMsg == "" {
+					s.codeBuddyCommas.remember(codeBuddySystemKey)
+				}
 				break
 			}
 			continue
@@ -4070,6 +4087,9 @@ func retryBodyForRejectedRequest(
 	}
 	if retryBody, ok := antigravityThinkingSignatureRetryBody(cfg, plan, res); ok {
 		return retryBody, stripAntigravityInvalidThinkingSignatureStrategy, true
+	}
+	if retryBody, strategy, ok := codeBuddyRetryBodyFor11128(upstreamProtocol, cfg, plan, res); ok {
+		return retryBody, strategy, true
 	}
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
 		return retryBody, strategy, true

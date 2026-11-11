@@ -240,6 +240,8 @@ type fwResult struct {
 	wireAliases         upstreamWireAliases // 同请求重试保留 wire 工具身份映射
 	FirstByteTime       float64             // 首字节响应时间（秒）
 
+	codeBuddyStreamComplete bool ///< CodeBuddy 已收到上游完成标记；仅完整成功可学习身份句修复。
+
 	// Token统计（2025-11新增，从SSE响应中提取）
 	InputTokens              int
 	OutputTokens             int

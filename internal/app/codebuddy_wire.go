@@ -42,6 +42,14 @@ func prepareCodeBuddyDefaults(body, source []byte) []byte {
 	return body
 }
 
+/**
+ * @brief 将 Chat 请求最终化为 CodeBuddy 接受的角色、参数和提示词格式。
+ * @param body 已完成协议转换与渠道请求体规则的 JSON 请求。
+ * @param matcher 系统提示词混淆规则；nil 表示不执行配置的敏感词混淆。
+ * @return 独立编码的上游请求，保留消息顺序及工具调用数据。
+ * @return 请求不是 JSON 对象或不包含非空消息数组时返回错误。
+ * @note 不修改输入字节；不将系统指令降级为用户消息。
+ */
 func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) {
 	var request map[string]json.RawMessage
 	if json.Unmarshal(body, &request) != nil || request == nil {
@@ -68,16 +76,32 @@ func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) 
 		"You are Claude Code, Anthropic's official CLI for Claude.", codeBuddyDefaultSystemPrompt,
 		"Main branch (you will usually use this for PRs)", "Default branch (you will usually use this for PRs)",
 	)
+	promptReplacer := strings.NewReplacer(
+		"You are an AI agent powered by DeepSeek Harness", "You are an AI agent, powered by DeepSeek Harness",
+		"Web GUI whose URL the runtime context names. When the user refers", "Web GUI whose URL the runtime context names. The interface, when the user refers",
+		"Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root",
+		"T"+sensitiveWordJoiner+"okens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root",
+	)
 	for _, message := range messages {
 		var role string
 		_ = json.Unmarshal(message["role"], &role)
+		if role == "developer" {
+			role = "system"
+			message["role"] = json.RawMessage(`"system"`)
+		}
+		if role == "assistant" {
+			normalizeCodeBuddyAssistantReasoning(message)
+		}
 		// Rewrite only text content, never serialized function arguments or tool results.
 		if role == "tool" {
 			continue
 		}
 		rewrite := func(text string) string {
 			text = replacer.Replace(text)
-			if matcher != nil && (role == "system" || role == "developer") {
+			if role == "system" || role == "assistant" {
+				text = promptReplacer.Replace(text)
+			}
+			if matcher != nil && role == "system" {
 				text = obfuscateAntigravityText(text, matcher)
 			}
 			return text
@@ -90,6 +114,12 @@ func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) 
 		var parts []map[string]json.RawMessage
 		if json.Unmarshal(message["content"], &parts) == nil && parts != nil {
 			for _, part := range parts {
+				if rawType, exists := part["type"]; exists {
+					var partType string
+					if json.Unmarshal(rawType, &partType) != nil || partType != "text" {
+						continue
+					}
+				}
 				if json.Unmarshal(part["text"], &content) == nil {
 					part["text"], _ = json.Marshal(rewrite(content))
 				}
@@ -98,12 +128,52 @@ func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) 
 		}
 	}
 	request["messages"], _ = json.Marshal(messages)
+	if limit, exists := request["max_completion_tokens"]; exists {
+		if _, explicit := request["max_tokens"]; !explicit {
+			request["max_tokens"] = limit
+		}
+		delete(request, "max_completion_tokens")
+	}
 	request["stream"] = json.RawMessage("true")
 	if _, ok := request["stream_options"]; !ok {
 		request["stream_options"] = json.RawMessage(`{"include_usage":true}`)
 	}
 	finalizeCodeBuddyThinking(request)
 	return json.Marshal(request)
+}
+
+/**
+ * @brief 将助手历史中的思考别名转换为 CodeBuddy 的 reasoning 文本。
+ * @param message 助手消息对象；已有非空 reasoning 优先，其次是 reasoning_content、reasoning_details。
+ * @note 原地改写消息并删除两个思考别名；工具调用、content 及其他字段不变。
+ */
+func normalizeCodeBuddyAssistantReasoning(message map[string]json.RawMessage) {
+	var reasoning string
+	_ = json.Unmarshal(message["reasoning"], &reasoning)
+	if reasoning == "" {
+		_ = json.Unmarshal(message["reasoning_content"], &reasoning)
+		if reasoning == "" {
+			var text strings.Builder
+			details := gjson.ParseBytes(message["reasoning_details"])
+			if details.IsArray() {
+				for _, detail := range details.Array() {
+					part := detail.Get("text")
+					if part.Type != gjson.String || part.Str == "" {
+						part = detail.Get("summary")
+					}
+					if part.Type == gjson.String {
+						text.WriteString(part.Str)
+					}
+				}
+			}
+			reasoning = text.String()
+		}
+		if reasoning != "" {
+			message["reasoning"], _ = json.Marshal(reasoning)
+		}
+	}
+	delete(message, "reasoning_content")
+	delete(message, "reasoning_details")
 }
 
 func finalizeCodeBuddyThinking(request map[string]json.RawMessage) {
@@ -165,6 +235,11 @@ func (s *Server) tryCodeBuddyOAuthChannel(ctx context.Context, cfg *model.Config
 	})
 }
 
+/**
+ * @brief 归一 CodeBuddy SSE 别名及业务错误，使 11128 使用请求拒绝的 HTTP 400 语义。
+ * @param raw 原始完整 SSE 事件。
+ * @return 归一后的事件；空数据、DONE 或无法解析的事件保持原样。
+ */
 func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	data := sseEventData(raw)
 	if len(data) == 0 || bytes.Equal(data, sseDoneMarker) {
@@ -176,7 +251,14 @@ func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	}
 	if code := gjson.GetBytes(data, "code"); code.Exists() && code.Int() != 0 {
 		errorBody, _ := json.Marshal(map[string]any{"error": map[string]any{"type": "upstream_error", "code": code.Int(), "message": fmt.Sprintf("CodeBuddy upstream business error %d", code.Int())}})
+		if code.Int() == 11128 {
+			errorBody = setJSONValue(errorBody, "status", http.StatusBadRequest)
+		}
 		return append(append([]byte("data: "), errorBody...), '\n', '\n')
+	}
+	if isCodeBuddyInvocationRefused(data) {
+		data = setJSONValue(data, "status", http.StatusBadRequest)
+		return append(append([]byte("data: "), data...), '\n', '\n')
 	}
 	var choices []map[string]json.RawMessage
 	if json.Unmarshal(payload["choices"], &choices) != nil {

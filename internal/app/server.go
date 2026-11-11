@@ -116,6 +116,7 @@ type Server struct {
 	loomyState                    loomyRuntimeState  ///< 服务实例内的挑战、限流、账号锁及自动尝试保护。
 	codeBuddyCredentials          *codeBuddyCredentialManager
 	codeBuddyOAuth                *codeBuddyOAuthManager
+	codeBuddyCommas               codeBuddyCommaCache ///< 已成功的 CodeBuddy 身份句修复，仅保留有界内存摘要。
 	zedService                    *zedauth.Service
 	zedCredentials                *zedCredentialManager
 	zedOAuth                      *codexOAuthManager
