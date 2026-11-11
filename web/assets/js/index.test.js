@@ -205,21 +205,26 @@ test('usage ranking reads model and channel totals from the summary and ranks th
   // 隐藏渠道的会话没有 by_channel
   assert.deepEqual(buildSummaryUsageRows({ by_model: null }), { model: [], channel: [] });
 
-  assert.deepEqual(rankUsageRows(channels, 'requests').map(row => [row.key, row.share]), [
-    ['2', 20 / 35],
-    ['1', 15 / 35]
+  assert.deepEqual(rankUsageRows(channels, 'requests').map(row => [row.key, row.shares]), [
+    ['2', { requests: 20 / 35, tokens: 30 / 580, cost: 0.5 / 2.5 }],
+    ['1', { requests: 15 / 35, tokens: 550 / 580, cost: 2 / 2.5 }]
   ]);
   assert.deepEqual(rankUsageRows(models, 'tokens').map(row => row.key), ['gpt-6', 'gpt-5.6']);
 
-  // 指标为零的行不上榜；前 N 名的占比仍以全部行之和为分母
+  // 取三项指标各自前 N 名的并集，按排序指标降序；为零的指标占比为 0，全零的行不上榜
   const rows = [
-    { key: 'a', cost: 6 }, { key: 'b', cost: 0 }, { key: 'c', cost: 3 }, { key: 'd', cost: 1 }
+    { key: 'a', requests: 1, tokens: 0, cost: 6 },
+    { key: 'b', requests: 9, tokens: 0, cost: 0 },
+    { key: 'c', requests: 2, tokens: 0, cost: 3 },
+    { key: 'd', requests: 0, tokens: 0, cost: 1 },
+    { key: 'e', requests: 0, tokens: 0, cost: 0 }
   ];
-  assert.deepEqual(rankUsageRows(rows, 'cost', 2).map(row => [row.key, row.share]), [
-    ['a', 0.6],
-    ['c', 0.3]
+  assert.deepEqual(rankUsageRows(rows, 'cost', 2).map(row => [row.key, row.shares]), [
+    ['a', { requests: 1 / 12, tokens: 0, cost: 0.6 }],
+    ['c', { requests: 2 / 12, tokens: 0, cost: 0.3 }],
+    ['b', { requests: 9 / 12, tokens: 0, cost: 0 }]
   ]);
-  assert.deepEqual(rankUsageRows([{ key: 'z', cost: 0 }], 'cost'), []);
+  assert.deepEqual(rankUsageRows([{ key: 'z', requests: 0, tokens: 0, cost: 0 }], 'cost'), []);
 });
 
 test('usage ranking rows link to logs filtered by the same date range', () => {

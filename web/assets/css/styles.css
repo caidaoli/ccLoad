@@ -1435,14 +1435,78 @@ html[data-resolved-theme="dark"] .login-brand-wordmark {
 .usage-rank-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-5) var(--space-6);
+  gap: var(--space-6) var(--space-8);
 }
 
 .usage-rank-title {
-  margin: 0 0 var(--space-2);
+  margin: 0 0 var(--space-1);
+  color: var(--neutral-800);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+/* 列头与数据行共用列宽：序号 / 名称 / 请求数 / Token / 费用 */
+.usage-rank {
+  --usage-rank-cols: 1rem minmax(0, 1fr) repeat(3, 7.25rem);
+}
+
+.usage-rank-columns,
+.usage-rank-item {
+  display: grid;
+  grid-template-columns: var(--usage-rank-cols);
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-2);
+}
+
+.usage-rank-sort {
+  padding: var(--space-1) 0;
+  border: none;
+  background: none;
   color: var(--neutral-500);
-  font-size: 0.8125rem;
-  font-weight: var(--font-medium);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  text-align: right;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.usage-rank-sort:first-child {
+  grid-column: 3;
+}
+
+.usage-rank-sort:hover {
+  color: var(--neutral-900);
+}
+
+/* 排序箭头同调用统计页 .sort-indicator：当前列主色 ↓，其余列悬停淡显 ⇅；始终占位，切换时列名不跳动 */
+.usage-rank-sort-indicator {
+  margin-left: var(--space-1);
+  color: var(--neutral-400);
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+.usage-rank-sort-indicator::after {
+  content: '⇅';
+}
+
+.usage-rank-sort:hover .usage-rank-sort-indicator {
+  opacity: 0.5;
+}
+
+.usage-rank-sort.is-active .usage-rank-sort-indicator {
+  opacity: 1;
+  color: var(--primary-500);
+}
+
+.usage-rank-sort.is-active .usage-rank-sort-indicator::after {
+  content: '↓';
+}
+
+.usage-rank-sort:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .usage-rank-list {
@@ -1453,13 +1517,9 @@ html[data-resolved-theme="dark"] .login-brand-wordmark {
   list-style: none;
 }
 
-/* 行底色按 --usage-share 从左填充 */
+/* 行底色按排序指标的 --usage-share 从左填充 */
 .usage-rank-item {
-  display: grid;
-  grid-template-columns: 1rem minmax(0, 1fr) auto 3.25rem;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 6px var(--space-2);
+  padding-block: 6px;
   border-radius: var(--radius-base);
   background: linear-gradient(90deg,
     color-mix(in srgb, var(--primary-500) 10%, transparent) var(--usage-share),
@@ -1499,22 +1559,42 @@ html[data-resolved-theme="dark"] .login-brand-wordmark {
   white-space: nowrap;
 }
 
+.usage-rank-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+
 .usage-rank-value {
+  color: var(--neutral-700);
+}
+
+.usage-rank-metric.is-active .usage-rank-value {
   color: var(--neutral-900);
-  font-weight: var(--font-medium);
-  text-align: right;
+  font-weight: var(--font-semibold);
 }
 
 .usage-rank-share {
-  color: var(--neutral-500);
+  min-width: 2.75rem;
+  color: var(--neutral-400);
   font-size: var(--text-xs);
   text-align: right;
 }
 
 .usage-rank-empty {
+  margin: 0;
   padding: 6px var(--space-2);
   color: var(--neutral-400);
   font-size: var(--text-sm);
+}
+
+/* 三列指标在半宽内放不下名称，较窄时四组改为单列 */
+@media (max-width: 1280px) {
+  .usage-rank-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 两列时请求、费用并排，Token 卡独占底行 */
@@ -1561,8 +1641,18 @@ html[data-resolved-theme="dark"] .login-brand-wordmark {
     padding: var(--space-4);
   }
 
-  .usage-rank-grid {
-    grid-template-columns: minmax(0, 1fr);
+  /* 三列放不下名称：数据行只显示当前排序指标，列名行仍保留三个列名用于切换 */
+  .usage-rank {
+    --usage-rank-cols: 1rem minmax(0, 1fr) auto;
+  }
+
+  .usage-rank-columns {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .usage-rank-metric:not(.is-active) {
+    display: none;
   }
 }
 
@@ -1861,38 +1951,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
   background: transparent;
   color: #4f46e5;
   font-weight: 500;
-}
-
-/* 排行指标切换：卡片顶部下划线 tab，只作用于本卡片，与页头胶囊式的时间范围区分 */
-.usage-rank-selector {
-  display: flex;
-  gap: var(--space-6);
-  margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--surface-border);
-}
-
-.usage-rank-selector button {
-  margin-bottom: -1px;
-  padding: 0 0 var(--space-3);
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: none;
-  color: var(--neutral-500);
-  font-size: var(--text-base);
-  line-height: 1.5;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
-}
-
-.usage-rank-selector button:hover {
-  color: var(--neutral-900);
-}
-
-.usage-rank-selector button.active {
-  border-bottom-color: #4f46e5;
-  color: #4f46e5;
-  font-weight: var(--font-medium);
 }
 
 .filter-custom-range-host {
@@ -9810,13 +9868,11 @@ body.web-hide-channels .chart-card--channel {
 
 /* ===== stats/trend/index 页面修复 ===== */
 /* 趋势类型切换由 div 改为 button：继承字体并提供键盘焦点指示 */
-button.toggle-btn,
-.usage-rank-selector button {
+button.toggle-btn {
   font-family: inherit;
 }
 
-.toggle-btn:focus-visible,
-.usage-rank-selector button:focus-visible {
+.toggle-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }

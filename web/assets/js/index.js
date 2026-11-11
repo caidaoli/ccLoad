@@ -2,7 +2,7 @@
     let statsData = { by_client_protocol: {}, by_auth_type: {}, by_model: [], by_channel: [] };
     // statsData 对应的时间范围查询串，排行跳转日志时沿用，保证日志与所见排行同一区间
     let statsDateRangeQuery = '';
-    let usageRankMetric = 'requests';
+    let usageRankMetric = 'cost';
     // Token 构成悬停/点击选中的分段（tone，空为未选中）
     let tokenMixActive = '';
     // 迷你趋势当前序列与悬停的数据点（metric:index，空为未悬停）
@@ -18,6 +18,7 @@
 
     const SPARK_MAX_POINTS = 96;
     const USAGE_RANK_LIMIT = 5;
+    const USAGE_METRICS = ['requests', 'tokens', 'cost'];
 
     // 时间范围同步到 URL（range/start_time/end_time）与 localStorage，刷新/分享后保持一致
     const INDEX_FILTER_KEY = 'index.filters';
@@ -484,40 +485,62 @@
       return `/web/logs.html?${params.toString()}`;
     }
 
-    // 按指标取前 N 名；占比以该维度全部行之和为分母
-    function rankUsageRows(rows, metric, limit = USAGE_RANK_LIMIT) {
-      const total = rows.reduce((sum, row) => sum + row[metric], 0);
-      return rows
-        .filter(row => row[metric] > 0)
-        .sort((left, right) => right[metric] - left[metric])
-        .slice(0, limit)
-        .map(row => ({ ...row, share: row[metric] / total }));
+    // 三项指标各取前 N 名的并集，按排序指标降序；占比以该维度全部行之和为分母
+    function rankUsageRows(rows, sortMetric, limit = USAGE_RANK_LIMIT) {
+      const picked = new Set();
+      const totals = {};
+      for (const metric of USAGE_METRICS) {
+        totals[metric] = rows.reduce((sum, row) => sum + row[metric], 0);
+        rows
+          .filter(row => row[metric] > 0)
+          .sort((left, right) => right[metric] - left[metric])
+          .slice(0, limit)
+          .forEach(row => picked.add(row));
+      }
+      return [...picked]
+        .sort((left, right) => right[sortMetric] - left[sortMetric])
+        .map(row => ({
+          ...row,
+          shares: Object.fromEntries(USAGE_METRICS.map(metric => [metric, row[metric] > 0 ? row[metric] / totals[metric] : 0]))
+        }));
     }
 
-    function formatUsageMetric(value) {
-      return usageRankMetric === 'cost' ? formatCost(value) : formatNumber(value);
+    function usageMetricCellHtml(row, metric) {
+      const active = metric === usageRankMetric ? ' is-active' : '';
+      if (!(row[metric] > 0)) return `<span class="usage-rank-metric${active}"><span class="usage-rank-value">—</span></span>`;
+      const value = metric === 'cost' ? formatCost(row[metric]) : formatNumber(row[metric]);
+      return `<span class="usage-rank-metric${active}"><span class="usage-rank-value">${escapeHtml(value)}</span><span class="usage-rank-share">${formatPercent(row.shares[metric])}</span></span>`;
     }
 
-    function renderUsageRank(listId, rows, iconOf) {
-      const list = document.getElementById(listId);
-      if (!list) return;
+    // 列名即排序按钮
+    function usageRankColumnsHtml() {
+      const buttons = USAGE_METRICS.map(metric => {
+        const active = metric === usageRankMetric;
+        return `<button type="button" class="usage-rank-sort${active ? ' is-active' : ''}" data-metric="${metric}" aria-pressed="${active}">${escapeHtml(overviewText(`index.rank.${metric}`, metric))}<span class="usage-rank-sort-indicator" aria-hidden="true"></span></button>`;
+      }).join('');
+      return `<div class="usage-rank-columns">${buttons}</div>`;
+    }
+
+    function renderUsageRank(containerId, rows, iconOf) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
       const ranked = rankUsageRows(rows, usageRankMetric);
       if (ranked.length === 0) {
-        list.innerHTML = `<li class="usage-rank-empty">${escapeHtml(overviewText('index.rank.empty', '暂无数据'))}</li>`;
+        container.innerHTML = `<p class="usage-rank-empty">${escapeHtml(overviewText('index.rank.empty', '暂无数据'))}</p>`;
         return;
       }
-      // 行底色按占比填充；可筛选的行整行链接到日志页
-      list.innerHTML = ranked.map((row, index) => {
-        const style = `--usage-share:${(row.share * 100).toFixed(1)}%;`;
+      // 行底色按排序指标占比填充；可筛选的行整行链接到日志页
+      const items = ranked.map((row, index) => {
+        const style = `--usage-share:${(row.shares[usageRankMetric] * 100).toFixed(1)}%;`;
         const cells = `<span class="usage-rank-index">${index + 1}</span>
-          <span class="usage-rank-name" title="${escapeHtml(row.label)}">${iconOf ? iconOf(row) : ''}<span class="usage-rank-label">${escapeHtml(row.label)}</span></span>
-          <span class="usage-rank-value">${escapeHtml(formatUsageMetric(row[usageRankMetric]))}</span>
-          <span class="usage-rank-share">${formatPercent(row.share)}</span>`;
+          <span class="usage-rank-name" title="${escapeHtml(row.label)}">${iconOf(row)}<span class="usage-rank-label">${escapeHtml(row.label)}</span></span>
+          ${USAGE_METRICS.map(metric => usageMetricCellHtml(row, metric)).join('')}`;
         const href = buildUsageLogsHref(statsDateRangeQuery, row.logsFilter);
         return href
           ? `<li><a class="usage-rank-item usage-rank-link" href="${escapeHtml(href)}" style="${style}">${cells}</a></li>`
           : `<li class="usage-rank-item" style="${style}">${cells}</li>`;
       }).join('');
+      container.innerHTML = `${usageRankColumnsHtml()}<ol class="usage-rank-list">${items}</ol>`;
     }
 
     function renderUsageRanks() {
@@ -538,18 +561,14 @@
         row => authTypeIconHtml(row.key, row.label));
     }
 
+    // 任一组的列名都切换全部分组的排序指标
     function bindUsageRankMetric() {
-      const group = document.getElementById('usage-rank-metric');
-      if (!group) return;
-      group.addEventListener('click', event => {
+      const card = document.getElementById('usage-rank-card');
+      if (!card) return;
+      card.addEventListener('click', event => {
         const button = event.target.closest('button[data-metric]');
         if (!button || button.dataset.metric === usageRankMetric) return;
         usageRankMetric = button.dataset.metric;
-        for (const item of group.querySelectorAll('button[data-metric]')) {
-          const active = item === button;
-          item.classList.toggle('active', active);
-          item.setAttribute('aria-pressed', String(active));
-        }
         renderUsageRanks();
       });
     }
