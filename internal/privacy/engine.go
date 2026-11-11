@@ -148,7 +148,15 @@ func (s *Session) MaskText(text string) (string, error) {
 // MaskDuration returns the total time this session spent in MaskText and MaskJSON.
 func (s *Session) MaskDuration() time.Duration { return time.Duration(s.masking.Load()) }
 
-func (s *Session) addMaskTime(start time.Time) { s.masking.Add(int64(time.Since(start))) }
+/**
+ * @brief 累计扫描耗时，同一时钟刻度内完成的扫描仍计为已执行
+ * @param start 扫描开始时刻
+ * @note 并发安全；每次扫描至少计一纳秒，零值保留给尚未扫描的会话
+ */
+func (s *Session) addMaskTime(start time.Time) {
+	// 统计层以零值识别未扫描；粗粒度时钟不应让已完成扫描消失。
+	s.masking.Add(int64(max(time.Since(start), time.Nanosecond)))
+}
 
 func (s *Session) maskText(text string) (string, error) {
 	if len(text) > maxTextBytes {

@@ -91,6 +91,10 @@ func TestActiveRequestManager_UpstreamStatusTransitions(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证流量计数与首字节首次写入契约，包含不足一微秒的耗时
+ * @param t 测试上下文
+ */
 func TestActiveRequestManager_BytesAndFirstByteTime(t *testing.T) {
 	m := newActiveRequestManager()
 
@@ -112,6 +116,17 @@ func TestActiveRequestManager_BytesAndFirstByteTime(t *testing.T) {
 	}
 	if math.Abs(got[0].ClientFirstByteTime-0.75) > 1e-6 {
 		t.Fatalf("expected client_first_byte_time≈0.75, got %f", got[0].ClientFirstByteTime)
+	}
+
+	for _, elapsed := range []time.Duration{time.Nanosecond, time.Microsecond - time.Nanosecond} {
+		id := beginTestActiveRequest(m, time.UnixMilli(100), "fast", "1.1.1.1", true)
+		m.SetClientFirstByteTime(id, elapsed)
+		m.SetClientFirstByteTime(id, time.Second)
+		for _, active := range m.List() {
+			if active.ID == id && active.ClientFirstByteTime != time.Microsecond.Seconds() {
+				t.Fatalf("elapsed=%v: first byte=%g, want one microsecond retained after later writes", elapsed, active.ClientFirstByteTime)
+			}
+		}
 	}
 }
 

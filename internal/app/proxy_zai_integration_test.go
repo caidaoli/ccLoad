@@ -1,28 +1,949 @@
 package app
 
 import (
+	"bytes"
 	"compress/zlib"
 	"context"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 重复渠道共享最长退避历史，渠道排序和新渠道均不能缩短账号窗口。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialDuplicateBackoffHistory(t *testing.T) {
+	for _, history := range [][2]int{{0, 1}, {1, 0}, {1, 2}, {2, 1}, {1, 1}} {
+		t.Run(fmt.Sprintf("history=%v", history), func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			ctx := context.Background()
+			const name = "GLM-5.3-Flash-Trial"
+			for i, index := range []int{0, 3} {
+				for range history[i] {
+					if _, err := env.store.BumpModelCooldown(ctx, configs[index].ID, name, time.Now().Add(-time.Hour), 429); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			control := env.server.client
+			var calls atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				calls.Add(1)
+				return zaiStartTestResponse(req, 429, `{"error":{"code":"1113","message":"quota exhausted"}}`), nil
+			})}
+			request := func(index int) *httptest.ResponseRecorder {
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": configs[index].Name})
+			}
+			if response := request(3); response.Code == 200 || calls.Load() != 1 {
+				t.Fatalf("expected one failed attempt: status=%d calls=%d", response.Code, calls.Load())
+			}
+			windows, err := env.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := time.Minute * time.Duration(1<<max(history[0], history[1]))
+			for _, index := range []int{0, 3} {
+				remaining := time.Until(windows[configs[index].ID][name])
+				if remaining < want-5*time.Second || remaining > want {
+					t.Errorf("channel %s: remaining=%v want=%v", configs[index].Name, remaining, want)
+				}
+				// 持久化窗口也必须实际阻止重复渠道再次发送。
+				if response := request(index); response.Code < 400 || calls.Load() != 1 {
+					t.Errorf("duplicate bypassed cooldown: status=%d calls=%d", response.Code, calls.Load())
+				}
+				if history[0] == history[1] {
+					// 相同历史无需传播，完整时长不能被剩余时长覆盖。
+					duration, err := env.store.BumpModelCooldown(ctx, configs[index].ID, name, time.Now(), 429)
+					if err != nil || duration != 2*want {
+						t.Errorf("preserved history: duration=%v want=%v err=%v", duration, 2*want, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 旧认证失败与新凭证采样并发时，新采样仍可在控制面故障后复用。
+ * @param t 测试上下文。
+ */
+func TestZAITrialAuthFailurePreservesNewPlanSample(t *testing.T) {
+	env := setupProxyTestEnv(t, []testChannel{{name: "auth", upstreamProtocol: "anthropic", models: "GLM-5.3-Flash-Trial", authType: model.AuthTypeZAIOAuth, oauthCredential: `{"jwt_token":"old-jwt","user_id":"account"}`}}, map[int]string{0: "https://zai.test"})
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queries atomic.Int32
+	var unavailable atomic.Bool
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		queries.Add(1)
+		if unavailable.Load() {
+			return zaiStartTestResponse(req, 503, `{"error":{"message":"unavailable"}}`), nil
+		}
+		return zaiStartTestResponse(req, 200, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active"}],"balances":[{"plan_id":"gift","capabilities":["model:glm-5.3-flash"],"remaining_units":10}]}}`), nil
+	})}
+	accepted, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	// 暂停已接受的旧认证失败，让新凭证的套餐查询与其收尾重叠；只断言查询结果和上游次数。
+	env.server.zaiStart.now = func() time.Time {
+		close(accepted)
+		<-release
+		return time.Now()
+	}
+	failureDone := make(chan struct{})
+	go func() {
+		env.server.applyZAITrialCooldown(ctx, configs[0], cooldown.ErrorInput{StatusCode: 401, Model: "GLM-5.3-Flash", ErrorBody: []byte(`{"error":{"message":"invalid JWT"}}`)})
+		close(failureDone)
+	}()
+	select {
+	case <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old authentication failure did not reach cooldown")
+	}
+	next := configs[0].Clone()
+	next.OAuthCredential = `{"jwt_token":"new-jwt","user_id":"account"}`
+	credential, err := zaiauth.ParseCredential([]byte(next.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryDone := make(chan error, 1)
+	go func() {
+		_, err := env.server.zaiAccountPlans(ctx, next, credential, false)
+		queryDone <- err
+	}()
+	// 允许旧实现完成并发采样；正确实现会等待失败收尾。超时只释放同步点，不作为断言。
+	queryFinished := false
+	select {
+	case err := <-queryDone:
+		queryFinished = true
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case <-failureDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old authentication failure did not finish")
+	}
+	if !queryFinished {
+		select {
+		case err := <-queryDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("new credential query did not finish")
+		}
+	}
+	unavailable.Store(true)
+	plans, err := env.server.zaiAccountPlans(ctx, next, credential, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, available := plans.GiftModel("GLM-5.3-Flash"); !available || queries.Load() != 1 {
+		t.Fatalf("new credential sample invalidated: available=%t queries=%d", available, queries.Load())
+	}
+}
+
+/**
+ * @brief busy 按上游恢复时间发送，超出预算时保留真实错误及明确冷却期限。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialRetryAfter(t *testing.T) {
+	for _, scenario := range []string{"seconds", "date", "final", "budget", "stream_budget", "invalid", "overflow", "past", "capacity_after_hint", "cancel_wait"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// 非整秒开始，覆盖秒数提示转 HTTP 日期时的取整边界。
+				time.Sleep(200 * time.Millisecond)
+				env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "retry", upstreamProtocol: "anthropic", models: "GLM-5.3-Flash-Trial", authType: model.AuthTypeZAIOAuth, oauthCredential: `{"jwt_token":"jwt","user_id":"account"}`}}, map[int]string{0: "https://zai.test"}, map[string]string{"upstream_first_byte_timeout": "2"})
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				configs[0].MaxConcurrency = 1
+				if scenario == "capacity_after_hint" {
+					configs[0].RPMLimit = 1
+				}
+				if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+					t.Fatal(err)
+				}
+				env.server.InvalidateChannelListCache()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				var sent []time.Time
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(req.URL.Path, "/messages") {
+						return zaiStartTestResponse(req, 200, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active"}],"balances":[{"plan_id":"gift","capabilities":["model:glm-5.3-flash"],"remaining_units":10}]}}`), nil
+					}
+					sent = append(sent, time.Now())
+					if scenario == "cancel_wait" {
+						time.AfterFunc(time.Second, cancel)
+					}
+					if len(sent) > 1 && scenario != "final" && scenario != "budget" {
+						return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+					}
+					resp := zaiStartTestResponse(req, 429, `{"code":3010,"msg":"busy"}`)
+					hint := "4"
+					switch scenario {
+					case "date":
+						hint = time.Now().Add(4 * time.Second).UTC().Format(http.TimeFormat)
+					case "budget":
+						hint = "120"
+					case "invalid":
+						hint = "invalid"
+					case "overflow":
+						hint = "9223372036854775807"
+					case "past":
+						hint = time.Now().Add(-time.Second).UTC().Format(http.TimeFormat)
+					}
+					resp.Header.Set("Retry-After", hint)
+					return resp, nil
+				})}
+				req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":"GLM-5.3-Flash-Trial","stream":%t,"max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`, scenario == "stream_budget"))).WithContext(ctx)
+				req.Header.Set("Authorization", "Bearer test-api-key")
+				req.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				env.engine.ServeHTTP(response, req)
+				want := 2
+				if scenario == "final" {
+					want = 3
+				}
+				if scenario == "budget" || scenario == "stream_budget" || scenario == "capacity_after_hint" || scenario == "cancel_wait" {
+					want = 1
+				}
+				if len(sent) != want {
+					t.Fatalf("sends=%d want=%d status=%d body=%s", len(sent), want, response.Code, response.Body.String())
+				}
+				for i := 1; i < len(sent); i++ {
+					delay := sent[i].Sub(sent[i-1])
+					if scenario == "invalid" || scenario == "overflow" || scenario == "past" {
+						if delay < time.Second || delay >= 2*time.Second {
+							t.Fatalf("fallback delay=%v", delay)
+						}
+					} else if scenario == "date" {
+						if sent[i].Before(sent[i-1].Add(4 * time.Second).Truncate(time.Second)) {
+							t.Fatalf("retried before HTTP date: %v", delay)
+						}
+					} else if delay < 4*time.Second {
+						t.Fatalf("retried before Retry-After: %v", delay)
+					}
+				}
+				windows, err := env.store.GetAllModelCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				until := windows[configs[0].ID]["GLM-5.3-Flash-Trial"]
+				if scenario == "final" || scenario == "budget" || scenario == "stream_budget" {
+					seconds := 4
+					if scenario == "budget" {
+						seconds = 120
+					}
+					if response.Code != 429 || gjson.GetBytes(response.Body.Bytes(), "code").Int() != 3010 {
+						t.Fatalf("lost busy: %d %s", response.Code, response.Body.String())
+					}
+					if wantUntil := sent[len(sent)-1].Add(time.Duration(seconds)*time.Second + time.Second - time.Nanosecond).Truncate(time.Second); !until.Equal(wantUntil) {
+						t.Fatalf("cooldown=%v want=%v", until, wantUntil)
+					}
+					// 管理直测也必须遵循持久化模型窗口，返回实际剩余时间且不续期。
+					for _, elapsed := range []time.Duration{0, 1500 * time.Millisecond} {
+						time.Sleep(elapsed)
+						local, sendErr := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", env.server.client.Do)
+						if sendErr != nil {
+							t.Fatal(sendErr)
+						}
+						_ = local.Body.Close()
+						remaining, parseErr := strconv.Atoi(local.Header.Get("Retry-After"))
+						wantRemaining := int((time.Until(until) + time.Second - 1) / time.Second)
+						if local.StatusCode != 429 || parseErr != nil || remaining != wantRemaining || len(sent) != want {
+							t.Fatalf("local cooldown: status=%d Retry-After=%q want=%d sends=%d", local.StatusCode, local.Header.Get("Retry-After"), wantRemaining, len(sent))
+						}
+					}
+				} else if scenario == "capacity_after_hint" || scenario == "cancel_wait" {
+					if until.After(time.Now()) {
+						t.Fatalf("elapsed hint/cancel opened cooldown: %v", until)
+					}
+					if scenario == "capacity_after_hint" && (response.Code != 429 || gjson.GetBytes(response.Body.Bytes(), "code").Int() != 3010) {
+						t.Fatalf("lost busy: %d %s", response.Code, response.Body.String())
+					}
+				} else if response.Code != 200 || !until.IsZero() {
+					t.Fatalf("recovery: status=%d cooldown=%v", response.Code, until)
+				}
+			})
+		})
+	}
+}
+
+/**
+ * @brief 手动检测遵守发送预算，批量检测遵守任务预算，流式和非流式均保留真实 busy。
+ * @param t 测试上下文。
+ */
+func TestZAIChannelTestRetryBudget(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, wait := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/wait=%t", stream, wait), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "budget", upstreamProtocol: "anthropic", models: "GLM-5.3-Flash-Trial", authType: model.AuthTypeZAIOAuth, oauthCredential: `{"jwt_token":"jwt","user_id":"account"}`}}, map[int]string{0: "https://zai.test"}, map[string]string{"upstream_first_byte_timeout": "2", "non_stream_timeout": "2"})
+					configs, err := env.store.ListConfigs(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					calls := 0
+					env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						if !strings.HasSuffix(req.URL.Path, "/messages") {
+							return zaiStartTestResponse(req, 200, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active"}],"balances":[{"plan_id":"gift","capabilities":["model:glm-5.3-flash"],"remaining_units":10}]}}`), nil
+						}
+						calls++
+						response := zaiStartTestResponse(req, 429, `{"code":3010,"msg":"busy"}`)
+						response.Header.Set("Retry-After", "120")
+						return response, nil
+					})}
+					started := time.Now()
+					ctx := context.Background()
+					if wait {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+						defer cancel()
+					}
+					result := env.server.executeChannelTestWithCooldown(ctx, configs[0], cooldown.NoKeyIndex, "", &testutil.TestChannelRequest{Model: "GLM-5.3-Flash-Trial", Content: "hello", ClientProtocol: "anthropic", Stream: stream, WaitForCapacity: wait}, true)
+					if calls != 1 || result["status_code"] != 429 || result["cooldown_action"] != "trial_model_cooldown" || time.Since(started) >= 2*time.Second {
+						t.Fatalf("budget result: calls=%d elapsed=%v result=%v", calls, time.Since(started), result)
+					}
+				})
+			})
+		}
+	}
+}
+
+/**
+ * @brief 重新授权后旧 JWT 的迟到认证错误不得冻结新 JWT，风控仍然生效。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialReauthorizationInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name         string ///< 回归场景。
+		status       int    ///< 旧 JWT 的上游状态。
+		admin        bool   ///< 通过管理检测入口发送。
+		risk         bool   ///< 旧响应为账号风控，必须保留保护。
+		newFailure   bool   ///< 新 JWT 也被拒绝，必须正常冷却。
+		csv          bool   ///< 使用 CSV 覆盖授权。
+		csvOverwrite bool   ///< CSV 后续行覆盖前行，前行 JWT 不应成为有效授权。
+		paid         bool   ///< 普通模型允许既有付费回退。
+	}{
+		{name: "unauthorized", status: 401},
+		{name: "forbidden", status: 403},
+		{name: "account-risk", status: 403, risk: true},
+		{name: "egress-risk", status: 405},
+		{name: "model-failure", status: 500},
+		{name: "admin-unauthorized", status: 401, admin: true},
+		{name: "new-jwt-failure", status: 401, newFailure: true},
+		{name: "csv", status: 401, csv: true},
+		{name: "csv-new-jwt-failure", status: 401, csv: true, newFailure: true},
+		{name: "csv-overwritten-credential", status: 401, csv: true, csvOverwrite: true},
+		{name: "paid-fallback", status: 401, paid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			cfg := configs[0]
+			started, release := make(chan struct{}), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			control := env.server.client
+			if tc.csv {
+				if _, _, err := env.server.commitZAICredential(context.Background(), &zaiauth.Credential{JWTToken: "jwt-a", UserID: "a"}, oauthLoginOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var calls atomic.Int32
+			var paidCalls atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				calls.Add(1)
+				if !strings.Contains(req.URL.Path, "/zcode-plan/") {
+					paidCalls.Add(1)
+				}
+				if req.Header.Get("Authorization") == "Bearer jwt-a" {
+					if calls.Load() == 1 {
+						close(started)
+					}
+					<-release
+					body := `{"error":{"message":"invalid JWT"}}`
+					if tc.risk {
+						body = `{"code":3012,"msg":"unusual activity"}`
+					}
+					if tc.status == 405 {
+						body = `<html>blocked</html>`
+					}
+					return zaiStartTestResponse(req, tc.status, body), nil
+				}
+				if tc.newFailure {
+					return zaiStartTestResponse(req, 401, `{"error":{"message":"invalid new JWT"}}`), nil
+				}
+				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			})}
+			request := func() *httptest.ResponseRecorder {
+				if tc.admin {
+					id := strconv.FormatInt(cfg.ID, 10)
+					c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/test", map[string]any{"model": "GLM-5.3-Flash-Trial", "content": "hello", "client_protocol": "anthropic", "stream": false}))
+					c.Params = gin.Params{{Key: "id", Value: id}}
+					env.server.HandleChannelTest(c)
+					return response
+				}
+				name := "GLM-5.3-Flash-Trial"
+				if tc.paid {
+					name = "GLM-5.3-Flash"
+				}
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": cfg.Name})
+			}
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- request() }()
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("old request did not start")
+			}
+			if tc.csv {
+				var csvBody, body bytes.Buffer
+				rows := [][]string{
+					{"name", "urls", "models", "auth_type", "oauth_credential", "enabled"},
+					{cfg.Name, `[{"url":"https://zcode.z.ai/api/v1/ultra-zai/anthropic"}]`, "GLM-5.3-Flash-Trial", model.AuthTypeZAIOAuth, `{"jwt_token":"new-jwt","user_id":"a"}`, "true"},
+				}
+				if tc.csvOverwrite {
+					rows[1][0] = "overwritten"
+					last := append([]string(nil), rows[1]...)
+					last[4] = `{"jwt_token":"other-jwt","user_id":"other"}`
+					rows = append(rows, last)
+				}
+				if err := csv.NewWriter(&csvBody).WriteAll(rows); err != nil {
+					t.Fatal(err)
+				}
+				writer := multipart.NewWriter(&body)
+				part, err := writer.CreateFormFile("file", "zai.csv")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := part.Write(csvBody.Bytes()); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				req := newRequest(http.MethodPost, "/admin/channels/import", &body)
+				req.Header.Set("Content-Type", writer.FormDataContentType())
+				c, result := newTestContext(t, req)
+				env.server.HandleImportChannelsCSV(c)
+				if result.Code != 200 || mustParseAPIResponse[ChannelImportSummary](t, result.Body.Bytes()).Data.Updated != 1 {
+					t.Fatalf("CSV import: %s", result.Body.String())
+				}
+			} else {
+				updated, created, err := env.server.commitZAICredential(context.Background(), &zaiauth.Credential{JWTToken: "new-jwt", UserID: "a"}, oauthLoginOptions{})
+				if err != nil || created || updated == nil {
+					t.Fatalf("reauthorization: created=%v err=%v", created, err)
+				}
+			}
+			unblock()
+			select {
+			case response := <-done:
+				if tc.admin {
+					if gjson.GetBytes(response.Body.Bytes(), "data.success").Bool() || gjson.GetBytes(response.Body.Bytes(), "data.cooldown_action").String() != "trial_error_no_cooldown" {
+						t.Fatalf("stale admin failure: %s", response.Body.String())
+					}
+				} else if (response.Code == 200) != tc.paid {
+					t.Fatalf("old attempt result: status=%d paid=%d", response.Code, paidCalls.Load())
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("old request did not finish")
+			}
+			response := request()
+			recovered := !tc.risk && !tc.csvOverwrite && (tc.status == 401 || tc.status == 403)
+			wantCalls := int32(1)
+			if recovered {
+				wantCalls = 2
+			}
+			if tc.paid {
+				wantCalls++
+				if paidCalls.Load() != 1 {
+					t.Fatalf("paid fallback=%d", paidCalls.Load())
+				}
+			}
+			success := response.Code == 200
+			if tc.admin {
+				success = gjson.GetBytes(response.Body.Bytes(), "data.success").Bool()
+			}
+			if success != (recovered && !tc.newFailure) || calls.Load() != wantCalls {
+				t.Fatalf("after late failure: status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+			}
+			if tc.newFailure {
+				response = request()
+				remaining, err := strconv.Atoi(response.Header().Get("Retry-After"))
+				if response.Code != 429 || calls.Load() != 2 || err != nil || remaining <= 0 {
+					t.Fatalf("new JWT failure not cooled: %d %s", response.Code, response.Body.String())
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 从代理入口验证 busy 恢复、冻结 wire、公共容量释放和容量中止不回付费。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIBusyRetryContract(t *testing.T) {
+	for _, scenario := range []string{"recover_second", "recover_third", "rpm_abort", "cancel"} {
+		t.Run(scenario, func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			cfg := configs[0]
+			cfg.MaxConcurrency = 1
+			if scenario == "rpm_abort" {
+				cfg.RPMLimit = 1
+			}
+			cfg.CustomRequestRules = &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{Action: model.RuleActionAppend, Name: "X-Retry-Marker", Value: "once"}}}
+			if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+				t.Fatal(err)
+			}
+			env.server.InvalidateChannelListCache()
+			control := env.server.client
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var firstBody []byte
+			var firstHeader http.Header
+			var attempts, paid int
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				if !strings.Contains(req.URL.Path, "/zcode-plan/") {
+					paid++
+					return zaiStartTestResponse(req, 500, `{}`), nil
+				}
+				attempts++
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				if gjson.GetBytes(body, "max_tokens").Int() != 16016 || gjson.GetBytes(body, "thinking.budget_tokens").Int() != 16000 {
+					t.Error("busy retry changed default thinking budget or output allowance")
+				}
+				if attempts == 1 {
+					firstBody, firstHeader = body, req.Header.Clone()
+				} else if !bytes.Equal(body, firstBody) || !reflect.DeepEqual(req.Header, firstHeader) {
+					t.Error("busy retry rebuilt wire")
+				}
+				if got := anthropicHeaderValue(req.Header, "X-Retry-Marker"); got != "once" {
+					t.Errorf("header append=%q", got)
+				}
+				if scenario == "cancel" {
+					cancel()
+				}
+				if scenario == "recover_second" && attempts == 2 || scenario == "recover_third" && attempts == 3 {
+					return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+				}
+				return zaiStartTestResponse(req, 429, `{"code":3010,"msg":"busy"}`), nil
+			})}
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"GLM-5.3-Flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)).WithContext(ctx)
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-CCLoad-Channel", cfg.Name)
+			response := httptest.NewRecorder()
+			env.engine.ServeHTTP(response, req)
+			want := 1
+			if scenario == "recover_second" {
+				want = 2
+			}
+			if scenario == "recover_third" {
+				want = 3
+			}
+			if attempts != want || paid != 0 {
+				t.Fatalf("trial=%d paid=%d", attempts, paid)
+			}
+			windows, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "rpm_abort" {
+				if response.Code != 429 || gjson.GetBytes(response.Body.Bytes(), "code").Int() != 3010 {
+					t.Fatalf("lost real busy: %d %s", response.Code, response.Body.String())
+				}
+				if !windows[cfg.ID]["GLM-5.3-Flash-Trial"].After(time.Now()) {
+					t.Fatal("final busy was not cooled")
+				}
+			} else {
+				if len(windows[cfg.ID]) != 0 {
+					t.Fatalf("success/cancel cooled: %v", windows)
+				}
+				if scenario != "cancel" && response.Code != 200 {
+					t.Fatalf("response=%d", response.Code)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证公共入口的 Trial 参数、commentary、环境脱敏和会话来源；Paid 保持原归一。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIPackageFinalization(t *testing.T) {
+	for _, paid := range []bool{false, true} {
+		t.Run(fmt.Sprintf("paid=%t", paid), func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			cfg := configs[0]
+			// 管理入口的 identity 约定不能覆盖普通代理显式配置的压缩协商。
+			cfg.CustomRequestRules = &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "Accept-Encoding", Value: "gzip"}}}
+			if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+				t.Fatal(err)
+			}
+			env.server.InvalidateChannelListCache()
+			if paid {
+				previous := cfg.OAuthCredential
+				credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential.JWTToken = ""
+				cfg.OAuthCredential, err = credential.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if changed, err := env.store.CompareAndSwapOAuthCredential(context.Background(), cfg.ID, model.AuthTypeZAIOAuth, previous, cfg.OAuthCredential); err != nil || !changed {
+					t.Fatalf("replace test credential: changed=%v err=%v", changed, err)
+				}
+				env.server.InvalidateChannelListCache()
+			}
+			if w := batchUpdateSetting(t, env.server, privacySettingKey, `{"enabled":true,"personal":true}`); w.Code != 200 {
+				t.Fatal(w.Body.String())
+			}
+			control := env.server.client
+			var captured []byte
+			var headers http.Header
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				captured, _ = io.ReadAll(req.Body)
+				headers = req.Header.Clone()
+				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			})}
+			body := map[string]any{"model": "GLM-5.3-Flash", "max_tokens": 16, "temperature": 0.4, "top_p": 0.7, "top_k": 12, "thinking": map[string]any{"type": "auto", "budget_tokens": 1024}, "tool_choice": map[string]any{"type": "any"}, "tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}}, "messages": []any{map[string]any{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "progress text", "signature": "cpa:commentary:v1"}, map[string]any{"type": "text", "text": "ready"}}}, map[string]any{"role": "user", "content": "continue"}}}
+			// 原生调用方携带的 CCH 必须在付费最终归一后重签。
+			if paid {
+				body["system"] = []map[string]string{{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=cli; cch=00000;"}}
+				body["metadata"] = map[string]string{"user_id": `{"device_id":"caller-device","account_uuid":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","session_id":"11111111-2222-4333-8444-555555555555"}`}
+			}
+			response := doProxyRequest(t, env.engine, "/v1/messages", body, map[string]string{"X-CCLoad-Channel": cfg.Name, "User-Agent": "claude-cli/2.1.280 (external, cli)", "X-App": "cli", "x-session-id": "11111111-2222-4333-8444-555555555555", "x-magpie-work-dir": url.PathEscape("/workspace/person@example.org"), "x-magpie-work-git": "yes"})
+			if response.Code != 200 {
+				t.Fatalf("response=%d %s", response.Code, response.Body.String())
+			}
+			root := gjson.ParseBytes(captured)
+			if got := anthropicHeaderValue(headers, "Accept-Encoding"); got != "gzip" {
+				t.Fatalf("proxy encoding=%q", got)
+			}
+			if paid {
+				resigned, err := finalizeAnthropicCCH(captured)
+				if err != nil || !bytes.Equal(resigned, captured) || strings.Contains(root.Get("system.0.text").String(), "cch=00000;") {
+					t.Fatalf("paid CCH is stale: %v", err)
+				}
+				if root.Get("temperature").Exists() || root.Get("top_p").Exists() || root.Get("thinking").Exists() {
+					t.Fatalf("paid normalization: temperature=%s top_p=%s thinking=%s tool_choice=%s", root.Get("temperature").Raw, root.Get("top_p").Raw, root.Get("thinking").Raw, root.Get("tool_choice").Raw)
+				}
+			} else {
+				if root.Get("temperature").Float() != 0.4 || root.Get("top_p").Float() != 0.7 || root.Get("top_k").Int() != 12 || root.Get("thinking.type").String() != "auto" {
+					t.Fatal("Trial GLM parameters lost")
+				}
+				identity := decodeZAIRequestIdentity(t, captured)
+				if identity.SessionID != "11111111-2222-4333-8444-555555555555" || anthropicHeaderValue(headers, "x-session-id") != identity.SessionID {
+					t.Fatal("explicit session lost")
+				}
+				commentary := root.Get("messages.2.content.0")
+				if commentary.Get("type").String() != "text" || commentary.Get("text").String() != "progress text" || commentary.Get("signature").Exists() {
+					t.Fatalf("commentary=%s", commentary.Raw)
+				}
+				environment := root.Get("system.2.text").String()
+				if !strings.Contains(environment, "Primary working directory: /workspace/") || strings.Contains(environment, "person@example.org") || !strings.Contains(environment, "Is a git repository: true") {
+					t.Fatal("environment missing or not masked")
+				}
+			}
+			if anthropicHeaderValue(headers, "x-magpie-work-dir") != "" || anthropicHeaderValue(headers, "x-magpie-work-git") != "" {
+				t.Fatal("private environment headers leaked")
+			}
+		})
+	}
+}
+
+/**
+ * @brief 通过真实代理入口验证缺省 high 的预算、显式设置优先级及渠道规则。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIThinkingDefaults(t *testing.T) {
+	for _, paid := range []bool{false, true} {
+		for _, tc := range []struct {
+			name      string
+			path      string
+			extra     string
+			maxTokens int64
+			thinking  string
+			budget    int64
+			effort    string
+			rules     []model.CustomBodyRule
+			repair    bool
+			paidOnly  bool
+		}{
+			{name: "native", extra: `{"temperature":0.4,"top_p":0.7,"top_k":12}`, maxTokens: 20096, thinking: "enabled", budget: 16000, effort: "high"},
+			{name: "chat", path: "/v1/chat/completions", maxTokens: 20096, thinking: "enabled", budget: 16000, effort: "high"},
+			{name: "responses", path: "/v1/responses", extra: `{"input":"hello","max_output_tokens":4096}`, maxTokens: 20096, thinking: "enabled", budget: 16000, effort: "high"},
+			{name: "capped", extra: `{"max_tokens":120000}`, maxTokens: 128000, thinking: "enabled", budget: 16000, effort: "high"},
+			{name: "large_integer", extra: `{"max_tokens":9223372036854775807}`, maxTokens: 128000, thinking: "enabled", budget: 16000, effort: "high"},
+			{name: "missing_max", maxTokens: 17024, thinking: "enabled", budget: 16000, effort: "high"},
+			{name: "invalid_max", extra: `{"max_tokens":0}`, maxTokens: 0},
+			{name: "thinking_repair", maxTokens: 20096, repair: true},
+			{name: "glm52", extra: `{"model":"GLM-5.2"}`, maxTokens: 14336, thinking: "enabled", budget: 10240, paidOnly: true},
+			{name: "glm51_cap", extra: `{"model":"GLM-5.1","max_tokens":60000}`, maxTokens: 64000, thinking: "enabled", budget: 10240, paidOnly: true},
+			{name: "glm47_cap", extra: `{"model":"GLM-4.7","max_tokens":130000}`, maxTokens: 131072, thinking: "enabled", budget: 10240, paidOnly: true},
+			{name: "glm45_cap", extra: `{"model":"GLM-4.5-Air","max_tokens":98000}`, maxTokens: 98304, thinking: "enabled", budget: 10240, paidOnly: true},
+			{name: "vision", extra: `{"model":"GLM-4.6V"}`, maxTokens: 4096, paidOnly: true},
+			{name: "unknown", extra: `{"model":"GLM-unknown"}`, maxTokens: 4096, paidOnly: true},
+			{name: "disabled", extra: `{"thinking":{"type":"disabled"}}`, maxTokens: 4096, thinking: "disabled"},
+			{name: "explicit_budget", extra: `{"thinking":{"type":"enabled","budget_tokens":2048}}`, maxTokens: 4096, thinking: "enabled", budget: 2048},
+			{name: "explicit_effort", extra: `{"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}}`, maxTokens: 4096, thinking: "adaptive", effort: "low"},
+			{name: "effort_only", extra: `{"output_config":{"effort":"low"}}`, maxTokens: 4096, effort: "low"},
+			{name: "null_thinking", extra: `{"thinking":null}`, maxTokens: 4096},
+			{name: "suffix_none", extra: `{"model":"GLM-5.3-Flash(none)"}`, maxTokens: 4096},
+			{name: "chat_none", path: "/v1/chat/completions", extra: `{"reasoning_effort":"none"}`, maxTokens: 4096, thinking: "disabled"},
+			{name: "forced_tool", extra: `{"tool_choice":{"type":"any"},"tools":[{"name":"lookup","input_schema":{"type":"object"}}]}`, maxTokens: 4096},
+			{name: "rules_override", maxTokens: 8000, thinking: "enabled", budget: 2048, effort: "low", rules: []model.CustomBodyRule{
+				{Action: model.RuleActionOverride, Path: "thinking.budget_tokens", Value: json.RawMessage(`2048`)},
+				{Action: model.RuleActionOverride, Path: "output_config.effort", Value: json.RawMessage(`"low"`)},
+				{Action: model.RuleActionOverride, Path: "max_tokens", Value: json.RawMessage(`8000`)},
+			}},
+			{name: "rules_remove", maxTokens: 20096, rules: []model.CustomBodyRule{
+				{Action: model.RuleActionRemove, Path: "thinking"},
+				{Action: model.RuleActionRemove, Path: "output_config.effort"},
+			}},
+		} {
+			if tc.paidOnly && !paid {
+				continue // 测试套餐只提供 Flash 的体验权益，其他模型验证付费出站。
+			}
+			t.Run(fmt.Sprintf("paid=%t/%s", paid, tc.name), func(t *testing.T) {
+				env, configs := newZAIStartHarness(t)
+				cfg := configs[0]
+				if paid {
+					previous := cfg.OAuthCredential
+					credential, err := zaiauth.ParseCredential([]byte(previous))
+					if err != nil {
+						t.Fatal(err)
+					}
+					credential.JWTToken = ""
+					cfg.OAuthCredential, err = credential.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if changed, err := env.store.CompareAndSwapOAuthCredential(context.Background(), cfg.ID, model.AuthTypeZAIOAuth, previous, cfg.OAuthCredential); err != nil || !changed {
+						t.Fatalf("replace test credential: changed=%v err=%v", changed, err)
+					}
+				}
+				cfg.CustomRequestRules = &model.CustomRequestRules{Body: tc.rules}
+				if tc.paidOnly {
+					cfg.ModelEntries = append(cfg.ModelEntries, model.ModelEntry{Model: gjson.Get(tc.extra, "model").String()})
+				}
+				if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+				env.server.InvalidateChannelListCache()
+				control := env.server.client
+				var captured []byte
+				calls := 0
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(req.URL.Path, "/messages") {
+						return control.Do(req)
+					}
+					var err error
+					captured, err = io.ReadAll(req.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					if trial := strings.Contains(req.URL.Path, "/zcode-plan/"); trial == paid {
+						t.Errorf("unexpected package: %s", req.URL.Path)
+					}
+					calls++
+					if tc.repair && calls == 1 {
+						if gjson.GetBytes(captured, "max_tokens").Int() != 20096 || gjson.GetBytes(captured, "thinking.budget_tokens").Int() != 16000 {
+							t.Error("first attempt missing default thinking allowance")
+						}
+						return zaiStartTestResponse(req, 400, `{"error":{"type":"invalid_request_error","message":"thinking blocks are not supported"}}`), nil
+					}
+					return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+				})}
+				body := map[string]any{"model": "GLM-5.3-Flash", "max_tokens": 4096, "messages": []map[string]string{{"role": "user", "content": "hello"}}}
+				if tc.repair && !paid {
+					body["model"] = "GLM-5.3-Flash-Trial" // 固定体验，验证正文修复而非套餐回退。
+				}
+				if tc.name == "missing_max" {
+					delete(body, "max_tokens")
+				}
+				if tc.extra != "" {
+					decoder := json.NewDecoder(strings.NewReader(tc.extra))
+					decoder.UseNumber()
+					if err := decoder.Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+				}
+				path := tc.path
+				if path == "" {
+					path = "/v1/messages"
+				}
+				response := doProxyRequest(t, env.engine, path, body, map[string]string{"X-CCLoad-Channel": cfg.Name})
+				if response.Code != 200 {
+					t.Fatalf("response=%d %s", response.Code, response.Body.String())
+				}
+				wantCalls := 1
+				if tc.repair {
+					wantCalls = 2
+				}
+				if calls != wantCalls {
+					t.Fatalf("sends=%d, want %d", calls, wantCalls)
+				}
+				root := gjson.ParseBytes(captured)
+				wantThinking := tc.thinking
+				if paid && wantThinking == "disabled" {
+					wantThinking = "" // 付费既有归一会移除 disabled，不能恢复默认 high。
+				}
+				if root.Get("max_tokens").Int() != tc.maxTokens || root.Get("thinking.type").String() != wantThinking ||
+					root.Get("thinking.budget_tokens").Int() != tc.budget || root.Get("output_config.effort").String() != tc.effort {
+					t.Fatalf("max_tokens=%s thinking=%s output_config=%s", root.Get("max_tokens").Raw, root.Get("thinking").Raw, root.Get("output_config").Raw)
+				}
+				if tc.name == "native" && (root.Get("temperature").Exists() || root.Get("top_p").Exists() || root.Get("top_k").Exists()) {
+					t.Fatal("default thinking retained incompatible sampling parameters")
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 管理检测与代理使用同一默认 high，表单关闭和模型后缀不能丢失。
+ * @param t 测试上下文。
+ */
+func TestZAIChannelTestThinkingDefaults(t *testing.T) {
+	for _, client := range []string{"anthropic", "openai", "codex", "gemini"} {
+		for _, mode := range []string{"default", "blank", "none", "normalized_none", "suffix_none", "suffix_zero"} {
+			t.Run(client+"/"+mode, func(t *testing.T) {
+				env, configs := newZAIStartHarness(t)
+				control := env.server.client
+				var captured []byte
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(req.URL.Path, "/messages") {
+						return control.Do(req)
+					}
+					var err error
+					captured, err = io.ReadAll(req.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+				})}
+				body := map[string]any{"model": "GLM-5.3-Flash", "max_tokens": 4096, "content": "hello", "client_protocol": client, "stream": false}
+				switch mode {
+				case "blank":
+					body["thinking_effort"] = " "
+				case "none":
+					body["thinking_effort"] = "none"
+				case "normalized_none":
+					body["thinking_effort"] = " NONE "
+				case "suffix_none":
+					body["model"] = "GLM-5.3-Flash(none)"
+				case "suffix_zero":
+					body["model"] = "GLM-5.3-Flash(0)"
+				}
+				id := fmt.Sprint(configs[0].ID)
+				c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/test", body))
+				c.Params = gin.Params{{Key: "id", Value: id}}
+				env.server.HandleChannelTest(c)
+				if response.Code != 200 || len(captured) == 0 {
+					t.Fatalf("response=%d %s", response.Code, response.Body.String())
+				}
+				root := gjson.ParseBytes(captured)
+				if mode == "default" || mode == "blank" {
+					if root.Get("thinking.type").String() != "enabled" || root.Get("thinking.budget_tokens").Int() != 16000 || root.Get("output_config.effort").String() != "high" || root.Get("max_tokens").Int() != 20096 {
+						t.Fatalf("default: max_tokens=%s thinking=%s effort=%s", root.Get("max_tokens").Raw, root.Get("thinking").Raw, root.Get("output_config.effort").Raw)
+					}
+				} else if kind := root.Get("thinking.type").String(); kind != "" && kind != "disabled" || root.Get("output_config.effort").Exists() || root.Get("max_tokens").Int() != 4096 {
+					t.Fatalf("explicit off: max_tokens=%s thinking=%s effort=%s", root.Get("max_tokens").Raw, root.Get("thinking").Raw, root.Get("output_config.effort").Raw)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 新增环境文本触发隐私容量保护时阻止 Trial 和付费，并沿原出口计一次阻止。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIEnvironmentPrivacyFailure(t *testing.T) {
+	env, configs := newZAIStartHarness(t)
+	if w := batchUpdateSetting(t, env.server, privacySettingKey, `{"enabled":true,"rules":[{"kind":"TEST","regex":"private-value-[0-9]+"}]}`); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	control := env.server.client
+	var sent atomic.Int32
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(req.URL.Path, "/messages") {
+			sent.Add(1)
+			return zaiStartTestResponse(req, 200, `{}`), nil
+		}
+		return control.Do(req)
+	})}
+	var cwd strings.Builder
+	// 明确匹配独立值，避免邮箱有效性规则让容量边界测试失效。
+	for i := range 4200 {
+		fmt.Fprintf(&cwd, "private-value-%d ", i)
+	}
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": "GLM-5.3-Flash", "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": configs[0].Name, "x-magpie-work-dir": url.PathEscape(cwd.String())})
+	if response.Code != 400 || sent.Load() != 0 {
+		t.Fatalf("privacy failure response=%d sends=%d", response.Code, sent.Load())
+	}
+	metrics := readPrivacyRuntime(t, env.server)
+	if metrics.BlockedRequests != 1 || metrics.MaskedRequests != 0 {
+		t.Fatalf("privacy metrics=%+v", metrics)
+	}
+	windows, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil || len(windows) != 0 {
+		t.Fatalf("privacy failure cooled: %v %v", windows, err)
+	}
+}
 
 /**
  * @brief 建立真实套餐查询与可控推理发送器之间的测试边界，含重复账号渠道。
@@ -70,7 +991,7 @@ func newZAIStartHarness(t *testing.T) (*proxyTestEnv, []*model.Config) {
 }
 
 /**
- * @brief 流终态故障或模型故障让备用 Trial 账号接替，客户端错误和并发忙保留活动账号。
+ * @brief 真实终态失败冷却体验模型，坏请求不冷却，已开始的流不得重放。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartFinalFailureRetiresAccount(t *testing.T) {
@@ -79,17 +1000,17 @@ func TestProxy_ZAIStartFinalFailureRetiresAccount(t *testing.T) {
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"
 	for _, tc := range []struct {
-		name   string
-		status int
-		stream bool
-		body   string
-		retire bool
+		name    string
+		status  int
+		stream  bool
+		body    string
+		cooling bool
 	}{
 		{"late-sse-error", 200, true, prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"backend failed after output\"}}\n\n", true},
 		{"incomplete-stream", 200, true, prefix, true},
 		{"model-not-found", 404, false, `{"type":"error","error":{"type":"not_found_error","message":"model not found"}}`, true},
 		{"bad-request", 400, false, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215000 tokens > 200000 maximum"}}`, false},
-		{"late-concurrency-error", 200, true, prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"3008\",\"message\":\"concurrency limit exceeded\"}}\n\n", false},
+		{"late-concurrency-error", 200, true, prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"3008\",\"message\":\"concurrency limit exceeded\"}}\n\n", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
@@ -139,13 +1060,14 @@ func TestProxy_ZAIStartFinalFailureRetiresAccount(t *testing.T) {
 				}
 			}
 			response := request(2, false)
-			if tc.retire {
-				if response.Code != http.StatusOK || reserveCalls.Load() != 1 {
-					t.Fatalf("reserve must take over: calls=%d status=%d body=%s", reserveCalls.Load(), response.Code, response.Body.String())
-				}
-			} else if response.Code != http.StatusTooManyRequests || reserveCalls.Load() != 0 || gjson.GetBytes(response.Body.Bytes(), "error.type").String() != "zcode_trial_reserve" {
-				t.Fatalf("active accounts must retain seats: calls=%d status=%d body=%s", reserveCalls.Load(), response.Code, response.Body.String())
+			if response.Code != http.StatusOK || reserveCalls.Load() != 1 {
+				t.Fatalf("idle account could not switch on explicit demand: %d %s", response.Code, response.Body.String())
 			}
+			models, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil || models[configs[0].ID]["GLM-5.3-Flash-Trial"].After(time.Now()) != tc.cooling {
+				t.Fatalf("wrong model cooldown: %v %v", models, err)
+			}
+
 			cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
 			if err != nil || len(cooldowns) != 0 {
 				t.Fatalf("Trial failure must not cool paid channels: %v %v", cooldowns, err)
@@ -289,136 +1211,254 @@ func zaiStartTestResponse(req *http.Request, status int, body string) *http.Resp
 }
 
 /**
- * @brief 验证配置钳制、重复账号与跨账号总上限，以及流关闭后容量回收。
+ * @brief 同账号跨重复渠道共享三并发及三等待，付费和其他提供商不受影响。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartCapacity(t *testing.T) {
-	for _, limit := range []int{0, 1, 2, 9} {
-		t.Run(fmt.Sprint(limit), func(t *testing.T) {
-			env, configs := newZAIStartHarness(t)
-			cfg := configs[0].Clone()
-			cfg.MaxConcurrency = limit
-			var calls atomic.Int32
-			send := func(req *http.Request) (*http.Response, error) {
-				calls.Add(1)
-				return zaiStartTestResponse(req, 200, `{}`), nil
-			}
-			first, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", send)
+
+	env, configs := newZAIStartHarness(t)
+	var calls atomic.Int32
+	send := func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return zaiStartTestResponse(req, 200, `{}`), nil
+	}
+	var held []io.ReadCloser
+	for _, index := range []int{0, 3, 0} {
+		resp, err := callZAIStart(context.Background(), env.server, configs[index], "GLM-5.3-Flash-Trial", send)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("admit: %v %v", resp, err)
+		}
+		held = append(held, resp.Body)
+		defer func() { _ = resp.Body.Close() }()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan int, 4)
+	for range 4 {
+		go func() {
+			resp, err := callZAIStart(ctx, env.server, configs[3], "GLM-5.3-Flash-Trial", send)
 			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = first.Body.Close() }()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			done := make(chan error, 3)
-			for range 3 {
-				go func() {
-					// 重复渠道也属于同一真实账号，不能绕过串行和总容量。
-					resp, err := callZAIStart(ctx, env.server, configs[3], "GLM-5.3-Flash-Trial", send)
-					if resp != nil {
-						defer func() { _ = resp.Body.Close() }()
-						var body struct {
-							Error struct {
-								Type string `json:"type"`
-							} `json:"error"`
-						}
-						if json.NewDecoder(resp.Body).Decode(&body) != nil || resp.StatusCode != 429 || body.Error.Type != "zcode_trial_capacity" {
-							err = fmt.Errorf("unexpected admission: status=%d type=%s", resp.StatusCode, body.Error.Type)
-						}
-					}
-					done <- err
-				}()
-			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("fourth request did not reject locally")
-			}
-			if calls.Load() != 1 {
-				t.Fatalf("same account sent %d calls", calls.Load())
-			}
-			// 满载时付费与非 ZAI 仍走原发送路径。
-			paid := cfg.Clone()
-			paid.OAuthCredential = `{"api_key":"key-a.secret","jwt_token":"jwt-a","user_id":"a","free_first":false}`
-			other := cfg.Clone()
-			other.AuthType = model.AuthTypeAPIKey
-			for _, selected := range []*model.Config{paid, other} {
-				resp, err := callZAIStart(context.Background(), env.server, selected, "GLM-5.3-Flash", send)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if resp.StatusCode != 200 || isZAITrialResponse(resp) {
-					t.Error("paid/provider isolation failed")
-				}
-				_ = resp.Body.Close()
-			}
-			cancel()
-			for range 2 {
-				select {
-				case err := <-done:
-					if !errors.Is(err, context.Canceled) {
-						t.Fatalf("waiting cancel: %v", err)
-					}
-				case <-time.After(5 * time.Second):
-					t.Fatal("waiting request ignored cancellation")
-				}
-			}
-			_ = first.Body.Close()
-			_ = first.Body.Close()
-			resp, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", send)
-			if err != nil {
-				t.Fatal(err)
+				done <- 0
+				return
 			}
 			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != 200 {
-				t.Fatalf("released capacity: %d", resp.StatusCode)
+			done <- resp.StatusCode
+		}()
+	}
+	select {
+	case status := <-done:
+		if status != 429 {
+			t.Fatalf("queue overflow=%d", status)
+		}
+	case <-ctx.Done():
+		t.Fatal("queue not bounded")
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("duplicate channel bypassed capacity: %d", calls.Load())
+	}
+	paid, other := configs[0].Clone(), configs[0].Clone()
+	paid.OAuthCredential = `{"api_key":"key-a.secret","jwt_token":"jwt-a","user_id":"a","free_first":false}`
+	other.AuthType = model.AuthTypeAPIKey
+	for _, cfg := range []*model.Config{paid, other} {
+		resp, err := callZAIStart(ctx, env.server, cfg, "GLM-5.3-Flash", send)
+		if err != nil || resp.StatusCode != 200 || isZAITrialResponse(resp) {
+			t.Fatalf("paid/provider isolation: %v %v", resp, err)
+		}
+		_ = resp.Body.Close()
+	}
+	_ = held[0].Close()
+	_ = held[0].Close()
+	for range 3 {
+		select {
+		case status := <-done:
+			if status != 200 {
+				t.Fatalf("queued=%d", status)
+			}
+		case <-ctx.Done():
+			t.Fatal("queue failed to wake")
+		}
+	}
+	if calls.Load() != 8 {
+		t.Fatalf("real sends=%d want=8", calls.Load())
+	}
+
+}
+
+/**
+ * @brief 三个独立请求必须在任一响应结束前同时经过完整代理入口到达同账号上游。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAIStartConcurrentRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		path            string
+		stream          bool
+		explicitSession bool
+	}{
+		{"messages_without_session", "/v1/messages", false, false},
+		{"messages_with_session", "/v1/messages", false, true},
+		{"streaming_messages", "/v1/messages", true, true},
+		{"streaming_responses_threads", "/v1/responses", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			// 固定同一真实账号，避免备用账号切换掩盖发送路径是否串行。
+			for _, cfg := range configs[1:] {
+				cfg.Enabled = false
+				if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env.server.InvalidateChannelListCache()
+			control := env.server.client
+			arrived := make(chan http.Header, 3)
+			release := make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				arrived <- req.Header.Clone()
+				select {
+				case <-release:
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				}
+				if tc.stream {
+					resp := zaiStartTestResponse(req, http.StatusOK, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"GLM-5.3-Flash\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+					resp.Header.Set("Content-Type", "text/event-stream")
+					return resp, nil
+				}
+				return zaiStartTestResponse(req, http.StatusOK, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			})}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			var workers sync.WaitGroup
+			defer func() { cancel(); unblock(); workers.Wait() }()
+			done := make(chan *httptest.ResponseRecorder, 3)
+			// 每个并发请求由 WaitGroup 跟踪，清理时等待全部处理结束。
+			for i := range 3 {
+				workers.Go(func() {
+					body := fmt.Sprintf(`{"model":"GLM-5.3-Flash-Trial","max_tokens":16,"stream":%t,"messages":[{"role":"user","content":"request %d"}]}`, tc.stream, i)
+					if tc.path == "/v1/responses" {
+						body = fmt.Sprintf(`{"model":"GLM-5.3-Flash-Trial","stream":true,"input":"request %d"}`, i)
+					}
+					req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(body)).WithContext(ctx)
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Authorization", "Bearer test-api-key")
+					if tc.explicitSession {
+						req.Header.Set("X-Claude-Code-Session-Id", fmt.Sprintf("session-%d", i))
+					}
+					if tc.path == "/v1/responses" {
+						req.Header.Set("Session-Id", "shared-session")
+						req.Header.Set("Thread-Id", fmt.Sprintf("thread-%d", i))
+					}
+					response := httptest.NewRecorder()
+					env.engine.ServeHTTP(response, req)
+					done <- response
+				})
+			}
+			for i := range 3 {
+				select {
+				case headers := <-arrived:
+					if anthropicHeaderValue(headers, "Authorization") != "Bearer jwt-a" {
+						t.Fatal("request used a different account")
+					}
+				case response := <-done:
+					t.Fatalf("request ended before three concurrent upstream sends: %d %s", response.Code, response.Body.String())
+				case <-ctx.Done():
+					t.Fatalf("only %d requests reached upstream before any response was released", i)
+				}
+			}
+			unblock()
+			for range 3 {
+				select {
+				case response := <-done:
+					if response.Code != http.StatusOK {
+						t.Errorf("status=%d body=%s", response.Code, response.Body.String())
+					}
+				case <-ctx.Done():
+					t.Fatal("concurrent requests did not finish")
+				}
 			}
 		})
 	}
 }
 
 /**
- * @brief 空闲活动账号保留席位，失效账号所有流关闭后备用账号才能接替。
+ * @brief 备用账号必须等旧账号全部流结束；取消切换后旧账号恢复新准入。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartReserve(t *testing.T) {
-	env, configs := newZAIStartHarness(t)
-	status := 200
-	send := func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, status, `{}`), nil }
-	first, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", send)
-	if err != nil {
-		t.Fatal(err)
+
+	for _, cancelSwitch := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelSwitch), func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			var held []io.ReadCloser
+			send := func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil }
+			for range 2 {
+				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", send)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				held = append(held, resp.Body)
+				defer func() { _ = resp.Body.Close() }()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sent := make(chan struct{}, 1)
+			done := make(chan error, 1)
+			go func() {
+				resp, err := callZAIStart(ctx, env.server, configs[1], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { sent <- struct{}{}; return send(req) })
+				if resp != nil {
+					_ = resp.Body.Close()
+					if resp.StatusCode != 200 {
+						err = fmt.Errorf("standby=%d", resp.StatusCode)
+					}
+				}
+				done <- err
+			}()
+			select {
+			case <-sent:
+				t.Fatal("standby overlapped active stream")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if cancelSwitch {
+				cancel()
+				if err := <-done; !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancel=%v", err)
+				}
+				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", send)
+				if err != nil || resp.StatusCode != 200 {
+					t.Fatalf("canceled drain stranded active: %v %v", resp, err)
+				}
+				_ = resp.Body.Close()
+				return
+			}
+			_ = held[0].Close()
+			select {
+			case <-sent:
+				t.Fatal("standby started before last stream closed")
+			case <-time.After(50 * time.Millisecond):
+			}
+			_ = held[1].Close()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("drain did not switch")
+			}
+			select {
+			case <-sent:
+			default:
+				t.Fatal("standby never sent")
+			}
+		})
 	}
-	defer func() { _ = first.Body.Close() }()
-	second, err := callZAIStart(context.Background(), env.server, configs[1], "GLM-5.3-Flash-Trial", send)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = second.Body.Close()
-	checkReserve := func(want int) {
-		t.Helper()
-		resp, err := callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", send)
-		if err != nil || resp.StatusCode != want {
-			t.Fatalf("reserve: %v %v, want %d", resp, err, want)
-		}
-		if want == 429 && !isZAILocalPlanResponse(resp) {
-			t.Fatal("reserve rejection must be local")
-		}
-		_ = resp.Body.Close()
-	}
-	checkReserve(429)
-	_ = first.Body.Close()
-	status = 401
-	failed, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", send)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = failed.Body.Close()
-	status = 200
-	checkReserve(200)
+
 }
 
 /**
@@ -429,7 +1469,7 @@ func TestProxy_ZAIStartReserveRouting(t *testing.T) {
 	for _, name := range []string{"GLM-5.3-Flash", "GLM-5.3-Flash-Trial"} {
 		t.Run(name, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
-			for _, cfg := range configs[:2] {
+			for _, cfg := range configs[:1] {
 				resp, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
 					return zaiStartTestResponse(req, http.StatusOK, `{}`), nil
 				})
@@ -484,215 +1524,107 @@ func TestProxy_ZAIStartReserveRouting(t *testing.T) {
 }
 
 /**
- * @brief 从真实代理入口验证两个执行、一个等待、第四条拒绝及跨账号唤醒和取消。
+ * @brief 真实代理排队只唤醒同一活动账号，取消等待不发送也不登记上游故障。
  * @param t 测试上下文。
- * @note 使用上游发送事件和客户端结果同步，不读取调度器私有状态。
  */
 func TestProxy_ZAIStartQueueRouting(t *testing.T) {
-	for _, scenario := range []string{"available", "automatic", "cancel", "disabled", "model_changed"} {
-		t.Run(scenario, func(t *testing.T) {
+
+	for _, cancelWaiting := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelWaiting), func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
-			for _, cfg := range configs[:2] {
-				resp, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
-				if err != nil {
-					t.Fatal(err)
-				}
-				_ = resp.Body.Close()
-			}
+			// 即使备用优先级更高，活动账号满载时仍等待它的空槽。
 			configs[2].Priority = 100
 			if _, err := env.store.UpdateConfig(context.Background(), configs[2].ID, configs[2]); err != nil {
 				t.Fatal(err)
 			}
 			env.server.InvalidateChannelListCache()
-			entered := make(chan string, 8)
-			a, b := make(chan struct{}), make(chan struct{})
-			releaseA, releaseB := sync.OnceFunc(func() { close(a) }), sync.OnceFunc(func() { close(b) })
-			defer releaseA()
-			defer releaseB()
-			controlClient := env.server.client
+
+			var held []io.ReadCloser
+			for range 3 {
+				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				held = append(held, resp.Body)
+				defer func() { _ = resp.Body.Close() }()
+			}
+			control := env.server.client
+			var inference atomic.Int32
 			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 				if !strings.HasSuffix(req.URL.Path, "/messages") {
-					return controlClient.Do(req)
+					return control.Do(req)
 				}
-				account := anthropicHeaderValue(req.Header, "Authorization")
-				if !strings.Contains(req.URL.Path, "/zcode-plan/") {
-					account = "paid"
+				if anthropicHeaderValue(req.Header, "Authorization") != "Bearer jwt-a" {
+					t.Error("other account bypassed full active account")
 				}
-				entered <- account
-				var release <-chan struct{}
-				switch account {
-				case "Bearer jwt-a":
-					release = a
-				case "Bearer jwt-b":
-					release = b
-				default:
-					return zaiStartTestResponse(req, 500, `{}`), nil
-				}
-				select {
-				case <-release:
-				case <-req.Context().Done():
-					return nil, req.Context().Err()
-				}
+				inference.Add(1)
 				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
 			})}
-			results := make(chan *httptest.ResponseRecorder, 4)
-			requestModel := "GLM-5.3-Flash-Trial"
-			if scenario == "automatic" {
-				requestModel = "GLM-5.3-Flash"
-			}
-			launch := func(ctx context.Context) {
-				go func() {
-					req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`, requestModel))).WithContext(ctx)
-					req.Header.Set("Content-Type", "application/json")
-					req.Header.Set("Authorization", "Bearer test-api-key")
-					response := httptest.NewRecorder()
-					env.engine.ServeHTTP(response, req)
-					results <- response
-				}()
-			}
-			nextResult := func() *httptest.ResponseRecorder {
-				t.Helper()
-				select {
-				case result := <-results:
-					return result
-				case <-time.After(5 * time.Second):
-					t.Fatal("proxy did not complete")
-					return nil
-				}
-			}
-			nextAccount := func() string {
-				t.Helper()
-				select {
-				case account := <-entered:
-					return account
-				case <-time.After(5 * time.Second):
-					t.Fatal("upstream did not start")
-					return ""
-				}
-			}
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			launch(ctx)
-			launch(ctx)
-			first, second := nextAccount(), nextAccount()
-			if first == second || (first != "Bearer jwt-a" && first != "Bearer jwt-b") || (second != "Bearer jwt-a" && second != "Bearer jwt-b") {
-				t.Fatalf("active accounts: %q %q", first, second)
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"GLM-5.3-Flash-Trial","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)).WithContext(ctx)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer test-api-key")
+				response := httptest.NewRecorder()
+				env.engine.ServeHTTP(response, req)
+				done <- response
+			}()
+			select {
+			case result := <-done:
+				t.Fatalf("queue returned early: %d %s", result.Code, result.Body.String())
+			case <-time.After(100 * time.Millisecond):
 			}
-			waitingCtx, cancelWaiting := context.WithCancel(ctx)
-			defer cancelWaiting()
-			launch(waitingCtx)
-			launch(waitingCtx)
-			overflow := nextResult()
-			var body struct {
-				Error struct {
-					Type string `json:"type"`
-				} `json:"error"`
-			}
-			if json.Unmarshal(overflow.Body.Bytes(), &body) != nil || overflow.Code != 429 || body.Error.Type != "zcode_trial_capacity" {
-				t.Fatalf("fourth request: %d %s", overflow.Code, overflow.Body.String())
+			if cancelWaiting {
+				cancel()
+			} else {
+				_ = held[0].Close()
 			}
 			select {
-			case account := <-entered:
-				t.Fatalf("queued/reserve request sent: %s", account)
-			default:
-			}
-			switch scenario {
-			case "cancel":
-				cancelWaiting()
-				if result := nextResult(); result.Code == 200 {
-					t.Fatal("canceled waiting request succeeded")
-				}
-			case "disabled", "model_changed":
-				for _, index := range []int{0, 1, 3} {
-					cfg := configs[index].Clone()
-					if scenario == "disabled" {
-						cfg.Enabled = false
-					} else {
-						cfg.ModelEntries = []model.ModelEntry{{Model: "GLM-5.3-Flash-Trial", RedirectModel: "GLM-5.3-Trial"}}
+			case result := <-done:
+				if cancelWaiting {
+					if inference.Load() != 0 {
+						t.Fatal("canceled queue sent")
 					}
-					if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
-						t.Fatal(err)
-					}
+				} else if result.Code != 200 || inference.Load() != 1 {
+					t.Fatalf("wake=%d sends=%d %s", result.Code, inference.Load(), result.Body.String())
 				}
-				env.server.InvalidateChannelListCache()
-				if result := nextResult(); result.Code != 429 {
-					t.Fatalf("disabled waiting request: %d", result.Code)
-				}
-			default:
-				releaseB()
-				if account := nextAccount(); account != "Bearer jwt-b" {
-					t.Fatalf("free B must serve waiting request: %s", account)
-				}
-				if result := nextResult(); result.Code != 200 {
-					t.Fatalf("completed B: %d %s", result.Code, result.Body.String())
-				}
-			}
-			releaseA()
-			releaseB()
-			for range 2 {
-				if result := nextResult(); result.Code != 200 {
-					t.Fatalf("active response: %d %s", result.Code, result.Body.String())
-				}
-			}
-			select {
-			case account := <-entered:
-				t.Fatalf("unexpected additional send: %s", account)
-			default:
-			}
-			entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.StatusCode == 429 })
-			if entry == nil || entry.ChannelID != 0 || !strings.Contains(entry.Message, "local ZAI Trial admission:") || strings.Contains(entry.Message, "upstream status") {
-				t.Fatalf("local admission log: %+v", entry)
-			}
-			logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 30, 0, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, entry := range logs {
-				if entry.ChannelID == configs[2].ID || strings.Contains(entry.Message, "zcode_trial_reserve") || strings.Contains(entry.Message, "upstream status 429") {
-					t.Errorf("false upstream failure: channel=%d message=%s", entry.ChannelID, entry.Message)
-				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("queue did not finish")
 			}
 		})
 	}
+
 }
 
 /**
- * @brief 公共并发拒绝只代表暂时繁忙，不应退役已成功使用的活动账号并放入第三账号。
+ * @brief 本地并发和 RPM 拒绝不冷却账号或模型，重复渠道可以继续使用。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartBusyAccountRemainsActive(t *testing.T) {
+
 	env, configs := newZAIStartHarness(t)
-	send := func(req *http.Request) (*http.Response, error) {
-		return zaiStartTestResponse(req, http.StatusOK, `{}`), nil
-	}
-	for _, cfg := range configs[:2] {
-		resp, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", send)
-		if err != nil {
-			t.Fatal(err)
+	for _, localErr := range []error{ErrChannelConcurrencyExceeded, ErrChannelRPMExceeded} {
+		resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(*http.Request) (*http.Response, error) { return nil, localErr })
+		if resp != nil {
+			_ = resp.Body.Close()
 		}
-		_ = resp.Body.Close()
+		if !errors.Is(err, localErr) {
+			t.Fatalf("local failure=%v", err)
+		}
 	}
-	resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(*http.Request) (*http.Response, error) {
-		return nil, ErrChannelConcurrencyExceeded
-	})
-	if resp != nil {
-		_ = resp.Body.Close()
+	resp, err := callZAIStart(context.Background(), env.server, configs[3], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("local capacity cooled healthy account: %v %v", resp, err)
 	}
-	if !errors.Is(err, ErrChannelConcurrencyExceeded) {
-		t.Fatalf("capacity rejection=%v", err)
+	_ = resp.Body.Close()
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil || len(cooldowns) != 0 {
+		t.Fatalf("local failure persisted: %v %v", cooldowns, err)
 	}
-	calls := 0
-	resp, err = callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
-		calls++
-		return send(req)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusTooManyRequests || calls != 0 {
-		t.Fatalf("healthy active account displaced: status=%d reserve calls=%d", resp.StatusCode, calls)
-	}
+
 }
 
 /**
@@ -701,150 +1633,70 @@ func TestProxy_ZAIStartBusyAccountRemainsActive(t *testing.T) {
  * @note 经真实 HTTP 代理入口验证候选遍历，用响应事件确认队列已满，不读取调度器内部状态。
  */
 func TestProxy_ZAIStartCapacityFallback(t *testing.T) {
-	for _, scenario := range []string{"paid", "api_key", "paid_failure", "all_trial"} {
-		t.Run(scenario, func(t *testing.T) {
-			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				switch r.URL.Path {
-				case "/api/biz/subscription/list":
-					_, _ = io.WriteString(w, `{"code":0,"data":[{"status":"VALID"}]}`)
-				case "/api/v1/zcode-plan/billing/balance":
-					_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active"}],"balances":[{"plan_id":"gift","capabilities":["model:glm-5.3-flash"],"remaining_units":10}]}}`)
-				default:
-					t.Errorf("unexpected control request: %s", r.URL.Path)
-					w.WriteHeader(500)
-				}
-			}))
-			var channels []testChannel
-			urls := make(map[int]string)
-			for i, account := range []string{"a", "b", "reserve", "fallback"} {
-				channel := testChannel{name: account, priority: 100 - i, upstreamProtocol: "anthropic", models: "GLM-5.3-Flash,GLM-5.3-Flash-Trial",
-					authType: model.AuthTypeZAIOAuth, oauthCredential: fmt.Sprintf(`{"api_key":"key-%s.secret","jwt_token":"jwt-%s","user_id":"%s"}`, account, account, account)}
-				if account == "fallback" {
-					if scenario == "api_key" {
-						channel.authType, channel.oauthCredential, channel.apiKey = model.AuthTypeAPIKey, "", "fallback-key"
-					} else if scenario != "all_trial" {
-						channel.oauthCredential = `{"api_key":"key-fallback.secret","jwt_token":"jwt-fallback","user_id":"fallback","free_first":false}`
-					}
-				}
-				channels = append(channels, channel)
-				urls[i] = upstream.URL
-			}
-			env := setupProxyTestEnv(t, channels, urls)
-			env.server.zaiService.OAuthBaseURL, env.server.zaiService.BizBaseURL = upstream.URL+"/api/v1", upstream.URL
-			configs, err := env.store.ListConfigs(context.Background())
-			if err != nil {
-				t.Fatal(err)
-			}
-			byName := make(map[string]*model.Config)
+
+	for _, ordinary := range []bool{false, true} {
+		t.Run(fmt.Sprint(ordinary), func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
 			for _, cfg := range configs {
-				byName[cfg.Name] = cfg
+				cfg.Enabled = cfg.ID == configs[0].ID || (cfg.ID == configs[1].ID && !ordinary)
+				if cfg.ID == configs[0].ID {
+					cfg.Priority = 100
+				}
+				if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
 			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			// 两个活动账号保持响应未关闭，再用一个等待请求填满第三个逻辑名额。
-			for _, account := range []string{"a", "b"} {
-				resp, err := callZAIStart(ctx, env.server, byName[account], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
-					return zaiStartTestResponse(req, 200, `{}`), nil
-				})
+			if ordinary {
+				cfg := configs[1].Clone()
+				cfg.ID, cfg.Name, cfg.AuthType, cfg.OAuthCredential, cfg.Enabled = 0, "ordinary", model.AuthTypeAPIKey, "", true
+				if _, err := env.store.CreateConfigWithAPIKeys(context.Background(), cfg, []*model.APIKey{{APIKey: "ordinary-key"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !ordinary {
+				next := `{"api_key":"key-b.secret","jwt_token":"jwt-b","user_id":"b","free_first":false}`
+				if ok, err := env.store.CompareAndSwapOAuthCredential(context.Background(), configs[1].ID, configs[1].AuthType, configs[1].OAuthCredential, next); err != nil || !ok {
+					t.Fatalf("paid preference: %v %v", ok, err)
+				}
+			}
+			env.server.InvalidateChannelListCache()
+			for range 3 {
+				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer func() { _ = resp.Body.Close() }()
 			}
-			done := make(chan error, 2)
-			for range 2 {
-				go func() {
-					resp, err := callZAIStart(ctx, env.server, byName["a"], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
-						return nil, fmt.Errorf("busy account unexpectedly sent %s", req.URL.Path)
-					})
-					if resp != nil {
-						var payload struct {
-							Error struct {
-								Type string `json:"type"`
-							} `json:"error"`
-						}
-						if json.NewDecoder(resp.Body).Decode(&payload) != nil || resp.StatusCode != 429 || payload.Error.Type != "zcode_trial_capacity" {
-							err = fmt.Errorf("expected capacity rejection, got %d", resp.StatusCode)
-						}
-						_ = resp.Body.Close()
-					}
-					done <- err
-				}()
-			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("Trial queue did not fill")
-			}
-			defer func() {
-				cancel()
-				select {
-				case err := <-done:
-					if !errors.Is(err, context.Canceled) {
-						t.Errorf("waiting request: %v", err)
-					}
-				case <-time.After(5 * time.Second):
-					t.Error("waiting request ignored cancellation")
-				}
-			}()
-			controlClient := env.server.client
-			var trial, fallback atomic.Int32
+			control := env.server.client
+			var trial, paid atomic.Int32
 			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 				if !strings.HasSuffix(req.URL.Path, "/messages") {
-					return controlClient.Do(req)
+					return control.Do(req)
 				}
 				if strings.Contains(req.URL.Path, "/zcode-plan/") {
 					trial.Add(1)
-					return zaiStartTestResponse(req, 500, `{}`), nil
+				} else {
+					paid.Add(1)
 				}
-				fallback.Add(1)
-				wantKey := "key-fallback.secret"
-				if scenario == "api_key" {
-					wantKey = "fallback-key"
-				}
-				if anthropicHeaderValue(req.Header, "x-api-key") != wantKey || anthropicHeaderValue(req.Header, "x-query-id") != "" {
-					t.Error("fallback used another account or retained Trial headers")
-				}
-				if scenario == "paid_failure" {
-					return zaiStartTestResponse(req, 500, `{"type":"error","error":{"type":"api_error","message":"paid failure"}}`), nil
-				}
-				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+				return zaiStartTestResponse(req, 500, `{"type":"error","error":{"type":"api_error","message":"real upstream failure"}}`), nil
 			})}
-			requestCtx, requestCancel := context.WithTimeout(ctx, 5*time.Second)
-			defer requestCancel()
-			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"GLM-5.3-Flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)).WithContext(requestCtx)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"GLM-5.3-Flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)).WithContext(ctx)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer test-api-key")
-			response := httptest.NewRecorder()
-			env.engine.ServeHTTP(response, req)
-			wantStatus, wantCalls := 200, int32(1)
-			if scenario == "paid_failure" {
-				wantStatus = 500
-			}
-			if scenario == "all_trial" {
-				wantStatus, wantCalls = 429, 0
-				var payload struct {
-					Error struct {
-						Type string `json:"type"`
-					} `json:"error"`
-				}
-				if json.Unmarshal(response.Body.Bytes(), &payload) != nil || payload.Error.Type != "zcode_trial_capacity" {
-					t.Errorf("capacity reason lost: %s", response.Body.String())
-				}
-			}
-			if response.Code != wantStatus || fallback.Load() != wantCalls || trial.Load() != 0 || requestCtx.Err() != nil {
-				t.Fatalf("status=%d want=%d fallback=%d want=%d trial=%d ctx=%v body=%s", response.Code, wantStatus, fallback.Load(), wantCalls, trial.Load(), requestCtx.Err(), response.Body.String())
+			result := httptest.NewRecorder()
+			env.engine.ServeHTTP(result, req)
+			if result.Code != 500 || ctx.Err() != nil || trial.Load() != 0 || paid.Load() != 1 {
+				t.Fatalf("fallback lost real failure: status=%d trial=%d paid=%d ctx=%v %s", result.Code, trial.Load(), paid.Load(), ctx.Err(), result.Body.String())
 			}
 		})
 	}
+
 }
 
 /**
- * @brief 付费已真实失败后不能重新等待此前候选，原地重试遇到忙也必须保留真实错误。
+ * @brief 付费真实失败不重回此前的体验队列，付费同渠道重试仍保持原有配置。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartPaidFailureDoesNotRequeue(t *testing.T) {
@@ -855,10 +1707,11 @@ func TestProxy_ZAIStartPaidFailureDoesNotRequeue(t *testing.T) {
 				cfg.Enabled = i == 0 || (scenario == "other_candidate" && i == 1)
 				if i == 0 {
 					cfg.Priority = 100
+					if scenario == "same_channel" {
+						cfg.SameChannelRetries = 1
+					}
 				}
-				if scenario == "same_channel" && i == 0 {
-					cfg.SameChannelRetries = 1
-				}
+
 				if i == 1 {
 					nextCredential := `{"api_key":"key-b.secret","jwt_token":"jwt-b","user_id":"b","free_first":false}`
 					// 普通配置更新不覆盖私有凭证，必须使用凭证 CAS 才能改变付费偏好。
@@ -873,14 +1726,17 @@ func TestProxy_ZAIStartPaidFailureDoesNotRequeue(t *testing.T) {
 				}
 			}
 			env.server.InvalidateChannelListCache()
-			held := make(chan *http.Response, 1)
+			held := make(chan *http.Response, 6)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			defer func() {
-				select {
-				case resp := <-held:
-					_ = resp.Body.Close()
-				default:
+				for {
+					select {
+					case resp := <-held:
+						_ = resp.Body.Close()
+					default:
+						return
+					}
 				}
 			}()
 			holdAccount := func() error {
@@ -896,8 +1752,10 @@ func TestProxy_ZAIStartPaidFailureDoesNotRequeue(t *testing.T) {
 				return nil
 			}
 			if scenario == "other_candidate" {
-				if err := holdAccount(); err != nil {
-					t.Fatal(err)
+				for range 3 {
+					if err := holdAccount(); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			controlClient := env.server.client
@@ -910,12 +1768,6 @@ func TestProxy_ZAIStartPaidFailureDoesNotRequeue(t *testing.T) {
 					trial.Add(1)
 				} else {
 					paid.Add(1)
-					// 原请求转付费已经归还 Trial 名额；并发请求抢到它后，本请求的原地重试将遇到本地忙。
-					if scenario == "same_channel" {
-						if err := holdAccount(); err != nil {
-							return nil, err
-						}
-					}
 				}
 				return zaiStartTestResponse(req, 500, `{"type":"error","error":{"type":"api_error","message":"real upstream failure"}}`), nil
 			})}
@@ -931,7 +1783,11 @@ func TestProxy_ZAIStartPaidFailureDoesNotRequeue(t *testing.T) {
 			if scenario == "same_channel" {
 				wantTrial = 1
 			}
-			if trial.Load() != wantTrial || paid.Load() != 1 {
+			wantPaid := int32(1)
+			if scenario == "same_channel" {
+				wantPaid = 2
+			}
+			if trial.Load() != wantTrial || paid.Load() != wantPaid {
 				t.Fatalf("replayed failure: trial=%d paid=%d", trial.Load(), paid.Load())
 			}
 		})
@@ -955,11 +1811,8 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 			}
 			env.server.InvalidateChannelListCache()
 			var held []io.ReadCloser
-			for i := range 2 {
-				if i == 1 && !multiple {
-					break
-				}
-				resp, err := callZAIStart(context.Background(), env.server, configs[i], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
+			for range 3 {
+				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1039,13 +1892,16 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 				if next := waitQueued(configs[1].ID); next.ID != active.ID {
 					t.Error("waiting request identity changed")
 				}
-				_ = held[0].Close()
-				_ = held[1].Close()
+				for _, body := range held {
+					_ = body.Close()
+				}
 				result(200)
 				wantAccount = "Bearer jwt-b"
 			} else {
 				result(502)
-				_ = held[0].Close()
+				for _, body := range held {
+					_ = body.Close()
+				}
 				launch()
 				result(200)
 			}
@@ -1071,122 +1927,44 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 }
 
 /**
- * @brief 一个账号持续繁忙时，排队超时不能掩盖另一个账号已返回的真实错误。
- * @param t 测试上下文。
- * @note 从 HTTP 入口等待完整六十秒，验证真实超时边界而非模拟内部结果。
- */
-func TestProxy_ZAIStartQueueTimeoutKeepsUpstreamFailure(t *testing.T) {
-	env, configs := newZAIStartHarness(t)
-	for i, cfg := range configs {
-		cfg.Enabled = i < 2
-		cfg.Priority = 100 - i
-		if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
-			t.Fatal(err)
-		}
-	}
-	env.server.InvalidateChannelListCache()
-	held, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
-		return zaiStartTestResponse(req, 200, `{}`), nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = held.Body.Close() }()
-	controlClient := env.server.client
-	var calls atomic.Int32
-	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(req.URL.Path, "/messages") {
-			return controlClient.Do(req)
-		}
-		calls.Add(1)
-		if anthropicHeaderValue(req.Header, "Authorization") != "Bearer jwt-b" || !strings.Contains(req.URL.Path, "/zcode-plan/") {
-			t.Error("busy account or paid request was sent")
-		}
-		return zaiStartTestResponse(req, 500, `{"type":"error","error":{"type":"api_error","message":"trial failure"}}`), nil
-	})}
-	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
-	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"GLM-5.3-Flash-Trial","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)).WithContext(ctx)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer test-api-key")
-	response := httptest.NewRecorder()
-	env.engine.ServeHTTP(response, req)
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(response.Body.Bytes(), &payload) != nil || response.Code != 500 || payload.Error.Message != "trial failure" || calls.Load() != 1 || ctx.Err() != nil {
-		t.Fatalf("real failure lost or replayed: status=%d body=%s calls=%d ctx=%v", response.Code, response.Body.String(), calls.Load(), ctx.Err())
-	}
-}
-
-/**
- * @brief 并发忙重试复用 wire；同请求仅计一次，五个不同请求触发暂停并按时恢复。
+ * @brief 首次繁忙只发送一次并立即冷却同账号模型，后续本地拒绝不续期。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartBusyWindow(t *testing.T) {
+
 	env, configs := newZAIStartHarness(t)
-	now := time.Now()
-	env.server.zaiStart.now = func() time.Time { return now }
-	var waits []time.Duration
-	env.server.zaiStart.wait = func(_ context.Context, delay time.Duration) error { waits = append(waits, delay); return nil }
-	var sentBody []byte
-	var sentHeader http.Header
-	calls := 0
-	send := func(req *http.Request) (*http.Response, error) {
-		raw, err := io.ReadAll(req.Body)
-		if err != nil {
-			return nil, err
+	var sends atomic.Int32
+	control := env.server.client
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(req.URL.Path, "/messages") {
+			return control.Do(req)
 		}
-		calls++
-		if sentBody == nil {
-			sentBody, sentHeader = raw, req.Header.Clone()
-		} else if string(sentBody) != string(raw) || anthropicHeaderValue(sentHeader, "x-query-id") != anthropicHeaderValue(req.Header, "x-query-id") || anthropicHeaderValue(sentHeader, "x-request-id") != anthropicHeaderValue(req.Header, "x-request-id") || anthropicHeaderValue(sentHeader, "x-zcode-trace-id") != anthropicHeaderValue(req.Header, "x-zcode-trace-id") {
-			t.Error("retry changed body or attribution headers")
-		}
-		return zaiStartTestResponse(req, 429, `{"code":3008,"msg":"busy"}`), nil
+		sends.Add(1)
+		return zaiStartTestResponse(req, 429, `{"code":3008,"msg":"concurrency limit exceeded"}`), nil
+	})}
+	request := func() *httptest.ResponseRecorder {
+		return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": "GLM-5.3-Flash-Trial", "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": configs[0].Name})
 	}
-	logical := &zaiStartRequest{}
-	for i := range 6 {
-		ctx := context.Background()
-		if i < 2 {
-			ctx = context.WithValue(ctx, zaiStartRequestKey{}, logical)
-		}
-		sentBody, sentHeader = nil, nil
-		before := calls
-		resp, err := callZAIStart(ctx, env.server, configs[0], "GLM-5.3-Flash-Trial", send)
-		if err != nil || resp.StatusCode != 429 {
-			t.Fatalf("busy: %v %v", resp, err)
-		}
-		if i < 5 {
-			if isZAILocalPlanResponse(resp) || calls-before != 7 {
-				t.Fatalf("single request incorrectly tripped hold: calls=%d", calls-before)
-			}
-		} else if !isZAILocalPlanResponse(resp) || resp.Header.Get("Retry-After") != "180" || calls-before != 1 {
-			t.Fatalf("fifth distinct request did not pause: %v calls=%d", resp.Header, calls-before)
-		}
-		_ = resp.Body.Close()
+	if result := request(); result.Code != 429 {
+		t.Fatalf("busy=%d %s", result.Code, result.Body.String())
 	}
-	base := []time.Duration{250, 500, 900, 1600, 2800, 4000}
-	for i, wait := range waits {
-		d := base[i%len(base)] * time.Millisecond
-		if wait < d*3/4 || wait > d*5/4 {
-			t.Fatalf("jitter=%v base=%v", wait, d)
-		}
+	first, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	before := calls
-	resp, err := callZAIStart(context.Background(), env.server, configs[1], "GLM-5.3-Flash-Trial", send)
-	if err != nil || !isZAILocalPlanResponse(resp) || calls != before {
-		t.Fatalf("hold leaked an upstream call: %v %v", resp, err)
+	until := first[configs[0].ID]["GLM-5.3-Flash-Trial"]
+	if !until.After(time.Now()) || !first[configs[3].ID]["GLM-5.3-Flash-Trial"].Equal(until) {
+		t.Fatalf("missing shared cooldown: %v", first)
 	}
-	_ = resp.Body.Close()
-	now = now.Add(3 * time.Minute)
-	resp, err = callZAIStart(context.Background(), env.server, configs[1], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
-	if err != nil || resp.StatusCode != 200 {
-		t.Fatalf("hold expiry: %v %v", resp, err)
+	_ = request()
+	next, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	_ = resp.Body.Close()
+	if sends.Load() != 3 || !next[configs[0].ID]["GLM-5.3-Flash-Trial"].Equal(until) {
+		t.Fatalf("busy retried or extended: sends=%d %v", sends.Load(), next)
+	}
+
 }
 
 /**
@@ -1194,117 +1972,98 @@ func TestProxy_ZAIStartBusyWindow(t *testing.T) {
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartEdgeHold(t *testing.T) {
-	for _, page := range []bool{false, true} {
-		t.Run(fmt.Sprint(page), func(t *testing.T) {
+	for _, tc := range []struct {
+		name  string ///< 响应特征。
+		body  string ///< 上游 405 原始响应。
+		group bool   ///< 是否应阻止其他体验账号使用同一出口。
+	}{
+		{"ordinary", `{"error":{"message":"method not allowed"}}`, false},
+		{"html", `<html>request blocked</html>`, true},
+		{"aliyun", `Access denied: https://errors.aliyun.com/`, true},
+		{"html_aliyun", `<html>https://errors.aliyun.com/</html>`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
-			calls := 0
-			send := func(req *http.Request) (*http.Response, error) {
-				calls++
-				body := `{"error":{"message":"method not allowed"}}`
-				if page {
-					body = `<html>https://errors.aliyun.com/</html>`
+			control := env.server.client
+			var trial, paid atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
 				}
-				return zaiStartTestResponse(req, 405, body), nil
+				if !strings.Contains(req.URL.Path, "/zcode-plan/") {
+					paid.Add(1)
+					return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+				}
+				trial.Add(1)
+				return zaiStartTestResponse(req, 405, tc.body), nil
+			})}
+			request := func(index int, name string) *httptest.ResponseRecorder {
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": configs[index].Name})
 			}
-			for _, cfg := range configs[:2] {
-				resp, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", send)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if page && (resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" || !isZAILocalPlanResponse(resp)) {
-					t.Fatalf("missing local hold: %v", resp)
-				}
-				_ = resp.Body.Close()
-			}
-			want := 2
-			if page {
+			_ = request(0, "GLM-5.3-Flash-Trial")
+			_ = request(1, "GLM-5.3-Flash-Trial")
+			want := int32(2)
+			if tc.group {
 				want = 1
 			}
-			if calls != want {
-				t.Fatalf("calls=%d want=%d", calls, want)
+			if trial.Load() != want {
+				t.Fatalf("group scope: calls=%d want=%d", trial.Load(), want)
 			}
-			if page {
-				// 自动体验暂停时可回付费，不应把本地暂停写成额度冷却。
-				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash", func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil })
-				if err != nil || resp.StatusCode != 200 || isZAITrialResponse(resp) {
-					t.Fatalf("paid fallback: %v %v", resp, err)
-				}
-				_ = resp.Body.Close()
-				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
-				if err != nil || len(cooldowns) != 0 {
-					t.Fatalf("local pause wrote cooldown: %v %v", cooldowns, err)
-				}
+			if result := request(0, "GLM-5.3-Flash"); result.Code != 200 || paid.Load() != 1 {
+				t.Fatalf("paid blocked: %d %s", result.Code, result.Body.String())
+			}
+			channels, err := env.store.GetAllChannelCooldowns(context.Background())
+			if err != nil || len(channels) != 0 {
+				t.Fatalf("Trial polluted paid channel: %v %v", channels, err)
 			}
 		})
 	}
+
 }
 
 /**
- * @brief 退避和已返回流均响应取消，之后仍可用完整容量。
+ * @brief 取消三个在途流并重复关闭响应体后，全部并发名额可重新使用。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartCancellation(t *testing.T) {
+
 	env, configs := newZAIStartHarness(t)
-	entered := make(chan struct{})
-	env.server.zaiStart.wait = func(ctx context.Context, _ time.Duration) error { close(entered); <-ctx.Done(); return ctx.Err() }
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		resp, err := callZAIStart(ctx, env.server, configs[0], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) {
-			return zaiStartTestResponse(req, 429, `{"code":3009,"msg":"busy"}`), nil
-		})
-		if resp != nil {
-			_ = resp.Body.Close()
+	send := func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil }
+	var held []io.ReadCloser
+	for range 3 {
+		resp, err := callZAIStart(ctx, env.server, configs[0], "GLM-5.3-Flash-Trial", send)
+		if err != nil {
+			t.Fatal(err)
 		}
-		done <- err
-	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("retry did not start")
+		defer func() { _ = resp.Body.Close() }()
+		held = append(held, resp.Body)
 	}
 	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancel: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("retry ignored cancel")
+	for _, body := range held {
+		_ = body.Close()
+		_ = body.Close()
 	}
-	streamCtx, stopStream := context.WithCancel(context.Background())
-	defer stopStream()
-	send := func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil }
-	resp, err := callZAIStart(streamCtx, env.server, configs[0], "GLM-5.3-Flash-Trial", send)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stopStream()
-	// Close 与取消并发执行，必须幂等且回收同一容量。
-	_ = resp.Body.Close()
 	for range 3 {
-		r, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", send)
-		if r != nil {
-			_ = r.Body.Close()
+		resp, err := callZAIStart(context.Background(), env.server, configs[3], "GLM-5.3-Flash-Trial", send)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("capacity leaked: %v %v", resp, err)
 		}
-		if err != nil {
-			t.Fatalf("capacity leaked after cancel: %v", err)
-		}
+		defer func() { _ = resp.Body.Close() }()
 	}
+
 }
 
 /**
- * @brief 只重试有效业务忙错误；首个 SSE 错误可重试，已开始的流不能重放。
+ * @brief 明确首帧 busy 可短重试，坏信封及已开始的流不能重放。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartRetryBoundary(t *testing.T) {
-	for _, scenario := range []string{"sse_first", "sse_started", "malformed", "unrelated_field", "window_expired"} {
+	for _, scenario := range []string{"sse_first", "sse_started", "malformed", "unrelated_field"} {
 		t.Run(scenario, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
 			now := time.Now()
 			env.server.zaiStart.now = func() time.Time { return now }
-			env.server.zaiStart.wait = func(context.Context, time.Duration) error { return nil }
 			calls := 0
 			send := func(req *http.Request) (*http.Response, error) {
 				calls++
@@ -1328,11 +2087,7 @@ func TestProxy_ZAIStartRetryBoundary(t *testing.T) {
 					return zaiStartTestResponse(req, 429, `{"code":3009,"msg":"busy"}`), nil
 				}
 			}
-			requests := 1
-			if scenario == "window_expired" {
-				requests = 6
-			}
-			for range requests {
+			for range 1 {
 				resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash-Trial", send)
 				if err != nil {
 					t.Fatal(err)
@@ -1347,9 +2102,6 @@ func TestProxy_ZAIStartRetryBoundary(t *testing.T) {
 			want := 1
 			if scenario == "sse_first" {
 				want = 2
-			}
-			if scenario == "window_expired" {
-				want = 12
 			}
 			if calls != want {
 				t.Fatalf("calls=%d want=%d", calls, want)
@@ -1367,7 +2119,7 @@ func TestProxy_ZAIStartReserveRecovery(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
 			send := func(req *http.Request) (*http.Response, error) { return zaiStartTestResponse(req, 200, `{}`), nil }
-			for _, cfg := range configs[:2] {
+			for _, cfg := range configs[:1] {
 				resp, err := callZAIStart(context.Background(), env.server, cfg, "GLM-5.3-Flash-Trial", send)
 				if err != nil {
 					t.Fatal(err)
@@ -1415,10 +2167,8 @@ func TestProxy_ZAIStartReserveRecovery(t *testing.T) {
 			reserveCalls := 0
 			resp, err := callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", func(req *http.Request) (*http.Response, error) { reserveCalls++; return send(req) })
 			want := 200
-			if scenario == "rpm" {
-				want = 429
-			}
-			if err != nil || resp.StatusCode != want || (scenario == "rpm" && reserveCalls != 0) {
+
+			if err != nil || resp.StatusCode != want {
 				t.Fatalf("reserve state: %v %v calls=%d want=%d", resp, err, reserveCalls, want)
 			}
 			_ = resp.Body.Close()
@@ -1446,11 +2196,6 @@ func TestProxy_ZAIStartPlanEligibility(t *testing.T) {
 				if first.StatusCode != 200 || !isZAITrialResponse(first) {
 					t.Fatal("initial account must use Trial")
 				}
-				second, err := callZAIStart(context.Background(), env.server, configs[1], "GLM-5.3-Flash", send)
-				if err != nil {
-					t.Fatal(err)
-				}
-				_ = second.Body.Close()
 				// 重复渠道保留旧的有效采样，单个渠道刷新也必须更新真实账号的资格判断。
 				duplicateCredential, err := zaiauth.ParseCredential([]byte(configs[3].OAuthCredential))
 				if err != nil {
@@ -1508,7 +2253,19 @@ func TestProxy_ZAIStartPlanEligibility(t *testing.T) {
 				}
 				checkReserve := func(want int) {
 					t.Helper()
-					resp, err := callZAIStart(context.Background(), env.server, configs[2], name+"-Trial", send)
+					ctx := context.Background()
+					if want == 429 {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+						defer cancel()
+					}
+					resp, err := callZAIStart(ctx, env.server, configs[2], name+"-Trial", send)
+					if want == 429 {
+						if !errors.Is(err, context.DeadlineExceeded) {
+							t.Fatalf("standby overlapped old stream: %v %v", resp, err)
+						}
+						return
+					}
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1534,9 +2291,7 @@ func TestProxy_ZAIStartPlanEligibility(t *testing.T) {
 				checkReserve(429)
 				_ = first.Body.Close()
 				want := http.StatusOK
-				if state == "unknown" || state == "other_model" {
-					want = http.StatusTooManyRequests
-				}
+
 				checkReserve(want)
 			})
 		}
@@ -1588,10 +2343,9 @@ func TestProxy_ZAIStartPlanRecovery(t *testing.T) {
 	check(0, "GLM-5.3-Flash", 200, false)
 	restored.Store(true)
 	check(3, "GLM-5.3-Flash-Trial", 200, true)
-	check(1, "GLM-5.3-Flash-Trial", 200, true)
 	// A 的旧渠道依然按缓存走付费，但不能移除已由新渠道确认恢复的活动账号。
 	check(0, "GLM-5.3-Flash", 200, false)
-	check(2, "GLM-5.3-Flash-Trial", 429, true)
+	check(3, "GLM-5.3-Flash-Trial", 200, true)
 }
 
 /**
@@ -1608,7 +2362,7 @@ func TestProxy_ZAIStartStaleEligibility(t *testing.T) {
 					return zaiStartTestResponse(req, 200, `{}`), nil
 				}
 				var active *http.Response
-				for _, index := range []int{3, 1} {
+				for _, index := range []int{3} {
 					resp, err := callZAIStart(context.Background(), env.server, configs[index], "GLM-5.3-Flash-Trial", send)
 					if err != nil {
 						t.Fatal(err)
@@ -1674,7 +2428,19 @@ func TestProxy_ZAIStartStaleEligibility(t *testing.T) {
 				}
 				checkReserve := func(want int) {
 					t.Helper()
-					resp, err := callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", send)
+					ctx := context.Background()
+					if want == 429 {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+						defer cancel()
+					}
+					resp, err := callZAIStart(ctx, env.server, configs[2], "GLM-5.3-Flash-Trial", send)
+					if want == 429 {
+						if !errors.Is(err, context.DeadlineExceeded) {
+							t.Fatalf("standby overlapped: %v %v", resp, err)
+						}
+						return
+					}
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1698,36 +2464,39 @@ func TestProxy_ZAIStartStaleEligibility(t *testing.T) {
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartModelCooldownKeepsAccount(t *testing.T) {
+
 	env, configs := newZAIStartHarness(t)
-	send := func(req *http.Request) (*http.Response, error) {
-		return zaiStartTestResponse(req, http.StatusOK, `{}`), nil
-	}
-	call := func(index int) (int, string) {
-		t.Helper()
-		resp, err := callZAIStart(context.Background(), env.server, configs[index], "GLM-5.3-Flash-Trial", send)
-		if err != nil {
-			t.Fatal(err)
+	balance := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active"}],"balances":[{"plan_id":"gift","bucket_id":"flash","capabilities":["model:glm-5.3-flash"],"remaining_units":10},{"plan_id":"gift","bucket_id":"other","capabilities":["model:glm-5.3"],"remaining_units":10}]}}`)
+	}))
+	env.server.zaiService.OAuthBaseURL = balance.URL + "/api/v1"
+	resp, err := callZAIStart(context.Background(), env.server, configs[0], "GLM-5.3-Flash", func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/zcode-plan/") {
+			return zaiStartTestResponse(req, 429, `{"code":1113,"msg":"quota exhausted"}`), nil
 		}
-		defer func() { _ = resp.Body.Close() }()
-		raw, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, gjson.GetBytes(raw, "error.type").String()
-	}
-	for _, index := range []int{0, 1} {
-		if status, _ := call(index); status != http.StatusOK {
-			t.Fatalf("warm account %d: status=%d", index, status)
-		}
-	}
-	if err := env.store.SetModelCooldown(context.Background(), configs[0].ID, "GLM-5.3-Flash-Trial", time.Now().Add(time.Minute)); err != nil {
+		return zaiStartTestResponse(req, 200, `{}`), nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	env.server.invalidateChannelRelatedCache(configs[0].ID)
-	// 重复渠道自身未冷却，须由账号级准入识别同账号的模型冷却。
-	if status, kind := call(3); status != http.StatusTooManyRequests || kind != "zcode_trial_cooling" {
-		t.Fatalf("cooled model: status=%d type=%q", status, kind)
+	_ = resp.Body.Close()
+	var sends atomic.Int32
+	send := func(req *http.Request) (*http.Response, error) {
+		sends.Add(1)
+		return zaiStartTestResponse(req, 200, `{}`), nil
 	}
-	if status, kind := call(2); status != http.StatusTooManyRequests || kind != "zcode_trial_reserve" {
-		t.Fatalf("model cooldown retired active account: status=%d type=%q", status, kind)
+	resp, err = callZAIStart(context.Background(), env.server, configs[3], "GLM-5.3-Flash-Trial", send)
+	if err != nil || resp.StatusCode != 429 || sends.Load() != 0 {
+		t.Fatalf("duplicate bypassed model cooling: %v %v sends=%d", resp, err, sends.Load())
 	}
+	_ = resp.Body.Close()
+	resp, err = callZAIStart(context.Background(), env.server, configs[3], "GLM-5.3-Trial", send)
+	if err != nil || resp.StatusCode != 200 || sends.Load() != 1 {
+		t.Fatalf("other model retired: %v %v sends=%d", resp, err, sends.Load())
+	}
+	_ = resp.Body.Close()
+
 }
 
 /**
@@ -1916,7 +2685,7 @@ func TestProxy_ZAIStartBalanceObservationOrder(t *testing.T) {
 	send := func(req *http.Request) (*http.Response, error) {
 		return zaiStartTestResponse(req, http.StatusOK, `{}`), nil
 	}
-	for _, index := range []int{3, 1} {
+	for _, index := range []int{3} {
 		resp, err := callZAIStart(context.Background(), env.server, configs[index], "GLM-5.3-Flash-Trial", send)
 		if err != nil {
 			t.Fatal(err)
@@ -1935,12 +2704,12 @@ func TestProxy_ZAIStartBalanceObservationOrder(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("old query did not finish")
 	}
-	resp, err := callZAIStart(context.Background(), env.server, configs[2], "GLM-5.3-Flash-Trial", send)
+	resp, err := callZAIStart(context.Background(), env.server, configs[3], "GLM-5.3-Flash-Trial", send)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusTooManyRequests {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("old exhausted balance displaced recovered account; reserve status=%d", resp.StatusCode)
 	}
 }
@@ -2294,30 +3063,33 @@ func TestProxy_ZAITrialCooldownBoundaries(t *testing.T) {
 		status     int
 		body       string
 		blocked    bool
-		sidelined  bool
 		invalidate bool
 	}{
-		{"risk", 405, `{"error":{"code":3012,"message":"unusual activity"}}`, false, true, true},
-		{"risk with 429", 429, `{"error":{"code":3012,"message":"unusual activity"}}`, false, true, true},
-		{"risk with 403", 403, `{"error":{"code":3012,"message":"unusual activity"}}`, false, true, true},
-		{"quota", 429, `{"error":{"code":1302,"message":"rate limited"}}`, true, false, true},
-		{"soft risk", 200, `{"code":3012,"msg":"unusual activity"}`, false, true, true},
-		{"nested soft risk", 200, `{"code":0,"error":{"code":"3012","message":"unusual activity"}}`, false, true, true},
-		{"soft quota", 200, `{"code":1113,"msg":"no resource package"}`, true, false, true},
-		{"soft quota limit", 200, `{"error":{"code":"1005","message":"exceed quota limit"}}`, true, false, true},
-		{"quota with client status", 400, `{"type":"error","error":{"type":"invalid_request_error","code":1113,"message":"no resource package"}}`, true, false, true},
-		{"unauthorized", 401, `{"error":{"type":"authentication_error","message":"invalid JWT"}}`, false, false, true},
-		{"forbidden", 403, `{"error":{"type":"permission_error","message":"access denied"}}`, false, false, true},
-		{"server", 500, `{"error":{"type":"api_error","message":"unavailable"}}`, false, false, false},
-		{"concurrency", 429, `{"code":3008,"msg":"concurrency limit exceeded"}`, false, false, false},
-		{"soft concurrency", 200, `{"code":3009,"msg":"concurrency limit exceeded"}`, false, false, false},
-		{"nested concurrency", 429, `{"code":0,"error":{"code":3008,"message":"busy"}}`, false, false, false},
-		{"nested soft concurrency", 200, `{"code":0,"error":{"code":3009,"message":"busy"}}`, false, false, false},
-		{"truncated quota", 429, `{"error":{"code":1302`, false, false, true},
-		{"truncated soft quota", 200, `{"code":1113`, false, false, true},
+		{"risk", 405, `{"error":{"code":3012,"message":"unusual activity"}}`, true, true},
+		{"risk with 429", 429, `{"error":{"code":3012,"message":"unusual activity"}}`, true, true},
+		{"risk with 403", 403, `{"error":{"code":3012,"message":"unusual activity"}}`, true, true},
+		{"quota", 429, `{"error":{"code":1302,"message":"rate limited"}}`, true, true},
+		{"soft risk", 200, `{"code":3012,"msg":"unusual activity"}`, true, true},
+		{"nested soft risk", 200, `{"code":0,"error":{"code":"3012","message":"unusual activity"}}`, true, true},
+		{"soft quota", 200, `{"code":1113,"msg":"no resource package"}`, true, true},
+		{"soft quota limit", 200, `{"error":{"code":"1005","message":"exceed quota limit"}}`, true, true},
+		{"quota with client status", 400, `{"type":"error","error":{"type":"invalid_request_error","code":1113,"message":"no resource package"}}`, true, true},
+		{"unauthorized", 401, `{"error":{"type":"authentication_error","message":"invalid JWT"}}`, true, true},
+		{"forbidden", 403, `{"error":{"type":"permission_error","message":"access denied"}}`, true, true},
+		{"server", 500, `{"error":{"type":"api_error","message":"unavailable"}}`, true, false},
+		{"concurrency", 429, `{"code":3008,"msg":"concurrency limit exceeded"}`, true, false},
+		{"soft concurrency", 200, `{"code":3009,"msg":"concurrency limit exceeded"}`, true, false},
+		{"nested concurrency", 429, `{"code":0,"error":{"code":3008,"message":"busy"}}`, true, false},
+		{"nested soft concurrency", 200, `{"code":0,"error":{"code":3009,"message":"busy"}}`, true, false},
+		{"truncated quota", 429, `{"error":{"code":1302`, true, true},
+		{"truncated soft quota", 200, `{"code":1113`, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var trialCalls, paidCalls, balanceCalls atomic.Int32
+			firstTrial := int32(1)
+			if zaiConcurrencyError([]byte(tc.body)) {
+				firstTrial = 3
+			}
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
@@ -2336,7 +3108,7 @@ func TestProxy_ZAITrialCooldownBoundaries(t *testing.T) {
 					t.Errorf("upstream model=%q err=%v", body.Model, err)
 				}
 				if strings.Contains(r.URL.Path, "/zcode-plan/anthropic/") {
-					if trialCalls.Add(1) == 1 {
+					if trialCalls.Add(1) <= firstTrial {
 						w.WriteHeader(tc.status)
 						_, _ = io.WriteString(w, tc.body)
 						if strings.HasPrefix(tc.name, "truncated") {
@@ -2356,12 +3128,15 @@ func TestProxy_ZAITrialCooldownBoundaries(t *testing.T) {
 			request := func(name string) *httptest.ResponseRecorder {
 				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, nil)
 			}
-			started := time.Now()
-			firstTrial, firstPaid := int32(1), int32(1)
-			if strings.Contains(tc.name, "concurrency") {
-				firstTrial, firstPaid = 2, 0 // 并发忙在原 Trial 请求内恢复，不回退付费。
+			firstPaid, firstStatus := int32(1), http.StatusOK
+			if strings.Contains(tc.name, "risk") {
+				// 明确风控停止当前请求，但仍保留账号暂停供后续请求避让。
+				firstPaid, firstStatus = 0, tc.status
+				if firstStatus == 200 {
+					firstStatus = http.StatusForbidden
+				}
 			}
-			if response := request("GLM-5.3-Flash"); response.Code != 200 || trialCalls.Load() != firstTrial || paidCalls.Load() != firstPaid {
+			if response := request("GLM-5.3-Flash"); response.Code != firstStatus || trialCalls.Load() != firstTrial || paidCalls.Load() != firstPaid {
 				t.Fatalf("fallback: status=%d trial=%d paid=%d body=%s", response.Code, trialCalls.Load(), paidCalls.Load(), response.Body.String())
 			}
 			configs, err := env.store.ListConfigs(context.Background())
@@ -2373,18 +3148,16 @@ func TestProxy_ZAITrialCooldownBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			until := cooldowns[configs[0].ID]["GLM-5.3-Flash-Trial"]
-			if until.After(time.Now()) != tc.blocked {
+			accountFailure := strings.Contains(tc.name, "risk") || tc.status == 401 || tc.status == 403
+			if until.After(time.Now()) != (tc.blocked && !accountFailure) {
 				t.Fatalf("Trial blocked=%v want=%v", until, tc.blocked)
-			}
-			if tc.blocked && (until.Before(started.Add(59*time.Second)) || until.After(time.Now().Add(time.Minute))) {
-				t.Fatalf("quota cooldown must be one minute: %v", until)
 			}
 			if response := request("GLM-5.3-Flash"); response.Code != 200 {
 				t.Fatalf("next ordinary request: %d %s", response.Code, response.Body.String())
 			}
 			wantTrial, wantPaid := firstTrial+1, firstPaid
-			if tc.blocked || tc.sidelined {
-				wantTrial, wantPaid = 1, 2
+			if tc.blocked {
+				wantTrial, wantPaid = firstTrial, firstPaid+1
 			}
 			if trialCalls.Load() != wantTrial || paidCalls.Load() != wantPaid {
 				t.Fatalf("automatic routing: trial=%d paid=%d want=%d/%d", trialCalls.Load(), paidCalls.Load(), wantTrial, wantPaid)
@@ -2397,12 +3170,218 @@ func TestProxy_ZAITrialCooldownBoundaries(t *testing.T) {
 			} else if response.Code != 200 || trialCalls.Load() != wantTrial+1 || paidCalls.Load() != wantPaid {
 				t.Fatalf("explicit Trial blocked by ordinary failure: status=%d trial=%d paid=%d", response.Code, trialCalls.Load(), paidCalls.Load())
 			}
-			wantBalances := int32(1)
-			if tc.invalidate {
-				wantBalances = 2
+
+		})
+	}
+}
+
+/**
+ * @brief 同账号重新授权恢复 JWT 认证冷却，保留模型、账号风控和出口暂停。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialReauthorizationCooldown(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		recover bool
+	}{
+		{"unauthorized", 401, `{"error":{"type":"authentication_error","message":"invalid JWT"}}`, true},
+		{"forbidden", 403, `{"error":{"type":"permission_error","message":"access denied"}}`, true},
+		{"account-risk", 403, `{"code":3012,"msg":"unusual activity"}`, false},
+		{"egress-risk", 405, `<html>blocked</html>`, false},
+		{"model-failure", 500, `{"error":{"type":"api_error","message":"unavailable"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/api/v1/zcode-plan/billing/balance" {
+					_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active"}],"balances":[{"plan_id":"gift","capabilities":["model:glm-5.3-flash","model:glm-4.7"],"remaining_units":10}]}}`)
+					return
+				}
+				if r.URL.Path != "/api/v1/zcode-plan/anthropic/v1/messages" {
+					t.Errorf("unexpected endpoint: %s", r.URL.Path)
+					w.WriteHeader(500)
+					return
+				}
+				calls.Add(1)
+				var body struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if body.Model == "GLM-4.7" {
+					w.WriteHeader(500)
+					_, _ = io.WriteString(w, `{"error":{"type":"api_error","message":"unavailable"}}`)
+					return
+				}
+				if r.Header.Get("Authorization") == "Bearer old-jwt" {
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.body)
+					return
+				}
+				if r.Header.Get("Authorization") != "Bearer new-jwt" {
+					t.Error("reauthorized request did not use the new JWT")
+				}
+				_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{name: "reauthorization", upstreamProtocol: "anthropic", models: "GLM-5.3-Flash-Trial,GLM-4.7-Trial", authType: model.AuthTypeZAIOAuth, oauthCredential: `{"jwt_token":"old-jwt","user_id":"account"}`}}, map[int]string{0: upstream.URL})
+			env.server.zaiService.OAuthBaseURL = upstream.URL + "/api/v1"
+			request := func(name string) *httptest.ResponseRecorder {
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, nil)
 			}
-			if balanceCalls.Load() != wantBalances {
-				t.Fatalf("balance reads=%d want=%d", balanceCalls.Load(), wantBalances)
+			// 先建立另一个模型的真实故障窗口，授权恢复不得顺带清除它。
+			if response := request("GLM-4.7-Trial"); response.Code == 200 || calls.Load() != 1 {
+				t.Fatalf("model failure: status=%d calls=%d", response.Code, calls.Load())
+			}
+			if response := request("GLM-5.3-Flash-Trial"); response.Code == 200 || calls.Load() != 2 {
+				t.Fatalf("initial failure: status=%d calls=%d", response.Code, calls.Load())
+			}
+			if response := request("GLM-5.3-Flash-Trial"); response.Code == 200 || calls.Load() != 2 {
+				t.Fatalf("cooldown bypassed: status=%d calls=%d", response.Code, calls.Load())
+			} else if tc.name != "model-failure" {
+				if seconds, err := strconv.Atoi(response.Header().Get("Retry-After")); err != nil || seconds <= 0 {
+					t.Fatalf("missing account/egress retry time: %q", response.Header().Get("Retry-After"))
+				}
+			}
+			updated, created, err := env.server.commitZAICredential(context.Background(), &zaiauth.Credential{JWTToken: "new-jwt", UserID: "account"}, oauthLoginOptions{})
+			if err != nil || created || updated == nil {
+				t.Fatalf("reauthorization: created=%v err=%v", created, err)
+			}
+			response := request("GLM-5.3-Flash-Trial")
+			wantCalls := int32(2)
+			if tc.recover {
+				wantCalls++
+			}
+			if (response.Code == 200) != tc.recover || calls.Load() != wantCalls {
+				t.Fatalf("after reauthorization: status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+			}
+			if response := request("GLM-4.7-Trial"); response.Code == 200 || calls.Load() != wantCalls {
+				t.Fatalf("reauthorization cleared unrelated model cooldown: status=%d calls=%d", response.Code, calls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证和明确风控拒绝停止套餐及跨渠道重放，只有风控保留账号暂停。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialTerminalBusinessErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		code     string
+		status   int
+		stream   bool
+		topLevel bool
+		repair   bool
+	}{
+		{name: "captcha-http", code: "3007", status: 400},
+		{name: "captcha-busy-status", code: "3007", status: 429},
+		{name: "captcha-soft", code: "3007", status: 200},
+		{name: "captcha-sse", code: "3007", status: 200, stream: true},
+		{name: "captcha-top-level", code: "3007", status: 200, topLevel: true},
+		{name: "captcha-repair", code: "3007", status: 400, repair: true},
+		{name: "risk-http", code: "3012", status: 403},
+		{name: "risk-busy-status", code: "3012", status: 429},
+		{name: "risk-soft", code: "3012", status: 200},
+		{name: "risk-sse", code: "3012", status: 200, stream: true},
+		{name: "risk-top-level", code: "3012", status: 200, topLevel: true},
+		{name: "risk-repair", code: "3012", status: 400, repair: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			control := env.server.client
+			var calls atomic.Int32
+			var firstJWT string
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				if calls.Add(1) == 1 {
+					firstJWT = req.Header.Get("Authorization")
+					// 业务码必须优先，不能因消息同时含 busy 文案就进入重试。
+					body := `{"code":0,"error":{"code":"` + tc.code + `","message":"concurrency limit exceeded"}}`
+					if tc.topLevel {
+						body = `{"code":` + tc.code + `,"msg":"concurrency limit exceeded"}`
+					} else if tc.repair {
+						body = `{"error":{"code":"` + tc.code + `","type":"invalid_request_error","message":"thinking.budget_tokens must be less than max_tokens"}}`
+					}
+					resp := zaiStartTestResponse(req, tc.status, body)
+					if tc.stream {
+						resp.Header.Set("Content-Type", "text/event-stream")
+						resp.Body = io.NopCloser(strings.NewReader("event: ping\ndata: {\"type\":\"ping\"}\n\nevent: error\ndata: " + body + "\n\n"))
+					}
+					return resp, nil
+				}
+				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			})}
+			body := map[string]any{"model": "GLM-5.3-Flash", "max_tokens": 16, "stream": tc.stream, "messages": []map[string]string{{"role": "user", "content": "hello"}}}
+			if tc.repair {
+				body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": 1024}
+			}
+			response := doProxyRequest(t, env.engine, "/v1/messages", body, nil)
+			wantStatus := tc.status
+			if wantStatus == 200 {
+				wantStatus = http.StatusBadRequest
+				if tc.code == "3012" {
+					wantStatus = http.StatusForbidden
+				}
+			}
+			if response.Code != wantStatus || calls.Load() != 1 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+			}
+			codePath, messagePath := "error.code", "error.message"
+			if tc.topLevel {
+				codePath, messagePath = "code", "msg"
+			}
+			if got := gjson.GetBytes(response.Body.Bytes(), codePath).String(); got != tc.code {
+				t.Fatalf("code=%s body=%s", got, response.Body.String())
+			}
+			if tc.code == "3007" && !strings.Contains(gjson.GetBytes(response.Body.Bytes(), messagePath).String(), "需要人机验证") {
+				t.Fatalf("missing verification hint: %s", response.Body.String())
+			}
+			windows, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, models := range windows {
+				for _, until := range models {
+					if until.After(time.Now()) {
+						t.Fatal("business rejection cooled a model")
+					}
+				}
+			}
+			var affected, other *model.Config
+			for _, cfg := range configs {
+				credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if "Bearer "+credential.JWTToken == firstJWT {
+					affected = cfg
+				} else {
+					other = cfg
+				}
+			}
+			if affected == nil || other == nil {
+				t.Fatal("missing test accounts")
+			}
+			request := func(cfg *model.Config) *httptest.ResponseRecorder {
+				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": "GLM-5.3-Flash-Trial", "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": cfg.Name})
+			}
+			response = request(affected)
+			if tc.code == "3012" {
+				if response.Code == 200 || calls.Load() != 1 {
+					t.Fatalf("risk pause lost: status=%d calls=%d", response.Code, calls.Load())
+				}
+			} else if response.Code != 200 || calls.Load() != 2 {
+				t.Fatalf("captcha installed a pause: status=%d calls=%d", response.Code, calls.Load())
+			}
+			if response = request(other); response.Code != 200 {
+				t.Fatalf("unrelated account paused: %d %s", response.Code, response.Body.String())
 			}
 		})
 	}
@@ -2474,11 +3453,8 @@ func TestProxy_ZAITrialConcurrentCooldown(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("first Trial request did not reach upstream")
 			}
-			// 同账号现已串行；直接模拟其他进程写入冷却，继续验证在途成功不得清除持久化状态。
-			if err := env.store.SetModelCooldown(context.Background(), configs[0].ID, "GLM-5.3-Trial", time.Now().Add(time.Minute)); err != nil {
-				t.Fatal(err)
-			}
-			env.server.invalidateChannelRelatedCache(configs[0].ID)
+			// 第二个真实并发请求失败并写入冷却，第一条在途成功不得清除它。
+			_ = request()
 			before, err := env.store.GetAllModelCooldowns(context.Background())
 			if err != nil || !before[configs[0].ID]["GLM-5.3-Trial"].After(time.Now()) {
 				t.Fatalf("quota response did not pause Trial: %v %v", before, err)
@@ -2665,7 +3641,7 @@ func TestProxy_ZAITrialRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			trialCooling := cooldowns[configs[0].ID]["GLM-5.3-Trial"].After(time.Now())
-			if tc.trialStatus >= 400 && trialCooling != (tc.trialStatus == 429) {
+			if tc.trialStatus >= 400 && trialCooling != (tc.trialStatus == 429 || tc.trialStatus == 500) {
 				t.Fatalf("trial cooling=%v status=%d", trialCooling, tc.trialStatus)
 			}
 			if cooldowns[configs[0].ID]["GLM-5.3"].After(time.Now()) {
@@ -2673,11 +3649,8 @@ func TestProxy_ZAITrialRouting(t *testing.T) {
 			}
 			if tc.wantPaid == 1 && tc.wantTrial == 1 {
 				response = doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "system": "caller-system", "max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": "hello again"}}}, nil)
-				// 额度暂停和风控避让会跳过自动体验；401、5xx 或空流允许下次重新尝试。
-				wantTrial := int32(2)
-				if tc.trialStatus == 429 || tc.trialStatus == 405 || tc.softError || tc.streamError == "first" {
-					wantTrial = 1
-				}
+				// 真实体验故障已经冷却，自动模式直接使用仍有效的付费资格。
+				wantTrial := int32(1)
 				if response.Code != 200 || trialCalls.Load() != wantTrial || paidCalls.Load() != 2 {
 					t.Fatalf("trial cooldown ignored: trial=%d paid=%d response=%d", trialCalls.Load(), paidCalls.Load(), response.Code)
 				}
@@ -2685,7 +3658,7 @@ func TestProxy_ZAITrialRouting(t *testing.T) {
 			if !tc.key && tc.trialStatus == 401 {
 				response = doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "system": "caller-system", "max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": "again"}}}, nil)
 				after, err := env.store.GetAllModelCooldowns(context.Background())
-				if err != nil || response.Code != 401 || trialCalls.Load() != 2 || after[configs[0].ID]["GLM-5.3-Trial"].After(time.Now()) {
+				if err != nil || response.Code != 429 || trialCalls.Load() != 1 || after[configs[0].ID]["GLM-5.3-Trial"].After(time.Now()) {
 					t.Fatalf("JWT-only cooldown bypassed/extended: calls=%d status=%d err=%v", trialCalls.Load(), response.Code, err)
 				}
 			}
@@ -3019,7 +3992,7 @@ func TestProxy_ZAIToolSearch(t *testing.T) {
 					t.Fatal(err)
 				}
 				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
-				if err != nil || resp.Code == 200 || len(cooldowns[configs[0].ID]) != 0 || configs[0].CooldownUntil != 0 {
+				if err != nil || resp.Code == 200 || !cooldowns[configs[0].ID]["GLM-5.3-Trial"].After(time.Now()) || cooldowns[configs[0].ID]["GLM-5.3"].After(time.Now()) || configs[0].CooldownUntil != 0 {
 					t.Fatalf("compression error lost trial identity: status=%d cooldowns=%+v err=%v", resp.Code, cooldowns, err)
 				}
 				return
@@ -3435,6 +4408,76 @@ func TestProxy_ZAITrialTransportErrorModel(t *testing.T) {
 }
 
 /**
+ * @brief 自动回退与显式体验按真实传输故障选用相同的存储时间策略。
+ * @param t 测试上下文。
+ * @note 覆盖默认及自定义配置，不实际等待冷却到期。
+ */
+func TestProxy_ZAITrialTransportCooldownPolicy(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		for _, forced := range []bool{false, true} {
+			for _, tc := range []struct {
+				name     string        ///< 传输故障类型。
+				err      error         ///< 实际发送错误。
+				initial  time.Duration ///< 默认初始冷却。
+				override time.Duration ///< 自定义初始冷却。
+			}{
+				{"connection_refused", errors.New("connection refused"), 2 * time.Minute, 137 * time.Second},
+				{"first_byte_timeout", util.ErrUpstreamFirstByteTimeout, time.Minute, 23 * time.Second},
+			} {
+				t.Run(fmt.Sprintf("custom=%t/forced=%t/%s", custom, forced, tc.name), func(t *testing.T) {
+					env, configs := newZAIStartHarness(t)
+					if custom {
+						env.store.ConfigureCooldown(util.CooldownSettings{ServerSec: 137, TimeoutSec: 23, MinSec: 1})
+					}
+					control := env.server.client
+					var trial, paid atomic.Int32
+					env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						if !strings.HasSuffix(req.URL.Path, "/messages") {
+							return control.Do(req)
+						}
+						if strings.Contains(req.URL.Path, "/zcode-plan/") {
+							trial.Add(1)
+							return nil, tc.err
+						}
+						paid.Add(1)
+						return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+					})}
+					name := "GLM-5.3-Flash"
+					if forced {
+						name += "-Trial"
+					}
+					started := time.Now()
+					result := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": configs[0].Name})
+					wantPaid := int32(1)
+					if forced {
+						wantPaid = 0
+					}
+					if trial.Load() != 1 || paid.Load() != wantPaid || (result.Code == 200) == forced {
+						t.Fatalf("fallback: status=%d trial=%d paid=%d", result.Code, trial.Load(), paid.Load())
+					}
+					cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := tc.initial
+					if custom {
+						want = tc.override
+					}
+					until := cooldowns[configs[0].ID]["GLM-5.3-Flash-Trial"]
+					// 存储截止时间精度为秒；只允许请求耗时和秒截断造成的偏差。
+					if until.Before(started.Add(want-time.Second)) || until.After(time.Now().Add(want)) {
+						t.Fatalf("wrong cooldown policy: remaining=%v want=%v", time.Until(until), want)
+					}
+					if !cooldowns[configs[3].ID]["GLM-5.3-Flash-Trial"].Equal(until) || cooldowns[configs[0].ID]["GLM-5.3-Flash"].After(time.Now()) {
+						t.Fatalf("cooldown crossed account or paid boundary: %v", cooldowns)
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
  * @brief 模拟读取冷却失败的存储，条件写入仍可用以暴露错误后的盲写。
  */
 type zaiQuotaReadErrorStore struct {
@@ -3506,6 +4549,44 @@ func (s *zaiQuotaSwapStore) SetModelCooldownIfOAuthCredential(ctx context.Contex
 		s.once.Do(s.beforeWrite)
 	}
 	return s.Store.SetModelCooldownIfOAuthCredential(ctx, id, authType, credential, name, until)
+}
+
+/**
+ * @brief 在原子递增前复现凭证替换竞争。
+ * @param ctx 存储上下文。
+ * @param id 目标渠道。
+ * @param authType 发送时认证类型。
+ * @param credential 发送时凭证。
+ * @param name 模型键。
+ * @param now 故障时间。
+ * @param status 上游状态码。
+ * @return 冷却截止时间，身份变化为零值。
+ * @return 身份匹配且写入为 true。
+ * @return 存储错误，否则 nil。
+ */
+func (s *zaiQuotaSwapStore) BumpModelCooldownIfOAuthCredential(ctx context.Context, id int64, authType, credential, name string, now time.Time, status int) (time.Time, bool, error) {
+	if id == s.target {
+		s.once.Do(s.beforeWrite)
+	}
+	return s.Store.BumpModelCooldownIfOAuthCredential(ctx, id, authType, credential, name, now, status)
+}
+
+/**
+ * @brief 在条件清理前插入凭证变更，验证成功恢复的身份竞争边界。
+ * @param ctx 存储上下文。
+ * @param id 目标渠道。
+ * @param authType 预期认证类型。
+ * @param credential 成功请求的凭证快照。
+ * @param name 体验模型键。
+ * @param cutoff 成功请求发送时间。
+ * @return 实际删除旧历史为 true，否则 false。
+ * @return 存储错误，否则 nil。
+ */
+func (s *zaiQuotaSwapStore) ResetExpiredModelCooldownIfOAuthCredential(ctx context.Context, id int64, authType, credential, name string, cutoff time.Time) (bool, error) {
+	if id == s.target {
+		s.once.Do(s.beforeWrite)
+	}
+	return s.Store.ResetExpiredModelCooldownIfOAuthCredential(ctx, id, authType, credential, name, cutoff)
 }
 
 /**
@@ -3675,5 +4756,91 @@ func TestZAILatestModelEligibility(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if calls != 1 || resp.StatusCode != 200 {
 		t.Fatalf("other model incorrectly rejected: calls=%d status=%d", calls, resp.StatusCode)
+	}
+}
+
+/**
+ * @brief 代理与管理检测恢复同账号的过期体验退避，不清付费模型状态。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialSuccessResetsExpiredHistory(t *testing.T) {
+	for _, mode := range []string{"proxy", "admin", "admin_wait"} {
+		for _, change := range []struct {
+			name       string        ///< 恢复过程中的凭证变化。
+			credential string        ///< 新凭证；空值表示不变。
+			backoff    time.Duration ///< 当前渠道下次失败的初始退避。
+		}{
+			{"unchanged", "", time.Minute},
+			{"refresh", `{"api_key":"key-a.secret","jwt_token":"jwt-refreshed","user_id":"a"}`, time.Minute},
+			{"preference", `{"api_key":"key-a.secret","jwt_token":"jwt-a","user_id":"a","free_first":false}`, time.Minute},
+			{"new_account", `{"api_key":"key-new.secret","jwt_token":"jwt-new","user_id":"new"}`, 2 * time.Minute},
+		} {
+			t.Run(mode+"/"+change.name, func(t *testing.T) {
+				env, configs := newZAIStartHarness(t)
+				ctx := context.Background()
+				const name = "GLM-5.3-Flash-Trial"
+				past := time.Now().Add(-time.Hour)
+				for _, index := range []int{0, 3} {
+					if _, err := env.store.BumpModelCooldown(ctx, configs[index].ID, name, past, 429); err != nil {
+						t.Fatal(err)
+					}
+					if err := env.store.SetModelCooldown(ctx, configs[index].ID, "GLM-5.3-Flash", time.Now().Add(time.Hour)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if change.credential != "" {
+					// 在读取目标之后、事务校验之前更新凭证，成功结果仍属于原账号。
+					wrapper := &zaiQuotaSwapStore{Store: env.store, target: configs[0].ID}
+					wrapper.beforeWrite = func() {
+						if ok, err := env.store.CompareAndSwapOAuthCredential(ctx, configs[0].ID, configs[0].AuthType, configs[0].OAuthCredential, change.credential); err != nil || !ok {
+							t.Fatalf("credential change: matched=%t err=%v", ok, err)
+						}
+					}
+					env.server.store = wrapper
+				}
+				control := env.server.client
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(req.URL.Path, "/messages") {
+						return control.Do(req)
+					}
+					return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+				})}
+				switch mode {
+				case "admin_wait":
+					result := env.server.executeChannelTestWithCooldown(ctx, configs[0], cooldown.NoKeyIndex, "key-a.secret", &testutil.TestChannelRequest{Model: name, Content: "hello", ClientProtocol: "anthropic", WaitForCapacity: true}, true)
+					if result["success"] != true {
+						t.Fatalf("wait test failed: %v", result)
+					}
+				case "admin":
+					path := fmt.Sprintf("/admin/channels/%d/test", configs[0].ID)
+					req := newJSONRequest(t, http.MethodPost, path, map[string]any{"model": name, "content": "hello", "client_protocol": "anthropic"})
+					c, response := newTestContext(t, req)
+					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(configs[0].ID)}}
+					env.server.HandleChannelTest(c)
+					if !mustParseAPIResponse[map[string]any](t, response.Body.Bytes()).Data["success"].(bool) {
+						t.Fatal(response.Body.String())
+					}
+				default:
+					response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": name, "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}, map[string]string{"X-CCLoad-Channel": configs[0].Name})
+					if response.Code != 200 {
+						t.Fatalf("success=%d %s", response.Code, response.Body.String())
+					}
+				}
+				for _, index := range []int{0, 3} {
+					duration, err := env.store.BumpModelCooldown(ctx, configs[index].ID, name, time.Now(), 429)
+					want := time.Minute
+					if index == 0 {
+						want = change.backoff
+					}
+					if err != nil || duration != want {
+						t.Fatalf("recovered backoff=%v want=%v err=%v", duration, want, err)
+					}
+				}
+				models, err := env.store.GetAllModelCooldowns(ctx)
+				if err != nil || !models[configs[0].ID]["GLM-5.3-Flash"].After(time.Now()) {
+					t.Fatalf("paid state cleared: %v %v", models, err)
+				}
+			})
+		}
 	}
 }

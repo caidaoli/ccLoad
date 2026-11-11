@@ -9,6 +9,15 @@ import (
 	"ccLoad/internal/model"
 )
 
+/**
+ * @brief 条件保存账号模型目录，拒绝凭证或请求来源纪元已变更的旧结果。
+ * @param ctx 持久化上下文；取消时终止写入或冲突重试。
+ * @param cfg 发起模型发现时的渠道配置。
+ * @param source 模型请求实际使用的凭证及额度纪元快照。
+ * @param manifest 待保存的账号模型目录。
+ * @return 成功返回 nil；渠道、凭证、纪元或更新的目录发生变化，存储、编码或取消失败时返回错误。
+ * @note 每次 CAS 重试重新核对身份和纪元，成功后失效凭证与渠道缓存。
+ */
 func (m *codexCredentialManager) persistModelManifest(ctx context.Context, cfg *model.Config, source *codexauth.Credential, manifest *codexauth.ModelManifest) error {
 	for attempt := 0; ; attempt++ {
 		current, err := m.store.GetConfig(ctx, cfg.ID)
@@ -22,10 +31,10 @@ func (m *codexCredentialManager) persistModelManifest(ctx context.Context, cfg *
 		if err != nil {
 			return err
 		}
-		// A poll-detected plan change restarts the epoch before id_token claims
-		// catch up; a sample taken before that restart cannot describe the account.
+		// 纪元重启与请求开始可能拥有相同墙钟读数，必须比较请求来源纪元，不能只按时间排序。
 		epoch := credential.QuotaCostUsage.EpochTime()
 		if credential.AccessToken != source.AccessToken || !manifest.Matches(credential, manifest.Endpoint) ||
+			!epoch.Equal(source.QuotaCostUsage.EpochTime()) ||
 			(!epoch.IsZero() && manifest.SampledAt < epoch.UnixNano()) {
 			return errors.New("model discovery: Codex credential changed; retry the refresh")
 		}

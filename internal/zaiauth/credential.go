@@ -128,9 +128,12 @@ func (i Identity) Matches(other Identity) bool {
 	return i.Email != "" && other.Email != "" && strings.EqualFold(i.Email, other.Email)
 }
 
-// DeriveDeviceID returns a stable UUID-shaped device fingerprint. ZCode stores
-// a random per-installation UUID; ccLoad derives one per credential so the same
-// account keeps reporting the same device across restarts.
+/**
+ * @brief 为 Key 导入及缺少设备的旧凭据提供稳定兜底；网页登录保存授权开始时的随机设备。
+ * @param identity 已核验的账号身份。
+ * @param fallback 无账号身份时使用的凭证种子。
+ * @return 稳定 UUIDv4 形状设备标识。
+ */
 func DeriveDeviceID(identity Identity, fallback string) string {
 	seed := strings.TrimSpace(identity.UserID)
 	if seed == "" {

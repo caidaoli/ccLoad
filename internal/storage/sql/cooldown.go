@@ -191,7 +191,16 @@ func normalizeCooldownModel(model string) (string, error) {
 	return model, nil
 }
 
-// BumpModelCooldown 模型级冷却：与 Key、渠道共用同一套指数退避策略。
+/**
+ * @brief 使用当前存储的公共策略递增模型冷却。
+ * @param ctx 存储上下文。
+ * @param channelID 渠道 ID。
+ * @param model 非空模型键。
+ * @param now 故障发生时间。
+ * @param statusCode 上游状态码。
+ * @return 新冷却时长；失败返回零值。
+ * @return 模型非法、取消或事务失败时返回错误，否则 nil。
+ */
 func (s *SQLStore) BumpModelCooldown(
 	ctx context.Context,
 	channelID int64,
@@ -206,54 +215,70 @@ func (s *SQLStore) BumpModelCooldown(
 
 	var nextDuration time.Duration
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		var insertQuery string
-		if s.supportsONConflict() {
-			insertQuery = `
-				INSERT INTO channel_model_cooldowns
-					(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
-				VALUES (?, ?, 0, 0, ?)
-				ON CONFLICT(channel_id, model) DO NOTHING
-			`
-		} else {
-			insertQuery = `
-				INSERT INTO channel_model_cooldowns
-					(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
-				VALUES (?, ?, 0, 0, ?)
-				ON DUPLICATE KEY UPDATE model = VALUES(model)
-			`
-		}
-		if _, err := s.execTx(ctx, tx, insertQuery, channelID, model, timeToUnix(now)); err != nil {
-			return fmt.Errorf("ensure model cooldown: %w", err)
-		}
-
-		var cooldownUntil, cooldownDurationMs int64
-		if err := s.queryRowTx(ctx, tx, `
-			SELECT cooldown_until, cooldown_duration_ms
-			FROM channel_model_cooldowns
-			WHERE channel_id = ? AND model = ?
-		`+s.cooldownSelectLockClause(), channelID, model).Scan(&cooldownUntil, &cooldownDurationMs); err != nil {
-			return fmt.Errorf("query model cooldown: %w", err)
-		}
-
-		nextDuration = s.calculateBackoffDuration(
-			cooldownDurationMs,
-			unixToTime(cooldownUntil),
-			now,
-			&statusCode,
-		)
-		newUntil := now.Add(nextDuration)
-		if _, err := s.execTx(ctx, tx, `
-			UPDATE channel_model_cooldowns
-			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
-			WHERE channel_id = ? AND model = ?
-		`, timeToUnix(newUntil), int64(nextDuration/time.Millisecond), timeToUnix(now), channelID, model); err != nil {
-			return fmt.Errorf("update model cooldown: %w", err)
-		}
-
-		return nil
+		var err error
+		nextDuration, err = s.bumpModelCooldownTx(ctx, tx, channelID, model, now, statusCode)
+		return err
 	})
-
 	return nextDuration, err
+}
+
+/**
+ * @brief 在调用方事务内使用存储生效策略递增模型冷却。
+ * @param ctx 数据库操作上下文。
+ * @param tx 调用方持有的事务。
+ * @param channelID 目标渠道 ID。
+ * @param model 已归一的模型键。
+ * @param now 本次错误时间。
+ * @param statusCode 已归一的上游状态码。
+ * @return 本次写入的持续时间，失败时为零值。
+ * @return 查询或写入失败时返回错误。
+ * @note 调用方负责事务提交及可选的身份校验。
+ */
+func (s *SQLStore) bumpModelCooldownTx(ctx context.Context, tx *sql.Tx, channelID int64, model string, now time.Time, statusCode int) (time.Duration, error) {
+	var insertQuery string
+	if s.supportsONConflict() {
+		insertQuery = `
+			INSERT INTO channel_model_cooldowns
+				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+			VALUES (?, ?, 0, 0, ?)
+			ON CONFLICT(channel_id, model) DO NOTHING
+		`
+	} else {
+		insertQuery = `
+			INSERT INTO channel_model_cooldowns
+				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+			VALUES (?, ?, 0, 0, ?)
+			ON DUPLICATE KEY UPDATE model = VALUES(model)
+		`
+	}
+	if _, err := s.execTx(ctx, tx, insertQuery, channelID, model, timeToUnix(now)); err != nil {
+		return 0, fmt.Errorf("ensure model cooldown: %w", err)
+	}
+
+	var cooldownUntil, cooldownDurationMs int64
+	if err := s.queryRowTx(ctx, tx, `
+		SELECT cooldown_until, cooldown_duration_ms
+		FROM channel_model_cooldowns
+		WHERE channel_id = ? AND model = ?
+	`+s.cooldownSelectLockClause(), channelID, model).Scan(&cooldownUntil, &cooldownDurationMs); err != nil {
+		return 0, fmt.Errorf("query model cooldown: %w", err)
+	}
+
+	nextDuration := s.calculateBackoffDuration(
+		cooldownDurationMs,
+		unixToTime(cooldownUntil),
+		now,
+		&statusCode,
+	)
+	newUntil := now.Add(nextDuration)
+	if _, err := s.execTx(ctx, tx, `
+		UPDATE channel_model_cooldowns
+		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+		WHERE channel_id = ? AND model = ?
+	`, timeToUnix(newUntil), int64(nextDuration/time.Millisecond), timeToUnix(now), channelID, model); err != nil {
+		return 0, fmt.Errorf("update model cooldown: %w", err)
+	}
+	return nextDuration, nil
 }
 
 // GetAllModelCooldowns 批量查询未过期的模型冷却状态。

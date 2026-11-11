@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const (
@@ -48,6 +49,7 @@ func (r *zaiOAuthStartRequest) Validate() error {
 type zaiOAuthOptions struct {
 	oauthLoginOptions              ///< 固定代理配置。
 	site              zaiauth.Site ///< 开始授权时确定的账号站点。
+	deviceID          string       ///< 本次登录设备，贯穿初始化、轮询及保存。
 }
 
 type zaiOAuthStartResponse struct {
@@ -171,8 +173,9 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, op
 	if err != nil {
 		return zaiOAuthStartResponse{}, err
 	}
+	options.deviceID = uuid.NewString()
 	service := m.service.ForSite(options.site, options.client)
-	flow, err := service.InitFlow(ctx, pollToken)
+	flow, err := service.InitFlow(ctx, pollToken, options.deviceID)
 	if err != nil {
 		return zaiOAuthStartResponse{}, err
 	}
@@ -229,13 +232,22 @@ func (m *zaiOAuthManager) run(
 	}
 
 	for m.now().Before(deadline) {
+		// 首轮和暂态恢复均先等待；期限只阻止下一轮，不取消已经在途的 poll。
+		m.sleep(session.ctx, interval)
 		if session.ctx.Err() != nil {
 			return
 		}
-		result, err := service.Poll(session.ctx, flow.FlowID, pollToken)
+		if !m.now().Before(deadline) {
+			break
+		}
+		result, err := service.Poll(session.ctx, flow.FlowID, pollToken, options.deviceID)
 		if err != nil {
 			if session.ctx.Err() != nil {
 				return
+			}
+			var pollErr *zaiauth.OAuthError
+			if errors.As(err, &pollErr) && pollErr.Retryable() {
+				continue
 			}
 			m.finish(session, "error", err.Error(), 0, "")
 			return
@@ -247,8 +259,6 @@ func (m *zaiOAuthManager) run(
 		case zaiauth.PollFailed:
 			m.finish(session, "error", "z.ai rejected the authorization", 0, "")
 			return
-		default:
-			m.sleep(session.ctx, interval)
 		}
 	}
 	if session.ctx.Err() == nil {
@@ -293,6 +303,7 @@ func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result
 	}
 	credential.AccessToken = result.AccessToken
 	credential.Site = options.site
+	credential.DeviceID = options.deviceID
 	credential.JWTToken = result.JWTToken
 	if credential.UserID == "" {
 		credential.UserID = result.Identity.UserID

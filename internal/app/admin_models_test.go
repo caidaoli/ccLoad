@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/anthropicauth"
@@ -2012,6 +2013,76 @@ func TestAdminModels_CodexManifestRefreshBoundaries(t *testing.T) {
 					t.Fatalf("public directory did not reuse actual endpoint snapshot: %s, requests=%d", result.Body.String(), requests)
 				}
 			}
+		})
+	}
+}
+
+/**
+ * @brief 验证同一时钟刻度内跨纪元的模型结果被拒绝，同纪元的合法结果仍可保存。
+ * @param t 当前测试上下文。
+ */
+func TestAdminModels_CodexManifestEpochAtSameTimestamp(t *testing.T) {
+	for _, scenario := range []string{"epoch changed", "unchanged epoch", "sample at epoch"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				server, store, cleanup := setupAdminTestServer(t)
+				defer cleanup()
+				ctx := context.Background()
+				now := time.Now()
+				credential := &codexauth.Credential{
+					Type: codexauth.ChannelType, AccessToken: "manifest-access", RefreshToken: "manifest-refresh", AccountID: "account",
+					PlanType: "pro", Expired: now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
+				}
+				if scenario == "sample at epoch" {
+					credential.RestartQuotaEpochFromPoll(now)
+				}
+				payload, err := credential.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := store.CreateConfig(ctx, &model.Config{
+					Name: "Codex same-tick epoch", Enabled: true, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
+					URLs: model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					if scenario == "epoch changed" {
+						// 事件先后由同步调用保证，故意让请求与纪元重启拥有相同时间戳。
+						credential.RestartQuotaEpochFromPoll(now)
+						next, err := credential.JSON()
+						if err != nil {
+							t.Fatal(err)
+						}
+						updated, err := store.CompareAndSwapOAuthCredential(ctx, cfg.ID, model.AuthTypeCodexOAuth, payload, next)
+						if err != nil || !updated {
+							t.Fatalf("restart epoch: updated=%v err=%v", updated, err)
+						}
+					}
+					return jsonResponse(r, `{"models":[{"slug":"gpt-6-astra","service_tiers":[]}]}`)
+				})}
+				server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), store, nil, nil)
+				_, err = server.fetchModelsForChannel(ctx, cfg, "", modelFetchFirstAvailableKey)
+				wantSuccess := scenario != "epoch changed"
+				if (err == nil) != wantSuccess {
+					t.Fatalf("model refresh error=%v, want success=%v", err, wantSuccess)
+				}
+				stored, err := store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parsed, err := codexauth.ParseCredential([]byte(stored.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (parsed.ModelManifest != nil) != wantSuccess || !parsed.QuotaCostUsage.EpochTime().Equal(credential.QuotaCostUsage.EpochTime()) {
+					t.Fatal("model refresh persisted an invalid manifest or overwrote the current epoch")
+				}
+				if parsed.ModelManifest != nil && parsed.ModelManifest.SampledAt != now.UnixNano() {
+					t.Fatalf("sample time=%d, want fixed time=%d", parsed.ModelManifest.SampledAt, now.UnixNano())
+				}
+			})
 		})
 	}
 }

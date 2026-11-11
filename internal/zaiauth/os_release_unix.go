@@ -12,6 +12,19 @@ import (
 )
 
 /**
+ * @brief 按 Unix locale 优先级读取服务进程语言。
+ * @return 规范语言标签，缺失或不能识别时为 unknown。
+ */
+func clientLocale() string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return normalizeClientLocale(value)
+		}
+	}
+	return "unknown"
+}
+
+/**
  * @brief 获取 ZCode 请求头的 IANA 时区，无法识别时返回 unknown。
  * @return Go 的命名时区或系统 zoneinfo 标识；无法识别时返回 unknown。
  */

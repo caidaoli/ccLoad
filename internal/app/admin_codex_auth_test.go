@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/anthropicauth"
@@ -2388,7 +2389,7 @@ func TestOAuthReauthorizationReactivatesChannel(t *testing.T) {
 		{name: "Z.ai", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
 			channel, _, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{
 				APIKey: token + ".secret", AccessToken: "access", Email: "same@example.com", UserID: "user",
-			}, nil, "")
+			}, nil, "", nil)
 			return channel, err
 		}},
 		{name: "Cursor", login: func(ctx context.Context, store storage.Store, token string) (*model.Config, error) {
@@ -7110,51 +7111,59 @@ func TestAttachOAuthQuotaCostUsageMatchesResetJitter(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 额度采样时间在重置额度查询完成前确定，不包含后者的等待时间
+ * @param t 测试上下文
+ */
 func TestRequestCodexUsageSamplesBeforeResetCreditLookupCompletes(t *testing.T) {
 	t.Parallel()
-	creditsStarted := make(chan struct{})
-	releaseCredits := make(chan struct{})
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		body := `{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":604800,"reset_at":1894060800}}}`
-		if request.URL.String() == codexResetCreditsURL {
-			close(creditsStarted)
-			<-releaseCredits
-			body = `[]`
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    request,
-		}, nil
-	})}
-	result := make(chan *oauthUsageSummary, 1)
-	errors := make(chan error, 1)
-	go func() {
-		summary, err := requestCodexUsage(context.Background(), client, &codexauth.Credential{
-			Type: codexauth.ChannelType, AccessToken: "at-sampled-before-credits",
-		})
-		if err != nil {
-			errors <- err
-			return
-		}
-		result <- summary
-	}()
-	<-creditsStarted
-	creditsStillBlockedAt := time.Now().UTC()
-	close(releaseCredits)
+	synctest.Test(t, func(t *testing.T) {
+		creditsStarted := make(chan struct{})
+		releaseCredits := make(chan struct{})
+		client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+			body := `{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":604800,"reset_at":1894060800}}}`
+			if request.URL.String() == codexResetCreditsURL {
+				close(creditsStarted)
+				<-releaseCredits
+				body = `[]`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})}
+		result := make(chan *oauthUsageSummary, 1)
+		errors := make(chan error, 1)
+		go func() {
+			summary, err := requestCodexUsage(context.Background(), client, &codexauth.Credential{
+				Type: codexauth.ChannelType, AccessToken: "at-sampled-before-credits",
+			})
+			if err != nil {
+				errors <- err
+				return
+			}
+			result <- summary
+		}()
+		<-creditsStarted
+		// 在查询阻塞期间推进虚拟时钟，不依赖宿主机墙钟精度来区分先后。
+		time.Sleep(time.Second)
+		creditsStillBlockedAt := time.Now().UTC()
+		close(releaseCredits)
 
-	select {
-	case err := <-errors:
-		t.Fatal(err)
-	case summary := <-result:
-		if len(summary.Windows) != 1 || summary.Windows[0].SampledAt.IsZero() ||
-			!summary.Windows[0].SampledAt.Before(creditsStillBlockedAt) {
-			t.Fatalf("usage sample time includes reset credit latency: %#v", summary.Windows)
+		select {
+		case err := <-errors:
+			t.Fatal(err)
+		case summary := <-result:
+			if len(summary.Windows) != 1 || summary.Windows[0].SampledAt.IsZero() ||
+				!summary.Windows[0].SampledAt.Before(creditsStillBlockedAt) {
+				t.Fatalf("usage sample time includes reset credit latency: %#v", summary.Windows)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Codex usage request did not finish")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Codex usage request did not finish")
-	}
+	})
 }
 
 func TestHandleOAuthUsageSilentlyFallsBackWhenCodexResetCreditDetailsAreUnavailable(t *testing.T) {

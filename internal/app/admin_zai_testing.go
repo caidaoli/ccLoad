@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -22,11 +23,14 @@ import (
  * @param result 待标注的检测结果映射，必须非 nil。
  * @param actualModel 实际请求模型，用于选择对应 Trial 冷却键。
  * @return 原结果映射，补充 cooldown_action。
- * @note 原地修改 result；真实最终故障退役活动账号，只有额度错误写 Trial 模型冷却并失效缓存。
+ * @note 原地修改 result；只有真实体验失败登记体验范围冷却，付费与其他渠道状态独立。
  */
 func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Config, keyIndex int, testReq *testutil.TestChannelRequest, persist bool, result map[string]any, actualModel string) map[string]any {
 	if success, _ := result["success"].(bool); success {
 		if persist {
+			cooldownCtx, cancel := cooldownWriteContext(ctx)
+			defer cancel()
+			s.recoverZAITrialCooldown(cooldownCtx, cfg, actualModel, testReq.ZAI.Started)
 			s.invalidateChannelRelatedCache(cfg.ID)
 		}
 		return result
@@ -53,12 +57,13 @@ func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Con
 	status, body, headers := buildTestFailureClassificationInput(result)
 	input := cooldownInputForModel(httpErrorInputFromParts(cfg.ID, keyIndex, status, body, headers), zaiTrialModelKey(actualModel))
 	input.IsNetworkError, _ = result["network_error"].(bool)
-	s.applyZAITrialCooldown(ctx, cfg, input)
-	if input.IsNetworkError || !zaiGiftQuotaError(status, body) {
+	decision := s.evaluateZAITrialCooldown(cfg, input)
+	_, accepted := s.applyZAITrialCooldown(ctx, cfg, input)
+	if !accepted {
 		result["cooldown_action"] = "trial_error_no_cooldown"
-		return result
+	} else {
+		result["cooldown_action"] = "trial_" + decision.scope + "_cooldown"
 	}
-	result["cooldown_action"] = "model_cooldown_applied"
 	return result
 }
 
@@ -77,6 +82,9 @@ func (s *Server) applyZAIChannelTestCooldown(ctx context.Context, cfg *model.Con
  */
 func (s *Server) sendZAIChannelTest(reqCtx context.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan, req *http.Request, cancel context.CancelFunc) (*http.Response, context.CancelFunc, error) {
 	resp, err := s.doUpstreamRequestWithSender(cfg, req, func(outbound *http.Request) (*http.Response, error) {
+		if attempt, _ := outbound.Context().Value(zaiSendAttemptKey{}).(*zaiSendAttempt); attempt != nil {
+			attempt.waitsForCapacity = true
+		}
 		release, err := s.waitForUpstreamRequest(reqCtx, cfg)
 		if err != nil {
 			return nil, err
@@ -85,6 +93,24 @@ func (s *Server) sendZAIChannelTest(reqCtx context.Context, cfg *model.Config, t
 		sendCtx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream, s.resolveProtocolTimeouts(protocol.TransformPlan{
 			UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 		}))
+		// 发送超时从管理上下文派生，显式保留体验发送时间供成功时条件恢复。
+		if started, ok := outbound.Context().Value(zaiTrialStartedKey{}).(time.Time); ok {
+			if state := zaiState(outbound); state != nil {
+				if state.started.IsZero() {
+					state.started = time.Now()
+				}
+				started = state.started
+			}
+			sendCtx = context.WithValue(sendCtx, zaiTrialStartedKey{}, started)
+		}
+		// 只携带下游仍需消费的私有记录，保留本次新建的实际发送超时。
+		if state := zaiState(outbound); state != nil {
+			sendCtx = context.WithValue(sendCtx, zaiRequestStateKey{}, state)
+		}
+		if attempt, _ := outbound.Context().Value(zaiSendAttemptKey{}).(*zaiSendAttempt); attempt != nil {
+			sendCtx = context.WithValue(sendCtx, zaiSendAttemptKey{}, attempt)
+			attempt.req, attempt.timeout = outbound.WithContext(sendCtx), timeout
+		}
 		requestPlan.timeout = timeout
 		previousCancel := cancel
 		cancel = func() {
@@ -100,11 +126,13 @@ func (s *Server) sendZAIChannelTest(reqCtx context.Context, cfg *model.Config, t
  * @brief 管理检测的调试信息记录最终套餐请求，避免把付费候选误报为实际请求。
  * @param cfg 当前渠道。
  * @param plan 管理检测计划。
+ * @param req 原请求，携带无响应时的实际尝试记录。
  * @param resp 最终上游响应。
  * @param testReq 检测请求，非 nil 时记录实际计费模型。
  * @param sendErr 最终发送错误；Trial 传输错误携带无响应时的实际模型。
+ * @note 将实际请求头同步到原请求，使管理结果与调试捕获使用同一份出站信息。
  */
-func (s *Server) syncZAIChannelTestRequest(cfg *model.Config, plan *channelTestRequestPlan, resp *http.Response, testReq *testutil.TestChannelRequest, sendErr error) {
+func (s *Server) syncZAIChannelTestRequest(cfg *model.Config, plan *channelTestRequestPlan, req *http.Request, resp *http.Response, testReq *testutil.TestChannelRequest, sendErr error) {
 	if !cfg.UsesZAIOAuth() {
 		return
 	}
@@ -118,24 +146,35 @@ func (s *Server) syncZAIChannelTestRequest(cfg *model.Config, plan *channelTestR
 			}
 		}()
 	}
-	if resp == nil || resp.Request == nil {
+	actual := req
+	if state := zaiState(req); state != nil && state.last != nil {
+		actual = state.last.req
+		if state.last.timeout != nil {
+			plan.timeout = state.last.timeout
+		}
+	} else if resp != nil && resp.Request != nil {
+		actual = resp.Request
+	} else {
 		return
 	}
-	body, err := zaiRequestBody(resp.Request)
+	body, err := zaiRequestBody(actual)
 	if err != nil {
 		return
 	}
 	plan.requestBody = body
 	if testReq != nil {
+		started, _ := actual.Context().Value(zaiTrialStartedKey{}).(time.Time)
 		testReq.ZAI = testutil.ZAITestOutcome{
+			Started:        started,
 			WireModel:      gjson.GetBytes(body, "model").String(),
 			Trial:          isZAITrialResponse(resp),
 			LocalPlanError: isZAILocalPlanResponse(resp),
 		}
 	}
-	plan.fullURL = resp.Request.URL.String()
-	plan.upstreamHeaders = resp.Request.Header.Clone()
-	plan.debugCapture = s.captureDebugRequest(resp.Request, body)
+	plan.fullURL = actual.URL.String()
+	plan.upstreamHeaders = actual.Header.Clone()
+	req.Header = actual.Header.Clone()
+	plan.debugCapture = s.captureDebugRequest(actual, body)
 	if plan.clientProtocol != plan.upstreamProtocol {
 		plan.debugCapture.markProtocolTransform(extractRequestPath(plan.clientURL), plan.clientHeaders, plan.clientBody)
 	}

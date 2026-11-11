@@ -544,7 +544,7 @@ func (s *Server) streamChatWithURLForProtocol(
 
 	start := time.Now()
 	resp, err := s.doUpstreamRequest(cfg, req)
-	s.syncZAIChannelTestRequest(cfg, requestPlan, resp, testReq, err)
+	s.syncZAIChannelTestRequest(cfg, requestPlan, req, resp, testReq, err)
 	if err != nil {
 		result := chatRequestErrorResult(start, testReq, requestPlan.timeout, err)
 		if requestThinking != "" {

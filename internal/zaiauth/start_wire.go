@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/text/language"
 )
 
 /**
@@ -65,7 +68,7 @@ func StartHeaders(jwt, session string) http.Header {
 		[2]string{"anthropic-version", "2023-06-01"},
 		[2]string{"User-Agent", "ZCode/" + AppVersion + " ai-sdk/anthropic/3.0.81"},
 		[2]string{"X-Release-Channel", "production"},
-		[2]string{"X-Client-Language", "en-US"},
+		[2]string{"X-Client-Language", clientLocale()},
 		[2]string{"X-Client-Timezone", clientTimezone()},
 		[2]string{"x-session-id", session},
 		[2]string{"x-zcode-session-type", "main"},
@@ -158,16 +161,43 @@ func zcodeTruthy(value any) bool {
 }
 
 /**
+ * @brief 调用方提供的可选环境文本，仅用于提示词，不访问本地目录。
+ */
+type StartEnvironment struct {
+	WorkDir string ///< 已 URI 解码的调用方目录。
+	Git     string ///< 仅接受 yes/no，缺少目录时不输出。
+}
+
+/**
+ * @brief 将系统 locale 规范为语言标签，不能识别时返回 unknown。
+ * @param value 系统 locale，允许 Unix 编码后缀和下划线。
+ * @return 规范语言标签或 unknown。
+ */
+func normalizeClientLocale(value string) string {
+	value, _, _ = strings.Cut(strings.TrimSpace(value), ".")
+	value, _, _ = strings.Cut(value, "@")
+	if value == "" || value == "C" || value == "POSIX" {
+		return "unknown"
+	}
+	tag, err := language.Parse(strings.ReplaceAll(value, "_", "-"))
+	if err != nil || tag == language.Und {
+		return "unknown"
+	}
+	return tag.String()
+}
+
+/**
  * @brief 按固定版本构造体验 Messages，保留调用者 system 与历史消息。
  * @param raw 转换后的 Anthropic JSON。
  * @param model 实际上游模型 ID。
  * @param device 账号设备指纹。
  * @param session 本次对话 ID。
  * @param site 已验证的账号站点，用于官方提示词的 provider。
+ * @param env 可选调用方目录/git 文本，不探测磁盘。
  * @return 独立的体验请求体，不修改付费请求。
  * @return JSON、消息或固定资源无效时返回错误。
  */
-func PrepareStartBody(raw []byte, model, device, session string, site Site) ([]byte, error) {
+func PrepareStartBody(raw []byte, model, device, session string, site Site, env StartEnvironment) ([]byte, error) {
 	var p struct {
 		CLIPrefix         string            `json:"cliPrefix"`
 		StableSections    []string          `json:"stableSections"`
@@ -205,8 +235,18 @@ func PrepareStartBody(raw []byte, model, device, session string, site Site) ([]b
 		}
 	}
 	e := p.Environment
-	platform, _, _ := strings.Cut(ClientPlatform(), "-")
-	environment := e["heading"] + "\n" + e["invokedLine"] + "\n - " + e["platformLabel"] + ": " + platform + "\n - " + e["osVersionLabel"] + ": " + hostRelease() + "\n - " + e["untrustedNote"]
+	platform, arch, _ := strings.Cut(ClientPlatform(), "-")
+	environment := e["heading"] + "\n" + e["invokedLine"]
+	if env.WorkDir != "" {
+		environment += "\n - " + e["cwdLabel"] + ": " + env.WorkDir
+		if env.Git == "yes" {
+			environment += "\n - " + e["gitLabel"] + ": " + e["gitYes"]
+		}
+		if env.Git == "no" {
+			environment += "\n - " + e["gitLabel"] + ": " + e["gitNo"]
+		}
+	}
+	environment += "\n - " + e["platformLabel"] + ": " + platform + "\n - " + e["osVersionLabel"] + ": " + platform + " " + hostRelease() + " " + arch + "\n - " + e["untrustedNote"]
 	dynamic = append(dynamic, environment, strings.NewReplacer("{provider}", site.config().prompt, "{model}", model).Replace(p.PoweredBy), p.ContextManagement)
 	switch own := body["system"].(type) {
 	case string:
@@ -245,10 +285,18 @@ func PrepareStartBody(raw []byte, model, device, session string, site Site) ([]b
 		case string:
 			last["content"] = []any{cached(content)}
 		case []any:
-			if len(content) > 0 {
-				if block, ok := content[len(content)-1].(map[string]any); ok {
-					block["cache_control"] = map[string]string{"type": "ephemeral"}
+			// 思考块不能作为显式缓存断点；只在末条消息内寻找合法位置。
+			for _, value := range slices.Backward(content) {
+				block, ok := value.(map[string]any)
+				if !ok {
+					continue
 				}
+				kind, _ := block["type"].(string)
+				if kind == "" || kind == "thinking" || kind == "redacted_thinking" {
+					continue
+				}
+				block["cache_control"] = map[string]string{"type": "ephemeral"}
+				break
 			}
 		}
 	}

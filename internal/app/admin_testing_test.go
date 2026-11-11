@@ -7474,7 +7474,166 @@ func TestAdminZAIPlanResponseTimeoutDoesNotReplayPaid(t *testing.T) {
 }
 
 /**
- * @brief 管理检测与聊天只对体验额度错误暂停 Trial，其他故障保留错误且不重派生付费 Key 或重试付费 URL。
+ * @brief 普通检测共享原预算，容量等待批任务在取得容量后发送，各次尝试使用独立预算。
+ * @param t 测试上下文。
+ */
+func TestAdminZAIBusyTimeoutOwnership(t *testing.T) {
+	for _, wait := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wait=%t", wait), func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			cfg := configs[0]
+			cfg.MaxConcurrency = 1
+			env.server.protocolTimeouts = map[string]protocolTimeoutConfig{"anthropic": {NonStreamTimeout: 250 * time.Millisecond}}
+			control := env.server.client
+			var calls atomic.Int32
+			var capacityReleased atomic.Bool
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				n := calls.Add(1)
+				// 从真实发送边界验证容量等待，不依赖内部计时 context 的表示。
+				if wait && !capacityReleased.Load() {
+					t.Error("request sent before capacity was released")
+				}
+				if n == 1 {
+					return zaiStartTestResponse(req, 429, `{"code":3009,"msg":"busy"}`), nil
+				}
+				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			})}
+			if wait {
+				release, err := env.server.reserveUpstreamRequest(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+				timer := time.AfterFunc(80*time.Millisecond, func() { capacityReleased.Store(true); release() })
+				defer timer.Stop()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			request := &testutil.TestChannelRequest{Model: "GLM-5.3-Flash-Trial", Content: "hello", ClientProtocol: "anthropic", WaitForCapacity: wait}
+			result := env.server.executeChannelTestWithCooldown(ctx, cfg, cooldown.NoKeyIndex, "key-a.secret", request, false)
+			if wait {
+				if result["success"] != true || calls.Load() != 2 {
+					t.Fatalf("independent timer success=%v calls=%d error=%v", result["success"], calls.Load(), result["error"])
+				}
+			} else if result["success"] != false || calls.Load() != 1 {
+				t.Fatalf("shared budget success=%v calls=%d", result["success"], calls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 付费管理入口在最终化后仍请求明文响应，并返回脱敏的实际出站头。
+ * @param t 测试上下文。
+ */
+func TestAdminZAIPaidFinalHeaders(t *testing.T) {
+	for _, entry := range []string{"test", "wait", "chat"} {
+		t.Run(entry, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{
+				Name: "paid headers", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: `{"api_key":"key.secret"}`, Enabled: true,
+				URLs:               model.ChannelURLs{{URL: "https://paid.invalid", Protocols: []string{"anthropic"}}},
+				ModelEntries:       []model.ModelEntry{{Model: "GLM-5.3"}},
+				CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "Accept-Encoding", Value: "gzip"}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var actual http.Header
+			srv.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				actual = req.Header.Clone()
+				body := []byte(`{"id":"m","type":"message","role":"assistant","model":"GLM-5.3","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+				headers := http.Header{"Content-Type": {"application/json"}}
+				// 按协商结果返回合法压缩响应，复现旧请求头被覆盖后的解析失败。
+				if strings.Contains(anthropicHeaderValue(actual, "Accept-Encoding"), "gzip") {
+					var compressed bytes.Buffer
+					writer := gzip.NewWriter(&compressed)
+					if _, err := writer.Write(body); err != nil {
+						t.Fatal(err)
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+					body = compressed.Bytes()
+					headers.Set("Content-Encoding", "gzip")
+				}
+				return &http.Response{StatusCode: 200, Header: headers, Body: io.NopCloser(bytes.NewReader(body)), Request: req}, nil
+			})}
+			if entry == "chat" {
+				req := newRequest(http.MethodPost, "/admin/channels/"+strconv.FormatInt(cfg.ID, 10)+"/chat", strings.NewReader(`{"model":"GLM-5.3","content":"hello","client_protocol":"anthropic"}`))
+				req.Header.Set("Content-Type", "application/json")
+				c, response := newTestContext(t, req)
+				c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+				srv.HandleChannelChat(c)
+				var content strings.Builder
+				for body := response.Body.Bytes(); len(body) > 0; {
+					end := firstSSEEventEnd(body)
+					if end < 0 {
+						t.Fatalf("incomplete chat event: %s", body)
+					}
+					_, data := parseSSEEventChunk(body[:end])
+					if message := gjson.GetBytes(data, "error"); message.Exists() {
+						t.Fatalf("chat error: %s", data)
+					}
+					content.WriteString(gjson.GetBytes(data, "delta").String())
+					body = body[end:]
+				}
+				if content.String() != "ok" {
+					t.Fatalf("chat content=%q response=%s", content.String(), response.Body.String())
+				}
+			} else {
+				result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "key.secret", &testutil.TestChannelRequest{
+					Model: "GLM-5.3", Content: "hello", ClientProtocol: "anthropic", WaitForCapacity: entry == "wait",
+				}, false)
+				if result["success"] != true {
+					t.Fatalf("paid detection failed: %v", result)
+				}
+				if want := maskSensitiveHeaderMap(flattenHeader(actual)); !reflect.DeepEqual(result["upstream_request_headers"], want) {
+					t.Fatalf("reported headers=%v want=%v", result["upstream_request_headers"], want)
+				}
+			}
+			if got := anthropicHeaderValue(actual, "Accept-Encoding"); got != "identity" {
+				t.Fatalf("paid admin encoding=%q", got)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 体验检测同样返回最终套餐的实际请求头，包含生成的请求与会话标识。
+ * @param t 测试上下文。
+ */
+func TestAdminZAITrialFinalHeaders(t *testing.T) {
+	for _, wait := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wait=%t", wait), func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			control := env.server.client
+			var actual http.Header
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				actual = req.Header.Clone()
+				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			})}
+			result := env.server.executeChannelTestWithCooldown(context.Background(), configs[0], cooldown.NoKeyIndex, "key-a.secret", &testutil.TestChannelRequest{
+				Model: "GLM-5.3-Flash-Trial", Content: "hello", ClientProtocol: "anthropic", WaitForCapacity: wait,
+			}, false)
+			if result["success"] != true || actual == nil {
+				t.Fatalf("trial detection failed: %v", result)
+			}
+			if want := maskSensitiveHeaderMap(flattenHeader(actual)); !reflect.DeepEqual(result["upstream_request_headers"], want) {
+				t.Fatalf("reported headers=%v want=%v", result["upstream_request_headers"], want)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 管理检测与聊天按故障范围冷却 Trial，不重派生付费 Key 或重试付费 URL。
  * @param t 测试上下文。
  */
 func TestAdminZAITrialFailureIsolation(t *testing.T) {
@@ -7482,8 +7641,7 @@ func TestAdminZAITrialFailureIsolation(t *testing.T) {
 		for _, outcome := range []string{"unauthorized", "forbidden", "server", "busy", "soft_quota", "network", "read", "read_probe", "read_quota", "cancel", "method", "notfound", "pending", "upstream_plan_error", "long_prompt", "bad_image"} {
 			t.Run(fmt.Sprintf("chat=%v/%s", chat, outcome), func(t *testing.T) {
 				srv := newInMemoryServer(t)
-				// 忙拒绝完整重试六次；等待区间由 Trial 专属测试验证，此处只验证发送隔离。
-				srv.zaiStart.wait = func(context.Context, time.Duration) error { return nil }
+				// 明确 busy 最多三次；付费 Key 与 URL 不参与 Trial 重试。
 				if outcome == "long_prompt" || outcome == "bad_image" {
 					srv.globalCooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 						Enabled: true, Name: "broad client error", StatusCodes: []int{400},
@@ -7568,7 +7726,7 @@ func TestAdminZAITrialFailureIsolation(t *testing.T) {
 				case "pending":
 					wantCalls = 0
 				case "busy":
-					wantCalls = 7
+					wantCalls = 3
 				}
 				if trialCalls.Load() != wantCalls || unexpected.Load() != 0 {
 					t.Fatalf("trial=%d unexpected=%d response=%s", trialCalls.Load(), unexpected.Load(), response.Body.String())
@@ -7597,7 +7755,7 @@ func TestAdminZAITrialFailureIsolation(t *testing.T) {
 					}
 				}
 				cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
-				if err != nil || cooldowns[cfg.ID]["GLM-5.3-Trial"].After(time.Now()) != (outcome == "upstream_plan_error" || outcome == "soft_quota") || cooldowns[cfg.ID]["GLM-5.3"].After(time.Now()) {
+				if err != nil || cooldowns[cfg.ID]["GLM-5.3-Trial"].After(time.Now()) != (outcome != "unauthorized" && outcome != "forbidden" && outcome != "method" && outcome != "notfound" && outcome != "cancel" && outcome != "pending" && outcome != "long_prompt" && outcome != "bad_image") || cooldowns[cfg.ID]["GLM-5.3"].After(time.Now()) {
 					t.Fatalf("wrong model cooldowns: %+v err=%v response=%s", cooldowns, err, response.Body.String())
 				}
 				current, err := srv.store.GetConfig(context.Background(), cfg.ID)
@@ -7610,7 +7768,7 @@ func TestAdminZAITrialFailureIsolation(t *testing.T) {
 }
 
 /**
- * @brief 管理检测和聊天的最终体验故障释放活动席位，并发忙和客户端取消保留活动账号。
+ * @brief 管理检测和聊天的终态失败不重放已输出的流，备用账号可在排空后接替。
  * @param t 测试上下文。
  */
 func TestAdminZAIStartFinalFailureRetiresAccount(t *testing.T) {
@@ -7623,11 +7781,11 @@ func TestAdminZAIStartFinalFailureRetiresAccount(t *testing.T) {
 			name    string ///< 终态故障或例外场景。
 			body    string ///< 首个业务事件之后的完整流。
 			readErr error  ///< 业务输出后的读取故障；nil 表示正常 EOF。
-			retire  bool   ///< 是否允许备用账号接替。
+			cooling bool   ///< 是否应产生当前体验模型冷却。
 		}{
 			{"late-sse-error", prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"backend failed after output\"}}\n\n", nil, true},
 			{"read-error", prefix, io.ErrUnexpectedEOF, true},
-			{"late-concurrency-error", prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"3008\",\"message\":\"concurrency limit exceeded\"}}\n\n", nil, false},
+			{"late-concurrency-error", prefix + "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"3008\",\"message\":\"concurrency limit exceeded\"}}\n\n", nil, true},
 			{"client-canceled", prefix, context.Canceled, false},
 		} {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
@@ -7694,16 +7852,13 @@ func TestAdminZAIStartFinalFailureRetiresAccount(t *testing.T) {
 					}
 				}
 				response := request(2, false)
-				wantCalls := int32(0)
-				if tc.retire {
-					wantCalls = 1
-				}
+				wantCalls := int32(1)
 				if calls[2].Load() != wantCalls {
 					t.Fatalf("reserve calls=%d want=%d status=%d body=%s", calls[2].Load(), wantCalls, response.Code, response.Body.String())
 				}
 				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
-				if err != nil || len(cooldowns) != 0 {
-					t.Fatalf("non-quota Trial failure changed model cooldowns: %v %v", cooldowns, err)
+				if err != nil || cooldowns[configs[0].ID]["GLM-5.3-Flash-Trial"].After(time.Now()) != tc.cooling || cooldowns[configs[0].ID]["GLM-5.3-Flash"].After(time.Now()) {
+					t.Fatalf("wrong Trial failure scope: %v %v", cooldowns, err)
 				}
 				channelCooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
 				if err != nil || len(channelCooldowns) != 0 {
@@ -7816,16 +7971,28 @@ func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	if plan.endpointPath != "/v1/messages" {
 		t.Fatalf("endpointPath = %q, want /v1/messages after stripping the ZCode base path", plan.endpointPath)
 	}
-	identity := decodeZAIRequestIdentity(t, plan.requestBody)
-	if identity.DeviceID != cfg.ZAIDeviceID {
-		t.Fatalf("metadata.user_id device = %q, want ZCode fingerprint %q", identity.DeviceID, cfg.ZAIDeviceID)
-	}
-
 	req, cancel, err := srv.newTestUpstreamRequest(context.Background(), cfgForBuild, testReq, plan)
 	if err != nil {
 		t.Fatalf("newTestUpstreamRequest: %v", err)
 	}
 	defer cancel()
+	// 验证真正发送的 wire，套餐选择前的候选不承诺付费身份。
+	resp, err := srv.doUpstreamRequestWithSender(cfgForBuild, req, func(outbound *http.Request) (*http.Response, error) {
+		req = outbound
+		body, readErr := zaiRequestBody(outbound)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		identity := decodeZAIRequestIdentity(t, body)
+		if identity.DeviceID != cfg.ZAIDeviceID {
+			t.Fatalf("device = %q", identity.DeviceID)
+		}
+		return zaiStartTestResponse(outbound, 200, `{}`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
 
 	if got := headerValueFold(req.Header, "x-api-key"); got != "key-id.secret" {
 		t.Fatalf("x-api-key = %q", got)

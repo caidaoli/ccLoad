@@ -403,7 +403,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 	ctx := context.Background()
 
 	first := &zaiauth.Credential{APIKey: "key-1.secret", AccessToken: "access-1", Email: "user@example.com", UserID: "u-1"}
-	created, isNew, err := createOrUpdateZAIChannel(ctx, store, first, nil, "")
+	created, isNew, err := createOrUpdateZAIChannel(ctx, store, first, nil, "", nil)
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateZAIChannel() created=%v err=%v", isNew, err)
 	}
@@ -413,7 +413,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 
 	// The same account reauthorizing must land on the same channel.
 	second := &zaiauth.Credential{APIKey: "key-2.secret", Email: "USER@example.com"}
-	updated, isNew, err := createOrUpdateZAIChannel(ctx, store, second, nil, "")
+	updated, isNew, err := createOrUpdateZAIChannel(ctx, store, second, nil, "", nil)
 	if err != nil || isNew {
 		t.Fatalf("reauthorization created=%v err=%v", isNew, err)
 	}
@@ -433,7 +433,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 
 	// A different account gets its own channel.
 	other := &zaiauth.Credential{APIKey: "key-3.secret", Email: "other@example.com", UserID: "u-2"}
-	otherChannel, isNew, err := createOrUpdateZAIChannel(ctx, store, other, nil, "")
+	otherChannel, isNew, err := createOrUpdateZAIChannel(ctx, store, other, nil, "", nil)
 	if err != nil || !isNew {
 		t.Fatalf("second account created=%v err=%v", isNew, err)
 	}
@@ -442,7 +442,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 	}
 	domestic := *first
 	domestic.Site = zaiauth.SiteBigModel
-	cn, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, nil, "")
+	cn, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, nil, "", nil)
 	if err != nil || !isNew || cn.ID == created.ID {
 		t.Fatalf("cross-site save: %+v %v %v", cn, isNew, err)
 	}
@@ -450,7 +450,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 		t.Fatalf("domestic route: %+v", cn)
 	}
 	domestic.APIKey = "domestic-rotated"
-	cnAgain, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, nil, "")
+	cnAgain, isNew, err := createOrUpdateZAIChannel(ctx, store, &domestic, nil, "", nil)
 	if err != nil || isNew || cnAgain.ID != cn.ID {
 		t.Fatalf("domestic reauth: %+v %v %v", cnAgain, isNew, err)
 	}
@@ -471,14 +471,14 @@ func TestCreateOrUpdateZAIChannelMatchesAnonymousKey(t *testing.T) {
 	ctx := context.Background()
 
 	credential := &zaiauth.Credential{APIKey: "key-1.secret"}
-	created, isNew, err := createOrUpdateZAIChannel(ctx, store, credential, nil, "")
+	created, isNew, err := createOrUpdateZAIChannel(ctx, store, credential, nil, "", nil)
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateZAIChannel() created=%v err=%v", isNew, err)
 	}
 	if !strings.HasPrefix(created.Name, "Z.ai-") {
 		t.Fatalf("name = %q", created.Name)
 	}
-	again, isNew, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{APIKey: "key-1.secret"}, nil, "")
+	again, isNew, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{APIKey: "key-1.secret"}, nil, "", nil)
 	if err != nil || isNew {
 		t.Fatalf("re-import created=%v err=%v", isNew, err)
 	}

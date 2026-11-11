@@ -102,6 +102,10 @@ func TestBridgePathAbsolutizesRelativeOverride(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 启动失败同时保留 Bridge 缺失分类和操作系统原始错误
+ * @param t 测试上下文
+ */
 func TestBridgeSpawnPreservesExecutableStartError(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "cursor-sdk-bridge")
 	if err := os.WriteFile(binary, []byte("bridge"), 0o755); err != nil {
@@ -115,11 +119,16 @@ func TestBridgeSpawnPreservesExecutableStartError(t *testing.T) {
 	}
 
 	_, err := bridge.spawn()
-	if !errors.Is(err, ErrAgentMissing) || !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("spawn() error = %v, want ErrAgentMissing wrapping os.ErrNotExist", err)
+	// 缺失程序在 Windows 可表现为 exec.ErrNotFound，Unix 通常为 os.ErrNotExist。
+	if !errors.Is(err, ErrAgentMissing) || (!errors.Is(err, os.ErrNotExist) && !errors.Is(err, exec.ErrNotFound)) {
+		t.Fatalf("spawn() error = %v, want ErrAgentMissing wrapping the executable lookup/start error", err)
 	}
 }
 
+/**
+ * @brief 缓存目录不可创建时使用备用目录，仅在支持的平台断言 POSIX 权限
+ * @param t 测试上下文
+ */
 func TestBridgeStateRootFallsBackWhenCacheCannotBeCreated(t *testing.T) {
 	blocked := filepath.Join(t.TempDir(), "cache-file")
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
@@ -142,7 +151,7 @@ func TestBridgeStateRootFallsBackWhenCacheCannotBeCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat fallback state root: %v", err)
 	}
-	if info.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
 		t.Fatalf("fallback state root mode = %v, want 0700", info.Mode())
 	}
 }

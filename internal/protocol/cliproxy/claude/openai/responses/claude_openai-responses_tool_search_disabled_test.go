@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,7 +15,8 @@ import (
 
 // The dev golden was produced by running renderToolSearchGolden against the
 // translator at origin/dev d739485df, before Codex tool_search support. With
-// upstream.claude.tool-search off the translator must reproduce it exactly.
+// upstream.claude.tool-search off the translator must reproduce its request
+// JSON values and response wire output.
 type toolSearchGoldenCase struct {
 	Name    string          `json:"name"`
 	Request json.RawMessage `json:"request"`
@@ -85,8 +87,20 @@ func TestToolSearchDisabledMatchesDevGolden(t *testing.T) {
 				t.Fatalf("no dev golden for %s", c.Name)
 			}
 			got := renderToolSearchGolden(fixtures, c)
-			if got.Request != want.Request || got.RequestError != want.RequestError {
+			if got.RequestError != want.RequestError {
 				t.Fatalf("request differs from dev\n got: %s %s\nwant: %s %s", got.Request, got.RequestError, want.Request, want.RequestError)
+			}
+			// Raw tool declarations retain fixture whitespace, including checkout CRLF.
+			// Compare JSON values so platform line endings cannot change this contract.
+			var gotRequest, wantRequest any
+			if err := json.Unmarshal([]byte(got.Request), &gotRequest); err != nil {
+				t.Fatalf("decode translated request: %v", err)
+			}
+			if err := json.Unmarshal([]byte(want.Request), &wantRequest); err != nil {
+				t.Fatalf("decode golden request: %v", err)
+			}
+			if !reflect.DeepEqual(gotRequest, wantRequest) {
+				t.Fatalf("request differs from dev\n got: %s\nwant: %s", got.Request, want.Request)
 			}
 			if strings.Join(got.Stream, "\n") != strings.Join(want.Stream, "\n") {
 				t.Fatalf("stream differs from dev\n got: %v\nwant: %v", got.Stream, want.Stream)

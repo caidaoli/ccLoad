@@ -360,6 +360,8 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		sessionAffinity:           newSessionAffinityStore(),
 	}
 	s.setMultimodalFallbackModels(runtimeCfg.MultimodalFallbackModels)
+	// Trial 暂停复用存储使用的同一份启动配置，不读取默认全局策略。
+	s.zaiStart.policy = util.NewCooldownPolicy(runtimeCfg.Cooldown)
 	s.reasoningAuto.Store(&reasoningAuto)
 	s.privacyPolicy.Store(privacyPolicy)
 	s.privacyEngine = privacy.NewEngine()

@@ -554,6 +554,10 @@ func TestForwardCursorResponsesStreamsRunningStatusAsPing(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证运行心跳解除首字节超时，但首内容计时仍等待真实文本。
+ * @param t 测试上下文。
+ */
 func TestForwardCursorAgentRunningPingStopsFirstByteTimeout(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 	runner := &blockingCursorRunner{
@@ -587,6 +591,9 @@ func TestForwardCursorAgentRunningPingStopsFirstByteTimeout(t *testing.T) {
 	}
 	if result == nil || !result.succeeded {
 		t.Fatalf("result = %+v, running ping should keep the first-byte timer from firing", result)
+	}
+	if result.firstByteTime < timeout.Seconds() {
+		t.Fatalf("firstByteTime = %.6f, want the delayed assistant text rather than the initial ping", result.firstByteTime)
 	}
 }
 
@@ -821,6 +828,10 @@ func TestCursorAnthropicStreamFinishEmitsEmptyObjectForInvalidToolArguments(t *t
 	}
 }
 
+/**
+ * @brief 验证仅发心跳便失败时保留 SDK 原错误，且不记录首内容时间。
+ * @param t 测试上下文。
+ */
 func TestForwardCursorResponsesKeepsOriginalSDKErrorAfterPing(t *testing.T) {
 	for _, toolType := range []string{"function", "custom"} {
 		t.Run(toolType, func(t *testing.T) {
@@ -838,6 +849,9 @@ func TestForwardCursorResponsesKeepsOriginalSDKErrorAfterPing(t *testing.T) {
 				&proxyRequestContext{originalModel: "composer-2.5", clientProtocol: protocol.Codex, requestPath: "/v1/responses", body: original, translatedBody: translated, isStreaming: true, skipProxyLog: true}, rec)
 			if err != nil || result == nil || result.status != http.StatusBadGateway {
 				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if result.firstByteTime != 0 {
+				t.Fatalf("firstByteTime = %.6f, ping without assistant content must not be timed", result.firstByteTime)
 			}
 			seenOriginal := false
 			for line := range strings.SplitSeq(rec.Body.String(), "\n") {

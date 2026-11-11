@@ -261,8 +261,11 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	c.String(http.StatusOK, buf.String())
 }
 
-// HandleImportChannelsCSV 导入渠道CSV
-// POST /admin/channels/import
+/**
+ * @brief 通过 POST /admin/channels/import 校验并批量导入渠道 CSV。
+ * @param c 包含 file 表单文件的 HTTP 上下文；返回导入统计或验证、存储错误。
+ * @note 成功后失效渠道相关缓存；ZAI JWT 的落库与授权恢复串行发布。
+ */
 func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -427,7 +430,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			RespondErrorWithData(c, http.StatusBadRequest, err.Error(), summary)
 			return
 		}
-		created, updated, err := s.store.ImportChannelBatch(c.Request.Context(), validChannels)
+		created, updated, err := s.persistCSVImport(c.Request.Context(), validChannels)
 		if err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
 			RespondErrorWithData(c, http.StatusInternalServerError, err.Error(), summary)
@@ -486,6 +489,52 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+/**
+ * @brief 批量落库已验证的 CSV 渠道，ZAI 授权发布与普通登录使用同一写入顺序。
+ * @param ctx 导入上下文。
+ * @param channels 已验证的渠道及凭证，成功时存储会回填渠道 ID。
+ * @return 新建渠道数；失败为零。
+ * @return 更新渠道数；失败为零。
+ * @return ZAI 凭证解析或批量存储失败时返回错误。
+ * @note 仅含 ZAI JWT 的批次占用授权锁；事务失败不发布授权、不清理冷却。
+ */
+func (s *Server) persistCSVImport(ctx context.Context, channels []*model.ChannelWithKeys) (int, int, error) {
+	credentials := make(map[int]*zaiauth.Credential)
+	for i, channel := range channels {
+		if channel == nil || channel.Config == nil || !channel.Config.UsesZAIOAuth() {
+			continue
+		}
+		credential, err := zaiauth.ParseCredential([]byte(channel.Config.OAuthCredential))
+		if err != nil {
+			return 0, 0, err
+		}
+		if credential.JWTToken != "" {
+			credentials[i] = credential
+		}
+	}
+	if len(credentials) > 0 {
+		zaiChannelCreateMu.Lock()
+		defer zaiChannelCreateMu.Unlock()
+	}
+	created, updated, err := s.store.ImportChannelBatch(ctx, channels)
+	if err != nil {
+		return 0, 0, err
+	}
+	// 同名/同 ID 的后续行可覆盖前行，只发布事务最终保留的 JWT，按最终行顺序处理重复账号。
+	lastRows := make(map[int64]int)
+	for i, channel := range channels {
+		if channel != nil && channel.Config != nil {
+			lastRows[channel.Config.ID] = i
+		}
+	}
+	for i, channel := range channels {
+		if credential := credentials[i]; credential != nil && lastRows[channel.Config.ID] == i {
+			s.zaiStart.reauthorize(credential)
+		}
+	}
+	return created, updated, nil
 }
 
 func (s *Server) applyImportedChannelManagementCheckin(ctx context.Context, channel *model.ChannelWithKeys) error {

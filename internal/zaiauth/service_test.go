@@ -12,8 +12,103 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
+
+/**
+ * @brief 授权轮询按 HTTP 状态及阶段选择容错，空状态保留 pending、JWT-only ready 可用。
+ * @param t 测试上下文。
+ */
+func TestPollErrorAndStateContract(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		body      string
+		readError bool
+		want      PollStatus
+		retry     bool
+	}{
+		{"missing_data", 200, `{"code":0}`, false, PollPending, false},
+		{"null_data", 200, `{"code":0,"data":null}`, false, PollPending, false},
+		{"empty_status", 200, `{"code":0,"data":{}}`, false, PollPending, false},
+		{"jwt_ready", 200, `{"code":0,"data":{"status":"ready","token":"jwt"}}`, false, PollReady, false},
+		{"failed", 200, `{"code":0,"data":{"status":"failed"}}`, false, PollFailed, false},
+		{"bad_json", 200, `broken`, false, "", true},
+		{"non_object", 200, `null`, false, "", true},
+		{"bad_data", 200, `{"code":0,"data":[]}`, false, "", true},
+		{"business", 200, `{"code":123,"msg":"busy"}`, false, "", true},
+		{"bad_ready", 200, `{"code":0,"data":{"status":"ready"}}`, false, "", false},
+		{"unknown", 200, `{"code":0,"data":{"status":"other"}}`, false, "", false},
+		{"not_found", 404, `broken`, false, "", false},
+		{"auth_read", 401, ``, true, "", false},
+		{"retry_read", 200, ``, true, "", true},
+		{"timeout", 408, `broken`, false, "", true},
+		{"limited", 429, `broken`, false, "", true},
+		{"server", 503, `broken`, false, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := NewService(&http.Client{Transport: siteTestTransport(func(req *http.Request) (*http.Response, error) {
+				if req.Header.Get("X-Device-Mid") != "login-device" {
+					t.Error("poll device missing")
+				}
+				var body io.Reader = strings.NewReader(tc.body)
+				if tc.readError {
+					body = iotest.ErrReader(io.ErrUnexpectedEOF)
+				}
+				return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(body), Request: req}, nil
+			})})
+			result, err := service.Poll(context.Background(), "flow", "token", "login-device")
+			if tc.want != "" {
+				if err != nil || result.Status != tc.want {
+					t.Fatalf("result=%v err=%v", result, err)
+				}
+				return
+			}
+			var failure *OAuthError
+			if !errors.As(err, &failure) || failure.Retryable() != tc.retry || failure.StatusCode != tc.status {
+				t.Fatalf("error=%v", err)
+			}
+			if tc.status == 404 && !errors.Is(err, ErrOAuthFlowUnavailable) {
+				t.Fatal("lost unavailable cause")
+			}
+		})
+	}
+}
+
+/**
+ * @brief 环境输入只按明确来源包装，locale 的编码后缀和未知值按契约规范。
+ * @param t 测试上下文。
+ */
+func TestStartEnvironmentAndLocale(t *testing.T) {
+	for input, want := range map[string]string{"en_US.UTF-8": "en-US", "zh_CN": "zh-CN", "C": "unknown", "": "unknown", "!!!": "unknown"} {
+		if got := normalizeClientLocale(input); got != want {
+			t.Errorf("locale %q=%q want %q", input, got, want)
+		}
+	}
+	for _, env := range []StartEnvironment{{WorkDir: "/remote/project", Git: "yes"}, {WorkDir: "/remote/project", Git: "no"}, {Git: "yes"}, {WorkDir: "/remote/project", Git: "invalid"}} {
+		body, err := PrepareStartBody([]byte(`{"messages":[{"role":"user","content":"hi"}]}`), "GLM-5.3", "device", "session", SiteZAI, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var request struct {
+			System []struct {
+				Text string `json:"text"`
+			} `json:"system"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatal(err)
+		}
+		text := request.System[2].Text
+		if strings.Contains(text, "Primary working directory:") != (env.WorkDir != "") || strings.Contains(text, "Is a git repository:") != (env.WorkDir != "" && (env.Git == "yes" || env.Git == "no")) {
+			t.Fatal("environment presence mismatch")
+		}
+		platform, arch, _ := strings.Cut(ClientPlatform(), "-")
+		if !strings.Contains(text, "OS Version: "+platform+" "+hostRelease()+" "+arch) {
+			t.Fatal("OS line missing platform/release/arch")
+		}
+	}
+}
 
 /**
  * @brief 在保留真实目标域名的情况下验证站点协议。
@@ -224,7 +319,7 @@ func TestBigModelServiceWireContract(t *testing.T) {
 		t.Fatalf("community: %v %v", models, err)
 	}
 	for _, site := range []Site{SiteZAI, SiteBigModel} {
-		body, err := PrepareStartBody([]byte(`{"model":"glm","messages":[{"role":"user","content":"hello"}]}`), "GLM-5.3", "device", "session", site)
+		body, err := PrepareStartBody([]byte(`{"model":"glm","messages":[{"role":"user","content":"hello"}]}`), "GLM-5.3", "device", "session", site, StartEnvironment{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -283,7 +378,7 @@ func TestBigModelOAuthContract(t *testing.T) {
 				}
 			}))
 			service = service.ForSite(SiteBigModel, nil)
-			flow, err := service.InitFlow(context.Background(), "poll")
+			flow, err := service.InitFlow(context.Background(), "poll", "device")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -295,7 +390,7 @@ func TestBigModelOAuthContract(t *testing.T) {
 			if err != nil || back.Host != "zcode.z.ai" || back.Path != "/app/oauth/login" || back.Query().Get("redirect") != "zcode://oauth/callback" || back.Query().Get("app_version") != AppVersion || authorize.Query().Get("keep") != "1" || authorize.Query().Has("redirect_uri") {
 				t.Fatalf("callback %s %v", flow.AuthorizeURL, err)
 			}
-			result, err := service.Poll(context.Background(), flow.FlowID, "poll")
+			result, err := service.Poll(context.Background(), flow.FlowID, "poll", "device")
 			if tc.invalid {
 				if err == nil {
 					t.Fatal("accepted international token")
@@ -709,7 +804,7 @@ func TestInitFlowAndPollFollowZCodeContract(t *testing.T) {
 		}
 	}))
 
-	flow, err := service.InitFlow(context.Background(), "poll-token")
+	flow, err := service.InitFlow(context.Background(), "poll-token", "device")
 	if err != nil {
 		t.Fatalf("InitFlow() error = %v", err)
 	}
@@ -727,7 +822,7 @@ func TestInitFlowAndPollFollowZCodeContract(t *testing.T) {
 	if flow.FlowID != "flow-1" || flow.PollIntervalSec != 2 {
 		t.Fatalf("flow = %+v", flow)
 	}
-	result, err := service.Poll(context.Background(), flow.FlowID, "poll-token")
+	result, err := service.Poll(context.Background(), flow.FlowID, "poll-token", "device")
 	if err != nil {
 		t.Fatalf("Poll() error = %v", err)
 	}
@@ -743,12 +838,12 @@ func TestPollReportsPendingAndFailed(t *testing.T) {
 	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"code":0,"data":{"status":"`+status+`"}}`)
 	}))
-	result, err := service.Poll(context.Background(), "flow-1", "poll-token")
+	result, err := service.Poll(context.Background(), "flow-1", "poll-token", "device")
 	if err != nil || result.Status != PollPending {
 		t.Fatalf("pending poll = %+v err = %v", result, err)
 	}
 	status = "failed"
-	result, err = service.Poll(context.Background(), "flow-1", "poll-token")
+	result, err = service.Poll(context.Background(), "flow-1", "poll-token", "device")
 	if err != nil || result.Status != PollFailed {
 		t.Fatalf("failed poll = %+v err = %v", result, err)
 	}
@@ -762,7 +857,7 @@ func TestInitFlowReportsUnavailableOnEmptyNotFound(t *testing.T) {
 	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	_, err := service.InitFlow(context.Background(), "poll-token")
+	_, err := service.InitFlow(context.Background(), "poll-token", "device")
 	if !errors.Is(err, ErrOAuthFlowUnavailable) {
 		t.Fatalf("InitFlow() error = %v", err)
 	}
@@ -773,7 +868,7 @@ func TestInitFlowRejectsBusinessErrors(t *testing.T) {
 	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"code":1001,"msg":"provider disabled"}`)
 	}))
-	_, err := service.InitFlow(context.Background(), "poll-token")
+	_, err := service.InitFlow(context.Background(), "poll-token", "device")
 	if err == nil || !strings.Contains(err.Error(), "provider disabled") {
 		t.Fatalf("InitFlow() error = %v", err)
 	}
@@ -1004,6 +1099,106 @@ func TestNormalizeCodingPlanURL(t *testing.T) {
 			}
 			if got := NormalizeCodingPlanURL(tc.in); got != want {
 				t.Fatalf("normalized URL = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 体验请求的缓存断点跳过思考块，保留正文和思考内容。
+ * @param t 测试上下文。
+ */
+func TestStartBodyCacheSkipsThinking(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		cached  int
+	}{
+		{"text-before-thinking", `[{"type":"text","text":"answer"},{"type":"thinking","thinking":"reason","signature":"sig"}]`, 0},
+		{"text-before-redacted", `[{"type":"text","text":"answer"},{"type":"redacted_thinking","data":"opaque"}]`, 0},
+		{"only-thinking", `[{"type":"thinking","thinking":"reason","signature":"sig"},{"type":"redacted_thinking","data":"opaque"}]`, -1},
+		{"text-last", `[{"type":"thinking","thinking":"reason","signature":"sig"},{"type":"text","text":"answer"}]`, 1},
+		{"empty", `[]`, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":` + tc.content + `}]}`)
+			wire, err := PrepareStartBody(raw, "GLM-5.3", "device", "session", SiteZAI, StartEnvironment{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Messages []struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(wire, &got); err != nil {
+				t.Fatal(err)
+			}
+			var original []map[string]any
+			if err := json.Unmarshal([]byte(tc.content), &original); err != nil {
+				t.Fatal(err)
+			}
+			var blocks []map[string]any
+			if err := json.Unmarshal(got.Messages[len(got.Messages)-1].Content, &blocks); err != nil {
+				t.Fatal(err)
+			}
+			if len(blocks) != len(original) {
+				t.Fatalf("content length=%d want=%d", len(blocks), len(original))
+			}
+			for i, block := range blocks {
+				_, cached := block["cache_control"]
+				if cached != (i == tc.cached) {
+					t.Fatalf("cache at block %d: %v", i, block)
+				}
+				for key, value := range original[i] {
+					if block[key] != value {
+						t.Fatalf("block %d field %s changed", i, key)
+					}
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 余额解析按明确剩余量、完整收支、可用量依次归一，零与未知保持区别。
+ * @param t 测试上下文。
+ */
+func TestFetchPlansRemainingFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fields    string
+		remaining float64
+		known     bool
+		usable    bool
+	}{
+		{"explicit-zero", `"remaining_units":0,"total_units":10,"used_units":2,"available_units":9`, 0, true, false},
+		{"explicit-positive", `"remaining_units":"3","total_units":10,"used_units":10`, 3, true, true},
+		{"derived", `"total_units":"10","used_units":2,"available_units":9`, 8, true, true},
+		{"derived-zero", `"total_units":10,"used_units":"10","available_units":9`, 0, true, false},
+		{"overdrawn", `"total_units":10,"used_units":12`, -2, true, false},
+		{"available-zero", `"available_units":0`, 0, true, false},
+		{"available-positive", `"total_units":10,"available_units":"4"`, 4, true, true},
+		{"null-remaining", `"remaining_units":null,"total_units":10,"used_units":2`, 8, true, true},
+		{"unknown", `"total_units":10`, 0, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"trial","status":"active"}],"balances":[{"plan_id":"trial","capabilities":["model:glm-5.3"],`+tc.fields+`}]}}`)
+			}))
+			plans, err := service.FetchPlans(context.Background(), &Credential{JWTToken: "jwt", DeviceID: "device"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !plans.GiftKnown || len(plans.Gifts) != 1 {
+				t.Fatalf("unexpected plans: %+v", plans)
+			}
+			remaining := plans.Gifts[0].Remaining
+			if (remaining != nil) != tc.known || remaining != nil && *remaining != tc.remaining {
+				t.Fatalf("remaining=%v want=%v known=%v", remaining, tc.remaining, tc.known)
+			}
+			if _, usable := plans.GiftModel("GLM-5.3-Trial"); usable != tc.usable {
+				t.Fatalf("usable=%v status=%s", usable, plans.Gifts[0].Status)
 			}
 		})
 	}
