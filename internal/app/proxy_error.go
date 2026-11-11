@@ -51,7 +51,8 @@ func (s *Server) applyCooldownDecision(
 	in cooldown.ErrorInput,
 ) cooldown.Action {
 	if cfg.UsesZAIOAuth() && isZAITrialModel(in.Model) {
-		return s.applyZAITrialCooldown(ctx, cfg, in)
+		action, _ := s.applyZAITrialCooldown(ctx, cfg, in)
+		return action
 	}
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
@@ -95,7 +96,7 @@ func (s *Server) decideCooldownAction(
 	in cooldown.ErrorInput,
 ) cooldown.Action {
 	if cfg.UsesZAIOAuth() && isZAITrialModel(in.Model) {
-		return zaiTrialErrorAction(in)
+		return s.evaluateZAITrialCooldown(cfg, in).Action
 	}
 	in = s.completeCooldownInput(cfg, in)
 	return s.cooldownManager.DecideAction(ctx, in)
@@ -701,6 +702,9 @@ func (s *Server) handleProxySuccess(
 
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
+	if cfg.UsesZAIOAuth() && res.zaiTrial && !reqCtx.countTokens() {
+		s.recoverZAITrialCooldown(cooldownCtx, cfg, actualModel, res.zaiTrialStarted)
+	}
 	if !cfg.AntigravityCredits && !reqCtx.countTokens() && (!cfg.UsesZAIOAuth() || !res.zaiTrial) {
 		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
 			count := cooldownClearChannelFailCount.Add(1)

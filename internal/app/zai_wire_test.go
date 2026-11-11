@@ -1,7 +1,10 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,7 +12,98 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/zaiauth"
+
+	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 在实际发送边界验证 Trial 会话优先级、严格 UUID 和网络失败的 wire 归因。
+ * @param t 测试上下文。
+ */
+func TestZAITrialSessionWire(t *testing.T) {
+	env, configs := newZAIStartHarness(t)
+	const bodySession = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	for _, tc := range []struct {
+		name    string
+		headers http.Header
+		want    string
+	}{
+		{"explicit", http.Header{"X-Session-Id": {"11111111-2222-4333-8444-555555555555"}, "Session-Id": {"other"}}, "11111111-2222-4333-8444-555555555555"},
+		{"hash", http.Header{"X-Session-Id": {"client-session"}}, "07f85c2e-b7c3-4797-9912-2c34d9b1690d"},
+		{"thread", http.Header{"Session-Id": {"parent"}, "Thread-Id": {"child"}, "Session_id": {"ignored"}}, "9f7215d6-268e-4392-a05f-175bdaba3543"},
+		{"underscore", http.Header{"Session_id": {"parent"}, "Thread-Id": {"child"}}, "9f7215d6-268e-4392-a05f-175bdaba3543"},
+		{"claude", http.Header{"X-Claude-Code-Session-Id": {"client-session"}}, "07f85c2e-b7c3-4797-9912-2c34d9b1690d"},
+		{"urn_is_seed", http.Header{"X-Session-Id": {"urn:uuid:11111111-2222-4333-8444-555555555555"}}, "d500ed84-9350-40ac-8733-03d8f04b3b54"},
+		{"body", nil, bodySession},
+		{"invalid_directory_utf8", http.Header{"X-Magpie-Work-Dir": {"%FF"}, "X-Magpie-Work-Git": {"yes"}}, bodySession},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"GLM-5.3-Flash-Trial","metadata":{"user_id":"{\"session_id\":\"` + bodySession + `\"}"},"messages":[{"role":"user","content":"hello"}]}`
+			req, err := http.NewRequestWithContext(context.Background(), "POST", "http://paid.invalid/v1/messages", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			captureZAISources(req, "key-a.secret", tc.headers, nil, anthropicCallerWire{})
+			var wire []byte
+			var final *http.Request
+			failure := errors.New("connection refused")
+			resp, err := env.server.doUpstreamRequestWithSender(configs[0], req, func(outbound *http.Request) (*http.Response, error) {
+				wire, _ = io.ReadAll(outbound.Body)
+				final = outbound
+				return nil, failure
+			})
+			if resp != nil {
+				defer func() { _ = resp.Body.Close() }()
+			}
+			if resp != nil || !errors.Is(err, failure) {
+				t.Fatalf("response=%v err=%v", resp, err)
+			}
+			identity := decodeZAIRequestIdentity(t, wire)
+			// 非法 UTF-8 不得替换成乱码后作为调用方目录发送。
+			if tc.name == "invalid_directory_utf8" && strings.Contains(gjson.GetBytes(wire, "system.2.text").String(), "Primary working directory:") {
+				t.Fatal("invalid directory entered environment")
+			}
+			if identity.SessionID != tc.want || anthropicHeaderValue(final.Header, "x-session-id") != tc.want {
+				t.Fatalf("session=%q want=%q", identity.SessionID, tc.want)
+			}
+			actual, recorded, repair := captureZAIForwardRequest(configs[0], resp, req, []byte(body))
+			if actual.URL.String() != final.URL.String() || string(recorded) != string(wire) || len(gjson.GetBytes(repair, "messages").Array()) != 1 {
+				t.Fatal("transport failure lost final wire or repair baseline")
+			}
+		})
+	}
+}
+
+/**
+ * @brief 尚未发送的资格/准备失败不把含规则新增文本的候选当作出站日志或计数来源。
+ * @param t 测试上下文。
+ */
+func TestZAIUnsentCandidateHasNoWireCapture(t *testing.T) {
+	env, configs := newZAIStartHarness(t)
+	for _, tc := range []struct{ name, body string }{
+		{"ineligible", `{"model":"unknown-Trial","system":"private candidate","messages":[{"role":"user","content":"hi"}]}`},
+		{"bad_messages", `{"model":"GLM-5.3-Flash-Trial","system":"private candidate","messages":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest("POST", "http://paid.invalid/v1/messages", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			captureZAISources(req, "key", nil, nil, anthropicCallerWire{})
+			resp, _ := env.server.doUpstreamRequestWithSender(configs[0], req, func(*http.Request) (*http.Response, error) {
+				t.Error("unsent candidate reached transport")
+				return nil, errors.New("unexpected")
+			})
+			if resp != nil {
+				defer func() { _ = resp.Body.Close() }()
+			}
+			_, body, repair := captureZAIForwardRequest(configs[0], resp, req, []byte(tc.body))
+			if len(body) != 0 || len(repair) != 0 {
+				t.Fatal("candidate leaked into actual wire capture")
+			}
+		})
+	}
+}
 
 func newZAITestChannel() *model.Config {
 	return &model.Config{

@@ -226,7 +226,7 @@ func (s *Server) buildZAICredential(
  * @return 已保存的渠道；失败时为 nil。
  * @return 是否新建渠道。
  * @return 上下文取消或凭证写入失败时返回错误；凭证落库后的模型追加失败只记日志。
- * @note 凭证落库后无论模型追加是否成功，都失效凭证、套餐及渠道列表缓存。
+ * @note 新 JWT 落库后解除同账号认证暂停；无论模型追加是否成功，都失效凭证、套餐及渠道列表缓存。
  */
 func (s *Server) commitZAICredential(
 	ctx context.Context,
@@ -247,7 +247,7 @@ func (s *Server) commitZAICredential(
 	} else {
 		names = s.zaiChannelModels(ctx, credential, options.proxyURL)
 	}
-	cfg, created, err := createOrUpdateZAIChannel(ctx, s.store, credential, names, options.proxyURL)
+	cfg, created, err := createOrUpdateZAIChannel(ctx, s.store, credential, names, options.proxyURL, s.zaiStart.reauthorize)
 	if err != nil {
 		return nil, false, err
 	}
@@ -336,12 +336,26 @@ func (s *Server) zaiChannelModels(ctx context.Context, credential *zaiauth.Crede
 	return models
 }
 
+/**
+ * @brief 串行保存授权，并在同一临界区发布已落库的 JWT，避免并行授权倒序覆盖。
+ * @param ctx 操作上下文。
+ * @param store 渠道存储。
+ * @param credential 新登录材料。
+ * @param models 新建渠道的模型列表。
+ * @param proxyURL 非空时更新代理。
+ * @param authorized JWT 落库后的同步通知；nil 不通知，纯 Key 导入不通知。
+ * @return 已保存渠道；存储或重新启用失败为 nil。
+ * @return 是否新建渠道。
+ * @return 序列化、存储、CAS 冲突或重新启用失败时返回错误。
+ * @note authorized 在持有 zaiChannelCreateMu 时调用，不得重新进入授权写入。
+ */
 func createOrUpdateZAIChannel(
 	ctx context.Context,
 	store storage.Store,
 	credential *zaiauth.Credential,
 	models []string,
 	proxyURL string,
+	authorized func(*zaiauth.Credential),
 ) (*model.Config, bool, error) {
 	if store == nil || credential == nil {
 		return nil, false, errors.New("persist z.ai credential: unavailable")
@@ -357,7 +371,7 @@ func createOrUpdateZAIChannel(
 	if err != nil {
 		return nil, false, fmt.Errorf("list channels for z.ai credential: %w", err)
 	}
-	if existing, found, updateErr := updateExistingZAIChannel(ctx, store, configs, credential, proxyURL); found || updateErr != nil {
+	if existing, found, updateErr := updateExistingZAIChannel(ctx, store, configs, credential, proxyURL, authorized); found || updateErr != nil {
 		return existing, false, updateErr
 	}
 	channel := newZAIOAuthChannel(uniqueZAIChannelName(configs, zaiChannelBaseName(credential)), credentialJSON, credential.Site.CodingPlanBaseURL(), models)
@@ -365,6 +379,9 @@ func createOrUpdateZAIChannel(
 	created, err := store.CreateConfig(ctx, channel)
 	if err != nil {
 		return nil, false, fmt.Errorf("create z.ai channel: %w", err)
+	}
+	if credential.JWTToken != "" && authorized != nil {
+		authorized(credential)
 	}
 	return created, true, nil
 }
@@ -376,9 +393,11 @@ func createOrUpdateZAIChannel(
  * @param configs 待匹配的渠道快照。
  * @param credential 新登录材料。
  * @param proxyURL 非空时更新渠道代理。
+ * @param authorized JWT 落库后的同步通知；nil 或纯 Key 导入不通知。
  * @return 已更新渠道；未匹配或失败时为 nil。
  * @return 是否匹配到原渠道。
  * @return 合并、CAS 冲突或存储失败时返回错误。
+ * @note 调用方持有 zaiChannelCreateMu；通知使用合并后的身份，重新启用失败也不能丢弃已落库的授权。
  */
 func updateExistingZAIChannel(
 	ctx context.Context,
@@ -386,6 +405,7 @@ func updateExistingZAIChannel(
 	configs []*model.Config,
 	credential *zaiauth.Credential,
 	proxyURL string,
+	authorized func(*zaiauth.Credential),
 ) (*model.Config, bool, error) {
 	identity := credential.Identity()
 	for _, cfg := range configs {
@@ -426,6 +446,9 @@ func updateExistingZAIChannel(
 		}
 		if !updated {
 			return nil, true, errors.New("z.ai credential changed during reauthorization")
+		}
+		if credential.JWTToken != "" && authorized != nil {
+			authorized(merged)
 		}
 		persisted, reactivateErr := reactivateReauthorizedChannel(ctx, store, cfg.ID, proxyURL)
 		return persisted, true, reactivateErr

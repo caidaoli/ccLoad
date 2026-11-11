@@ -485,8 +485,17 @@ func patchUpstreamTestFields(translatedBody, upstreamBody []byte, upstreamProtoc
 	return result
 }
 
-// requestedModel 是用户在测试表单里写的模型名，可能带思考后缀；testReq.Model 已经被
-// 解析成实际上游模型。后缀改写要落在客户端 body 上，和代理链路保持同一套上游契约。
+/**
+ * @brief 构造管理检测和聊天请求，保留用户思考选项供提供商默认值判断。
+ * @param cfgForBuild 目标渠道配置。
+ * @param apiKey 选定的上游凭据。
+ * @param testReq 已解析实际上游模型的检测参数。
+ * @param requestedModel 用户原始模型名，可能携带显式思考后缀。
+ * @param clientProtocol 客户端协议。
+ * @param upstreamProtocol 上游协议。
+ * @return 包含原始意图和转换正文的请求计划；失败时为空。
+ * @return 模板构建或协议转换失败时返回错误。
+ */
 func (s *Server) buildChannelTestRequestPlan(
 	cfgForBuild *model.Config,
 	apiKey string,
@@ -499,6 +508,28 @@ func (s *Server) buildChannelTestRequestPlan(
 	fullURL, headers, body, err := clientTester.Build(cfgForBuild, apiKey, testReq)
 	if err != nil {
 		return nil, err
+	}
+	zaiMessages := cfgForBuild.UsesZAIOAuth() && upstreamProtocol == util.ProtocolAnthropic
+	if zaiMessages {
+		effort := normalizeThinkingEffort(testReq.ThinkingEffort)
+		// 检测模板的 medium 不是用户选择，缺省值应由 ZAI 决定。
+		if effort == "" {
+			switch clientProtocol {
+			case util.ProtocolAnthropic:
+				body = deleteAnthropicOutputEffort(body)
+			case util.ProtocolCodex:
+				body = deleteJSONPath(body, "reasoning.effort")
+			}
+		}
+		// 通用测试器把 none 编码为缺失字段；为跨协议转换保留显式关闭。
+		if effort == "none" {
+			switch clientProtocol {
+			case util.ProtocolOpenAI:
+				body = setJSONRaw(body, "reasoning_effort", `"none"`)
+			case util.ProtocolCodex:
+				body = setJSONRaw(body, "reasoning.effort", `"none"`)
+			}
+		}
 	}
 	// 测试器只保留显式参数；模型默认值复用正式 Anthropic 构造层的目录。
 	if clientProtocol == util.ProtocolAnthropic && !gjson.GetBytes(body, "max_tokens").Exists() {
@@ -522,6 +553,10 @@ func (s *Server) buildChannelTestRequestPlan(
 		requestBody:      body,
 		clientBody:       body,
 		antigravityOAuth: cfgForBuild.UsesAntigravityOAuth(),
+	}
+	if zaiMessages {
+		// 实际出站仍用基名；来源保留后缀，防止 (none)/(0) 被当作缺省重启。
+		plan.clientBody = replaceJSONRequestModel(body, requestedModel)
 	}
 
 	if clientProtocol == upstreamProtocol {
@@ -1929,7 +1964,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	} else {
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
-	s.syncZAIChannelTestRequest(cfg, requestPlan, resp, testReq, err)
+	s.syncZAIChannelTestRequest(cfg, requestPlan, req, resp, testReq, err)
 	if err != nil {
 		if errors.Is(err, ErrChannelRPMExceeded) {
 			result := channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
@@ -2426,9 +2461,12 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	requestPlan.requestBody, requestPlan.openCodeResponses = prepareOpenCodeResponsesRequest(
 		parsedTestURL, upstreamProtocolValue, requestPath, requestPlan.requestBody, nil,
 	)
-	requestPlan.requestBody, err = refreshAnthropicCallerCCH(requestPlan.requestBody, callerBody, callerWire)
-	if err != nil {
-		return nil, nil, fmt.Errorf("refresh test request CCH: %w", err)
+	// ZAI 选择套餐后才签名最终付费正文。
+	if !isZAICodingPlanRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+		requestPlan.requestBody, err = refreshAnthropicCallerCCH(requestPlan.requestBody, callerBody, callerWire)
+		if err != nil {
+			return nil, nil, fmt.Errorf("refresh test request CCH: %w", err)
+		}
 	}
 	if xaiResponsesRequest {
 		requestPlan.xaiConversationID = testReq.ResolveSessionID()
@@ -2491,6 +2529,7 @@ func (s *Server) newTestUpstreamRequest(
 	testReq *testutil.TestChannelRequest,
 	requestPlan *channelTestRequestPlan,
 ) (*http.Request, context.CancelFunc, error) {
+	started := time.Now()
 	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth() || requestPlan.openCodeFree, s.resolveProtocolTimeouts(protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
@@ -2499,6 +2538,10 @@ func (s *Server) newTestUpstreamRequest(
 	if err != nil {
 		timeout.cancelAll()
 		return nil, nil, err
+	}
+	if state := zaiState(req); state != nil && testReq.Stream {
+		// 手动与定时流式检测共用原 timer，重试不得越过首内容或总超时。
+		state.retryDeadline = zaiRetryDeadline(ctx, started, timeout.firstByteTimeout, timeout.streamTimeout)
 	}
 	return req, timeout.cancelAll, nil
 }
@@ -2575,8 +2618,9 @@ func (s *Server) buildTestUpstreamHTTPRequest(ctx context.Context, cfgForBuild *
 			callerOwnsAnthropicWire, oauthFingerprint, sourceHeaders)
 		wireRebuilt = true
 	} else if isZAICodingPlanRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
-		injectZAICodingPlanHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
-		wireRebuilt = true
+		captureZAISources(req, requestPlan.apiKey, sourceHeaders, callerBody, callerWire)
+		// 最终头在套餐选择后重建，管理压缩约定也必须随之延后恢复。
+		zaiState(req).adminTest = true
 	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) && !isOpenCodeAPIKeyEndpoint(cfgForBuild, req.URL.String()) {
 		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody,
 			callerOwnsAnthropicWire, sourceHeaders)

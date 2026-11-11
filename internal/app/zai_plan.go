@@ -25,7 +25,6 @@ import (
 	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"golang.org/x/sync/singleflight"
@@ -35,68 +34,22 @@ import (
  * @brief 按渠道保存短期套餐采样；身份摘要防止旧登录污染新账号。
  */
 type zaiPlanCache struct {
-	mu          sync.Mutex                 ///< 保护 entries、generations 和 sidelined。
-	quotaMu     sync.Mutex                 ///< 只串行额度暂停写入，不阻塞套餐查询和正常选路。
-	entries     map[int64]zaiPlanEntry     ///< 每渠道最多一个采样。
-	generations map[int64]uint64           ///< 失效代次，隔离在途查询的回填及结果复用。
-	flights     singleflight.Group         ///< 合并相同身份的并发查询。
-	sidelined   map[zaiGiftRoute]time.Time ///< 非额度拒绝只避让自动体验，显式 Trial 不受影响。
+	mu          sync.Mutex             ///< 保护 entries 和 generations。
+	quotaMu     sync.Mutex             ///< 只串行体验冷却写入，不阻塞套餐查询和正常选路。
+	entries     map[int64]zaiPlanEntry ///< 每渠道最多一个采样。
+	generations map[int64]uint64       ///< 失效代次，隔离在途查询的回填及结果复用。
+	flights     singleflight.Group     ///< 合并相同身份的并发查询。
 }
 
 /**
- * @brief 隔离渠道、实际登录及模型的自动体验避让键，不保存凭证原文。
- */
-type zaiGiftRoute struct {
-	channelID int64    ///< 渠道 ID。
-	identity  [32]byte ///< 账号、站点及出口摘要。
-	model     string   ///< 不带 Trial 后缀的规范小写模型。
-}
-
-/**
- * @brief 查询或登记自动体验的一分钟避让，不影响显式体验请求。
- * @param cfg 实际出站渠道。
- * @param credential 本次请求凭证，偏好与额度快照不参与身份。
- * @param name 实际请求的普通模型名。
- * @param refuse 是否因本次非额度风控拒绝登记避让。
- * @return 当前身份的该模型是否正在避让。
- * @note 并发安全；顺便清理已过期条目，不影响显式 Trial 或纯体验账号。
- */
-func (s *Server) zaiGiftSidelined(cfg *model.Config, credential *zaiauth.Credential, name string, refuse bool) bool {
-	cache := &s.zaiPlans
-	key := zaiGiftRoute{channelID: cfg.ID, identity: zaiPlanIdentity(cfg, credential), model: strings.ToLower(model.RoutingModelName(name))}
-	now := time.Now()
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	for route, until := range cache.sidelined {
-		if !until.After(now) {
-			delete(cache.sidelined, route)
-		}
-	}
-	if refuse {
-		if cache.sidelined == nil {
-			cache.sidelined = make(map[zaiGiftRoute]time.Time)
-		}
-		cache.sidelined[key] = now.Add(time.Minute)
-	}
-	return cache.sidelined[key].After(now)
-}
-
-/**
- * @brief 识别体验额度暂停：1113、1005 或非并发忙的 429。
+ * @brief 仅识别已确认的体验额度业务码，未知 429 不代表余额耗尽。
  * @param status 实际错误状态，可由 HTTP 200 错误信封或首个 SSE 错误归一得到。
  * @param body 结构化上游错误体。
- * @return 额度不足或额度类限流返回 true；3008/3009 和并发忙返回 false。
+ * @return 额度不足或额度类限流返回 true；3008/3009/3010 和并发忙返回 false。
  */
 func zaiGiftQuotaError(status int, body []byte) bool {
-	// 风控拒绝优先于额度分类，即使使用 429 状态也不能解释为额度耗尽。
-	if status >= 400 && (status == http.StatusMethodNotAllowed || zaiGiftRefused.Match(body)) {
+	if status < 200 || !json.Valid(body) {
 		return false
-	}
-	if !json.Valid(body) {
-		return status == http.StatusTooManyRequests
-	}
-	if status == http.StatusTooManyRequests {
-		return !zaiConcurrencyError(body)
 	}
 	// 非 429 保留内外两层额度码识别，嵌套非额度码不能覆盖外层额度码。
 	outerCode := gjson.GetBytes(body, "code").String()
@@ -111,7 +64,7 @@ func zaiGiftQuotaError(status int, body []byte) bool {
 /**
  * @brief 识别 ZCode 结构化错误中的账号并发忙，供额度分类和 Trial 退避共用。
  * @param body 上游错误 JSON；只读取错误码与错误消息字段，不扫描任意文本。
- * @return 3008、3009 或明确并发超限消息返回 true；无效 JSON 返回 false。
+ * @return 3008、3009、3010 或明确并发超限消息返回 true；无效 JSON 返回 false。
  * @note 调用方负责核对 HTTP 429；不决定套餐回退、冷却或 JSON/SSE 状态映射。
  */
 func zaiConcurrencyError(body []byte) bool {
@@ -123,7 +76,7 @@ func zaiConcurrencyError(body []byte) bool {
 	if code == "" {
 		code = gjson.GetBytes(body, "code").String()
 	}
-	if code == "3008" || code == "3009" {
+	if code == "3008" || code == "3009" || code == "3010" {
 		return true
 	}
 	for _, path := range []string{"msg", "message", "error.message", "error"} {
@@ -136,95 +89,326 @@ func zaiConcurrencyError(body []byte) bool {
 }
 
 /**
- * @brief 识别只让自动体验避让的上游风控拒绝。
+ * @brief ZAI 薄适配的决策，仅在体验资源范围内执行公共分类结果。
  */
-var zaiGiftRefused = regexp.MustCompile(`(?i)unusual activity|request has been blocked|"code"\s*:\s*"?3012\b`)
-
-/**
- * @brief 为最终体验错误选择后续路由动作，独立于是否登记额度暂停。
- * @param in 带实际体验身份的错误输入。
- * @return 确定性客户端错误直接返回；其他错误允许切换模型渠道，但不会回退该请求到付费。
- */
-func zaiTrialErrorAction(in cooldown.ErrorInput) cooldown.Action {
-	if !in.IsNetworkError && !zaiGiftQuotaError(in.StatusCode, in.ErrorBody) && isZAIClientRequestError(in.StatusCode, in.Headers, in.ErrorBody) {
-		return cooldown.ActionReturnClient
-	}
-	return cooldown.ActionRetryModel
+type zaiTrialDecision struct {
+	cooldown.Decision        ///< 通用错误动作及明确截止时间。
+	scope             string ///< model、account 或 group；仅 ZAI 解释此范围。
+	status            int    ///< 业务码归一后的状态，用于通用时间策略。
+	authFailure       bool   ///< JWT 认证拒绝，可由成功重新授权解除；不包含账号风控。
 }
 
 /**
- * @brief 判断最终体验上游故障是否应让备用账号接替活动席位。
- * @param in 实际体验上游的最终错误，不含本地拒绝或调用方取消。
- * @return 非并发忙且非确定性客户端错误时返回 true；网络故障同样退役。
+ * @brief 读取完整 ZCode 错误的业务码，嵌套错误优先于外层信封。
+ * @param body 上游 JSON；截断或非 JSON 不参与业务判定。
+ * @return 数字或字符串业务码；没有可识别错误码时为空。
  */
-func zaiTrialAccountFailed(in cooldown.ErrorInput) bool {
-	return !zaiConcurrencyError(in.ErrorBody) && zaiTrialErrorAction(in) != cooldown.ActionReturnClient
+func zaiErrorCode(body []byte) string {
+	if !json.Valid(body) {
+		return ""
+	}
+	code := gjson.GetBytes(body, "error.code").String()
+	if code == "" {
+		code = gjson.GetBytes(body, "code").String()
+	}
+	return code
 }
 
 /**
- * @brief 最终体验故障退役实际账号；真实额度错误另共享一分钟 Trial 模型冷却。
- * @param ctx 当前操作上下文。
- * @param cfg 发生错误的渠道。
- * @param in 真实体验错误；网络故障不解释为额度不足。
- * @return 后续路由动作，非额度故障同样可以切换渠道。
- * @note 取消不退役；不影响付费或公共渠道冷却。额度写入独立串行，直接读存储防止旧缓存延长暂停，持久化失败记录日志。
+ * @brief 归一体验业务错误，再使用公共无副作用决策；不写库、不修改调度。
+ * @param cfg 实际发送时的渠道快照。
+ * @param in 真实体验错误，不含本地拒绝。
+ * @return 限定体验范围的动作和截止时间；客户端错误不冷却。
  */
-func (s *Server) applyZAITrialCooldown(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) cooldown.Action {
-	credential, credentialErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
-	if ctx.Err() == nil && credentialErr == nil && zaiTrialAccountFailed(in) {
-		s.zaiStart.retire(zaiStartIdentity(credential))
+func (s *Server) evaluateZAITrialCooldown(cfg *model.Config, in cooldown.ErrorInput) zaiTrialDecision {
+	quota := !in.IsNetworkError && zaiGiftQuotaError(in.StatusCode, in.ErrorBody)
+	code := zaiErrorCode(in.ErrorBody)
+	if !in.IsNetworkError && code == "3007" {
+		// 人机验证不是模型或凭证失效，换号与冷却都无法完成验证。
+		var decision zaiTrialDecision
+		decision.Action, decision.status = cooldown.ActionReturnClient, in.StatusCode
+		return decision
 	}
-	if !in.IsNetworkError && zaiGiftQuotaError(in.StatusCode, in.ErrorBody) {
-		name := zaiTrialModelKey(in.Model)
-		// 额度错误的读改写不占用套餐缓存锁，正常请求和取消无需等待写库。
-		s.zaiPlans.quotaMu.Lock()
-		defer s.zaiPlans.quotaMu.Unlock()
-		cooldownCtx, cancel := cooldownWriteContext(ctx)
-		defer cancel()
-		now := time.Now()
-		targets := []*model.Config{cfg}
-		if credentialErr == nil {
-			// 额度属于账号。只有真实额度错误才枚举重复渠道，热路径不增加数据库全表读取。
-			configs, err := s.store.ListConfigs(cooldownCtx)
+	message := strings.ToLower(gjson.GetBytes(in.ErrorBody, "error.message").String() + " " + gjson.GetBytes(in.ErrorBody, "message").String() + " " + gjson.GetBytes(in.ErrorBody, "msg").String())
+	risk := !in.IsNetworkError && (code == "3012" || strings.Contains(message, "unusual activity") || strings.Contains(message, "request has been blocked"))
+	if quota || !in.IsNetworkError && zaiConcurrencyError(in.ErrorBody) {
+		in.StatusCode = http.StatusTooManyRequests
+	}
+	if risk {
+		in.StatusCode = http.StatusForbidden
+	}
+	// 内容本身无法处理时不切套餐；宽泛的配置规则也不应把坏请求误冻成账号故障。
+	if !in.IsNetworkError && !quota && !risk && in.StatusCode != 404 && in.StatusCode != 405 && isZAIClientRequestError(in.StatusCode, in.Headers, in.ErrorBody) {
+		var decision zaiTrialDecision
+		decision.Action, decision.status = cooldown.ActionReturnClient, in.StatusCode
+		return decision
+	}
+	in.KeyIndex = cooldown.NoKeyIndex
+	in.ModelScoped = in.IsNetworkError
+	in = s.completeCooldownInput(cfg, in)
+	d := zaiTrialDecision{Decision: s.cooldownManager.Evaluate(in), scope: "model", status: in.StatusCode}
+	if !in.IsNetworkError && zaiConcurrencyError(in.ErrorBody) && d.Until.IsZero() {
+		// busy 的相对提示在发送边界转成绝对时间；过期日期不再开启新窗口。
+		if until, _ := util.ParseRetryAfter(in.Headers, time.Now()); !until.IsZero() {
+			d.Until = until
+		}
+	}
+	if d.Action == cooldown.ActionRetryChannel || d.Action == cooldown.ActionRetryKey {
+		d.scope = "account"
+	}
+	if !in.IsNetworkError && in.StatusCode == 405 {
+		body := strings.ToLower(string(in.ErrorBody))
+		// HTML 封禁页或 Aliyun 专有特征都足以确认出口拒绝，二者无需同时出现。
+		if strings.Contains(body, "<html") || strings.Contains(body, "errors.aliyun.com") {
+			d.scope = "group"
+		}
+	}
+	if risk {
+		d.scope = "account"
+	}
+	d.authFailure = d.scope == "account" && !risk && (in.StatusCode == http.StatusUnauthorized || in.StatusCode == http.StatusForbidden)
+	// 固定体验端点没有协议探测机会，真实 404/405 不能被当成本地配置拒绝。
+	if d.Action == cooldown.ActionReturnClient && (risk || in.StatusCode == 404 || in.StatusCode == 405) {
+		d.Action = cooldown.ActionRetryModel
+	}
+	if !in.IsNetworkError && code == "3012" {
+		// 明确风控仍暂停账号，但停止当前请求的付费回退及后续渠道重放。
+		d.Action = cooldown.ActionReturnClient
+	}
+	d.Model = zaiTrialModelKey(in.Model)
+	return d
+}
+
+/**
+ * @brief 在真实账号边界执行体验冷却，不使用公共渠道冷却或资源耗尽升级。
+ * @param ctx 请求上下文；调用方取消时不写入。
+ * @param cfg 实际发送时的渠道及凭证快照。
+ * @param in 真实体验失败，网络失败不解释为额度耗尽。
+ * @return 后续路由动作；写入失败或旧认证错误不改变原有故障转移。
+ * @return 冷却策略接受该失败时为 true；客户端错误、取消、凭证无效或过期认证错误为 false。
+ * @note 同账号重复渠道共享一个窗口；CAS 防止旧账号结果污染新账号，付费资格独立。
+ */
+func (s *Server) applyZAITrialCooldown(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) (cooldown.Action, bool) {
+	d := s.evaluateZAITrialCooldown(cfg, in)
+	if (d.Action == cooldown.ActionReturnClient && d.scope != "account") || ctx.Err() != nil {
+		return d.Action, false
+	}
+	credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return d.Action, false
+	}
+	identity := zaiStartIdentity(credential)
+	if d.scope != "model" {
+		// 与套餐查询共用临界区，并保持 plans → guard 锁序；旧失败不能在新采样之后失效缓存。
+		s.zaiPlans.mu.Lock()
+		defer s.zaiPlans.mu.Unlock()
+		if !s.zaiStart.cool(credential, d) {
+			return cooldown.ActionRetryModel, false
+		}
+		if d.scope == "account" {
+			s.invalidateZAIGiftPlansLocked(cfg)
+		}
+		if d.Action == cooldown.ActionReturnClient {
+			return d.Action, true
+		}
+		return cooldown.ActionRetryModel, true
+	}
+	s.zaiPlans.quotaMu.Lock()
+	defer s.zaiPlans.quotaMu.Unlock()
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+	configs, listErr := s.store.ListConfigs(cooldownCtx)
+	if listErr != nil {
+		configs = []*model.Config{cfg}
+	}
+	var targets []*model.Config
+	for _, candidate := range configs {
+		if !candidate.UsesZAIOAuth() {
+			continue
+		}
+		other, err := zaiauth.ParseCredential([]byte(candidate.OAuthCredential))
+		if err == nil && zaiStartIdentity(other) == identity {
+			targets = append(targets, candidate)
+		}
+	}
+	cooldowns, err := s.store.GetAllModelCooldowns(cooldownCtx)
+	if err != nil {
+		log.Printf("[WARN] 读取 ZCode 体验冷却失败，保留已有窗口 (channel=%d): %v", cfg.ID, err)
+		return cooldown.ActionRetryModel, true
+	}
+	now := time.Now()
+	var until time.Time
+	for _, target := range targets {
+		if existing := cooldowns[target.ID][d.Model]; existing.After(now) && (until.IsZero() || existing.After(until)) {
+			until = existing
+		}
+	}
+	if until.IsZero() {
+		until = d.Until
+	}
+	// 没有有效窗口时，各渠道的历史各递增一次，再共享最长窗口；新渠道不能重置账号退避。
+	if until.IsZero() {
+		for _, target := range targets {
+			next, matched, err := s.bumpZAITrialCooldown(cooldownCtx, target, d.Model, now, d.status)
 			if err != nil {
-				log.Printf("[WARN] 查询 ZCode 重复账号渠道失败 (channel=%d): %v", cfg.ID, err)
-			} else {
-				// 在途旧请求返回时源渠道可能已换账号，源渠道也必须按当前身份重新核对。
-				targets = targets[:0]
+				log.Printf("[WARN] 更新 ZCode 体验冷却失败 (channel=%d): %v", target.ID, err)
+				// 未能读完账号历史时，不能传播可能更短的窗口覆盖其他渠道。
+				until = time.Time{}
+				break
 			}
-			for _, candidate := range configs {
-				if !candidate.UsesZAIOAuth() {
-					continue
+			if matched {
+				if next.After(until) {
+					until = next
 				}
-				other, err := zaiauth.ParseCredential([]byte(candidate.OAuthCredential))
-				if err == nil && zaiStartIdentity(other) == zaiStartIdentity(credential) {
-					targets = append(targets, candidate)
+				if cooldowns[target.ID] == nil {
+					cooldowns[target.ID] = make(map[string]time.Time)
 				}
+				cooldowns[target.ID][d.Model] = next.Truncate(time.Second)
+				s.invalidateChannelRelatedCache(target.ID)
 			}
 		}
-		cooldowns, cooldownReadErr := s.store.GetAllModelCooldowns(cooldownCtx)
-		if cooldownReadErr != nil {
-			// 无法确认已有窗口时停止写入，不能把读取失败当空表而延长账号暂停。
-			log.Printf("[WARN] 读取 ZCode 体验额度暂停失败，跳过冷却写入 (channel=%d): %v", cfg.ID, cooldownReadErr)
-		}
-		until := now.Add(time.Minute)
-		for _, target := range targets {
-			// 重复渠道再次报错不续期；新补上的渠道沿用账号现有窗口。
-			if existing := cooldowns[target.ID][name]; existing.After(now) && existing.Before(until) {
-				until = existing
+	}
+	for _, target := range targets {
+		if until.After(now) && !cooldowns[target.ID][d.Model].Equal(until.Truncate(time.Second)) {
+			// 已有相同窗口不能再 Set：剩余时间会覆盖其完整的指数历史。
+			if err := s.setZAITrialCooldown(cooldownCtx, target, d.Model, until); err != nil {
+				log.Printf("[WARN] 传播 ZCode 体验冷却失败 (channel=%d): %v", target.ID, err)
 			}
 		}
-		for _, target := range targets {
-			if cooldownReadErr == nil && !cooldowns[target.ID][name].After(now) {
-				if err := s.setZAITrialCooldown(cooldownCtx, target, name, until); err != nil {
-					log.Printf("[WARN] 设置 ZCode 体验额度暂停失败 (channel=%d, model=%s): %v", target.ID, name, err)
-				}
-			}
-			s.invalidateZAIGiftPlans(target)
+		if !in.IsNetworkError && zaiGiftQuotaError(in.StatusCode, in.ErrorBody) {
+			s.zaiPlans.mu.Lock()
+			s.invalidateZAIGiftPlansLocked(target)
+			s.zaiPlans.mu.Unlock()
+		}
+		s.invalidateChannelRelatedCache(target.ID)
+	}
+	return cooldown.ActionRetryModel, true
+}
+
+/**
+ * @brief 同账号凭证刷新可重试条件递增，换账号则停止写入。
+ * @param ctx 冷却写入上下文。
+ * @param target 同账号渠道快照。
+ * @param name Trial 模型冷却键。
+ * @param now 本次错误时间。
+ * @param status 已归一的状态码。
+ * @return 成功写入的截止时间，拒写为零值。
+ * @return 身份仍匹配且写入成功为 true，否则为 false。
+ * @return 数据库失败或取消时返回错误。
+ */
+func (s *Server) bumpZAITrialCooldown(ctx context.Context, target *model.Config, name string, now time.Time, status int) (time.Time, bool, error) {
+	original, err := zaiauth.ParseCredential([]byte(target.OAuthCredential))
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	for attempt := 0; ; attempt++ {
+		until, matched, err := s.store.BumpModelCooldownIfOAuthCredential(ctx, target.ID, target.AuthType, target.OAuthCredential, name, now, status)
+		if err != nil || matched {
+			return until, matched, err
+		}
+		current, err := s.store.GetConfig(ctx, target.ID)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		credential, err := zaiauth.ParseCredential([]byte(current.OAuthCredential))
+		if !current.UsesZAIOAuth() || err != nil || zaiStartIdentity(credential) != zaiStartIdentity(original) {
+			return time.Time{}, false, nil
+		}
+		if err := waitOAuthCASRetry(ctx, attempt); err != nil {
+			return time.Time{}, false, err
+		}
+		target = current
+	}
+}
+
+/**
+ * @brief 真实体验成功后恢复旧退避历史，保留请求开始后的新失败窗口。
+ * @param ctx 独立限时的冷却写入上下文。
+ * @param cfg 成功请求的凭证快照。
+ * @param name 实际体验模型。
+ * @param started 成功请求开始时间；零值不执行清理。
+ * @note 只清理同真实账号的 Trial 模型，不修改公共渠道或付费冷却。
+ */
+func (s *Server) recoverZAITrialCooldown(ctx context.Context, cfg *model.Config, name string, started time.Time) {
+	if started.IsZero() {
+		return
+	}
+	credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return
+	}
+	identity := zaiStartIdentity(credential)
+	s.zaiStart.mu.Lock()
+	if pause := s.zaiStart.cooldowns[identity]; !pause.until.After(started) {
+		delete(s.zaiStart.cooldowns, identity)
+	}
+	if !s.zaiStart.until.After(started) {
+		s.zaiStart.until, s.zaiStart.duration = time.Time{}, 0
+	}
+	s.zaiStart.mu.Unlock()
+	s.zaiPlans.quotaMu.Lock()
+	defer s.zaiPlans.quotaMu.Unlock()
+	// 活动冷却缓存不包含过期退避历史；直接查询持久化候选，重启后也能恢复。
+	modelKey := zaiTrialModelKey(name)
+	configs, err := s.store.ListExpiredOAuthModelCooldowns(ctx, model.AuthTypeZAIOAuth, modelKey, started)
+	if err != nil {
+		log.Printf("[WARN] 读取 ZCode 体验恢复目标失败: %v", err)
+		return
+	}
+	for _, target := range configs {
+		if !target.UsesZAIOAuth() {
+			continue
+		}
+		other, err := zaiauth.ParseCredential([]byte(target.OAuthCredential))
+		if err != nil || zaiStartIdentity(other) != identity {
+			continue
+		}
+		changed, err := s.resetZAITrialCooldown(ctx, target, modelKey, started)
+		if err != nil {
+			log.Printf("[WARN] 恢复 ZCode 体验退避失败 (channel=%d): %v", target.ID, err)
+		} else if changed {
 			s.invalidateChannelRelatedCache(target.ID)
 		}
 	}
-	return zaiTrialErrorAction(in)
+}
+
+/**
+ * @brief 同账号凭证更新后重试清理旧历史，换账号或没有可清理历史时停止。
+ * @param ctx 独立限时的存储上下文；取消时终止重试。
+ * @param target 成功请求所属账号的渠道快照。
+ * @param name 体验模型冷却键。
+ * @param cutoff 成功请求发送时间，晚于此时的冷却始终保留。
+ * @return 实际清除旧历史返回 true，身份变化或无旧历史返回 false。
+ * @return 凭证解析、存储、取消或达到 CAS 重试上限时返回错误，否则 nil。
+ * @note 每次清理均由存储事务原子校验完整凭证和截止时间。
+ */
+func (s *Server) resetZAITrialCooldown(ctx context.Context, target *model.Config, name string, cutoff time.Time) (bool, error) {
+	original, err := zaiauth.ParseCredential([]byte(target.OAuthCredential))
+	if err != nil {
+		return false, err
+	}
+	for attempt := 0; ; attempt++ {
+		changed, err := s.store.ResetExpiredModelCooldownIfOAuthCredential(ctx, target.ID, target.AuthType, target.OAuthCredential, name, cutoff)
+		if err != nil || changed {
+			return changed, err
+		}
+		current, err := s.store.GetConfig(ctx, target.ID)
+		if err != nil {
+			return false, err
+		}
+		// false 既可能是凭证变化，也可能没有过期历史；未变化时不能无限重试。
+		if current.AuthType == target.AuthType && current.OAuthCredential == target.OAuthCredential {
+			return false, nil
+		}
+		credential, err := zaiauth.ParseCredential([]byte(current.OAuthCredential))
+		if !current.UsesZAIOAuth() || err != nil || zaiStartIdentity(credential) != zaiStartIdentity(original) {
+			return false, nil
+		}
+		if err := waitOAuthCASRetry(ctx, attempt); err != nil {
+			return false, err
+		}
+		target = current
+	}
 }
 
 /**
@@ -393,15 +577,15 @@ func (s *Server) setZAITrialCooldown(ctx context.Context, target *model.Config, 
 
 /**
  * @brief 只失效同账号体验采样，保留付费资格及原有效期，并阻止旧查询回填。
+ * @param cfg 失败所属账号的渠道凭证快照。
+ * @note 调用方必须持有 zaiPlans.mu；认证失败的代次校验也必须在同一临界区完成。
  */
-func (s *Server) invalidateZAIGiftPlans(cfg *model.Config) {
+func (s *Server) invalidateZAIGiftPlansLocked(cfg *model.Config) {
 	credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
 		return
 	}
 	cache := &s.zaiPlans
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
 	entry, exists := cache.entries[cfg.ID]
 	if exists && entry.account != zaiStartIdentity(credential) {
 		return
@@ -506,13 +690,22 @@ func (s *Server) HandleZAIOptions(c *gin.Context) {
 /**
  * @brief 在公共 HTTP 发送边界选择套餐；每次实际请求单独占用额度。
  * @param cfg 请求渠道快照，不修改共享配置。
- * @param req 已转换的付费格式请求，Body 必须可重读。
+ * @param req 公共转换和规则后的候选请求，Body 必须可重读。
  * @param send 实际发送回调，每次调用独立预留 RPM 和并发并负责释放。
  * @return 最终响应，Request 指向实际发送的请求。
  * @return 本地准备、取消、预留或传输错误。
- * @note 所有本地资格拒绝在调用 send 之前完成，不消耗推理容量；最终体验上游故障退役实际账号，调用方取消不退役。
+ * @note 所有本地资格拒绝在调用 send 之前完成，不消耗推理容量；体验最终失败按证据冷却，调用方取消不登记上游故障。
  */
 func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send func(*http.Request) (*http.Response, error)) (result *http.Response, resultErr error) {
+	credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return nil, err
+	}
+	if zaiState(req) == nil {
+		// 独立管理/内部调用也走同一准备边界，不要求测试或调用者预构造付费 wire。
+		captureZAISources(req, credential.APIKey, req.Header, nil, anthropicCallerWire{})
+	}
+	state := zaiState(req)
 	logical, _ := req.Context().Value(zaiStartRequestKey{}).(*zaiStartRequest)
 	if logical == nil {
 		logical = &zaiStartRequest{}
@@ -526,13 +719,27 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 			return nil, err
 		}
 		resp, err := originalSend(outbound)
+		if !errors.Is(err, ErrChannelRPMExceeded) && !errors.Is(err, ErrChannelConcurrencyExceeded) {
+			if attempt, _ := outbound.Context().Value(zaiSendAttemptKey{}).(*zaiSendAttempt); attempt != nil && (!attempt.waitsForCapacity || attempt.req != nil) {
+				if attempt.req == nil {
+					attempt.req = outbound
+				}
+				state.last = attempt
+			}
+		}
 		if resp != nil && resp.Body != nil {
 			// 管理检测在实际发送时才加超时，归因不能抹掉该上下文。
 			actual := outbound
+			if state.last != nil && state.last.req != nil {
+				actual = state.last.req
+			}
 			if resp.Request != nil {
-				actual = outbound.WithContext(resp.Request.Context())
+				actual = actual.WithContext(resp.Request.Context())
 			}
 			resp.Request = actual
+			if state.last != nil {
+				state.last.req = actual
+			}
 		}
 		return resp, err
 	}
@@ -543,23 +750,22 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		}
 	}()
 	sendPaid := func(paid *http.Request) (*http.Response, error) {
+		paid, err := prepareZAIPackageRequest(cfg, paid, credential, "")
+		if err != nil {
+			return nil, err
+		}
 		// 已经离开 Trial，不能让付费长流继续占用 Trial 等待名额。
 		s.zaiStart.finish(logical)
 		logical.departures.Add(1)
 		return send(paid)
-	}
-	credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
-	if err != nil {
-		return nil, err
 	}
 	body, err := zaiRequestBody(req)
 	if err != nil {
 		return nil, err
 	}
 	name := gjson.GetBytes(body, "model").String()
-	body, renamed := aliasZAISearch(body)
+	renamed := zaiSearchNeedsAlias(body)
 	if renamed {
-		req = cloneRequestWithBody(req.Clone(req.Context()), body)
 		defer func() {
 			if resultErr != nil || result == nil || result.Body == nil || result.StatusCode < 200 || result.StatusCode >= 300 {
 				return
@@ -604,13 +810,10 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		// 模型冷却只拒绝当前模型；账号仍可服务其他体验模型，不退役活动席位。
 		if cooldowns, err := s.getAllModelCooldowns(req.Context()); err == nil && cooldowns[cfg.ID][zaiTrialModelKey(name)].After(time.Now()) {
 			if onlyGift || forced {
-				return zaiPlanError(req, http.StatusTooManyRequests, "zcode_trial_cooling", "ZCode 该模型体验入口暂时冷却，请稍后重试"), nil
+				return zaiCoolingError(req, "zcode_trial_cooling", "ZCode 该模型体验入口暂时冷却，请稍后重试", time.Until(cooldowns[cfg.ID][zaiTrialModelKey(name)])), nil
 			}
 			useGift = false
 		}
-	}
-	if useGift && !forced && !onlyGift && s.zaiGiftSidelined(cfg, credential, name, false) {
-		useGift = false
 	}
 	if !useGift {
 		return sendPaid(req)
@@ -631,12 +834,10 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		}
 		return zaiPlanError(req, status, "zcode_trial_error", message), nil
 	}
-	session := resolveZAISessionID(body, cfg)
-	trialBody, err := zaiauth.PrepareStartBody(body, zaiauth.WireModel(raw), credential.DeviceID, session, credential.Site)
+	trial, err := prepareZAIPackageRequest(cfg, req, credential, zaiauth.WireModel(raw))
 	if err != nil {
 		return nil, err
 	}
-	trial := cloneRequestWithBody(req.Clone(req.Context()), trialBody)
 	target := zaiauth.StartPlanBaseURL + "/v1/messages"
 	if s.zaiService != nil {
 		target = strings.TrimRight(s.zaiService.OAuthBaseURL, "/") + "/zcode-plan/anthropic/v1/messages"
@@ -646,14 +847,6 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		return nil, err
 	}
 	trial.Host = ""
-	trial.Header = zaiauth.StartHeaders(credential.JWTToken, session)
-	// 同一用户轮次的工具续调用必须复用查询 ID，下一条真实用户输入才换值。
-	if queryID := zaiauth.StartQueryID(body, session); queryID != "" {
-		setRawHeader(trial.Header, "x-query-id", queryID)
-	}
-	setRawHeader(trial.Header, "x-request-id", uuid.NewString())
-	setRawHeader(trial.Header, "x-zcode-trace-id", uuid.NewString())
-	applyHeaderRules(trial.Header, cfg.HeaderRules())
 	// 每次 Trial 准入统一清理失效席位；付费请求无需操作 Trial 活动池。
 	release, rejected, err := s.waitZAIStart(trial, zaiStartIdentity(credential), name)
 	if err != nil {
@@ -680,7 +873,18 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		stop := context.AfterFunc(req.Context(), func() { _ = base.Close(); release() })
 		result.Body = &releaseOnCloseReadCloser{ReadCloser: base, release: func() { stop(); release() }}
 	}()
-	resp, rawError, sendErr := s.zaiStart.send(trial, send)
+	resp, rawError, sendErr := s.zaiStart.send(trial, send, func() bool {
+		// 已持有逻辑槽，复核保护窗口而不重新准入或排队。
+		s.zaiStart.mu.Lock()
+		now := s.zaiStart.clock()
+		paused := s.zaiStart.until.After(now) || s.zaiStart.cooldowns[zaiStartIdentity(credential)].until.After(now)
+		s.zaiStart.mu.Unlock()
+		if paused {
+			return false
+		}
+		windows, readErr := s.getAllModelCooldowns(trial.Context())
+		return readErr == nil && !windows[cfg.ID][zaiTrialModelKey(name)].After(now)
+	})
 	// 容量拒绝尚未发送，不能冷却体验模型或触发付费重放。
 	if errors.Is(sendErr, ErrChannelRPMExceeded) || errors.Is(sendErr, ErrChannelConcurrencyExceeded) {
 		// 本地暂满不是账号失效，保留活动席位，不能借备用绕过容量约束。
@@ -710,41 +914,36 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		// 截断响应属于读取故障，不能用残缺的 429 错误体判定额度耗尽。
 		sendErr = &zaiTrialRequestError{error: sendErr, model: zaiauth.WireModel(raw)}
 	}
-	if req.Context().Err() == nil && sendErr == nil && resp != nil && !isZAILocalPlanResponse(resp) && resp.StatusCode >= 400 &&
-		zaiTrialAccountFailed(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, resp.StatusCode, rawError, resp.Header)) {
-		s.zaiStart.retire(zaiStartIdentity(credential))
+	if canceled := req.Context().Err(); canceled != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, canceled
 	}
-	if req.Context().Err() == nil && sendErr != nil && !errors.Is(sendErr, context.Canceled) && !errors.Is(sendErr, context.DeadlineExceeded) {
-		s.zaiStart.retire(zaiStartIdentity(credential))
-	}
-	if req.Context().Err() != nil || errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded) || forced || onlyGift || (sendErr == nil && resp != nil && resp.StatusCode < 400) {
+	if errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded) || forced || onlyGift || state.capacityAbort || (sendErr == nil && resp != nil && resp.StatusCode < 400) {
 		return resp, sendErr
 	}
-	// 只有额度错误共享 Trial 暂停；风控仅避让自动体验，普通 5xx 不失效套餐缓存。
-	invalidate := sendErr != nil
-	if sendErr == nil && resp != nil && !isZAILocalPlanResponse(resp) {
-		refused := resp.StatusCode >= 400 && (resp.StatusCode == http.StatusMethodNotAllowed || zaiGiftRefused.Match(rawError))
-		quota := zaiGiftQuotaError(resp.StatusCode, rawError)
-		if !refused && !quota && isZAIClientRequestError(resp.StatusCode, resp.Header, rawError) {
+	// 自动体验即将回付费，外层只能看见付费结果，必须先且仅在此登记体验失败。
+	status, _, retry := util.ClassifyError(sendErr)
+	if sendErr != nil && !retry {
+		return resp, sendErr
+	}
+	// 连接拒绝等 502 与真实超时使用各自策略，不能把所有传输失败统一记成 597。
+	input := cooldownInputForModel(networkErrorInput(cfg.ID, cooldown.NoKeyIndex, status), zaiTrialModelKey(name))
+	if sendErr == nil && resp != nil {
+		if isZAILocalPlanResponse(resp) {
 			return resp, nil
 		}
-		if quota {
-			s.applyZAITrialCooldown(req.Context(), cfg, cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, resp.StatusCode, rawError, resp.Header), zaiTrialModelKey(name)))
-		} else if refused {
-			s.zaiGiftSidelined(cfg, credential, name, true)
-			invalidate = true
-		} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			invalidate = true
-		}
+		input = cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, resp.StatusCode, rawError, resp.Header), zaiTrialModelKey(name))
+	}
+	if action, _ := s.applyZAITrialCooldown(req.Context(), cfg, input); action == cooldown.ActionReturnClient {
+		return resp, sendErr
 	}
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
 	// 付费发送不占用 Trial 容量，不能等外层返回后才释放。
 	release()
-	if invalidate {
-		s.invalidateZAIPlans(cfg.ID)
-	}
 	// 付费重放使用原始请求，绝不带体验 system 块；此时尚未向客户端提交响应。
 	paid := cloneRequestWithBody(req.Clone(req.Context()), body)
 	return sendPaid(paid)
@@ -842,12 +1041,31 @@ func annotateZAITrialTestError(result map[string]any, testReq *testutil.TestChan
 var zaiMessageErrorPath = regexp.MustCompile(`^messages\.[0-9]+(?:\.[A-Za-z0-9_]+)*$`)
 
 /**
- * @brief 在体验响应边界统一还原消息错误位置，供客户端和内部修复共同使用。
+ * @brief 在体验响应边界补充验证提示并还原消息错误位置，供客户端和内部修复共同使用。
  * @param raw 完整错误 JSON 或单个 SSE 事件的 JSON 数据。
  * @return 还原后的错误；非错误或无效 JSON 保持原值，注入日期消息使用非数字位置。
  */
 func zaiRestoreErrorBody(raw []byte) []byte {
-	if !json.Valid(raw) || !gjson.GetBytes(raw, "error").IsObject() {
+	if !json.Valid(raw) {
+		return raw
+	}
+	if zaiErrorCode(raw) == "3007" {
+		// 保留原始业务码与错误正文，明确需要完成验证，避免误导用户刷新凭证。
+		const hint = "ZCode 体验请求需要人机验证，请完成验证后重试"
+		path, message := "message", ""
+		for _, key := range []string{"error.message", "error.msg", "message", "msg"} {
+			if value := gjson.GetBytes(raw, key); value.Type == gjson.String {
+				path, message = key, value.String()
+				break
+			}
+		}
+		if !strings.Contains(message, hint) {
+			if next, err := sjson.SetBytes(raw, path, strings.TrimSpace(message+" "+hint)); err == nil {
+				raw = next
+			}
+		}
+	}
+	if !gjson.GetBytes(raw, "error").IsObject() {
 		return raw
 	}
 	shift := func(path string) string {
@@ -946,14 +1164,13 @@ func probeZAIError(resp *http.Response, streaming bool) error {
 	if !json.Valid(buf) {
 		return nil
 	}
-	code := gjson.GetBytes(buf, "error.code").String()
-	if code == "" {
-		code = gjson.GetBytes(buf, "code").String()
-	}
+	code := zaiErrorCode(buf)
 	if code == "3012" {
 		// 成功 HTTP 状态不能掩盖风控拒绝，也不能将其归类为额度耗尽。
 		resp.StatusCode = http.StatusForbidden
-	} else if zaiGiftQuotaError(resp.StatusCode, buf) || code == "3008" || code == "3009" {
+	} else if code == "3007" {
+		resp.StatusCode = http.StatusBadRequest
+	} else if zaiGiftQuotaError(resp.StatusCode, buf) || zaiConcurrencyError(buf) {
 		resp.StatusCode = http.StatusTooManyRequests
 	} else if gjson.GetBytes(buf, "type").String() == "error" {
 		resp.StatusCode = http.StatusBadRequest
@@ -991,12 +1208,15 @@ func probeZAIStreamError(resp *http.Response) error {
 			if event == "error" || gjson.GetBytes(data, "type").String() == "error" {
 				resp.StatusCode = classifySSEErrorStatus(data)
 				// ZCode 的数字业务码不是 HTTP 状态，不能交给公共 SSE 分类器猜测。
-				code := gjson.GetBytes(data, "error.code").String()
-				if code == "" {
-					code = gjson.GetBytes(data, "code").String()
-				}
-				if json.Valid(data) && (code == "3008" || code == "3009") {
-					resp.StatusCode = http.StatusTooManyRequests
+				switch zaiErrorCode(data) {
+				case "3012":
+					resp.StatusCode = http.StatusForbidden
+				case "3007":
+					resp.StatusCode = http.StatusBadRequest
+				default:
+					if zaiConcurrencyError(data) {
+						resp.StatusCode = http.StatusTooManyRequests
+					}
 				}
 				resp.Header.Set("Content-Type", "application/json")
 				resp.Header.Del("Content-Length")

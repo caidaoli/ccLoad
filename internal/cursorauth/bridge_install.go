@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -190,15 +191,17 @@ func isBridgeStorageError(err error) bool {
 	return errors.As(err, &linkErr)
 }
 
+/**
+ * @brief 判断 Bridge 是否因路径缺失或访问权限而无法启动，以决定是否换安装目录
+ * @param err 探测错误；须包含 ErrAgentMissing 才能触发目录回退
+ * @return 路径不存在、查找不到可执行文件或权限不足时为 true；其他错误为 false
+ */
 func isBridgeExecutablePathError(err error) bool {
 	if !errors.Is(err, ErrAgentMissing) {
 		return false
 	}
-	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) {
-		return false
-	}
-	return errors.Is(pathErr.Err, os.ErrNotExist) || errors.Is(pathErr.Err, os.ErrPermission)
+	// Windows 查找无扩展名程序可能返回 exec.Error，按错误语义识别而非限定包装类型。
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) || errors.Is(err, exec.ErrNotFound)
 }
 
 func (i bridgeInstaller) ensure(ctx context.Context, force bool) (string, error) {

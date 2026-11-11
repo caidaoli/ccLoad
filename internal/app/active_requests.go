@@ -259,7 +259,12 @@ func (m *activeRequestManager) AddBytes(id int64, n int64) {
 	m.mu.Unlock()
 }
 
-// SetClientFirstByteTime 设置客户端侧首字节响应时间（CAS保证只写一次，线程安全）
+/**
+ * @brief 记录客户端首字节耗时，正数不足一微秒时仍保留已收到状态
+ * @param id 活跃请求 ID；不存在时忽略
+ * @param d 首字节耗时；非正数忽略，正数至少记录一微秒
+ * @note 并发安全；同一请求仅首次有效写入生效
+ */
 func (m *activeRequestManager) SetClientFirstByteTime(id int64, d time.Duration) {
 	if d <= 0 {
 		return
@@ -272,8 +277,8 @@ func (m *activeRequestManager) SetClientFirstByteTime(id int64, d time.Duration)
 	}
 	usec := d.Microseconds()
 	if usec <= 0 {
-		m.mu.Unlock()
-		return
+		// 零值表示尚未收到，不能因单位截断而丢失已收到的首字节。
+		usec = 1
 	}
 	req.clientFirstByteTimeUsec.CompareAndSwap(0, usec) // 只有首次（0值）才写入
 	req.UpstreamStatus = activeRequestStatusReceiving

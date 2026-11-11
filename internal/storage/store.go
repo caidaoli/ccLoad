@@ -123,6 +123,43 @@ type Store interface {
 	 * @note 身份核对与冷却写入具有原子性；Hybrid 存储仅在写入成功后安排副本同步。
 	 */
 	SetModelCooldownIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, model string, until time.Time) (bool, error)
+	/**
+	 * @brief 身份仍匹配时按当前存储策略原子递增模型冷却。
+	 * @param ctx 存储操作上下文。
+	 * @param channelID 目标渠道 ID。
+	 * @param expectedAuthType 预期 OAuth 认证类型。
+	 * @param expectedCredential 完整凭证快照。
+	 * @param model 模型冷却键。
+	 * @param now 本次错误的时间基准。
+	 * @param statusCode 已归一的上游错误状态。
+	 * @return 成功写入的截止时间；身份不匹配时为零值。
+	 * @return 写入成功为 true，身份变化或渠道不存在为 false。
+	 * @return 输入非法、取消或数据库失败时返回错误。
+	 */
+	BumpModelCooldownIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, model string, now time.Time, statusCode int) (time.Time, bool, error)
+	/**
+	 * @brief 查询指定 OAuth 类型和模型在截止时刻已过期的退避历史所属渠道。
+	 * @param ctx 存储上下文，取消时终止查询。
+	 * @param authType OAuth 认证类型，不接受 API Key 类型。
+	 * @param name 模型冷却键，不得为空。
+	 * @param cutoff 历史截止时间，不得为零。
+	 * @return 仅填充 ID、AuthType、OAuthCredential 的身份快照，无历史时为空。
+	 * @return 输入非法、取消或数据库失败时返回错误，否则 nil。
+	 * @note 包含停用渠道；查询不清理历史，删除仍须校验凭证与截止时间。
+	 */
+	ListExpiredOAuthModelCooldowns(ctx context.Context, authType, name string, cutoff time.Time) ([]*model.Config, error)
+	/**
+	 * @brief 身份仍匹配时仅清除指定时刻以前已过期的模型退避历史。
+	 * @param ctx 存储上下文。
+	 * @param channelID 渠道 ID。
+	 * @param expectedAuthType 预期 OAuth 类型。
+	 * @param expectedCredential 完整凭证快照。
+	 * @param model 模型冷却键。
+	 * @param cutoff 成功请求发送时间，晚于该时刻的窗口保留。
+	 * @return 实际清除返回 true；无历史或身份变化返回 false。
+	 * @return 输入非法、取消或数据库失败返回错误，否则 nil。
+	 */
+	ResetExpiredModelCooldownIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, model string, cutoff time.Time) (bool, error)
 	ResetModelCooldown(ctx context.Context, channelID int64, model string) error
 
 	// === Log Management ===

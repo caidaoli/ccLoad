@@ -79,6 +79,8 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(ctx context.Context, can
 		if len(logical.pending) == 0 {
 			return last, false
 		}
+		// 先完整遍历原候选；活动账号若能服务会已返回，只有剩余备用才请求排空。
+		s.zaiStart.switchAccount(logical, logical.pending[0].identity)
 		if deadline == nil {
 			deadline = time.NewTimer(zaiStartQueueWait)
 			queueStarted = time.Now()
@@ -212,6 +214,14 @@ func (s *Server) refreshZAIStartPending(ctx context.Context, reqCtx *proxyReques
 		}
 	}
 	s.zaiStart.mu.Lock()
+	// 目标被停用、替换或管理员跳过后，撤销旧排空，允许余下合法候选重选。
+	if s.zaiStart.switching == logical && !waiting[s.zaiStart.target] {
+		s.zaiStart.switching = nil
+		for _, account := range s.zaiStart.accounts {
+			account.draining = false
+		}
+		s.zaiStart.notifyLocked()
+	}
 	if !reflect.DeepEqual(logical.waiting, waiting) {
 		logical.waiting = waiting
 		s.zaiStart.notifyLocked()

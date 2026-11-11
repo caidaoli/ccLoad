@@ -225,10 +225,11 @@ type upstreamWireAliases struct {
  * @brief 一次上游尝试的响应、原始计费用量及诊断信息。
  */
 type fwResult struct {
-	zaiLocalPlanError   bool   ///< 本地资格拒绝，未请求推理上游，不能产生故障冷却。
-	zaiLocalPlanKind    string ///< 可信本地拒绝类别，区分排队与终态。
-	zaiModel            string ///< ZCode 实际 wire 模型，独立于 -Trial 路由身份。
-	zaiTrial            bool   ///< 实际体验请求注入了日期消息，修复错误位置需减一。
+	zaiTrialStarted     time.Time ///< 实际体验发送时间，恢复历史时不能使用排队起点。
+	zaiLocalPlanError   bool      ///< 本地资格拒绝，未请求推理上游，不能产生故障冷却。
+	zaiLocalPlanKind    string    ///< 可信本地拒绝类别，区分排队与终态。
+	zaiModel            string    ///< ZCode 实际 wire 模型，独立于 -Trial 路由身份。
+	zaiTrial            bool      ///< 实际体验请求注入了日期消息，修复错误位置需减一。
 	Status              int
 	UpstreamStatus      int                           // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
 	ConfiguredDetection *cooldown.DetectionEvaluation ///< 成功响应探测已确认的规则与截止时间，错误处理不重新匹配

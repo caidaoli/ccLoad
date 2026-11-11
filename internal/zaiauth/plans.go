@@ -266,6 +266,7 @@ func (p *Plans) readGifts(raw []byte, observed time.Time, elapsed time.Duration)
 			Total         *json.Number `json:"total_units"`
 			Used          *json.Number `json:"used_units"`
 			Remaining     *json.Number `json:"remaining_units"`
+			Available     *json.Number `json:"available_units"` ///< 缺少剩余量及完整收支时使用。
 			ExpiresAt     json.Number  `json:"expires_at"`
 			PeriodStart   json.Number  `json:"period_start"`
 			PeriodEnd     json.Number  `json:"period_end"`
@@ -367,6 +368,15 @@ func (p *Plans) readGifts(raw []byte, observed time.Time, elapsed time.Duration)
 				gift.UnitType = bucket.UnitType
 			}
 			gift.Total, gift.Used, gift.Remaining = planNumber(bucket.Total), planNumber(bucket.Used), planNumber(bucket.Remaining)
+			// 显式剩余量（包括零）优先；缺失时才推导，未知不能当成零。
+			if gift.Remaining == nil {
+				if gift.Total != nil && gift.Used != nil {
+					remaining := *gift.Total - *gift.Used
+					gift.Remaining = &remaining
+				} else {
+					gift.Remaining = planNumber(bucket.Available)
+				}
+			}
 			if bucket.BucketID != "" {
 				gift.ID = base.ID + "/bucket/" + bucket.BucketID
 			}

@@ -79,6 +79,40 @@ type cooldownDecision struct {
 	channelCooldownReason   string
 }
 
+/**
+ * @brief 无副作用的冷却决策，供调用方在自身资源边界内执行。
+ */
+type Decision struct {
+	Action Action    ///< 后续路由动作；返回客户端时不登记冷却。
+	Model  string    ///< 已确认受影响的模型，非模型动作时可为空。
+	Until  time.Time ///< 明确的截止时间；零值表示使用存储的指数策略。
+}
+
+/**
+ * @brief 复用现有分类和检测规则，不执行写库或资源耗尽升级。
+ * @param in 实际上游错误和已选渠道规则。
+ * @return 动作、模型与明确截止时间；不会改变存储及其他渠道状态。
+ */
+func (m *Manager) Evaluate(in ErrorInput) Decision {
+	d := m.classifyDecision(in)
+	result := Decision{Action: d.action, Model: d.model}
+	switch d.action {
+	case ActionRetryKey:
+		if d.hasKeyCooldownUntil {
+			result.Until = d.keyCooldownUntil
+		}
+	case ActionRetryModel:
+		if d.hasModelCooldownUntil {
+			result.Until = d.modelCooldownUntil
+		}
+	case ActionRetryChannel:
+		if d.hasChannelCooldownUntil {
+			result.Until = d.channelCooldownUntil
+		}
+	}
+	return result
+}
+
 // NewManager 创建冷却管理器实例
 // configGetter: 可选参数，传入nil时降级到store.GetConfig
 func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
