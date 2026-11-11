@@ -1619,7 +1619,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.gemini_first_byte_timeout': 'Gemini first valid stream content timeout (seconds, 0 = use global first-byte timeout)',
   'settings.desc.gemini_non_stream_timeout': 'Gemini non-stream request timeout (seconds, 0 = use global non-stream timeout)',
   'settings.desc.model_fuzzy_match': 'Use substring fuzzy match when model matching fails (latest version selected for multiple matches)',
-  'settings.desc.antigravity_sensitive_words': 'JSON array of sensitive words obfuscated with a zero-width character in Antigravity systemInstruction and CodeBuddy system/developer message text (restart required)',
+  'settings.desc.antigravity_sensitive_words': 'JSON array of sensitive words; inserts U+034F (zero-width combining grapheme joiner) after the first character of each match in Antigravity systemInstruction and CodeBuddy system/developer message text (restart required)',
   'settings.desc.channel_test_content': 'Default content for channel testing; separate multiple contents with |; cannot be empty',
   'settings.desc.model_catalog_sync_interval_hours': 'Interval for syncing the official model pricing catalog from models.dev (hours, decimals supported); 0 disables network sync and keeps using the last successful cache or embedded pricing; does not affect channel model lists',
   'settings.desc.model_custom_pricing': 'Custom model price overrides (token prices are USD per 1M tokens; applies immediately after saving)',

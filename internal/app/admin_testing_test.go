@@ -182,7 +182,7 @@ func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
 		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
 			t.Parallel()
 			messages := []map[string]any{
-				{"role": "system", "content": "Claude API"},
+				{"role": "system", "content": "Claude API C\u034Flaude"},
 				{"role": "developer", "content": []any{map[string]any{"type": "text", "text": "claude API"}}},
 				{"role": "user", "content": "Claude API"},
 				{"role": "assistant", "content": "Claude API", "tool_calls": []any{map[string]any{"id": "call-1", "type": "function", "function": map[string]any{"name": "API", "arguments": `{"text":"Claude"}`}}}},
@@ -204,8 +204,8 @@ func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
 					t.Error(err)
 				}
 				if enabled {
-					want[0]["content"] = "C\u200blaude A\u200bPI"
-					want[1]["content"].([]any)[0].(map[string]any)["text"] = "c\u200blaude A\u200bPI"
+					want[0]["content"] = "C\u034Flaude A\u034FPI C\u034Flaude"
+					want[1]["content"].([]any)[0].(map[string]any)["text"] = "c\u034Flaude A\u034FPI"
 				}
 				if !reflect.DeepEqual(request.Messages, want) {
 					t.Errorf("wire messages = %+v, want %+v", request.Messages, want)

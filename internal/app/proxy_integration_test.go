@@ -4061,7 +4061,7 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 		if got := envelope.Request.SystemInstruction.Parts[0].Text; !strings.Contains(got, "You are Antigravity") {
 			t.Errorf("identity prompt missing: %q", got)
 		}
-		if got := envelope.Request.SystemInstruction.Parts[1].Text; got != "You are A\u200BPI p\u200Broxy C\u200Blaude A\u200Bnthropic assistant" {
+		if got := envelope.Request.SystemInstruction.Parts[1].Text; got != "You are A\u034FPI p\u034Froxy C\u034Flaude A\u034Fnthropic assistant" {
 			t.Errorf("user system prompt = %q", got)
 		}
 		if got := envelope.Request.Contents[0].Parts[0].Text; got != "mention API proxy Claude Anthropic unchanged" {

@@ -34,8 +34,11 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+/**
+ * @brief 定义系统提示混淆字符与 Antigravity 请求默认值。
+ */
 const (
-	zeroWidthSpace                    = "\u200B"
+	sensitiveWordJoiner               = "\u034F" ///< Unicode combining grapheme joiner，供 Antigravity 与 CodeBuddy 共用。
 	antigravityWebSearchFallbackModel = "gemini-3.8-flash-high"
 	antigravityBaseURLFallbackDelay   = time.Second
 	antigravityModelCapacityAttempts  = 3
@@ -54,13 +57,18 @@ This information may or may not be relevant to the coding task, it is up for you
  */
 const stripAntigravityInvalidThinkingSignatureStrategy = "strip_antigravity_invalid_thinking_signature"
 
+/**
+ * @brief 构建 Antigravity 与 CodeBuddy 共用的大小写不敏感、长词优先匹配器。
+ * @param words 配置的敏感词；忽略单字符、重复项与已含混淆字符的词。
+ * @return 匹配器；无有效词时返回 nil，表示禁用混淆。
+ */
 func buildAntigravitySensitiveWordMatcher(words []string) *regexp.Regexp {
 	valid := make([]string, 0, len(words))
 	seen := make(map[string]struct{}, len(words))
 	for _, word := range words {
 		word = strings.TrimSpace(word)
 		key := strings.ToLower(word)
-		if utf8.RuneCountInString(word) < 2 || strings.Contains(word, zeroWidthSpace) {
+		if utf8.RuneCountInString(word) < 2 || strings.Contains(word, sensitiveWordJoiner) {
 			continue
 		}
 		if _, exists := seen[key]; exists {
@@ -611,9 +619,14 @@ func injectAntigravityIdentityPrompt(request []byte) []byte {
 	return request
 }
 
+/**
+ * @brief 在忽略敏感词混淆字符后识别系统提示中的 Antigravity 身份。
+ * @param request 不含信封的 Gemini 请求 JSON。
+ * @return 是否已包含身份提示，用于避免重复注入。
+ */
 func antigravitySystemInstructionContainsIdentity(request []byte) bool {
 	containsIdentity := func(text string) bool {
-		return strings.Contains(strings.ReplaceAll(text, zeroWidthSpace, ""), "You are Antigravity")
+		return strings.Contains(strings.ReplaceAll(text, sensitiveWordJoiner, ""), "You are Antigravity")
 	}
 	instruction := gjson.GetBytes(request, "systemInstruction")
 	switch {
@@ -1035,16 +1048,22 @@ func obfuscateAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) 
 	return updated
 }
 
+/**
+ * @brief 在命中敏感词的首 rune 后插入 U+034F，供两个提供商共用。
+ * @param text 系统或开发者提示文本。
+ * @param matcher 已启用的敏感词匹配器，不得为 nil。
+ * @return 混淆后的文本，已含混淆字符的命中保持原样。
+ */
 func obfuscateAntigravityText(text string, matcher *regexp.Regexp) string {
 	return matcher.ReplaceAllStringFunc(text, func(word string) string {
-		if strings.Contains(word, zeroWidthSpace) {
+		if strings.Contains(word, sensitiveWordJoiner) {
 			return word
 		}
 		_, size := utf8.DecodeRuneInString(word)
 		if size <= 0 || size >= len(word) {
 			return word
 		}
-		return word[:size] + zeroWidthSpace + word[size:]
+		return word[:size] + sensitiveWordJoiner + word[size:]
 	})
 }
 
