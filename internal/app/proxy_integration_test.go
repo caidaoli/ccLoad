@@ -3014,6 +3014,97 @@ func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 仅在上游拒绝空 system 消息后删除该条消息，并将同类恢复限制为一次。
+ * @param t 测试上下文。
+ */
+func TestProxy_Anthropic400RepairsEmptySystemMessageOnce(t *testing.T) {
+	t.Parallel()
+	for _, rejectAgain := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rejected_again=%t", rejectAgain), func(t *testing.T) {
+			t.Parallel()
+			upstreamError := `{"type":"error","error":{"type":"invalid_request_error","message":"messages.1: system content must contain at least one block"}}`
+			var bodies [][]byte
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "empty-system-repair", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant",
+			}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				bodies = append(bodies, body)
+				status := http.StatusOK
+				response := `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+				if len(bodies) == 1 || rejectAgain {
+					status, response = http.StatusBadRequest, upstreamError
+				}
+				return &http.Response{
+					StatusCode: status,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(response)),
+				}, nil
+			})}
+			messages := []any{
+				map[string]any{"role": "user", "content": "first"},
+				map[string]any{"role": "system", "content": []any{}, "output_config": map[string]any{}},
+			}
+			if rejectAgain {
+				messages = append(messages, map[string]any{"role": "system", "content": []any{}, "output_config": map[string]any{}})
+			}
+			messages = append(messages,
+				map[string]any{"role": "system", "content": []any{map[string]any{"type": "text", "text": "preserve this instruction"}}},
+				map[string]any{"role": "user", "content": "continue"},
+			)
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 4096,
+				"system":   []any{map[string]any{"type": "text", "text": "native prompt"}},
+				"metadata": map[string]any{"user_id": `{"device_id":"empty-system-device","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`},
+				"messages": messages,
+			}, map[string]string{
+				"anthropic-version": "2023-06-01",
+				"User-Agent":        "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+				"X-App":             "cli",
+			})
+			wantStatus := http.StatusOK
+			if rejectAgain {
+				wantStatus = http.StatusBadRequest
+			}
+			if len(bodies) != 2 || response.Code != wantStatus {
+				t.Fatalf("attempts=%d status=%d, want 2/%d: %s", len(bodies), response.Code, wantStatus, response.Body.String())
+			}
+			var before, after map[string]any
+			if err := json.Unmarshal(bodies[0], &before); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(bodies[1], &after); err != nil {
+				t.Fatal(err)
+			}
+			firstMessages := before["messages"].([]any)
+			wantMessages := slices.Clone(messages)
+			for index, message := range wantMessages {
+				wantMessage := maps.Clone(message.(map[string]any))
+				delete(wantMessage, "output_config")
+				wantMessages[index] = wantMessage
+			}
+			if !reflect.DeepEqual(firstMessages, wantMessages) {
+				t.Fatalf("initial request changed messages: %s", bodies[0])
+			}
+			before["messages"] = append(firstMessages[:1], firstMessages[2:]...)
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("repair changed more than the rejected empty system message: first=%s second=%s", bodies[0], bodies[1])
+			}
+			if rejectAgain && gjson.Get(response.Body.String(), "error.message").String() != gjson.Get(upstreamError, "error.message").String() {
+				t.Fatalf("second rejection was not returned: %s", response.Body.String())
+			}
+			entry := waitForProxyLog(t, env, "claude-sonnet-4-6")
+			if !strings.Contains(entry.Message, "strip_anthropic_empty_system_message") {
+				t.Fatalf("repair strategy missing: %s", entry.Message)
+			}
+		})
+	}
+}
+
 func TestProxy_NativeAnthropic400RepairsThinkingBudget(t *testing.T) {
 	t.Parallel()
 	var attempts atomic.Int32

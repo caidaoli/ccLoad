@@ -8,26 +8,27 @@ import (
 	"time"
 )
 
+/**
+ * @brief 额度周期长度约束与跨提供商共享的用量回退容差。
+ */
 const (
 	monthlyWindowMinimumSeconds = 28 * 24 * 60 * 60
 	monthlyWindowMaximumSeconds = 31 * 24 * 60 * 60
 	maxWindowSeconds            = math.MaxInt64 / int64(time.Second)
-	// upstreamUsageRollbackEpsilon 是判定上游用量「回退」所需的最小降幅
-	// （绝对百分点，开区间）。上游用量在同一个额度周期内只会单调增加，
-	// 小数级下降一律是采样噪声：Google remaining_fraction 的浮点抖动、
-	// Codex 整数百分比的取整闪烁。真实的上游提前重置下降几十个百分点，
-	// 远高于此容差。有意取舍：已用 ≤1% 时发生的真重置（如 1.0→0）会漏检，
-	// 由本地时钟越过 reset_at 后的自然滚动兜底。
-	upstreamUsageRollbackEpsilon = 1.0
+	// 降幅按绝对百分点比较，严格超过容差才截断；同一容差也用于回退证据的低位与恢复判定。
+	// 已用 ≤0.2% 时的真实重置仍可能漏检，由周期自然滚动处理。
+	upstreamUsageRollbackEpsilon = 0.2 ///< 上游用量回退容差（百分点）。
 )
 
-// 模型族：上游同一采样里的不同额度窗口可能只覆盖部分模型，
-// 累加必须按族归属，否则一个族的消耗会污染另一个族的窗口。
+/**
+ * @brief 按上游额度窗口覆盖的模型族筛选账本成本。
+ */
 const (
 	// FamilyAll 覆盖渠道上的全部模型。
 	FamilyAll = ""
 	// FamilyGemini 只覆盖 Gemini 系列模型（Antigravity "Gemini Models" 组）。
-	FamilyGemini = "gemini"
+	FamilyGemini      = "gemini"
+	FamilyGeminiArgon = "gemini_argon" ///< Antigravity Argon 专属额度，仅计入 Gemini 4 Argon 系列。
 	// FamilyNonGemini 只覆盖非 Gemini 模型（Antigravity "Claude and GPT models" 组）。
 	FamilyNonGemini = "non_gemini"
 	// FamilySonnet 只覆盖 Claude Sonnet（Anthropic seven_day_sonnet 窗口）。
@@ -113,17 +114,22 @@ func Key(limitName, kind string) string {
 	return limitName + "|" + kind
 }
 
-// FamilyMatches 判断某个模型的消耗是否计入该族的额度窗口。
+/**
+ * @brief 判断实际请求模型是否属于额度窗口的模型族。
+ * @param family 窗口模型族；空字符串覆盖全部模型。
+ * @param modelName 实际请求模型名，允许大小写与首尾空白。
+ * @return 模型是否应计入该族额度。
+ */
 func FamilyMatches(family, modelName string) bool {
 	if family == FamilyAll {
 		return true
 	}
 	modelName = strings.ToLower(strings.TrimSpace(modelName))
 	switch family {
-	// Antigravity 的两组额度按上游模型名前缀划分：gemini-* 归 Gemini Models，
-	// 其余（claude-*/gpt-*）归 Claude and GPT models。
 	case FamilyGemini:
 		return strings.HasPrefix(modelName, "gemini")
+	case FamilyGeminiArgon:
+		return modelName == "gemini-4-argon" || strings.HasPrefix(modelName, "gemini-4-argon-")
 	case FamilyNonGemini:
 		return modelName != "" && !strings.HasPrefix(modelName, "gemini")
 	case FamilySonnet:
@@ -143,9 +149,14 @@ func FamilyMatches(family, modelName string) bool {
 	}
 }
 
+/**
+ * @brief 校验可持久化的额度模型族。
+ * @param family 待验证的模型族标识。
+ * @return 是否为已支持的模型族。
+ */
 func validFamily(family string) bool {
 	switch family {
-	case FamilyAll, FamilyGemini, FamilyNonGemini, FamilySonnet, FamilyFable, FamilySpark, FamilyCodex, FamilyCodexReserve:
+	case FamilyAll, FamilyGemini, FamilyGeminiArgon, FamilyNonGemini, FamilySonnet, FamilyFable, FamilySpark, FamilyCodex, FamilyCodexReserve:
 		return true
 	default:
 		return false
@@ -162,8 +173,15 @@ func WindowMatchesModel(window *Window, modelName string) bool {
 	return FamilyMatches(WindowModelFamily(window), modelName)
 }
 
-// WindowModelFamily resolves historical family values from the quota identity.
+/**
+ * @brief 按额度标识修正旧快照的模型族，使读取账本无需等待重新采样。
+ * @param window 已存在的额度窗口。
+ * @return 该窗口应使用的模型族；不改写传入窗口。
+ */
 func WindowModelFamily(window *Window) string {
+	if strings.HasSuffix(window.Key, "|gemini-argon-wtu-weekly") {
+		return FamilyGeminiArgon
+	}
 	if isCodexReserveKey(window.Key) {
 		return FamilyCodexReserve
 	}

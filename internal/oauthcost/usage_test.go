@@ -1084,6 +1084,10 @@ func TestReconcileIgnoresSmallUsageDropAcrossWindows(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证用量下降恰好 0.2 个百分点时保留累计，超过时截断。
+ * @param t 测试上下文。
+ */
 func TestReconcileUsageDropAtEpsilonBoundary(t *testing.T) {
 	t.Parallel()
 	logs := []testLog{{at: time.Date(2026, time.August, 24, 2, 29, 7, 0, time.UTC), model: "gpt-5.6-sol", cost: 1_000_000}}
@@ -1106,18 +1110,18 @@ func TestReconcileUsageDropAtEpsilonBoundary(t *testing.T) {
 		return usage, sampledAt
 	}
 
-	// 降幅恰好等于容差（80→79）：开区间语义，仍视为噪声，不切断成本。
-	usage, sampledAt := reconcile(seed(), 79)
+	// 降幅恰好等于容差（80→79.8）：开区间语义，仍视为噪声，不切断成本。
+	usage, sampledAt := reconcile(seed(), 79.8)
 	window := Find(usage, "codex|primary")
 	if costAt(usage, window.Key, sampledAt, logs...) != 1_000_000 || window.CountFromAt != 0 {
 		t.Fatalf("drop at epsilon bound cleared cost: %#v", window)
 	}
-	if window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 79 {
+	if window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 79.8 {
 		t.Fatalf("drop at epsilon bound did not refresh baseline: %#v", window)
 	}
 
-	// 降幅刚过容差（80→78.9）：判定为上游重置，从采样点重新累计。
-	usage, sampledAt = reconcile(seed(), 78.9)
+	// 降幅刚过容差（80→79.79）：判定为上游重置，从采样点重新累计。
+	usage, sampledAt = reconcile(seed(), 79.79)
 	window = Find(usage, "codex|primary")
 	if costAt(usage, window.Key, sampledAt, logs...) != 0 || window.CountFromAt != sampledAt.Unix() {
 		t.Fatalf("drop beyond epsilon did not reset window: %#v", window)
@@ -1234,5 +1238,53 @@ func TestQuotaEpochPreservesEventOrderWithinOneSecond(t *testing.T) {
 	}
 	if err := Validate(&Usage{EpochAt: at.Unix(), EpochAtUnixNano: at.Add(time.Second).UnixNano()}); err == nil {
 		t.Fatal("accepted inconsistent epoch clocks")
+	}
+}
+
+/**
+ * @brief Argon 新快照和旧 Gemini 族窗口均仅累计 Argon 模型，读取不改写旧边界。
+ * @param t 测试上下文。
+ */
+func TestAntigravityArgonWindowCosts(t *testing.T) {
+	t.Parallel()
+	const key = "gemini 4 argon|gemini-argon-wtu-weekly"
+	now := time.Date(2026, time.November, 11, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(6 * 24 * time.Hour)
+	summary := &SnapshotSummary{Provider: ProviderAntigravity, Windows: []SnapshotWindow{{
+		LimitName: "Gemini 4 Argon", Kind: "gemini-argon-wtu-weekly", UsedPercent: new(0.0),
+		LimitWindowSeconds: 604800, ResetAt: resetAt.Unix(),
+	}}}
+	legacy := &Usage{Windows: []*Window{{
+		Key: key, Family: FamilyGemini, WindowSeconds: 604800,
+		StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: resetAt.Unix(),
+	}}}
+	for name, usage := range map[string]*Usage{
+		"new snapshot":            Reconcile(nil, summary.Samples(), now),
+		"persisted gemini family": legacy,
+	} {
+		t.Run(name, func(t *testing.T) {
+			logs := []testLog{
+				{at: now.Add(-time.Minute), model: "gemini-3.5-flash-lite", cost: 65_640_711},
+				{at: now.Add(-time.Minute), model: "gemini-3.8-flash-high", cost: 4_137},
+				{at: now.Add(-time.Minute), model: "claude-opus-5-5", cost: 3_803_381},
+			}
+			if got := costAt(usage, key, now, logs...); got != 0 {
+				t.Fatalf("unused Argon cost=%d, want 0", got)
+			}
+			logs = append(logs,
+				testLog{at: now, model: "gemini-4-argon", cost: 1_000_000},
+				testLog{at: now, model: "gemini-4-argon-cyber-permissive", cost: 2_000_000},
+				testLog{at: now, model: "gemini-4-argon2", cost: 4_000_000},
+			)
+			if got := costAt(usage, key, now, logs...); got != 3_000_000 {
+				t.Fatalf("Argon cost=%d, want 3000000", got)
+			}
+			if err := Validate(usage); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if legacy.Windows[0].Family != FamilyGemini || legacy.Windows[0].StartedAt != now.Add(-24*time.Hour).Unix() {
+		t.Fatal("reading costs changed persisted family or counting boundary")
 	}
 }

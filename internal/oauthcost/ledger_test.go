@@ -153,6 +153,10 @@ func TestRollbackConfirmsRealResetWhenReadingClimbsGradually(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证回退后低位波动不提前结案或移动计数起点。
+ * @param t 测试上下文。
+ */
 func TestRollbackStaysPendingWhileReadingStaysLow(t *testing.T) {
 	t.Parallel()
 	usage, start, cut := rollbackFixture(t)
@@ -165,9 +169,9 @@ func TestRollbackStaysPendingWhileReadingStaysLow(t *testing.T) {
 			t.Fatalf("%s: evidence changed while pending: %#v", stage, w)
 		}
 	}
-	// 5.8% 仍在截断水位 +ε 以内：继续待定。
+	// 5.1% 仍在截断水位 +ε 以内：继续待定。
 	jitter := cut.Add(20 * time.Minute)
-	usage = Reconcile(usage, geminiWeeklySample(resetAt, 5.8, jitter), jitter)
+	usage = Reconcile(usage, geminiWeeklySample(resetAt, 5.1, jitter), jitter)
 	assertPending("jitter")
 	// 再次下探到 3%：吸收，截断点与证据都不前移。
 	dip := cut.Add(40 * time.Minute)
@@ -180,6 +184,10 @@ func TestRollbackStaysPendingWhileReadingStaysLow(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 0.2 个百分点容差内低位待定优先于恢复判定。
+ * @param t 测试上下文。
+ */
 func TestRollbackLowBandTakesPriorityOverRecovery(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -187,8 +195,8 @@ func TestRollbackLowBandTakesPriorityOverRecovery(t *testing.T) {
 		previous, cut, latest float64
 		recovery              *float64
 	}{
-		{name: "overlap", previous: 2, cut: 0.8, latest: 1},
-		{name: "exact low boundary", previous: 2.5, cut: 1, latest: 2, recovery: new(2.25)},
+		{name: "overlap", previous: 1.3, cut: 1, latest: 1.15},
+		{name: "exact low boundary", previous: 1.3, cut: 1, latest: 1.2, recovery: new(1.21)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			start := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)

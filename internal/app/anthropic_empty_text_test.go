@@ -1,8 +1,11 @@
 package app
 
 import (
+	"net/http"
 	"strings"
 	"testing"
+
+	"ccLoad/internal/protocol"
 
 	"github.com/tidwall/gjson"
 )
@@ -215,6 +218,79 @@ func TestAnthropicCloakRollingCacheSkipsBlankTextBlocks(t *testing.T) {
 			}
 			if test.absent != "" && gjson.GetBytes(out, test.absent).Exists() {
 				t.Fatalf("breakpoint landed on a blank text block: %s", out)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 仅对上游明确拒绝的空 system 消息生成修复请求，保留其他消息与请求参数。
+ * @param t 测试上下文。
+ */
+func TestAnthropicRetryBodyFor400EmptySystemMessage(t *testing.T) {
+	t.Parallel()
+	const emptySystem = `{"role":"system","content":[],"output_config":{}}`
+	const errorMessage = "messages.1: system content must contain at least one block"
+	for _, tc := range []struct {
+		name      string            ///< 场景名称。
+		message   string            ///< 上游错误定位与原因。
+		rejected  string            ///< 报错索引对应的消息。
+		errorType string            ///< 上游错误类型。
+		status    int               ///< 上游 HTTP 状态。
+		committed bool              ///< 响应是否已向客户端提交。
+		upstream  protocol.Protocol ///< 出站协议。
+		wantRetry bool              ///< 是否允许生成修复请求。
+	}{
+		{name: "empty system", message: errorMessage, rejected: emptySystem, wantRetry: true},
+		{name: "nonempty system", message: errorMessage, rejected: `{"role":"system","content":[{"type":"text","text":"keep"}]}`},
+		{name: "empty user", message: errorMessage, rejected: `{"role":"user","content":[]}`},
+		{name: "null content", message: errorMessage, rejected: `{"role":"system","content":null}`},
+		{name: "empty string", message: errorMessage, rejected: `{"role":"system","content":""}`},
+		{name: "missing content", message: errorMessage, rejected: `{"role":"system"}`},
+		{name: "out of range", message: "messages.99: system content must contain at least one block", rejected: emptySystem},
+		{name: "invalid path", message: "messages.1.content: system content must contain at least one block", rejected: emptySystem},
+		{name: "other error", message: "messages.1: invalid content", rejected: emptySystem},
+		{name: "wrong error type", message: errorMessage, rejected: emptySystem, errorType: "authentication_error"},
+		{name: "wrong status", message: errorMessage, rejected: emptySystem, status: http.StatusTooManyRequests},
+		{name: "committed", message: errorMessage, rejected: emptySystem, committed: true},
+		{name: "other protocol", message: errorMessage, rejected: emptySystem, upstream: protocol.OpenAI},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":"top-level"}],"thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"hello"},` + tc.rejected + `,{"role":"assistant","content":"ok"},{"role":"system","content":"keep system"},` + emptySystem + `]}`)
+			if tc.status == 0 {
+				tc.status = http.StatusBadRequest
+			}
+			if tc.errorType == "" {
+				tc.errorType = "invalid_request_error"
+			}
+			if tc.upstream == "" {
+				tc.upstream = protocol.Anthropic
+			}
+			res := &fwResult{Status: tc.status, ResponseCommitted: tc.committed, Body: []byte(`{"error":{"type":"` + tc.errorType + `","message":"` + tc.message + `"}}`)}
+			got, strategy, ok := anthropicRetryBodyFor400(tc.upstream, nil, nil, protocol.TransformPlan{TranslatedBody: body}, res)
+			if ok != tc.wantRetry {
+				t.Fatalf("retry=%v want=%v strategy=%s body=%s", ok, tc.wantRetry, strategy, got)
+			}
+			if !ok {
+				return
+			}
+			if strategy != "strip_anthropic_empty_system_message" {
+				t.Fatalf("strategy=%s", strategy)
+			}
+			messages := gjson.GetBytes(got, "messages").Array()
+			original := gjson.GetBytes(body, "messages").Array()
+			if len(messages) != 4 {
+				t.Fatalf("messages=%s", got)
+			}
+			for i, source := range []int{0, 2, 3, 4} {
+				if messages[i].Raw != original[source].Raw {
+					t.Fatalf("message %d changed: %s", i, got)
+				}
+			}
+			for _, key := range []string{"model", "system", "thinking"} {
+				if gjson.GetBytes(got, key).Raw != gjson.GetBytes(body, key).Raw {
+					t.Fatalf("%s changed: %s", key, got)
+				}
 			}
 		})
 	}

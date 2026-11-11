@@ -125,8 +125,13 @@ func percentOf(used, limit *float64) *float64 {
 	return &value
 }
 
-// WindowFamily 把 provider 的窗口标识映射到模型族：只覆盖部分模型的
-// 窗口不能累加其他模型的消耗。
+/**
+ * @brief 把提供商的额度窗口标识映射到对应模型族。
+ * @param provider 提供商标识。
+ * @param limitName 上游额度组名称。
+ * @param kind 上游额度桶标识。
+ * @return 窗口覆盖的模型族；未划分模型族的窗口覆盖全部模型。
+ */
 func WindowFamily(provider, limitName, kind string) string {
 	limitName = strings.ToLower(strings.TrimSpace(limitName))
 	kind = strings.ToLower(strings.TrimSpace(kind))
@@ -134,6 +139,8 @@ func WindowFamily(provider, limitName, kind string) string {
 	case ProviderAntigravity:
 		// Antigravity 的 bucketId 带族前缀（gemini-* / 3p-*）。
 		switch {
+		case kind == "gemini-argon-wtu-weekly":
+			return FamilyGeminiArgon
 		case strings.HasPrefix(kind, "gemini"):
 			return FamilyGemini
 		case strings.HasPrefix(kind, "3p"):

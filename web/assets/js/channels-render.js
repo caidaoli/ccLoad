@@ -689,16 +689,21 @@ function formatOAuthAccumulatedCost(standardCostMicroUSD) {
   return formatOAuthCostMicroUSD(microUSD);
 }
 
+/**
+ * @brief 已用比例达到 1% 时按累计标准成本外推总额度，避免低用量放大采样误差
+ * @param standardCostMicroUSD 累计标准成本，单位为微美元
+ * @param remainingPercent 上游剩余额度百分比，使用未舍入的采样值
+ * @return 美元总额度文案；成本无效或已用不足 1% 时返回空串
+ */
 function formatOAuthEstimatedTotalCost(standardCostMicroUSD, remainingPercent) {
   const microUSD = Number(standardCostMicroUSD);
   const remaining = Number(remainingPercent);
-  if (!Number.isFinite(microUSD) || microUSD <= 0 || !Number.isFinite(remaining) || remaining >= 100) {
+  if (!Number.isFinite(microUSD) || microUSD <= 0 || !Number.isFinite(remaining) || remaining > 99) {
     return '';
   }
-  const usedRatio = 1 - Math.min(100, Math.max(0, remaining)) / 100;
-  if (usedRatio <= 0) return '';
+  const usedRatio = 1 - Math.max(0, remaining) / 100;
   const estimatedMicroUSD = microUSD / usedRatio;
-  if (!Number.isFinite(estimatedMicroUSD) || estimatedMicroUSD < 0) return '';
+  if (!Number.isFinite(estimatedMicroUSD)) return '';
   return formatOAuthCostMicroUSD(estimatedMicroUSD);
 }
 

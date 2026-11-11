@@ -334,3 +334,42 @@ func TestOAuthQuotaLedger_TransientRollbackRestoresDespitePriceChange(t *testing
 		t.Fatalf("persisted window = %#v, want restored count start without evidence", window)
 	}
 }
+
+/**
+ * @brief 额度视图对旧 Argon 窗口按实际模型筛选账本，并保留普通 Gemini 的累计。
+ * @param t 测试上下文。
+ */
+func TestOAuthQuotaLedger_ArgonViewExcludesOtherGeminiModels(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, time.November, 11, 9, 0, 0, 0, time.UTC)
+	channelID := createOAuthLedgerChannel(t, ctx, store, "argon-ledger", model.AuthTypeAntigravityOAuth, now)
+	const argonKey = "gemini 4 argon|gemini-argon-wtu-weekly"
+	const geminiKey = "gemini models|gemini-weekly"
+	usage := &oauthcost.Usage{}
+	for _, key := range []string{argonKey, geminiKey} {
+		usage.Windows = append(usage.Windows, &oauthcost.Window{
+			Key: key, Family: oauthcost.FamilyGemini, WindowSeconds: 604800,
+			StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+		})
+	}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: newJSONTime(now), ChannelID: channelID, Model: "gemini-3.5-flash-lite", StatusCode: http.StatusOK, Cost: 65.640711},
+		{Time: newJSONTime(now), ChannelID: channelID, Model: "argon-alias", ActualModel: "gemini-4-argon", StatusCode: http.StatusOK, Cost: 1},
+		{Time: newJSONTime(now), ChannelID: channelID, Model: "gemini-4-argon-cyber-permissive", StatusCode: http.StatusOK, Cost: 2},
+		{Time: newJSONTime(now), ChannelID: channelID, Model: "claude-opus-5-5", StatusCode: http.StatusOK, Cost: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	views, err := store.OAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{channelID: usage}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := viewCost(views[channelID], argonKey); got != 3_000_000 {
+		t.Fatalf("Argon cost=%d, want 3000000", got)
+	}
+	if got := viewCost(views[channelID], geminiKey); got != 68_640_711 {
+		t.Fatalf("Gemini cost=%d, want 68640711", got)
+	}
+}

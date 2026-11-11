@@ -23,6 +23,17 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+/**
+ * @brief 根据 Anthropic 400 验证错误生成定向修复请求。
+ * @param upstreamProtocol 本次出站协议。
+ * @param cfg 当前渠道配置。
+ * @param target 本次请求命中的上游地址。
+ * @param plan 包含实际出站正文的转换计划。
+ * @param res 上游响应；已提交响应或非 400 不修复。
+ * @return 修复后的正文；不可修复时为 nil。
+ * @return 用于限制同类修复次数和记录日志的策略名；不可修复时为空。
+ * @return 是否生成了可重试的请求。
+ */
 func anthropicRetryBodyFor400(
 	upstreamProtocol protocol.Protocol,
 	cfg *model.Config,
@@ -35,6 +46,27 @@ func anthropicRetryBodyFor400(
 	}
 	if !isAnthropicRepairableValidationError(res.Body) {
 		return nil, "", false
+	}
+	message := gjson.GetBytes(res.Body, "error.message").String()
+	path, reason, located := strings.Cut(message, ":")
+	if located && strings.TrimSpace(reason) == "system content must contain at least one block" &&
+		gjson.GetBytes(res.Body, "error.type").String() == "invalid_request_error" {
+		indexText, isMessage := strings.CutPrefix(path, "messages.")
+		index, err := strconv.Atoi(indexText)
+		if !isMessage || err != nil || index < 0 {
+			return nil, "", false
+		}
+		path = "messages." + strconv.Itoa(index)
+		message := gjson.GetBytes(plan.TranslatedBody, path)
+		content := message.Get("content")
+		if message.Get("role").String() != "system" || !content.IsArray() || len(content.Array()) != 0 {
+			return nil, "", false
+		}
+		body, err := sjson.DeleteBytes(plan.TranslatedBody, path)
+		if err != nil {
+			return nil, "", false
+		}
+		return body, "strip_anthropic_empty_system_message", true
 	}
 	errorText := anthropicErrorText(res.Body)
 	// Official Anthropic HMAC only: judged by the URL this attempt hit, so a

@@ -600,25 +600,76 @@ test('OAuth 额度超过 2 个窗口时折叠其余窗口，展开状态跨重�
   }
 });
 
-test('OAuth 窗口累计成本不足 $0.1 时金额与预估都不显示', () => {
+test('OAuth 窗口金额和总额度预估按累计成本与已用比例门槛显示', () => {
   const saved = { window: global.window, state: global.getOAuthUsageState, readOnly: global.isTokenChannelsReadOnly };
-  global.window = { t: (key, values = {}) => [key, ...Object.values(values)].join('|') };
+  const translations = new Map();
+  global.window = {
+    /**
+     * @brief 记录并生成用于验证金额合同的展示文案
+     * @param key 翻译键
+     * @param values 展示参数
+     * @return 包含翻译键与参数的文案
+     */
+    t: (key, values = {}) => {
+      translations.set(key, values);
+      return [key, ...Object.values(values)].join('|');
+    }
+  };
   global.isTokenChannelsReadOnly = () => false;
   const channel = { id: 78, auth_type: 'codex_oauth' };
-  const render = window => {
-    global.getOAuthUsageState = () => ({ status: 'ready', data: { windows: [{ limit_name: 'codex', ...window }] } });
+  /**
+   * @brief 渲染上游窗口并捕获展示文案的翻译参数
+   * @param usageWindow 上游窗口数据
+   * @return 渲染后的额度状态 HTML
+   */
+  const render = usageWindow => {
+    translations.clear();
+    global.getOAuthUsageState = () => ({ status: 'ready', data: { windows: [{ limit_name: 'codex', ...usageWindow }] } });
     return buildOAuthUsageStatusHtml(channel);
   };
-  const amountOf = window => render(window).match(/<span class="ch-oauth-usage__amount">([^<]*)<\/span>/)?.[1] ?? null;
+  /**
+   * @brief 获取列表与悬浮明细实际使用的金额文案参数
+   * @param usageWindow 上游窗口数据
+   * @return 金额翻译键及其参数；不展示金额时为空数组
+   */
+  const amountsOf = usageWindow => {
+    render(usageWindow);
+    return [...translations].filter(([, values]) => 'used' in values);
+  };
   try {
     for (const cost of [400, 30_000, 99_999]) {
-      const html = render({ remaining_percent: 50, standard_cost_microusd: cost });
-      assert.doesNotMatch(html, /ch-oauth-usage__amount/);
-      assert.doesNotMatch(html, /channels\.oauth\.usageDetail(Used|Amount)/, '悬浮明细同样不显示金额');
+      assert.deepEqual(amountsOf({ remaining_percent: 50, standard_cost_microusd: cost }), []);
     }
-    assert.equal(amountOf({ remaining_percent: 100, standard_cost_microusd: 100_000 }), 'channels.oauth.usageCompactUsed|$0.1');
-    assert.equal(amountOf({ remaining_percent: 50, standard_cost_microusd: 100_000 }), 'channels.oauth.usageCompactAmount|$0.1|$0.2');
-    assert.equal(amountOf({ remaining_percent: 41, standard_cost_microusd: 5_697_691 }), 'channels.oauth.usageCompactAmount|$5.7|$9.7');
+    assert.deepEqual(amountsOf({ remaining_percent: 100, standard_cost_microusd: 100_000 }), [
+      ['channels.oauth.usageCompactUsed', { used: '$0.1' }],
+      ['channels.oauth.usageDetailUsed', { used: '$0.1' }]
+    ]);
+    assert.deepEqual(amountsOf({ remaining_percent: 50, standard_cost_microusd: 100_000 }), [
+      ['channels.oauth.usageCompactAmount', { used: '$0.1', estimated: '$0.2' }],
+      ['channels.oauth.usageDetailAmount', { used: '$0.1', estimated: '$0.2' }]
+    ]);
+    assert.deepEqual(amountsOf({ remaining_percent: 41, standard_cost_microusd: 5_697_691 }), [
+      ['channels.oauth.usageCompactAmount', { used: '$5.7', estimated: '$9.7' }],
+      ['channels.oauth.usageDetailAmount', { used: '$5.7', estimated: '$9.7' }]
+    ]);
+
+    const resetAt = new Date(2026, 10, 11, 18).getTime() / 1000;
+    for (const remaining of [99.99232, 99.000001]) {
+      assert.deepEqual(amountsOf({ remaining_percent: remaining, standard_cost_microusd: 65_640_711, reset_at: resetAt }), [
+        ['channels.oauth.usageCompactUsed', { used: '$65.6' }],
+        ['channels.oauth.usageDetailUsed', { used: '$65.6' }]
+      ]);
+      const percent = remaining === 99.99232 ? '100' : '99';
+      assert.deepEqual(translations.get('channels.oauth.usageCompactRemaining'), { percent });
+      assert.deepEqual(translations.get('channels.oauth.usageDetailRemaining'), { percent });
+      assert.deepEqual(translations.get('channels.oauth.usageReset'), { time: '11/11 18:00' });
+    }
+    for (const [remaining, estimated] of [[99, '$6564.1'], [98, '$3282.0']]) {
+      assert.deepEqual(amountsOf({ remaining_percent: remaining, standard_cost_microusd: 65_640_711 }), [
+        ['channels.oauth.usageCompactAmount', { used: '$65.6', estimated }],
+        ['channels.oauth.usageDetailAmount', { used: '$65.6', estimated }]
+      ]);
+    }
   } finally {
     global.window = saved.window;
     global.getOAuthUsageState = saved.state;
