@@ -146,7 +146,7 @@ func TestProxy_AnthropicClaudeWireCompatibility(t *testing.T) {
 			native := strings.HasPrefix(scenario, "ua_") || scenario == "cache_native" || scenario == "binding_native" || scenario == "timing_native"
 			if native {
 				body["metadata"] = map[string]any{"user_id": `{"device_id":"native-device","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`}
-				headers["User-Agent"] = "claude-cli/2.1.321 (external, cli, agent-sdk/0.2.133, workload/cron, request-phase/background)"
+				headers["User-Agent"] = "claude-cli/" + anthropicCLIVersion + " (external, cli, agent-sdk/0.2.133, workload/cron, request-phase/background)"
 				headers["X-Stainless-Lang"], headers["X-Stainless-Runtime"] = "js", "node"
 				headers["X-Stainless-Package-Version"], headers["X-Stainless-Runtime-Version"] = "0.128.0", "v26.12.1"
 				switch scenario {
