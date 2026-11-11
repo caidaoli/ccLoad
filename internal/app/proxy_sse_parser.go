@@ -198,7 +198,7 @@ func (u *usageAccumulator) captureResponseModel(payload map[string]any, upstream
 	case "openai", "codex", "system_one":
 		candidates = []string{nestedResponseModel(payload, "response"), responseModelValue(payload, "model")}
 	case "anthropic":
-		candidates = []string{nestedResponseModel(payload, "message"), responseModelValue(payload, "model")}
+		candidates = []string{anthropicFallbackServedModel(payload), nestedResponseModel(payload, "message"), responseModelValue(payload, "model")}
 	case "gemini":
 		candidates = []string{responseModelValue(payload, "modelVersion"), responseModelValue(payload, "model")}
 	default:
@@ -211,6 +211,33 @@ func (u *usageAccumulator) captureResponseModel(payload map[string]any, upstream
 			return
 		}
 	}
+}
+
+/**
+ * @brief 提取 Anthropic 服务端 fallback 后实际服务的模型
+ * @param payload Anthropic 流事件或非流消息
+ * @return 流内 fallback 块的 to.model，或 usage.iterations 中最后一个
+ *         fallback_message 的模型；未发生 fallback 时返回空串
+ * @details 发生 fallback 时 message_start 与非流顶层 model 仍是请求的主模型，
+ *          只有这两处字段声明真正的服务模型。
+ */
+func anthropicFallbackServedModel(payload map[string]any) string {
+	if block, _ := payload["content_block"].(map[string]any); block["type"] == "fallback" {
+		to, _ := block["to"].(map[string]any)
+		return responseModelValue(to, "model")
+	}
+	usage, _ := payload["usage"].(map[string]any)
+	iterations, _ := usage["iterations"].([]any)
+	served := ""
+	for _, raw := range iterations {
+		iteration, _ := raw.(map[string]any)
+		if iteration["type"] == "fallback_message" {
+			if model := normalizeResponseModel(responseModelValue(iteration, "model")); model != "" {
+				served = model
+			}
+		}
+	}
+	return served
 }
 
 func nestedResponseModel(payload map[string]any, key string) string {

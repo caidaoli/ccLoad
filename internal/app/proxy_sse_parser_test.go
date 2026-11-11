@@ -263,6 +263,20 @@ func TestUsageParsersExtractResponseModel(t *testing.T) {
 			wantModel: "claude-opus-5-served",
 		},
 		{
+			name:   "Anthropic SSE fallback 块切换服务模型",
+			parser: newSSEUsageParser("anthropic"),
+			payload: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\"}}\n\n" +
+				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"fallback\",\"from\":{\"model\":\"claude-opus-5-5\"},\"to\":{\"model\":\"claude-opus-4-8\"}}}\n\n" +
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+			wantModel: "claude-opus-4-8",
+		},
+		{
+			name:      "Anthropic JSON fallback iterations 优先于顶层 model",
+			parser:    newJSONUsageParser("anthropic"),
+			payload:   `{"type":"message","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":1,"output_tokens":1,"iterations":[{"type":"message","model":"claude-opus-5-5"},{"type":"fallback_message","model":"claude-opus-4-8"}]}}`,
+			wantModel: "claude-opus-4-8",
+		},
+		{
 			name:      "Gemini JSON modelVersion",
 			parser:    newJSONUsageParser("gemini"),
 			payload:   `{"modelVersion":"gemini-3.1-flash-003","candidates":[]}`,
