@@ -521,8 +521,11 @@ var anthropicHaikuHelperBetaProfiles = map[string]anthropicHaikuHelperShape{
 // 判定只看下游请求形态（UA、x-app、beta 组合指纹、JSON 键序、身份形态），与本渠道
 // 用什么凭证无关——辅助请求经 OAuth 还是 API Key 渠道转发，形态都是同一份。
 func nativeAnthropicHaikuHelperShape(body []byte, headers http.Header) anthropicHaikuHelperShape {
-	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
-		anthropicHeaderValue(headers, "X-App") != "cli" {
+	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) {
+		return anthropicHaikuHelperNone
+	}
+	// Claude Code 后台会话发送 cli-bg，前台为 cli。
+	if xApp := anthropicHeaderValue(headers, "X-App"); xApp != "cli" && xApp != "cli-bg" {
 		return anthropicHaikuHelperNone
 	}
 	shape := anthropicHaikuHelperBetaProfiles[normalizedAnthropicBetaHeader(headers)]

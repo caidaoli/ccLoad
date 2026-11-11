@@ -3381,27 +3381,32 @@ func TestAnthropicOAuthPreservesStructuredHaikuHelper(t *testing.T) {
 		credential.DeviceID, sessionID)
 	body := fmt.Appendf(nil, `{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":[{"type":"text","text":"helper probe"}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"Return a short title."}],"tools":[],"metadata":{"user_id":%q},"max_tokens":32000,"thinking":{"type":"disabled"},"temperature":1,"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},"stream":true}`, userID)
 	betas := "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15"
-	headers := http.Header{
-		"Accept": {"application/json"}, "Accept-Encoding": {"gzip, deflate, br, zstd"}, "Content-Type": {"application/json"},
-		"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {betas},
-		"Anthropic-Version": {"2023-06-01"}, "Anthropic-Dangerous-Direct-Browser-Access": {"true"},
-		"X-Claude-Code-Session-Id": {sessionID}, "X-Client-Request-Id": {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
-		"X-Stainless-Async": {"async"}, "X-Stainless-Lang": {"js"}, "X-Stainless-Runtime": {"node"},
-		"X-Stainless-Package-Version": {"0.94.0"}, "X-Stainless-Runtime-Version": {"v26.3.0"},
-		"X-Stainless-OS": {"MacOS"}, "X-Stainless-Arch": {"arm64"}, "X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},
-	}
-	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
-		body, &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", headers, anthropicOfficialTestURL,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(finalized, []byte(`"cache_control"`)) || !gjson.GetBytes(finalized, "thinking.type").Exists() ||
-		gjson.GetBytes(finalized, "temperature").Num != 1 || !gjson.GetBytes(finalized, "stream").Bool() {
-		t.Fatalf("structured helper shape changed: %s", finalized)
-	}
-	if got := gjson.GetBytes(finalized, "system.0.text").String(); strings.Contains(got, "cch=00000") || !strings.Contains(got, " cch=") {
-		t.Fatalf("structured helper CCH was not refreshed: %q", got)
+	// Claude Code 后台会话发送 X-App: cli-bg，与前台 cli 同属原生辅助请求。
+	for _, xApp := range []string{"cli", "cli-bg"} {
+		t.Run(xApp, func(t *testing.T) {
+			headers := http.Header{
+				"Accept": {"application/json"}, "Accept-Encoding": {"gzip, deflate, br, zstd"}, "Content-Type": {"application/json"},
+				"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {xApp}, "Anthropic-Beta": {betas},
+				"Anthropic-Version": {"2023-06-01"}, "Anthropic-Dangerous-Direct-Browser-Access": {"true"},
+				"X-Claude-Code-Session-Id": {sessionID}, "X-Client-Request-Id": {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
+				"X-Stainless-Async": {"async"}, "X-Stainless-Lang": {"js"}, "X-Stainless-Runtime": {"node"},
+				"X-Stainless-Package-Version": {"0.94.0"}, "X-Stainless-Runtime-Version": {"v26.3.0"},
+				"X-Stainless-OS": {"MacOS"}, "X-Stainless-Arch": {"arm64"}, "X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},
+			}
+			finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
+				body, &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", headers, anthropicOfficialTestURL,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(finalized, []byte(`"cache_control"`)) || !gjson.GetBytes(finalized, "thinking.type").Exists() ||
+				gjson.GetBytes(finalized, "temperature").Num != 1 || !gjson.GetBytes(finalized, "stream").Bool() {
+				t.Fatalf("structured helper shape changed: %s", finalized)
+			}
+			if got := gjson.GetBytes(finalized, "system.0.text").String(); strings.Contains(got, "cch=00000") || !strings.Contains(got, " cch=") {
+				t.Fatalf("structured helper CCH was not refreshed: %q", got)
+			}
+		})
 	}
 }
 
