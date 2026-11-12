@@ -99,8 +99,8 @@ const (
 	// anthropicMaxRateLimitWindow 是 Anthropic 最长限流窗口（7d）加 1h 时钟偏差余量；
 	// 更晚的时间戳是计费周期边界，不是可恢复的限流。
 	anthropicMaxRateLimitWindow = 7*24*time.Hour + time.Hour
-	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
-	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
+	// WebsocketConnectionLimitCooldown 是上游 WebSocket 连接寿命到期、同渠道重连仍未恢复时的渠道冷却时长。
+	// 换新连接即可继续，冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
 	WebsocketConnectionLimitCooldown = 5 * time.Second
 	// xaiFreeUsageExhaustedCooldown 是 xAI 免费额度声明的滚动窗口上限。
 	xaiFreeUsageExhaustedCooldown = 24 * time.Hour
@@ -420,7 +420,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
-	// 上游 WebSocket 连接槽耗尽：切渠道重试，只给一个极短的渠道冷却。
+	// 上游 WebSocket 连接寿命到期：原生 WS 已在同渠道换新连接重放过，仍到达这里才切渠道，只给极短的渠道冷却。
 	// 优先于 597/429 的常规分类，避免健康 Key 被指数退避冷却。
 	if IsWebsocketConnectionLimitError(responseBody) {
 		return HTTPResponseClassification{
@@ -952,7 +952,7 @@ func anthropicFastModeCreditsRequired(body []byte) bool {
 }
 
 // requestRejectedClassification 是 400/413 的通用兜底：当前模型/上游拒绝这份请求，
-// 响应体里没有凭证、配额、上下文或连接槽等更具体的信号。
+// 响应体里没有凭证、配额、上下文或连接寿命等更具体的信号。
 var requestRejectedClassification = HTTPResponseClassification{Level: ErrorLevelKey, ModelScoped: true}
 
 // IsGenericRequestRejection 判断 400 是否只落到通用兜底分类。Key/凭证终态、
@@ -1010,20 +1010,27 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 	}
 }
 
-// WebsocketConnectionLimitCode 是上游 WebSocket 并发连接数超限的错误码。
+/**
+ * @brief 上游 WebSocket 单条连接达到寿命上限（60 分钟）的错误码
+ */
 const WebsocketConnectionLimitCode = "websocket_connection_limit_reached"
 
-// websocketErrorProbe 只解析判定连接数超限所需的字段。
-// error 既可能是对象也可能是字符串，用 RawMessage 兜住两种形态。
+/**
+ * @brief 只解析判定连接寿命到期所需的字段
+ * @details error 既可能是对象也可能是字符串，用 RawMessage 兜住两种形态。
+ */
 type websocketErrorProbe struct {
 	Code  any             `json:"code"`
 	Error json.RawMessage `json:"error"`
 }
 
-// IsWebsocketConnectionLimitError 判断响应体是否为上游 WebSocket 并发连接槽耗尽。
-//
-// 这不是渠道/Key/模型故障，而是瞬时资源竞争：既有 Key 完全健康，
-// 落到默认分类会被误判成 Key 级错误并触发指数退避冷却。
+/**
+ * @brief 判断响应体是否为上游 WebSocket 单条连接达到寿命上限（60 分钟）
+ * @param responseBody 上游错误响应体或 WebSocket 错误帧
+ * @return 顶层 code、字符串 error 或 error.type/error.code 为该错误码时返回 true
+ * @details 这不是渠道/Key/模型故障：新建连接即可继续，既有 Key 完全健康，
+ * 落到默认分类会被误判成 Key 级错误并触发指数退避冷却。
+ */
 func IsWebsocketConnectionLimitError(responseBody []byte) bool {
 	if len(responseBody) == 0 {
 		return false

@@ -1745,7 +1745,7 @@ func TestClassifyHTTPResponseWithMeta_UsageLimitReached(t *testing.T) {
 	})
 }
 
-// 上游 WebSocket 连接槽耗尽是瞬时资源竞争：必须切渠道，但不能让健康的 Key
+// 上游 WebSocket 连接寿命到期不是凭证或模型故障：必须切渠道，但不能让健康的 Key
 // 或整个模型背上指数退避冷却。
 func TestClassifyWebsocketConnectionLimitIsShortChannelCooldown(t *testing.T) {
 	now := time.Date(2026, 7, 25, 6, 30, 0, 0, time.UTC)
@@ -1799,16 +1799,16 @@ func TestClassifyWebsocketConnectionLimitIsShortChannelCooldown(t *testing.T) {
 				t.Errorf("ChannelCooldownReason=%q, want websocket_connection_limit", got.ChannelCooldownReason)
 			}
 			if got.ModelScoped {
-				t.Error("connection slot exhaustion must not cool down the model")
+				t.Error("connection lifetime limit must not cool down the model")
 			}
 			if got.HasKeyCooldownUntil {
-				t.Error("connection slot exhaustion must not cool down the key")
+				t.Error("connection lifetime limit must not cool down the key")
 			}
 		})
 	}
 }
 
-// 回归保护：普通限流仍然只冷却当前模型，不被连接槽分支吞掉。
+// 回归保护：普通限流仍然只冷却当前模型，不被连接寿命分支吞掉。
 func TestClassifyOrdinaryRateLimitStillModelScoped(t *testing.T) {
 	now := time.Date(2026, 7, 25, 6, 30, 0, 0, time.UTC)
 	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)

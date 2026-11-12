@@ -2391,7 +2391,7 @@ func createTestChannel(t *testing.T, store storage.Store, name string) *model.Co
 	return created
 }
 
-// 上游 WebSocket 连接槽耗尽：切渠道，但冷却必须是几秒级的固定窗口，
+// 上游 WebSocket 连接寿命到期：切渠道，但冷却必须是几秒级的固定窗口，
 // 而不是渠道指数退避（2 分钟起）或 Key/模型冷却。
 func TestHandleError_WebsocketConnectionLimit(t *testing.T) {
 	store, cleanup := setupTestStore(t)
@@ -2436,10 +2436,10 @@ func TestHandleError_WebsocketConnectionLimit(t *testing.T) {
 	}
 
 	if _, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists {
-		t.Error("connection slot exhaustion must not cool down the key")
+		t.Error("connection lifetime limit must not cool down the key")
 	}
 	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a"); exists {
-		t.Error("connection slot exhaustion must not cool down the model")
+		t.Error("connection lifetime limit must not cool down the model")
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 	"github.com/gorilla/websocket"
@@ -1384,11 +1385,14 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 			}
 			payload := event.payload
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-			if !semanticOutput && !retried && ctx.Err() == nil &&
-				isCodexWebsocketPreviousResponseNotFound(payload) {
+			reconnectReason := ""
+			if !semanticOutput && !retried && ctx.Err() == nil {
+				reconnectReason = codexWebsocketConnectionBoundErrorReason(payload)
+			}
+			if reconnectReason != "" {
 				retried = true
 				s.invalidate(conn)
-				s.recordReconnect("previous_response_not_found")
+				s.recordReconnect(reconnectReason)
 				connRetry, retryHeaders, errRetry := s.reconnectWithReplay(
 					ctx, dialer, target, replayReq, replayBody, timeouts,
 				)
@@ -1465,6 +1469,24 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 func isCodexWebsocketMessageTooBigError(err error) bool {
 	var closeErr *websocket.CloseError
 	return errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig
+}
+
+/**
+ * @brief 识别只因当前物理连接失效、换新连接重放即可恢复的上游错误帧
+ * @param payload 上游 WebSocket 文本帧
+ * @return 重连原因（即错误码）；其他帧返回空串
+ * @details previous_response_not_found：Response ID 只在原物理连接上有效；
+ * websocket_connection_limit_reached：单条连接已达上游 60 分钟寿命上限。
+ * 两者都与渠道、Key 健康无关，不应进入冷却或切换渠道。
+ */
+func codexWebsocketConnectionBoundErrorReason(payload []byte) string {
+	if isCodexWebsocketPreviousResponseNotFound(payload) {
+		return "previous_response_not_found"
+	}
+	if util.IsWebsocketConnectionLimitError(payload) {
+		return util.WebsocketConnectionLimitCode
+	}
+	return ""
 }
 
 func isCodexWebsocketPreviousResponseNotFound(payload []byte) bool {

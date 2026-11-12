@@ -6403,8 +6403,34 @@ func TestNativeCodexWebsocketModelRowBindingAndSwitchReplaysTranscript(t *testin
 	}
 }
 
-func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *testing.T) {
+func TestNativeCodexWebsocketConnectionBoundErrorReconnectsWithReplay(t *testing.T) {
 	t.Parallel()
+	tests := map[string]map[string]any{
+		"previous_response_not_found": {
+			"type": "error", "status": http.StatusBadRequest,
+			"error": map[string]any{
+				"type": "invalid_request_error", "code": "previous_response_not_found",
+				"message": "No response found for previous_response_id resp-first",
+			},
+		},
+		"websocket_connection_limit_reached": {
+			"type": "error", "status": http.StatusBadRequest,
+			"error": map[string]any{
+				"type": "invalid_request_error", "code": "websocket_connection_limit_reached", "param": nil,
+				"message": "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.",
+			},
+		},
+	}
+	for name, errorEvent := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assertNativeCodexWebsocketErrorReconnectsWithReplay(t, errorEvent)
+		})
+	}
+}
+
+func assertNativeCodexWebsocketErrorReconnectsWithReplay(t *testing.T, errorEvent map[string]any) {
+	t.Helper()
 	requests := make(chan map[string]any, 3)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -6443,13 +6469,7 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 				return
 			}
 			requests <- incremental
-			_ = conn.WriteJSON(map[string]any{
-				"type": "error", "status": http.StatusBadRequest,
-				"error": map[string]any{
-					"type": "invalid_request_error", "code": "previous_response_not_found",
-					"message": "No response found for previous_response_id resp-first",
-				},
-			})
+			_ = conn.WriteJSON(errorEvent)
 			return
 		}
 
@@ -6518,6 +6538,9 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
 		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 50 {
 		t.Fatalf("reconnect handshake quota = (%#v, %v)", persistedCredential, err)
+	}
+	if configs[0].CooldownUntil != 0 {
+		t.Fatalf("connection-bound error cooled channel until %d", configs[0].CooldownUntil)
 	}
 }
 
