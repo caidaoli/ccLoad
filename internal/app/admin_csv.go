@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -23,6 +24,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -1170,6 +1172,18 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 			return "", err
 		}
 		return credential.JSON()
+	case model.AuthTypeAccioOAuth:
+		credential, err := accioauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeQoderOAuth:
+		credential, err := qoderauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeCodeBuddyOAuth:
 		credential, err := codebuddyauth.ParseCredential([]byte(raw))
 		if err != nil {
@@ -1308,6 +1322,44 @@ func (s *Server) validateCSVImportOAuthCredential(
 			return "", err
 		}
 		if _, err := service.FetchModels(ctx, credential.Session); err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAccioOAuth:
+		credential, err := accioauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := accioauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !accioIdentityMatches(current, credential) {
+			return "", errors.New("accio imported account does not match existing channel")
+		}
+		service := *s.accioService
+		service.Client = client
+		credential, err = validateAccioImport(ctx, &service, credential)
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeQoderOAuth:
+		credential, err := qoderauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := qoderauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !qoderIdentityMatches(current, credential) {
+			return "", errors.New("qoder imported account does not match existing channel")
+		}
+		service := *s.qoderService
+		service.Client = client
+		credential, err = service.CompleteIdentity(ctx, credential)
+		if err != nil {
 			return "", err
 		}
 		return credential.JSON()

@@ -139,7 +139,7 @@ test('returning via reload or bfcache restores channel name search with the othe
   }
 });
 
-test('selecting the xAI auth type keeps the filter and reloads with it', () => {
+test('selecting credential auth types keeps the filter and reloads with them', () => {
   const previousGlobals = new Map();
   const setGlobal = (key, value) => {
     previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
@@ -161,7 +161,7 @@ test('selecting the xAI auth type keeps the filter and reloads with it', () => {
   setGlobal('allAvailableModels', []);
   setGlobal('allAvailableChannelNames', []);
   setGlobal('channelAuthTypeFilterLabel', value => value);
-  setGlobal('getChannelAuthTypeOptions', () => [{ value: 'all' }, { value: 'xai_oauth' }]);
+  setGlobal('getChannelAuthTypeOptions', () => ['all', 'xai_oauth', 'accio_oauth', 'qoder_oauth', 'loomy_session'].map(value => ({ value })));
   setGlobal('createSearchableCombobox', options => {
     if (options.inputId === 'channelAuthTypeFilter') authCombobox = options;
     return { setValue() {}, refresh() {} };
@@ -173,11 +173,12 @@ test('selecting the xAI auth type keeps the filter and reloads with it', () => {
     delete require.cache[require.resolve('./channels-filters.js')];
     const { setupFilterListeners } = require('./channels-filters.js');
     setupFilterListeners();
-    authCombobox.onSelect('xai_oauth');
-
-    assert.equal(global.filters.authType, 'xai_oauth');
-    assert.equal(loadedAuthType, 'xai_oauth');
-    assert.equal(global.channelsCurrentPage, 1);
+    for (const authType of ['xai_oauth', 'accio_oauth', 'qoder_oauth', 'loomy_session']) {
+      authCombobox.onSelect(authType);
+      assert.equal(global.filters.authType, authType);
+      assert.equal(loadedAuthType, authType);
+      assert.equal(global.channelsCurrentPage, 1);
+    }
   } finally {
     delete require.cache[require.resolve('./channels-filters.js')];
     for (const [key, descriptor] of previousGlobals) {

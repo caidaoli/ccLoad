@@ -462,11 +462,32 @@ func collectChatCompletion(ctx context.Context, reader io.Reader, onEvent func(*
 }
 
 func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Response, headers http.Header, w http.ResponseWriter, stats *streamReadStats) (*fwResult, float64, error) {
-	normalize := normalizeCodeBuddySSEEvent
+	return s.handleChatNonStream(reqCtx, resp, headers, w, stats, normalizeCodeBuddySSEEvent, "CodeBuddy")
+}
+
+/**
+ * @brief 聚合已归一的 Chat SSE，并按客户端协议返回非流式结果或压缩摘要。
+ * @param reqCtx 当前请求及协议转换上下文。
+ * @param resp 上游响应，正文由调用方管理。
+ * @param headers 待返回的上游响应头。
+ * @param w 下游响应写入器。
+ * @param stats 上游读取与首字节统计。
+ * @param normalize 可选的事件归一函数；nil 表示事件已是标准 Chat SSE。
+ * @param provider 用于错误与诊断的提供商名称。
+ * @return 包含用量、终态和响应提交状态的转发结果。
+ * @return 当前请求耗时，单位为秒。
+ * @return 读取、协议转换、无成功摘要终态或下游写入错误。
+ * @note 压缩摘要仅在收到成功终态时发布；写入响应后不得重放。
+ */
+func (s *Server) handleChatNonStream(reqCtx *requestContext, resp *http.Response, headers http.Header, w http.ResponseWriter, stats *streamReadStats, normalize func([]byte) []byte, provider string) (*fwResult, float64, error) {
 	summaryFinished := false
 	if reqCtx.responsesCompaction != nil {
+		normalizeEvent := normalize
 		normalize = func(raw []byte) []byte {
-			normalized := normalizeCodeBuddySSEEvent(raw)
+			normalized := raw
+			if normalizeEvent != nil {
+				normalized = normalizeEvent(raw)
+			}
 			if responsesCompactionSummaryComplete(protocol.OpenAI, sseEventData(normalized)) {
 				summaryFinished = true
 			}
@@ -477,7 +498,7 @@ func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Res
 		if shouldMarkUpstreamFirstByte(parser) {
 			markFirstStreamResponse(reqCtx, stats)
 		}
-	}, normalize, "CodeBuddy")
+	}, normalize, provider)
 	result := &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: headers, FirstByteTime: responseFirstByteSec(reqCtx, stats), BytesReceived: stats.totalBytes}
 	populateFWResultFromUsageParser(result, parser)
 	if result.SSEErrorEvent != nil {
@@ -493,7 +514,7 @@ func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Res
 		// The ordinary collector permits [DONE] without a finish_reason. A
 		// context capsule must only be produced after an actual successful stop.
 		if !parser.IsStreamComplete() || !summaryFinished {
-			result.StreamDiagMsg = "CodeBuddy compaction summary ended without a successful stop"
+			result.StreamDiagMsg = provider + " compaction summary ended without a successful stop"
 			return result, reqCtx.Duration().Seconds(), errors.New(result.StreamDiagMsg)
 		}
 		_ = resp.Body.Close()
@@ -516,7 +537,7 @@ func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Res
 	headers.Set("Content-Type", "application/json")
 	headers.Del("Content-Length")
 	headers.Del("Content-Encoding")
-	disableResponseWriteTimeout(w, "CodeBuddy非流式")
+	disableResponseWriteTimeout(w, provider+"非流式")
 	filterAndWriteResponseHeaders(w, headers)
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)

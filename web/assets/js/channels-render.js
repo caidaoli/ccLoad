@@ -166,7 +166,9 @@ const CREDENTIAL_CHANNEL_AUTH_TYPES = [
   'cursor_oauth',
   'zed_oauth',
   'codebuddy_oauth',
-  'vertex_oauth'
+  'vertex_oauth',
+  'qoder_oauth',
+  'accio_oauth'
 ];
 
 /**
@@ -919,13 +921,22 @@ function buildCheckinSummaryHtml(text) {
 }
 
 /**
- * @brief 统一生成国内 CodeBuddy 与 Loomy 签到状态和操作入口。
+ * @brief 统一生成 Qoder、国内 CodeBuddy 与 Loomy 签到状态和操作入口。
  * @param channel 包含认证类型及持久签到日的渠道快照。
  * @param state 本地请求状态及本次操作确认的签到日。
  * @return 返回签到区域 HTML；不支持签到的类型返回空字符串。
  * @details Loomy 按 UTC+8 合并持久与临时签到日；无余额快照仍显示状态，已签到保留补做任务入口。
  */
 function buildOAuthUsageCheckinHtml(channel, state = {}) {
+  if (channel?.auth_type === 'qoder_oauth') {
+    const loading = state.checkin_status === 'loading';
+    const manual = buildQuotaActionButton('checkin-qoder', channel.id, 'checkin', window.t('channels.qoder.checkin'), { busy: loading, disabled: loading });
+    const message = state.checkin_status === 'error' ? state.checkin_error : state.checkin_message;
+    const notice = message ? `<div role="status">${escapeChannelRefreshText(message)}</div>` : '';
+    const install = state.checkin_result === 'missing_component' ? `<button type="button" class="ch-oauth-usage__trigger channel-action-btn" data-action="install-qoder-umid" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.qoder.install'))}</button>` : '';
+    return `${manual}${notice}${install}`;
+  }
+
   const isLoomy = channel?.auth_type === 'loomy_session';
   if (!isLoomy && (channel?.auth_type !== 'codebuddy_oauth' || channel?.codebuddy_enterprise || channel?.codebuddy_international)) {
     return '';
@@ -1332,6 +1343,25 @@ function buildOAuthCreditsHtml(credits, refresh, {
   });
 }
 
+function buildQoderUsageRows(credits, refresh) {
+  if (!credits || !Number.isFinite(credits.remaining)) return [];
+  const format = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const label = [credits.plan, credits.unit].filter(Boolean).join(' · ') || 'Qoder';
+  const percent = credits.total > 0 ? credits.remaining / credits.total * 100 : null;
+  const buckets = Array.isArray(credits.buckets) ? credits.buckets : [];
+  const details = buckets.filter(bucket => Number.isFinite(bucket.remaining)).map(bucket => `${bucket.kind}: ${format(bucket.remaining)} ${bucket.unit || credits.unit || ''}`);
+  return [buildOAuthUsageWindowHtml({
+    refresh,
+    tooltipID: oauthUsageTooltipID('ch-qoder-credits-tooltip', refresh.channelID, 0),
+    label,
+    amount: Number.isFinite(credits.used) && credits.total > 0 ? `${format(credits.used)}/${format(credits.total)}` : '',
+    value: format(credits.remaining),
+    detailLines: [label, ...details],
+    ariaLabel: label,
+    percent
+  })];
+}
+
 const OAUTH_USAGE_VISIBLE_WINDOWS = 2;
 // 展开状态跨重渲染保留：列表在刷新额度、筛选后整体重建。
 const expandedOAuthUsageChannels = new Set();
@@ -1411,13 +1441,14 @@ function buildOAuthUsageStatusHtml(channel) {
   const isCodex = channel?.auth_type === 'codex_oauth';
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
   const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
+  const isQoder = channel?.auth_type === 'qoder_oauth' || state.data?.provider === 'qoder';
   const isCodeBuddy = channel?.auth_type === 'codebuddy_oauth' || state.data?.provider === 'codebuddy';
   const displayedWindows = isCursor
     ? orderCursorUsageWindows(windows)
     : isCodex
       ? orderCodexUsageWindows(windows)
       : windows;
-  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : isCodeBuddy ? [] : displayedWindows.map((windowInfo, windowIndex) => {
+  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : (isCodeBuddy || isQoder) ? [] : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
@@ -1462,6 +1493,7 @@ function buildOAuthUsageStatusHtml(channel) {
       percent: remaining
     });
   });
+  if (isQoder) rows.push(...buildQoderUsageRows(state.data?.qoder_credits, refresh));
   const codeBuddyCreditsHtml = isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, refresh) : '';
   if (channel?.auth_type === 'loomy_session') {
     const credits = state.data?.loomy_credits;
@@ -1934,7 +1966,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'checkin-loomy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'checkin-loomy', 'checkin-qoder', 'install-qoder-umid', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1960,6 +1992,14 @@ function initChannelEventDelegation() {
         if (typeof confirmAnthropicQuotaReset === 'function') {
           confirmAnthropicQuotaReset(channelId).catch(() => {});
         }
+        break;
+      case 'checkin-qoder':
+        checkInQoder(channelId).then(result => {
+          if (['claimed', 'already_claimed'].includes(result?.status) && window.showSuccess) window.showSuccess(window.t(`channels.qoder.${result.status}`));
+        }).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.checkinFailed')); });
+        break;
+      case 'install-qoder-umid':
+        installQoderUMID().catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.componentFailed')); });
         break;
       case 'checkin-codebuddy':
         if (typeof checkInCodeBuddy === 'function') {

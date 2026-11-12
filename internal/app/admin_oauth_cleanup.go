@@ -11,11 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/testutil"
 
 	"github.com/bytedance/sonic"
@@ -449,7 +451,7 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
-		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth,
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth, model.AuthTypeQoderOAuth, model.AuthTypeAccioOAuth,
 		model.AuthTypeVertexOAuth, model.AuthTypeLoomySession:
 		return authType
 	default:
@@ -933,6 +935,21 @@ func oauthRefreshTokenRejected(err error) bool {
 	if errors.As(err, &codexFailure) && codexFailure.authType == model.AuthTypeCodexOAuth && codexauth.IsTerminalRefreshError(err) {
 		return true
 	}
+	if errors.Is(err, accioauth.ErrCannotRefresh) {
+		return true
+	}
+	var accioErr *accioauth.HTTPError
+	if errors.As(err, &accioErr) && accioErr.StatusCode == 401 {
+		return true
+	}
+
+	if errors.Is(err, qoderauth.ErrCannotRefresh) {
+		return true
+	}
+	var qoderErr *qoderauth.HTTPError
+	if errors.As(err, &qoderErr) && qoderErr.StatusCode == 401 {
+		return true
+	}
 	if errors.Is(err, codebuddyauth.ErrCannotRefresh) {
 		return true
 	}
@@ -1060,7 +1077,7 @@ func oauthCredentialTestAccessToken(
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
 	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(), persisted.UsesZedOAuth(),
-		persisted.UsesVertexOAuth(), persisted.UsesLoomySession():
+		persisted.UsesVertexOAuth(), persisted.UsesLoomySession(), persisted.UsesAccioOAuth(), persisted.UsesQoderOAuth():
 		return selection.requestCredential
 	}
 	return ""
@@ -1076,7 +1093,7 @@ func oauthCredentialCleanupProtocol(cfg *model.Config) string {
 		return string(protocol.Anthropic)
 	}
 	switch {
-	case cfg.UsesLoomySession():
+	case cfg.UsesLoomySession(), cfg.UsesAccioOAuth():
 		return string(protocol.OpenAI)
 	case cfg.UsesCodexOAuth(), cfg.UsesXAIOAuth(), cfg.UsesZedOAuth():
 		return string(protocol.Codex)

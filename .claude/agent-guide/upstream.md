@@ -4,6 +4,33 @@
 
 审查或修改 wire 形态、指纹、签名及发送前处理时，先读该节记录的参照上游固定提交（如"对照来源"）中的对应实现，列出其完整分支表后再与本地比对，不凭推理判定"方向错误"。本地的典型偏差是只移植了命中当前场景的分支。
 
+## Accio
+
+- 所有出站接口统一使用不含 ccLoad 标识的标准 Chrome UA，共用 JSON Content-Type/Accept、`Accept-Language/x-language: en`、`x-platform: desktop`、`x-os`（macOS 为 `macos`）、`x-app-version: 0.34.4` 与地区头；推理另设 SSE Accept、`version: 0.34.4` 和 `appKey: OneChat`。2026-11-07 国际版同账号同出口对照：推理 `undici` 返回 `Bxpunish: 1` HTML，仅换 UA 可恢复 SSE，只改版本或 appKey 仍被拦截；不再保留 `undici` 或 Go 默认 UA。控制面错误展示真实 HTTP 状态与数字业务码，重试分类仍用归一状态，不回显原始响应消息。
+- Accio 先将 `system` / `developer` 文本中的 `Claude`、`Codex` 大小写敏感替换为 `Accio`，再复用 `antigravity_sensitive_words`。后者仅处理 `system` / `developer` 消息字符串和 text 内容块；在渠道请求体规则之后、ADK 编码之前插入零宽字符，正常代理与管理测试共用入口。空数组只禁用零宽处理，名称替换仍生效；敏感词配置修改后重启生效。
+- `accio_oauth` 对 Registry 暴露逻辑 OpenAI Chat。支持显式 `region=cn|global` 的 PKCE 网页授权及 canonical/官方 camelCase JSON 凭据导入，无签到；按地区与用户标识账号。重新导入保留模型配置，目录批量导入按身份去重。
+- 网页授权复用 Codex OAuth 管理器的启动、回调、状态、取消及生命周期：国内登录 `www.accio-ai.com/login`，国际登录 `www.accio.com/login`，客户端 `accio-work`；随机本机端口接收 `/auth/callback-accio`，远程部署可提交完整回调 URL。`return_url` 与换码 `redirectUri` 逐字相同；state 一次性消费，PKCE verifier 留在服务端。
+- 国内国际共用 `phoenix-gw.alibaba.com`，`x-package-region` 分别为 `CN` / `GLOBAL`。用户资料 `/api/auth/userinfo` 使用 POST JSON `accessToken`（2026-10-20 实测纠正参考项目 GET 导致的 405）；额度与订阅 GET 使用 query `accessToken`，刷新 POST 使用 body `accessToken/refreshToken`；不携带 Bearer。临期一分钟刷新、401/403 单次刷新、singleflight 与 CAS 保留新凭据及并发额度快照。
+- 目录 `POST /api/llm/config` 获取可见对话模型，公开 ID 与推理 body 的 `model` 统一使用目录 `modelName`，列表按名称去重、不生成编码重定向，缺少名称的条目跳过。不解析或匹配 `modelCode`，旧编码重定向不兼容；不使用静态别名或兜底模型。目录按渠道/地区/用户缓存一小时并绑定访问令牌指纹，避免换凭据仍用旧能力。
+- `accio_wire.go` 在统一出站边界构造 ADK `/api/adk/llm/generateContent?sg_k=md5(request_id)` 请求；认证 token 仅放实际请求体，逻辑请求留给调试/重试/转换。消息、工具及思考参数转原生字段，思考落点由模型目录 `protocol` 决定。
+- 推理携带 `utdid`：官方 JSON 的 `utdid/deviceId` 保存为 `device_id`；缺少时按地区+已验证用户标识派生稳定 desktop 标识，刷新令牌不改变设备身份，重新授权缺项保留已有设备值。2026-10-20 实测缺该头会返回 HTTP 200 HTML + `Bxpunish: 1`；补头后进入真实 SSE，但测试环境仍收到业务码 555 / sentinel rate limit（映射429）。管理测试诊断记录实际原生请求，body token 与设备头脱敏；网关挑战先分类为502并剔除挑战Cookie/跳转地址，不误报EOF或刷新令牌。
+- 官方 `sgcookie/sgCookie` 经导入、OAuth 换码和刷新保存为可选 `sgcookie`，仅随推理发送同名头并在调试输出脱敏；缺项保留已有值，拒绝超过4096字节或非可见 ASCII 的值。刷新期间仅更新 cookie 时保留最新 cookie 并发布已轮换令牌，不能把 cookie 更新误判为新授权而丢弃已消费刷新令牌的结果。
+- 正常推理响应为 SSE，转换成 Chat SSE 后复用现有协议转换及非流式聚合器；空 `content` 对象允许缺少 `parts` 或 `parts: null`，仍处理同帧终态与 usage，除 `null` 外的非数组 `parts` 拒绝。保留工具参数与 usage，缺失终态的 EOF 返回错误，已有输出后不重放。原生业务错误映射 401/429/502，SSE 错误携带顶层 status 供通用分类器识别。
+- 额度以百分比窗口展示，订阅字段保留原单位；只保存安全 `oauth_usage` 快照，不进入 USD 窗口成本账本。控制面错误不回显令牌/query URL，禁止跟随重定向。
+- 参考提交及独立实现边界见 `internal/accioauth/UPSTREAM.md`；使用说明见 `docs/guide/accio.zh-CN.md`。
+
+## Qoder
+
+- `qoder_oauth` 使用显式 `region=cn|global`，支持 PKCE、PAT、canonical JSON；账号按地区与用户区分。网页保留 device-token 单对；PAT 的 job refresh 被401/403拒绝后可重新兑换并核对身份，发布复用共享刷新/CAS。canonical到期时间仍存Unix秒，上游期限兼容见 [来源及分支表](../../internal/qoderauth/UPSTREAM.md)。
+- 参照 Magpie 插件 `52e31c4a1fdb857d673c6e92c90ef4a6c1294c68`。国内门户 `qoder.cn`、国际 `qoder.com`，带官方client_id；国内推理/目录在gateway.qoder.com.cn，国际统一api3.qoder.sh。App身份、COSY1.1.69、ClientType10；推理不伪造机器风控token，也不运行/安装UMID。
+- 目录App优先、Chat补充，同key取App；过滤禁用与auto/default，保留旧显示名归一的公开ID，同名后续条目用原生key。缓存绑定渠道/地区/用户/访问令牌，一小时失效；缺项重取，确认额度耗尽的禁用模型返回429，异常免费视图最多每五分钟尝试一次刷新。
+- 渠道BodyRules及system/developer零宽处理之后，前置Qoder默认身份并合并原system/developer；用户/工具内容不做敏感词改写。编码及COSY签名后不改body。正常代理与管理测试共用此入口。
+- 请求支持稳定会话、用户轮任务复用、business.model_key和原生缓存标记；任务缓存账号隔离、512项/空闲2小时。按目录选思考档/输出上限，短预算默认关闭或最低思考档；上下文粗估包括输出预算。工具历史ID、图片、推理别名及schema按来源分支表处理。
+- 原生SSE归一后进入已有转换器；工具文本仅匹配已声明工具，保留代码示例；处理迟到名称和同index不同ID，纯无名调用报502。保留多choices、严格帧校验和无终态EOF报错；输出后不重放。非流式复用Chat聚合器。
+- 排队仍按503交统一路由，不在插件内长时间轮询。普通认证403归一401并单次刷新；明确请求错误归一400，供应商内部错误502；明确输出上限拒绝仅同渠道降额修复一次，不跨请求学习上限。
+- 额度仍从 `/api/v2/quota/usage` 获取原生credits，保存oauth_usage安全快照，不进入token成本账本。签到仍是campaign列表/claim及同活动回查，不伪造奖励。已启用渠道自动签到，UTC+8 10点窗口去重、启动约一分钟补扫、每15分钟复查。
+- 国际签到依赖官方UMID，并先从Sash取UID；桌面/CLI组件环境参数均为3。发现官方安装与CLI缓存，支持其目录环境变量。Linux/macOS amd64/arm64缺组件时下载官方npm包、校验SHA-512并原子安装到data/qoder-umid/runtime-info；Windows只复用官方安装组件。保留后台安装、进度轮询、取消及生命周期契约，容器需glibc/libstdc++/libgcc。
+
 ## CodeBuddy
 
 - `codebuddy_oauth` 渠道支持扫码登录、workbuddy.json / canonical JSON 导入与自动刷新。登录 state 和 CookieJar 按管理员会话隔离，轮询最长 5 分钟；相同 UID + enterprise_id 重新授权更新已有渠道。

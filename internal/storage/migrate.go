@@ -586,7 +586,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"privacy_redaction", "{}", "json", "隐私脱敏配置（默认关闭，保存后立即生效）", "{}"},
 		{"reasoning_auto", `{ "enabled": false, "decision_model": "", "business_models": [], "timeout_ms": 2000 }`, "json", "动态思考等级配置（保存后立即生效）", `{ "enabled": false, "decision_model": "", "business_models": [], "timeout_ms": 2000 }`},
 		{"model_custom_pricing", "{}", "json", "模型自定义价格覆盖（价格单位为美元/百万Token）", "{}"},
-		{"antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON, "json", "Antigravity systemInstruction 和 CodeBuddy system/developer 消息文本中统一使用 U+034F 混淆的敏感词 JSON 字符串数组", config.DefaultAntigravitySensitiveWordsJSON},
+		{"antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON, "json", "Antigravity systemInstruction 和 CodeBuddy/Qoder/Accio system/developer 消息文本中统一使用 U+034F 混淆的敏感词 JSON 字符串数组", config.DefaultAntigravitySensitiveWordsJSON},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"upstream_connection_reuse_limit_seconds", "0", "duration", "上游连接最长复用时间(秒,0=不限制;达到时限后不接收新请求,在途请求完成后关闭)", "0"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},

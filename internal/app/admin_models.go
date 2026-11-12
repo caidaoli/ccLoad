@@ -946,6 +946,12 @@ func (s *Server) fetchModelsForChannel(
 	if cfg.UsesLoomySession() {
 		return s.fetchLoomyModels(ctx, cfg, overrideProtocol)
 	}
+	if cfg.UsesAccioOAuth() {
+		return sortOAuthFetchModels(s.fetchAccioOAuthModels(ctx, cfg, overrideProtocol))
+	}
+	if cfg.UsesQoderOAuth() {
+		return sortOAuthFetchModels(s.fetchQoderOAuthModels(ctx, cfg, overrideProtocol))
+	}
 	if cfg.UsesCodeBuddyOAuth() {
 		return sortOAuthFetchModels(s.fetchCodeBuddyOAuthModels(ctx, cfg, overrideProtocol))
 	}

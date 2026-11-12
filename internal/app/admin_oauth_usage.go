@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -23,6 +24,7 @@ import (
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
@@ -228,6 +230,8 @@ type oauthUsageSummary struct {
 	// CodeBuddyCredits is the absolute remaining balance returned by the
 	// billing meter. CodeBuddy does not expose a percentage window like the
 	// other OAuth providers, so retain the provider-native value.
+	AccioUsage       *accioauth.Usage   `json:"accio_usage,omitempty"`
+	QoderCredits     *qoderauth.Usage   `json:"qoder_credits,omitempty"`
 	CodeBuddyCredits *codeBuddyCredits  `json:"codebuddy_credits,omitempty"`
 	LoomyCredits     *loomyauth.Balance `json:"loomy_credits,omitempty"` ///< Loomy 原生积分及每日总额，nil 表示尚无快照。
 	ZAIPlans         *zaiauth.Plans     `json:"zai_plans,omitempty"`     ///< ZCode 原生套餐与余额，复用现有 JSON 快照。
@@ -1550,7 +1554,7 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			continue
 		}
 		if cfg.UsesAntigravityOAuth() || cfg.UsesZAIOAuth() ||
-			cfg.UsesCodeBuddyOAuth() || cfg.UsesLoomySession() ||
+			cfg.UsesCodeBuddyOAuth() || cfg.UsesLoomySession() || cfg.UsesQoderOAuth() || cfg.UsesAccioOAuth() ||
 			cfg.UsesCursorOAuth() || cfg.UsesZedOAuth() {
 			channelIDs = append(channelIDs, cfg.ID)
 		}
@@ -2050,6 +2054,10 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 	switch {
 	case cfg.UsesLoomySession():
 		return s.requestLoomyUsage(ctx, cfg)
+	case cfg.UsesAccioOAuth():
+		return s.requestAccioUsage(ctx, cfg)
+	case cfg.UsesQoderOAuth():
+		return s.requestQoderUsage(ctx, cfg)
 	case cfg.UsesCodeBuddyOAuth():
 		if s.codeBuddyCredentials == nil || s.codeBuddyService == nil {
 			return nil, errCodeBuddyUsageManagerUnavailable

@@ -14,12 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -84,7 +86,7 @@ func normalizeOAuthCredentialProvider(provider string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
 	case "", oauthCredentialProviderAuto:
 		return oauthCredentialProviderAuto, nil
-	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType, vertexauth.ChannelType:
+	case accioauth.ChannelType, qoderauth.ChannelType, codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType, vertexauth.ChannelType:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported credential provider %q", normalized)
@@ -172,7 +174,7 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 			return "", errors.New("credential type must be a string")
 		}
 		switch normalized := strings.ToLower(strings.TrimSpace(credentialType)); normalized {
-		case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType:
+		case accioauth.ChannelType, qoderauth.ChannelType, codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType:
 			return normalized, nil
 		case "workbuddy":
 			return codebuddyauth.ChannelType, nil
@@ -284,6 +286,8 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context) (*oauthCredentialI
 	}
 	nextPriorityByProvider := map[string]int{
 		codebuddyauth.ChannelType:   0,
+		accioauth.ChannelType:       0,
+		qoderauth.ChannelType:       0,
 		codexauth.ChannelType:       0,
 		antigravityauth.ChannelType: 0,
 		xaiauth.ChannelType:         0,
@@ -300,6 +304,10 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context) (*oauthCredentialI
 				continue
 			}
 			switch {
+			case cfg.UsesAccioOAuth() && cfg.Priority > nextPriorityByProvider[accioauth.ChannelType]:
+				nextPriorityByProvider[accioauth.ChannelType] = cfg.Priority
+			case cfg.UsesQoderOAuth() && cfg.Priority > nextPriorityByProvider[qoderauth.ChannelType]:
+				nextPriorityByProvider[qoderauth.ChannelType] = cfg.Priority
 			case cfg.UsesCodeBuddyOAuth() && cfg.Priority > nextPriorityByProvider[codebuddyauth.ChannelType]:
 				nextPriorityByProvider[codebuddyauth.ChannelType] = cfg.Priority
 			case cfg.UsesCodexOAuth() && cfg.Priority > nextPriorityByProvider[codexauth.ChannelType]:
@@ -497,6 +505,50 @@ func (s *Server) prepareOAuthCredentialImportFile(
 	prepared.Provider = credentialProvider
 
 	switch credentialProvider {
+	case accioauth.ChannelType:
+		credential, err := accioauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credential, err = validateAccioImport(ctx, s.accioService, credential)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = accioChannelBaseName(credential)
+		prepared.Config, err = s.prepareAccioChannel(ctx, prepared.ChannelName, credentialJSON)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+	case qoderauth.ChannelType:
+		credential, err := qoderauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credential, err = s.qoderService.CompleteIdentity(ctx, credential)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = qoderChannelBaseName(credential)
+		prepared.Config, err = s.prepareQoderChannel(ctx, prepared.ChannelName, credentialJSON)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
 	case codebuddyauth.ChannelType:
 		credential, err := codebuddyauth.ParseCredential(file.Raw)
 		if err != nil {
@@ -751,6 +803,32 @@ func (s *Server) commitPreparedOAuthCredentialImport(
 ) oauthCredentialImportResult {
 	if prepared.Result.Status != "" {
 		return prepared.Result
+	}
+	if prepared.Provider == accioauth.ChannelType {
+		accioChannelCreateMu.Lock()
+		defer accioChannelCreateMu.Unlock()
+		credential, err := accioauth.ParseCredential([]byte(prepared.Config.OAuthCredential))
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared.Result
+		}
+		configs, err := s.store.ListConfigs(ctx)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared.Result
+		}
+		for _, cfg := range configs {
+			if !cfg.UsesAccioOAuth() {
+				continue
+			}
+			stored, parseErr := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if parseErr == nil && accioIdentityMatches(stored, credential) {
+				prepared.Result.Status, prepared.Result.ChannelName = "skipped", cfg.Name
+				return prepared.Result
+			}
+		}
+		prepared.ChannelName = uniqueZedChannelName(configs, prepared.ChannelName)
+		prepared.Config.Name = prepared.ChannelName
 	}
 	normalizedName := normalizeOAuthCredentialChannelName(prepared.ChannelName)
 	if existingName, exists := committedNames[normalizedName]; exists {

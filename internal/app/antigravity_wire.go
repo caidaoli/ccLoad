@@ -1048,6 +1048,46 @@ func obfuscateAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) 
 	return updated
 }
 
+// obfuscateChatSystemMessages only rewrites system/developer text. User content,
+// tool schemas, arguments and results remain untouched.
+func obfuscateChatSystemMessages(body []byte, matcher *regexp.Regexp) ([]byte, error) {
+	if matcher == nil {
+		return body, nil
+	}
+	return rewriteChatSystemMessages(body, func(text string) string {
+		return obfuscateAntigravityText(text, matcher)
+	})
+}
+
+func rewriteChatSystemMessages(body []byte, rewrite func(string) string) ([]byte, error) {
+	var err error
+	for index, message := range gjson.GetBytes(body, "messages").Array() {
+		role := message.Get("role").String()
+		if role != "system" && role != "developer" {
+			continue
+		}
+		content := message.Get("content")
+		path := fmt.Sprintf("messages.%d.content", index)
+		if content.Type == gjson.String {
+			body, err = sjson.SetBytes(body, path, rewrite(content.String()))
+		} else if content.IsArray() {
+			for partIndex, part := range content.Array() {
+				if part.Get("type").String() != "text" || part.Get("text").Type != gjson.String {
+					continue
+				}
+				body, err = sjson.SetBytes(body, fmt.Sprintf("%s.%d.text", path, partIndex), rewrite(part.Get("text").String()))
+				if err != nil {
+					break
+				}
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return body, nil
+}
+
 /**
  * @brief 在命中敏感词的首 rune 后插入 U+034F，供两个提供商共用。
  * @param text 系统或开发者提示文本。

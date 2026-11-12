@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -22,6 +23,7 @@ import (
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -648,6 +650,22 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		// 签到独立于额度快照；余额请求失败也要向列表和详情返回已确认日期。
 		return channelOAuthMetadata{oauthUsage: usage, loomyLastCheckinDay: credential.LastCheckinDay}
 	}
+	if cfg.UsesAccioOAuth() {
+		credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), accioauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
+	if cfg.UsesQoderOAuth() {
+		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), qoderauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
 	if cfg.UsesCodeBuddyOAuth() {
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {
@@ -993,6 +1011,18 @@ func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err e
 			return "", "", err
 		}
 		return credential.Session, "Loomy session", nil
+	case cfg.UsesAccioOAuth():
+		credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.AccessToken, "Accio OAuth AT", nil
+	case cfg.UsesQoderOAuth():
+		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.AccessToken, "Qoder OAuth AT", nil
 	case cfg.UsesCodeBuddyOAuth():
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

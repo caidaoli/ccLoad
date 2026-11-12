@@ -37,6 +37,9 @@ func (s *Server) managementCheckinLoop() {
 	// local check-in windows. Initialize the current slot without replaying it
 	// on every server restart; the next slot transition performs the check-in.
 	codeBuddySlot := codeBuddyCheckinSlot(time.Now())
+	// Qoder check-in is always on; its catch-up runs on the first tick rather
+	// than during boot, so startup never races channel setup.
+	qoderLastScan := time.Now().Add(-15 * time.Minute)
 
 	ticker := time.NewTicker(channelManagementScheduleInterval)
 	defer ticker.Stop()
@@ -47,6 +50,10 @@ func (s *Server) managementCheckinLoop() {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			if now.Sub(qoderLastScan) >= 15*time.Minute {
+				s.runDueQoderCheckins(ctx)
+				qoderLastScan = now
+			}
 			if err := s.runDueManagementCheckins(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("[WARN] 管理账户每日签到扫描失败: %v", err)
 			}

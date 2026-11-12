@@ -28,6 +28,8 @@ const (
 	AuthTypeZedOAuth         = "zed_oauth"
 	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
 	AuthTypeLoomySession     = "loomy_session" ///< Loomy 会话认证，无已知续期接口。
+	AuthTypeQoderOAuth       = "qoder_oauth"
+	AuthTypeAccioOAuth       = "accio_oauth"
 	// AuthTypeVertexOAuth authenticates Vertex AI with a Google service account.
 	AuthTypeVertexOAuth = "vertex_oauth"
 	// AuthTypeSystemOne is a decision-only channel authenticated by API keys.
@@ -67,6 +69,10 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeCursorOAuth
 	case AuthTypeZedOAuth:
 		return AuthTypeZedOAuth
+	case AuthTypeAccioOAuth:
+		return AuthTypeAccioOAuth
+	case AuthTypeQoderOAuth:
+		return AuthTypeQoderOAuth
 	case AuthTypeCodeBuddyOAuth:
 		return AuthTypeCodeBuddyOAuth
 	case AuthTypeLoomySession:
@@ -118,6 +124,14 @@ func CountsTowardQuotaWindows(authType string, cost float64, codexHasCredits boo
  */
 func (c *Config) UsesLoomySession() bool {
 	return c != nil && c.GetAuthType() == AuthTypeLoomySession
+}
+
+// UsesAccioOAuth reports whether this channel uses Accio credentials.
+func (c *Config) UsesAccioOAuth() bool { return c != nil && c.GetAuthType() == AuthTypeAccioOAuth }
+
+// UsesQoderOAuth reports whether this channel uses Qoder credentials.
+func (c *Config) UsesQoderOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeQoderOAuth
 }
 
 // UsesCodeBuddyOAuth reports whether this channel uses CodeBuddy credentials.

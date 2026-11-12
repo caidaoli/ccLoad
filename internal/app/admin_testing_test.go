@@ -21,6 +21,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -174,6 +175,107 @@ func TestLoomyManagementWireAndRejection(t *testing.T) {
 				t.Fatal("old test must preserve the reauthorized credential")
 			}
 		})
+	}
+}
+
+func TestAdminTestAccioCapturesNativeWire(t *testing.T) {
+	t.Parallel()
+	for _, debugEnabled := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			for _, networkFailure := range []bool{false, true} {
+				t.Run(fmt.Sprintf("debug=%v/stream=%v/networkFailure=%v", debugEnabled, stream, networkFailure), func(t *testing.T) {
+					t.Parallel()
+					srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": strconv.FormatBool(debugEnabled)})
+					cfg := newAccioChannel("Accio", accioTestCredential(t, "global", "native-access-secret"))
+					credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+					if err != nil {
+						t.Fatal(err)
+					}
+					credential.SGCookie = "native-session-cookie-value"
+					cfg.OAuthCredential, err = credential.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					cfg.ModelEntries = []model.ModelEntry{{Model: "accio-test"}}
+					cfg.CustomRequestRules = &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "utdid", Value: "native-device-secret"}}}
+					var wireURL string
+					var wireHeaders http.Header
+					var wireBody map[string]any
+					accioTestClient(srv, func(req *http.Request) (*http.Response, error) {
+						switch req.URL.Path {
+						case "/api/llm/config":
+							return accioTestResponse(req, http.StatusOK, accioTestCatalog), nil
+						case "/api/adk/llm/generateContent":
+							wireURL, wireHeaders = req.URL.String(), req.Header.Clone()
+							if err := json.NewDecoder(req.Body).Decode(&wireBody); err != nil {
+								t.Fatal(err)
+							}
+							if networkFailure {
+								return nil, errors.New("connection reset by peer")
+							}
+							return accioTestResponse(req, http.StatusOK, accioTestCompletion), nil
+						default:
+							t.Fatalf("unexpected upstream path %s", req.URL.Path)
+							return nil, errors.New("unexpected upstream path")
+						}
+					})
+					result := srv.testChannelAPI(context.Background(), cfg, "native-access-secret", &testutil.TestChannelRequest{
+						Model: "accio-test", ClientProtocol: "openai", Content: "hello", Stream: stream,
+						Headers: map[string]string{"utDID": "client-device-secret"},
+					})
+					if result["success"] != !networkFailure {
+						t.Fatalf("success=%v error=%v", result["success"], result["error"])
+					}
+					if wireURL == "" || result["upstream_request_url"] != wireURL {
+						t.Fatalf("diagnostic URL=%v, want native URL=%s", result["upstream_request_url"], wireURL)
+					}
+					headers, _ := result["upstream_request_headers"].(map[string]string)
+					wantHeaders := flattenHeader(wireHeaders)
+					wantHeaders["Utdid"] = "******"
+					wantHeaders["Sgcookie"] = "nati******alue"
+					if !reflect.DeepEqual(headers, wantHeaders) || !strings.HasPrefix(headers["User-Agent"], "Mozilla/5.0 ") || strings.Contains(strings.ToLower(headers["User-Agent"]), "ccload") || headers["Authorization"] != "" || wireHeaders.Get("utdid") == "" || wireHeaders.Get("utdid") == "******" || wireHeaders.Get("sgcookie") != credential.SGCookie {
+						t.Fatal("diagnostic headers differ from the native request beyond device redaction")
+					}
+					if wireBody["token"] != "native-access-secret" {
+						t.Fatal("diagnostic capture changed the actual authentication token")
+					}
+					body, _ := result["upstream_request_body"].(string)
+					var diagnosticBody map[string]any
+					if err := json.Unmarshal([]byte(body), &diagnosticBody); err != nil {
+						t.Fatal(err)
+					}
+					if diagnosticBody["token"] != "******" {
+						t.Fatal("native authentication token was not redacted")
+					}
+					wireBody["token"] = "******"
+					if !reflect.DeepEqual(diagnosticBody, wireBody) {
+						t.Fatal("diagnostic body differs from the native request beyond redaction")
+					}
+					debug, _ := result["debug_data"].(*model.DebugLogEntry)
+					if debugEnabled {
+						if debug == nil || debug.ReqURL != wireURL || string(debug.ReqBody) != body || !debug.ProtocolTransformed || !gjson.GetBytes(debug.OriginalReqBody, "messages").Exists() {
+							t.Fatal("debug log did not capture native wire and original client request")
+						}
+						var debugHeaders map[string]string
+						if err := json.Unmarshal([]byte(debug.ReqHeaders), &debugHeaders); err != nil || !reflect.DeepEqual(debugHeaders, headers) {
+							t.Fatal("debug log headers differ from the native request")
+						}
+					} else if debug != nil {
+						t.Fatal("debug logging enabled unexpectedly")
+					}
+					encoded, err := json.Marshal(result)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(string(encoded), "native-access-secret") || strings.Contains(string(encoded), "refresh-secret") || strings.Contains(string(encoded), "client-device-secret") || strings.Contains(string(encoded), wireHeaders.Get("utdid")) {
+						t.Fatal("credential leaked in diagnostics")
+					}
+					if strings.Contains(string(encoded), credential.SGCookie) {
+						t.Fatal("session cookie leaked in diagnostics")
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -1302,6 +1404,79 @@ func TestOAuthCredentialCleanupDisablesRejectedPersonalAccessTokenByDefault(t *t
 	}
 	if _, err := srv.store.GetConfig(context.Background(), created.ID); err == nil {
 		t.Fatal("delete cleanup kept the disabled revoked PAT channel")
+	}
+}
+
+/**
+ * @brief Qoder 清理使用自动刷新后的凭证快照，在新令牌和刷新令牌均失效时禁用渠道。
+ * @param t 当前测试上下文。
+ */
+func TestOAuthCredentialCleanupQoderAdoptsRefreshedCredential(t *testing.T) {
+	t.Parallel()
+	srv := newInMemoryServer(t)
+	credential := qoderIntegrationCredential(t, "cn", "cleanup-expired-token")
+	credential.ExpiresAt = time.Now().Add(-time.Hour).Unix()
+	cfg := newQoderChannel("cleanup-qoder", qoderIntegrationJSON(t, credential))
+	cfg.ModelEntries = []model.ModelEntry{{Model: "QwenTest"}}
+	created, err := srv.store.CreateConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshes atomic.Int32
+	qoderIntegrationClient(srv, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/v1/deviceToken/refresh":
+			if refreshes.Add(1) == 1 {
+				return qoderIntegrationResponse(req, http.StatusOK, `{"device_token":"cleanup-refreshed-token","refresh_token":"cleanup-refreshed-refresh","user_id":"same-user","expires_in":3600}`), nil
+			}
+			return qoderIntegrationResponse(req, http.StatusUnauthorized, `{"error":"invalid_grant"}`), nil
+		case "/algo/api/v2/model/list":
+			return qoderIntegrationResponse(req, http.StatusOK, `{"app":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+		default:
+			return qoderIntegrationResponse(req, http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"expired"}}`), nil
+		}
+	})
+	startContext, startResponse := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", map[string]any{
+		"auth_type": model.AuthTypeQoderOAuth, "model": "QwenTest",
+	}))
+	srv.HandleStartOAuthCredentialCleanupJob(startContext)
+	if startResponse.Code != http.StatusAccepted {
+		t.Fatalf("start cleanup status=%d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var started oauthCredentialCleanupJobStart
+	mustUnmarshalAPIResponseData(t, startResponse.Body.Bytes(), &started)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	streamRequest := newRequest(http.MethodGet, "/admin/oauth/credentials/cleanup/jobs/"+started.JobID+"/stream", nil).WithContext(ctx)
+	streamContext, streamResponse := newTestContext(t, streamRequest)
+	streamContext.Params = gin.Params{{Key: "id", Value: started.JobID}}
+	srv.HandleOAuthCredentialCleanupStream(streamContext)
+	completed := false
+	for line := range strings.SplitSeq(streamResponse.Body.String(), "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		var event oauthCredentialCleanupEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Event == "complete" {
+			completed = true
+			if event.Disabled != 1 || event.Failed != 0 || event.Skipped != 0 {
+				t.Fatalf("cleanup summary=%+v", event)
+			}
+		}
+	}
+	if !completed || refreshes.Load() != 2 {
+		t.Fatalf("completed=%v refreshes=%d events=%s", completed, refreshes.Load(), streamResponse.Body.String())
+	}
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Enabled {
+		t.Fatal("cleanup kept the channel after the refreshed credential was rejected")
 	}
 }
 

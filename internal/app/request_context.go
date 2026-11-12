@@ -31,6 +31,8 @@ type requestContext struct {
 	responsesSSEUpstreamNonStream bool
 	responsesCompaction           *responsesCompactionRequest
 	openCodeFree                  bool
+	accioOAuth                    bool
+	qoderOAuth                    bool
 	codeBuddyOAuth                bool
 	antigravityOAuth              bool
 	antigravityReplay             *antigravityReplay

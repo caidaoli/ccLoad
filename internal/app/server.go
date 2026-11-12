@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -34,6 +35,8 @@ import (
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	protocolbuiltin "ccLoad/internal/protocol/builtin"
+	"ccLoad/internal/qoderauth"
+	"ccLoad/internal/qoderumid"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/version"
@@ -111,6 +114,16 @@ type Server struct {
 	zaiStart                      zaiStartGuard ///< 仅 Trial 使用的活动账号、并发和风控暂停。
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
+	accioService                  *accioauth.Service
+	accioOAuth                    *codexOAuthManager
+	accioCredentials              *accioCredentialManager
+	accioModels                   sync.Map
+	qoderService                  *qoderauth.Service
+	qoderCredentials              *qoderCredentialManager
+	qoderOAuth                    *qoderOAuthManager
+	qoderUMID                     *qoderumid.Manager
+	qoderModels                   sync.Map
+	qoderCheckins                 sync.Map
 	codeBuddyService              *codebuddyauth.Service
 	loomyService                  *loomyauth.Service ///< 共享 Loomy 协议端点配置；渠道请求复制后应用自己的 HTTP 客户端。
 	loomyState                    loomyRuntimeState  ///< 服务实例内的挑战、限流、账号锁及自动尝试保护。
@@ -440,6 +453,16 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		s.InvalidateChannelListCache()
 	})
 	s.zaiService = zaiauth.NewService(s.client)
+	s.qoderUMID = qoderumid.NewManager(s.baseCtx, "data", s.client)
+	s.accioService = accioauth.NewService(s.client)
+	s.accioOAuth = newAccioOAuthManager(s)
+	s.accioCredentials = &accioCredentialManager{server: s}
+	s.qoderService = qoderauth.NewService(s.client)
+	s.qoderService.RiskHeaders = func(ctx context.Context, credential *qoderauth.Credential) (http.Header, error) {
+		return s.qoderUMID.Headers(ctx, credential.Region, credential.UserID)
+	}
+	s.qoderCredentials = &qoderCredentialManager{server: s}
+	s.qoderOAuth = &qoderOAuthManager{server: s, sessions: make(map[string]*qoderLoginSession)}
 	s.codeBuddyService = codebuddyauth.NewService(s.client)
 	s.loomyService = loomyauth.NewService(s.client)
 	s.codeBuddyCredentials = &codeBuddyCredentialManager{server: s}
@@ -1381,6 +1404,8 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 		TeamID        string `json:"team_id"`
 		UserID        string `json:"user_id"`
 		SystemID      string `json:"system_id"`
+		Region        string `json:"region"`
+		MachineID     string `json:"machine_id"`
 		UID           string `json:"uid"`
 		EnterpriseID  string `json:"enterprise_id"`
 		Domain        string `json:"domain"`
@@ -1438,6 +1463,14 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 		case model.AuthTypeZedOAuth:
 			if credential.UserID != "" {
 				identity = fmt.Sprintf("user:%q:system:%q", credential.UserID, credential.SystemID)
+			}
+		case model.AuthTypeAccioOAuth:
+			if credential.UserID != "" {
+				identity = fmt.Sprintf("region:%q:user:%q", credential.Region, credential.UserID)
+			}
+		case model.AuthTypeQoderOAuth:
+			if credential.UserID != "" {
+				identity = fmt.Sprintf("region:%q:user:%q:machine:%q", credential.Region, credential.UserID, credential.MachineID)
 			}
 		case model.AuthTypeCodeBuddyOAuth:
 			if credential.UID != "" {
@@ -1898,6 +1931,20 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/anthropic/oauth/callback", s.HandleSubmitAnthropicOAuthCode)
 		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
 		admin.POST("/zai/oauth/start", s.HandleStartZAIOAuth)
+		admin.POST("/qoder/oauth/start", s.HandleStartQoderOAuth)
+		admin.GET("/qoder/oauth/status", s.HandleQoderOAuthStatus)
+		admin.POST("/qoder/oauth/cancel", s.HandleCancelQoderOAuth)
+		admin.POST("/accio/credentials/import", s.HandleImportAccioCredential)
+		admin.POST("/accio/oauth/start", s.HandleStartAccioOAuth)
+		admin.GET("/accio/oauth/status", s.HandleAccioOAuthStatus)
+		admin.POST("/accio/oauth/cancel", s.HandleCancelAccioOAuth)
+		admin.POST("/accio/oauth/callback", s.HandleSubmitAccioOAuthCallback)
+		admin.POST("/channels/:id/accio-credential/refresh", s.HandleRefreshAccioCredential)
+		admin.POST("/qoder/credentials/import", s.HandleImportQoderCredential)
+		admin.POST("/channels/:id/qoder-credential/refresh", s.HandleRefreshQoderCredential)
+		admin.POST("/channels/:id/qoder-checkin", s.HandleQoderCheckin)
+		admin.GET("/qoder/umid", s.HandleQoderUMIDStatus)
+		admin.POST("/qoder/umid/install", s.HandleInstallQoderUMID)
 		admin.POST("/codebuddy/oauth/start", s.HandleStartCodeBuddyOAuth)
 		admin.POST("/loomy/login/send-code", s.HandleLoomySendCode)
 		admin.POST("/loomy/login/verify", s.HandleLoomyLogin)
@@ -2174,11 +2221,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.zaiOAuth != nil {
 		s.zaiOAuth.close()
 	}
+	if s.qoderOAuth != nil {
+		s.qoderOAuth.close()
+	}
 	if s.codeBuddyOAuth != nil {
 		s.codeBuddyOAuth.close()
 	}
 	if s.zedOAuth != nil {
 		s.zedOAuth.close()
+	}
+	if s.accioOAuth != nil {
+		s.accioOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

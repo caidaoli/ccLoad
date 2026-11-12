@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -16,6 +17,7 @@ import (
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
@@ -58,6 +60,35 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
 				// Preserve onboarding and daily state while replacing only the balance.
 				credential.OAuthUsage = usage
+				return credential.JSON()
+			},
+		}, nil
+	case cfg.UsesAccioOAuth():
+		credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		// Accio percentages are provider quota snapshots, not USD cost windows.
+		return &oauthUsageCredentialState{
+			provider: accioauth.ChannelType, authType: model.AuthTypeAccioOAuth,
+			oauthUsage: json.RawMessage(credential.OAuthUsage),
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				credential.OAuthUsage = string(usage)
+				return credential.JSON()
+			},
+		}, nil
+	case cfg.UsesQoderOAuth():
+		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		// Qoder exposes an absolute credit balance, not token windows, so
+		// persist the safe snapshot without standard-cost reconciliation.
+		return &oauthUsageCredentialState{
+			provider: qoderauth.ChannelType, authType: model.AuthTypeQoderOAuth,
+			oauthUsage: json.RawMessage(credential.OAuthUsage),
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				credential.OAuthUsage = string(usage)
 				return credential.JSON()
 			},
 		}, nil

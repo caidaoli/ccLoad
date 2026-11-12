@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -29,6 +30,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -202,7 +204,54 @@ type channelTestRequestPlan struct {
 	xaiTools                  *xaiResponsesToolsPlan
 	timeout                   *channelTestTimeout
 	debugCapture              *debugCapture
+	wireRequest               *channelTestWireRequest
 	antigravityOAuth          bool
+}
+
+type channelTestWireRequest struct {
+	url     string
+	headers map[string]string
+	body    []byte
+}
+
+type channelTestAccioWireContextKey struct{}
+
+// captureAccioWireRequest records the native request after provider identity and
+// body rules have been applied, without changing the logical request used by retries.
+func captureAccioWireRequest(req *http.Request) {
+	plan, _ := req.Context().Value(channelTestAccioWireContextKey{}).(*channelTestRequestPlan)
+	if plan == nil || req.GetBody == nil {
+		return
+	}
+	source, err := req.GetBody()
+	if err != nil {
+		return
+	}
+	defer func() { _ = source.Close() }()
+	body, err := io.ReadAll(source)
+	if err != nil {
+		return
+	}
+	// Accio authenticates in its native JSON body instead of Authorization.
+	body, err = sjson.SetBytes(body, "token", "******")
+	if err != nil {
+		return
+	}
+	headers := req.Header.Clone()
+	if headers.Get("utdid") != "" {
+		headers.Set("utdid", "******")
+	}
+	plan.wireRequest = &channelTestWireRequest{
+		url: req.URL.String(), headers: maskSensitiveHeaderMap(flattenHeader(headers)), body: body,
+	}
+	if dc := plan.debugCapture; dc != nil {
+		dc.mu.Lock()
+		dc.reqMethod = req.Method
+		dc.reqURL = req.URL.String()
+		dc.reqHeaders = encodeDebugHeaders(headers)
+		dc.reqBody = cloneDebugBody(body)
+		dc.mu.Unlock()
+	}
 }
 
 // requestedServiceTier 读取本次测试上游请求体声明的计费档位，与代理 requestedServiceTier 同源。
@@ -1078,6 +1127,36 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		}
 		selection.requestCredential = credential.Session
 		return cfg.Clone(), selection, true, nil
+	case cfg.UsesAccioOAuth():
+		var credential *accioauth.Credential
+		var err error
+		if mode == oauthCredentialUseCurrent {
+			credential, err = accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		} else {
+			credential, err = s.accioCredentials.credential(ctx, cfg, mode == oauthCredentialForceRefresh, rejectedAccessToken)
+		}
+		if err != nil {
+			return nil, selection, true, err
+		}
+		runtime := cfg.Clone()
+		runtime.OAuthCredential, _ = credential.JSON()
+		selection.requestCredential = credential.AccessToken
+		return runtime, selection, true, nil
+	case cfg.UsesQoderOAuth():
+		var credential *qoderauth.Credential
+		var err error
+		if mode == oauthCredentialUseCurrent {
+			credential, err = qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		} else {
+			credential, err = s.qoderCredentials.credential(ctx, cfg, mode == oauthCredentialForceRefresh, rejectedAccessToken)
+		}
+		if err != nil {
+			return nil, selection, true, err
+		}
+		runtime := cfg.Clone()
+		runtime.OAuthCredential, _ = credential.JSON()
+		selection.requestCredential = credential.AccessToken
+		return runtime, selection, true, nil
 	case cfg.UsesCodeBuddyOAuth():
 		var credential *codebuddyauth.Credential
 		var err error
@@ -1401,6 +1480,9 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 			}
 		}
 		return result
+	}
+	if cfg.UsesAccioOAuth() && statusCode == util.StatusSSEError {
+		statusCode = classifySSEErrorStatus(errorBody)
 	}
 	input := httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers)
 	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
@@ -2104,6 +2186,30 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 
 	if isEventStream {
+		if cfg.UsesAccioOAuth() && !testReq.Stream {
+			body, _, collectErr := collectChatCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
+				if testStreamParserHasFirstContent(parser) {
+					markTestFirstStreamContent(requestPlan, result, start)
+				}
+			}, nil, "Accio")
+			if collectErr != nil {
+				result["success"], result["error"] = false, collectErr.Error()
+				return attachTestDebugData(requestPlan, resp, result)
+			}
+			return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, "application/json", start, body, result))
+		}
+		if cfg.UsesQoderOAuth() && !testReq.Stream {
+			body, _, collectErr := collectChatCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
+				if testStreamParserHasFirstContent(parser) {
+					markTestFirstStreamContent(requestPlan, result, start)
+				}
+			}, nil, "Qoder")
+			if collectErr != nil {
+				result["success"], result["error"] = false, collectErr.Error()
+				return attachTestDebugData(requestPlan, resp, result)
+			}
+			return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, "application/json", start, body, result))
+		}
 		if cfg.UsesCodeBuddyOAuth() && !testReq.Stream {
 			body, _, collectErr := collectCodeBuddyCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
 				if testStreamParserHasFirstContent(parser) {
@@ -2530,7 +2636,7 @@ func (s *Server) newTestUpstreamRequest(
 	requestPlan *channelTestRequestPlan,
 ) (*http.Request, context.CancelFunc, error) {
 	started := time.Now()
-	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth() || requestPlan.openCodeFree, s.resolveProtocolTimeouts(protocol.TransformPlan{
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth() || cfgForBuild.UsesQoderOAuth() || cfgForBuild.UsesAccioOAuth() || requestPlan.openCodeFree, s.resolveProtocolTimeouts(protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
 	requestPlan.timeout = timeout
@@ -2664,12 +2770,18 @@ func (s *Server) buildTestUpstreamHTTPRequest(ctx context.Context, cfgForBuild *
 		setAdminTestAcceptEncoding(cfgForBuild, req)
 	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
-	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesZedOAuth() {
+	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesZedOAuth() || cfgForBuild.UsesAccioOAuth() {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)
 		for key, value := range testReq.Headers {
 			originalHeaders.Set(key, value)
 		}
+		if cfgForBuild.UsesAccioOAuth() && originalHeaders.Get("utdid") != "" {
+			originalHeaders.Set("utdid", "******")
+		}
 		requestPlan.debugCapture.markProtocolTransform(extractRequestPath(requestPlan.clientURL), originalHeaders, requestPlan.clientBody)
+	}
+	if cfgForBuild.UsesAccioOAuth() {
+		req = req.WithContext(context.WithValue(req.Context(), channelTestAccioWireContextKey{}, requestPlan))
 	}
 
 	return req, nil
@@ -2705,10 +2817,17 @@ func (s *Server) buildTestUpstreamRequestForProtocol(
 }
 
 func attachTestDebugData(requestPlan *channelTestRequestPlan, resp *http.Response, result map[string]any) map[string]any {
-	if result == nil || requestPlan == nil || requestPlan.debugCapture == nil {
+	if result == nil || requestPlan == nil {
 		return result
 	}
-	result["debug_data"] = requestPlan.debugCapture.buildEntry(resp)
+	if wire := requestPlan.wireRequest; wire != nil {
+		result["upstream_request_url"] = wire.url
+		result["upstream_request_headers"] = wire.headers
+		result["upstream_request_body"] = string(wire.body)
+	}
+	if requestPlan.debugCapture != nil {
+		result["debug_data"] = requestPlan.debugCapture.buildEntry(resp)
+	}
 	return result
 }
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -13,6 +14,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
@@ -122,6 +124,18 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	} else if cfg.UsesLoomySession() {
 		// Session 凭证仅在管理员编辑器返回，列表与普通详情仍使用掩码。
 		if _, parseErr := loomyauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesAccioOAuth() {
+		if _, parseErr := accioauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesQoderOAuth() {
+		if _, parseErr := qoderauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}

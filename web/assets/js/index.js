@@ -88,6 +88,8 @@
       api_key: 'channels.authTypeAPI',
       codex_oauth: 'channels.authTypeCodex',
       antigravity_oauth: 'channels.authTypeAntigravity',
+      accio_oauth: 'channels.authTypeAccio',
+      qoder_oauth: 'channels.authTypeQoder',
       codebuddy_oauth: 'channels.authTypeCodeBuddy',
       loomy_session: 'channels.authTypeLoomy',
       xai_oauth: 'channels.authTypeXAI',
