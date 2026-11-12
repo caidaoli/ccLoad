@@ -515,6 +515,7 @@ type tokenStatsUpdate struct {
 	firstByteTime       float64
 	promptTokens        int64
 	completionTokens    int64
+	reasoningTokens     int64 ///< 输出中的推理 Token，决定输出速度是否扣除首字
 	cacheReadTokens     int64
 	cacheCreationTokens int64
 	costUSD             float64 // 标准成本
@@ -567,7 +568,7 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(effectiveCostUSD), upd.completedAt)
 	}
 
-	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.outcome, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD, effectiveCostUSD, upd.completedAt); err != nil {
+	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.outcome, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.reasoningTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD, effectiveCostUSD, upd.completedAt); err != nil {
 		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
 		if strings.Contains(err.Error(), "token not found") {
 			return
@@ -597,7 +598,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 	}
 	completedAt := time.Now()
 
-	var promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens int64
+	var promptTokens, completionTokens, reasoningTokens, cacheReadTokens, cacheCreationTokens int64
 	var costUSD float64
 	var firstByteTime float64
 
@@ -607,6 +608,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 	if billed {
 		promptTokens = int64(res.InputTokens)
 		completionTokens = int64(res.OutputTokens)
+		reasoningTokens = int64(res.ReasoningTokens)
 		cacheReadTokens = int64(res.CacheReadInputTokens)
 		cacheCreationTokens = int64(res.CacheCreationInputTokens)
 		costUSD = computeRequestCostWithPrice(actualModel, res.ServiceTier, modelPrice, res)
@@ -628,6 +630,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		firstByteTime:       firstByteTime,
 		promptTokens:        promptTokens,
 		completionTokens:    completionTokens,
+		reasoningTokens:     reasoningTokens,
 		cacheReadTokens:     cacheReadTokens,
 		cacheCreationTokens: cacheCreationTokens,
 		costUSD:             costUSD,

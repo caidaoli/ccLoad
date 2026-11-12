@@ -20,6 +20,7 @@ window.I18N_LOCALES['en'] = {
   // Common
   // ============================================================
   'common.save': 'Save',
+  'common.speedTitle': 'Output speed = output tokens ÷ generation time. Streaming without reasoning tokens: generation time = total duration − first byte (total duration if under 1 s); with reasoning tokens or non-streaming: total duration (hidden reasoning is generated before the first byte). Aggregates = total output ÷ total generation time over successful requests with output.',
   'common.cancel': 'Cancel',
   'common.retry': 'Retry',
   'common.delete': 'Delete',
@@ -1084,7 +1085,6 @@ window.I18N_LOCALES['en'] = {
   'tokens.table.latency': 'TTFB / Duration',
   'tokens.table.latencyTitle': 'Average first-byte time of successful streams / average duration of successful requests',
   'tokens.table.speed': 'Tok/s',
-  'tokens.table.speedTitle': 'Output speed of successful requests: total output tokens / total generation time (streams exclude first-byte time)',
   'tokens.limitShortDaily': 'Day',
   'tokens.limitShortMonthly': 'Month',
   'tokens.limitShortTotal': 'Total',
@@ -1900,7 +1900,6 @@ window.I18N_LOCALES['en'] = {
   'channels.noMatchingModels': 'No matching models',
   // Stats Display
   'channels.stats.firstByte': 'TTFB',
-  'channels.stats.speed': 'Speed',
   'channels.stats.requests': 'Requests',
   'channels.stats.requestCount': '{count}',
   'channels.stats.cacheRead': 'Read',

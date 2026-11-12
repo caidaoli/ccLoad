@@ -548,7 +548,7 @@ function buildChannelMetricsHtml(stats) {
     items.push(channelMetricPairHtml('timing', window.t('channels.stats.timingTitle'), `${CHANNEL_METRIC_ICONS.clock}${escapeChannelRefreshText(label)}`, values));
   }
   if (Number.isFinite(stats.outputTokensPerSecond) && stats.outputTokensPerSecond > 0) {
-    items.push(`<span class="ch-metric ch-metric--speed" title="${escapeChannelRefreshText(window.t('channels.stats.speed'))}">${channelMetricValueHtml(stats.outputTokensPerSecond.toFixed(1), window.getSpeedLevel(stats.outputTokensPerSecond))} tok/s</span>`);
+    items.push(`<span class="ch-metric ch-metric--speed" title="${escapeChannelRefreshText(window.t('common.speedTitle'))}">${channelMetricValueHtml(stats.outputTokensPerSecond.toFixed(1), window.getSpeedLevel(stats.outputTokensPerSecond))} tok/s</span>`);
   }
 
   const rate = successCount / total;

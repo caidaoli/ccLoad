@@ -433,7 +433,7 @@
             <th class="tokens-col-num" title="${t('tokens.table.rpmTitle')}">${t('tokens.table.rpm')}</th>
             <th class="tokens-col-num">${t('tokens.table.tokenUsage')}</th>
             <th class="tokens-col-num" title="${t('tokens.table.latencyTitle')}">${t('tokens.table.latency')}</th>
-            <th class="tokens-col-num" title="${t('tokens.table.speedTitle')}">${t('tokens.table.speed')}</th>
+            <th class="tokens-col-num" title="${t('common.speedTitle')}">${t('tokens.table.speed')}</th>
             <th class="tokens-col-cost">${t('tokens.table.costLimit')}</th>
             <th class="tokens-col-num tokens-col-concurrency">${t('tokens.table.concurrency')}</th>
             <th>${t('tokens.table.lastUsed')}</th>

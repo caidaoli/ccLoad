@@ -311,22 +311,11 @@
       return (sortState.order === 'asc' ? result : -result) || compareStatsDefault(a, b);
     }
 
-    function calculateAverageSpeed(entry) {
-      const successCount = Number(entry?.success);
-      if (!Number.isFinite(successCount) || successCount <= 0) {
-        return null;
-      }
-
-      return calculateTokenSpeed(
-        Number(entry?.total_output_tokens) / successCount,
-        Number(entry?.avg_duration_seconds),
-        Number(entry?.avg_first_byte_time_seconds)
-      );
-    }
-
-    // 渠道行/合计行由 StatsGrouping 按总输出/总生成秒数算好；单条统计按均值推算
+    // 模型行用后端按统一口径累加的分子分母；渠道行/合计行由 StatsGrouping 相加后同样计算
     function getStatsEntrySpeed(entry) {
-      return entry.aggregate_speed !== undefined ? entry.aggregate_speed : calculateAverageSpeed(entry);
+      const outputTokens = Number(entry.speed_output_tokens);
+      const seconds = Number(entry.speed_duration_seconds);
+      return outputTokens > 0 && seconds > 0 ? outputTokens / seconds : null;
     }
 
     function buildStatsTimingValue(seconds, color) {

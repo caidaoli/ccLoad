@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -277,11 +276,6 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 		}
 		summary["cache_read"] = cacheRead
 		summary["cache_create"] = cacheCreation
-
-		if output > 0 && durationMs > 0 {
-			speed := float64(output) / (float64(durationMs) / 1000.0)
-			summary["speed"] = math.Round(speed*10) / 10
-		}
 
 		if cost, ok := sr.costUSD(testReq); ok {
 			summary["cost_usd"] = cost
@@ -874,15 +868,6 @@ func writeChatNonStreamSummary(c *gin.Context, result map[string]any) {
 	}
 	if v, ok := result["cost_usd"]; ok {
 		summary["cost_usd"] = v
-	}
-	durationMs, _ := result["duration_ms"].(int64)
-	outputTokens := 0
-	if usage, ok := result["usage"].(map[string]any); ok {
-		outputTokens = usageInt(usage, "output_tokens")
-	}
-	if outputTokens > 0 && durationMs > 0 {
-		speed := float64(outputTokens) / (float64(durationMs) / 1000.0)
-		summary["speed"] = math.Round(speed*10) / 10
 	}
 
 	jsonBytes, err := sonic.Marshal(map[string]any{"summary": summary})

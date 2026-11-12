@@ -20,6 +20,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 通用
   // ============================================================
   'common.save': '保存',
+  'common.speedTitle': '输出速度 = 输出 Token ÷ 生成耗时。流式且无推理 Token：生成耗时 = 总耗时 − 首字（不足 1 秒时用总耗时）；含推理 Token 或非流式：用总耗时（隐藏推理在首字之前生成）。汇总值 = 总输出 ÷ 总生成耗时，只计有输出的成功请求。',
   'common.cancel': '取消',
   'common.retry': '重试',
   'common.delete': '删除',
@@ -1084,7 +1085,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'tokens.table.latency': '首字 / 耗时',
   'tokens.table.latencyTitle': '成功流式请求平均首字时间 / 成功请求平均耗时',
   'tokens.table.speed': 'Tok/s',
-  'tokens.table.speedTitle': '成功请求的输出速度：输出 Token 总量 / 生成总耗时（流式扣除首字时间）',
   'tokens.limitShortDaily': '日',
   'tokens.limitShortMonthly': '月',
   'tokens.limitShortTotal': '总',
@@ -1900,7 +1900,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.noMatchingModels': '无匹配的模型',
   // 统计显示
   'channels.stats.firstByte': '首字',
-  'channels.stats.speed': '速度',
   'channels.stats.requests': '请求',
   'channels.stats.requestCount': '{count}次',
   'channels.stats.cacheRead': '缓读',

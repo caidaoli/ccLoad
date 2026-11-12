@@ -286,6 +286,8 @@ func TestMetrics_TokenSpeedUsesSuccessfulOutputAndEffectiveDuration(t *testing.T
 		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, IsStreaming: true, Duration: 4, FirstByteTime: 1, OutputTokens: 60, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 2, OutputTokens: 20, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, IsStreaming: true, Duration: 1.2, FirstByteTime: 0.6, OutputTokens: 12, LogSource: model.LogSourceProxy},
+		// 含推理 Token：隐藏推理在首字前生成，按总耗时 27 秒计
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, IsStreaming: true, Duration: 27, FirstByteTime: 25, OutputTokens: 654, ReasoningTokens: 516, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 500, Duration: 1, OutputTokens: 1000, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 499, Duration: 1, OutputTokens: 1000, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 1, LogSource: model.LogSourceProxy},
@@ -298,9 +300,9 @@ func TestMetrics_TokenSpeedUsesSuccessfulOutputAndEffectiveDuration(t *testing.T
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
 	}
-	if len(stats) != 1 || stats[0].SpeedOutputTokens == nil || *stats[0].SpeedOutputTokens != 92 ||
-		stats[0].SpeedDurationSeconds == nil || math.Abs(*stats[0].SpeedDurationSeconds-6.2) > 1e-9 {
-		t.Fatalf("speed aggregates = %+v, want 92 tokens over 6.2 seconds", stats)
+	if len(stats) != 1 || stats[0].SpeedOutputTokens == nil || *stats[0].SpeedOutputTokens != 746 ||
+		stats[0].SpeedDurationSeconds == nil || math.Abs(*stats[0].SpeedDurationSeconds-33.2) > 1e-9 {
+		t.Fatalf("speed aggregates = %+v, want 746 tokens over 33.2 seconds", stats)
 	}
 }
 

@@ -793,7 +793,8 @@ function calculateLogSpeed(entry) {
   return calculateTokenSpeed(
     Number(entry?.output_tokens),
     Number(entry?.duration),
-    entry?.is_streaming ? Number(entry?.first_byte_time) : 0
+    entry?.is_streaming ? Number(entry?.first_byte_time) : 0,
+    entry?.reasoning_tokens
   );
 }
 

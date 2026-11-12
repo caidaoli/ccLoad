@@ -136,7 +136,7 @@ const CHANNEL_MODE_HEAD = `
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
   <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
-  <th class="table-col-speed" data-i18n="modelTest.speed" data-sort-key="speed">速度(tok/s)</th>
+  <th class="table-col-speed" data-i18n="modelTest.speed" data-i18n-title="common.speedTitle" data-sort-key="speed">速度(tok/s)</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
@@ -152,7 +152,7 @@ const MODEL_MODE_HEAD = `
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
   <th class="table-col-metric" data-i18n="common.output" data-sort-key="outputTokens">输出</th>
-  <th class="table-col-speed" data-i18n="modelTest.speed" data-sort-key="speed">速度(tok/s)</th>
+  <th class="table-col-speed" data-i18n="modelTest.speed" data-i18n-title="common.speedTitle" data-sort-key="speed">速度(tok/s)</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
@@ -913,7 +913,8 @@ function calculateTestSpeed(data, usage) {
   return calculateTokenSpeed(
     outputTokens,
     Number(data?.duration_ms) / 1000,
-    Number(data?.first_byte_duration_ms) / 1000
+    Number(data?.first_byte_duration_ms) / 1000,
+    usage?.reasoning_tokens
   );
 }
 
@@ -4667,7 +4668,7 @@ function markChatCopyButtonCopied(btn, copiedClass) {
 /**
  * 在 assistant 气泡右下方渲染 token 统计信息。
  * @param {HTMLElement} bubble
- * @param {object} summary - { first_byte_ms, duration_ms, input_tokens, output_tokens, cache_read, cache_create, speed, cost_usd }
+ * @param {object} summary - { first_byte_ms, duration_ms, input_tokens, output_tokens, reasoning_tokens, cache_read, cache_create, cost_usd }
  */
 function renderChatBubbleStats(bubble, summary) {
   if (!bubble || !summary) return;
@@ -4692,8 +4693,14 @@ function renderChatBubbleStats(bubble, summary) {
   if (summary.cache_create != null && summary.cache_create > 0) {
     parts.push(chatStatPart('modelTest.cacheCreate', '缓建', chatStatValue(formatChatStatNumber(summary.cache_create), 'token-type--cache-create', '')));
   }
-  if (summary.speed != null && summary.speed > 0) {
-    parts.push(chatStatValue(`${summary.speed.toFixed(1)} tok/s`, 'stats-value-dynamic', `--stats-accent:${window.getSpeedColor(summary.speed)};`));
+  const speed = calculateTokenSpeed(
+    summary.output_tokens,
+    Number(summary.duration_ms) / 1000,
+    Number(summary.first_byte_ms) / 1000,
+    summary.reasoning_tokens
+  );
+  if (speed !== null) {
+    parts.push(`<span title="${chatStatLabel('common.speedTitle', '')}">${chatStatValue(`${speed.toFixed(1)} tok/s`, 'stats-value-dynamic', `--stats-accent:${window.getSpeedColor(speed)};`)}</span>`);
   }
   if (summary.cost_usd != null && summary.cost_usd > 0) {
     parts.push(chatStatValue(formatCost(summary.cost_usd), 'stats-value-warning', ''));

@@ -8,8 +8,8 @@
   }
 })(typeof window !== 'undefined' ? window : globalThis, function createStatsGrouping() {
   // 合并多条统计为同结构条目（渠道行、合计行共用）：
-  // 计数/Token/费用直接相加；首字/耗时按后端返回的各自样本数加权；Tok/s 用 总输出 / 总生成秒数，
-  // 生成秒数口径与 calculateTokenSpeed 一致（耗时减首字不足 1 秒时退回总耗时）。
+  // 计数/Token/费用直接相加；首字/耗时按后端返回的各自样本数加权；
+  // Tok/s 的分子分母（speed_output_tokens / speed_duration_seconds）由后端逐条按统一口径累加，这里直接相加。
   function aggregateStatsEntries(entries) {
     const aggregate = {
       success: 0,
@@ -20,14 +20,14 @@
       total_cache_read_input_tokens: 0,
       total_cache_creation_input_tokens: 0,
       total_cost: 0,
-      effective_cost: 0
+      effective_cost: 0,
+      speed_output_tokens: 0,
+      speed_duration_seconds: 0
     };
     let firstByteWeighted = 0;
     let firstByteSamples = 0;
     let durationWeighted = 0;
     let durationSamples = 0;
-    let speedOutputTokens = 0;
-    let speedGenerationSeconds = 0;
 
     for (const entry of entries) {
       aggregate.success += entry.success || 0;
@@ -56,25 +56,12 @@
         durationSamples += durationCount;
       }
 
-      const success = Number(entry.success) || 0;
-      if (success <= 0 || duration <= 0) continue;
-
-      const output = Number(entry.total_output_tokens) || 0;
-      if (output > 0) {
-        let generationSeconds = duration;
-        if (firstByte > 0 && firstByte < duration && duration - firstByte >= 1) {
-          generationSeconds = duration - firstByte;
-        }
-        speedOutputTokens += output;
-        speedGenerationSeconds += generationSeconds * success;
-      }
+      aggregate.speed_output_tokens += Number(entry.speed_output_tokens) || 0;
+      aggregate.speed_duration_seconds += Number(entry.speed_duration_seconds) || 0;
     }
 
     aggregate.avg_first_byte_time_seconds = firstByteSamples > 0 ? firstByteWeighted / firstByteSamples : 0;
     aggregate.avg_duration_seconds = durationSamples > 0 ? durationWeighted / durationSamples : 0;
-    aggregate.aggregate_speed = speedOutputTokens > 0 && speedGenerationSeconds > 0
-      ? speedOutputTokens / speedGenerationSeconds
-      : null;
     return aggregate;
   }
 

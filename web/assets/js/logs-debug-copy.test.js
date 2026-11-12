@@ -534,3 +534,15 @@ test('narrow desktop hides IP and token columns by default while explicit choice
     }
   }
 });
+
+test('token speed subtracts first byte only for streams without reasoning tokens', () => {
+  withUiFormatters(({ calculateTokenSpeed }) => {
+    // 无推理：扣除首字 → 654 / (27 - 25)
+    assert.equal(calculateTokenSpeed(654, 27, 25, 0), 327);
+    // 含推理：隐藏推理在首字前生成，按总耗时 → 654 / 27
+    assert.equal(calculateTokenSpeed(654, 27, 25, 516), 654 / 27);
+    // 扣除首字后不足 1 秒时用总耗时
+    assert.equal(calculateTokenSpeed(10, 1.5, 1, 0), 10 / 1.5);
+    assert.equal(calculateTokenSpeed(0, 5, 1, 0), null);
+  });
+});

@@ -81,6 +81,7 @@ func (s *failingTokenStatsStore) UpdateTokenStats(
 	int64,
 	int64,
 	int64,
+	int64,
 	float64,
 	float64,
 	time.Time,

@@ -873,6 +873,7 @@ func (s *SQLStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, no
 //   - firstByteTime: 流式请求的首字节时间(秒)，非流式时为0
 //   - promptTokens: 输入token数量
 //   - completionTokens: 输出token数量
+//   - reasoningTokens: 输出中的推理token数量，非 0 时输出速度按总耗时计算
 //   - costUSD: 本次请求费用(美元)；token 与费用按传入值累加，不计费的请求传 0
 func (s *SQLStore) UpdateTokenStats(
 	ctx context.Context,
@@ -883,6 +884,7 @@ func (s *SQLStore) UpdateTokenStats(
 	firstByteTime float64,
 	promptTokens int64,
 	completionTokens int64,
+	reasoningTokens int64,
 	cacheReadTokens int64,
 	cacheCreationTokens int64,
 	costUSD float64,
@@ -899,7 +901,7 @@ func (s *SQLStore) UpdateTokenStats(
 	var speedDuration float64
 	if successFlag && completionTokens > 0 && duration > 0 {
 		speedOutputTokens = completionTokens
-		speedDuration = speedGenerationSeconds(duration, isStreaming, firstByteTime)
+		speedDuration = speedGenerationSeconds(duration, isStreaming, firstByteTime, reasoningTokens)
 	}
 	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
 	dayStartMs, monthStartMs := model.AuthTokenCostPeriodStarts(completedAt)

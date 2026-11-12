@@ -40,7 +40,7 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	}
 
 	// 失败请求：累加失败次数，不计耗时均值；token与费用按调用方传入值累加（已提交流的部分用量）。
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 2.0, false, 0, 10, 20, 3, 4, 1.0, 0.25, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 2.0, false, 0, 10, 20, 0, 3, 4, 1.0, 0.25, time.Now()); err != nil {
 		t.Fatalf("update token stats (failure): %v", err)
 	}
 
@@ -64,7 +64,7 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	}
 
 	// 客户端取消：只累加用量与费用，不计成功/失败次数，也不影响耗时统计。
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsCanceled, 9.0, false, 0, 10, 20, 3, 4, 0.5, 0.25, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsCanceled, 9.0, false, 0, 10, 20, 0, 3, 4, 0.5, 0.25, time.Now()); err != nil {
 		t.Fatalf("update token stats (canceled): %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 
 	// 成功请求：累加成功次数、token与费用，并计入耗时均值。
 	completedAt := time.Now()
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 4.0, false, 0, 10, 20, 3, 4, 0.5, 0.25, completedAt); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 4.0, false, 0, 10, 20, 0, 3, 4, 0.5, 0.25, completedAt); err != nil {
 		t.Fatalf("update token stats (success): %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestUpdateTokenStats_UsesCompletionPeriodWithoutRegressingNewerWindows(t *t
 	oldDayStart, oldMonthStart := model.AuthTokenCostPeriodStarts(oldCompletedAt)
 	currentDayStart, currentMonthStart := model.AuthTokenCostPeriodStarts(now)
 
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
 		t.Fatalf("update old-period token stats: %v", err)
 	}
 
@@ -180,11 +180,11 @@ func TestUpdateTokenStats_UsesCompletionPeriodWithoutRegressingNewerWindows(t *t
 		t.Fatalf("last_used_at=%v, want %d", got.LastUsedAt, oldCompletedAt.UnixMilli())
 	}
 
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0.2, 0.2, now); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0, 0.2, 0.2, now); err != nil {
 		t.Fatalf("update current-period token stats: %v", err)
 	}
 	// 再迟到一个旧周期事件：总额仍应记账，但当前日/月窗口和 last_used_at 不得倒退。
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
 		t.Fatalf("update delayed old-period token stats: %v", err)
 	}
 	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
@@ -235,7 +235,7 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 
 	// 第一次流式请求：首字 1s，耗时 3s
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 3.0, true, 1.0, 10, 20, 0, 0, 0.1, 0.1, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 3.0, true, 1.0, 10, 20, 0, 0, 0, 0.1, 0.1, time.Now()); err != nil {
 		t.Fatalf("update token stats (streaming 1): %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 
 	// 第二次流式请求：首字 2s、耗时 5s，期望均值 1.5 / 4
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 5.0, true, 2.0, 5, 10, 0, 0, 0.05, 0.05, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 5.0, true, 2.0, 5, 10, 0, 0, 0, 0.05, 0.05, time.Now()); err != nil {
 		t.Fatalf("update token stats (streaming 2): %v", err)
 	}
 
@@ -270,7 +270,7 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 
 	// 已出首字的失败流不计入首字与耗时均值
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 60.0, true, 30.0, 0, 0, 0, 0, 0, 0, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 60.0, true, 30.0, 0, 0, 0, 0, 0, 0, 0, time.Now()); err != nil {
 		t.Fatalf("update token stats (failed stream): %v", err)
 	}
 	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
@@ -291,7 +291,7 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 
 	// 扣除首字后不足 1 秒时按总耗时计：+1.5s，输出 +6
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.5, true, 1.0, 0, 6, 0, 0, 0, 0, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.5, true, 1.0, 0, 6, 0, 0, 0, 0, 0, time.Now()); err != nil {
 		t.Fatalf("update token stats (short generation): %v", err)
 	}
 	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
@@ -300,5 +300,17 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 	if got.SpeedOutputTokens != 36 || got.SpeedDurationSeconds != 6.5 {
 		t.Fatalf("unexpected speed stats after short generation: tokens=%d seconds=%v, want 36/6.5", got.SpeedOutputTokens, got.SpeedDurationSeconds)
+	}
+
+	// 含推理 Token 时隐藏推理发生在首字之前，按总耗时计：+27s，输出 +654
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 27.0, true, 25.0, 0, 654, 516, 0, 0, 0, 0, time.Now()); err != nil {
+		t.Fatalf("update token stats (reasoning): %v", err)
+	}
+	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.SpeedOutputTokens != 690 || got.SpeedDurationSeconds != 33.5 {
+		t.Fatalf("unexpected speed stats after reasoning request: tokens=%d seconds=%v, want 690/33.5", got.SpeedOutputTokens, got.SpeedDurationSeconds)
 	}
 }

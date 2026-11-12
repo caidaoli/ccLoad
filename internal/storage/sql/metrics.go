@@ -31,18 +31,28 @@ func (s *SQLStore) logsRangeIndexHint(rangeIndex string, filter *model.LogFilter
 }
 
 // 输出速度口径（统计页、渠道页、令牌页共用）：只算有输出的成功请求，速度 = 输出总量 / 生成总耗时。
-// 流式请求的生成耗时扣除首字，扣除后不足 1 秒时用总耗时；speedGenerationSeconds 是同一口径的增量版本。
+// 无推理 Token 的流式请求扣除首字，扣除后不足 1 秒时用总耗时；含推理 Token 时用总耗时，
+// 因为隐藏推理在首个可见事件之前生成，扣除首字会把这些 Token 摊到过短的时间上。
+// speedGenerationSeconds 是同一口径的增量版本。
 const (
 	speedSampleCondSQL   = `status_code >= 200 AND status_code < 300 AND output_tokens > 0 AND duration > 0`
 	speedOutputTokensSQL = `SUM(CASE WHEN ` + speedSampleCondSQL + ` THEN output_tokens ELSE 0 END)`
 	speedDurationSQL     = `SUM(CASE WHEN ` + speedSampleCondSQL + ` THEN
-				CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND first_byte_time < duration AND duration - first_byte_time >= 1
+				CASE WHEN reasoning_tokens = 0 AND is_streaming = 1 AND first_byte_time > 0 AND first_byte_time < duration AND duration - first_byte_time >= 1
 					THEN duration - first_byte_time ELSE duration END
 				ELSE 0 END)`
 )
 
-func speedGenerationSeconds(duration float64, isStreaming bool, firstByteTime float64) float64 {
-	if isStreaming && firstByteTime > 0 && firstByteTime < duration && duration-firstByteTime >= 1 {
+/**
+ * @brief 计算单条请求计入输出速度的生成耗时
+ * @param duration 请求总耗时（秒）
+ * @param isStreaming 是否流式请求
+ * @param firstByteTime 首个客户端可见事件耗时（秒），非流式为 0
+ * @param reasoningTokens 输出中的推理 Token 数
+ * @return 生成耗时（秒）；含推理 Token、非流式或扣除首字后不足 1 秒时返回总耗时
+ */
+func speedGenerationSeconds(duration float64, isStreaming bool, firstByteTime float64, reasoningTokens int64) float64 {
+	if reasoningTokens == 0 && isStreaming && firstByteTime > 0 && firstByteTime < duration && duration-firstByteTime >= 1 {
 		return duration - firstByteTime
 	}
 	return duration
