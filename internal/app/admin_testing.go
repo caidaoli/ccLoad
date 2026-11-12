@@ -2187,12 +2187,18 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 
 	if isEventStream {
 		if cfg.UsesAccioOAuth() && !testReq.Stream {
-			body, _, collectErr := collectChatCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
+			var rawUpstream bytes.Buffer
+			body, parser, collectErr := collectChatCompletion(ctx, io.TeeReader(resp.Body, &rawUpstream), func(parser *sseUsageParser) {
 				if testStreamParserHasFirstContent(parser) {
 					markTestFirstStreamContent(requestPlan, result, start)
 				}
 			}, nil, "Accio")
 			if collectErr != nil {
+				result["duration_ms"] = time.Since(start).Milliseconds()
+				result["upstream_response_body"] = rawUpstream.String()
+				if len(parser.GetLastError()) > 0 {
+					return attachTestDebugData(requestPlan, resp, parseTestStreamResponseBytes(rawUpstream.Bytes(), requestPlan.upstreamProtocol, resp.StatusCode, result, testReq, requestPlan.requestedServiceTier()))
+				}
 				result["success"], result["error"] = false, collectErr.Error()
 				return attachTestDebugData(requestPlan, resp, result)
 			}

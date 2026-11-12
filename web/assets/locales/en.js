@@ -418,6 +418,7 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.providerCodeBuddy': 'CodeBuddy',
   'channels.oauth.providerCodeBuddyInternational': 'CodeBuddy International',
   'channels.authTypeAccio': 'Accio',
+  'channels.accio.credits': 'Credits',
   "channels.accio.description": "China / international edition, browser authorization or credential JSON",
   "channels.accio.method": "Login method",
   "channels.accio.methodBrowser": "Browser authorization",

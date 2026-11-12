@@ -1442,13 +1442,14 @@ function buildOAuthUsageStatusHtml(channel) {
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
   const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
   const isQoder = channel?.auth_type === 'qoder_oauth' || state.data?.provider === 'qoder';
+  const isAccio = channel?.auth_type === 'accio_oauth' || state.data?.provider === 'accio';
   const isCodeBuddy = channel?.auth_type === 'codebuddy_oauth' || state.data?.provider === 'codebuddy';
   const displayedWindows = isCursor
     ? orderCursorUsageWindows(windows)
     : isCodex
       ? orderCodexUsageWindows(windows)
       : windows;
-  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : (isCodeBuddy || isQoder) ? [] : displayedWindows.map((windowInfo, windowIndex) => {
+  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : (isCodeBuddy || isQoder || isAccio) ? [] : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
@@ -1494,6 +1495,21 @@ function buildOAuthUsageStatusHtml(channel) {
     });
   });
   if (isQoder) rows.push(...buildQoderUsageRows(state.data?.qoder_credits, refresh));
+  if (isAccio) {
+    const subscription = state.data?.accio_usage?.subscription;
+    if (Number.isFinite(subscription?.remaining_quota)) {
+      const remain = subscription.remaining_quota;
+      const total = subscription.total_quota;
+      rows.push(buildOAuthCreditsHtml({
+        remain,
+        total,
+        used: Number.isFinite(total) ? Math.max(0, total - remain) : undefined
+      }, refresh, {
+        tooltipID: oauthUsageTooltipID('ch-accio-credits-tooltip', channel.id, 0),
+        label: `Accio · ${subscription.unit || window.t('channels.accio.credits')}`
+      }));
+    }
+  }
   const codeBuddyCreditsHtml = isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, refresh) : '';
   if (channel?.auth_type === 'loomy_session') {
     const credits = state.data?.loomy_credits;

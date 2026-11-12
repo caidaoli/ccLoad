@@ -1127,6 +1127,36 @@ func TestAccioGatewayAndNonSSEResponse(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 非流式管理测试保留 Accio SSE 错误正文和限流分类。
+ * @param t 测试上下文。
+ */
+func TestAccioAdminQuotaExhaustedDetails(t *testing.T) {
+	env := setupProxyTestEnv(t, []testChannel{{name: "accio", authType: model.AuthTypeAccioOAuth, oauthCredential: accioTestCredential(t, "global", "access"), models: "accio-test,spare-model", upstreamProtocol: "openai"}}, map[int]string{0: "https://phoenix-gw.alibaba.com/v1/chat/completions"})
+	const errorBody = `{"error":{"status":429,"type":"rate_limit_error","code":"rate_limit_exceeded","message":"quota exhausted"},"status":429}`
+	accioTestClient(env.server, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/llm/config" {
+			return accioTestResponse(req, http.StatusOK, strings.ReplaceAll(accioTestCatalog, `"protocol":"openai"`, `"protocol":"openai","reasoningEfforts":["low","medium","high"]`)), nil
+		}
+		return accioTestResponse(req, http.StatusOK, "data: "+errorBody+"\n\n"), nil
+	})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", configs[0].ID), map[string]any{"model": "accio-test", "client_protocol": "anthropic", "content": "hi", "stream": false}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(configs[0].ID)}}
+	env.server.HandleChannelTest(c)
+	data := gjson.GetBytes(response.Body.Bytes(), "data")
+	body := strings.TrimSpace(strings.TrimPrefix(data.Get("upstream_response_body").String(), "data: "))
+	if gjson.Get(body, "error.message").String() != "quota exhausted" {
+		t.Fatalf("missing upstream error details: %s", data.Raw)
+	}
+	if data.Get("success").Bool() || data.Get("status_code").Int() != http.StatusOK || data.Get("error").String() != "quota exhausted" || data.Get("api_error.error.status").Int() != 429 || data.Get("cooldown_action").String() != "model_cooldown_applied" {
+		t.Fatalf("incorrect quota classification: %s", data.Raw)
+	}
+}
+
 func TestAccioProxySentinelRateLimit(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {

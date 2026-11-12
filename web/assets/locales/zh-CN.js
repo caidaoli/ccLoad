@@ -418,6 +418,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.providerCodeBuddy': 'CodeBuddy',
   'channels.oauth.providerCodeBuddyInternational': 'CodeBuddy 国际版',
   'channels.authTypeAccio': 'Accio',
+  'channels.accio.credits': '积分',
   "channels.accio.description": "国内版 / 国际版，浏览器授权或导入凭据 JSON",
   "channels.accio.method": "登录方式",
   "channels.accio.methodBrowser": "浏览器授权",

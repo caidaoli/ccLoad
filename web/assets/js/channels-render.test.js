@@ -818,25 +818,33 @@ test('Qoder quota keeps accessible progress and escapes plan and bucket data', (
   } finally { global.window = previousWindow; global.getOAuthUsageState = previousUsage; global.isTokenChannelsReadOnly = previousReadOnly; }
 });
 
-test('Accio standard quota exposes remaining percentage with accessible progress', () => {
+test('Accio accessible progress follows credits rather than quota percentage', () => {
   const previousWindow = global.window;
   const previousUsage = global.getOAuthUsageState;
   const previousReadOnly = global.isTokenChannelsReadOnly;
   global.window = { t: (key, values = {}) => `${key} ${Object.values(values).join(' ')}`.trim() };
   global.isTokenChannelsReadOnly = () => false;
-  global.getOAuthUsageState = () => ({ status: 'ready', data: {
+  const data = {
     provider: 'accio', plan_type: 'Pro', windows: [{
-      kind: 'accio', limit_name: 'Accio', used_percent: 25, remaining_percent: 75,
+      kind: 'accio', limit_name: 'Accio', used_percent: 0, remaining_percent: 100,
       reset_at: '2027-01-01T00:00:00Z', limit_window_seconds: 0
-    }]
-  } });
+    }],
+    accio_usage: { subscription: { remaining_quota: 5, total_quota: 20 } }
+  };
+  global.getOAuthUsageState = () => ({ status: 'ready', data });
   try {
     const channel = { id: 9202, auth_type: 'accio_oauth' };
     assert.equal(channelShowsOAuthUsage(channel), true);
-    const html = buildOAuthUsageStatusHtml(channel);
-    assert.match(html, /role="progressbar"/);
-    assert.match(html, /aria-valuenow="75"/);
-    assert.match(html, /aria-label="[^"]*Accio[^"]*75/);
+    for (const [remain, percent] of [[5, 25], [0, 0], [20, 100]]) {
+      data.accio_usage.subscription.remaining_quota = remain;
+      const html = buildOAuthUsageStatusHtml(channel);
+      assert.equal((html.match(/role="progressbar"/g) || []).length, 1);
+      assert.match(html, new RegExp(`aria-valuenow="${percent}"`));
+    }
+    delete data.accio_usage.subscription.total_quota;
+    assert.doesNotMatch(buildOAuthUsageStatusHtml(channel), /role="progressbar"/);
+    delete data.accio_usage.subscription;
+    assert.doesNotMatch(buildOAuthUsageStatusHtml(channel), /role="progressbar"/);
     global.isTokenChannelsReadOnly = () => true;
     assert.equal(buildOAuthUsageStatusHtml(channel), '');
   } finally {
