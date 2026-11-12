@@ -374,6 +374,111 @@ func TestAccioBatchImportDeduplicatesRenamedAccount(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证四种客户端协议保留 Accio 会话字段，并在转换后拒绝非法字段。
+ * @param t 当前测试上下文。
+ */
+func TestAccioSessionFieldsCrossProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		name string ///< 客户端协议。
+		path string ///< 客户端生成端点。
+		body string ///< 最小有效请求。
+	}{
+		{name: "openai", path: "/v1/chat/completions", body: `{"model":"accio-test","messages":[{"role":"user","content":"hi"}]}`},
+		{name: "responses", path: "/v1/responses", body: `{"model":"accio-test","input":"hi"}`},
+		{name: "anthropic", path: "/v1/messages", body: `{"model":"accio-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`},
+		{name: "gemini", path: "/v1beta/models/accio-test:generateContent", body: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+	} {
+		for _, invalid := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/invalid=%v", tc.name, invalid), func(t *testing.T) {
+				env := setupProxyTestEnv(t, []testChannel{{name: "accio-session", authType: model.AuthTypeAccioOAuth, oauthCredential: accioTestCredential(t, "global", "session-access"), models: "accio-test", upstreamProtocol: "openai"}}, map[int]string{0: "https://phoenix-gw.alibaba.com/v1/chat/completions"})
+				var chats atomic.Int32
+				accioTestClient(env.server, func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/api/llm/config" {
+						return accioTestResponse(r, 200, accioTestCatalog), nil
+					}
+					chats.Add(1)
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						return nil, err
+					}
+					for key, want := range map[string]string{"session_key": "session", "conversation_id": "conversation", "conversation_name": "title"} {
+						if body[key] != want {
+							t.Errorf("native %s = %#v, want %q", key, body[key], want)
+						}
+					}
+					return accioTestResponse(r, 200, accioTestCompletion), nil
+				})
+				var request map[string]any
+				mustUnmarshalJSON(t, []byte(tc.body), &request)
+				request["session_key"] = nil
+				request["sessionKey"] = " session "
+				request["session_id"] = "lower-priority"
+				request["conversationId"] = " conversation "
+				request["conversationName"] = " title "
+				if invalid {
+					request["sessionKey"] = 42
+				}
+				w := doProxyRequest(t, env.engine, tc.path, request, nil)
+				wantStatus, wantChats := http.StatusOK, int32(1)
+				if invalid {
+					wantStatus, wantChats = http.StatusBadRequest, 0
+				}
+				if w.Code != wantStatus || chats.Load() != wantChats {
+					t.Fatalf("session conversion: status=%d chats=%d body=%s", w.Code, chats.Load(), w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证会话字段先透传再应用渠道规则，原生认证刷新重试不恢复已删除字段。
+ * @param t 当前测试上下文。
+ */
+func TestAccioSessionBodyRulesSurviveRefreshRetry(t *testing.T) {
+	rules := &model.CustomRequestRules{Body: []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "session_key", Value: json.RawMessage(`"rule-session"`)},
+		{Action: model.RuleActionRemove, Path: "conversation_id"},
+		{Action: model.RuleActionRemove, Path: "conversation_name"},
+	}}
+	env := setupProxyTestEnv(t, []testChannel{{name: "accio-session-rules", authType: model.AuthTypeAccioOAuth, oauthCredential: accioTestCredential(t, "global", "old-access"), models: "accio-test", upstreamProtocol: "openai", customRequestRules: rules}}, map[int]string{0: "https://phoenix-gw.alibaba.com/v1/chat/completions"})
+	var chats, refreshes atomic.Int32
+	accioTestClient(env.server, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/api/llm/config":
+			return accioTestResponse(r, 200, accioTestCatalog), nil
+		case "/api/auth/refresh_token":
+			refreshes.Add(1)
+			return accioTestResponse(r, 200, `{"data":{"accessToken":"new-access","refreshToken":"new-refresh","userId":"same-user"}}`), nil
+		default:
+			attempt := chats.Add(1)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			if body["session_key"] != "rule-session" {
+				t.Errorf("attempt %d ignored session override: %#v", attempt, body["session_key"])
+			}
+			for _, field := range []string{"conversation_id", "conversation_name"} {
+				if value, exists := body[field]; exists {
+					t.Errorf("attempt %d restored removed %s = %#v", attempt, field, value)
+				}
+			}
+			if attempt == 1 {
+				return accioTestResponse(r, 200, "data: {\"error_code\":\"401\",\"error_message\":\"token expired\"}\n\n"), nil
+			}
+			return accioTestResponse(r, 200, accioTestCompletion), nil
+		}
+	})
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "accio-test", "input": "hi", "sessionKey": "client-session", "conversation_id": "removed-conversation", "conversation_name": "removed-title",
+	}, nil)
+	if w.Code != http.StatusOK || chats.Load() != 2 || refreshes.Load() != 1 {
+		t.Fatalf("refresh retry: status=%d chats=%d refreshes=%d body=%s", w.Code, chats.Load(), refreshes.Load(), w.Body.String())
+	}
+}
+
 func TestAccioCrossProtocolTools(t *testing.T) {
 	const native = "data: {\"content\":{\"parts\":[{\"text\":\"checking\"}]}}\n\ndata: {\"content\":{\"parts\":[{\"function_call\":{\"id\":\"call-accio\",\"name\":\"lookup\",\"args_json\":\"{\\\"q\\\":\\\"test\\\"}\"}}]}}\n\ndata: {\"turn_complete\":true,\"finish_reason\":\"tool_calls\",\"usage_metadata\":{\"prompt_token_count\":10,\"candidates_token_count\":7,\"total_token_count\":17}}\n\n"
 	for _, client := range []string{"responses", "anthropic", "gemini"} {

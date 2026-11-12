@@ -14,10 +14,29 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
-// BuildChatRequest converts logical OpenAI Chat into Accio's native ADK wire.
-// ADK always returns SSE, including for logical nonstream requests.
+/**
+ * @brief Accio 会话字段及其客户端别名，首项为原生字段名和最高优先级。
+ */
+var sessionFields = [][]string{
+	{"session_key", "sessionKey", "session_id", "sessionId"},
+	{"conversation_id", "conversationId"},
+	{"conversation_name", "conversationName"},
+}
+
+/**
+ * @brief 将逻辑 Chat 请求转换为 Accio ADK 报文，保留客户端提供的会话标识。
+ * @param ctx 出站上下文；取消时中止网络请求。
+ * @param c 已验证账号凭证。
+ * @param body 逻辑 Chat 请求 JSON。
+ * @param model 目录声明的模型及能力。
+ * @return 可重放的原生 HTTP 请求；失败时为 nil，成功后调用方须关闭正文。
+ * @return 凭证、请求字段或模型能力非法，以及 JSON 编码或 URL 构造错误。
+ * @note 每次生成独立请求和消息 ID；ADK 始终返回 SSE。
+ */
 func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []byte, model Model) (*http.Request, error) {
 	if c == nil || c.AccessToken == "" || model.ID == "" {
 		return nil, errors.New("accio: credential and model name are required")
@@ -39,6 +58,22 @@ func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []by
 		"model": model.ID, "token": c.AccessToken, "tenant": "accio-agent", "iai_tag": "phoenix-desktop",
 		"empid": "", "request_id": id, "message_id": "msg-" + id,
 		"contents": contents, "system_instruction": system, "properties": properties,
+	}
+	for _, fields := range sessionFields {
+		for _, key := range fields {
+			value := input[key]
+			if value == nil {
+				continue
+			}
+			text, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("accio: %s must be a string", key)
+			}
+			if text = strings.TrimSpace(text); text != "" {
+				payload[fields[0]] = text
+				break
+			}
+		}
 	}
 	if err := chatTools(input["tools"], payload); err != nil {
 		return nil, err
@@ -122,6 +157,40 @@ func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []by
 		req.Header.Set("utdid", deviceID)
 	}
 	return req, nil
+}
+
+/**
+ * @brief 补回跨协议转换遗漏的 Accio 会话字段，供代理和管理测试在请求体规则之前使用。
+ * @param body 转换后的有效 JSON 请求。
+ * @param source 客户端原始 JSON 请求。
+ * @return 带会话字段的请求；已有任一同组字段时保持该组原值。
+ * @return JSON 字段写入失败时返回错误。
+ * @note 仅复制原值；类型与空白处理由 BuildChatRequest 在最终出站边界执行。
+ */
+func PreserveSessionFields(body, source []byte) ([]byte, error) {
+	current, original := gjson.ParseBytes(body), gjson.ParseBytes(source)
+	for _, fields := range sessionFields {
+		present := false
+		for _, key := range fields {
+			if current.Get(key).Exists() {
+				present = true
+				break
+			}
+		}
+		if present {
+			continue
+		}
+		for _, key := range fields {
+			if value := original.Get(key); value.Exists() {
+				var err error
+				body, err = sjson.SetRawBytes(body, key, []byte(value.Raw))
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return body, nil
 }
 
 func validateChatOptions(input map[string]any) error {

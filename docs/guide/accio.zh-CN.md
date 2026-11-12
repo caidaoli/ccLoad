@@ -26,6 +26,8 @@
 
 访问令牌临期或收到认证失败时自动刷新；没有刷新令牌的账号需要重新导入。额度卡显示上游用量百分比与重置时间，保留订阅原始单位，不把百分比当作积分或美元。Accio 没有接入签到功能。
 
+请求体中的 `session_key`、`conversation_id`、`conversation_name` 会透传给 Accio，支持 Chat、Responses、Anthropic 和 Gemini 入口。也接受 `sessionKey`、`session_id`、`sessionId`、`conversationId`、`conversationName`：同组按上述顺序取首个非空字符串，去除首尾空白后发送原生蛇形字段，非字符串值报错。渠道请求体规则可覆盖或删除这些字段；不会自动从请求头生成会话标识。每次推理仍独立生成 `request_id` 和 `message_id`。
+
 国内版与国际版都连接 `phoenix-gw.alibaba.com`，使用不同地区请求头。推理直接发送 HTTP 请求，不需要运行 Accio 桌面程序。网页登录使用 PKCE 和 state 校验，回调地址在授权与换码时保持一致；凭据只交给自己的 ccLoad 后端，不要放入公共日志或仓库。
 
 实现经过模拟上游的凭据、目录、工具、流终态、刷新和跨协议集成测试。2026-11-07 已在真实国际版账号复现并修复 `accio_gateway_blocked / Bxpunish: 1`：所有请求从 `undici` 改为标准浏览器 UA，使用客户端版本 `0.34.4`，推理使用 `appKey: OneChat`。账号信息、目录、额度与订阅查询，以及直连 `auto` 模型的流式和非流式调用均成功。此次测试账号没有 `sgcookie`，无需为该修复重新导入凭据；真实网页登录及国内版推理未在此次验证中执行。

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
@@ -614,6 +615,13 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		}
 	}
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
+	if !wireBodyRulesApplied && isAccioChatRequest(cfg, upstreamProtocol) {
+		var err error
+		body, err = accioauth.PreserveSessionFields(body, sourceBody)
+		if err != nil {
+			return nil, "", &protocol.RequestTranslationError{Err: err}
+		}
+	}
 	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
 		body = prepareCodeBuddyDefaults(body, sourceBody)
 	}

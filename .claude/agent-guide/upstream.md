@@ -13,6 +13,7 @@
 - 国内国际共用 `phoenix-gw.alibaba.com`，`x-package-region` 分别为 `CN` / `GLOBAL`。用户资料 `/api/auth/userinfo` 使用 POST JSON `accessToken`（2026-10-20 实测纠正参考项目 GET 导致的 405）；额度与订阅 GET 使用 query `accessToken`，刷新 POST 使用 body `accessToken/refreshToken`；不携带 Bearer。临期一分钟刷新、401/403 单次刷新、singleflight 与 CAS 保留新凭据及并发额度快照。
 - 目录 `POST /api/llm/config` 获取可见对话模型，公开 ID 与推理 body 的 `model` 统一使用目录 `modelName`，列表按名称去重、不生成编码重定向，缺少名称的条目跳过。不解析或匹配 `modelCode`，旧编码重定向不兼容；不使用静态别名或兜底模型。目录按渠道/地区/用户缓存一小时并绑定访问令牌指纹，避免换凭据仍用旧能力。
 - `accio_wire.go` 在统一出站边界构造 ADK `/api/adk/llm/generateContent?sg_k=md5(request_id)` 请求；认证 token 仅放实际请求体，逻辑请求留给调试/重试/转换。消息、工具及思考参数转原生字段，思考落点由模型目录 `protocol` 决定。
+- Accio 会话字段 `session_key`、`conversation_id/name` 在跨协议转换后、渠道 BodyRules 前从原始 body 补回；接受驼峰及 `session_id/sessionId` 别名，按原生名优先取首个非空字符串并去首尾空白。非字符串报错；重试不恢复规则已删除的字段，不从头部推导会话。每次 `request_id/message_id` 仍独立生成。
 - 推理携带 `utdid`：官方 JSON 的 `utdid/deviceId` 保存为 `device_id`；缺少时按地区+已验证用户标识派生稳定 desktop 标识，刷新令牌不改变设备身份，重新授权缺项保留已有设备值。2026-10-20 实测缺该头会返回 HTTP 200 HTML + `Bxpunish: 1`；补头后进入真实 SSE，但测试环境仍收到业务码 555 / sentinel rate limit（映射429）。管理测试诊断记录实际原生请求，body token 与设备头脱敏；网关挑战先分类为502并剔除挑战Cookie/跳转地址，不误报EOF或刷新令牌。
 - 官方 `sgcookie/sgCookie` 经导入、OAuth 换码和刷新保存为可选 `sgcookie`，仅随推理发送同名头并在调试输出脱敏；缺项保留已有值，拒绝超过4096字节或非可见 ASCII 的值。刷新期间仅更新 cookie 时保留最新 cookie 并发布已轮换令牌，不能把 cookie 更新误判为新授权而丢弃已消费刷新令牌的结果。
 - 正常推理响应为 SSE，转换成 Chat SSE 后复用现有协议转换及非流式聚合器；空 `content` 对象允许缺少 `parts` 或 `parts: null`，仍处理同帧终态与 usage，除 `null` 外的非数组 `parts` 拒绝。保留工具参数与 usage，缺失终态的 EOF 返回错误，已有输出后不重放。原生业务错误映射 401/429/502，SSE 错误携带顶层 status 供通用分类器识别。

@@ -88,6 +88,15 @@ fingerprints, raw response exposure, or redirect following is added.
 Inference uses `POST /api/adk/llm/generateContent?sg_k=md5(request_id)` with
 body `token`, `message_id`, `tenant=accio-agent`, `iai_tag=phoenix-desktop`,
 `properties.normalized_response="true"`, and the `appKey`/version/region headers.
+Client-provided `session_key`, `conversation_id`, and `conversation_name` survive
+Chat, Responses, Anthropic, and Gemini conversion before channel body rules.
+Aliases are checked in order: `session_key` / `sessionKey` / `session_id` /
+`sessionId`, `conversation_id` / `conversationId`, and `conversation_name` /
+`conversationName`. The first nonempty string is trimmed and emitted under its
+native name; non-string values are rejected. Retries do not restore fields removed
+by body rules. Per-request `request_id` / `message_id` remain generated locally.
+This passthrough follows the user-provided accio-manager checkout `a975473`;
+no account storage or implementation code is imported.
 ADK uses snake_case content parts and JSON-string tool declarations/arguments/results.
 Catalog protocol `openai`/`responses` puts reasoning effort in `properties`;
 other protocols put it at the top level. Native SSE camelCase/snake_case fields

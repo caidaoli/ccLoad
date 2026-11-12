@@ -74,6 +74,76 @@ func TestBuildChatRequestNativeContract(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证会话字段的别名优先级、空值和类型边界，以及每次请求独立生成消息标识。
+ * @param t 当前测试上下文。
+ */
+func TestBuildChatRequestSessionFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string    ///< 用例名称。
+		fields string    ///< 客户端会话字段 JSON。
+		want   [3]string ///< 原生 session_key、conversation_id、conversation_name。
+	}{
+		{name: "missing"},
+		{name: "native priority", fields: `,"session_key":" session ","sessionKey":"other","session_id":"other","sessionId":42,"conversation_id":" conversation ","conversationId":false,"conversation_name":" title ","conversationName":[]`, want: [3]string{"session", "conversation", "title"}},
+		{name: "camel aliases", fields: `,"session_key":null,"sessionKey":" camel ","session_id":"other","conversation_id":" ","conversationId":" conversation ","conversation_name":null,"conversationName":" title "`, want: [3]string{"camel", "conversation", "title"}},
+		{name: "snake session id", fields: `,"session_key":" ","sessionKey":null,"session_id":" snake ","sessionId":"other"`, want: [3]string{"snake", "", ""}},
+		{name: "camel session id", fields: `,"session_key":null,"sessionKey":" ","session_id":"\t","sessionId":" camel-id "`, want: [3]string{"camel-id", "", ""}},
+		{name: "empty", fields: `,"session_key":null,"sessionKey":" ","session_id":"","sessionId":"\t","conversation_id":null,"conversationId":" ","conversation_name":"\n","conversationName":null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := []byte(`{"messages":[{"role":"user","content":"hi"}],"request_id":"client-request","message_id":"client-message"` + tc.fields + `}`)
+			var previousRequest, previousMessage string
+			for range 2 {
+				req, err := (&Service{}).BuildChatRequest(t.Context(), &Credential{Region: "global", AccessToken: "token"}, input, Model{ID: "native"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var body map[string]any
+				err = json.NewDecoder(req.Body).Decode(&body)
+				_ = req.Body.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, field := range []string{"session_key", "conversation_id", "conversation_name"} {
+					value, exists := body[field]
+					if tc.want[i] == "" {
+						if exists {
+							t.Errorf("empty %s sent as %#v", field, value)
+						}
+					} else if value != tc.want[i] {
+						t.Errorf("%s = %#v, want %q", field, value, tc.want[i])
+					}
+				}
+				for _, alias := range []string{"sessionKey", "session_id", "sessionId", "conversationId", "conversationName"} {
+					if _, exists := body[alias]; exists {
+						t.Errorf("native payload included alias %s", alias)
+					}
+				}
+				requestID, messageID := body["request_id"].(string), body["message_id"].(string)
+				if requestID == "" || messageID == "" || requestID == "client-request" || messageID == "client-message" || requestID == previousRequest || messageID == previousMessage {
+					t.Fatalf("request markers were not generated independently: request=%q message=%q", requestID, messageID)
+				}
+				previousRequest, previousMessage = requestID, messageID
+			}
+		})
+	}
+	for field, value := range map[string]string{
+		"session_key": "42", "sessionKey": "true", "session_id": "[]", "sessionId": "{}",
+		"conversation_id": "42", "conversationId": "true", "conversation_name": "[]", "conversationName": "{}",
+	} {
+		t.Run("invalid/"+field, func(t *testing.T) {
+			input := []byte(`{"messages":[{"role":"user","content":"hi"}],"` + field + `":` + value + `}`)
+			if req, err := (&Service{}).BuildChatRequest(t.Context(), &Credential{Region: "global", AccessToken: "token"}, input, Model{ID: "native"}); err == nil {
+				_ = req.Body.Close()
+				t.Fatal("non-string session field accepted")
+			} else if !strings.Contains(err.Error(), field) {
+				t.Fatalf("error omitted the invalid field: %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildChatRequestDeviceIdentity(t *testing.T) {
 	service := NewService(nil)
 	credential := &Credential{Region: "global", UserID: "account-a", AccessToken: "access"}
