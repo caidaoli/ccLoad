@@ -3616,6 +3616,9 @@ func retryBodyForRejectedRequest(
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
 		return retryBody, strategy, true
 	}
+	if retryBody, strategy, ok := qoderRetryBodyForMaxTokens(upstreamProtocol, cfg, plan, res); ok {
+		return retryBody, strategy, true
+	}
 	if retryBody, strategy, ok := openAIRetryBodyForMaxTokens(upstreamProtocol, plan, res); ok {
 		return retryBody, strategy, true
 	}

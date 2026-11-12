@@ -1,13 +1,17 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/qoderauth"
 )
 
 type rpmReservation struct {
@@ -170,6 +174,15 @@ func (s *Server) doUpstreamRequest(cfg *model.Config, req *http.Request) (*http.
 	return s.doReservedUpstreamRequest(cfg, req, release, err)
 }
 
+/**
+ * @brief 消费已预留的请求名额，构造提供商报文并规范化响应
+ * @param cfg 当前渠道
+ * @param req 逻辑上游请求
+ * @param release 释放请求名额的回调
+ * @param err 预留失败的错误
+ * @return 关闭正文时释放名额的响应，失败时为 nil
+ * @return 预留、转换、网络或响应读取错误
+ */
 func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request, release func(), err error) (*http.Response, error) {
 	if err != nil {
 		return nil, err
@@ -190,7 +203,15 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if cfg.UsesQoderOAuth() {
 		signed, wireErr := s.prepareQoderWire(cfg, req)
 		if wireErr != nil {
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
 			release()
+			var apiErr *qoderauth.APIError
+			if errors.As(wireErr, &apiErr) {
+				raw, _ := json.Marshal(map[string]any{"error": apiErr, "status": apiErr.StatusCode})
+				return &http.Response{StatusCode: apiErr.StatusCode, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(raw)), Request: req}, nil
+			}
 			return nil, wireErr
 		}
 		if req.Body != nil {
@@ -225,7 +246,8 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		}
 	}
 	if cfg.UsesQoderOAuth() {
-		if normalizeErr := normalizeQoderResponse(resp); normalizeErr != nil {
+		tools, _ := req.Context().Value(qoderToolsContextKey{}).([]map[string]any)
+		if normalizeErr := normalizeQoderResponse(resp, tools); normalizeErr != nil {
 			_ = resp.Body.Close()
 			release()
 			return nil, normalizeErr

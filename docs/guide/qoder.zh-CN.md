@@ -1,8 +1,10 @@
 # Qoder 渠道
 
-在渠道页添加 Qoder，选择国内版或国际版，通过网页登录、PAT 或凭据 JSON 导入。地区必须与账号一致。导入时自动读取模型目录，模型名为上游显示名去掉空白后的小写形式（如 `Qwen 3.8 Flash` → `qwen3.8flash`），转发时按名称不区分大小写匹配目录；模型调用支持现有协议转换、流式/非流式和工具调用。
+在渠道页添加 Qoder，选择国内版或国际版，通过网页登录、PAT 或凭据 JSON 导入。地区必须与账号一致。导入时自动读取模型目录，模型名为上游显示名去掉空白后的小写形式（如 `Qwen 3.8 Flash` → `qwen3.8flash`），目录以 App 场景为主，过滤禁用项；同名的其他模型以原生 key 区分，转发可按名称不区分大小写或原生 key 精确匹配；模型调用支持现有协议转换、流式/非流式和工具调用。
 
 凭据 JSON 使用 `type: "qoder"`、`region: "cn"` 或 `"global"`、`access_token`、`refresh_token`、`user_id`、`machine_id`、`expires_at`（Unix 秒）；不要把登录凭据放入公共日志或仓库。
+
+每次请求会前置 Qoder 默认身份提示词，再接原 system/developer 指令。会话及工具续轮保持稳定任务标识；输出预算与思考档按模型目录选择，短请求默认减少思考。
 
 系统设置中的 `antigravity_sensitive_words` 同样适用于 Qoder：在 system/developer 提示词的匹配词中插入零宽字符，不改写用户/助手文本、工具声明、参数或结果。设置为 `[]` 可禁用，修改后重启生效。
 

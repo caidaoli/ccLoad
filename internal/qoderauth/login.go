@@ -28,7 +28,10 @@ type LoginSession struct {
 	expiresAt time.Time
 }
 
-// StartLogin prepares a PKCE device login without contacting the upstream.
+// StartLogin prepares a PKCE device login for the edition's CLI client.
+/**
+ * @param region The explicit cn or global edition.
+ */
 func StartLogin(region string) (*LoginSession, error) {
 	if err := authRegion(region); err != nil {
 		return nil, err
@@ -43,13 +46,16 @@ func StartLogin(region string) (*LoginSession, error) {
 		return nil, err
 	}
 	origin := "https://qoder.com"
+	clientID := "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa"
 	if region == "cn" {
-		origin = "https://qoder.com.cn"
+		origin = "https://qoder.cn"
+		clientID = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
 	}
 	digest := sha256.Sum256([]byte(verifier))
 	query := url.Values{
 		"challenge":        {base64.RawURLEncoding.EncodeToString(digest[:])},
 		"challenge_method": {"S256"},
+		"client_id":        {clientID},
 		"machine_id":       {machineID},
 		"nonce":            {nonce},
 	}
@@ -59,7 +65,10 @@ func StartLogin(region string) (*LoginSession, error) {
 // StartLogin prepares a device login for callers that already own a Service.
 func (s *Service) StartLogin(region string) (*LoginSession, error) { return StartLogin(region) }
 
-// PollLogin performs one poll. The caller owns the polling schedule and session.
+// PollLogin performs one device-token poll; the caller owns the schedule.
+/**
+ * @param session The pending login containing the server-held PKCE verifier.
+ */
 func (s *Service) PollLogin(ctx context.Context, session *LoginSession) (*Credential, error) {
 	if session == nil || session.verifier == "" || session.nonce == "" {
 		return nil, errors.New("invalid Qoder login session")
@@ -85,6 +94,6 @@ func (s *Service) PollLogin(ctx context.Context, session *LoginSession) (*Creden
 	}
 	c.RefreshToken = authText(data, "refresh_token")
 	c.UserID = authText(data, "user_id")
-	c.ExpiresAt = authTimestamp(data)
+	c.ExpiresAt = authTimestamp(data, time.Second)
 	return s.CompleteIdentity(ctx, c)
 }

@@ -232,17 +232,16 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 	return w.buffer.Write(p)
 }
 
+/**
+ * @brief run reads international device identity from the official runtime in environment 3.
+ */
 func (m *Manager) run(parent context.Context, c component, uid string) (http.Header, error) {
 	if c.path == "" {
 		return nil, errors.New("qoder UMID component is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(parent, m.processTimeout)
 	defer cancel()
-	env := "4"
-	if c.source == "app" {
-		env = "3"
-	}
-	args := []string{env}
+	args := []string{"3"}
 	if m.goos == "darwin" || m.goos == "windows" {
 		args = append(args, "--account-stdin")
 	}
@@ -287,6 +286,9 @@ func (m *Manager) run(parent context.Context, c component, uid string) (http.Hea
 	return headers, nil
 }
 
+/**
+ * @brief discover locates installed desktop and platform-specific CLI runtime components.
+ */
 func (m *Manager) discover(region string) component {
 	if m.dataDir != "" && regularExecutable(m.installedPath(), m.goos) {
 		return component{m.installedPath(), "data"}
@@ -307,8 +309,12 @@ func (m *Manager) discover(region string) component {
 				resources = append(resources, filepath.Join(root, name+".app", "Contents", "Resources"))
 			}
 		case "windows":
-			for _, root := range []string{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs"), os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
-				if root == "" || root == "Programs" {
+			local := os.Getenv("LOCALAPPDATA")
+			if local == "" {
+				local = filepath.Join(m.home, "AppData", "Local")
+			}
+			for _, root := range []string{filepath.Join(local, "Programs"), os.Getenv("ProgramFiles"), os.Getenv("PROGRAMFILES"), os.Getenv("ProgramW6432"), os.Getenv("ProgramFiles(x86)")} {
+				if root == "" {
 					continue
 				}
 				install := filepath.Join(root, name)
@@ -331,12 +337,46 @@ func (m *Manager) discover(region string) component {
 			}
 		}
 	}
-	for _, dir := range []string{".qoder", ".qoder-cn"} {
-		matches, _ := filepath.Glob(filepath.Join(m.home, dir, ".bin", "umid-*", exe))
-		for i := len(matches) - 1; i >= 0; i-- {
-			if regularExecutable(matches[i], m.goos) {
-				return component{matches[i], "cli"}
+	platform, arch := m.goos, m.arch
+	if platform == "windows" {
+		platform = "win32"
+	}
+	if arch == "amd64" {
+		arch = "x64"
+	}
+	for _, cli := range []struct{ prefix, dir string }{{"QODER_", ".qoder"}, {"QODERCN_", ".qoder-cn"}} {
+		config := os.Getenv(cli.prefix + "CONFIG_DIR")
+		if config == "" {
+			home := os.Getenv(cli.prefix + "CLI_HOME")
+			if home == "" {
+				home = m.home
 			}
+			dir := os.Getenv(cli.prefix + "CONFIG_DIR_NAME")
+			if dir == "" {
+				dir = cli.dir
+			}
+			config = filepath.Join(home, dir)
+		}
+		cache := filepath.Join(config, ".bin")
+		pattern := "runtime-info-" + platform + "-" + arch + "-*"
+		if m.goos == "windows" {
+			pattern += ".exe"
+		}
+		matches, _ := filepath.Glob(filepath.Join(cache, pattern))
+		directories, _ := filepath.Glob(filepath.Join(cache, "umid-"+platform+"-"+arch+"-*", exe))
+		matches = append(matches, directories...)
+		var newest component
+		var modified time.Time
+		for _, path := range matches {
+			if strings.HasSuffix(path, ".tmp") || !regularExecutable(path, m.goos) {
+				continue
+			}
+			if info, err := os.Stat(path); err == nil && (newest.path == "" || info.ModTime().After(modified)) {
+				newest, modified = component{path, "cli"}, info.ModTime()
+			}
+		}
+		if newest.path != "" {
+			return newest
 		}
 	}
 	return component{}

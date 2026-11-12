@@ -22,9 +22,15 @@ import (
 	"time"
 )
 
-// The subprocess is this test executable, never a downloaded component or shell.
+/**
+ * @brief TestMain uses this test executable as the official-runtime fixture.
+ * Every component source must request international environment 3.
+ */
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && (os.Args[1] == "4" || os.Args[1] == "3") {
+		if os.Args[1] != "3" {
+			os.Exit(2)
+		}
 		switch os.Getenv("CCLOAD_UMID_FIXTURE") {
 		case "account":
 			var payload struct {
@@ -48,6 +54,9 @@ func TestMain(m *testing.M) {
 			fmt.Println(`{"machineToken":"secret"}`)
 		case "failure":
 			os.Exit(1)
+		case "environment":
+			value, _ := json.Marshal(map[string]string{"machineToken": os.Args[1], "machineCode": "code", "machineType": "4"})
+			fmt.Println(string(value))
 		default:
 			fmt.Println(`{"machineToken":"token","machineCode":"code","machineType":"4"}`)
 		}
@@ -515,16 +524,40 @@ func TestWaitingInstallerCancellationDoesNotCancelLeader(t *testing.T) {
 	}
 }
 
+/**
+ * @brief TestDiscoversOfficialClientAndCLI verifies installed runtime discovery and execution.
+ */
 func TestDiscoversOfficialClientAndCLI(t *testing.T) {
-	for _, source := range []string{"app", "cli"} {
-		t.Run(source, func(t *testing.T) {
+	for _, key := range []string{"LOCALAPPDATA", "ProgramFiles", "PROGRAMFILES", "ProgramW6432", "ProgramFiles(x86)", "QODER_CONFIG_DIR", "QODER_CLI_HOME", "QODER_CONFIG_DIR_NAME", "QODERCN_CONFIG_DIR", "QODERCN_CLI_HOME", "QODERCN_CONFIG_DIR_NAME"} {
+		t.Setenv(key, "")
+	}
+	for _, tc := range []struct {
+		name, goos, arch, source, path, env string
+	}{
+		{"desktop", "darwin", "arm64", "app", "Applications/Qoder.app/Contents/Resources/umid/runtime-info", ""},
+		{"CLI directory", "darwin", "arm64", "cli", ".qoder/.bin/umid-darwin-arm64-fixture/runtime-info", ""},
+		{"CLI file", "darwin", "arm64", "cli", ".qoder/.bin/runtime-info-darwin-arm64-fixture", ""},
+		{"Linux x64", "linux", "amd64", "cli", ".qoder/.bin/runtime-info-linux-x64-fixture", ""},
+		{"Windows user desktop", "windows", "amd64", "app", "AppData/Local/Programs/Qoder/resources/umid/runtime-info.exe", ""},
+		{"Windows system desktop", "windows", "amd64", "app", "system/Qoder/resources/umid/runtime-info.exe", "ProgramW6432"},
+		{"Windows CLI directory", "windows", "amd64", "cli", ".qoder/.bin/umid-win32-x64-fixture/runtime-info.exe", ""},
+		{"Windows CLI file", "windows", "amd64", "cli", ".qoder/.bin/runtime-info-win32-x64-fixture.exe", ""},
+		{"CLI config directory", "linux", "amd64", "cli", "config/.bin/runtime-info-linux-x64-fixture", "QODER_CONFIG_DIR"},
+		{"CN CLI config directory", "linux", "amd64", "cli", "config/.bin/runtime-info-linux-x64-fixture", "QODERCN_CONFIG_DIR"},
+		{"CLI home and name", "linux", "amd64", "cli", "cli-home/custom-name/.bin/runtime-info-linux-x64-fixture", "QODER_CLI_HOME"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			m := testManager(t)
-			m.goos = "darwin"
-			var target string
-			if source == "app" {
-				target = filepath.Join(m.home, "Applications", "Qoder.app", "Contents", "Resources", "umid", "runtime-info")
-			} else {
-				target = filepath.Join(m.home, ".qoder", ".bin", "umid-darwin-arm64-fixture", "runtime-info")
+			m.goos, m.arch = tc.goos, tc.arch
+			target := filepath.Join(m.home, filepath.FromSlash(tc.path))
+			switch tc.env {
+			case "ProgramW6432":
+				t.Setenv(tc.env, filepath.Join(m.home, "system"))
+			case "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR":
+				t.Setenv(tc.env, filepath.Join(m.home, "config"))
+			case "QODER_CLI_HOME":
+				t.Setenv(tc.env, filepath.Join(m.home, "cli-home"))
+				t.Setenv("QODER_CONFIG_DIR_NAME", "custom-name")
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 				t.Fatal(err)
@@ -537,17 +570,59 @@ func TestDiscoversOfficialClientAndCLI(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := m.Status()
-			if !status.Available || status.Source != source || !status.InstallSupported {
+			if !status.Available || status.Source != tc.source || status.InstallSupported != (tc.goos != "windows") {
 				t.Fatalf("status=%+v", status)
 			}
-			t.Setenv("CCLOAD_UMID_FIXTURE", "account")
+			mode, token := "account", "fixture-account"
+			if tc.goos == "linux" {
+				mode, token = "environment", "3"
+			}
+			t.Setenv("CCLOAD_UMID_FIXTURE", mode)
 			headers, err := m.Headers(context.Background(), "global", "fixture-account")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if headers.Get("Cosy-MachineToken") != "fixture-account" {
+			if headers.Get("Cosy-MachineToken") != token {
 				t.Fatalf("account stdin was not passed: %v", headers)
 			}
 		})
+	}
+}
+
+/**
+ * @brief TestCLIRuntimeSelection rejects foreign architecture and incomplete cache files.
+ */
+func TestCLIRuntimeSelection(t *testing.T) {
+	for _, key := range []string{"QODER_CONFIG_DIR", "QODER_CLI_HOME", "QODER_CONFIG_DIR_NAME"} {
+		t.Setenv(key, "")
+	}
+	m := testManager(t)
+	cache := filepath.Join(m.home, ".qoder", ".bin")
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"runtime-info-linux-arm64-new", "runtime-info-linux-x64-new.tmp", "runtime-info-linux-x64-zz-old"} {
+		path := filepath.Join(cache, name)
+		if err := os.WriteFile(path, []byte("invalid executable"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(name, "old") {
+			past := time.Now().Add(-time.Hour)
+			if err := os.Chtimes(path, past, past); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(exe, filepath.Join(cache, "runtime-info-linux-x64-current")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCLOAD_UMID_FIXTURE", "environment")
+	headers, err := m.Headers(t.Context(), "global", "user")
+	if err != nil || headers.Get("Cosy-MachineToken") != "3" {
+		t.Fatalf("runtime selection or environment mismatch: %v %v", headers, err)
 	}
 }

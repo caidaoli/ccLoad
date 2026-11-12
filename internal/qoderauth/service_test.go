@@ -34,6 +34,9 @@ func authTestJSON(t *testing.T, w http.ResponseWriter, value any) {
 	}
 }
 
+/**
+ * @brief TestCredentialValidationAndRouting covers canonical import and regional hosts.
+ */
 func TestCredentialValidationAndRouting(t *testing.T) {
 	for _, region := range []string{"", "intl", "https://evil.invalid", "CN"} {
 		if _, err := ParseCredential([]byte(fmt.Sprintf(`{"region":%q,"access_token":"dt-secret"}`, region))); err == nil {
@@ -49,7 +52,7 @@ func TestCredentialValidationAndRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Type != ChannelType || c.ExpiresAt != 1800000000 || c.GatewayURL() != "https://api2.qoder.sh" || c.OpenAPIURL() != "https://openapi.qoder.sh" {
+	if c.Type != ChannelType || c.ExpiresAt != 1800000000 || c.GatewayURL() != "https://api3.qoder.sh" || c.OpenAPIURL() != "https://openapi.qoder.sh" {
 		t.Fatalf("incorrect normalized credential: %+v", c)
 	}
 	raw, err := c.JSON()
@@ -182,6 +185,153 @@ func TestRefreshMissingRotationRetainsRefreshToken(t *testing.T) {
 	}
 }
 
+/**
+ * @brief TestRefreshPATReexchange covers rejected job refresh recovery and owner isolation.
+ */
+func TestRefreshPATReexchange(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		refresh        string
+		pat            string
+		status         int
+		owner          string
+		exchangeStatus int
+		wantCalls      int
+		wantError      bool
+	}{
+		{"unauthorized", "jrt-old", "pat-secret", 401, "user", 200, 3, false},
+		{"forbidden", "jrt-old", "pat-secret", 403, "user", 200, 3, false},
+		{"no refresh token", "", "pat-secret", 0, "user", 200, 2, false},
+		{"different owner", "jrt-old", "pat-secret", 401, "other-user", 200, 3, true},
+		{"expired PAT", "jrt-old", "pat-secret", 401, "user", 403, 2, true},
+		{"no PAT", "jrt-old", "", 401, "user", 200, 1, true},
+		{"device rejection", "drt-old", "pat-secret", 401, "user", 200, 1, true},
+		{"server error", "jrt-old", "pat-secret", 500, "user", 200, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Credential{Region: "global", AccessToken: "jt-old", RefreshToken: tc.refresh, PAT: tc.pat, UserID: "user", MachineID: "machine", Name: "name", Email: "old@example.com", ExpiresAt: 1, OAuthUsage: `{"remaining":9}`, LastCheckinAt: 12, LastCheckinCampaign: "campaign"}
+			original := *c
+			calls := 0
+			service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				switch r.URL.Path {
+				case "/api/v1/jobToken/refresh", "/api/v1/deviceToken/refresh":
+					w.WriteHeader(tc.status)
+				case "/api/v1/jobToken/exchange":
+					var body map[string]string
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["personal_token"] != tc.pat || r.Header.Get("Authorization") != "" {
+						t.Errorf("invalid PAT exchange request: %v", err)
+					}
+					w.WriteHeader(tc.exchangeStatus)
+					authTestJSON(t, w, map[string]any{"token": "jt-new", "refresh_token": "jrt-new", "expires_at": 1800000000})
+				case "/api/v1/userinfo":
+					if r.Header.Get("Authorization") != "Bearer jt-new" {
+						t.Error("identity did not use the new token")
+					}
+					authTestJSON(t, w, map[string]string{"id": tc.owner})
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			fresh, err := service.Refresh(t.Context(), c)
+			if (err != nil) != tc.wantError || calls != tc.wantCalls {
+				t.Fatalf("refresh error=%v calls=%d", err, calls)
+			}
+			if *c != original {
+				t.Fatal("refresh mutated its input")
+			}
+			if tc.wantError {
+				return
+			}
+			want := original
+			want.Type = ChannelType
+			want.AccessToken, want.RefreshToken, want.ExpiresAt = "jt-new", "jrt-new", 1800000000
+			if *fresh != want {
+				t.Fatalf("PAT recovery dropped credential metadata: %+v", fresh)
+			}
+		})
+	}
+}
+
+/**
+ * @brief TestTokenExpiryFormats verifies upstream dates, epochs and lifetime units.
+ */
+func TestTokenExpiryFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		flow     string
+		response string
+		want     int64
+		relative bool
+	}{
+		{"date", "job", `{"expires_at":"2027-01-15T08:00:00.123Z"}`, 1800000000, false},
+		{"epoch seconds string", "job", `{"expire_time":"1800000000"}`, 1800000000, false},
+		{"epoch milliseconds string", "job", `{"expiresAt":"1800000000000"}`, 1800000000, false},
+		{"absolute precedes lifetime", "job", `{"expireTime":1800000000000,"expires_in":1}`, 1800000000, false},
+		{"past absolute remains past", "job", `{"expire_time":1,"expires_in":3600000}`, 1, false},
+		{"job milliseconds", "job", `{"expires_in":3600000}`, 3600, true},
+		{"device seconds", "device", `{"expires_in":"3600"}`, 3600, true},
+		{"PAT milliseconds and token alias", "pat", `{"expires_in":3600000,"device_token":"jt-new"}`, 3600, true},
+		{"PAT access alias", "pat", `{"expires_at":"1800000000","access_token":"jt-new"}`, 1800000000, false},
+		{"login seconds", "login", `{"expires_in":3600}`, 3600, true},
+		{"invalid absolute uses lifetime", "device", `{"expires_at":"invalid","expires_in":3600}`, 3600, true},
+		{"unknown", "job", `{}`, 0, false},
+		{"invalid", "job", `{"expires_at":1e100,"expires_in":-1}`, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var response map[string]any
+			if err := json.Unmarshal([]byte(tc.response), &response); err != nil {
+				t.Fatal(err)
+			}
+			if _, device := response["device_token"]; !device {
+				if _, access := response["access_token"]; !access {
+					response["token"] = "token-new"
+				}
+			}
+			service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/userinfo" {
+					authTestJSON(t, w, map[string]string{"id": "user"})
+					return
+				}
+				authTestJSON(t, w, response)
+			})
+			before := time.Now().Unix()
+			var fresh *Credential
+			var err error
+			switch tc.flow {
+			case "pat":
+				fresh, err = service.ExchangePAT(t.Context(), "global", "pat-secret")
+			case "login":
+				var session *LoginSession
+				session, err = service.StartLogin("global")
+				if err == nil {
+					fresh, err = service.PollLogin(t.Context(), session)
+				}
+			default:
+				refresh := "jrt-old"
+				if tc.flow == "device" {
+					refresh = "drt-old"
+				}
+				fresh, err = service.Refresh(t.Context(), &Credential{Region: "global", AccessToken: "old", RefreshToken: refresh, UserID: "user", ExpiresAt: 1})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.relative {
+				if fresh.ExpiresAt < before+tc.want || fresh.ExpiresAt > time.Now().Unix()+tc.want {
+					t.Fatalf("expiry=%d, want now+%d seconds", fresh.ExpiresAt, tc.want)
+				}
+			} else if fresh.ExpiresAt != tc.want {
+				t.Fatalf("expiry=%d, want %d", fresh.ExpiresAt, tc.want)
+			}
+		})
+	}
+}
+
+/**
+ * @brief TestLoginPKCEAndPending checks edition client IDs and public PKCE fields.
+ */
 func TestLoginPKCEAndPending(t *testing.T) {
 	session, err := StartLogin("global")
 	if err != nil {
@@ -197,8 +347,16 @@ func TestLoginPKCEAndPending(t *testing.T) {
 		t.Fatal("authorization nonce must be a canonical UUID")
 	}
 	digest := sha256.Sum256([]byte(session.verifier))
-	if parsed.Host != "qoder.com" || parsed.Path != "/device/selectAccounts" || query.Get("challenge_method") != "S256" || query.Get("challenge") != base64.RawURLEncoding.EncodeToString(digest[:]) || query.Get("nonce") == "" || strings.Contains(session.AuthURL, session.verifier) {
+	if parsed.Host != "qoder.com" || parsed.Path != "/device/selectAccounts" || query.Get("client_id") != "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa" || query.Get("challenge_method") != "S256" || query.Get("challenge") != base64.RawURLEncoding.EncodeToString(digest[:]) || query.Get("nonce") == "" || strings.Contains(session.AuthURL, session.verifier) {
 		t.Fatal("invalid public PKCE authorization URL")
+	}
+	cn, err := StartLogin("cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cnURL, err := url.Parse(cn.AuthURL)
+	if err != nil || cnURL.Host != "qoder.cn" || cnURL.Query().Get("client_id") != "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb" {
+		t.Fatalf("invalid CN authorization URL: %s %v", cn.AuthURL, err)
 	}
 	encoded, err := json.Marshal(session)
 	if err != nil || strings.Contains(string(encoded), session.verifier) {

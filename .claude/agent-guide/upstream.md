@@ -21,15 +21,15 @@
 
 ## Qoder
 
-- `qoder_oauth` 渠道使用显式 `region=cn|global`，支持 PKCE 网页授权、PAT 换取令牌和 canonical JSON 导入。凭据含 `user_id`、`machine_id`，地区与用户共同标识账号；重新授权保留模型配置与签到记录。令牌临期刷新、401 后单次刷新及 CAS 使用现有 OAuth 生命周期。
-- PKCE `nonce` 使用带横线的标准 UUID，轮询接受 `token/device_token`。刷新仅按刷新令牌 `jrt-` 前缀选择作业端点，其余走设备端点，不用旧 access token 的类型推断。思考档位优先保留目录声明的值；长上下文按目录 `context_config` 对象/数组档位升档，估算消息和工具定义时按 CJK/全角字符计数并留15%余量，同时写入 `parameters.context_length`、`chat_context.extra.ideModelConfigOverride.max_input_tokens` 与 `model_config.max_input_tokens` 后再编码签名。`isQueued=true` 与其他排队信号统一映射503。
-- Qoder 对 Registry 暴露逻辑 OpenAI Chat；`internal/qoderauth` 在实际发送前构造专属信封、编码请求体并生成 COSY 签名，签名后不再改变请求体。`qoder_wire.go` 接线复用统一路由/冷却。国内版推理在 gateway.qoder.com.cn；国际版作业令牌 jt- 走 api2.qoder.sh，其余走 api3.qoder.sh。国际模型目录始终在 api3，不能跟随作业令牌改到 api2。目录按渠道/地区/用户缓存一小时，不使用猜测的静态模型表；公开模型名取 `display_name` 去空白后小写，推理时按名称不区分大小写或原生 key 精确匹配目录。
-- Qoder 复用系统设置 `antigravity_sensitive_words`，仅对 `system` / `developer` 消息字符串或 text 内容块插入零宽字符，不改写用户/助手文本、工具声明、工具参数或工具结果。空数组禁用，修改后重启生效；正常代理与管理测试均在最终请求编码和 COSY 签名前处理。
-- 上游始终返回 SSE；信封内的业务状态先归一为 OpenAI 错误，认证/额度/排队分别映射 401/429/503；HTTP 非2xx也按相同业务码分类。文本、工具、思考和 usage 归一后进入已有转换器。非流式通过共享 Chat SSE 聚合器处理。缺少终态的 EOF 不得标记成功；输出后不得自动重放。
-- 额度通过 `/api/v2/quota/usage` 查询，credits 保持原单位，写入 `oauth_usage` 安全快照，不进入 token 窗口成本账本。
-- 签到使用 campaign 列表与 claim 接口，区分新领取、已领取、无活动和缺组件；未知奖励不伪造默认金额。国际版需要官方 UMID，国内版不需要。已启用渠道始终自动签到（无开关），首个调度 tick（启动约1分钟后）补扫，之后每15分钟扫描，成功/已领取按 UTC+8 10:00 活动窗口去重；失败或无活动保留后续扫描机会。
-- `internal/qoderumid` 发现现有 Qoder/CLI 组件；国际版签到缺组件时，Linux/macOS amd64/arm64 从官方 npm registry 下载 qodercli 包、校验 SHA-512、提取匹配平台与架构的 ELF/Mach-O 并原子安装到 `data/qoder-umid/runtime-info`。Windows 组件需配套 DLL，只复用官方安装组件，不自动下载。执行有超时、输出上限和取消传播；不在推理请求中下载安装。安装跟随服务生命周期在后台运行（自带 3 分钟超时），并发调用共享同一次下载，调用方取消等待不会中断安装；`POST /admin/qoder/umid/install` 只触发安装并立即返回当前状态，`GET /admin/qoder/umid` 在安装期间返回 `installing` 与 `progress`（`metadata`/`download`/`verify` 阶段及包体字节数，缺 Content-Length 时 `total` 为 0）。管理页靠轮询显示进度和结果，弹窗关闭即停止轮询；组件就绪或平台不支持时不显示安装按钮。容器依赖 glibc、libstdc++6 和 libgcc-s1。
-- 参考事实与独立实现说明见 `internal/qoderauth/UPSTREAM.md`；不导入 agent2api 的受限代码或改变 CLIProxyAPI 快照。
+- `qoder_oauth` 使用显式 `region=cn|global`，支持 PKCE、PAT、canonical JSON；账号按地区与用户区分。网页保留 device-token 单对；PAT 的 job refresh 被401/403拒绝后可重新兑换并核对身份，发布复用共享刷新/CAS。canonical到期时间仍存Unix秒，上游期限兼容见 [来源及分支表](../../internal/qoderauth/UPSTREAM.md)。
+- 参照 Magpie 插件 `52e31c4a1fdb857d673c6e92c90ef4a6c1294c68`。国内门户 `qoder.cn`、国际 `qoder.com`，带官方client_id；国内推理/目录在gateway.qoder.com.cn，国际统一api3.qoder.sh。App身份、COSY1.1.69、ClientType10；推理不伪造机器风控token，也不运行/安装UMID。
+- 目录App优先、Chat补充，同key取App；过滤禁用与auto/default，保留旧显示名归一的公开ID，同名后续条目用原生key。缓存绑定渠道/地区/用户/访问令牌，一小时失效；缺项重取，确认额度耗尽的禁用模型返回429，异常免费视图最多每五分钟尝试一次刷新。
+- 渠道BodyRules及system/developer零宽处理之后，前置Qoder默认身份并合并原system/developer；用户/工具内容不做敏感词改写。编码及COSY签名后不改body。正常代理与管理测试共用此入口。
+- 请求支持稳定会话、用户轮任务复用、business.model_key和原生缓存标记；任务缓存账号隔离、512项/空闲2小时。按目录选思考档/输出上限，短预算默认关闭或最低思考档；上下文粗估包括输出预算。工具历史ID、图片、推理别名及schema按来源分支表处理。
+- 原生SSE归一后进入已有转换器；工具文本仅匹配已声明工具，保留代码示例；处理迟到名称和同index不同ID，纯无名调用报502。保留多choices、严格帧校验和无终态EOF报错；输出后不重放。非流式复用Chat聚合器。
+- 排队仍按503交统一路由，不在插件内长时间轮询。普通认证403归一401并单次刷新；明确请求错误归一400，供应商内部错误502；明确输出上限拒绝仅同渠道降额修复一次，不跨请求学习上限。
+- 额度仍从 `/api/v2/quota/usage` 获取原生credits，保存oauth_usage安全快照，不进入token成本账本。签到仍是campaign列表/claim及同活动回查，不伪造奖励。已启用渠道自动签到，UTC+8 10点窗口去重、启动约一分钟补扫、每15分钟复查。
+- 国际签到依赖官方UMID，并先从Sash取UID；桌面/CLI组件环境参数均为3。发现官方安装与CLI缓存，支持其目录环境变量。Linux/macOS amd64/arm64缺组件时下载官方npm包、校验SHA-512并原子安装到data/qoder-umid/runtime-info；Windows只复用官方安装组件。保留后台安装、进度轮询、取消及生命周期契约，容器需glibc/libstdc++/libgcc。
 
 ## CodeBuddy
 

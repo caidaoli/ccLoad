@@ -105,7 +105,10 @@ func (c *Credential) NeedsRefresh(now time.Time) bool {
 	return c != nil && (c.AccessToken == "" || (c.ExpiresAt > 0 && c.ExpiresAt <= now.Add(time.Minute).Unix()))
 }
 
-// GatewayURL selects the inference host, including job-token routing.
+// GatewayURL selects the inference host for the credential's region.
+/**
+ * @return The edition's inference origin, or empty for an invalid credential.
+ */
 func (c *Credential) GatewayURL() string {
 	if c == nil {
 		return ""
@@ -114,9 +117,6 @@ func (c *Credential) GatewayURL() string {
 	case "cn":
 		return "https://gateway.qoder.com.cn"
 	case "global":
-		if strings.HasPrefix(c.AccessToken, "jt-") {
-			return "https://api2.qoder.sh"
-		}
 		return "https://api3.qoder.sh"
 	default:
 		return ""

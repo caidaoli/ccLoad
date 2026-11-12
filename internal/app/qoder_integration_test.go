@@ -77,7 +77,7 @@ func TestQoderImportReauthorizesByRegionAndUser(t *testing.T) {
 			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer COSY.") {
 				t.Error("catalog request was not signed")
 			}
-			return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test"}]}`), nil
+			return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 		default:
 			t.Errorf("unexpected import request %s", r.URL)
 			return qoderIntegrationResponse(r, 404, `{}`), nil
@@ -288,7 +288,7 @@ func TestQoderProxyStreamAndNonStreamKeepToolsAndUsage(t *testing.T) {
 			var chatCalls atomic.Int32
 			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/algo/api/v2/model/list" {
-					return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test"}]}`), nil
+					return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 				}
 				chatCalls.Add(1)
 				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer COSY.") {
@@ -395,7 +395,7 @@ func TestQoderSystemSensitiveWordsOnWire(t *testing.T) {
 				var chatCalls atomic.Int32
 				qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
 					if r.URL.Path == "/algo/api/v2/model/list" {
-						return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test"}]}`), nil
+						return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 					}
 					chatCalls.Add(1)
 					decoded := qoderIntegrationDecodeSignedRequest(t, r)
@@ -404,23 +404,33 @@ func TestQoderSystemSensitiveWordsOnWire(t *testing.T) {
 						Tools    []map[string]any `json:"tools"`
 					}
 					mustUnmarshalJSON(t, decoded, &actual)
-					var wantMessages, wantTools []map[string]any
-					mustUnmarshalJSON(t, []byte(messagesJSON), &wantMessages)
+					var wantTools []map[string]any
 					mustUnmarshalJSON(t, []byte(toolsJSON), &wantTools)
-					// Native Qoder wire flattens text blocks and represents developer messages as system.
-					wantMessages[1]["role"] = "system"
-					wantMessages[2]["content"] = "CLAUDE API\nordinary policy"
-					wantMessages[3]["role"] = "system"
-					wantMessages[3]["content"] = "claude Api\nordinary instruction"
-					wantMessages[7]["content"] = "cLaUdE api"
+					system := "You are a Qoder agent. Use the instructions below and the tools available to you to assist the user."
+					instructions := []string{"Claude API unchanged", "cLaUdE api unchanged", "CLAUDE APIordinary policy", "claude Apiordinary instruction"}
 					if enabled {
-						wantMessages[0]["content"] = "C\u200blaude A\u200bPI unchanged"
-						wantMessages[1]["content"] = "c\u200bLaUdE a\u200bpi unchanged"
-						wantMessages[2]["content"] = "C\u200bLAUDE A\u200bPI\nordinary policy"
-						wantMessages[3]["content"] = "c\u200blaude A\u200bpi\nordinary instruction"
+						instructions = []string{"C\u200blaude A\u200bPI unchanged", "c\u200bLaUdE a\u200bpi unchanged", "C\u200bLAUDE A\u200bPIordinary policy", "c\u200blaude A\u200bpiordinary instruction"}
 					}
-					if !reflect.DeepEqual(actual.Messages, wantMessages) {
-						t.Errorf("wire messages = %+v, want %+v", actual.Messages, wantMessages)
+					wantText := []string{system + "\n\n" + strings.Join(instructions, "\n\n"), "Claude API", "Claude API", "Claude API", "cLaUdE api"}
+					wantRoles := []string{"system", "user", "assistant", "tool", "user"}
+					if len(actual.Messages) != len(wantText) {
+						t.Fatalf("wire messages=%+v", actual.Messages)
+					}
+					for i, message := range actual.Messages {
+						text, _ := message["content"].(string)
+						if parts, ok := message["content"].([]any); ok {
+							for _, part := range parts {
+								value, _ := part.(map[string]any)["text"].(string)
+								text += value
+							}
+						}
+						if text != wantText[i] || message["role"] != wantRoles[i] {
+							t.Errorf("message %d=%+v want role=%s text=%q", i, message, wantRoles[i], wantText[i])
+						}
+					}
+					calls := actual.Messages[2]["tool_calls"].([]any)
+					if calls[0].(map[string]any)["function"].(map[string]any)["arguments"] != `{"text":"Claude API"}` {
+						t.Error("tool arguments changed")
 					}
 					if !reflect.DeepEqual(actual.Tools, wantTools) {
 						t.Errorf("wire tools = %+v, want %+v", actual.Tools, wantTools)
@@ -500,7 +510,7 @@ func TestQoderProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
 	qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
 		case "/algo/api/v2/model/list":
-			return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test"}]}`), nil
+			return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 		case "/api/v1/deviceToken/refresh":
 			refreshes.Add(1)
 			if r.Header.Get("Authorization") != "" {
@@ -552,7 +562,7 @@ func TestQoderProxyDoesNotReplayAfterCommittedOutput(t *testing.T) {
 			var primaryChats, fallbackChats, refreshes atomic.Int32
 			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/algo/api/v2/model/list" {
-					return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test"}]}`), nil
+					return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 				}
 				if strings.Contains(r.URL.Path, "Token/refresh") {
 					refreshes.Add(1)
@@ -759,5 +769,321 @@ func TestQoderRefreshRetriesCASAfterMetadataWrite(t *testing.T) {
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("CAS conflict repeated one-use refresh: %d", requests.Load())
+	}
+}
+
+/**
+ * @brief 真实代理链路解析文本工具调用，并在工具续轮保留会话和任务身份
+ * @param t 测试上下文
+ */
+func TestQoderProxyTextToolsAndTaskIdentity(t *testing.T) {
+	credential := qoderIntegrationCredential(t, "cn", "dt-text-tools")
+	env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+	var session, task string
+	var chats int
+	qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/algo/api/v2/model/list" {
+			return qoderIntegrationResponse(r, 200, `{"app":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+		}
+		chats++
+		var wire struct {
+			Session  string `json:"session_id"`
+			Task     string `json:"request_set_id"`
+			Business struct {
+				ID, Stage string
+				Model     string `json:"model_key"`
+			} `json:"business"`
+		}
+		mustUnmarshalJSON(t, qoderIntegrationDecodeSignedRequest(t, r), &wire)
+		if wire.Business.ID != wire.Task || wire.Business.Model != "native-key" {
+			t.Errorf("business=%+v", wire.Business)
+		}
+		if chats == 1 {
+			session, task = wire.Session, wire.Task
+		} else if session != wire.Session || task != wire.Task || wire.Business.Stage != "processing" {
+			t.Errorf("tool continuation changed identity: %+v", wire)
+		}
+		answer := "<tool_call>{\"name\":\"lookup\",\"arguments\":{\"q\":1}}</tool_call>"
+		if chats > 1 {
+			answer = "done"
+		}
+		body := qoderIntegrationEvent(map[string]any{"id": "chat-tools", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": answer}, "finish_reason": "stop"}}})
+		return qoderIntegrationResponse(r, 200, body), nil
+	})
+	messages := []any{map[string]any{"role": "user", "content": "lookup"}}
+	tools := []any{map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "parameters": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "integer"}}}}}}
+	for turn := 0; turn < 2; turn++ {
+		w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": messages, "tools": tools, "stream": false}, map[string]string{"Session-Id": "stable-tools"})
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var result struct {
+			Choices []struct {
+				Message map[string]any `json:"message"`
+				Finish  string         `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &result)
+		if turn == 0 {
+			calls, ok := result.Choices[0].Message["tool_calls"].([]any)
+			if !ok || len(calls) != 1 || result.Choices[0].Finish != "tool_calls" {
+				t.Fatalf("text call not parsed: %s", w.Body.String())
+			}
+			call := calls[0].(map[string]any)
+			var arguments map[string]int
+			mustUnmarshalJSON(t, []byte(call["function"].(map[string]any)["arguments"].(string)), &arguments)
+			if arguments["q"] != 1 {
+				t.Fatalf("arguments=%v", arguments)
+			}
+			messages = append(messages, result.Choices[0].Message, map[string]any{"role": "tool", "tool_call_id": call["id"], "content": "found"})
+		}
+	}
+	if chats != 2 {
+		t.Fatalf("chats=%d", chats)
+	}
+}
+
+/**
+ * @brief 输出上限拒绝只修复一次，HTTP 与流内错误共用修复路径
+ * @param t 测试上下文
+ */
+func TestQoderProxyRepairsOutputLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		streamed, nullable bool
+		cap                int
+	}{
+		{"http", false, false, 8192}, {"sse", true, false, 8192}, {"nullable-budget", false, true, 40000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-output-cap")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			chats := 0
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/algo/api/v2/model/list" {
+					return qoderIntegrationResponse(r, 200, `{"app":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+				}
+				chats++
+				var wire struct {
+					Parameters struct {
+						Max int `json:"max_tokens"`
+					} `json:"parameters"`
+				}
+				mustUnmarshalJSON(t, qoderIntegrationDecodeSignedRequest(t, r), &wire)
+				want := 50000
+				if chats > 1 {
+					want = tc.cap
+				}
+				if wire.Parameters.Max != want {
+					t.Errorf("attempt %d budget=%d want=%d", chats, wire.Parameters.Max, want)
+				}
+				if chats == 1 {
+					failure := fmt.Sprintf(`{"message":"Error in upstream response: Range of max_tokens should be [1, %d]"}`, tc.cap)
+					if tc.streamed {
+						return qoderIntegrationResponse(r, 200, "data: {\"statusCodeValue\":400,\"body\":"+failure+"}\n\n"), nil
+					}
+					return qoderIntegrationResponse(r, 400, failure), nil
+				}
+				return qoderIntegrationResponse(r, 200, qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}})), nil
+			})
+			request := map[string]any{"model": "QwenTest", "max_tokens": 50000, "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": false}
+			if tc.nullable {
+				request["max_completion_tokens"] = nil
+			}
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", request, nil)
+			if w.Code != 200 || chats != 2 {
+				t.Fatalf("status=%d chats=%d body=%s", w.Code, chats, w.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 免费视图只在额度未耗尽时刷新，确认耗尽的禁用模型返回 429
+ * @param t 测试上下文
+ */
+func TestQoderProxyRecoversFreeViewAndClassifiesDisabledQuota(t *testing.T) {
+	for _, exhausted := range []bool{false, true} {
+		t.Run(fmt.Sprint(exhausted), func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-free-view")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			catalogs, refreshes, chats := 0, 0, 0
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/algo/api/v2/model/list":
+					catalogs++
+					enabled := "false"
+					if refreshes > 0 {
+						enabled = "true"
+					}
+					return qoderIntegrationResponse(r, 200, `{"app":[{"key":"free","display_name":"Free","enable":true,"price_factor":0},{"key":"native-key","display_name":"Qwen Test","enable":`+enabled+`,"price_factor":1}]}`), nil
+				case "/api/v2/quota/usage":
+					remaining := "1"
+					if exhausted {
+						remaining = "0"
+					}
+					return qoderIntegrationResponse(r, 200, `{"userQuota":{"total":1,"remaining":`+remaining+`,"unit":"credits"}}`), nil
+				case "/api/v2/user/plan":
+					return qoderIntegrationResponse(r, 200, `{}`), nil
+				case "/api/v1/deviceToken/refresh":
+					refreshes++
+					return qoderIntegrationResponse(r, 200, `{"token":"dt-free-renewed","refresh_token":"refresh-new","expires_in":3600}`), nil
+				default:
+					chats++
+					return qoderIntegrationResponse(r, 200, qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}})), nil
+				}
+			})
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+			if exhausted {
+				if w.Code != 429 || refreshes != 0 || chats != 0 {
+					t.Fatalf("status=%d refreshes=%d chats=%d body=%s", w.Code, refreshes, chats, w.Body.String())
+				}
+			} else if w.Code != 200 || refreshes != 1 || catalogs != 2 || chats != 1 {
+				t.Fatalf("status=%d catalogs=%d refreshes=%d chats=%d body=%s", w.Code, catalogs, refreshes, chats, w.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 模型缓存缺项时重取目录，不将新模型误判为请求错误
+ * @param t 测试上下文
+ */
+func TestQoderProxyRefreshesCatalogForNewModel(t *testing.T) {
+	for _, initiallyDisabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(initiallyDisabled), func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-new-model")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "First,Second", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			catalogs, chats := 0, 0
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/algo/api/v2/model/list" {
+					catalogs++
+					entries := `{"key":"one","display_name":"First","enable":true}`
+					if catalogs > 1 || initiallyDisabled {
+						entries += `,{"key":"two","display_name":"Second","enable":` + strconv.FormatBool(catalogs > 1) + `}`
+					}
+					return qoderIntegrationResponse(r, 200, `{"app":[`+entries+`]}`), nil
+				}
+				chats++
+				want := "one"
+				if chats > 1 {
+					want = "two"
+				}
+				if r.Header.Get("X-Model-Key") != want {
+					t.Errorf("model key=%q want=%q", r.Header.Get("X-Model-Key"), want)
+				}
+				return qoderIntegrationResponse(r, 200, qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}})), nil
+			})
+			for _, name := range []string{"First", "Second"} {
+				w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": name, "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+				if w.Code != 200 {
+					t.Fatalf("%s status=%d body=%s", name, w.Code, w.Body.String())
+				}
+			}
+			if catalogs != 2 || chats != 2 {
+				t.Fatalf("catalogs=%d chats=%d", catalogs, chats)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 成功目录中的免费模型不因缺失刷新材料或可选恢复暂时失败而不可用
+ * @param t 测试上下文
+ */
+func TestQoderProxyKeepsEnabledFreeModelsWhenRecoveryUnavailable(t *testing.T) {
+	for _, canRefresh := range []bool{false, true} {
+		t.Run(fmt.Sprint(canRefresh), func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-enabled-free")
+			if !canRefresh {
+				credential.RefreshToken = ""
+			}
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "Free", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			refreshes, chats := 0, 0
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/algo/api/v2/model/list":
+					return qoderIntegrationResponse(r, 200, `{"app":[{"key":"free","display_name":"Free","enable":true,"price_factor":0},{"key":"paid","display_name":"Paid","enable":false,"price_factor":1}]}`), nil
+				case "/api/v2/quota/usage":
+					return qoderIntegrationResponse(r, 503, `{}`), nil
+				case "/api/v1/deviceToken/refresh":
+					refreshes++
+					return qoderIntegrationResponse(r, 503, `{}`), nil
+				default:
+					chats++
+					return qoderIntegrationResponse(r, 200, qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "free answer"}, "finish_reason": "stop"}}})), nil
+				}
+			})
+			for range 2 {
+				w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "Free", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+				if w.Code != 200 {
+					t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+				}
+			}
+			want := 0
+			if canRefresh {
+				want = 1
+			}
+			if refreshes != want || chats != 2 {
+				t.Fatalf("refreshes=%d want=%d chats=%d", refreshes, want, chats)
+			}
+		})
+	}
+}
+
+/**
+ * @brief HTTP 与首帧 SSE 排队失败均保留上游 Retry-After
+ * @param t 测试上下文
+ */
+func TestQoderProxyQueueKeepsRetryAfter(t *testing.T) {
+	for _, inStream := range []bool{false, true} {
+		t.Run(fmt.Sprint(inStream), func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-queue")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/algo/api/v2/model/list" {
+					return qoderIntegrationResponse(r, 200, `{"app":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+				}
+				failure := `{"code":10605,"queue":{"isQueued":true,"retryAfterSeconds":12}}`
+				if inStream {
+					return qoderIntegrationResponse(r, 200, `data: {"statusCodeValue":403,"body":`+failure+"}\n\n"), nil
+				}
+				return qoderIntegrationResponse(r, 403, failure), nil
+			})
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+			if w.Code != 503 || w.Header().Get("Retry-After") != "12" {
+				t.Fatalf("status=%d retry-after=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 纯无名工具回复不会先提交成功终态，流式与非流式均可在输出前报错
+ * @param t 测试上下文
+ */
+func TestQoderProxyRejectsNamelessOnlyToolReply(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-nameless")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/algo/api/v2/model/list" {
+					return qoderIntegrationResponse(r, 200, `{"app":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+				}
+				body := qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil}}})
+				body += qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "unnamed", "type": "function", "function": map[string]any{"arguments": "{}"}}}}, "finish_reason": "tool_calls"}}})
+				return qoderIntegrationResponse(r, 200, body), nil
+			})
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": stream}, nil)
+			if w.Code != 502 {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var result map[string]any
+			mustUnmarshalJSON(t, w.Body.Bytes(), &result)
+			if result["error"] == nil {
+				t.Fatalf("missing error: %s", w.Body.String())
+			}
+		})
 	}
 }
