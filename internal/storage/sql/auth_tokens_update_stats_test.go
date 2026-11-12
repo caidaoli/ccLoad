@@ -313,4 +313,16 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	if got.SpeedOutputTokens != 690 || got.SpeedDurationSeconds != 33.5 {
 		t.Fatalf("unexpected speed stats after reasoning request: tokens=%d seconds=%v, want 690/33.5", got.SpeedOutputTokens, got.SpeedDurationSeconds)
 	}
+
+	// 无推理但首字 > 3 秒：视为首字前有隐藏生成，按总耗时计：+10s，输出 +100
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 10.0, true, 6.0, 0, 100, 0, 0, 0, 0, 0, time.Now()); err != nil {
+		t.Fatalf("update token stats (slow first byte): %v", err)
+	}
+	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.SpeedOutputTokens != 790 || got.SpeedDurationSeconds != 43.5 {
+		t.Fatalf("unexpected speed stats after slow first byte: tokens=%d seconds=%v, want 790/43.5", got.SpeedOutputTokens, got.SpeedDurationSeconds)
+	}
 }

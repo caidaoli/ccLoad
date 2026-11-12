@@ -1387,6 +1387,7 @@ window.WebAuth = window.WebAuth || {
    * @param firstByteSeconds 首字耗时（秒），非流式传 0
    * @param reasoningTokens 推理 Token 数；大于 0 时隐藏推理在首字前生成，按总耗时计算
    * @return 输出速度；无输出或耗时无效时返回 null
+   * @details 仅首字 ≤ 3 秒、无推理 Token 的流式请求扣除首字；首字过慢视为首字前有隐藏生成，按总耗时计算以免高估。
    */
   function calculateTokenSpeed(outputTokens, durationSeconds, firstByteSeconds, reasoningTokens) {
     const output = Number(outputTokens);
@@ -1397,7 +1398,7 @@ window.WebAuth = window.WebAuth || {
 
     let tokenDuration = duration;
     const firstByte = Number(firstByteSeconds);
-    if (!(Number(reasoningTokens) > 0) && Number.isFinite(firstByte) && firstByte > 0 && firstByte < duration) {
+    if (!(Number(reasoningTokens) > 0) && Number.isFinite(firstByte) && firstByte > 0 && firstByte <= 3 && firstByte < duration) {
       const generationDuration = duration - firstByte;
       if (generationDuration >= 1) {
         tokenDuration = generationDuration;

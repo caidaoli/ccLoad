@@ -31,14 +31,17 @@ func (s *SQLStore) logsRangeIndexHint(rangeIndex string, filter *model.LogFilter
 }
 
 // 输出速度口径（统计页、渠道页、令牌页共用）：只算有输出的成功请求，速度 = 输出总量 / 生成总耗时。
-// 无推理 Token 的流式请求扣除首字，扣除后不足 1 秒时用总耗时；含推理 Token 时用总耗时，
-// 因为隐藏推理在首个可见事件之前生成，扣除首字会把这些 Token 摊到过短的时间上。
+// 仅对首字较快（≤ speedFirstByteCapSeconds）、无推理 Token 的流式请求扣除首字，扣除后不足 1 秒时用总耗时；
+// 含推理 Token、非流式、或首字过慢时用总耗时。首字慢往往意味着首个可见事件之前存在隐藏推理
+// （Claude extended thinking 不单独上报 reasoning_tokens），扣除首字会把这些 Token 摊到过短的时间上导致高估。
 // speedGenerationSeconds 是同一口径的增量版本。
+const speedFirstByteCapSecondsSQL = `3` ///< 首字耗时上限（秒）；超过则视为首字前存在隐藏生成，不扣首字
+
 const (
 	speedSampleCondSQL   = `status_code >= 200 AND status_code < 300 AND output_tokens > 0 AND duration > 0`
 	speedOutputTokensSQL = `SUM(CASE WHEN ` + speedSampleCondSQL + ` THEN output_tokens ELSE 0 END)`
 	speedDurationSQL     = `SUM(CASE WHEN ` + speedSampleCondSQL + ` THEN
-				CASE WHEN reasoning_tokens = 0 AND is_streaming = 1 AND first_byte_time > 0 AND first_byte_time < duration AND duration - first_byte_time >= 1
+				CASE WHEN reasoning_tokens = 0 AND is_streaming = 1 AND first_byte_time > 0 AND first_byte_time <= ` + speedFirstByteCapSecondsSQL + ` AND first_byte_time < duration AND duration - first_byte_time >= 1
 					THEN duration - first_byte_time ELSE duration END
 				ELSE 0 END)`
 )
@@ -49,10 +52,11 @@ const (
  * @param isStreaming 是否流式请求
  * @param firstByteTime 首个客户端可见事件耗时（秒），非流式为 0
  * @param reasoningTokens 输出中的推理 Token 数
- * @return 生成耗时（秒）；含推理 Token、非流式或扣除首字后不足 1 秒时返回总耗时
+ * @return 生成耗时（秒）；含推理 Token、非流式、首字超过 3 秒或扣除首字后不足 1 秒时返回总耗时
+ * @details 首字超过 3 秒往往意味着首字前存在隐藏推理（Claude extended thinking 不单独上报 reasoning_tokens），此时按总耗时计以免高估。
  */
 func speedGenerationSeconds(duration float64, isStreaming bool, firstByteTime float64, reasoningTokens int64) float64 {
-	if reasoningTokens == 0 && isStreaming && firstByteTime > 0 && firstByteTime < duration && duration-firstByteTime >= 1 {
+	if reasoningTokens == 0 && isStreaming && firstByteTime > 0 && firstByteTime <= 3 && firstByteTime < duration && duration-firstByteTime >= 1 {
 		return duration - firstByteTime
 	}
 	return duration

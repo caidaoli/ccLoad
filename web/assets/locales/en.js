@@ -20,7 +20,7 @@ window.I18N_LOCALES['en'] = {
   // Common
   // ============================================================
   'common.save': 'Save',
-  'common.speedTitle': 'Output speed = output tokens ÷ generation time. Streaming without reasoning tokens: generation time = total duration − first byte (total duration if under 1 s); with reasoning tokens or non-streaming: total duration (hidden reasoning is generated before the first byte). Aggregates = total output ÷ total generation time over successful requests with output.',
+  'common.speedTitle': 'Output speed = output tokens ÷ generation time. Streaming without reasoning tokens and first byte ≤ 3 s: generation time = total duration − first byte (total duration if under 1 s); with reasoning tokens, non-streaming, or first byte > 3 s: total duration (hidden reasoning is generated before the first byte). Aggregates = total output ÷ total generation time over successful requests with output.',
   'common.cancel': 'Cancel',
   'common.retry': 'Retry',
   'common.delete': 'Delete',

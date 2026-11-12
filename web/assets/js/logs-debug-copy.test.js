@@ -535,10 +535,12 @@ test('narrow desktop hides IP and token columns by default while explicit choice
   }
 });
 
-test('token speed subtracts first byte only for streams without reasoning tokens', () => {
+test('token speed subtracts first byte only for fast streams without reasoning tokens', () => {
   withUiFormatters(({ calculateTokenSpeed }) => {
-    // 无推理：扣除首字 → 654 / (27 - 25)
-    assert.equal(calculateTokenSpeed(654, 27, 25, 0), 327);
+    // 无推理、首字 ≤ 3 秒：扣除首字 → 654 / (8 - 2)
+    assert.equal(calculateTokenSpeed(654, 8, 2, 0), 109);
+    // 无推理但首字 > 3 秒：视为首字前有隐藏生成，按总耗时 → 654 / 27
+    assert.equal(calculateTokenSpeed(654, 27, 25, 0), 654 / 27);
     // 含推理：隐藏推理在首字前生成，按总耗时 → 654 / 27
     assert.equal(calculateTokenSpeed(654, 27, 25, 516), 654 / 27);
     // 扣除首字后不足 1 秒时用总耗时
