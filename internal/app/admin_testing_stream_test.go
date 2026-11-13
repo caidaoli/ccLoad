@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"ccLoad/internal/cursorauth"
@@ -144,7 +145,11 @@ func TestStreamChatNativeEmitsOnlyFrontendDeltaEvents(t *testing.T) {
 	}
 }
 
-func TestChatFrontendChunksFromSSEEventEmitsThinkingDelta(t *testing.T) {
+/**
+ * @brief 原生 SSE 入口将各协议的结构化思考和完整标签统一为思考事件。
+ * @param t 测试上下文。
+ */
+func TestStreamChatNativeEmitsThinkingDelta(t *testing.T) {
 	tests := []struct {
 		name     string
 		rawEvent string
@@ -196,8 +201,11 @@ func TestChatFrontendChunksFromSSEEventEmitsThinkingDelta(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chunks := chatFrontendChunksFromSSEEventWithState([]byte(tt.rawEvent), nil)
-			body := string(bytes.Join(chunks, nil))
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodGet, "/", nil))
+			if err := streamChatNativeWithFirstContent(c, strings.NewReader(tt.rawEvent+"\n"), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			body := w.Body.String()
 			if !strings.Contains(body, tt.want) {
 				t.Fatalf("expected %s in chunks, got:\n%s", tt.want, body)
 			}
@@ -208,32 +216,129 @@ func TestChatFrontendChunksFromSSEEventEmitsThinkingDelta(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 解析前端 SSE 契约并验证可见增量在成功终态之前输出。
+ * @param t 测试上下文。
+ * @param body 管理聊天返回的 SSE 响应。
+ * @return 合并后的正文。
+ * @return 合并后的思考。
+ * @return 成功终态数量；无成功终态时为零。
+ * @return 上游错误消息；无错误时为空。
+ */
+func parseChatFrontendEvents(t *testing.T, body string) (text, thinking string, done int, errorMessages []string) {
+	t.Helper()
+	for block := range strings.SplitSeq(body, "\n\n") {
+		payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(block), "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			done++
+			continue
+		}
+		var event struct {
+			Delta    string `json:"delta"`
+			Thinking string `json:"thinking_delta"`
+			Error    string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			t.Fatalf("decode frontend SSE %q: %v", payload, err)
+		}
+		if done > 0 && (event.Delta != "" || event.Thinking != "") {
+			t.Fatalf("visible content after DONE: %s", body)
+		}
+		text += event.Delta
+		thinking += event.Thinking
+		if event.Error != "" {
+			errorMessages = append(errorMessages, event.Error)
+		}
+	}
+	return
+}
+
+/**
+ * @brief 原生 SSE 入口跨字符分片解析思考标签，并在终态、EOF、错误和取消时保留残片。
+ * @param t 测试上下文。
+ */
 func TestStreamChatNativeParsesSplitThinkTags(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	c, w := newTestContext(t, req)
-	upstream := strings.NewReader(strings.Join([]string{
-		`data: {"choices":[{"index":0,"delta":{"content":"<think>"}}]}`,
-		"",
-		`data: {"choices":[{"index":0,"delta":{"content":"split thought"}}]}`,
-		"",
-		`data: {"choices":[{"index":0,"delta":{"content":"</think>"}}]}`,
-		"",
-		`data: {"choices":[{"index":0,"delta":{"content":"answer"}}]}`,
-		"",
-		"",
-	}, "\n"))
-
-	_ = streamChatNativeWithFirstContent(c, upstream, nil, nil)
-
-	body := w.Body.String()
-	if !strings.Contains(body, `"thinking_delta":"split thought"`) {
-		t.Fatalf("expected split think tag content as thinking_delta, got:\n%s", body)
+	cases := []struct {
+		name, content, reasoning, text, terminator string
+		fragmented, cancel                         bool
+		readErr                                    error
+		wantErrors                                 int
+		payload                                    string
+	}{
+		{name: "complete", content: "before <think> thought </think> after", reasoning: " thought ", text: "before  after", terminator: "[DONE]"},
+		{name: "think characters", content: "<think>thought</think>answer", fragmented: true, reasoning: "thought", text: "answer", terminator: "[DONE]"},
+		{name: "thinking characters", content: "<thinking>thought</thinking>answer", fragmented: true, reasoning: "thought", text: "answer", terminator: "[DONE]"},
+		{name: "ordinary tags", content: "plain <b>text</b> <thing>", fragmented: true, text: "plain <b>text</b> <thing>"},
+		{name: "open suffix done", content: "answer<thi", text: "answer<thi", terminator: "[DONE]"},
+		{name: "open suffix eof", content: "answer<thi", text: "answer<thi"},
+		{name: "only pending eof", content: "<", text: "<"},
+		{name: "close suffix done", content: "<think>thought</thi", reasoning: "thought</thi", terminator: "[DONE]"},
+		{name: "close suffix eof", content: "<think>thought</thi", reasoning: "thought</thi"},
+		{name: "message stop", content: "answer<thi", text: "answer<thi", terminator: `{"type":"message_stop"}`},
+		{name: "response completed", content: "answer<thi", text: "answer<thi", terminator: `{"type":"response.completed"}`},
+		{name: "error", content: "answer<thi", text: "answer<thi", terminator: `{"error":{"message":"upstream failed"}}`, wantErrors: 1},
+		{name: "read error", content: "answer<thi", text: "answer<thi", readErr: io.ErrUnexpectedEOF},
+		{name: "canceled", content: "answer<thi", text: "answer<thi", cancel: true},
+		{name: "structured and tagged", payload: `{"choices":[{"delta":{"reasoning_content":"structured ","content":"<think>tagged</think>answer"}}]}`, reasoning: "structured tagged", text: "answer", terminator: "[DONE]"},
+		{name: "gemini thought and tagged", payload: `{"candidates":[{"content":{"parts":[{"text":"structured ","thought":true},{"text":"<think>tagged</think>answer"}]}}]}`, reasoning: "structured tagged", text: "answer", terminator: "[DONE]"},
 	}
-	if !strings.Contains(body, `"delta":"answer"`) {
-		t.Fatalf("expected answer delta after think tag, got:\n%s", body)
-	}
-	if strings.Contains(body, `<think>`) || strings.Contains(body, `</think>`) {
-		t.Fatalf("think tags must not leak to frontend stream:\n%s", body)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			var wire strings.Builder
+			if tc.payload != "" {
+				fmt.Fprintf(&wire, "data: %s\n\n", tc.payload)
+			} else {
+				fragments := []string{tc.content}
+				if tc.fragmented {
+					fragments = strings.Split(tc.content, "")
+				}
+				for _, fragment := range fragments {
+					payload, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": fragment}}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					fmt.Fprintf(&wire, "data: %s\n\n", payload)
+				}
+			}
+			if tc.terminator != "" {
+				fmt.Fprintf(&wire, "data: %s\n\n", tc.terminator)
+			}
+			var source io.Reader = strings.NewReader(wire.String())
+			if tc.readErr != nil {
+				source = io.MultiReader(source, iotest.ErrReader(tc.readErr))
+			}
+			contentNotifications := 0
+			onFirstContent := func() {
+				contentNotifications++
+				if tc.cancel {
+					cancel()
+				}
+			}
+			wantErr := tc.readErr
+			if tc.cancel {
+				wantErr = context.Canceled
+			}
+			if err := streamChatNativeWithFirstContent(c, source, onFirstContent, nil); !errors.Is(err, wantErr) {
+				t.Fatalf("stream error=%v, want %v", err, wantErr)
+			}
+			if contentNotifications == 0 {
+				t.Fatal("visible text did not notify first content")
+			}
+			text, reasoning, done, failures := parseChatFrontendEvents(t, w.Body.String())
+			wantDone := 0
+			if tc.terminator != "" && tc.wantErrors == 0 {
+				wantDone = 1
+			}
+			if text != tc.text || reasoning != tc.reasoning || done != wantDone || len(failures) != tc.wantErrors {
+				t.Fatalf("text=%q reasoning=%q done=%d errors=%v; want text=%q reasoning=%q done=%d errors=%d", text, reasoning, done, failures, tc.text, tc.reasoning, wantDone, tc.wantErrors)
+			}
+		})
 	}
 }
 
@@ -2375,5 +2480,115 @@ func TestTestChannelAPI_GeminiStreamIncludesTTFBAndText(t *testing.T) {
 	totalDurationMs, ok := result["duration_ms"].(int64)
 	if !ok || totalDurationMs <= 0 {
 		t.Fatalf("expected duration_ms(int64)>0, got: %#v", result["duration_ms"])
+	}
+}
+
+/**
+ * @brief JSON 上游响应经管理聊天 SSE 入口输出时保留普通文本与末尾未完成标签。
+ * @param t 测试上下文。
+ */
+func TestStreamChatWithURLParsesJSONThinkTags(t *testing.T) {
+	for _, tc := range []struct{ name, content, text, reasoning string }{
+		{name: "complete", content: "before<think>thought</think>after", text: "beforeafter", reasoning: "thought"},
+		{name: "thinking", content: "<thinking>thought</thinking>answer", text: "answer", reasoning: "thought"},
+		{name: "open suffix", content: "answer<thi", text: "answer<thi"},
+		{name: "close suffix", content: "<think>thought</thi", reasoning: "thought</thi"},
+		{name: "ordinary tags", content: "plain <b>text</b>", text: "plain <b>text</b>"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": tc.content}}}}); err != nil {
+						t.Error(err)
+					}
+				}))
+				defer upstream.Close()
+				srv := newInMemoryServer(t)
+				srv.client = upstream.Client()
+				cfg := &model.Config{ID: 1, Name: "json-think-tags", URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}}, Enabled: true}
+				req := &testutil.TestChannelRequest{Model: "gpt-4o-mini", ClientProtocol: "openai", Stream: stream, Content: "hi"}
+				c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
+				attempt := srv.streamChatWithURLForProtocol(c, cfg, channelTestKeySelection{apiKey: "sk-test", requestCredential: "sk-test"}, req, "openai", "openai", upstream.URL, req.Model)
+				text, reasoning, done, failures := parseChatFrontendEvents(t, w.Body.String())
+				if !attempt.succeeded || text != tc.text || reasoning != tc.reasoning || done != 1 || len(failures) != 0 {
+					t.Fatalf("success=%v text=%q reasoning=%q done=%d errors=%v, want text=%q reasoning=%q", attempt.succeeded, text, reasoning, done, failures, tc.text, tc.reasoning)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 经协议转换的管理聊天保留跨字符思考标签与 EOF 尾缀，并正确记录首内容时间。
+ * @param t 测试上下文。
+ */
+func TestStreamChatWithURLTranslatesFragmentedThinkTags(t *testing.T) {
+	for _, tc := range []struct{ name, content, text, reasoning string }{
+		{name: "complete", content: "before<think>thought</think>after", text: "beforeafter", reasoning: "thought"},
+		{name: "pending eof", content: "<", text: "<"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, char := range tc.content {
+					payload, err := json.Marshal(map[string]any{"id": "chat-test", "object": "chat.completion.chunk", "model": "gpt-4o-mini", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": string(char)}}}})
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+				}
+			}))
+			defer upstream.Close()
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			cfg := &model.Config{ID: 1, Name: "translated-think-tags", URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}}, Enabled: true}
+			req := &testutil.TestChannelRequest{Model: "gpt-4o-mini", ClientProtocol: "anthropic", Stream: true, Content: "hi"}
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
+			attempt := srv.streamChatWithURLForProtocol(c, cfg, channelTestKeySelection{apiKey: "sk-test", requestCredential: "sk-test"}, req, "anthropic", "openai", upstream.URL, req.Model)
+			text, reasoning, done, failures := parseChatFrontendEvents(t, w.Body.String())
+			if !attempt.succeeded || text != tc.text || reasoning != tc.reasoning || done != 0 || len(failures) != 0 {
+				t.Fatalf("success=%v text=%q reasoning=%q done=%d errors=%v, want text=%q reasoning=%q", attempt.succeeded, text, reasoning, done, failures, tc.text, tc.reasoning)
+			}
+			if attempt.streamResult == nil || attempt.streamResult.firstContentTime.IsZero() {
+				t.Fatal("visible text did not record first content time")
+			}
+		})
+	}
+}
+
+/**
+ * @brief 管理 SSE 在结构化思考和各协议工具边界排空正文残片，禁止跨语义段重组标签。
+ * @param t 测试上下文。
+ */
+func TestStreamChatNativeFlushesTextAtSemanticBoundaries(t *testing.T) {
+	for _, tc := range []struct{ name, prefix, boundary, suffix, thinking string }{
+		{name: "chat tool", prefix: `{"choices":[{"delta":{"content":"before<thi"}}]}`, boundary: `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`, suffix: `{"choices":[{"delta":{"content":"nk>after"}}]}`},
+		{name: "chat reasoning", prefix: `{"choices":[{"delta":{"content":"before<thi"}}]}`, boundary: `{"choices":[{"delta":{"reasoning_content":"structured"}}]}`, suffix: `{"choices":[{"delta":{"content":"nk>after"}}]}`, thinking: "structured"},
+		{name: "gemini tool", prefix: `{"candidates":[{"content":{"parts":[{"text":"before<thi"}]}}]}`, boundary: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}}]}}]}`, suffix: `{"candidates":[{"content":{"parts":[{"text":"nk>after"}]}}]}`},
+		{name: "gemini thought", prefix: `{"candidates":[{"content":{"parts":[{"text":"before<thi"}]}}]}`, boundary: `{"candidates":[{"content":{"parts":[{"text":"structured","thought":true}]}}]}`, suffix: `{"candidates":[{"content":{"parts":[{"text":"nk>after"}]}}]}`, thinking: "structured"},
+		{name: "anthropic tool", prefix: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"before<thi"}}`, boundary: `{"type":"content_block_start","content_block":{"type":"tool_use","id":"call","name":"lookup","input":{}}}`, suffix: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"nk>after"}}`},
+		{name: "responses tool", prefix: `{"type":"response.output_text.delta","delta":"before<thi"}`, boundary: `{"type":"response.output_item.added","item":{"type":"function_call","id":"call","name":"lookup","arguments":"{}"}}`, suffix: `{"type":"response.output_text.delta","delta":"nk>after"}`},
+		{name: "anthropic block end", prefix: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"before<thi"}}`, boundary: `{"type":"content_block_stop","index":0}`, suffix: `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"nk>after"}}`},
+		{name: "responses message end", prefix: `{"type":"response.output_text.delta","delta":"before<thi"}`, boundary: `{"type":"response.output_item.done","item":{"id":"a","type":"message","role":"assistant","content":[]}}`, suffix: `{"type":"response.output_text.delta","delta":"nk>after"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := "data: " + tc.prefix + "\n\ndata: " + tc.boundary + "\n\ndata: " + tc.suffix + "\n\n"
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodGet, "/", nil))
+			if err := streamChatNativeWithFirstContent(c, strings.NewReader(wire), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			text, thinking, done, failures := parseChatFrontendEvents(t, w.Body.String())
+			if text != "before<think>after" || thinking != tc.thinking || done != 0 || len(failures) != 0 {
+				t.Fatalf("text=%q thinking=%q done=%d errors=%v", text, thinking, done, failures)
+			}
+			if tc.thinking != "" {
+				events := parseSSEJSONPayloads(w.Body.String())
+				if len(events) < 3 || events[1]["delta"] != "<thi" || events[2]["thinking_delta"] != tc.thinking {
+					t.Fatalf("pending text must precede structured thinking: %v", events)
+				}
+			}
+		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/thinktag"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -383,7 +384,7 @@ func (s *Server) streamCursorChannelChat(
 	writer := &cursorChatResponseWriter{
 		c:     c,
 		usage: sr.usageParser,
-		state: &chatFrontendStreamState{},
+		state: &thinktag.Parser{},
 		onOutput: func() {
 			if sr.firstContentTime.IsZero() {
 				sr.firstContentTime = time.Now()
@@ -400,6 +401,11 @@ func (s *Server) streamCursorChannelChat(
 		skipProxyLog:   true,
 	}
 	result, forwardErr := s.forwardCursorAgent(c.Request.Context(), cfg, credential, proxyReq, writer)
+	finalChunks := chatChunksFromTextParts(writer.state.Flush())
+	if chatFrontendChunksHaveVisibleContent(finalChunks) {
+		writer.onOutput()
+	}
+	writeChatFrontendChunks(c, finalChunks...)
 	sr.debugData = proxyReq.debugData
 	if forwardErr != nil {
 		fail(http.StatusBadGateway, forwardErr.Error())
@@ -434,12 +440,13 @@ func (s *Server) streamCursorChannelChat(
 	s.writeChatStreamLog(c, persistedCfg, &attemptReq, keySelection, sr, originalModel)
 }
 
-// cursorChatResponseWriter converts the client-protocol SSE produced by
-// forwardCursorAgent into the small event contract consumed by model-test.js.
+/**
+ * @brief 将 Cursor 客户端协议 SSE 转为管理聊天使用的正文、思考和终态事件。
+ */
 type cursorChatResponseWriter struct {
 	c        *gin.Context
 	usage    *sseUsageParser
-	state    *chatFrontendStreamState
+	state    *thinktag.Parser ///< 当前响应独占的跨分片思考标签解析状态。
 	onOutput func()
 }
 
@@ -812,6 +819,11 @@ func (s *Server) streamChatNonStreamResponse(
 	return succeeded
 }
 
+/**
+ * @brief 将完整聊天响应拆成前端正文、思考和终态事件，保留末尾未闭合的标签片段。
+ * @param c 管理聊天请求上下文。
+ * @param result 已解析的上游响应；失败时仅输出错误事件。
+ */
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
 	if success, ok := result["success"].(bool); ok && !success {
 		msg, _ := result["error"].(string)
@@ -832,8 +844,9 @@ func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
 		return
 	}
 
-	state := &chatFrontendStreamState{}
-	writeChatFrontendChunks(c, chatChunksFromTextDelta(responseText, state)...)
+	state := &thinktag.Parser{}
+	writeChatFrontendChunks(c, chatChunksFromTextParts(state.Push(responseText))...)
+	writeChatFrontendChunks(c, chatChunksFromTextParts(state.Flush())...)
 	writeChatFrontendChunks(c, chatDoneEventChunk())
 }
 
@@ -950,10 +963,17 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, logModel, model.RoutingModelName(actualModel), keySelection, c.ClientIP(), logThinking, result))
 }
 
-// streamChatNativeWithFirstContent 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
+/**
+ * @brief 将原生上游 SSE 归一化为前端事件，结束或中断时排空标签解析缓冲。
+ * @param c 管理聊天请求上下文。
+ * @param body 原生协议的上游 SSE 响应。
+ * @param onFirstContent 输出可见正文或思考时调用；nil 时不通知。
+ * @param sr 用量收集状态；nil 时不收集。
+ * @return 读取、取消或写入失败时返回相应错误；正常 EOF 返回 nil。
+ */
 func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstContent func(), sr *chatStreamResult) error {
-	frontendState := &chatFrontendStreamState{}
-	return streamTransformSSEEvents(c.Request.Context(), body, c.Writer,
+	frontendState := &thinktag.Parser{}
+	streamErr := streamTransformSSEEvents(c.Request.Context(), body, c.Writer,
 		func(rawEvent []byte) error {
 			// Feed raw SSE bytes to usage parser as side-channel
 			if sr != nil && sr.usageParser != nil {
@@ -969,12 +989,31 @@ func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstCon
 			return chunks, nil
 		},
 	)
+	chunks := chatChunksFromTextParts(frontendState.Flush())
+	if chatFrontendChunksHaveVisibleContent(chunks) && onFirstContent != nil {
+		onFirstContent()
+	}
+	flushErr := writeSSEChunks(c.Writer, chunks)
+	if streamErr != nil {
+		return streamErr
+	}
+	return flushErr
 }
 
-// streamChatTranslated 协议转换时：翻译 SSE 事件后再提取 delta 写给前端。
+/**
+ * @brief 将转换后的上游 SSE 归一化为前端事件，结束或中断时排空标签解析缓冲。
+ * @param c 管理聊天请求上下文。
+ * @param resp 待转换的上游响应。
+ * @param requestPlan 上游与客户端协议及调试捕获配置。
+ * @param testReq 当前测试请求及模型。
+ * @param s 提供协议转换注册表的服务实例。
+ * @param onFirstContent 输出可见正文或思考时调用；nil 时不通知。
+ * @param sr 用量收集状态；nil 时不收集。
+ * @return 读取、转换、取消或写入失败时返回相应错误；正常 EOF 返回 nil。
+ */
 func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *channelTestRequestPlan, testReq *testutil.TestChannelRequest, s *Server, onFirstContent func(), sr *chatStreamResult) error {
 	var state any
-	frontendState := &chatFrontendStreamState{}
+	frontendState := &thinktag.Parser{}
 	ctx := c.Request.Context()
 	requestPlan.debugCapture.captureTranslatedResponseMeta(resp.StatusCode, resp.Header)
 
@@ -982,7 +1021,7 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 	if requestPlan.antigravityOAuth {
 		src = terminateAntigravitySSE(src)
 	}
-	return streamTransformSSEEvents(ctx, src, c.Writer,
+	streamErr := streamTransformSSEEvents(ctx, src, c.Writer,
 		func(rawEvent []byte) error {
 			parserEvent := rawEvent
 			if requestPlan.antigravityOAuth {
@@ -1040,18 +1079,24 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 			return chunks, nil
 		},
 	)
+	chunks := chatChunksFromTextParts(frontendState.Flush())
+	if chatFrontendChunksHaveVisibleContent(chunks) && onFirstContent != nil {
+		onFirstContent()
+	}
+	flushErr := writeSSEChunks(c.Writer, chunks)
+	if streamErr != nil {
+		return streamErr
+	}
+	return flushErr
 }
 
-type chatFrontendStreamState struct {
-	thinkTagOpen bool
-}
-
-type chatTextDeltaPart struct {
-	kind string
-	text string
-}
-
-func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFrontendStreamState) [][]byte {
+/**
+ * @brief 提取前端增量事件，跨 SSE 事件保留标签状态，在终态或错误前排空残留文本。
+ * @param rawEvent 一个上游 SSE 事件。
+ * @param state 当前响应专用的标签解析器。
+ * @return 按原始顺序排列的前端事件；无可显示增量时为空。
+ */
+func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *thinktag.Parser) [][]byte {
 	lines := strings.Split(string(rawEvent), "\n")
 	chunks := make([][]byte, 0, 1)
 	for _, line := range lines {
@@ -1064,6 +1109,7 @@ func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFronten
 			continue
 		}
 		if payload == "[DONE]" {
+			chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
 			chunks = append(chunks, chatDoneEventChunk())
 			continue
 		}
@@ -1072,15 +1118,39 @@ func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFronten
 		if err := sonic.Unmarshal([]byte(payload), &obj); err != nil {
 			continue
 		}
-		if thinking := extractSSEThinkingDelta(obj); thinking != "" {
-			chunks = append(chunks, chatThinkingEventChunk(thinking))
-			continue
+		if candidates, ok := obj["candidates"].([]any); ok && len(candidates) > 0 {
+			candidate, _ := candidates[0].(map[string]any)
+			content, _ := candidate["content"].(map[string]any)
+			parts, _ := content["parts"].([]any)
+			for _, value := range parts {
+				part, _ := value.(map[string]any)
+				if _, toolCall := part["functionCall"]; toolCall {
+					chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
+				}
+				text, _ := part["text"].(string)
+				if thought, _ := part["thought"].(bool); thought {
+					if text != "" {
+						chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
+						chunks = append(chunks, chatThinkingEventChunk(text))
+					}
+				} else {
+					chunks = append(chunks, chatChunksFromTextParts(state.Push(text))...)
+				}
+			}
+		} else {
+			if thinking := extractSSEThinkingDelta(obj); thinking != "" {
+				chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
+				chunks = append(chunks, chatThinkingEventChunk(thinking))
+			}
+			if delta := extractSSEDeltaText(obj); delta != "" {
+				chunks = append(chunks, chatChunksFromTextParts(state.Push(delta))...)
+			}
 		}
-		if delta := extractSSEDeltaText(obj); delta != "" {
-			chunks = append(chunks, chatChunksFromTextDelta(delta, state)...)
-			continue
+		if isChatContentBoundary(obj) {
+			chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
 		}
 		if isChatStopEvent(obj) {
+			chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
 			chunks = append(chunks, chatDoneEventChunk())
 			continue
 		}
@@ -1088,10 +1158,43 @@ func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFronten
 			if errMsg == "" {
 				errMsg = "上游返回错误"
 			}
+			chunks = append(chunks, chatChunksFromTextParts(state.Flush())...)
 			chunks = append(chunks, chatErrorEventChunk(errMsg))
 		}
 	}
 	return chunks
+}
+
+/**
+ * @brief 识别隔断连续正文的工具调用、内容块结束与 Responses 消息结束事件。
+ * @param obj 已解析的单个上游 SSE 事件。
+ * @return 当前事件结束连续文本段时为 true；普通文本增量为 false。
+ */
+func isChatContentBoundary(obj map[string]any) bool {
+	if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		if calls, _ := delta["tool_calls"].([]any); len(calls) > 0 {
+			return true
+		}
+	}
+	typ, _ := obj["type"].(string)
+	switch typ {
+	case "content_block_start":
+		block, _ := obj["content_block"].(map[string]any)
+		return block["type"] == "tool_use"
+	case "content_block_delta":
+		delta, _ := obj["delta"].(map[string]any)
+		return delta["type"] == "input_json_delta"
+	case "content_block_stop":
+		return true
+	case "response.output_item.added", "response.output_item.done":
+		item, _ := obj["item"].(map[string]any)
+		return item["type"] == "function_call" || item["type"] == "custom_tool_call" || (typ == "response.output_item.done" && item["type"] == "message")
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done":
+		return true
+	}
+	return false
 }
 
 func chatFrontendChunksHaveVisibleContent(chunks [][]byte) bool {
@@ -1122,100 +1225,21 @@ func chatFrontendChunkHasVisibleContent(chunk []byte) bool {
 	return false
 }
 
-func chatChunksFromTextDelta(delta string, state *chatFrontendStreamState) [][]byte {
-	chunks := make([][]byte, 0, 1)
-	for _, part := range splitChatTextDeltaParts(delta, state) {
-		if part.kind == "thinking" {
-			chunks = appendNonEmptyThinkingChunk(chunks, part.text)
+/**
+ * @brief 将已分离且非空的正文与思考片段编码为前端 SSE。
+ * @param parts 按原始顺序排列的标签解析结果。
+ * @return 对应的正文或思考事件；parts 为空时返回空切片。
+ */
+func chatChunksFromTextParts(parts []thinktag.Part) [][]byte {
+	chunks := make([][]byte, 0, len(parts))
+	for _, part := range parts {
+		if part.Thinking {
+			chunks = append(chunks, chatThinkingEventChunk(part.Text))
 		} else {
-			chunks = appendNonEmptyDeltaChunk(chunks, part.text)
+			chunks = append(chunks, chatDeltaEventChunk(part.Text))
 		}
 	}
 	return chunks
-}
-
-func splitChatTextDeltaParts(delta string, state *chatFrontendStreamState) []chatTextDeltaPart {
-	if state == nil {
-		if thinking, text := splitThinkTaggedText(delta); thinking != "" {
-			parts := []chatTextDeltaPart{{kind: "thinking", text: thinking}}
-			if text != "" {
-				parts = append(parts, chatTextDeltaPart{kind: "text", text: text})
-			}
-			return parts
-		}
-		return []chatTextDeltaPart{{kind: "text", text: delta}}
-	}
-
-	parts := make([]chatTextDeltaPart, 0, 1)
-	remaining := delta
-	for remaining != "" {
-		if state.thinkTagOpen {
-			closeIdx, closeLen := findThinkCloseTag(remaining)
-			if closeIdx < 0 {
-				parts = appendNonEmptyChatTextPart(parts, "thinking", remaining)
-				return parts
-			}
-			parts = appendNonEmptyChatTextPart(parts, "thinking", remaining[:closeIdx])
-			remaining = remaining[closeIdx+closeLen:]
-			state.thinkTagOpen = false
-			continue
-		}
-
-		openIdx, openLen := findThinkOpenTag(remaining)
-		if openIdx < 0 {
-			parts = appendNonEmptyChatTextPart(parts, "text", remaining)
-			return parts
-		}
-		parts = appendNonEmptyChatTextPart(parts, "text", remaining[:openIdx])
-		remaining = remaining[openIdx+openLen:]
-		state.thinkTagOpen = true
-	}
-	return parts
-}
-
-func appendNonEmptyChatTextPart(parts []chatTextDeltaPart, kind, text string) []chatTextDeltaPart {
-	if text == "" {
-		return parts
-	}
-	return append(parts, chatTextDeltaPart{kind: kind, text: text})
-}
-
-func appendNonEmptyThinkingChunk(chunks [][]byte, text string) [][]byte {
-	if text == "" {
-		return chunks
-	}
-	return append(chunks, chatThinkingEventChunk(text))
-}
-
-func appendNonEmptyDeltaChunk(chunks [][]byte, text string) [][]byte {
-	if text == "" {
-		return chunks
-	}
-	return append(chunks, chatDeltaEventChunk(text))
-}
-
-func findThinkOpenTag(text string) (idx int, length int) {
-	return findFirstTag(text, []string{"<think>", "<thinking>"})
-}
-
-func findThinkCloseTag(text string) (idx int, length int) {
-	return findFirstTag(text, []string{"</think>", "</thinking>"})
-}
-
-func findFirstTag(text string, tags []string) (idx int, length int) {
-	bestIdx := -1
-	bestLen := 0
-	for _, tag := range tags {
-		pos := strings.Index(text, tag)
-		if pos < 0 {
-			continue
-		}
-		if bestIdx < 0 || pos < bestIdx {
-			bestIdx = pos
-			bestLen = len(tag)
-		}
-	}
-	return bestIdx, bestLen
 }
 
 func extractSSEThinkingDelta(obj map[string]any) string {
@@ -1258,25 +1282,6 @@ func extractSSEThinkingDelta(obj map[string]any) string {
 		}
 	}
 	return ""
-}
-
-func splitThinkTaggedText(text string) (thinking string, answer string) {
-	trimmed := strings.TrimSpace(text)
-	for _, tag := range []string{"think", "thinking"} {
-		openTag := "<" + tag + ">"
-		closeTag := "</" + tag + ">"
-		if !strings.HasPrefix(trimmed, openTag) || !strings.Contains(trimmed, closeTag) {
-			continue
-		}
-		end := strings.Index(trimmed, closeTag)
-		if end < 0 {
-			continue
-		}
-		thinking = strings.TrimSpace(trimmed[len(openTag):end])
-		answer = strings.TrimSpace(trimmed[end+len(closeTag):])
-		return thinking, answer
-	}
-	return "", text
 }
 
 func isChatStopEvent(obj map[string]any) bool {

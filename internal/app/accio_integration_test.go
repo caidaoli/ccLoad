@@ -479,9 +479,30 @@ func TestAccioSessionBodyRulesSurviveRefreshRetry(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证分片思考标签及原生思考经四种客户端协议输出，工具与用量保持完整。
+ * @param t 当前测试上下文。
+ */
 func TestAccioCrossProtocolTools(t *testing.T) {
-	const native = "data: {\"content\":{\"parts\":[{\"text\":\"checking\"}]}}\n\ndata: {\"content\":{\"parts\":[{\"function_call\":{\"id\":\"call-accio\",\"name\":\"lookup\",\"args_json\":\"{\\\"q\\\":\\\"test\\\"}\"}}]}}\n\ndata: {\"turn_complete\":true,\"finish_reason\":\"tool_calls\",\"usage_metadata\":{\"prompt_token_count\":10,\"candidates_token_count\":7,\"total_token_count\":17}}\n\n"
-	for _, client := range []string{"responses", "anthropic", "gemini"} {
+	/**
+	 * @brief 将标签前缀拆在 ADK 帧边界，覆盖 think 与 thinking 的前缀歧义。
+	 */
+	const native = `data: {"content":{"parts":[{"text":"native <think>literal</think> ","thought":true}]}}
+
+data: {"content":{"parts":[{"text":"before <thi"}]}}
+
+data: {"content":{"parts":[{"text":"nk>first </th"}]}}
+
+data: {"content":{"parts":[{"text":"ink>middle <think"}]}}
+
+data: {"content":{"parts":[{"text":"ing>second</thinking>checking"}]}}
+
+data: {"content":{"parts":[{"function_call":{"id":"call-accio","name":"lookup","args_json":"{\"q\":\"test\"}"}}]}}
+
+data: {"turn_complete":true,"finish_reason":"tool_calls","usage_metadata":{"prompt_token_count":10,"candidates_token_count":7,"total_token_count":17}}
+
+`
+	for _, client := range []string{"openai", "responses", "anthropic", "gemini"} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%v", client, stream), func(t *testing.T) {
 				env := setupProxyTestEnv(t, []testChannel{{name: "accio", authType: model.AuthTypeAccioOAuth, oauthCredential: accioTestCredential(t, "global", "tool-access"), models: "accio-test", upstreamProtocol: "openai"}}, map[int]string{0: "https://phoenix-gw.alibaba.com/v1/chat/completions"})
@@ -503,6 +524,9 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 				path := "/v1/responses"
 				request := map[string]any{"model": "accio-test", "stream": stream, "input": "hi", "tools": []any{map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}}}
 				switch client {
+				case "openai":
+					path = "/v1/chat/completions"
+					request = map[string]any{"model": "accio-test", "stream": stream, "messages": []any{map[string]string{"role": "user", "content": "hi"}}, "tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "parameters": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}}}}
 				case "anthropic":
 					path = "/v1/messages"
 					request = map[string]any{"model": "accio-test", "stream": stream, "max_tokens": 64, "messages": []any{map[string]string{"role": "user", "content": "hi"}}, "tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}}}
@@ -526,16 +550,42 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 					}
 					events = []gjson.Result{gjson.ParseBytes(w.Body.Bytes())}
 				}
-				var text, args, name, id string
+				var text, thinking, ordered, args, name, id string
 				var input, output int64
 				var terminal bool
 				for _, event := range events {
 					switch client {
+					case "openai":
+						message := event.Get("choices.0.message")
+						if stream {
+							message = event.Get("choices.0.delta")
+						}
+						text += message.Get("content").String()
+						thinking += message.Get("reasoning_content").String()
+						ordered += message.Get("reasoning_content").String() + message.Get("content").String()
+						for _, call := range message.Get("tool_calls").Array() {
+							if call.Get("id").Exists() {
+								id = call.Get("id").String()
+							}
+							if call.Get("function.name").Exists() {
+								name = call.Get("function.name").String()
+							}
+							args += call.Get("function.arguments").String()
+						}
+						if event.Get("usage").Exists() {
+							input = event.Get("usage.prompt_tokens").Int()
+							output = event.Get("usage.completion_tokens").Int()
+						}
+						terminal = terminal || event.Get("choices.0.finish_reason").String() == "tool_calls"
 					case "responses":
 						if stream {
 							switch event.Get("type").String() {
 							case "response.output_text.delta":
 								text += event.Get("delta").String()
+								ordered += event.Get("delta").String()
+							case "response.reasoning_summary_text.delta":
+								thinking += event.Get("delta").String()
+								ordered += event.Get("delta").String()
 							case "response.function_call_arguments.done":
 								args = event.Get("arguments").String()
 							case "response.output_item.done":
@@ -558,6 +608,10 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 									name = item.Get("name").String()
 									id = item.Get("call_id").String()
 									args = item.Get("arguments").String()
+								} else if item.Get("type").String() == "reasoning" {
+									for _, part := range item.Get("summary").Array() {
+										thinking += part.Get("text").String()
+									}
 								} else {
 									for _, part := range item.Get("content").Array() {
 										text += part.Get("text").String()
@@ -575,6 +629,8 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 								}
 							case "content_block_delta":
 								text += event.Get("delta.text").String()
+								thinking += event.Get("delta.thinking").String()
+								ordered += event.Get("delta.thinking").String() + event.Get("delta.text").String()
 								args += event.Get("delta.partial_json").String()
 							case "message_start":
 								input = event.Get("message.usage.input_tokens").Int()
@@ -591,6 +647,7 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 							terminal = event.Get("stop_reason").String() == "tool_use"
 							for _, block := range event.Get("content").Array() {
 								text += block.Get("text").String()
+								thinking += block.Get("thinking").String()
 								if block.Get("type").String() == "tool_use" {
 									name = block.Get("name").String()
 									id = block.Get("id").String()
@@ -600,7 +657,12 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 						}
 					case "gemini":
 						for _, part := range event.Get("candidates.0.content.parts").Array() {
-							text += part.Get("text").String()
+							if part.Get("thought").Bool() {
+								thinking += part.Get("text").String()
+							} else {
+								text += part.Get("text").String()
+							}
+							ordered += part.Get("text").String()
 							if call := part.Get("functionCall"); call.Exists() {
 								name = call.Get("name").String()
 								id = call.Get("id").String()
@@ -616,8 +678,11 @@ func TestAccioCrossProtocolTools(t *testing.T) {
 						}
 					}
 				}
-				if text != "checking" || name != "lookup" || id == "" || gjson.Get(args, "q").String() != "test" || input != 10 || output != 7 || !terminal {
-					t.Fatalf("lost protocol data: text=%q name=%q id=%q args=%s tokens=%d/%d terminal=%v body=%s", text, name, id, args, input, output, terminal, w.Body.String())
+				if stream && ordered != "native <think>literal</think> before first middle secondchecking" {
+					t.Fatalf("stream reordered text/thinking: %q body=%s", ordered, w.Body.String())
+				}
+				if text != "before middle checking" || thinking != "native <think>literal</think> first second" || name != "lookup" || id == "" || gjson.Get(args, "q").String() != "test" || input != 10 || output != 7 || !terminal {
+					t.Fatalf("lost protocol data: text=%q thinking=%q name=%q id=%q args=%s tokens=%d/%d terminal=%v body=%s", text, thinking, name, id, args, input, output, terminal, w.Body.String())
 				}
 			})
 		}

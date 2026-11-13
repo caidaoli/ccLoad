@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -300,6 +301,139 @@ func TestNormalizeStreamPreservesTextReasoningToolsAndUsage(t *testing.T) {
 	}
 	if usage["prompt_tokens"] != float64(8) || usage["completion_tokens"] != float64(5) || usage["total_tokens"] != float64(13) || usage["prompt_tokens_details"].(map[string]any)["cached_tokens"] != float64(4) || usage["completion_tokens_details"].(map[string]any)["reasoning_tokens"] != float64(2) {
 		t.Fatalf("invalid usage: %v", usage)
+	}
+}
+
+/**
+ * @brief 思考标签跨原生帧时仍与正文分离，结构化思考、签名和未完成文本保持完整。
+ * @param t 测试上下文。
+ */
+func TestNormalizeStreamThinkingTags(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, content, reasoning string
+	}{
+		{"mixed", "前<think>推理</think>后<thinking>分析</thinking>答", "前后答", "推理分析"},
+		{"plain", "x < y <this> z", "x < y <this> z", ""},
+		{"partial opening", "answer<thi", "answer<thi", ""},
+		{"partial closing", "<think>why</thi", "", "why</thi"},
+		{"unclosed", "<think>why", "", "why"},
+	} {
+		for _, split := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/split=%v", tc.name, split), func(t *testing.T) {
+				pieces := []string{tc.input}
+				if split {
+					pieces = strings.Split(tc.input, "")
+				}
+				var input strings.Builder
+				for i, text := range pieces {
+					part := map[string]any{"text": text}
+					if i == 0 {
+						part["thought_signature"] = "opaque"
+					}
+					input.WriteString(adkEvent(map[string]any{"content": map[string]any{"parts": []any{part}}}))
+				}
+				input.WriteString("data: [DONE]\n\n")
+				chunks, done, err := readADKStream(t, io.NopCloser(strings.NewReader(input.String())))
+				if err != nil || !done {
+					t.Fatalf("stream failed: %v done=%v", err, done)
+				}
+				var content, reasoning string
+				var signatures []string
+				for _, chunk := range chunks {
+					if chunk["error"] != nil {
+						t.Fatalf("unexpected error: %v", chunk)
+					}
+					for _, raw := range chunk["choices"].([]any) {
+						delta := raw.(map[string]any)["delta"].(map[string]any)
+						content += wireText(delta["content"])
+						reasoning += wireText(delta["reasoning_content"])
+						if extra, ok := delta["extra_content"].(map[string]any); ok {
+							signatures = append(signatures, extra["google"].(map[string]any)["thought_signature"].(string))
+						}
+					}
+				}
+				if content != tc.content || reasoning != tc.reasoning {
+					t.Fatalf("content=%q reasoning=%q; want %q / %q", content, reasoning, tc.content, tc.reasoning)
+				}
+				if !slices.Equal(signatures, []string{"opaque"}) {
+					t.Fatalf("signatures lost or duplicated: %v", signatures)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 标签缓冲在结构化思考、工具和流失败之前排空，保留输出顺序与原生签名。
+ * @param t 测试上下文。
+ */
+func TestNormalizeStreamThinkingBoundaries(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprint(terminal), func(t *testing.T) {
+			parts := []any{
+				map[string]any{"text": "before<thi"},
+				map[string]any{"text": "native<think>literal</think>", "thought": true, "thought_signature": "opaque"},
+				map[string]any{"text": "nk>after<thinking>reason</thinking><"},
+				map[string]any{"function_call": map[string]any{"id": "call", "name": "lookup", "args_json": "{}"}},
+				map[string]any{"text": "tail<thi"},
+			}
+			input := adkEvent(map[string]any{"content": map[string]any{"parts": parts}})
+			if terminal {
+				input += "data: [DONE]\n\n"
+			}
+			chunks, done, err := readADKStream(t, io.NopCloser(strings.NewReader(input)))
+			if err != nil || done != terminal {
+				t.Fatalf("stream failed: %v done=%v", err, done)
+			}
+			/**
+			 * @brief 客户端可见的语义内容，忽略同类型文本的传输分片。
+			 */
+			type event struct{ kind, text string }
+			var events []event
+			appendText := func(kind, text string) {
+				if text == "" {
+					return
+				}
+				if len(events) > 0 && events[len(events)-1].kind == kind {
+					events[len(events)-1].text += text
+				} else {
+					events = append(events, event{kind, text})
+				}
+			}
+			signature := ""
+			for _, chunk := range chunks {
+				if chunk["error"] != nil {
+					events = append(events, event{kind: "error"})
+				}
+				choices, _ := chunk["choices"].([]any)
+				for _, raw := range choices {
+					delta := raw.(map[string]any)["delta"].(map[string]any)
+					appendText("text", wireText(delta["content"]))
+					appendText("thought", wireText(delta["reasoning_content"]))
+					if extra, ok := delta["extra_content"].(map[string]any); ok {
+						signature = extra["google"].(map[string]any)["thought_signature"].(string)
+					}
+					if delta["tool_calls"] != nil {
+						events = append(events, event{kind: "tool"})
+					}
+				}
+			}
+			want := []event{
+				{"text", "before<thi"},
+				{"thought", "native<think>literal</think>"},
+				{"text", "nk>after"},
+				{"thought", "reason"},
+				{"text", "<"},
+				{"tool", ""},
+				{"text", "tail<thi"},
+			}
+			if !terminal {
+				want = append(want, event{kind: "error"})
+			}
+			if !slices.Equal(events, want) || signature != "opaque" {
+				t.Fatalf("events=%v signature=%q; want %v", events, signature, want)
+			}
+		})
 	}
 }
 

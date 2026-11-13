@@ -319,3 +319,78 @@ func TestMergeResponseBody_MergesOpenAIStreamingToolCallIDWithIndexDeltas(t *tes
 		t.Fatalf("tool call should not be split into an anonymous second block, got:\n%s", parts.Tools)
 	}
 }
+
+/**
+ * @brief 调试响应聚合 API 跨 SSE 字符分片解析思考标签并排空尾部标签残片。
+ * @param t 测试上下文。
+ */
+func TestHandleMergeDebugResponse_ParsesFragmentedThinkTags(t *testing.T) {
+	for _, tc := range []struct{ name, content, text, reasoning string }{
+		{name: "think", content: "before<think>thought</think>after", text: "beforeafter", reasoning: "thought"},
+		{name: "thinking", content: "<thinking>thought</thinking>answer", text: "answer", reasoning: "thought"},
+		{name: "open suffix", content: "answer<thi", text: "answer<thi"},
+		{name: "close suffix", content: "<think>thought</thi", reasoning: "thought</thi"},
+		{name: "ordinary tags", content: "plain <b>text</b>", text: "plain <b>text</b>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			var wire strings.Builder
+			for _, char := range tc.content {
+				payload, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": string(char)}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				wire.WriteString("data: " + string(payload) + "\n\n")
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/debug-logs/merged-response", map[string]string{"resp_body": wire.String()}))
+			srv.HandleMergeDebugResponse(c)
+			resp := mustParseAPIResponse[mergedResponseParts](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || !resp.Success || resp.Data.Content != tc.text || resp.Data.Reasoning != tc.reasoning {
+				t.Fatalf("status=%d success=%v parts=%+v, want text=%q reasoning=%q", w.Code, resp.Success, resp.Data, tc.text, tc.reasoning)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 聚合 Responses 消息时先输出前一条目的标签残片，再插入消息分隔。
+ * @param t 测试上下文。
+ */
+func TestHandleMergeDebugResponse_SeparatesPendingCodexTextItems(t *testing.T) {
+	for _, first := range []string{"first<", "<"} {
+		t.Run(first, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			var wire strings.Builder
+			for _, item := range []struct{ id, text string }{{"a", first}, {"b", "second"}} {
+				payload, err := json.Marshal(map[string]any{"type": "response.output_text.delta", "item_id": item.id, "delta": item.text})
+				if err != nil {
+					t.Fatal(err)
+				}
+				wire.WriteString("data: " + string(payload) + "\n\n")
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/debug-logs/merged-response", map[string]string{"resp_body": wire.String()}))
+			srv.HandleMergeDebugResponse(c)
+			resp := mustParseAPIResponse[mergedResponseParts](t, w.Body.Bytes())
+			if want := first + "\n\n---\n\nsecond"; w.Code != http.StatusOK || !resp.Success || resp.Data.Content != want {
+				t.Fatalf("status=%d success=%v content=%q, want %q", w.Code, resp.Success, resp.Data.Content, want)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 调试响应聚合在 Chat 工具调用之前结束文本段，避免将两侧残片重组为标签。
+ * @param t 测试上下文。
+ */
+func TestHandleMergeDebugResponse_FlushesTextBeforeToolCalls(t *testing.T) {
+	srv := newInMemoryServer(t)
+	wire := "data: " + `{"choices":[{"delta":{"content":"before<thi"}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"delta":{"content":"nk>after"}}]}` + "\n\n"
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/debug-logs/merged-response", map[string]string{"resp_body": wire}))
+	srv.HandleMergeDebugResponse(c)
+	resp := mustParseAPIResponse[mergedResponseParts](t, w.Body.Bytes())
+	if w.Code != http.StatusOK || !resp.Success || resp.Data.Content != "before<think>after" || resp.Data.Reasoning != "" || !strings.Contains(resp.Data.Tools, "lookup") {
+		t.Fatalf("status=%d success=%v parts=%+v", w.Code, resp.Success, resp.Data)
+	}
+}

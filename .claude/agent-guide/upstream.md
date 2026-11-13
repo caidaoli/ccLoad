@@ -17,6 +17,7 @@
 - 推理携带 `utdid`：官方 JSON 的 `utdid/deviceId` 保存为 `device_id`；缺少时按地区+已验证用户标识派生稳定 desktop 标识，刷新令牌不改变设备身份，重新授权缺项保留已有设备值。2026-10-20 实测缺该头会返回 HTTP 200 HTML + `Bxpunish: 1`；补头后进入真实 SSE，但测试环境仍收到业务码 555 / sentinel rate limit（映射429）。管理测试诊断记录实际原生请求，body token 与设备头脱敏；网关挑战先分类为502并剔除挑战Cookie/跳转地址，不误报EOF或刷新令牌。
 - 官方 `sgcookie/sgCookie` 经导入、OAuth 换码和刷新保存为可选 `sgcookie`，仅随推理发送同名头并在调试输出脱敏；缺项保留已有值，拒绝超过4096字节或非可见 ASCII 的值。刷新期间仅更新 cookie 时保留最新 cookie 并发布已轮换令牌，不能把 cookie 更新误判为新授权而丢弃已消费刷新令牌的结果。
 - 正常推理响应为 SSE，转换成 Chat SSE 后复用现有协议转换及非流式聚合器；空 `content` 对象允许缺少 `parts` 或 `parts: null`，仍处理同帧终态与 usage，除 `null` 外的非数组 `parts` 拒绝。保留工具参数与 usage，缺失终态的 EOF 返回错误，已有输出后不重放。原生业务错误映射 401/429/502，SSE 错误携带顶层 status 供通用分类器识别。
+- 普通 `text` 中的 `<think>` / `<thinking>` 按流状态拆为正文和 `reasoning_content`，支持标签跨原生帧；`thought: true` 的结构化思考保持原文。工具、结构化思考和流终止前排空残留标签片段，保留输出顺序、签名与错误终态；管理测试页使用相同解析器。
 - 额度以百分比窗口展示，订阅字段保留原单位；只保存安全 `oauth_usage` 快照，不进入 USD 窗口成本账本。控制面错误不回显令牌/query URL，禁止跟随重定向。
 - 参考提交及独立实现边界见 `internal/accioauth/UPSTREAM.md`；使用说明见 `docs/guide/accio.zh-CN.md`。
 

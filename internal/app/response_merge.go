@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"ccLoad/internal/thinktag"
+
 	"github.com/bytedance/sonic"
 )
 
@@ -17,6 +19,9 @@ type mergedResponseParts struct {
 	Tools     string `json:"tools,omitempty"`
 }
 
+/**
+ * @brief 聚合响应中的正文、思考及工具调用，保留跨 SSE 分片的思考标签状态。
+ */
 type mergedResponseBuilder struct {
 	reasoning          strings.Builder
 	content            strings.Builder
@@ -27,7 +32,7 @@ type mergedResponseBuilder struct {
 	toolDeltaKey       string
 	toolNamesByIndex   map[string]string
 	openAIToolKeys     map[string]string
-	streamState        chatFrontendStreamState
+	streamState        thinktag.Parser ///< 连续文本增量的思考标签解析状态。
 	lastContentItemKey string
 }
 
@@ -114,6 +119,10 @@ func parseSSEJSONPayloads(body string) []map[string]any {
 	return payloads
 }
 
+/**
+ * @brief 收集响应事件，在结构化思考与工具调用边界排空连续文本的标签缓冲。
+ * @param obj 已解码的响应 JSON 对象；nil 时无可收集内容。
+ */
 func (b *mergedResponseBuilder) collectPayload(obj map[string]any) {
 	if obj == nil {
 		return
@@ -128,12 +137,16 @@ func (b *mergedResponseBuilder) collectPayload(obj map[string]any) {
 		return
 	}
 	if thinking := extractSSEThinkingDelta(obj); thinking != "" {
+		b.appendTextParts(b.streamState.Flush())
 		b.appendReasoning(thinking)
 	}
 	if b.appendCodexTextDelta(obj) {
 		// Codex text deltas carry item identity; keep item boundaries visible.
 	} else if delta := extractSSEDeltaText(obj); delta != "" {
 		b.appendTextDelta(delta)
+	}
+	if isChatContentBoundary(obj) {
+		b.appendTextParts(b.streamState.Flush())
 	}
 	b.collectOpenAIMessage(obj)
 	b.collectGeminiContent(obj)
@@ -287,15 +300,24 @@ func (b *mergedResponseBuilder) collectToolCalls(value any, streaming bool, choi
 	}
 }
 
+/**
+ * @brief 聚合跨分片标签解析后可输出的正文与思考。
+ * @param delta 上游响应中的文本增量。
+ */
 func (b *mergedResponseBuilder) appendTextDelta(delta string) {
-	for _, part := range splitChatTextDeltaParts(delta, &b.streamState) {
-		if part.text == "" {
-			continue
-		}
-		if part.kind == "thinking" {
-			b.appendReasoning(part.text)
+	b.appendTextParts(b.streamState.Push(delta))
+}
+
+/**
+ * @brief 将标签解析结果按类别追加到聚合结果。
+ * @param parts 按原始顺序排列的非空正文或思考片段。
+ */
+func (b *mergedResponseBuilder) appendTextParts(parts []thinktag.Part) {
+	for _, part := range parts {
+		if part.Thinking {
+			b.appendReasoning(part.Text)
 		} else {
-			b.appendContent(part.text)
+			b.appendContent(part.Text)
 		}
 	}
 }
@@ -318,12 +340,19 @@ func (b *mergedResponseBuilder) appendCodexTextDelta(obj map[string]any) bool {
 	return true
 }
 
+/**
+ * @brief 在 Responses 消息条目切换时排空前一条目的标签残片并保留可见分隔。
+ * @param itemKey 当前消息条目标识；空值表示没有条目边界信息。
+ */
 func (b *mergedResponseBuilder) beginContentItem(itemKey string) {
 	if itemKey == "" {
 		return
 	}
-	if b.lastContentItemKey != "" && b.lastContentItemKey != itemKey && b.content.Len() > 0 {
-		b.content.WriteString(codexMessageItemSeparator)
+	if b.lastContentItemKey != "" && b.lastContentItemKey != itemKey {
+		b.appendTextParts(b.streamState.Flush())
+		if b.content.Len() > 0 {
+			b.content.WriteString(codexMessageItemSeparator)
+		}
 	}
 	b.lastContentItemKey = itemKey
 }
@@ -374,7 +403,12 @@ func (b *mergedResponseBuilder) appendContent(text string) {
 	b.content.WriteString(text)
 }
 
+/**
+ * @brief 排空标签与工具缓冲并返回可展示的聚合结果。
+ * @return 正文、思考与工具诊断；无对应内容时字段为空。
+ */
 func (b *mergedResponseBuilder) parts() mergedResponseParts {
+	b.appendTextParts(b.streamState.Flush())
 	b.flushToolDelta()
 	return mergedResponseParts{
 		Reasoning: strings.TrimSpace(b.reasoning.String()),

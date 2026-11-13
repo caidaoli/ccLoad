@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ccLoad/internal/thinktag"
+
 	"github.com/google/uuid"
 )
 
@@ -81,6 +83,9 @@ func NormalizeStream(source io.ReadCloser, model string) io.ReadCloser {
 	return &adkStream{source: source, scanner: scanner, model: model, id: "chatcmpl-" + uuid.NewString(), created: time.Now().Unix()}
 }
 
+/**
+ * @brief 将原生 ADK 事件增量转为 Chat SSE，保留终态、工具与跨帧思考标签状态。
+ */
 type adkStream struct {
 	source   io.ReadCloser
 	scanner  *bufio.Scanner
@@ -94,6 +99,7 @@ type adkStream struct {
 	finish   string
 	usage    map[string]any
 	tools    []*adkTool
+	text     thinktag.Parser ///< 普通 text 的思考标签解析状态。
 }
 
 type adkTool struct {
@@ -235,6 +241,11 @@ func (r *adkStream) consume(data []byte) error {
 	return nil
 }
 
+/**
+ * @brief 转换原生内容块，在结构化思考和工具边界排空文本标签缓冲。
+ * @param part 已解码的原生内容块。
+ * @return 内容字段类型或工具参数无效、存在不支持字段时返回错误，否则为 nil。
+ */
 func (r *adkStream) part(part map[string]any) error {
 	for key := range part {
 		switch key {
@@ -249,6 +260,7 @@ func (r *adkStream) part(part map[string]any) error {
 		if !ok {
 			return errors.New("accio: invalid function call")
 		}
+		r.textParts(r.text.Flush(), nil)
 		return r.tool(call, signature)
 	}
 	if raw, exists := part["text"]; exists {
@@ -256,10 +268,12 @@ func (r *adkStream) part(part map[string]any) error {
 		if !ok {
 			return errors.New("accio: invalid text part")
 		}
-		delta := map[string]any{"content": text}
-		if thought, _ := part["thought"].(bool); thought {
-			delta = map[string]any{"reasoning_content": text}
+		if thought, _ := part["thought"].(bool); !thought {
+			r.textParts(r.text.Push(text), signature)
+			return nil
 		}
+		r.textParts(r.text.Flush(), nil)
+		delta := map[string]any{"reasoning_content": text}
 		if signature != nil {
 			delta["extra_content"] = map[string]any{"google": map[string]any{"thought_signature": signature}}
 		}
@@ -271,6 +285,29 @@ func (r *adkStream) part(part map[string]any) error {
 		return nil
 	}
 	return errors.New("accio: unsupported SSE content part")
+}
+
+/**
+ * @brief 按出现顺序输出正文和思考增量，原生签名只附加一次。
+ * @param parts 非空文本片段；切片可以为空。
+ * @param signature 原生签名；nil 表示没有签名。
+ */
+func (r *adkStream) textParts(parts []thinktag.Part, signature any) {
+	for _, part := range parts {
+		key := "content"
+		if part.Thinking {
+			key = "reasoning_content"
+		}
+		delta := map[string]any{key: part.Text}
+		if signature != nil {
+			delta["extra_content"] = map[string]any{"google": map[string]any{"thought_signature": signature}}
+			signature = nil
+		}
+		r.delta(delta)
+	}
+	if signature != nil {
+		r.delta(map[string]any{"extra_content": map[string]any{"google": map[string]any{"thought_signature": signature}}})
+	}
 }
 
 func (r *adkStream) tool(call map[string]any, signature any) error {
@@ -365,7 +402,12 @@ func (r *adkStream) frame(value any) {
 	r.pending = append(r.pending, '\n', '\n')
 }
 
+/**
+ * @brief 排空文本并结束成功的流，保留工具终态和用量。
+ * @return 尚有无效或未完成的工具参数时返回错误，否则为 nil。
+ */
 func (r *adkStream) complete() error {
+	r.textParts(r.text.Flush(), nil)
 	for _, tool := range r.tools {
 		var arguments map[string]any
 		if json.Unmarshal([]byte(tool.arguments), &arguments) != nil || arguments == nil {
@@ -391,7 +433,12 @@ func (r *adkStream) complete() error {
 	return nil
 }
 
+/**
+ * @brief 在已收到的文本之后输出错误终态，不伪造成功结束标记。
+ * @param err 上游错误或原生事件解析错误。
+ */
 func (r *adkStream) fail(err error) {
+	r.textParts(r.text.Flush(), nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		apiErr = &APIError{StatusCode: 502, Type: "upstream_error", Code: "invalid_upstream_response", Message: err.Error()}
