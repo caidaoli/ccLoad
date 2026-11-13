@@ -500,19 +500,32 @@ function isPrefixOrSuffixVariant(model, actualModel) {
   return prefixLen > 0 && suffixLen > 0 && prefixLen + suffixLen === short.length;
 }
 
-function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningTokens, clientEffort = '') {
+/**
+ * @brief 展示请求与响应模型，悬停保留转发信息；隐藏渠道时隐藏上游模型信息。
+ * @param model 请求模型。
+ * @param actualModel 实际转发模型，空表示未重定向。
+ * @param responseModel 上游响应声明的模型，缺失时展示转发模型。
+ * @param thinkingEffort 生效的思考等级。
+ * @param reasoningTokens 推理 token 数。
+ * @param clientEffort 客户端请求的思考等级。
+ * @return 已转义的模型展示 HTML。
+ */
+function buildLogModelDisplay(model, actualModel, responseModel, thinkingEffort, reasoningTokens, clientEffort = '') {
   if (!model) {
     return '<span style="color: var(--neutral-500);">-</span>';
   }
 
-  const redirected = !window.shouldHideChannels?.() && actualModel && actualModel !== model && !isPrefixOrSuffixVariant(model, actualModel);
+  const showUpstream = !window.shouldHideChannels?.();
+  const displayedModel = responseModel || actualModel;
+  const redirected = showUpstream && displayedModel && displayedModel !== model && !isPrefixOrSuffixVariant(model, displayedModel);
   const effort = normalizeThinkingEffortDisplay(thinkingEffort);
   const tokens = normalizeReasoningTokens(reasoningTokens);
   const classes = ['model-tag'];
   const titleParts = [];
-  if (redirected) {
+  if (showUpstream && (actualModel || responseModel)) {
     titleParts.push(escapeHtml(t('logs.titleRequestedModel', { model })));
-    titleParts.push(escapeHtml(t('logs.titleActualModel', { model: actualModel })));
+    titleParts.push(escapeHtml(t('logs.titleForwardedModel', { model: actualModel || model })));
+    if (responseModel) titleParts.push(escapeHtml(t('logs.titleResponseModel', { model: responseModel })));
   }
   if (effort) {
     classes.push('model-thinking');
@@ -530,7 +543,7 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
   return `<span class="model-display">
       <span class="${classes.join(' ')}"${title}>
         <span class="model-text">${escapeHtml(model)}</span>
-        ${redirected ? `<span class="model-actual"><span aria-hidden="true">→</span><span class="model-text">${escapeHtml(actualModel)}</span></span>` : ''}
+        ${redirected ? `<span class="model-actual"><span aria-hidden="true">→</span><span class="model-text">${escapeHtml(displayedModel)}</span></span>` : ''}
       </span>
       ${badgeHtml}
     </span>`;
@@ -1006,7 +1019,7 @@ function renderActiveRequests(activeRequests) {
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
     const statusDisplay = buildActiveRequestStatusHtml(req);
-    const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens, req.client_effort);
+    const modelDisplay = buildLogModelDisplay(req.model, '', '', req.thinking_effort, req.reasoning_tokens, req.client_effort);
     const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
     const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
     const abortDisplay = buildActiveRequestAbortHtml(req, id, startMs);
@@ -1232,8 +1245,7 @@ function renderLogs(data) {
     const statusCode = entry.status_code;
 
     // 3. 模型显示（支持重定向与思考等级角标）
-    const displayedActualModel = entry.actual_model || entry.response_model;
-    const modelDisplay = buildLogModelDisplay(entry.model, displayedActualModel, entry.thinking_effort, entry.reasoning_tokens, reasoningClientEffort(entry));
+    const modelDisplay = buildLogModelDisplay(entry.model, entry.actual_model, entry.response_model, entry.thinking_effort, entry.reasoning_tokens, reasoningClientEffort(entry));
 
     // 4. 响应时间显示(流式/非流式)
     const hasDuration = entry.duration !== undefined && entry.duration !== null;

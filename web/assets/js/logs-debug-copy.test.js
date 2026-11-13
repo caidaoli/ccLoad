@@ -326,12 +326,17 @@ test('channelless count_tokens logs link to their debug-log entry', async () => 
 
 test('token channel visibility also controls actual model text and hover', async () => {
   for (const [isTokenRole, showChannels] of [[true, false], [true, true], [false, false]]) {
-    for (const modelField of ['actual_model', 'response_model']) {
+    for (const models of [
+      { actual_model: 'private-forwarded-model' },
+      { response_model: 'private-response-model' },
+      { actual_model: 'private-forwarded-model', response_model: 'private-response-model' },
+      { actual_model: 'private-forwarded-model', response_model: 'requested-model' }
+    ]) {
       await withLoadedLogsPage({
         isTokenRole,
         showChannels,
         entries: [{
-          time: Date.now(), model: 'requested-model', [modelField]: 'private-upstream-model',
+          time: Date.now(), model: 'requested-model', ...models,
           thinking_effort: 'high', reasoning_tokens: 123,
           status_code: 200, duration: 0, log_source: 'proxy'
         }]
@@ -339,9 +344,11 @@ test('token channel visibility also controls actual model text and hover', async
         const html = tbody.innerHTML;
         assert.match(html, /requested-model/);
         if (isTokenRole && !showChannels) {
-          assert.doesNotMatch(html, /private-upstream-model|model-actual|logs\.titleActualModel/);
+          assert.doesNotMatch(html, /private-forwarded-model|private-response-model|logs\.titleForwardedModel|logs\.titleResponseModel/);
         } else {
-          assert.match(html, /logs\.titleActualModel private-upstream-model/);
+          assert.match(html, /logs\.titleForwardedModel/);
+          if (models.actual_model) assert.match(html, /logs\.titleForwardedModel private-forwarded-model/);
+          if (models.response_model) assert.ok(html.includes(`logs.titleResponseModel ${models.response_model}`));
         }
       });
     }
