@@ -611,7 +611,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 				return nil, "", err
 			}
 		} else if !wireBodyRulesApplied {
-			body = relaxAnthropicClaude55ForcedToolChoice(body, requestModel)
+			body = prepareAnthropicConvertedRequest(body, requestModel)
 		}
 	}
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
@@ -2702,8 +2702,28 @@ type nativeCodexWebsocketAttempt struct {
 	incrementalBodyRulesApplied bool
 }
 
-// forwardOnceAsyncWithNativeCodexWebsocket 异步流式转发，透明转发客户端原始请求
-// apiKey 为 KeySelector 已选中的 API Key；method 支持任意 HTTP 方法。
+/**
+ * @brief 执行一次协议转换与上游转发，支持原生 Responses WebSocket 会话和已最终化的重试正文。
+ * @param ctx 请求上下文；取消时终止本次转发。
+ * @param cfg 本次选择的渠道配置。
+ * @param apiKey KeySelector 已选中的上游凭据。
+ * @param method 客户端 HTTP 方法。
+ * @param plan 包含调用方原文、实际转换输入与上下游协议的请求计划。
+ * @param hdr 调用方请求头。
+ * @param rawQuery 调用方原始查询参数。
+ * @param baseURL 本次选择的上游地址。
+ * @param w 下游响应写入器。
+ * @param observer 转发观测器；nil 表示不额外观测。
+ * @param native 原生 Codex WebSocket 尝试；nil 时使用 HTTP。
+ * @param executionIdentity 本轮工具与会话映射使用的执行身份。
+ * @param translatedRequestOverride 已生成的上游正文；nil 时按计划转换。
+ * @param replayBodyRulesApplied 是否重放已应用渠道规则的 wire 正文。
+ * @param wireAliases 重试沿用的工具别名映射。
+ * @return 转发结果；请求构造或转换失败时可能为 nil。
+ * @return 本次转发耗时，单位秒；发送前失败时为零。
+ * @return 转换、构造、传输或响应处理失败时返回错误；无法表示的跨协议请求包含 protocol.RequestTranslationError。
+ * @note 可能写入下游响应，转发结束时清理本次请求上下文。
+ */
 func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	ctx context.Context,
 	cfg *model.Config,
@@ -2853,6 +2873,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 				}
 			}
 			translatedBody = preserveResponsesTopLevelSystemItems(cfg, baseURL, plan.ClientProtocol, plan.UpstreamProtocol, translatedBody)
+			translationSource := translatedBody
 			var err error
 			translatedBody, err = s.protocolRegistry.TranslateRequest(
 				plan.ClientProtocol,
@@ -2863,6 +2884,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			)
 			if err != nil {
 				return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
+			}
+			if plan.UpstreamProtocol == protocol.Anthropic {
+				translatedBody = preserveAnthropicConvertedEffort(translatedBody, translationSource, plan.RequestModel())
 			}
 		}
 		plan.TranslatedBody = translatedBody

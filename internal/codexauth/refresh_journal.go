@@ -11,17 +11,27 @@ import (
 
 /**
  * @brief 在权威凭据存储中永久记录刷新 grant 的提交与结果
- * @note claim 必须原子创建；未完成记录不允许回收或按时间重试，回执含私密凭据。
+ * @note claim 必须原子创建；仅原 owner 确证未发送时可释放，不按时间回收；回执含私密凭据。
  */
 type RefreshJournal interface {
 	/**
 	 * @brief 在发送 grant 前原子创建未完成记录
 	 * @param ctx 存储操作上下文
 	 * @param key RefreshGrantKey 返回的 grant 指纹
+	 * @param owner 本次申领独有的随机标识，释放时必须原样提供
 	 * @return 首次取得提交权时返回 true，已有记录时返回 false
 	 * @return 存储失败时返回错误，此时不得发送刷新请求
 	 */
-	RefreshClaim(ctx context.Context, key string) (bool, error)
+	RefreshClaim(ctx context.Context, key, owner string) (bool, error)
+	/**
+	 * @brief 仅在确证未发送时释放属于本次申领的未完成记录
+	 * @param ctx 存储操作上下文
+	 * @param key grant 指纹
+	 * @param owner 本次成功申领使用的随机标识
+	 * @return 存储失败、owner 不匹配、记录不存在或已有回执时返回错误
+	 * @note 不得释放已连接且结果未知的交换；释放失败后保留不可重放状态。
+	 */
+	RefreshRelease(ctx context.Context, key, owner string) error
 	/**
 	 * @brief 读取既有 grant 的持久化回执
 	 * @param ctx 存储操作上下文
@@ -39,6 +49,39 @@ type RefreshJournal interface {
 	 * @return 写入失败或记录已完成时返回错误
 	 */
 	RefreshComplete(ctx context.Context, key string, receipt []byte) error
+}
+
+/**
+ * @brief 标记确证尚未向上游发送的刷新失败
+ * @note 诊断仅暴露阶段；底层错误通过 Unwrap 保留，不回显 URL 或私密数据。
+ */
+type RefreshPreSendError struct {
+	stage string ///< 确证未发送的失败阶段
+	cause error  ///< 原始错误，可为空
+}
+
+/**
+ * @brief 返回允许后续重试的发送前失败说明
+ * @return 不含上游正文或令牌的阶段提示
+ */
+func (e *RefreshPreSendError) Error() string {
+	return "codex refresh failed before send at " + e.stage + "; retry later"
+}
+
+/**
+ * @brief 保留原始错误供取消和网络故障分类
+ * @return 原始错误；没有底层错误时返回 nil
+ */
+func (e *RefreshPreSendError) Unwrap() error { return e.cause }
+
+/**
+ * @brief 判断刷新失败是否已确认未发送且安全释放提交权
+ * @param err 刷新错误
+ * @return 含发送前错误且不含不确定结果时返回 true
+ */
+func IsRefreshPreSendError(err error) bool {
+	_, ok := errors.AsType[*RefreshPreSendError](err)
+	return ok && !IsRefreshOutcomeUnknown(err)
 }
 
 /**

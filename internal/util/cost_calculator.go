@@ -706,13 +706,14 @@ func isOpusModel(model string) bool {
 /**
  * @brief 判断模型是否支持 Anthropic fast 模式计费。
  * @param model 模型名称，可带版本或思考等级后缀。
- * @return 已支持的 Opus 系列或 Fable 5.2 返回 true，其他模型返回 false。
+ * @return 已支持的 Opus 系列、Fable 5.2 或 Mythos 5.2 返回 true，其他模型返回 false。
  */
 func IsFastModeModel(model string) bool {
 	lowerModel := strings.ToLower(model)
 	return strings.HasPrefix(lowerModel, "claude-opus-5") ||
 		strings.HasPrefix(lowerModel, "claude-opus-4-8") ||
-		strings.HasPrefix(lowerModel, "claude-fable-5-2")
+		strings.HasPrefix(lowerModel, "claude-fable-5-2") ||
+		strings.HasPrefix(lowerModel, "claude-mythos-5-2")
 }
 
 // anthropicFastModeMultiplier 是 fast 模式全部 token 费用相对标准价的倍率。

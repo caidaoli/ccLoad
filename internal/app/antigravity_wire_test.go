@@ -20,6 +20,40 @@ import (
 
 const antigravitySchemaTestModel = "gemini-3-pro"
 
+/**
+ * @brief 验证最终发送的 Antigravity 请求按模型能力保留 xhigh，并兼容旧等级映射。
+ * @param t 测试上下文。
+ */
+func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, tc := range []struct {
+		model string
+		level string
+		want  string
+	}{
+		{"gemini-4-hydrogen-xhigh", " XHIGH ", "xhigh"},
+		{"gemini-3.8-flash-tiered", "xhigh", "high"},
+		{"gemini-3-pro", "xhigh", "high"},
+		{"gemini-unlisted", "xhigh", "high"},
+		{"gemini-4-hydrogen-xhigh", "max", "high"},
+		{"gemini-4-hydrogen-xhigh", "minimal", "low"},
+	} {
+		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
+			for _, path := range []string{"generationConfig.thinkingConfig.thinkingLevel", "generation_config.thinking_config.thinking_level"} {
+				body := setJSONValue([]byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), path, tc.level)
+				got, err := prepareAntigravityRequestBody(cfg, tc.model, body, body, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				outputPath := "request." + strings.Replace(path, "generation_config", "generationConfig", 1)
+				if level := gjson.GetBytes(got, outputPath).String(); level != tc.want {
+					t.Fatalf("%s=%q, want %q; body=%s", path, level, tc.want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestAntigravityGeminiWireRejectsVertexSignature(t *testing.T) {
 	t.Parallel()
 	sig := base64.StdEncoding.EncodeToString(append([]byte{1, 0x8f, 0x3d, 0x6b, 0x5f}, bytes.Repeat([]byte{0x42}, 400)...))

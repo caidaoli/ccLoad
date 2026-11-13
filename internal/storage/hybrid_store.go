@@ -252,12 +252,25 @@ func (h *HybridStore) CompareAndSwapOAuthUsage(
  * @brief 仅在 SQLite 权威库申领 Codex 刷新授权
  * @param ctx 数据库操作上下文
  * @param key 客户端身份与刷新令牌的 SHA-256 十六进制摘要
+ * @param owner 本次申领独有的随机标识
  * @return 首次申领返回 true；已存在时返回 false
  * @return SQLite 操作或上下文取消时返回错误
  * @note 不复制到主库，也不在 SQLite 失败时回退主库
  */
-func (h *HybridStore) RefreshClaim(ctx context.Context, key string) (bool, error) {
-	return h.sqlite.RefreshClaim(ctx, key)
+func (h *HybridStore) RefreshClaim(ctx context.Context, key, owner string) (bool, error) {
+	return h.sqlite.RefreshClaim(ctx, key, owner)
+}
+
+/**
+ * @brief 仅在 SQLite 权威库释放确证未发送的本次刷新申领
+ * @param ctx 数据库操作上下文
+ * @param key 已申领授权的 SHA-256 十六进制摘要
+ * @param owner 本次成功申领时提供的随机标识
+ * @return SQLite 失败、记录不存在、已完成或 owner 不匹配时返回错误
+ * @note 不复制到主库，也不在 SQLite 失败时回退主库。
+ */
+func (h *HybridStore) RefreshRelease(ctx context.Context, key, owner string) error {
+	return h.sqlite.RefreshRelease(ctx, key, owner)
 }
 
 /**

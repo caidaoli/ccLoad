@@ -4,7 +4,7 @@
 
 - **OpenAI 缓存写入 TTL**（2026-11-10 核对 [官方缓存文档](https://developers.openai.com/api/docs/guides/prompt-caching)，参照 sub2api `fe093d76`）：从实际响应 `input_tokens_details` 或 Chat 的 `prompt_tokens_details` 读取 `cache_write_tokens_details.ttl_30m_tokens/ttl_12h_tokens`；两项均为非负整数且合计等于写入总量时才采用。不从请求 TTL 推断写入，不与 Anthropic 5m/1h 混用，总量只从普通输入扣减一次。明细缺失或非法时保留原有总量计费。OpenAI 标准短写/长写按输入价1.25×/2.5×，再统一应用已选价目卡的Fast/Flex等倍率；显式自定义统一写入价在未设置独立12h价时继续覆盖两个档位，显式零价有效。日志及成本分项保留TTL明细，历史日志不反推分桶。
 
-- **Fable 5.2 定价**（2026-11-10 核对 [官方定价](https://platform.claude.com/docs/en/about-claude/pricing)）：每百万 token 输入 $8、输出 $40、缓存读 $0.20、5 分钟缓存写 $10、1 小时缓存写 $16；全上下文统一费率，`fast` 模式所有 token 费用乘 2。标准目录按 `claude-fable-5-2` 登记，版本和思考后缀沿用现有匹配逻辑。
+- **Fable/Mythos 5.2 定价**（2026-11-13 核对 [官方定价](https://platform.claude.com/docs/en/about-claude/pricing)及 [Fast 模式](https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing)）：每百万 token 输入 $8、输出 $40、缓存读 $0.20、5 分钟缓存写 $10、1 小时缓存写 $16；全上下文统一费率，`fast` 模式所有 token 费用乘 2。标准目录按 `claude-fable-5-2`、`claude-mythos-5-2` 分别登记，版本和思考后缀沿用现有匹配逻辑。
 
 - **Cursor 用量**：计费累计 SDK 实际发出的每轮增量，终态只补未报告差额，已完成工具结果重放不重复记账；异常结束保留已知真实消费。本地 SDK 的 `totalTokens=inputTokens+outputTokens` 口径表示 input 已含缓存，归一化时先扣缓存再按各价目计费。SDK 用量边界不等于客户端 HTTP 工具轮：独立 `usage` 事件与终态补差都可能累计此前工具轮的消费，工具恢复轮发给客户端的上下文用量始终按本次请求与输出估算，不使用累计输入、缓存或输出。工具轮没有真实报告时，日志独立保存 `usage_estimate`（输入、输出），前端以 `≈` 标明，不进入真实 token、费用及额度汇总。管理测试和聊天也从 Cursor 转发结果取真实计费量，不能解析含估算的客户端响应来计费。
 

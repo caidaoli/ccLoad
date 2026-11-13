@@ -160,19 +160,66 @@ func validateAnthropicLegacySystemRequestForUpstream(
 	return validateAnthropicLegacySystemMessages(body)
 }
 
-// validateAnthropicClaude55Request mirrors Claude Code's request guard for the
-// Claude 5.5 contract. It must run before the CLI finalizer normalizes thinking
-// or tool_choice, otherwise an invalid caller request would be silently turned
-// into a different request instead of receiving the same 400 as the native API.
+/**
+ * @brief 在模拟改写前拒绝原生调用方违反 Claude 5.5 与 Fable/Mythos 5.2 契约的参数。
+ * @param body 原始 Anthropic 调用方正文，尚未应用渠道规则。
+ * @param requestModel 实际路由后的上游模型，空字符串时采用正文 model。
+ * @return 参数合法时返回 nil；不支持的思考、工具或采样参数返回 requestValidationError。
+ */
 func validateAnthropicClaude55Request(body []byte, requestModel string) error {
 	modelName := anthropicRequestModelName(body, requestModel)
-	if strings.HasPrefix(modelName, "claude-opus-5-5") {
+	claude52Family := anthropicClaude52Family(modelName)
+	family := anthropicClaude55Family(modelName)
+	if family == "" {
+		family = claude52Family
+	}
+	if family != "" {
 		thinkingType := strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type"))))
-		if thinkingType == "disabled" || thinkingType == "enabled" {
-			return &requestValidationError{message: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort"}
+		isSonnet55 := family == "claude-sonnet-5-5"
+		isHaiku55 := family == "claude-haiku-5-5"
+		if thinkingType == "enabled" || (thinkingType == "disabled" && !isHaiku55) || (thinkingType == "between_tools" && !isSonnet55) {
+			return &requestValidationError{message: family + " does not support thinking.type=" + thinkingType + "; use adaptive thinking and output_config.effort"}
+		}
+		if (isSonnet55 && thinkingType == "between_tools") || (isHaiku55 && thinkingType == "disabled") {
+			effort := jsonStringValue(gjson.GetBytes(body, "output_config.effort"))
+			if effort == "xhigh" || effort == "max" {
+				return &requestValidationError{message: family + " thinking.type=" + thinkingType + " supports only low, medium or high effort"}
+			}
+			if effort == "" {
+				effort = "high"
+				if isHaiku55 {
+					effort = "medium"
+				}
+			}
+			for _, message := range gjson.GetBytes(body, "messages").Array() {
+				if nextEffort := message.Get("output_config.effort"); nextEffort.Type == gjson.String && nextEffort.String() != effort {
+					return &requestValidationError{message: family + " thinking.type=" + thinkingType + " does not support changing per-message effort"}
+				}
+			}
+			for _, field := range []string{"thinking.display", "thinking.budget_tokens", "thinking.block_binding"} {
+				if gjson.GetBytes(body, field).Exists() {
+					return &requestValidationError{message: family + " thinking.type=" + thinkingType + " does not support " + field}
+				}
+			}
 		}
 	}
-	family := anthropicForcedToolChoiceRejectingFamily(modelName)
+	if claude52Family != "" || family == "claude-sonnet-5-5" || family == "claude-haiku-5-5" {
+		temperature := gjson.GetBytes(body, "temperature")
+		if temperature.Exists() && (temperature.Type != gjson.Number || temperature.Float() != 1) {
+			return &requestValidationError{message: family + " does not support non-default temperature"}
+		}
+		topP := gjson.GetBytes(body, "top_p")
+		if topP.Exists() && (topP.Type != gjson.Number || topP.Float() != 0.99) {
+			return &requestValidationError{message: family + " does not support non-default top_p"}
+		}
+		if gjson.GetBytes(body, "top_k").Exists() {
+			return &requestValidationError{message: family + " does not support top_k"}
+		}
+		if temperature.Exists() && topP.Exists() {
+			return &requestValidationError{message: family + " does not allow temperature and top_p together; omit both"}
+		}
+	}
+	family = anthropicForcedToolChoiceRejectingFamily(modelName)
 	if family == "" {
 		return nil
 	}
@@ -188,12 +235,35 @@ func validateAnthropicClaude55Request(body []byte, requestModel string) error {
 	return &requestValidationError{message: family + " does not support forced tool_choice; use auto or none"}
 }
 
-// relaxAnthropicClaude55ForcedToolChoice 对齐 CPA NormalizeClaudeToolChoice：
-// 协议转换出的 Opus/Sonnet 5.5 请求把 any/tool 降为 auto。转换方的调用方看不到
-// Anthropic 契约，留给上游只会得到 400 并冷却模型。必须早于 normalizeAnthropicToolChoice
-// （强制选择会先删掉 thinking/effort）和渠道 BodyRules（规则仍可覆盖）。
-func relaxAnthropicClaude55ForcedToolChoice(body []byte, requestModel string) []byte {
-	if anthropicForcedToolChoiceRejectingFamily(anthropicRequestModelName(body, requestModel)) == "" {
+/**
+ * @brief 在渠道规则前将跨协议请求调整为模型支持的思考、采样和工具选择形态。
+ * @param body 转换后的 Anthropic 请求正文。
+ * @param requestModel 实际路由后的上游模型，空字符串时采用转换正文 model。
+ * @return 兼容 Claude 5.5 或 Fable/Mythos 5.2 的正文；其他模型原样返回。
+ */
+func prepareAnthropicConvertedRequest(body []byte, requestModel string) []byte {
+	modelName := anthropicRequestModelName(body, requestModel)
+	family := anthropicClaude55Family(modelName)
+	if anthropicClaude52Family(modelName) != "" || family != "" {
+		switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type")))) {
+		case "disabled", "between_tools":
+			switch family {
+			case "claude-sonnet-5-5":
+				body = setJSONRaw(body, "thinking", `{"type":"between_tools"}`)
+			case "claude-haiku-5-5":
+				body = setJSONRaw(body, "thinking", `{"type":"disabled"}`)
+			default:
+				body = setJSONValue(body, "thinking.type", "adaptive")
+			}
+		case "enabled":
+			body = setJSONValue(body, "thinking.type", "adaptive")
+		}
+		body = normalizeAnthropicThinking(body)
+		for _, field := range []string{"temperature", "top_p", "top_k"} {
+			body = deleteJSONPath(body, field)
+		}
+	}
+	if anthropicForcedToolChoiceRejectingFamily(modelName) == "" {
 		return body
 	}
 	switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "tool_choice.type")))) {
@@ -205,11 +275,57 @@ func relaxAnthropicClaude55ForcedToolChoice(body []byte, requestModel string) []
 	}
 }
 
-// anthropicForcedToolChoiceRejectingFamily 返回拒绝强制 tool_choice 的模型族：
-// Opus/Sonnet 5.5 拒绝 any/tool，Haiku 5.5 仍接受。
+/**
+ * @brief 恢复 Fable/Mythos 5.2 被旧转换目录折算为预算前的五档思考等级。
+ * @param body 刚完成跨协议转换的 Anthropic 正文。
+ * @param sourceBody 实际传入转换器的正文，包含按最终模型应用的后缀与动态决策。
+ * @param requestModel 实际路由后的上游模型，空字符串时采用转换正文 model。
+ * @return 明确等级恢复后的正文；缺省等级或其他模型保留转换结果。
+ */
+func preserveAnthropicConvertedEffort(body, sourceBody []byte, requestModel string) []byte {
+	if anthropicClaude52Family(anthropicRequestModelName(body, requestModel)) != "" {
+		switch effort := extractThinkingEffortFromJSON(sourceBody); effort {
+		case "low", "medium", "high", "xhigh", "max":
+			return setJSONValue(body, "output_config.effort", effort)
+		}
+	}
+	return body
+}
+
+/**
+ * @brief 查询拒绝强制工具选择的模型族，Haiku 5.5 不在此集合。
+ * @param modelName 已规范化的 Anthropic 模型名。
+ * @return 模型族前缀；允许强制工具选择或未知模型返回空字符串。
+ */
 func anthropicForcedToolChoiceRejectingFamily(modelName string) string {
-	for _, family := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
-		if strings.HasPrefix(modelName, family) {
+	if family := anthropicClaude55Family(modelName); family != "" && family != "claude-haiku-5-5" {
+		return family
+	}
+	return anthropicClaude52Family(modelName)
+}
+
+/**
+ * @brief 识别共享五档思考等级、但最低思考模式不同的 Claude 5.5 模型族。
+ * @param modelName 已规范化的 Anthropic 模型名。
+ * @return 官方模型族前缀；不属于 Opus/Sonnet/Haiku 5.5 时返回空字符串。
+ */
+func anthropicClaude55Family(modelName string) string {
+	for _, family := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"} {
+		if anthropicModelMatchesFamily(modelName, family, strings.ReplaceAll(family, "5-5", "5.5")) {
+			return family
+		}
+	}
+	return ""
+}
+
+/**
+ * @brief 识别共享自适应思考契约的 Fable/Mythos 5.2 模型族。
+ * @param modelName 已规范化的 Anthropic 模型名。
+ * @return 官方模型族前缀；不属于这两个 5.2 模型族时返回空字符串。
+ */
+func anthropicClaude52Family(modelName string) string {
+	for _, family := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		if anthropicModelMatchesFamily(modelName, family, strings.ReplaceAll(family, "5-2", "5.2")) {
 			return family
 		}
 	}
@@ -2571,14 +2687,14 @@ func anthropicModelMatchesFamily(modelName string, families ...string) bool {
 }
 
 /**
- * @brief 查询 2.1.321 中同时支持 preserved thinking 与 per-turn control 的模型集合。
+ * @brief 查询同时支持 preserved thinking 与 per-turn control 的模型集合。
  * @param modelName 已规范化的 Anthropic 模型名。
  * @return 模型采用签名前缀绑定时为 true。
  */
 func anthropicModelPreservesThinking(modelName string) bool {
 	return anthropicModelMatchesFamily(modelName, "claude-opus-5-5", "claude-sonnet-5-5",
 		"claude-haiku-5-5", "claude-haiku-5.5", "claude-fable-5-1", "claude-fable-5.1",
-		"claude-fable-5-2", "claude-fable-5.2")
+		"claude-fable-5-2", "claude-fable-5.2", "claude-mythos-5-2", "claude-mythos-5.2")
 }
 
 /**

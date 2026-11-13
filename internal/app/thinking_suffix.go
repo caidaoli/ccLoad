@@ -53,9 +53,9 @@ func applyThinkingSuffixForModel(
 	case protocol.Codex:
 		return applyOpenAIStyleThinking(body, cfg, "reasoning.effort", resolvedModel)
 	case protocol.Anthropic:
-		return applyAnthropicThinking(body, cfg)
+		return applyAnthropicThinking(body, cfg, resolvedModel)
 	case protocol.Gemini:
-		return applyGeminiThinking(body, cfg)
+		return applyGeminiThinking(body, cfg, resolvedModel)
 	default:
 		return body
 	}
@@ -176,14 +176,22 @@ func indexOfOpenAIStyleLevel(level string) int {
 	return -1
 }
 
-// applyAnthropicThinking 只写客户端协议字段。等级走 adaptive + MapToClaudeEffort，
-// 数字预算走 enabled；能力裁剪归转换器/后续归一化，这里不查 catalog——选路和
-// 重定向前拿不到实际上游模型。
-func applyAnthropicThinking(body []byte, cfg thinking.ThinkingConfig) []byte {
+/**
+ * @brief 将模型后缀写入 Anthropic 字段，并按实际模型表达最低思考模式。
+ * @param body 客户端协议正文。
+ * @param cfg 已解析的思考后缀。
+ * @param baseModel 本次选路实际使用的模型名。
+ * @return 应用后缀后的正文；显式后缀替换历史消息中的等级指令。
+ */
+func applyAnthropicThinking(body []byte, cfg thinking.ThinkingConfig, baseModel string) []byte {
 	body = clearAnthropicEffortDirectives(body)
 	if cfg.Mode == thinking.ModeNone {
-		// ccLoad 全链路以"没有 thinking 字段"表示关闭思考（见 normalizeAnthropicThinking），
-		// 直接写成终态，避免归一化路径与原生 Claude Code 直通路径给出两种线协议。
+		switch anthropicClaude55Family(anthropicCanonicalModelName(baseModel)) {
+		case "claude-sonnet-5-5":
+			return deleteAnthropicThinkingEffort(setJSONRaw(body, "thinking", `{"type":"between_tools"}`))
+		case "claude-haiku-5-5":
+			return deleteAnthropicThinkingEffort(setJSONRaw(body, "thinking", `{"type":"disabled"}`))
+		}
 		out, _ := sjson.DeleteBytes(body, "thinking")
 		return deleteAnthropicThinkingEffort(out)
 	}
@@ -208,6 +216,9 @@ func applyAnthropicThinking(body []byte, cfg thinking.ThinkingConfig) []byte {
 	if !ok {
 		return deleteAnthropicThinkingEffort(out)
 	}
+	if cfg.Level == thinking.LevelXHigh && anthropicClaude55Family(anthropicCanonicalModelName(baseModel)) != "" {
+		effort = "xhigh"
+	}
 	out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 	return out
 }
@@ -231,7 +242,14 @@ func deleteAnthropicThinkingEffort(body []byte) []byte {
 	return out
 }
 
-func applyGeminiThinking(body []byte, cfg thinking.ThinkingConfig) []byte {
+/**
+ * @brief 应用 Gemini 思考后缀，按实际模型保留受支持的 xhigh 等级。
+ * @param body 客户端 Gemini 请求正文。
+ * @param cfg 已解析的模型思考后缀。
+ * @param baseModel 实际路由后的模型名。
+ * @return 后缀应用后的请求正文，其他生成参数不变。
+ */
+func applyGeminiThinking(body []byte, cfg thinking.ThinkingConfig, baseModel string) []byte {
 	switch cfg.Mode {
 	case thinking.ModeNone:
 		// Gemini 的 ThinkingLevel 枚举没有 none，关闭思考靠 thinkingBudget=0。
@@ -241,7 +259,7 @@ func applyGeminiThinking(body []byte, cfg thinking.ThinkingConfig) []byte {
 	case thinking.ModeBudget:
 		return setGeminiThinkingBudget(body, cfg.Budget)
 	case thinking.ModeLevel:
-		level := normalizeGeminiThinkingLevel(string(cfg.Level))
+		level := normalizeGeminiThinkingLevel(string(cfg.Level), baseModel)
 		if level == "" {
 			return body
 		}
@@ -265,15 +283,24 @@ func setGeminiThinkingBudget(body []byte, budget int) []byte {
 	return out
 }
 
-// normalizeGeminiThinkingLevel 收敛到 Gemini ThinkingLevel 枚举，
-// 与 normalizeAntigravityThinkingLevel 的契约保持一致。
-func normalizeGeminiThinkingLevel(level string) string {
+/**
+ * @brief 按静态模型能力保留 xhigh，其他后缀沿用 Gemini 等级映射。
+ * @param level 请求的思考等级。
+ * @param baseModel 实际路由后的模型名。
+ * @return 可发送的等级；未知等级返回空字符串。
+ */
+func normalizeGeminiThinkingLevel(level, baseModel string) string {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "minimal", "low":
 		return "low"
 	case "medium":
 		return "medium"
-	case "high", "xhigh", "max":
+	case "xhigh":
+		if info := modelregistry.LookupModelInfo(baseModel, "gemini"); info != nil && info.Thinking != nil && thinking.HasLevel(info.Thinking.Levels, "xhigh") {
+			return "xhigh"
+		}
+		return "high"
+	case "high", "max":
 		return "high"
 	default:
 		return ""

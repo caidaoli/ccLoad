@@ -16,16 +16,21 @@ file|test|internal/translator/openai/openai/responses/openai_openai-responses_ro
 file|source|internal/misc/mime-type.go|internal/protocol/cliproxy/misc/mime_type.go|6c7fcafd6003880c81a3c9f964684bc74acbf31d|6c7fcafd6003880c81a3c9f964684bc74acbf31d
 file|test|internal/util/claude_tool_result_test.go|internal/protocol/cliproxy/util/claude_tool_id_test.go|fc1f309d7fcb1a7301cc84aed046f1048053f9af|3cf29440c7e32ea477f4116d626fd1674227da85
 file|test|internal/translator/gemini/claude/gemini_claude_tool_result_error_test.go|internal/protocol/cliproxy/gemini/claude/gemini_claude_request_test.go|956995f95692f0e4069fad76513ba4c92e2b1dba|24a39b0583d378ac18615f97127276e2243bb0d3
-file|source|internal/registry/models/models.json|internal/protocol/cliproxy/registry/models/models.json|8e1a0205a0f5bd86a575e2b7f79378c35a918e7d|b7bdf2f4c8494f2aee67c8b46cbca4e8e3a9bb76
+file|source|internal/registry/models/models.json|internal/protocol/cliproxy/registry/models/models.json|8e1a0205a0f5bd86a575e2b7f79378c35a918e7d|2ce45329261e5dec0e739e2827121ec8e52277cd
 file|test|internal/translator/codex/claude/public_commentary_test.go|internal/protocol/cliproxy/codex/claude/codex_claude_commentary_replay_test.go|ed512f8beaf2e640c582cff4d13373c8b790c625|0a9b4488dfe7046c01cda55c872a4d0c4aaf23cc
 
 # ccLoad-owned pure wire helpers with no direct upstream source file.
 local|source|internal/protocol/cliproxy/common/anthropic_response.go|ccload-native-anthropic-wire|bf4c9849f523f5519e9d1fa3104c33700d4c31a6
 local|source|internal/protocol/cliproxy/registry/models.go|static-catalog-loader|02355e277cd6f141fc845bcc5dd1f4f0260185d1
-local|test|internal/protocol/cliproxy/registry/models_test.go|static-catalog-loader-test|67a038c7fa5194f1bd75cf07a777da93ffb30e22
+local|test|internal/protocol/cliproxy/registry/models_test.go|static-catalog-loader-test|64967d8125badb7e75c4e1120ea38e9232e5c3be
 local|source|internal/protocol/cliproxy/util/function_name.go|ccload-function-name-normalization|a08a75d94b772b9fe3b79a9cd3b2e9288196f39b
 local|test|internal/protocol/cliproxy/openai/openai/responses/openai_openai-responses_tool_search_test.go|ccload-native-tool-search-test|969d85aa06203b9ee7d901651197fca1bdc867b5
 local|source|internal/protocol/cliproxy/openai/openai/responses/openai_openai-responses_tool_search.go|ccload-native-tool-search-adapter|2eebdc99bf6df64f9c4e6b98cb818964001b65a8
+
+# Targeted post-snapshot helpers; immutable upstream provenance is in UPSTREAM.md.
+local|source|internal/protocol/cliproxy/common/gemini_claude_carrier.go|post-snapshot-91aca317-gemini-carrier|dde0028be0b4d9bfe4d35674b7a18bbd4f234810
+local|source|internal/protocol/cliproxy/gemini/claude/signature_carrier.go|post-snapshot-91aca317-gemini-carrier|9e4ee786704423b72fbf9614eb38f71f1a713181
+local|source|internal/protocol/cliproxy/gemini/common/parts.go|post-snapshot-91aca317-gemini-parts|359ac93b93ac0c681f60e83dc72c98e527b7b1cd
 
 # Translator runtime registration, unsupported protocols, no-op paths, and benchmarks.
 exclude|internal/translator/init.go|dynamic-registry

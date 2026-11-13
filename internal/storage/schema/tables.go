@@ -2,11 +2,12 @@ package schema
 
 /**
  * @brief 定义不随渠道生命周期清理的 Codex 刷新申领与最终回执表
- * @return 使用 SHA-256 授权摘要主键、可空回执的永久表定义
+ * @return 使用 SHA-256 授权摘要主键、可空 owner 和回执的永久表定义
  */
 func DefineCodexRefreshJournalTable() *TableBuilder {
 	return NewTable("codex_refresh_journal").
 		Column("grant_key VARCHAR(64) PRIMARY KEY").
+		Column("claim_owner VARCHAR(32) NULL").
 		Column("receipt TEXT NULL")
 }
 

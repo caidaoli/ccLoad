@@ -9,9 +9,124 @@ import (
 	"testing"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 
 	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 验证模型重定向后的显式后缀与动态等级以实际转换输入为准。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_AnthropicClaude52UsesCurrentEffort(t *testing.T) {
+	for _, modelName := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		for _, client := range []protocol.Protocol{protocol.OpenAI, protocol.Codex} {
+			for _, mode := range []string{"max", "xhigh", "dynamic"} {
+				t.Run(modelName+"/"+string(client)+"/"+mode, func(t *testing.T) {
+					business := newReasoningAutoBusiness(t)
+					clientModel, wantEffort := "gpt-5.5", mode
+					if mode == "dynamic" {
+						clientModel, wantEffort = "gpt-5.6-sol", "xhigh"
+					}
+					channel := testChannel{name: "claude52", upstreamProtocol: "anthropic", protocolTransformMode: "local",
+						modelEntries: []model.ModelEntry{{Model: clientModel, RedirectModel: modelName}}}
+					var env *proxyTestEnv
+					var judge *reasoningAutoJudgeFixture
+					requestedModel := clientModel + "(" + mode + ")"
+					if mode == "dynamic" {
+						judge = newReasoningAutoJudge(t, wantEffort)
+						env = setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{channel}, []string{business.server.URL})
+						requestedModel = clientModel
+					} else {
+						env = setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: business.server.URL})
+					}
+					path := "/v1/chat/completions"
+					body := map[string]any{"model": requestedModel, "reasoning_effort": "low",
+						"messages": []any{map[string]any{"role": "user", "content": "Choose effort for this task."}}}
+					if client == protocol.Codex {
+						path = "/v1/responses"
+						body = map[string]any{"model": requestedModel, "reasoning": map[string]any{"effort": "low"},
+							"input": []any{map[string]any{"role": "user", "content": "Choose effort for this task."}}}
+					}
+					response := doProxyRequest(t, env.engine, path, body, nil)
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					requests := business.snapshot()
+					if len(requests) != 1 {
+						t.Fatalf("upstream requests=%d, want 1", len(requests))
+					}
+					if got := gjson.GetBytes(requests[0], "output_config.effort").String(); got != wantEffort {
+						t.Fatalf("effort=%q, want %q: %s", got, wantEffort, requests[0])
+					}
+					if gjson.GetBytes(requests[0], "model").String() != modelName || gjson.GetBytes(requests[0], "thinking.type").String() != "adaptive" {
+						t.Fatalf("actual model or adaptive thinking lost: %s", requests[0])
+					}
+					if judge != nil && len(judge.snapshot()) != 1 {
+						t.Fatalf("dynamic decision calls=%d, want 1", len(judge.snapshot()))
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证重定向到 Sonnet/Haiku 5.5 的 none/xhigh 后缀经过真实代理后保留模型语义。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_AnthropicClaude55ThinkingSuffix(t *testing.T) {
+	for _, modelName := range []string{"claude-sonnet-5-5", "claude-haiku-5-5"} {
+		for _, client := range []protocol.Protocol{protocol.Anthropic, protocol.OpenAI, protocol.Codex} {
+			for _, suffix := range []string{"none", "xhigh"} {
+				t.Run(modelName+"/"+string(client)+"/"+suffix, func(t *testing.T) {
+					business := newReasoningAutoBusiness(t)
+					channel := testChannel{name: "claude55", upstreamProtocol: "anthropic", protocolTransformMode: "local",
+						modelEntries: []model.ModelEntry{{Model: "gpt-5.5", RedirectModel: modelName}}}
+					env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: business.server.URL})
+					path := "/v1/messages"
+					requestedModel := "gpt-5.5(" + suffix + ")"
+					body := map[string]any{"model": requestedModel, "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+						"thinking": map[string]any{"type": "adaptive", "display": "summarized"}, "output_config": map[string]any{"effort": "low"}}
+					switch client {
+					case protocol.OpenAI:
+						path = "/v1/chat/completions"
+						body = map[string]any{"model": requestedModel, "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "reasoning_effort": "low"}
+					case protocol.Codex:
+						path = "/v1/responses"
+						body = map[string]any{"model": requestedModel, "input": "hello", "reasoning": map[string]any{"effort": "low"}}
+					}
+					response := doProxyRequest(t, env.engine, path, body, nil)
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					requests := business.snapshot()
+					if len(requests) != 1 {
+						t.Fatalf("upstream requests=%d, want 1", len(requests))
+					}
+					wantMode := "disabled"
+					if modelName == "claude-sonnet-5-5" {
+						wantMode = "between_tools"
+					}
+					if suffix == "xhigh" {
+						wantMode = "adaptive"
+						if gjson.GetBytes(requests[0], "output_config.effort").String() != "xhigh" {
+							t.Fatalf("xhigh suffix changed: %s", requests[0])
+						}
+					}
+					if gjson.GetBytes(requests[0], "model").String() != modelName || gjson.GetBytes(requests[0], "thinking.type").String() != wantMode {
+						t.Fatalf("actual model or minimum thinking mode lost: %s", requests[0])
+					}
+					for _, field := range []string{"thinking.display", "thinking.budget_tokens", "thinking.block_binding", "output_config.effort"} {
+						if suffix == "none" && gjson.GetBytes(requests[0], field).Exists() {
+							t.Fatalf("none suffix retained %s: %s", field, requests[0])
+						}
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestAnthropicClaudeCodeMimicBetasIncludesThinkingDisplayUpdates(t *testing.T) {
 	t.Parallel()
@@ -60,14 +175,19 @@ func TestProxy_AnthropicClaudeWireCompatibility(t *testing.T) {
 	for _, scenario := range []string{
 		"cache_1h", "cache_5m", "cache_limit", "cache_native",
 		"binding", "binding_missing_thinking", "binding_disabled", "binding_rule_disabled", "binding_explicit", "binding_forced_tool",
-		"binding_foreign", "binding_native", "binding_third_party", "binding_removed",
+		"binding_foreign", "binding_native", "binding_mythos", "binding_mythos_native", "binding_third_party", "binding_removed",
 		"timing_thread", "timing_message", "timing_haiku", "timing_removed", "timing_native",
 		"ua_old", "ua_current", "ua_incomplete",
 	} {
 		t.Run(scenario, func(t *testing.T) {
 			modelName := "claude-fable-5-2"
-			if scenario == "timing_haiku" {
+			switch scenario {
+			case "timing_haiku":
 				modelName = "claude-haiku-5-5"
+			case "binding_disabled", "binding_forced_tool":
+				modelName = "claude-fable-5-1"
+			case "binding_mythos", "binding_mythos_native":
+				modelName = "claude-mythos-5-2"
 			}
 			channel := testChannel{name: "anthropic-wire", upstreamProtocol: "anthropic", models: modelName,
 				authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "wire-test-token")}
@@ -143,7 +263,7 @@ func TestProxy_AnthropicClaudeWireCompatibility(t *testing.T) {
 							"output_config": map[string]any{"effort": "low", "timing": map[string]any{"type": "enabled"}}}}
 				}
 			}
-			native := strings.HasPrefix(scenario, "ua_") || scenario == "cache_native" || scenario == "binding_native" || scenario == "timing_native"
+			native := strings.HasPrefix(scenario, "ua_") || scenario == "cache_native" || scenario == "binding_native" || scenario == "binding_mythos_native" || scenario == "timing_native"
 			if native {
 				body["metadata"] = map[string]any{"user_id": `{"device_id":"native-device","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`}
 				headers["User-Agent"] = "claude-cli/" + anthropicCLIVersion + " (external, cli, agent-sdk/0.2.133, workload/cron, request-phase/background)"
@@ -222,7 +342,7 @@ func TestProxy_AnthropicClaudeWireCompatibility(t *testing.T) {
 			case strings.HasPrefix(scenario, "binding"):
 				want := ""
 				switch scenario {
-				case "binding", "binding_missing_thinking":
+				case "binding", "binding_missing_thinking", "binding_mythos":
 					want = "drop_block"
 				case "binding_explicit":
 					want = "error"

@@ -106,10 +106,16 @@ func TestFinishReasonMaxTokens(t *testing.T) {
 	chunk2 := []byte(`{"response":{"candidates":[{"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":100,"totalTokenCount":110}}}`)
 	result2 := ConvertAntigravityResponseToOpenAI(ctx, "model", nil, nil, chunk2, &param)
 
-	// Verify finish_reason is "max_tokens"
-	fr := gjson.GetBytes(result2[0], "choices.0.finish_reason").String()
-	if fr != "max_tokens" {
-		t.Errorf("Expected finish_reason 'max_tokens', got: %s", fr)
+	nonStream := ConvertAntigravityResponseToOpenAINonStream(ctx, "model", nil, nil, chunk2, nil)
+	for name, payload := range map[string][]byte{
+		"terminal": result2[0], "non-stream": nonStream,
+	} {
+		if got := gjson.GetBytes(payload, "choices.0.finish_reason").String(); got != "length" {
+			t.Errorf("%s finish_reason = %q, want length", name, got)
+		}
+		if got := gjson.GetBytes(payload, "choices.0.native_finish_reason").String(); got != "max_tokens" {
+			t.Errorf("%s native_finish_reason = %q, want max_tokens", name, got)
+		}
 	}
 }
 

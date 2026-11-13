@@ -15602,6 +15602,68 @@ func TestProxy_ThinkingSuffixUsesResolvedModelCapabilities(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 四种客户端协议经模型重定向后都将 Hydrogen 的 xhigh 后缀发送为真实等级。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiHydrogenThinkingSuffix(t *testing.T) {
+	for _, client := range []string{"gemini", "openai", "codex", "anthropic"} {
+		t.Run(client, func(t *testing.T) {
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "hydrogen", upstreamProtocol: "gemini", models: "latest", apiKey: "sk-gem",
+			}}, map[int]string{0: "https://gemini-upstream.example.com"})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := configs[0]
+			cfg.ModelEntries = []model.ModelEntry{{Model: "latest", RedirectModel: "gemini-4-hydrogen"}}
+			if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+				t.Fatal(err)
+			}
+			env.server.InvalidateChannelListCache()
+			var gotBody []byte
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if !strings.Contains(r.URL.Path, "/models/gemini-4-hydrogen:") {
+					t.Errorf("unexpected upstream path: %s", r.URL.Path)
+				}
+				gotBody, err = io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-4-hydrogen"}`)),
+				}, nil
+			})}
+			path := "/v1/chat/completions"
+			body := map[string]any{"model": "latest(xhigh)", "messages": []map[string]string{{"role": "user", "content": "hi"}}}
+			switch client {
+			case "gemini":
+				path = "/v1beta/models/latest(xhigh):generateContent"
+				body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": "hi"}}}}}
+			case "codex":
+				path = "/v1/responses"
+				body = map[string]any{"model": "latest(xhigh)", "input": "hi"}
+			case "anthropic":
+				path = "/v1/messages"
+				body["max_tokens"] = 128
+			}
+			w := doProxyRequest(t, env.engine, path, body, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+			}
+			if got := gjson.GetBytes(gotBody, geminiThinkingLevelPath).String(); got != "xhigh" {
+				t.Fatalf("thinkingLevel=%q, want xhigh: %s", got, gotBody)
+			}
+			if gjson.GetBytes(gotBody, geminiThinkingBudgetPath).Exists() {
+				t.Fatalf("Hydrogen request unexpectedly contains a thinking budget: %s", gotBody)
+			}
+		})
+	}
+}
+
 func TestProxy_Success_Streaming_OpenAIToGeminiTransform_TextPlainSSE(t *testing.T) {
 	t.Parallel()
 

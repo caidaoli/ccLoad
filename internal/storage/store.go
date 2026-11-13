@@ -23,14 +23,24 @@ type Store interface {
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
 	/**
-	 * @brief 在发送 Codex 刷新请求前永久申领该授权，阻止同一授权重放
+	 * @brief 在发送刷新请求前申领授权，阻止同一授权重放
 	 * @param ctx 数据库操作上下文
 	 * @param key 客户端身份与刷新令牌的 SHA-256 十六进制摘要
+	 * @param owner 本次申领独有的随机标识
 	 * @return 仅首次申领返回 true；已申领或已完成返回 false
 	 * @return 数据库执行、读取影响行数或上下文取消时返回错误
-	 * @note 并发安全；记录不随渠道删除或凭据重导入清理
+	 * @note 并发安全；仅原 owner 确证未发送时可释放，不随渠道删除或凭据重导入清理
 	 */
-	RefreshClaim(ctx context.Context, key string) (bool, error)
+	RefreshClaim(ctx context.Context, key, owner string) (bool, error)
+	/**
+	 * @brief 释放确证未发送且属于当前 owner 的未完成刷新授权
+	 * @param ctx 数据库操作上下文
+	 * @param key 已申领授权的 SHA-256 十六进制摘要
+	 * @param owner 本次成功申领时提供的随机标识
+	 * @return 数据库失败、记录不存在、已完成或 owner 不匹配时返回错误
+	 * @note 并发安全；旧版无 owner 记录不可释放
+	 */
+	RefreshRelease(ctx context.Context, key, owner string) error
 	/**
 	 * @brief 读取 Codex 刷新最终回执
 	 * @param ctx 数据库操作上下文

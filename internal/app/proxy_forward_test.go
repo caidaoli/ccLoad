@@ -632,6 +632,10 @@ func headerValueFold(headers http.Header, name string) string {
 	return ""
 }
 
+/**
+ * @brief 验证 Codex OAuth 使用渠道凭证、公共 wire 约束及最后执行的渠道规则。
+ * @param t 当前测试上下文。
+ */
 func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cfg := &model.Config{
@@ -738,8 +742,8 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	if got := gjson.GetBytes(wireBody, "tools.0.type").String(); got != "web_search" {
 		t.Fatalf("tool type = %q, body=%s", got, wireBody)
 	}
-	if got := gjson.GetBytes(wireBody, "reasoning.effort").String(); got != "low" {
-		t.Fatalf("reasoning.effort = %q, want minimal normalized to low; body=%s", got, wireBody)
+	if got := gjson.GetBytes(wireBody, "reasoning.effort").String(); got != "minimal" {
+		t.Fatalf("reasoning.effort = %q, want unknown model effort preserved; body=%s", got, wireBody)
 	}
 	if got := gjson.GetBytes(wireBody, "service_tier").String(); got != "ultrafast" {
 		t.Fatalf("service_tier = %q, want custom rule to survive Codex normalization; body=%s", got, wireBody)
@@ -766,6 +770,171 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		if gjson.GetBytes(httpBody, field).Exists() {
 			t.Fatalf("HTTP-only unsupported field %s leaked: %s", field, httpBody)
 		}
+	}
+}
+
+/**
+ * @brief 验证 Codex OAuth 出站请求分别收敛基线与更新等级，并保持原生 Responses 时间线。
+ * @param t 当前测试上下文。
+ */
+func TestCodexOAuthRequestNormalizesReasoningEffort(t *testing.T) {
+	srv := newInMemoryServer(t)
+	nativeModels := []string{"gpt-6-sol", "gpt-6.1-sol"}
+	tests := []struct {
+		name   string   ///< 请求场景。
+		models []string ///< 实际上游模型。
+		body   string   ///< 除模型名外的输入字段。
+		want   string   ///< 预期的思考字段及输入时间线；空值表示保持输入。
+		apiKey bool     ///< 使用 API Key 验证普通 Responses 透传。
+	}{
+		{
+			name: "none baseline", models: nativeModels,
+			body: `"reasoning":{"effort":"none","summary":"auto","other":7},"input":[]`,
+			want: `"reasoning":{"effort":"low","summary":"auto","other":7},"input":[]`,
+		},
+		{
+			name: "every update preserves timeline", models: nativeModels,
+			body: `"reasoning":{"effort":"xhigh","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"none","other":7}},{"role":"user","content":"first"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"assistant","content":"reply"},{"type":"configuration_update","reasoning":{"effort":"minimal"}}]`,
+			want: `"reasoning":{"effort":"xhigh","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"low","other":7}},{"role":"user","content":"first"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"assistant","content":"reply"},{"type":"configuration_update","reasoning":{"effort":"low"}}]`,
+		},
+		{
+			name: "update without baseline", models: nativeModels,
+			body: `"input":[{"type":"configuration_update","reasoning":{"effort":"none"}},{"role":"user","content":"hi"}]`,
+			want: `"input":[{"type":"configuration_update","reasoning":{"effort":"low"}},{"role":"user","content":"hi"}]`,
+		},
+		{
+			name: "native auto uses upstream compatibility mapping", models: nativeModels,
+			body: `"reasoning":{"effort":"auto","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"auto","other":7}}]`,
+			want: `"reasoning":{"effort":"medium","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"medium","other":7}}]`,
+		},
+		{
+			name: "auto update replaces previous effort", models: nativeModels,
+			body: `"reasoning":{"effort":"xhigh"},"input":[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"first"},{"type":"configuration_update","reasoning":{"effort":"auto","summary":"auto"}}]`,
+			want: `"reasoning":{"effort":"xhigh"},"input":[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"first"},{"type":"configuration_update","reasoning":{"effort":"medium","summary":"auto"}}]`,
+		},
+		{
+			name: "supported levels", models: nativeModels,
+			body: `"reasoning":{"effort":"max","summary":"auto"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}},{"type":"configuration_update","reasoning":{"effort":"medium"}},{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"configuration_update","reasoning":{"effort":"xhigh"}},{"type":"configuration_update","reasoning":{"effort":"max"}}]`,
+		},
+		{
+			name: "missing and invalid values", models: nativeModels,
+			body: `"reasoning":{"summary":"auto"},"input":[{"type":"configuration_update","tools":[]},{"type":"configuration_update","reasoning":{"effort":""}},{"type":"configuration_update","reasoning":{"effort":null}},{"type":"configuration_update","reasoning":{"effort":7}},{"type":"configuration_update","reasoning":{"effort":"invalid"}},{"role":"user","reasoning":{"effort":"none"},"content":"hi"}]`,
+		},
+		{
+			name: "nearest supported levels", models: []string{"gpt-5.5"},
+			body: `"reasoning":{"effort":"minimal"},"input":[{"type":"configuration_update","reasoning":{"effort":"max"}}]`,
+			want: `"reasoning":{"effort":"low"},"input":[{"type":"configuration_update","reasoning":{"effort":"xhigh"}}]`,
+		},
+		{
+			name: "unknown model remains opaque", models: []string{"opaque-codex-route"},
+			body: `"reasoning":{"effort":"minimal"},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}},{"type":"configuration_update","reasoning":{"effort":"auto"}}]`,
+		},
+		{
+			name: "API Key remains opaque", models: nativeModels, apiKey: true,
+			body: `"reasoning":{"effort":"none"},"input":[{"type":"configuration_update","reasoning":{"effort":"minimal"}},{"type":"configuration_update","reasoning":{"effort":"auto"}}]`,
+		},
+	}
+	for _, tt := range tests {
+		for _, modelName := range tt.models {
+			t.Run(tt.name+"/"+modelName, func(t *testing.T) {
+				cfg := &model.Config{AuthType: model.AuthTypeCodexOAuth, CodexAccessToken: "at-test"}
+				if tt.apiKey {
+					cfg.AuthType = model.AuthTypeAPIKey
+				}
+				reqCtx := &requestContext{
+					ctx: context.Background(), startTime: time.Now(),
+					clientProtocol: protocol.Codex, upstreamProtocol: protocol.Codex,
+				}
+				req, err := srv.buildProxyRequest(reqCtx, cfg, "sk-test", http.MethodPost,
+					fmt.Appendf(nil, `{"model":%q,%s}`, modelName, tt.body),
+					http.Header{"Content-Type": []string{"application/json"}}, "", "/v1/responses", "https://codex.example.test")
+				if err != nil {
+					t.Fatalf("buildProxyRequest: %v", err)
+				}
+				wireBody, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read request: %v", err)
+				}
+				want := tt.want
+				if want == "" {
+					want = tt.body
+				}
+				for _, path := range []string{"reasoning", "input"} {
+					gotField, wantField := gjson.GetBytes(wireBody, path), gjson.Get("{"+want+"}", path)
+					if gotField.Exists() != wantField.Exists() || !reflect.DeepEqual(gotField.Value(), wantField.Value()) {
+						t.Fatalf("%s = %s, want %s; body=%s", path, gotField.Raw, wantField.Raw, wireBody)
+					}
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证模型后缀覆盖基线后仍逐项收敛更新，渠道规则最后覆盖 OAuth 规范化。
+ * @param t 当前测试上下文。
+ */
+func TestCodexOAuthReasoningEffortRespectsSuffixAndBodyRules(t *testing.T) {
+	tests := []struct {
+		name       string                 ///< 代理场景。
+		suffix     string                 ///< 客户端请求的模型后缀。
+		rules      []model.CustomBodyRule ///< 渠道最后执行的请求体规则。
+		wantEffort string                 ///< 预期基线等级；空值表示不存在。
+		wantUpdate string                 ///< 预期会话更新等级。
+	}{
+		{name: "suffix", suffix: "(high)", wantEffort: "high", wantUpdate: "low"},
+		{name: "auto suffix", suffix: "(auto)", wantUpdate: "low"},
+		{
+			name: "body rules", suffix: "(high)", wantEffort: "none", wantUpdate: "none",
+			rules: []model.CustomBodyRule{
+				{Action: model.RuleActionOverride, Path: "reasoning.effort", Value: json.RawMessage(`"none"`)},
+				{Action: model.RuleActionOverride, Path: "input.0.reasoning.effort", Value: json.RawMessage(`"none"`)},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestBodies := make(chan []byte, 1)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read upstream request: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				requestBodies <- body
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-effort\",\"status\":\"completed\",\"output\":[]}}\n\n")
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "codex-effort", upstreamProtocol: "codex", models: "gpt-6.1-sol",
+				authType: model.AuthTypeCodexOAuth, oauthCredential: codexProxyTestCredential(t, "at-effort", "rt-effort", "account-effort"),
+				customRequestRules: &model.CustomRequestRules{Body: tt.rules},
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model":     "gpt-6.1-sol" + tt.suffix,
+				"reasoning": map[string]any{"effort": "invalid", "summary": "auto"},
+				"input": []any{
+					map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "none"}},
+					map[string]any{"role": "user", "content": "hi"},
+				},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d; body=%s", response.Code, response.Body.String())
+			}
+			body := <-requestBodies
+			effort := gjson.GetBytes(body, "reasoning.effort")
+			if effort.Exists() != (tt.wantEffort != "") || effort.String() != tt.wantEffort {
+				t.Fatalf("baseline effort = %s, want %q; body=%s", effort.Raw, tt.wantEffort, body)
+			}
+			if got := gjson.GetBytes(body, "input.0.reasoning.effort").String(); got != tt.wantUpdate {
+				t.Fatalf("update effort = %q, want %q; body=%s", got, tt.wantUpdate, body)
+			}
+			if got := gjson.GetBytes(body, "reasoning.summary").String(); got != "auto" {
+				t.Fatalf("reasoning summary = %q, want auto; body=%s", got, body)
+			}
+		})
 	}
 }
 

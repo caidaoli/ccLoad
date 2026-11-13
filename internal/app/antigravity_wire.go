@@ -383,7 +383,7 @@ func prepareAntigravityRequestBody(
 	request = restoreAntigravityAnthropicToolIDs(request, sourceBody)
 	request, structuredOutputPrompt := takeAntigravityClaude55StructuredOutput(request, modelName)
 	request = normalizeAntigravitySchemas(request, modelName)
-	request = normalizeAntigravityThinkingLevel(request)
+	request = normalizeAntigravityThinkingLevel(request, modelName)
 	lookupID := strings.ToLower(strings.TrimSpace(modelName))
 	if strings.Contains(lookupID, "claude") {
 		// The translator preserves client limits; cap them for the actual upstream model.
@@ -489,11 +489,15 @@ func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) (
 	return request, prompt
 }
 
-// normalizeAntigravityThinkingLevel replaces client-facing effort aliases that
-// are not valid Antigravity ThinkingLevel enum values. CLIProxyAPI normally does
-// this in its excluded runtime ApplyThinking stage, so ccLoad must enforce the
-// provider wire contract at the shared finalization boundary.
-func normalizeAntigravityThinkingLevel(request []byte) []byte {
+/**
+ * @brief 按实际模型能力保留 xhigh，其余客户端别名沿用 Antigravity 枚举映射。
+ * @param request 信封内 Gemini 请求体。
+ * @param modelName 实际发送到 Antigravity 的模型名。
+ * @return 规范化思考等级后的请求体；不改写其他字段。
+ */
+func normalizeAntigravityThinkingLevel(request []byte, modelName string) []byte {
+	info := cliproxyregistry.LookupModelInfo(strings.ToLower(strings.TrimSpace(modelName)), "antigravity")
+	supportsXHigh := info != nil && info.Thinking != nil && slices.Contains(info.Thinking.Levels, "xhigh")
 	for _, generationConfigKey := range []string{"generationConfig", "generation_config"} {
 		if !gjson.GetBytes(request, generationConfigKey).IsObject() {
 			continue
@@ -514,7 +518,13 @@ func normalizeAntigravityThinkingLevel(request []byte) []byte {
 			switch normalized := strings.ToLower(strings.TrimSpace(level)); normalized {
 			case "minimal":
 				request = setJSONValue(request, levelPath, "low")
-			case "xhigh", "max":
+			case "xhigh":
+				if supportsXHigh {
+					request = setJSONValue(request, levelPath, normalized)
+				} else {
+					request = setJSONValue(request, levelPath, "high")
+				}
+			case "max":
 				request = setJSONValue(request, levelPath, "high")
 			case "low", "medium", "high":
 				request = setJSONValue(request, levelPath, normalized)

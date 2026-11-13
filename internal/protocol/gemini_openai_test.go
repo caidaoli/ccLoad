@@ -13,6 +13,49 @@ import (
 )
 
 /**
+ * @brief Gemini 工具签名经过 Chat 响应和下一轮请求后仍绑定原工具
+ * @param t 测试上下文
+ */
+func TestRegistryGeminiChatToolSignatureRoundTrip(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	const signature = "EggKBgEMOdbHNA=="
+	response := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"query":"go"}}},{"thoughtSignature":"` + signature + `"}]},"finishReason":"STOP"}]}`
+	out, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.OpenAI, "gemini-2.5-pro", nil, nil, []byte(response))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(out, "choices.0.message.tool_calls.0.extra_content.google.thought_signature").String(); got != signature {
+		t.Fatalf("tool signature = %q, want %q: %s", got, signature, out)
+	}
+	request := []byte(`{"messages":[` + gjson.GetBytes(out, "choices.0.message").Raw + `,{"role":"tool","tool_call_id":"call_1","content":"ok"}]}`)
+	replayed, err := reg.TranslateRequest(protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(replayed, "contents.0.parts.0.thoughtSignature").String(); got != signature {
+		t.Fatalf("replayed signature = %q, want %q: %s", got, signature, replayed)
+	}
+	stream := translateResponseStreamChunks(t, reg, protocol.Gemini, protocol.OpenAI, "gemini-2.5-pro",
+		`data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"query":"go"}}}]}}]}`+"\n\n",
+		`data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"`+signature+`"}]},"finishReason":"STOP"}]}`+"\n\n")
+	found := false
+	for _, event := range parseSSEEvents(t, stream) {
+		for _, call := range gjson.Get(event.RawData, "choices.0.delta.tool_calls").Array() {
+			if got := call.Get("extra_content.google.thought_signature").String(); got != "" {
+				if got != signature || call.Get("index").Int() != 0 {
+					t.Fatalf("late signature bound to wrong call: %s", event.RawData)
+				}
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("late tool signature missing: %s", stream)
+	}
+}
+
+/**
  * @brief Gemini 多 Part 的正文与思考按各自顺序累计，签名载体不产生内容
  * @param t 测试上下文
  */

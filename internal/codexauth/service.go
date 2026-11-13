@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -342,12 +345,12 @@ func (s *Service) ExchangeCode(ctx context.Context, code string, pkce PKCE) (*Cr
 
 /**
  * @brief 在持久化提交权与回执保护下交换 Codex 刷新 token
- * @param ctx 请求上下文；取消不能撤销已记录的提交权
+ * @param ctx 请求上下文；取消后仍保存回执或释放确证未发送的提交权
  * @param refreshToken 已规范化的刷新 token
  * @param journal 权威凭据存储，与凭据一同备份和恢复
  * @return 新凭据或已记录的未过期轮换结果；失败时返回 nil
- * @return 明确拒绝返回永久错误，提交或结果无法确认时返回 RefreshOutcomeUnknownError
- * @note 同一 grant 只能提交一次；无回执或回执过期时必须恢复结果或重新授权。
+ * @return 确证未发送且已释放时返回 RefreshPreSendError；明确拒绝返回永久错误，结果无法确认时返回 RefreshOutcomeUnknownError
+ * @note 同一 grant 只能提交一次；仅原 owner 确证未发送可释放；无回执或回执过期时必须恢复结果或重新授权。
  * @details 与原生 Codex 一致，刷新使用不含 scope 的 JSON 请求，授权码交换继续使用表单。
  */
 func (s *Service) Refresh(ctx context.Context, refreshToken string, journal RefreshJournal) (*Credential, error) {
@@ -372,18 +375,27 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, journal Refr
 		return nil, fmt.Errorf("encode Codex refresh request: %w", err)
 	}
 	key := RefreshGrantKey(s.ClientID, refreshToken)
-	claimed, err := journal.RefreshClaim(ctx, key)
+	owner := rand.Text()
+	claimed, err := journal.RefreshClaim(ctx, key, owner)
 	if err != nil {
 		return nil, &RefreshOutcomeUnknownError{stage: "claim", cause: err}
 	}
 	if !claimed {
 		credential, exists, err := readRefreshReceipt(ctx, journal, key, s.ClientID)
 		if !exists && err == nil {
-			return nil, &RefreshOutcomeUnknownError{stage: "pending"}
+			return nil, &RefreshPreSendError{stage: "claim_released"}
 		}
 		return credential, err
 	}
 	credential, refreshErr := s.requestToken(ctx, "application/json", payload, true)
+	receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultTokenTimeout)
+	defer cancel()
+	if IsRefreshPreSendError(refreshErr) {
+		if err := journal.RefreshRelease(receiptCtx, key, owner); err != nil {
+			return nil, errors.Join(refreshErr, &RefreshOutcomeUnknownError{stage: "claim_release", cause: err})
+		}
+		return nil, refreshErr
+	}
 	receipt := refreshReceipt{Credential: credential}
 	if refreshErr != nil {
 		if unknown, ok := errors.AsType[*RefreshOutcomeUnknownError](refreshErr); ok {
@@ -398,8 +410,6 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, journal Refr
 	if err != nil {
 		return nil, &RefreshOutcomeUnknownError{stage: "receipt_encode", cause: err}
 	}
-	receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultTokenTimeout)
-	defer cancel()
 	if err := journal.RefreshComplete(receiptCtx, key, raw); err != nil {
 		return nil, &RefreshOutcomeUnknownError{stage: "receipt_write", cause: err}
 	}
@@ -421,13 +431,13 @@ func (s *Service) validate() error {
 }
 
 /**
- * @brief 执行授权码或刷新交换，并在刷新时保留不可重放的失败阶段
+ * @brief 执行授权码或刷新交换，区分确证未发送和不可重放的失败阶段
  * @param ctx 交换上下文
  * @param contentType OAuth 请求的内容类型
  * @param payload 已编码的授权请求
  * @param refreshing 是否执行已 claim 的 refresh grant
  * @return 上游颁发的凭据，失败时返回 nil
- * @return 请求、响应或校验错误；刷新时除明确拒绝外均返回 RefreshOutcomeUnknownError
+ * @return 请求、响应或校验错误；刷新时返回 RefreshPreSendError、RefreshOutcomeUnknownError 或明确拒绝错误
  */
 func (s *Service) requestToken(ctx context.Context, contentType string, payload []byte, refreshing bool) (*Credential, error) {
 	if ctx == nil {
@@ -444,6 +454,9 @@ func (s *Service) requestToken(ctx context.Context, contentType string, payload 
 
 	req, err := http.NewRequestWithContext(tokenCtx, http.MethodPost, s.TokenURL, bytes.NewReader(payload))
 	if err != nil {
+		if refreshing {
+			return nil, &RefreshPreSendError{stage: "request_create", cause: err}
+		}
 		return nil, tokenError("request_create", fmt.Errorf("build Codex token request: %w", err))
 	}
 	// Native Codex sends token requests through its default client: reqwest's
@@ -454,13 +467,36 @@ func (s *Service) requestToken(ctx context.Context, contentType string, payload 
 	req.Header.Set("User-Agent", DefaultUserAgent)
 
 	client := s.Client
+	var sawPreConn, sawConnReady, sawBodyRead atomic.Bool
 	if refreshing {
+		if err := tokenCtx.Err(); err != nil {
+			return nil, &RefreshPreSendError{stage: "request_context", cause: err}
+		}
+		req.GetBody = nil
+		req.Body = &refreshBodyReadTracker{body: req.Body, readSeen: &sawBodyRead}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GetConn:           func(string) { sawPreConn.Store(true) },
+			DNSStart:          func(httptrace.DNSStartInfo) { sawPreConn.Store(true) },
+			ConnectStart:      func(string, string) { sawPreConn.Store(true) },
+			TLSHandshakeStart: func() { sawPreConn.Store(true) },
+			GotConn:           func(httptrace.GotConnInfo) { sawConnReady.Store(true) },
+			WroteHeaderField:  func(string, []string) { sawConnReady.Store(true) },
+			WroteHeaders:      func() { sawConnReady.Store(true) },
+			WroteRequest:      func(httptrace.WroteRequestInfo) { sawConnReady.Store(true) },
+		}))
 		isolated := *client
 		isolated.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		client = &isolated
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if refreshing && !sawConnReady.Load() && !sawBodyRead.Load() {
+			_, dnsError := errors.AsType[*net.DNSError](err)
+			opError, networkError := errors.AsType[*net.OpError](err)
+			if sawPreConn.Load() || dnsError || (networkError && opError.Op == "dial") {
+				return nil, &RefreshPreSendError{stage: "connect", cause: err}
+			}
+		}
 		return nil, tokenError("transport", fmt.Errorf("codex token request: %w", err))
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -508,6 +544,32 @@ func (s *Service) requestToken(ctx context.Context, contentType string, payload 
 	}
 	return credential, nil
 }
+
+/**
+ * @brief 跟踪刷新正文是否已交给传输层，防止缺少 trace 的传输错误被误判为未发送
+ */
+type refreshBodyReadTracker struct {
+	body     io.ReadCloser ///< 原始请求正文
+	readSeen *atomic.Bool  ///< 传输层开始读取正文时置为 true
+}
+
+/**
+ * @brief 在交付正文前记录刷新 grant 已可能发送
+ * @param p 接收正文的缓冲区
+ * @return 实际读取的字节数，EOF 时可为零
+ * @return 原始正文读取错误，包括 io.EOF
+ * @note 并发安全地发布已读取状态。
+ */
+func (r *refreshBodyReadTracker) Read(p []byte) (int, error) {
+	r.readSeen.Store(true)
+	return r.body.Read(p)
+}
+
+/**
+ * @brief 关闭原始刷新正文
+ * @return 原始正文关闭错误，成功时为 nil
+ */
+func (r *refreshBodyReadTracker) Close() error { return r.body.Close() }
 
 type idTokenClaims struct {
 	Email string `json:"email"`

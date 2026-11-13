@@ -668,6 +668,10 @@ func (s *Server) buildChannelTestRequestPlan(
 		return nil, err
 	}
 
+	if transformPlan.UpstreamProtocol == protocol.Anthropic {
+		translatedBody = preserveAnthropicConvertedEffort(translatedBody, transformPlan.TranslatedBody, transformPlan.RequestModel())
+	}
+
 	// 协议转换负责消息和工具的格式变换；上游测试器负责系统提示、请求选项和协议默认值。
 	// Zed 的上游协议名义上是 Codex，实际发出的是 provider_request，Codex 测试模板对任何
 	// Zed provider 都不成立，所以对全部 Zed 渠道跳过——不只 Anthropic。具体到 Anthropic：
@@ -675,6 +679,9 @@ func (s *Server) buildChannelTestRequestPlan(
 	// 再和保守的 max_tokens 默认值撞成上游 400。Zed 测试只保留客户端转换结果。
 	if !cfgForBuild.UsesZedOAuth() {
 		translatedBody = patchUpstreamTestFields(translatedBody, upstreamBody, upstreamProtocol)
+	}
+	if transformPlan.UpstreamProtocol == protocol.Anthropic {
+		translatedBody = prepareAnthropicConvertedRequest(translatedBody, transformPlan.RequestModel())
 	}
 
 	plan.fullURL = upstreamURL

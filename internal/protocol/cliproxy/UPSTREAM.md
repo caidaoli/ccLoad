@@ -24,6 +24,46 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-13)
+
+These targeted fixes use the local CLIProxyAPI checkout and the immutable
+commits below. The full snapshot baseline and provider provenance remain unchanged.
+
+- Adapt `07290e18da93fcbec494c6fe8743ff7c7e4e8ad3`: map Antigravity
+  `MAX_TOKENS` to Chat `finish_reason: "length"`, retaining the native reason
+  and tool-call precedence. Ordinary Gemini and Antigravity non-stream responses
+  already shared the correct mapping.
+- Adapt `c3a6c7416cd8521bfd9cb97727a61bb39970bb79`: translate typed Chat content
+  arrays and structured reasoning into Responses text and reasoning items.
+  Preserve interleaved streaming order, completed earlier message segments, and
+  reasoning-only termination with an explicit upstream finish reason. Keep
+  ccLoad's encrypted reasoning, tool-search and custom-tool behavior. Unknown
+  typed parts are omitted instead of being serialized as visible JSON text.
+  Within each streamed delta, a non-empty top-level reasoning representation
+  takes priority over typed thinking parts, matching the non-stream selection;
+  ordinary text parts remain visible. Empty top-level aliases still allow typed
+  thinking. Registry regressions cover incremental and final streamed output.
+- Adapt `91aca317b06e765fdc15f082ff28c315205a6e07`: retain Gemini tool thought
+  signatures in Chat responses, including delayed signature parts, and restore
+  Claude signature carriers to their original Gemini parts. Carrier binding
+  respects message and semantic boundaries; unsupported payloads cannot attach
+  signatures across those boundaries. The pure carrier helpers are recorded as
+  post-snapshot additions in the manifest. Keep ccLoad's partial-argument errors
+  and provider signature compatibility checks.
+- Adapt the three Gemini catalog entries from
+  `1fcb143220a464758238617809cc251df8d5806b`: `gemini-4-hydrogen`,
+  Antigravity `gemini-4-hydrogen-xhigh`, and `gemini-3.8-flash-tiered`.
+  Google's [Hydrogen model documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen)
+  confirms low/medium/high/xhigh and a unified 1,048,576-token context.
+  Both Hydrogen entries advertise the 65,536-token single-segment output limit
+  supported by ccLoad's current execution path; the upstream catalog's 1M output
+  requires continuation handling. Antigravity-specific aliases and budget metadata
+  come from the pinned upstream catalog, not an account entitlement check.
+  No pricing or automatic continuation is introduced.
+
+No runtime executor, authentication, cache or registry implementation is imported.
+The independent Codex refresh recovery change lives in ccLoad's auth/storage layer.
+
 ## Post-snapshot compatibility fixes (2026-11-10)
 
 Adapt `05e668cf2d3c58428c199e254147c92c19b45939` from the local checkout at

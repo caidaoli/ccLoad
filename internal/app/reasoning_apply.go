@@ -38,8 +38,12 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
 	return out
 }
 
-// The upstream's own catalog is authoritative; relays may serve a model under a
-// different protocol, so the fullest entry in any catalog is the fallback.
+/**
+ * @brief 优先读取上游目录能力，缺失时补齐尚未进入快照的 Anthropic 5.2 官方等级。
+ * @param model 实际路由后的模型名。
+ * @param upstream 本次使用的上游协议。
+ * @return 模型允许的思考等级；没有目录或已确认能力时返回 nil。
+ */
 func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
 	provider := "openai"
 	switch upstream {
@@ -51,7 +55,14 @@ func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
 	if info := modelregistry.LookupModelInfo(model, provider); info != nil && info.Thinking != nil && len(info.Thinking.Levels) > 0 {
 		return info.Thinking.Levels
 	}
-	return modelregistry.LookupThinkingLevels(model)
+	if levels := modelregistry.LookupThinkingLevels(model); len(levels) > 0 {
+		return levels
+	}
+	if upstream == protocol.Anthropic && anthropicClaude52Family(anthropicCanonicalModelName(model)) != "" {
+		return []string{string(thinking.LevelLow), string(thinking.LevelMedium), string(thinking.LevelHigh),
+			string(thinking.LevelXHigh), string(thinking.LevelMax)}
+	}
+	return nil
 }
 
 // Levels the decision may choose for a business model, ascending. A redirected

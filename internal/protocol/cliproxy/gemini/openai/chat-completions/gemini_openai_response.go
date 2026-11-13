@@ -16,6 +16,8 @@ import (
 	"time"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
+	geminicommon "ccLoad/internal/protocol/cliproxy/gemini/common"
+	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
@@ -39,10 +41,19 @@ type convertGeminiResponseToOpenAIChatParams struct {
 	SanitizedNameMapResolved bool
 	ActiveToolCall           map[int]*translatorcommon.VertexStreamingToolCall
 	HasIncompleteToolCall    map[int]bool
+	LastToolCallIndex        map[int]int
 }
 
 // functionCallIDCounter provides a process-wide unique counter for function call identifiers.
 var functionCallIDCounter uint64
+
+func geminiOpenAIToolThoughtSignature(raw string) string {
+	signature := strings.TrimSpace(raw)
+	if sigcompat.IsGeminiThoughtSignatureBypass(sigcompat.SignaturePayloadWithoutProviderPrefix(signature)) {
+		return ""
+	}
+	return signature
+}
 
 // ConvertGeminiResponseToOpenAI translates a single chunk of a streaming response from the
 // Gemini API format to the OpenAI Chat Completions streaming format.
@@ -95,6 +106,9 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 	}
 	if p.HasIncompleteToolCall == nil {
 		p.HasIncompleteToolCall = make(map[int]bool)
+	}
+	if p.LastToolCallIndex == nil {
+		p.LastToolCallIndex = make(map[int]int)
 	}
 	if !p.SanitizedNameMapResolved {
 		if p.SanitizedNameMap == nil {
@@ -219,6 +233,21 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 				assistantRoleSet = true
 			}
+			appendToolSignature := func(signature string) {
+				index, exists := p.LastToolCallIndex[candidateIndex]
+				if signature == "" || !exists {
+					return
+				}
+				toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+				if !toolCallsResult.IsArray() {
+					template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+				}
+				call := []byte(`{"index":0}`)
+				call, _ = sjson.SetBytes(call, "index", index)
+				call, _ = sjson.SetBytes(call, "extra_content.google.thought_signature", signature)
+				setAssistantRole()
+				template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", call)
+			}
 
 			if partsResult.IsArray() {
 				partResults := partsResult.Array()
@@ -228,6 +257,15 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 				hasReasoningContent := false
 				for i := 0; i < len(partResults); i++ {
 					partResult := partResults[i]
+					if geminicommon.HasUnsupportedPartPayload(partResult, "text", "functionCall", "inlineData", "inline_data", "audioTranscription") {
+						delete(p.LastToolCallIndex, candidateIndex)
+						if p.ActiveToolCall[candidateIndex] != nil {
+							p.HasIncompleteToolCall[candidateIndex] = true
+							p.ActiveToolCall[candidateIndex] = nil
+						}
+						sawNoopFunctionCall = true
+						continue
+					}
 					partTextResult := partResult.Get("text")
 					functionCallResult := partResult.Get("functionCall")
 					inlineDataResult := partResult.Get("inlineData")
@@ -257,8 +295,10 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 						break
 					}
 
-					// Skip pure thoughtSignature parts but keep any actual payload in the same part.
+					thoughtSignature := geminiOpenAIToolThoughtSignature(thoughtSignatureResult.String())
+					// A late signature is still a tool delta even without argument bytes.
 					if hasThoughtSignature && !hasContentPayload {
+						appendToolSignature(thoughtSignature)
 						if p.ActiveToolCall[candidateIndex] != nil {
 							sawNoopFunctionCall = true
 						}
@@ -267,6 +307,9 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 					if partTextResult.Exists() {
 						text := partTextResult.String()
+						if text != "" {
+							delete(p.LastToolCallIndex, candidateIndex)
+						}
 						if p.ActiveToolCall[candidateIndex] != nil {
 							sawNoopFunctionCall = true
 							continue
@@ -295,14 +338,19 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							if done {
 								p.ActiveToolCall[candidateIndex] = nil
 							}
-							if delta != "" {
+							if delta != "" || thoughtSignature != "" {
 								toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
 								if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
 									template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 								}
-								functionCallTemplate := []byte(`{"index":0,"function":{"arguments":""}}`)
+								functionCallTemplate := []byte(`{"index":0}`)
 								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", active.Index)
-								functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
+								if delta != "" {
+									functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
+								}
+								if thoughtSignature != "" {
+									functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
+								}
 								setAssistantRole()
 								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 							} else {
@@ -332,6 +380,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							}
 							p.SawToolCall[candidateIndex] = true
 							p.FunctionIndex[candidateIndex]++
+							p.LastToolCallIndex[candidateIndex] = functionCallIndex
 							if !done {
 								p.ActiveToolCall[candidateIndex] = active
 							}
@@ -346,11 +395,15 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
 							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
 							functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
+							if thoughtSignature != "" {
+								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
+							}
 							setAssistantRole()
 							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 						} else {
 							rawName := strings.TrimSpace(functionCallResult.Get("name").String())
 							if rawName == "" && !functionCallResult.Get("args").Exists() {
+								appendToolSignature(thoughtSignature)
 								sawNoopFunctionCall = true
 								continue
 							}
@@ -361,6 +414,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							// Retrieve the function index for this specific candidate.
 							functionCallIndex := p.FunctionIndex[candidateIndex]
 							p.FunctionIndex[candidateIndex]++
+							p.LastToolCallIndex[candidateIndex] = functionCallIndex
 
 							if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
 								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
@@ -378,10 +432,14 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
 								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", fcArgsResult.Raw)
 							}
+							if thoughtSignature != "" {
+								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
+							}
 							setAssistantRole()
 							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 						}
 					} else if inlineDataResult.Exists() {
+						delete(p.LastToolCallIndex, candidateIndex)
 						if p.ActiveToolCall[candidateIndex] != nil {
 							p.HasIncompleteToolCall[candidateIndex] = true
 							p.ActiveToolCall[candidateIndex] = nil
@@ -541,6 +599,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 			if partsResult.IsArray() {
 				partsResults := partsResult.Array()
 				var toolCalls [][]byte
+				lastToolCall := -1
 				var images [][]byte
 				var textContent strings.Builder
 				var reasoningContent strings.Builder
@@ -549,6 +608,10 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 
 				for i := 0; i < len(partsResults); i++ {
 					partResult := partsResults[i]
+					if geminicommon.HasUnsupportedPartPayload(partResult, "text", "functionCall", "inlineData", "inline_data", "audioTranscription") {
+						lastToolCall = -1
+						continue
+					}
 					partTextResult := partResult.Get("text")
 					functionCallResult := partResult.Get("functionCall")
 					inlineDataResult := partResult.Get("inlineData")
@@ -571,12 +634,18 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 					hasTextPayload := partTextResult.Exists() && partTextResult.String() != ""
 					hasContentPayload := hasTextPayload || functionCallResult.Exists() || inlineDataResult.Exists()
 
-					// Skip pure thoughtSignature parts but keep any actual payload in the same part.
+					// Keep a detached signature on its preceding tool, not across text or images.
 					if hasThoughtSignature && !hasContentPayload {
+						if signature := geminiOpenAIToolThoughtSignature(thoughtSignatureResult.String()); signature != "" && lastToolCall >= 0 {
+							toolCalls[lastToolCall], _ = sjson.SetBytes(toolCalls[lastToolCall], "extra_content.google.thought_signature", signature)
+						}
 						continue
 					}
 
 					if partTextResult.Exists() {
+						if partTextResult.String() != "" {
+							lastToolCall = -1
+						}
 						// Append text content, distinguishing between regular content and reasoning.
 						if partResult.Get("thought").Bool() {
 							hasReasoningContent = true
@@ -599,8 +668,13 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 						if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
 							functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", fcArgsResult.Raw)
 						}
+						if signature := geminiOpenAIToolThoughtSignature(thoughtSignatureResult.String()); signature != "" {
+							functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "extra_content.google.thought_signature", signature)
+						}
 						toolCalls = append(toolCalls, functionCallItemTemplate)
+						lastToolCall = len(toolCalls) - 1
 					} else if inlineDataResult.Exists() {
+						lastToolCall = -1
 						data := inlineDataResult.Get("data").String()
 						if data != "" {
 							mimeType := inlineDataResult.Get("mimeType").String()

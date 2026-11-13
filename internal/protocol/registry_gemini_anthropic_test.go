@@ -14,6 +14,41 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+/**
+ * @brief Gemini 工具签名经 Claude 响应和工具结果回放后仍属于同一调用
+ * @param t 测试上下文
+ */
+func TestRegistryGeminiClaudeToolSignatureRoundTrip(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	const signature = "EggKBgEMOdbHNA=="
+	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"lookup","args":{"query":"go"}},"thoughtSignature":"` + signature + `"}]},"finishReason":"STOP"}]}`)
+	out, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.Anthropic, "gemini-2.5-pro", nil, nil, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolID := gjson.GetBytes(out, `content.#(type=="tool_use").id`).String()
+	request := fmt.Appendf(nil, `{"messages":[{"role":"assistant","content":%s},{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":"ok"}]}]}`, gjson.GetBytes(out, "content").Raw, toolID)
+	replayed, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-2.5-pro", request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, part := range gjson.GetBytes(replayed, "contents.0.parts").Array() {
+		if part.Get("functionCall").Exists() {
+			found = true
+			if part.Get("functionCall.id").String() != toolID || part.Get("thoughtSignature").String() != signature {
+				t.Fatalf("tool signature or identity lost: %s", replayed)
+			}
+		} else if part.Get("thoughtSignature").Exists() {
+			t.Fatalf("tool signature attached to another part: %s", replayed)
+		}
+	}
+	if !found {
+		t.Fatalf("replayed tool call missing: %s", replayed)
+	}
+}
+
 func TestRegistry_TranslateRequest_GeminiToAnthropic(t *testing.T) {
 	t.Parallel()
 

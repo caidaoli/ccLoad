@@ -37,7 +37,7 @@ func TestSyncManager_RestoreOnStartup_BlocksRestoredCodexRefreshGrants(t *testin
 	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "refresh")
 	localKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "local-refresh")
 	for store, claimKey := range map[Store]string{source: key, target: localKey} {
-		if claimed, err := store.RefreshClaim(ctx, claimKey); err != nil || !claimed {
+		if claimed, err := store.RefreshClaim(ctx, claimKey, "test-owner"); err != nil || !claimed {
 			t.Fatalf("claim = (%v, %v)", claimed, err)
 		}
 		if err := store.RefreshComplete(ctx, claimKey, []byte(`{"access_token":"saved"}`)); err != nil {
@@ -60,7 +60,7 @@ func TestSyncManager_RestoreOnStartup_BlocksRestoredCodexRefreshGrants(t *testin
 	if receipt, exists, err := target.RefreshRead(ctx, key); err != nil || !exists || receipt != nil {
 		t.Fatalf("restored grant = (%q, %v, %v), want pending", receipt, exists, err)
 	}
-	if claimed, err := target.RefreshClaim(ctx, key); err != nil || claimed {
+	if claimed, err := target.RefreshClaim(ctx, key, "test-owner"); err != nil || claimed {
 		t.Fatalf("restored claim = (%v, %v), want (false, nil)", claimed, err)
 	}
 	if receipt, exists, err := target.RefreshRead(ctx, localKey); err != nil || !exists || string(receipt) != `{"access_token":"saved"}` {

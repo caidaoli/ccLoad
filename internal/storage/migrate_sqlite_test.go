@@ -2840,3 +2840,48 @@ func verifyOpenAICacheWriteTTLMigrationAndRoundTrip(t *testing.T, db *sql.DB, st
 		}
 	}
 }
+
+/**
+ * @brief 验证旧刷新 journal 增补 owner 不会解除未知 grant 或改写已有回执
+ * @param t 测试上下文
+ */
+func TestMigrate_SQLite_RefreshJournalOwnerPreservesLegacyRecords(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE codex_refresh_journal (grant_key VARCHAR(64) PRIMARY KEY, receipt TEXT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO codex_refresh_journal (grant_key, receipt) VALUES ('legacy-pending', NULL), ('legacy-complete', '{"access_token":"saved"}')`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := migrate(ctx, db, DialectSQLite); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := sqlstore.NewSQLStore(db, "sqlite")
+	if claimed, err := store.RefreshClaim(ctx, "legacy-pending", "new-owner"); err != nil || claimed {
+		t.Fatalf("legacy grant reclaimed: claimed=%v err=%v", claimed, err)
+	}
+	for _, key := range []string{"legacy-pending", "legacy-complete"} {
+		if err := store.RefreshRelease(ctx, key, "new-owner"); err == nil {
+			t.Fatalf("legacy grant %s released", key)
+		}
+		var owner sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT claim_owner FROM codex_refresh_journal WHERE grant_key = ?`, key).Scan(&owner); err != nil || owner.Valid {
+			t.Fatalf("legacy owner=%+v err=%v", owner, err)
+		}
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, "legacy-pending"); err != nil || !exists || receipt != nil {
+		t.Fatalf("legacy pending=(%q, %v, %v)", receipt, exists, err)
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, "legacy-complete"); err != nil || !exists || string(receipt) != `{"access_token":"saved"}` {
+		t.Fatalf("legacy receipt=(%q, %v, %v)", receipt, exists, err)
+	}
+	if claimed, err := store.RefreshClaim(ctx, "new-grant", "new-owner"); err != nil || !claimed {
+		t.Fatalf("new grant claimed=%v err=%v", claimed, err)
+	}
+	if err := store.RefreshRelease(ctx, "new-grant", "new-owner"); err != nil {
+		t.Fatal(err)
+	}
+}

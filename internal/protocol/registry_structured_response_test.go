@@ -11,6 +11,111 @@ import (
 	"ccLoad/internal/protocol/builtin"
 )
 
+/**
+ * @brief Chat 内容数组通过 Responses 边界保留思考、正文与截断状态
+ * @param t 测试上下文
+ */
+func TestRegistryOpenAIToResponsesTypedContent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	parts := `[{"type":"thinking","thinking":[{"type":"text","text":"consider"}]},{"type":"text","text":"answer"}]`
+	raw := []byte(`{"id":"chatcmpl_parts","choices":[{"index":0,"message":{"role":"assistant","content":` + parts + `},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":5}}`)
+	out, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Codex, "model", nil, nil, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := mustJSONMap(t, out)
+	output := mustSlice(t, response["output"])
+	if len(output) != 2 || response["status"] != "incomplete" {
+		t.Fatalf("unexpected output or status: %s", out)
+	}
+	reasoning, message := mustMap(t, output[0]), mustMap(t, output[1])
+	if reasoning["type"] != "reasoning" || mustMap(t, mustSlice(t, reasoning["summary"])[0])["text"] != "consider" ||
+		message["type"] != "message" || mustMap(t, mustSlice(t, message["content"])[0])["text"] != "answer" {
+		t.Fatalf("typed content lost its meaning: %s", out)
+	}
+	stream := translateResponseStreamChunks(t, reg, protocol.OpenAI, protocol.Codex, "model",
+		`data: {"id":"chatcmpl_parts","choices":[{"index":0,"delta":{"content":`+parts+`},"finish_reason":"length"}]}`+"\n\n",
+		"data: [DONE]\n\n")
+	var text, thought strings.Builder
+	var incomplete bool
+	for _, event := range parseSSEEvents(t, stream) {
+		switch event.Event {
+		case "response.output_text.delta":
+			text.WriteString(mustString(t, event.Data["delta"]))
+		case "response.reasoning_summary_text.delta":
+			thought.WriteString(mustString(t, event.Data["delta"]))
+		case "response.incomplete":
+			incomplete = mustMap(t, event.Data["response"])["status"] == "incomplete"
+		case "response.completed":
+			t.Fatalf("truncated response reported completion: %s", stream)
+		}
+	}
+	if text.String() != "answer" || thought.String() != "consider" || !incomplete {
+		t.Fatalf("typed stream lost content or termination: %s", stream)
+	}
+}
+
+/**
+ * @brief 同帧思考的顶层表示优先于内容数组，JSON、SSE 增量及终态保留相同思考和正文。
+ * @param t 测试上下文。
+ */
+func TestRegistryOpenAIToResponsesReasoningRepresentationPriority(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		name   string
+		fields string
+	}{
+		{"reasoning content", `"reasoning_content":"thought"`},
+		{"structured reasoning", `"reasoning":{"text":"thought"}`},
+		{"reasoning details", `"reasoning_details":[{"text":"thought"}]`},
+		{"alias priority", `"reasoning_content":"thought","reasoning":"ignored","reasoning_details":[{"text":"ignored"}]`},
+		{"empty aliases use typed thinking", `"reasoning_content":"","reasoning":{"text":""},"reasoning_details":[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message := `{"role":"assistant",` + tc.fields + `,"content":[{"type":"thinking","thinking":"thought"},{"type":"text","text":"answer"}]}`
+			raw := []byte(`{"id":"priority","choices":[{"index":0,"message":` + message + `,"finish_reason":"stop"}]}`)
+			out, err := reg.TranslateResponseNonStream(context.Background(), protocol.OpenAI, protocol.Codex, "model", nil, nil, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream := translateResponseStreamChunks(t, reg, protocol.OpenAI, protocol.Codex, "model",
+				`data: {"id":"priority","choices":[{"index":0,"delta":`+message+`,"finish_reason":"stop"}]}`+"\n\n",
+				"data: [DONE]\n\n")
+			var thought, text strings.Builder
+			var completed map[string]any
+			for _, event := range parseSSEEvents(t, stream) {
+				switch event.Event {
+				case "response.reasoning_summary_text.delta":
+					thought.WriteString(mustString(t, event.Data["delta"]))
+				case "response.output_text.delta":
+					text.WriteString(mustString(t, event.Data["delta"]))
+				case "response.completed":
+					completed = mustMap(t, event.Data["response"])
+				}
+			}
+			if thought.String() != "thought" || text.String() != "answer" {
+				t.Fatalf("stream thought=%q text=%q, want thought/answer", thought.String(), text.String())
+			}
+			if completed == nil {
+				t.Fatalf("stream has no completed response: %s", stream)
+			}
+			for name, response := range map[string]map[string]any{"JSON": mustJSONMap(t, out), "SSE": completed} {
+				output := mustSlice(t, response["output"])
+				if len(output) != 2 {
+					t.Fatalf("%s output count=%d, want 2: %+v", name, len(output), response)
+				}
+				reasoning, message := mustMap(t, output[0]), mustMap(t, output[1])
+				if reasoning["type"] != "reasoning" || mustMap(t, mustSlice(t, reasoning["summary"])[0])["text"] != "thought" ||
+					message["type"] != "message" || mustMap(t, mustSlice(t, message["content"])[0])["text"] != "answer" {
+					t.Fatalf("%s changed reasoning or text: %+v", name, response)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_AnthropicTruncation(t *testing.T) {
 	t.Parallel()
 	reg := protocol.NewRegistry()

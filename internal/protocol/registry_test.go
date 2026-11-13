@@ -391,6 +391,10 @@ func TestRegistry_TranslateResponseStream_NilStatePointerSupported(t *testing.T)
 	}
 }
 
+/**
+ * @brief Gemini 转 Claude 的内容块在消息终态前关闭，并保留最终用量
+ * @param t 测试上下文
+ */
 func TestRegistry_TranslateResponseStream_GeminiToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -416,11 +420,19 @@ func TestRegistry_TranslateResponseStream_GeminiToAnthropic(t *testing.T) {
 		t.Fatalf("TranslateResponseStream done failed: %v", err)
 	}
 	doneJoined := string(bytes.Join(done, nil))
-	blockStopAt := strings.Index(doneJoined, "event: content_block_stop")
-	messageDeltaAt := strings.Index(doneJoined, "event: message_delta")
-	messageStopAt := strings.Index(doneJoined, "event: message_stop")
+	blockStopAt, messageDeltaAt, messageStopAt := -1, -1, -1
+	for i, event := range parseSSEEvents(t, joined+doneJoined) {
+		switch event.Event {
+		case "content_block_stop":
+			blockStopAt = i
+		case "message_delta":
+			messageDeltaAt = i
+		case "message_stop":
+			messageStopAt = i
+		}
+	}
 	if blockStopAt < 0 || messageDeltaAt <= blockStopAt || messageStopAt <= messageDeltaAt {
-		t.Fatalf("unexpected Anthropic terminal event order: %s", doneJoined)
+		t.Fatalf("unexpected Anthropic terminal event order: %s", joined+doneJoined)
 	}
 	usage := mustMap(t, mustSSEEventData(t, doneJoined, "message_delta")["usage"])
 	if mustInt(t, usage["input_tokens"]) != 3 || mustInt(t, usage["output_tokens"]) != 7 {

@@ -7415,6 +7415,67 @@ func TestBuildTestUpstreamRequestPlanKeepsThinkingSuffixAcrossCodexTransform(t *
 	}
 }
 
+/**
+ * @brief 验证管理检测在跨协议转换后保留按实际 5.2 模型应用的 xhigh/max 后缀。
+ * @param t 当前测试上下文。
+ */
+func TestBuildTestUpstreamRequestPlanClaude52PreservesThinkingSuffix(t *testing.T) {
+	srv := newInMemoryServer(t)
+	for _, modelName := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		for _, client := range []string{util.ProtocolOpenAI, util.ProtocolCodex} {
+			for _, effort := range []string{"xhigh", "max"} {
+				t.Run(modelName+"/"+client+"/"+effort, func(t *testing.T) {
+					cfg := &model.Config{ID: 12, Name: "claude52", AuthType: model.AuthTypeAPIKey,
+						URLs:         model.ChannelURLs{{URL: "https://upstream.example.com", Protocols: []string{util.ProtocolAnthropic}}},
+						ModelEntries: []model.ModelEntry{{Model: "gpt-5.5", RedirectModel: modelName}}}
+					testReq := &testutil.TestChannelRequest{Model: modelName, Content: "hello", ClientProtocol: client}
+					_, plan, err := srv.buildTestUpstreamRequestPlan(context.Background(), cfg, "sk-test", testReq,
+						"gpt-5.5("+effort+")", client, util.ProtocolAnthropic, "https://upstream.example.com")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := gjson.GetBytes(plan.requestBody, "output_config.effort").String(); got != effort {
+						t.Fatalf("effort=%q, want %q: %s", got, effort, plan.requestBody)
+					}
+					if gjson.GetBytes(plan.requestBody, "thinking.type").String() != "adaptive" || gjson.GetBytes(plan.requestBody, "thinking.budget_tokens").Exists() {
+						t.Fatalf("unsupported manual thinking survived: %s", plan.requestBody)
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证管理测试转到 Sonnet/Haiku 5.5 后保留 none 后缀的最低思考模式。
+ * @param t 当前测试上下文。
+ */
+func TestBuildTestUpstreamRequestPlanClaude55MinimumThinking(t *testing.T) {
+	srv := newInMemoryServer(t)
+	for _, modelName := range []string{"claude-sonnet-5-5", "claude-haiku-5-5"} {
+		for _, client := range []string{util.ProtocolAnthropic, util.ProtocolOpenAI, util.ProtocolCodex} {
+			t.Run(modelName+"/"+client, func(t *testing.T) {
+				cfg := &model.Config{ID: 12, Name: "claude55", AuthType: model.AuthTypeAPIKey,
+					URLs:         model.ChannelURLs{{URL: "https://upstream.example.com", Protocols: []string{util.ProtocolAnthropic}}},
+					ModelEntries: []model.ModelEntry{{Model: "gpt-5.5", RedirectModel: modelName}}}
+				testReq := &testutil.TestChannelRequest{Model: modelName, Content: "hello", ClientProtocol: client}
+				_, plan, err := srv.buildTestUpstreamRequestPlan(context.Background(), cfg, "sk-test", testReq,
+					"gpt-5.5(none)", client, util.ProtocolAnthropic, "https://upstream.example.com")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantMode := "disabled"
+				if modelName == "claude-sonnet-5-5" {
+					wantMode = "between_tools"
+				}
+				if gjson.GetBytes(plan.requestBody, "thinking.type").String() != wantMode || gjson.GetBytes(plan.requestBody, "thinking.budget_tokens").Exists() {
+					t.Fatalf("minimum thinking mode lost: %s", plan.requestBody)
+				}
+			})
+		}
+	}
+}
+
 func TestBuildTestUpstreamRequestPlanZedHaikuDoesNotInheritCodexThinkingBudget(t *testing.T) {
 	t.Parallel()
 	srv := newInMemoryServer(t)

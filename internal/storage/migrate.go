@@ -154,6 +154,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if _, err := db.ExecContext(ctx, buildDDL(tb, dialect)); err != nil {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
 		}
+		if tb.Name() == "codex_refresh_journal" {
+			if err := ensureColumn(ctx, db, dialect, tb.Name(), "claim_owner", "VARCHAR(32) NULL", "VARCHAR(32) NULL"); err != nil {
+				return fmt.Errorf("migrate refresh journal claim owner: %w", err)
+			}
+		}
 		if tb.Name() == "oauth_quota_cost_ledger" {
 			if err := ensureOAuthQuotaLedgerBinaryKeys(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate OAuth quota ledger key collation: %w", err)

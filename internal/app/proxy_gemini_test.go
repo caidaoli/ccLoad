@@ -852,6 +852,10 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	})
 }
 
+/**
+ * @brief Gemini 模型列表按静态能力返回限制，新型号只声明当前执行支持的单段输出。
+ * @param t 测试上下文。
+ */
 func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
@@ -866,6 +870,9 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro"},
 			{Model: "claude-sonnet-4-6"},
+			{Model: "gemini-4-hydrogen"},
+			{Model: "gemini-4-hydrogen-xhigh"},
+			{Model: "gemini-3.8-flash-tiered"},
 			{Model: "local-unlisted-model"},
 		},
 	}); err != nil {
@@ -903,6 +910,16 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 			mustUnmarshalJSON(t, entry[field], &limit)
 			if limit <= 0 {
 				t.Fatalf("%s %s=%d, want positive catalog limit", name, field, limit)
+			}
+		}
+	}
+	for _, name := range []string{"gemini-4-hydrogen", "gemini-4-hydrogen-xhigh", "gemini-3.8-flash-tiered"} {
+		entry := byName["models/"+name]
+		for field, want := range map[string]int{"inputTokenLimit": 1048576, "outputTokenLimit": 65536} {
+			var limit int
+			mustUnmarshalJSON(t, entry[field], &limit)
+			if limit != want {
+				t.Fatalf("%s %s=%d, want %d", name, field, limit, want)
 			}
 		}
 	}

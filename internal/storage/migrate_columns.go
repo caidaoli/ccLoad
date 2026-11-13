@@ -9,8 +9,9 @@ import (
 	"strings"
 )
 
-// sqliteMigratableTables 允许增量迁移的SQLite表名白名单
-// 安全设计：防止SQL注入，新增表时需在此处注册
+/**
+ * @brief 限定允许通过 SQLite PRAGMA 检查并增量迁移的内部表名，阻止动态标识符注入
+ */
 var sqliteMigratableTables = map[string]bool{
 	"logs":                    true,
 	"auth_tokens":             true,
@@ -20,6 +21,7 @@ var sqliteMigratableTables = map[string]bool{
 	"channels":                true,
 	"debug_logs":              true,
 	"schema_migrations":       true,
+	"codex_refresh_journal":   true,
 }
 
 type sqliteColumnDef struct {

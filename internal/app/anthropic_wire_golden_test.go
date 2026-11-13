@@ -3,6 +3,7 @@ package app
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,8 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/builtin"
 
 	"github.com/tidwall/gjson"
 )
@@ -371,6 +374,297 @@ func TestAnthropicWireBillingFingerprintUTF16(t *testing.T) {
 				if got := gjson.GetBytes(finalized, "system.0.text").String(); got != want {
 					t.Errorf("blocks=%t: billing header = %q, want %q", blocks, got, want)
 				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证原生 Fable/Mythos 5.2 在正文改写前拒绝不支持的参数。
+ * @param t 当前测试上下文。
+ */
+func TestAnthropicClaude52NativeRequestContract(t *testing.T) {
+	for _, modelName := range []string{"claude-fable-5-2", "anthropic/claude-mythos-5.2-20261101"} {
+		for _, testCase := range []struct {
+			name    string
+			fields  string
+			wantErr bool
+		}{
+			{name: "implicit adaptive"},
+			{name: "adaptive", fields: `,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}`},
+			{name: "disabled", fields: `,"thinking":{"type":"disabled"}`, wantErr: true},
+			{name: "manual", fields: `,"thinking":{"type":"enabled","budget_tokens":8192}`, wantErr: true},
+			{name: "between tools", fields: `,"thinking":{"type":"between_tools"}`, wantErr: true},
+			{name: "auto tool", fields: `,"tool_choice":{"type":"auto"}`},
+			{name: "no tool", fields: `,"tool_choice":{"type":"none"}`},
+			{name: "any tool", fields: `,"tool_choice":{"type":"any"}`, wantErr: true},
+			{name: "named tool", fields: `,"tool_choice":{"type":"tool","name":"lookup"}`, wantErr: true},
+			{name: "required tool", fields: `,"tool_choice":"required"`, wantErr: true},
+			{name: "default temperature", fields: `,"temperature":1`},
+			{name: "default top p", fields: `,"top_p":0.99`},
+			{name: "temperature", fields: `,"temperature":0.5`, wantErr: true},
+			{name: "temperature type", fields: `,"temperature":"1"`, wantErr: true},
+			{name: "top p", fields: `,"top_p":1`, wantErr: true},
+			{name: "top k", fields: `,"top_k":50`, wantErr: true},
+			{name: "both sampling defaults", fields: `,"temperature":1,"top_p":0.99`, wantErr: true},
+		} {
+			t.Run(modelName+"/"+testCase.name, func(t *testing.T) {
+				body := []byte(`{"model":"client-alias","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]` + testCase.fields + `}`)
+				_, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
+					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, true)
+				if (err != nil) != testCase.wantErr {
+					t.Fatalf("error=%v, wantErr=%t", err, testCase.wantErr)
+				}
+				if err != nil {
+					if _, ok := errors.AsType[*requestValidationError](err); !ok {
+						t.Fatalf("error=%T %v, want requestValidationError", err, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证 Sonnet/Haiku 5.5 的最低思考模式、参数限制及模拟后的语义保留。
+ * @param t 当前测试上下文。
+ */
+func TestAnthropicClaude55ThinkingRequestContract(t *testing.T) {
+	for _, modelName := range []string{"claude-sonnet-5-5", "anthropic/claude-sonnet-5.5-20261001", "claude-haiku-5-5", "anthropic/claude-haiku-5.5-20261001"} {
+		isSonnet := anthropicClaude55Family(anthropicCanonicalModelName(modelName)) == "claude-sonnet-5-5"
+		minimumType := "disabled"
+		defaultEffort := "medium"
+		if isSonnet {
+			minimumType = "between_tools"
+			defaultEffort = "high"
+		}
+		for _, testCase := range []struct {
+			name      string
+			fields    string
+			sonnetErr bool
+			haikuErr  bool
+		}{
+			{name: "implicit adaptive"},
+			{name: "adaptive max", fields: `,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}`},
+			{name: "manual", fields: `,"thinking":{"type":"enabled","budget_tokens":8192}`, sonnetErr: true, haikuErr: true},
+			{name: "disabled", fields: `,"thinking":{"type":"disabled"}`, sonnetErr: true},
+			{name: "disabled high", fields: `,"thinking":{"type":"disabled"},"output_config":{"effort":"high"}`, sonnetErr: true},
+			{name: "disabled max", fields: `,"thinking":{"type":"disabled"},"output_config":{"effort":"max"}`, sonnetErr: true, haikuErr: true},
+			{name: "disabled display", fields: `,"thinking":{"type":"disabled","display":"omitted"}`, sonnetErr: true, haikuErr: true},
+			{name: "disabled budget", fields: `,"thinking":{"type":"disabled","budget_tokens":0}`, sonnetErr: true, haikuErr: true},
+			{name: "disabled binding", fields: `,"thinking":{"type":"disabled","block_binding":{}}`, sonnetErr: true, haikuErr: true},
+			{name: "between tools", fields: `,"thinking":{"type":"between_tools"}`, haikuErr: true},
+			{name: "between tools low", fields: `,"thinking":{"type":"between_tools"},"output_config":{"effort":"low"}`, haikuErr: true},
+			{name: "between tools xhigh", fields: `,"thinking":{"type":"between_tools"},"output_config":{"effort":"xhigh"}`, sonnetErr: true, haikuErr: true},
+			{name: "between tools display", fields: `,"thinking":{"type":"between_tools","display":"omitted"}`, sonnetErr: true, haikuErr: true},
+			{name: "between tools budget", fields: `,"thinking":{"type":"between_tools","budget_tokens":0}`, sonnetErr: true, haikuErr: true},
+			{name: "between tools binding", fields: `,"thinking":{"type":"between_tools","block_binding":{}}`, sonnetErr: true, haikuErr: true},
+			{name: "forced tool", fields: `,"tool_choice":{"type":"any"}`, sonnetErr: true},
+			{name: "default temperature", fields: `,"temperature":1`},
+			{name: "default top p", fields: `,"top_p":0.99`},
+			{name: "temperature", fields: `,"temperature":0.5`, sonnetErr: true, haikuErr: true},
+			{name: "top p one", fields: `,"top_p":1`, sonnetErr: true, haikuErr: true},
+			{name: "top p type", fields: `,"top_p":"0.99"`, sonnetErr: true, haikuErr: true},
+			{name: "top k", fields: `,"top_k":0`, sonnetErr: true, haikuErr: true},
+			{name: "both sampling defaults", fields: `,"temperature":1,"top_p":0.99`, sonnetErr: true, haikuErr: true},
+		} {
+			t.Run(modelName+"/"+testCase.name, func(t *testing.T) {
+				body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]` + testCase.fields + `}`)
+				got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
+					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, true)
+				wantErr := testCase.haikuErr
+				if isSonnet {
+					wantErr = testCase.sonnetErr
+				}
+				if (err != nil) != wantErr {
+					t.Fatalf("error=%v, wantErr=%t", err, wantErr)
+				}
+				if err != nil {
+					if _, ok := errors.AsType[*requestValidationError](err); !ok {
+						t.Fatalf("error=%T %v, want requestValidationError", err, err)
+					}
+					return
+				}
+				if mode := gjson.GetBytes(body, "thinking.type").String(); mode != "" && gjson.GetBytes(got, "thinking.type").String() != mode {
+					t.Fatalf("caller thinking mode changed: %s", got)
+				}
+				if effort := gjson.GetBytes(body, "output_config.effort").String(); effort != "" && gjson.GetBytes(got, "output_config.effort").String() != effort {
+					t.Fatalf("caller output effort changed: %s", got)
+				}
+			})
+		}
+		for _, testCase := range []struct {
+			name    string
+			effort  string
+			message string
+			wantErr bool
+		}{
+			{name: "same default", message: defaultEffort},
+			{name: "different from default", message: "low", wantErr: true},
+			{name: "same explicit", effort: "low", message: "low"},
+			{name: "changed explicit", effort: "medium", message: "high", wantErr: true},
+			{name: "xhigh", effort: "xhigh", wantErr: true},
+			{name: "max", effort: "max", wantErr: true},
+		} {
+			t.Run(modelName+"/minimum mode "+testCase.name, func(t *testing.T) {
+				body := []byte(`{"model":"` + modelName + `","thinking":{"type":"` + minimumType + `"},"messages":[{"role":"user","content":"hello"}]}`)
+				if testCase.effort != "" {
+					body = setJSONValue(body, "output_config.effort", testCase.effort)
+				}
+				if testCase.message != "" {
+					body = setJSONValue(body, "messages.1", map[string]any{"role": "system", "content": "continue", "output_config": map[string]any{"effort": testCase.message}})
+				}
+				_, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
+					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, true)
+				if (err != nil) != testCase.wantErr {
+					t.Fatalf("error=%v, wantErr=%t", err, testCase.wantErr)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证 Chat/Responses 请求在 Sonnet/Haiku 5.5 保留明确等级及关闭思考的模型差异。
+ * @param t 当前测试上下文。
+ */
+func TestAnthropicClaude55ConvertedThinkingContract(t *testing.T) {
+	registry := protocol.NewRegistry()
+	builtin.Register(registry)
+	for _, modelName := range []string{"claude-sonnet-5-5", "claude-haiku-5-5"} {
+		for _, client := range []protocol.Protocol{protocol.OpenAI, protocol.Codex} {
+			for _, effort := range []string{"none", "low", "medium", "high", "xhigh", "max"} {
+				t.Run(modelName+"/"+string(client)+"/"+effort, func(t *testing.T) {
+					raw := `{"model":"client-alias","temperature":0.5,"top_p":0.7`
+					if client == protocol.OpenAI {
+						raw += `,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":"required","reasoning_effort":"` + effort + `"}`
+					} else {
+						raw += `,"input":"hello","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":"required","reasoning":{"effort":"` + effort + `"}}`
+					}
+					source := []byte(raw)
+					translated, err := registry.TranslateRequest(client, protocol.Anthropic, modelName, source, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+						protocol.Anthropic, "/v1/messages", modelName, translated, source, anthropicGoldenAPIKey,
+						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantMode, wantEffort, wantChoice := "adaptive", effort, "any"
+					if modelName == "claude-sonnet-5-5" {
+						wantChoice = "auto"
+					}
+					if effort == "none" {
+						wantMode, wantEffort = "disabled", ""
+						if modelName == "claude-sonnet-5-5" {
+							wantMode = "between_tools"
+						}
+					}
+					if gjson.GetBytes(got, "thinking.type").String() != wantMode || gjson.GetBytes(got, "output_config.effort").String() != wantEffort || gjson.GetBytes(got, "tool_choice.type").String() != wantChoice {
+						t.Fatalf("thinking mode, effort or tool choice changed: want=%s/%s/%s body=%s", wantMode, wantEffort, wantChoice, got)
+					}
+					for _, field := range []string{"thinking.budget_tokens", "temperature", "top_p", "top_k"} {
+						if gjson.GetBytes(got, field).Exists() {
+							t.Fatalf("unsupported %s survived: %s", field, got)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证真实 Chat/Responses 转换后保留 5.2 的五档等级，并先于渠道规则调整不兼容参数。
+ * @param t 当前测试上下文。
+ */
+func TestAnthropicClaude52ConvertedRequestContract(t *testing.T) {
+	registry := protocol.NewRegistry()
+	builtin.Register(registry)
+	for _, modelName := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		for _, client := range []protocol.Protocol{protocol.OpenAI, protocol.Codex} {
+			for _, effort := range []string{"", "none", "auto", "low", "medium", "high", "xhigh", "max"} {
+				t.Run(modelName+"/"+string(client)+"/"+effort, func(t *testing.T) {
+					var raw string
+					if client == protocol.OpenAI {
+						raw = `{"model":"client-alias","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"temperature":0.5,"top_p":0.7`
+						if effort != "" {
+							raw += `,"reasoning_effort":"` + effort + `"`
+						}
+					} else {
+						raw = `{"model":"client-alias","input":"hello","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"lookup"},"temperature":0.5,"top_p":0.7`
+						if effort != "" {
+							raw += `,"reasoning":{"effort":"` + effort + `"}`
+						}
+					}
+					source := []byte(raw + `}`)
+					translated, err := registry.TranslateRequest(client, protocol.Anthropic, modelName, source, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					translated = preserveAnthropicConvertedEffort(translated, source, modelName)
+					got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+						protocol.Anthropic, "/v1/messages", modelName, translated, source, anthropicGoldenAPIKey,
+						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantEffort := effort
+					if effort == "none" || effort == "auto" {
+						wantEffort = ""
+					}
+					if gotEffort := gjson.GetBytes(got, "output_config.effort").String(); gotEffort != wantEffort {
+						t.Fatalf("effort=%q, want=%q: %s", gotEffort, wantEffort, got)
+					}
+					if thinking := gjson.GetBytes(got, "thinking.type").String(); (effort != "" && thinking != "adaptive") || (effort == "" && thinking != "") {
+						t.Fatalf("unexpected thinking mode: %s", got)
+					}
+					if gjson.GetBytes(got, "thinking.budget_tokens").Exists() || gjson.GetBytes(got, "tool_choice.type").String() != "auto" || gjson.GetBytes(got, "tool_choice.name").Exists() {
+						t.Fatalf("unsupported thinking budget or forced tool survived: %s", got)
+					}
+					for _, field := range []string{"temperature", "top_p", "top_k"} {
+						if gjson.GetBytes(got, field).Exists() {
+							t.Fatalf("unsupported %s survived: %s", field, got)
+						}
+					}
+				})
+			}
+		}
+	}
+	for _, testCase := range []struct {
+		name       string
+		fields     string
+		rules      *model.CustomRequestRules
+		wantEffort string
+		wantChoice string
+	}{
+		{name: "legacy budget", fields: `,"thinking":{"type":"enabled","budget_tokens":8192}`, wantEffort: "medium", wantChoice: "auto"},
+		{name: "explicit effort", fields: `,"thinking":{"type":"enabled","budget_tokens":8192},"output_config":{"effort":"max"}`, wantEffort: "max", wantChoice: "auto"},
+		{name: "channel rules", fields: `,"thinking":{"type":"enabled","budget_tokens":8192}`,
+			rules: &model.CustomRequestRules{Body: []model.CustomBodyRule{
+				{Action: model.RuleActionOverride, Path: "output_config.effort", Value: json.RawMessage(`"low"`)},
+				{Action: model.RuleActionOverride, Path: "tool_choice", Value: json.RawMessage(`{"type":"none"}`)},
+			}}, wantEffort: "low", wantChoice: "none"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := []byte(`{"model":"claude-mythos-5-2","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"lookup","disable_parallel_tool_use":true},"top_k":50` + testCase.fields + `}`)
+			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic", CustomRequestRules: testCase.rules},
+				protocol.Anthropic, "/v1/messages", "claude-mythos-5-2", body, []byte(`{}`), anthropicGoldenAPIKey,
+				anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gjson.GetBytes(got, "output_config.effort").String() != testCase.wantEffort || gjson.GetBytes(got, "tool_choice.type").String() != testCase.wantChoice ||
+				gjson.GetBytes(got, "thinking.type").String() != "adaptive" || gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+				t.Fatalf("converted request or channel priority changed: %s", got)
+			}
+			if testCase.rules == nil && !gjson.GetBytes(got, "tool_choice.disable_parallel_tool_use").Bool() {
+				t.Fatalf("parallel-tool preference lost: %s", got)
 			}
 		})
 	}

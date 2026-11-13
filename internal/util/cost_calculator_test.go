@@ -162,11 +162,14 @@ func TestCalculateCost_Fable51(t *testing.T) {
 }
 
 /**
- * @brief 验证 Fable 5.2 标准及 fast 价格，包括长上下文和两种缓存写入时长。
+ * @brief 验证 Fable/Mythos 5.2 标准及 fast 价格，包括长上下文和两种缓存写入时长。
  * @param t 测试上下文。
  */
-func TestCalculateCost_Fable52(t *testing.T) {
-	for _, name := range []string{"claude-fable-5-2", "claude-fable-5-2-high"} {
+func TestCalculateCost_FableMythos52(t *testing.T) {
+	for _, name := range []string{
+		"claude-fable-5-2", "claude-fable-5-2-high",
+		"claude-mythos-5-2", "claude-mythos-5-2-high", "claude-mythos-5-2-20261109",
+	} {
 		for _, tier := range []string{"", "fast"} {
 			t.Run(name+"/"+tier, func(t *testing.T) {
 				multiplier := 1.0
@@ -1995,6 +1998,10 @@ func TestFastModeCost_VsStandard(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 fast 倍率仅应用于支持的模型，不扩展到旧版 Fable/Mythos。
+ * @param t 测试上下文。
+ */
 func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 	tests := []struct {
 		model           string
@@ -2006,6 +2013,8 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 		{model: "claude-opus-4-8", wantInputPrice: 10, wantOutputPrice: 50},
 		{model: "claude-opus-4-6", wantInputPrice: 5, wantOutputPrice: 25},
 		{model: "claude-sonnet-4-6", wantInputPrice: 3, wantOutputPrice: 15},
+		{model: "claude-fable-5-1", wantInputPrice: 10, wantOutputPrice: 50},
+		{model: "claude-mythos-5-1", wantInputPrice: 10, wantOutputPrice: 50},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

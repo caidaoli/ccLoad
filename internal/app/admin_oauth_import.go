@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -766,7 +767,7 @@ func refreshImportedAnthropicCredential(ctx context.Context, store storage.Store
 			credential = recovered
 			continue
 		}
-		claimed, err := store.RefreshClaim(ctx, key)
+		claimed, err := store.RefreshClaim(ctx, key, rand.Text())
 		if err != nil {
 			return nil, fmt.Errorf("claim Anthropic import refresh: %w", err)
 		}

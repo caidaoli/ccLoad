@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2796,7 +2797,7 @@ func TestHandleImportAnthropicRetainsRefreshedCredentialAfterCatalogFailure(t *t
 			}
 			if scenario != "catalog retry" {
 				key := codexauth.RefreshGrantKey(service.ClientID, original.RefreshToken)
-				claimed, err := store.RefreshClaim(context.Background(), key)
+				claimed, err := store.RefreshClaim(context.Background(), key, "test-owner")
 				if err != nil || !claimed {
 					t.Fatalf("prepare refresh claim: %t, %v", claimed, err)
 				}
@@ -5029,6 +5030,78 @@ func TestCodexUnknownRefreshRetainsAccessWithoutReplayingGrant(t *testing.T) {
 	got, err = manager.credential(context.Background(), channel, false)
 	if !codexauth.IsRefreshOutcomeUnknown(err) || got == nil || got.AccessToken != "at-old" || refreshCount.Load() != 1 {
 		t.Fatalf("expired access replayed unknown grant: credential=%v err=%v refreshes=%d", got, err, refreshCount.Load())
+	}
+}
+
+/**
+ * @brief 验证发送前故障保留可用凭据、按现有退避重试且不在管理列表提示重新授权
+ * @param t 测试上下文
+ */
+func TestCodexPreSendRefreshRetriesWithoutReauthorization(t *testing.T) {
+	t.Parallel()
+	for _, forced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("forced=%v", forced), func(t *testing.T) {
+			ctx := context.Background()
+			start := time.Now().UTC()
+			store := newCodexAuthTestStore(t)
+			credential := &codexauth.Credential{
+				Type: codexauth.ChannelType, AccessToken: "old-access", RefreshToken: "retry-grant",
+				Expired: start.Add(time.Hour).Format(time.RFC3339), AccountID: "presend-account",
+			}
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			var unavailable atomic.Bool
+			unavailable.Store(true)
+			client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				if unavailable.Load() {
+					return nil, &net.DNSError{Err: "no such host", Name: "private-host", IsNotFound: true}
+				}
+				return jsonResponse(request, `{"access_token":"new-access","refresh_token":"rotated-grant","expires_in":604800}`)
+			})}
+			service := codexauth.NewService(client)
+			manager := newCodexCredentialManager(service, store, nil, nil)
+			now := start
+			manager.now = func() time.Time { return now }
+			got, err := manager.credential(ctx, channel, false)
+			if !codexauth.IsRefreshPreSendError(err) || codexauth.IsTerminalRefreshError(err) || got == nil || got.AccessToken != "old-access" || calls.Load() != 1 {
+				t.Fatalf("pre-send refresh credential=%v err=%v calls=%d", got, err, calls.Load())
+			}
+			got, err = manager.credential(ctx, channel, false)
+			if err != nil || got == nil || got.AccessToken != "old-access" || calls.Load() != 1 {
+				t.Fatalf("backoff credential=%v err=%v calls=%d", got, err, calls.Load())
+			}
+			server, _, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			server.store = store
+			server.codexCredentials = manager
+			c, response := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(c)
+			if response.Code != http.StatusOK {
+				t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+			}
+			listed := mustParseAPIResponse[[]ChannelWithCooldown](t, response.Body.Bytes())
+			if len(listed.Data) != 1 || listed.Data[0].CodexRequiresReauthorization {
+				t.Fatalf("pre-send recovery projection=%+v", listed.Data)
+			}
+			unavailable.Store(false)
+			if forced {
+				got, err = manager.credentialAfterUnauthorized(ctx, channel, "old-access")
+			} else {
+				now = start.Add(codexCredentialRefreshRetryBackoff)
+				got, err = manager.credential(ctx, channel, false)
+			}
+			if err != nil || got == nil || got.AccessToken != "new-access" || got.RefreshToken != "rotated-grant" || calls.Load() != 2 {
+				t.Fatalf("recovered refresh credential=%v err=%v calls=%d", got, err, calls.Load())
+			}
+			persisted, err := store.GetConfig(ctx, channel.ID)
+			if err != nil || !persisted.Enabled {
+				t.Fatalf("pre-send failure disabled channel: channel=%v err=%v", persisted, err)
+			}
+		})
 	}
 }
 
@@ -10125,7 +10198,7 @@ func TestCodexRefreshUnknownSurvivesRestartAndReimport(t *testing.T) {
 			})}
 			service := codexauth.NewService(client)
 			if failure == "pending" {
-				if claimed, err := store.RefreshClaim(ctx, codexauth.RefreshGrantKey(service.ClientID, credential.RefreshToken)); err != nil || !claimed {
+				if claimed, err := store.RefreshClaim(ctx, codexauth.RefreshGrantKey(service.ClientID, credential.RefreshToken), "test-owner"); err != nil || !claimed {
 					t.Fatalf("claim=%v err=%v", claimed, err)
 				}
 			} else if _, err := service.Refresh(ctx, credential.RefreshToken, store); !codexauth.IsRefreshOutcomeUnknown(err) {

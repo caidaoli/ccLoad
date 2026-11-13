@@ -96,7 +96,7 @@ func assertCodexRefreshJournal(t *testing.T, store Store) {
 	errs := make(chan error, 16)
 	for range 16 {
 		wg.Go(func() {
-			claimed, err := store.RefreshClaim(ctx, key)
+			claimed, err := store.RefreshClaim(ctx, key, "test-owner")
 			if err != nil {
 				errs <- err
 			}
@@ -123,15 +123,42 @@ func assertCodexRefreshJournal(t *testing.T, store Store) {
 	if err := store.RefreshComplete(ctx, key, []byte(`{"access_token":"overwrite"}`)); err == nil {
 		t.Fatal("completed grant accepted an overwrite")
 	}
-	if claimed, err := store.RefreshClaim(ctx, key); err != nil || claimed {
+	if claimed, err := store.RefreshClaim(ctx, key, "test-owner"); err != nil || claimed {
 		t.Fatalf("completed claim = (%v, %v), want (false, nil)", claimed, err)
 	}
 	if receipt, exists, err := store.RefreshRead(ctx, key); err != nil || !exists || string(receipt) != want {
 		t.Fatalf("completed grant = (%q, %v, %v), want %q", receipt, exists, err, want)
 	}
 	otherKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "other-refresh")
-	if claimed, err := store.RefreshClaim(ctx, otherKey); err != nil || !claimed {
+	if claimed, err := store.RefreshClaim(ctx, otherKey, "test-owner"); err != nil || !claimed {
 		t.Fatalf("different grant claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if err := store.RefreshRelease(ctx, otherKey, "other-owner"); err == nil {
+		t.Fatal("foreign owner released a claim")
+	}
+	if err := store.RefreshRelease(ctx, otherKey, "test-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, otherKey); err != nil || exists || receipt != nil {
+		t.Fatalf("released claim = (%q, %v, %v)", receipt, exists, err)
+	}
+	if err := store.RefreshRelease(ctx, otherKey, "test-owner"); err == nil {
+		t.Fatal("duplicate release succeeded")
+	}
+	if claimed, err := store.RefreshClaim(ctx, otherKey, "next-owner"); err != nil || !claimed {
+		t.Fatalf("reclaim = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if err := store.RefreshRelease(ctx, otherKey, "test-owner"); err == nil {
+		t.Fatal("stale owner released a later claim")
+	}
+	if receipt, exists, err := store.RefreshRead(ctx, otherKey); err != nil || !exists || receipt != nil {
+		t.Fatalf("later claim = (%q, %v, %v)", receipt, exists, err)
+	}
+	if err := store.RefreshComplete(ctx, otherKey, []byte(want)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RefreshRelease(ctx, otherKey, "next-owner"); err == nil {
+		t.Fatal("completed claim was released")
 	}
 }
 
@@ -165,7 +192,7 @@ func TestCodexRefreshJournal_PersistsAcrossRestartAndChannelReimport(t *testing.
 	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "refresh")
 	pendingKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "pending-refresh")
 	for _, claimKey := range []string{key, pendingKey} {
-		if claimed, err := store.RefreshClaim(ctx, claimKey); err != nil || !claimed {
+		if claimed, err := store.RefreshClaim(ctx, claimKey, "test-owner"); err != nil || !claimed {
 			t.Fatalf("claim = (%v, %v)", claimed, err)
 		}
 	}
@@ -193,7 +220,7 @@ func TestCodexRefreshJournal_PersistsAcrossRestartAndChannelReimport(t *testing.
 		t.Fatalf("durable pending grant = (%q, %v, %v)", receipt, exists, err)
 	}
 	for _, claimKey := range []string{key, pendingKey} {
-		if claimed, err := store.RefreshClaim(ctx, claimKey); err != nil || claimed {
+		if claimed, err := store.RefreshClaim(ctx, claimKey, "test-owner"); err != nil || claimed {
 			t.Fatalf("durable claim = (%v, %v), want (false, nil)", claimed, err)
 		}
 	}
@@ -210,7 +237,7 @@ func TestHybridStore_RefreshJournalUsesSQLiteOnly(t *testing.T) {
 	t.Cleanup(func() { _ = hybrid.Close() })
 	ctx := context.Background()
 	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "local-refresh")
-	if claimed, err := hybrid.RefreshClaim(ctx, key); err != nil || !claimed {
+	if claimed, err := hybrid.RefreshClaim(ctx, key, "test-owner"); err != nil || !claimed {
 		t.Fatalf("local claim = (%v, %v)", claimed, err)
 	}
 	if receipt, exists, err := primary.RefreshRead(ctx, key); err != nil || exists || receipt != nil {
@@ -218,6 +245,12 @@ func TestHybridStore_RefreshJournalUsesSQLiteOnly(t *testing.T) {
 	}
 	if err := primary.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if err := hybrid.RefreshRelease(ctx, key, "test-owner"); err != nil {
+		t.Fatalf("primary outage blocked local release: %v", err)
+	}
+	if claimed, err := hybrid.RefreshClaim(ctx, key, "test-owner"); err != nil || !claimed {
+		t.Fatalf("local reclaim = (%v, %v)", claimed, err)
 	}
 	if err := hybrid.RefreshComplete(ctx, key, []byte(`{"access_token":"local"}`)); err != nil {
 		t.Fatalf("primary outage blocked local receipt: %v", err)
@@ -228,14 +261,14 @@ func TestHybridStore_RefreshJournalUsesSQLiteOnly(t *testing.T) {
 	livePrimary := createTestSQLiteStore(t)
 	fallbackProbe := NewHybridStore(sqlite, livePrimary)
 	t.Cleanup(func() { _ = fallbackProbe.Close() })
-	if claimed, err := livePrimary.RefreshClaim(ctx, key); err != nil || !claimed {
+	if claimed, err := livePrimary.RefreshClaim(ctx, key, "test-owner"); err != nil || !claimed {
 		t.Fatalf("primary probe claim = (%v, %v)", claimed, err)
 	}
 	if err := livePrimary.RefreshComplete(ctx, key, []byte(`{"access_token":"primary"}`)); err != nil {
 		t.Fatal(err)
 	}
 	pendingKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "primary-pending")
-	if claimed, err := livePrimary.RefreshClaim(ctx, pendingKey); err != nil || !claimed {
+	if claimed, err := livePrimary.RefreshClaim(ctx, pendingKey, "test-owner"); err != nil || !claimed {
 		t.Fatalf("primary pending probe claim = (%v, %v)", claimed, err)
 	}
 	if err := sqlite.Close(); err != nil {
@@ -244,8 +277,11 @@ func TestHybridStore_RefreshJournalUsesSQLiteOnly(t *testing.T) {
 	if _, _, err := fallbackProbe.RefreshRead(ctx, key); err == nil {
 		t.Fatal("SQLite read failure did not surface")
 	}
-	if _, err := fallbackProbe.RefreshClaim(ctx, key); err == nil {
+	if _, err := fallbackProbe.RefreshClaim(ctx, key, "test-owner"); err == nil {
 		t.Fatal("SQLite claim failure did not surface")
+	}
+	if err := fallbackProbe.RefreshRelease(ctx, pendingKey, "test-owner"); err == nil {
+		t.Fatal("SQLite release failure did not surface")
 	}
 	if err := fallbackProbe.RefreshComplete(ctx, pendingKey, []byte(`{"access_token":"fallback"}`)); err == nil {
 		t.Fatal("SQLite completion failure did not surface")

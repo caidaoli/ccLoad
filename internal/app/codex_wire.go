@@ -13,6 +13,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	codexresponses "ccLoad/internal/protocol/cliproxy/codex/openai/responses"
+	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
@@ -81,10 +83,15 @@ func codexResponsesLiteRequested(body []byte, headers http.Header) bool {
 		metadata.Type == gjson.String && strings.EqualFold(strings.TrimSpace(metadata.String()), "true")
 }
 
-// prepareCodexOAuthResponsesBody applies the mandatory ChatGPT Codex wire
-// contract after any cross-protocol translation. This deliberately lives above
-// the synchronized translator snapshot: it is credential/runtime behavior, not
-// a format conversion rule.
+/**
+ * @brief 在协议转换后应用 Codex OAuth 的 HTTP/WS 共同请求约束。
+ * @param cfg 本次使用的渠道及认证配置。
+ * @param upstreamProtocol 本次上游协议。
+ * @param requestPath Responses 请求路径。
+ * @param body 已完成协议转换的请求体。
+ * @param headers 请求头，用于识别 responses-lite 信号。
+ * @return 完成 OAuth wire 归一化的请求体；其他认证或端点原样返回。
+ */
 func prepareCodexOAuthResponsesBody(
 	cfg *model.Config,
 	upstreamProtocol protocol.Protocol,
@@ -103,10 +110,7 @@ func prepareCodexOAuthResponsesBody(
 	// The normalizer fills max_output_tokens from legacy fields, after the
 	// shared Codex clamp has already run.
 	body = clampCodexMaxOutputTokens(body)
-	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Type == gjson.String &&
-		strings.EqualFold(strings.TrimSpace(effort.String()), "minimal") {
-		body, _ = sjson.SetBytes(body, "reasoning.effort", "low")
-	}
+	body = normalizeCodexOAuthResponsesEffort(body)
 	if instructions := gjson.GetBytes(body, "instructions"); !instructions.Exists() ||
 		instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == "" {
 		body, _ = sjson.SetBytes(
@@ -122,6 +126,51 @@ func prepareCodexOAuthResponsesBody(
 		tools := gjson.GetBytes(body, "tools")
 		if !tools.IsArray() || len(tools.Array()) == 0 {
 			body, _ = sjson.DeleteBytes(body, "parallel_tool_calls")
+		}
+	}
+	return body
+}
+
+/**
+ * @brief 按实际模型能力分别收敛 Responses 基线及会话更新的思考等级。
+ * @param body 已通过 Codex OAuth 请求归一化的 JSON 请求体。
+ * @return 保留更新位置和其他配置的请求体；缺少模型等级元数据时原样返回。
+ * @details none 在模型不可关闭思考时取最低档；原生 auto 沿用上游的 medium 兼容映射并按模型档位收敛。
+ */
+func normalizeCodexOAuthResponsesEffort(body []byte) []byte {
+	info := modelregistry.LookupModelInfo(gjson.GetBytes(body, "model").String(), "codex")
+	if info == nil || info.Thinking == nil || len(info.Thinking.Levels) == 0 {
+		return body
+	}
+	paths := []string{"reasoning.effort"}
+	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+		for index, item := range input.Array() {
+			if item.Get("type").String() == "configuration_update" {
+				paths = append(paths, fmt.Sprintf("input.%d.reasoning.effort", index))
+			}
+		}
+	}
+	for _, path := range paths {
+		value := gjson.GetBytes(body, path)
+		if value.Type != gjson.String {
+			continue
+		}
+		effort := strings.ToLower(strings.TrimSpace(value.String()))
+		switch effort {
+		case "auto":
+			effort = clampEffortToLevels("medium", info.Thinking.Levels)
+		case "none":
+			if !info.Thinking.ZeroAllowed && !thinking.HasLevel(info.Thinking.Levels, effort) {
+				effort = clampEffortToLevels("minimal", info.Thinking.Levels)
+			}
+		default:
+			if indexOfOpenAIStyleLevel(effort) < 0 {
+				continue
+			}
+			effort = clampEffortToLevels(effort, info.Thinking.Levels)
+		}
+		if effort != value.String() {
+			body, _ = sjson.SetBytes(body, path, effort)
 		}
 	}
 	return body

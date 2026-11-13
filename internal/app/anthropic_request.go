@@ -147,6 +147,11 @@ func countAnthropicCacheControls(body []byte) int {
 	return count
 }
 
+/**
+ * @brief 归一工具选择；Haiku 5.5 的强制工具选择允许保留思考模式和输出等级。
+ * @param body 待最终化的 Anthropic 正文。
+ * @return 移除无工具选择及旧模型强制工具思考冲突后的正文。
+ */
 func normalizeAnthropicToolChoice(body []byte) []byte {
 	if tools := gjson.GetBytes(body, "tools"); !tools.IsArray() || jsonMemberCount(tools) == 0 {
 		body = deleteJSONPath(body, "tool_choice")
@@ -155,10 +160,18 @@ func normalizeAnthropicToolChoice(body []byte) []byte {
 	if choiceType != "any" && choiceType != "tool" {
 		return body
 	}
+	if anthropicClaude55Family(anthropicRequestModelName(body, "")) == "claude-haiku-5-5" {
+		return body
+	}
 	body = deleteJSONPath(body, "thinking")
 	return deleteAnthropicOutputEffort(body)
 }
 
+/**
+ * @brief 将旧思考别名和自适应预算归一，保留默认开启模型的显式关闭语义。
+ * @param body 待最终化的 Anthropic 正文。
+ * @return 归一后的正文；Haiku 5.5 关闭思考时仍保留输出等级。
+ */
 func normalizeAnthropicThinking(body []byte) []byte {
 	thinking := gjson.GetBytes(body, "thinking")
 	if !thinking.IsObject() {
@@ -170,6 +183,9 @@ func normalizeAnthropicThinking(body []byte) []byte {
 		body = setJSONRaw(body, "thinking.type", `"adaptive"`)
 		typ = "adaptive"
 	case "disabled", "off", "none":
+		if anthropicClaude55Family(anthropicRequestModelName(body, "")) == "claude-haiku-5-5" {
+			return setJSONValue(body, "thinking.type", "disabled")
+		}
 		body = deleteJSONPath(body, "thinking")
 		return deleteAnthropicOutputEffort(body)
 	}
