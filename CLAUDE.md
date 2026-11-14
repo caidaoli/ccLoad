@@ -29,6 +29,7 @@ golangci-lint run ./...                            # Go 改动提交前零警告
 
 ## 通用代码约束
 
+- Git 提交说明（subject 与 body）、Tag 注释和 Release 说明一律用英文，格式遵循 Conventional Commits；对用户的回复语言不受影响。
 - 用 `any`；配置错误 fail-fast；`defer cancel()` 无条件调用，取消监听用 `context.AfterFunc`。
 - lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose/modernize；gosec 已禁，revive `exported` 因与 Doxygen 注释冲突已禁，modernize 不检查 `internal/protocol/cliproxy/` 快照。
 - JSON 重复 key 按 `encoding/json` 后者胜出，不加检测、拒绝或兼容兜底，审查也不作为问题；只有改写与渲染不一致时才就地收敛（见 `ordered_json.go`）。
