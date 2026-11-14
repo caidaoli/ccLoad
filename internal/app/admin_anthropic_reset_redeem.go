@@ -105,6 +105,14 @@ func (s *Server) HandleRedeemAnthropicResetCredits(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, result)
 }
 
+/**
+ * @brief 为一次管理员确认选择持有券并仅向上游发送一次兑换请求
+ * @param ctx 准备阶段上下文；准备耗时用尽时不发送兑换请求
+ * @param cfg 已确认使用 Claude OAuth 的渠道，包含实际出站地址
+ * @return 上游兑换结果；兑换结果不明确时返回 unknown，不自动重试
+ * @return 仅准备阶段失败时返回错误，兑换 POST 尚未发送
+ * @note 同一组织仅允许一个并发兑换；已发起的兑换使用独立超时，成功后同步本地窗口
+ */
 func (s *Server) redeemAnthropicResetCredits(ctx context.Context, cfg *model.Config) (*anthropicResetOutcome, error) {
 	credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
 	if err != nil {
@@ -145,17 +153,9 @@ func (s *Server) redeemAnthropicResetCredits(ctx context.Context, cfg *model.Con
 	if !anthropicResetHasProfileScope(credential.Scope) {
 		return nil, errAnthropicResetProfileScope
 	}
-	grantID := ""
-	if block != nil {
-		for _, grant := range block.Grants {
-			if anthropicResetGrantRedeemable(block, grant, time.Now()) {
-				grantID = grant.ID
-				break
-			}
-		}
-	}
-	if grantID == "" {
-		return nil, anthropicResetFailure(http.StatusConflict, "reset_not_available", "no reset is redeemable right now")
+	grants := anthropicResetHeldGrants(block, time.Now())
+	if len(grants) == 0 {
+		return nil, anthropicResetFailure(http.StatusConflict, "reset_not_available", "no reset credits held")
 	}
 	// Preparation may consume the whole request budget; a claim sent with the
 	// leftover would almost surely end as "unknown" after spending the credit.
@@ -166,7 +166,7 @@ func (s *Server) redeemAnthropicResetCredits(ctx context.Context, cfg *model.Con
 	// the old window but lands in the new one, over-counting rather than under.
 	resetAt := time.Now().UTC()
 	claimCtx, claimCancel := context.WithTimeout(context.WithoutCancel(ctx), oauthUsageTimeout)
-	result := claimAnthropicReset(claimCtx, client, credential, baseURL, organization, grantID, uuid.NewString())
+	result := claimAnthropicReset(claimCtx, client, credential, baseURL, organization, grants[0].ID, uuid.NewString())
 	claimCancel()
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oauthUsageTimeout)
 	defer cancel()

@@ -822,9 +822,15 @@ function orderCursorUsageWindows(windows) {
   });
 }
 
+/**
+ * @brief 隐藏 Cursor 与额度进度条重复的用量提示。
+ * @param value 上游额度提示。
+ * @return 非重复提示；用量百分比和额度用尽提示返回空字符串。
+ */
 function formatCursorUsageNotice(value) {
   const message = String(value || '').trim();
-  if (message.toLowerCase() === "you've hit your usage limit") {
+  if (message.toLowerCase() === "you've hit your usage limit" ||
+      /^you've used \d+(?:\.\d+)?% of your included usage$/i.test(message)) {
     return '';
   }
   return message;
@@ -981,6 +987,11 @@ function buildResetCreditCountTrigger(action, channelID, count, { disabled = fal
   });
 }
 
+/**
+ * @brief 展示持有的 Claude 重置次数和到期时间，不在本地预判兑换资格。
+ * @param channelID 渠道 ID。
+ * @return 重置操作及实际执行反馈的 HTML；无次数与反馈时为空字符串。
+ */
 function buildAnthropicResetCreditsHtml(channelID) {
   const state = typeof getAnthropicResetCreditsState === 'function'
     ? getAnthropicResetCreditsState(channelID) : null;
@@ -997,16 +1008,7 @@ function buildAnthropicResetCreditsHtml(channelID) {
     (!credit.expires_at || Date.parse(credit.expires_at) > Date.now()));
   const total = credits.reduce((sum, credit) => sum + Math.max(0, Number(credit.resets_left) || 0), 0);
   if (total <= 0) return feedback ? `<div class="ch-oauth-usage__credits">${feedback}</div>` : '';
-  const expiry = credit => {
-    const timestamp = Date.parse(String(credit.expires_at || ''));
-    return Number.isFinite(timestamp) ? timestamp : Infinity;
-  };
-  const primary = credits.find(credit => credit.redeemable) ||
-    [...credits].sort((left, right) => expiry(left) - expiry(right))[0];
-  const available = data.eligible && data.available_count > 0;
-  const status = !data.eligible ? 'channels.oauth.anthropicResetIneligible'
-    : available ? ''
-      : 'channels.oauth.anthropicResetUnavailable';
+  const primary = credits[0];
   const expiryText = primary?.expires_at
     ? window.t('channels.oauth.resetCreditExpires', { time: formatXAIUsageReset(primary.expires_at) })
     : window.t('channels.oauth.resetCreditExpiresUnknown');
@@ -1014,18 +1016,12 @@ function buildAnthropicResetCreditsHtml(channelID) {
     const time = credit.expires_at ? formatXAIUsageReset(credit.expires_at) : '';
     return `${String(credit.label || '')}: ${Math.max(0, Number(credit.resets_left) || 0)}${time ? ` · ${window.t('channels.oauth.resetCreditExpires', { time })}` : ''}`;
   }).join('\n');
-  const cooldown = data.cooldown_until && Date.parse(data.cooldown_until) > Date.now()
-    ? formatXAIUsageReset(data.cooldown_until) : '';
   return `<div class="ch-oauth-usage__credits ch-oauth-usage__credits--reset" role="status">
     <div class="ch-oauth-usage__credits-summary">
       ${OAUTH_RESET_CREDIT_ICON}
       ${buildResetCreditCountTrigger('reset-anthropic-quota', channelID, total, { disabled: loading, busy: resetting })}
       <span class="ch-oauth-usage__credit-expiry" title="${escapeChannelRefreshText(details)}">${escapeChannelRefreshText(expiryText)}</span>
     </div>
-    ${status || cooldown ? `<div class="ch-oauth-usage__credits-summary">${[
-      status ? escapeChannelRefreshText(window.t(status)) : '',
-      cooldown ? escapeChannelRefreshText(window.t('channels.oauth.anthropicResetCooldown', { time: cooldown })) : ''
-    ].filter(Boolean).join(' · ')}</div>` : ''}
     ${feedback}
   </div>`;
 }

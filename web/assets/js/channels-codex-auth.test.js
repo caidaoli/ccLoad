@@ -130,13 +130,20 @@ test('Claude usage refresh includes reset credits and ignores an older response'
 test('Claude cached reset credits can be redeemed without refreshing or cached eligibility', async () => {
   const previousChannels = global.channels;
   const previousWindow = global.window;
-  const data = { eligible: false, available_count: 0, credits: [
-    { resets_left: 1, redeemable: false, clears: ['seven_day'] }
+  const data = { eligible: false, available_count: 0, cooldown_until: '2099-01-01T00:00:00Z', credits: [
+    { resets_left: 1, redeemable: false, clears: ['seven_day'] },
+    { resets_left: 0, redeemable: true, clears: ['five_hour'] }
   ] };
   global.channels = [{ id: 8120, auth_type: 'anthropic_oauth', oauth_usage: { anthropic_reset_credits: data } }];
   let confirmed = false;
   let calls = 0;
-  global.window = { t: key => key, showConfirm: async () => confirmed };
+  global.window = {
+    t: (key, values) => key === 'channels.oauth.anthropicResetConfirm' ? JSON.stringify(values) : key,
+    showConfirm: async ({ message }) => {
+      assert.deepEqual(JSON.parse(message), { windows: 'channels.oauth.anthropicResetSevenDay', count: 0 });
+      return confirmed;
+    }
+  };
   const fetcher = async (url, options) => {
     calls++;
     assert.equal(url, '/admin/channels/8120/anthropic-reset-credits/redeem');

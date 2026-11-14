@@ -2663,13 +2663,19 @@ function hasAnthropicResetCredits(state) {
     Number(credit?.resets_left) > 0 && (!credit.expires_at || Date.parse(credit.expires_at) > Date.now()));
 }
 
+/**
+ * @brief 确认消耗持有的 Claude 重置券，兑换资格由上游判断。
+ * @param channelID 渠道 ID。
+ * @param fetcher 管理 API 请求函数。
+ * @param options 兑换后的刷新选项。
+ * @return 未确认、操作进行中或没有有效券时为 null，否则返回兑换结果；请求失败抛出错误。
+ */
 async function confirmAnthropicQuotaReset(channelID, fetcher = fetchDataWithAuth, options = {}) {
   const state = getAnthropicResetCreditsState(channelID);
   if (state?.reset_status === 'loading' || state?.status === 'loading') return null;
   if (!hasAnthropicResetCredits(state)) return null;
-  const credit = state.data.credits.find(item => item.redeemable) ||
-    state.data.credits.find(item => Number(item?.resets_left) > 0 &&
-      (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
+  const credit = state.data.credits.find(item => Number(item?.resets_left) > 0 &&
+    (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
   const message = window.t('channels.oauth.anthropicResetConfirm', {
     windows: anthropicResetWindowLabels(credit?.clears) || '—',
     count: Math.max(0, state.data.credits.reduce((sum, item) => sum + Math.max(0, Number(item.resets_left) || 0), 0) - 1)

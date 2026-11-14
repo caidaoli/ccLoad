@@ -457,26 +457,106 @@ func TestHandleAnthropicResetRedeemConcurrentChannelAndOrganization(t *testing.T
 	}
 }
 
-func TestHandleAnthropicResetRedeemRequiresFreshEligibility(t *testing.T) {
-	t.Parallel()
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	cfg := createAnthropicResetTestChannel(t, store, "preflight-account", nil)
-	var posts, queries int
-	configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		if request.Method == http.MethodPost {
-			posts++
-			return anthropicResetTestResponse(request, 200, `{"result":"reset"}`)
-		}
-		queries++
-		if request.URL.Path == "/api/oauth/profile" {
-			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
-		}
-		return anthropicResetTestResponse(request, 200, `{"cedar_ember":{"eligible":true,"at_limit":false,"next_grant_id":"private_grant","grants":[{"id":"private_grant","resets_left":2,"clears":["five_hour"],"usable_now":true}]}}`)
-	}))
-	w, _ := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
-	if w.Code != 409 || queries != 2 || posts != 0 {
-		t.Fatalf("fresh eligibility = %d queries=%d posts=%d", w.Code, queries, posts)
+/**
+ * @brief 管理员兑换只验证持有券，资格和限制决定由实际 HTTP 上游响应返回
+ * @param t Go 测试上下文
+ */
+func TestHandleAnthropicResetRedeemDefersAvailabilityToUpstream(t *testing.T) {
+	grant := `{"id":"first","label":"First","resets_left":2,"clears":["five_hour"]}`
+	second := `{"id":"second","label":"Second","resets_left":1,"clears":["seven_day"]}`
+	rejected := `{"eligible":false,"at_limit":false,"cooldown_until":"2100-01-01T00:00:00Z","next_grant_id":"first","grants":[{"id":"first","resets_left":2,"clears":["five_hour"],"usable_now":false,"use_requires_limit":true,"blocking":["five_hour"]}]}`
+	for _, test := range []struct {
+		name, block, grantID, reply, outcome, reason string
+	}{
+		{"missing flags", `{"grants":[` + grant + `]}`, "first", `{"result":"not_limited"}`, "not_limited", ""},
+		{"rejected flags", rejected, "first", `{"result":"ineligible","reason":"tenure"}`, "ineligible", "tenure"},
+		{"upstream cooldown", rejected, "first", `{"result":"cooldown","cooldown_until":"2100-01-01T00:00:00Z"}`, "cooldown", ""},
+		{"next grant preferred", `{"next_grant_id":"second","grants":[` + grant + `,` + second + `]}`, "second", `{"result":"not_limited"}`, "not_limited", ""},
+		{"unknown next grant", `{"next_grant_id":"missing","grants":[` + grant + `,` + second + `]}`, "first", `{"result":"ineligible","reason":"not_next_grant"}`, "ineligible", "not_next_grant"},
+		{"expired next grant", `{"next_grant_id":"second","grants":[` + grant + `,{"id":"second","resets_left":1,"clears":["seven_day"],"ends_at":"2000-01-01T00:00:00Z"}]}`, "first", `{"result":"already_used"}`, "already_used", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			cfg := createAnthropicResetTestChannel(t, store, "availability-account", nil)
+			var posts atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.Method == http.MethodPost {
+					posts.Add(1)
+					var payload map[string]string
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Error(err)
+					}
+					if payload["grant_id"] != test.grantID || payload["program"] != "cedar_ember" || request.URL.Path != "/api/organizations/"+anthropicResetTestOrganization+"/reset_rate_limits" {
+						t.Errorf("claim = %s %+v", request.URL, payload)
+					}
+					_, _ = io.WriteString(w, test.reply)
+					return
+				}
+				if request.URL.Path == "/api/oauth/profile" {
+					_, _ = io.WriteString(w, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"cedar_ember":`+test.block+`}`)
+			}))
+			defer upstream.Close()
+			server.configService = newStubConfigService(map[string]string{config.AnthropicBaseURLSettingKey: upstream.URL})
+			configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(http.DefaultTransport.RoundTrip))
+			w, response := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+			if w.Code != http.StatusOK || !response.Success || response.Data.Outcome != test.outcome || response.Data.Reason != test.reason || posts.Load() != 1 {
+				t.Fatalf("upstream availability = %d %+v posts=%d", w.Code, response, posts.Load())
+			}
+			if test.outcome == "cooldown" && (response.Data.CooldownUntil == nil || response.Data.CooldownUntil.Year() != 2100) {
+				t.Fatalf("upstream cooldown = %+v", response.Data)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 无持有券时兑换接口返回未执行错误且不发送兑换 POST
+ * @param t Go 测试上下文
+ */
+func TestHandleAnthropicResetRedeemRequiresHeldCredit(t *testing.T) {
+	for _, test := range []struct {
+		name, body string
+	}{
+		{"absent", `{}`},
+		{"null", `{"cedar_ember":null}`},
+		{"empty", `{"cedar_ember":{"grants":[]}}`},
+		{"used", `{"cedar_ember":{"grants":[{"id":"first","resets_left":0,"clears":["five_hour"]}]}}`},
+		{"paused", `{"cedar_ember":{"grants":[{"id":"first","resets_left":1,"clears":["five_hour"],"paused":true}]}}`},
+		{"future", `{"cedar_ember":{"grants":[{"id":"first","resets_left":1,"clears":["five_hour"],"starts_at":"2100-01-01T00:00:00Z"}]}}`},
+		{"expired", `{"cedar_ember":{"grants":[{"id":"first","resets_left":1,"clears":["five_hour"],"ends_at":"2000-01-01T00:00:00Z"}]}}`},
+		{"invalid ID", `{"cedar_ember":{"grants":[{"id":"INVALID","resets_left":1,"clears":["five_hour"]}]}}`},
+		{"no windows", `{"cedar_ember":{"grants":[{"id":"first","resets_left":1}]}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			cfg := createAnthropicResetTestChannel(t, store, "no-credit-account", nil)
+			posts := 0
+			configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodPost {
+					posts++
+					return anthropicResetTestResponse(request, 200, `{"result":"reset"}`)
+				}
+				if request.URL.Path == "/api/oauth/profile" {
+					return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+				}
+				return anthropicResetTestResponse(request, 200, test.body)
+			}))
+			w, _ := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+			var response APIResponse[struct {
+				Code string `json:"code"`
+			}]
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != http.StatusConflict || response.Data.Code != "reset_not_available" || posts != 0 {
+				t.Fatalf("missing credit = %d %s posts=%d", w.Code, w.Body.String(), posts)
+			}
+		})
 	}
 }
 
@@ -7761,6 +7841,10 @@ func TestPersistOAuthUsageKeepsNewerPassiveQuotaAfterCASConflict(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 主动额度查询与持久化及被动采样合并保留脱敏持有重置券
+ * @param t Go 测试上下文
+ */
 func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -7774,7 +7858,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 		wantWarning      bool
 		scope            string
 		resetBody        string
-		wantResetCount   int
+		wantResetCredits int
 		wantResetWarning bool
 	}{
 		{
@@ -7817,8 +7901,8 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			name:        "reset credits share usage request",
 			profileBody: `{"organization":{"organization_type":"claude_pro"}}`,
 			wantPlan:    "Pro", scope: "user:inference user:profile",
-			resetBody:      `,"cedar_ember":{"eligible":true,"at_limit":true,"next_grant_id":"private-grant","grants":[{"id":"private-grant","label":"Weekly","resets_left":2,"clears":["seven_day"],"usable_now":true}]}`,
-			wantResetCount: 2,
+			resetBody:        `,"cedar_ember":{"eligible":true,"at_limit":true,"next_grant_id":"private-grant","grants":[{"id":"private-grant","label":"Weekly","resets_left":2,"clears":["seven_day"],"usable_now":true}]}`,
+			wantResetCredits: 1,
 		},
 		{
 			name:        "missing reset block keeps quota",
@@ -7934,16 +8018,21 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			}
 			credits := response.Data.AnthropicResetCredits
 			wantCredits := test.scope != "" && !test.wantResetWarning
-			if (credits != nil) != wantCredits || credits != nil && (credits.AvailableCount != test.wantResetCount || credits.FetchedAt.IsZero()) {
+			if (credits != nil) != wantCredits || credits != nil && (len(credits.Credits) != test.wantResetCredits || credits.FetchedAt.IsZero()) {
 				t.Fatalf("reset credits = %#v", credits)
+			}
+			if test.wantResetCredits > 0 && credits.Credits[0].ResetsLeft != 2 {
+				t.Fatalf("held credit count = %+v", credits.Credits)
 			}
 			var responseFields map[string]any
 			if err := json.Unmarshal(w.Body.Bytes(), &responseFields); err != nil {
 				t.Fatal(err)
 			}
 			if resetFields, ok := responseFields["data"].(map[string]any)["anthropic_reset_credits"].(map[string]any); ok {
-				if _, leaked := resetFields["next_grant_id"]; leaked {
-					t.Fatal("reset response leaked next grant ID")
+				for _, field := range []string{"next_grant_id", "available_count"} {
+					if _, present := resetFields[field]; present {
+						t.Fatalf("reset response contains %s", field)
+					}
 				}
 				for _, credit := range resetFields["credits"].([]any) {
 					if _, leaked := credit.(map[string]any)["id"]; leaked {
@@ -7972,13 +8061,13 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				t.Fatalf("Anthropic channel list metadata = %+v", list.Data)
 			}
 			listedCredits := list.Data[0].OAuthUsage.AnthropicResetCredits
-			if (listedCredits != nil) != wantCredits || listedCredits != nil && listedCredits.AvailableCount != test.wantResetCount {
+			if !reflect.DeepEqual(listedCredits, credits) {
 				t.Fatalf("persisted reset credits = %#v", listedCredits)
 			}
 			if wantCredits {
 				passive := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{{Kind: "five_hour", UsedPercent: 80, SampledAt: time.Now().Add(time.Minute)}}}
 				merged := latestOAuthUsage(list.Data[0].OAuthUsage, time.Now(), passive, time.Now().Add(time.Minute).Format(time.RFC3339Nano), nil)
-				if merged.AnthropicResetCredits == nil || merged.AnthropicResetCredits.AvailableCount != test.wantResetCount || merged.Windows[0].UsedPercent != 80 {
+				if !reflect.DeepEqual(merged.AnthropicResetCredits, credits) || merged.Windows[0].UsedPercent != 80 {
 					t.Fatalf("passive merged usage = %#v", merged)
 				}
 			}
@@ -7996,6 +8085,10 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 重置券查询只返回持有券和上游元数据，不派生本地可用性结论或写入凭证
+ * @param t Go 测试上下文
+ */
 func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
@@ -8034,19 +8127,26 @@ func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 	if w.Code != http.StatusOK || calls != 1 {
 		t.Fatalf("status=%d calls=%d body=%s", w.Code, calls, w.Body.String())
 	}
-	var response struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Eligible       bool `json:"eligible"`
-			AvailableCount int  `json:"available_count"`
-			Credits        []struct {
-				Redeemable bool `json:"redeemable"`
-			} `json:"credits"`
-		} `json:"data"`
+	response := mustParseAPIResponse[anthropicResetCredits](t, w.Body.Bytes())
+	if !response.Success || response.Data.Eligible == nil || !*response.Data.Eligible ||
+		len(response.Data.Credits) != 1 || response.Data.Credits[0].ResetsLeft != 2 || response.Data.Credits[0].UseRequiresLimit != nil {
+		t.Fatalf("reset response = %+v", response)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || !response.Success || !response.Data.Eligible ||
-		response.Data.AvailableCount != 2 || len(response.Data.Credits) != 1 || !response.Data.Credits[0].Redeemable {
-		t.Fatalf("reset response = %+v, %v", response, err)
+	var fields APIResponse[map[string]json.RawMessage]
+	if err := json.Unmarshal(w.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields.Data["available_count"]; present {
+		t.Fatal("query still derives an available count")
+	}
+	var creditFields []map[string]json.RawMessage
+	if err := json.Unmarshal(fields.Data["credits"], &creditFields); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"redeemable", "use_requires_limit"} {
+		if _, present := creditFields[0][field]; present {
+			t.Fatalf("query derives missing %s metadata", field)
+		}
 	}
 	if strings.Contains(w.Body.String(), "grant_1") || strings.Contains(w.Body.String(), "reset-access-secret") {
 		t.Fatalf("reset response leaked private data: %s", w.Body.String())
@@ -8056,40 +8156,50 @@ func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 		t.Fatalf("read-only query changed credential: %v", err)
 	}
 	baseGrant := `"id":"grant_1","label":"Weekly reset","resets_left":2,"clears":["weekly"],"usable_now":true`
+	requiresLimit := false
 	for _, test := range []struct {
 		name, blockFields, grantFields string
-		wantCredits, wantAvailable     int
+		wantCredits                    int
+		wantRequiresLimit              *bool
 	}{
-		{"paused", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"paused":true`, 0, 0},
-		{"expired", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"ends_at":"2000-01-01T00:00:00Z"`, 0, 0},
-		{"future", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"starts_at":"2100-01-01T00:00:00Z"`, 0, 0},
-		{"cooldown", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1","cooldown_until":"2100-01-01T00:00:00Z"`, baseGrant, 1, 0},
-		{"requires limit", `"eligible":true,"at_limit":false,"next_grant_id":"grant_1"`, baseGrant, 1, 0},
-		{"blocking", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"blocking":["some_limit"]`, 1, 0},
-		{"ineligible", `"eligible":false,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant, 1, 0},
-		{"not next", `"eligible":true,"at_limit":true,"next_grant_id":"other"`, baseGrant, 1, 0},
-		{"no limit required", `"eligible":true,"at_limit":false,"next_grant_id":"grant_1"`, baseGrant + `,"use_requires_limit":false`, 1, 2},
+		{"paused", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"paused":true`, 0, nil},
+		{"expired", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"ends_at":"2000-01-01T00:00:00Z"`, 0, nil},
+		{"future", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"starts_at":"2100-01-01T00:00:00Z"`, 0, nil},
+		{"cooldown", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1","cooldown_until":"2100-01-01T00:00:00Z"`, baseGrant, 1, nil},
+		{"requires limit", `"eligible":true,"at_limit":false,"next_grant_id":"grant_1"`, baseGrant, 1, nil},
+		{"blocking", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"blocking":["some_limit"]`, 1, nil},
+		{"ineligible", `"eligible":false,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant, 1, nil},
+		{"not next", `"eligible":true,"at_limit":true,"next_grant_id":"other"`, baseGrant, 1, nil},
+		{"no limit required", `"eligible":true,"at_limit":false,"next_grant_id":"grant_1"`, baseGrant + `,"use_requires_limit":false`, 1, &requiresLimit},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			upstreamBody = `{"cedar_ember":{` + test.blockFields + `,"grants":[{` + test.grantFields + `}]}}`
 			c, response := newTestContext(t, newRequest(http.MethodGet, path, nil))
 			c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
 			server.HandleAnthropicResetCredits(c)
-			var result struct {
-				Success bool `json:"success"`
-				Data    struct {
-					AvailableCount int               `json:"available_count"`
-					Credits        []json.RawMessage `json:"credits"`
-				} `json:"data"`
+			result := mustParseAPIResponse[anthropicResetCredits](t, response.Body.Bytes())
+			if response.Code != http.StatusOK || !result.Success || len(result.Data.Credits) != test.wantCredits {
+				t.Fatalf("status=%d result=%+v", response.Code, result)
 			}
-			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK || !result.Success ||
-				len(result.Data.Credits) != test.wantCredits || result.Data.AvailableCount != test.wantAvailable {
-				t.Fatalf("status=%d result=%+v err=%v", response.Code, result, err)
+			if test.wantCredits > 0 && !reflect.DeepEqual(result.Data.Credits[0].UseRequiresLimit, test.wantRequiresLimit) {
+				t.Fatalf("limit metadata = %v want %v", result.Data.Credits[0].UseRequiresLimit, test.wantRequiresLimit)
 			}
 		})
 	}
+	upstreamBody = `{"cedar_ember":{"next_grant_id":"second","grants":[{"id":"first","label":"First","resets_left":2,"clears":["weekly"]},{"id":"second","label":"Second","resets_left":1,"clears":["weekly"]},{"id":"third","label":"Third","resets_left":3,"clears":["weekly"]}]}}`
+	c, orderedResponse := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleAnthropicResetCredits(c)
+	ordered := mustParseAPIResponse[anthropicResetCredits](t, orderedResponse.Body.Bytes())
+	if ordered.Data.Eligible != nil || len(ordered.Data.Credits) != 3 || ordered.Data.Credits[0].Label != "Second" || ordered.Data.Credits[1].Label != "First" || ordered.Data.Credits[2].Label != "Third" {
+		t.Fatalf("next-grant ordering or missing metadata = %+v", ordered.Data)
+	}
 }
 
+/**
+ * @brief 查询拒绝缺少 scope 或无效上游数据；缺失券集合返回空持有券视图
+ * @param t Go 测试上下文
+ */
 func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *testing.T) {
 	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
@@ -8138,13 +8248,12 @@ func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *t
 		var result struct {
 			Success bool `json:"success"`
 			Data    struct {
-				Eligible       bool              `json:"eligible"`
-				AvailableCount int               `json:"available_count"`
-				Credits        []json.RawMessage `json:"credits"`
+				Eligible *bool             `json:"eligible"`
+				Credits  []json.RawMessage `json:"credits"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK || !result.Success ||
-			result.Data.Eligible || result.Data.AvailableCount != 0 || len(result.Data.Credits) != 0 {
+			result.Data.Eligible != nil || len(result.Data.Credits) != 0 {
 			t.Fatalf("absent reset %s status=%d body=%s err=%v", upstream, response.Code, response.Body.String(), err)
 		}
 	}
