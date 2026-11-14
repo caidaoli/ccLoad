@@ -268,7 +268,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="clock"></span>
             <h3 data-i18n-html="www.config.runtime.timeout.title">Protocol timeouts</h3>
-            <p data-i18n-html="www.config.runtime.timeout.desc"><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 120 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
+            <p data-i18n-html="www.config.runtime.timeout.desc"><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 600 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="plug"></span>
@@ -298,7 +298,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="gauge"></span>
             <h3 data-i18n-html="www.config.runtime.limits.title">Concurrency and body limits</h3>
-            <p data-i18n-html="www.config.runtime.limits.desc"><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. <code>http_read_timeout_seconds</code> covers the complete downstream header and body read (<code>0</code> uses 120 seconds) and returns 408 on timeout — independent of the body-size limits. All take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
+            <p data-i18n-html="www.config.runtime.limits.desc"><code>max_concurrency</code> caps simultaneous proxy requests. <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap each request body for regular and Images API paths respectively; exceeding either returns 413. These size limits also bound Responses WebSocket frames and transcripts. <code>request_body_memory_budget_bytes</code> (default 512 MiB) is shared by all in-flight HTTP proxy requests for body buffers and decompression workspaces; exhaustion returns 503 with <code>Retry-After: 1</code>. It excludes WebSocket and does not cap total process memory. <code>http_read_timeout_seconds</code> covers the complete downstream header and body read (<code>0</code> uses 120 seconds) and returns 408 on timeout. All take effect after the automatic restart that follows a settings change.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="link"></span>
@@ -313,7 +313,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="lightbulb"></span>
             <h3 data-i18n-html="www.config.runtime.reasoningAuto.title">Dynamic reasoning effort</h3>
-            <p data-i18n-html="www.config.runtime.reasoningAuto.desc"><code>reasoning_auto</code> is off by default. It names a System One decision channel and model, the exact base names of covered models, and a decision timeout of 0.1–10 seconds (default 2). For covered models, requests without a suffix or with <code>(auto)</code> get a reasoning effort chosen from the model's own levels; explicit suffixes skip the judge. An empty model list enables nothing. Saving this setting on its own applies without a restart.</p>
+            <p data-i18n-html="www.config.runtime.reasoningAuto.desc"><code>reasoning_auto</code> is off by default. It specifies <code>decision_model</code>, the exact base names of covered models, and a total decision timeout of 0.1–10 seconds (default 2). ccLoad routes the decision model among enabled System One channels and fails over within that shared timeout. For covered models, requests without a suffix or with <code>(auto)</code> get a reasoning effort chosen from the model's own levels; explicit suffixes skip the judge. An empty model list enables nothing. Saving this setting on its own applies without a restart.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon" data-icon="lock"></span>

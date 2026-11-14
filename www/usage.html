@@ -248,7 +248,7 @@ supports_websockets = true</code></pre>
           <article class="www-info-card">
             <h3 data-i18n-html="www.usage.thinking.dynamic.title">Dynamic reasoning effort</h3>
             <ul class="www-check-list">
-              <li data-i18n-html="www.usage.thinking.dynamic.item1">Off by default. Create a System One channel from <strong>Channels → Add</strong>, then pick it, its model and the exact base model names to cover in <strong>Settings → Dynamic reasoning effort</strong>.</li>
+              <li data-i18n-html="www.usage.thinking.dynamic.item1">Off by default. Create one or more System One channels from <strong>Channels → Add → System One channel</strong>, then select <code>decision_model</code> and the exact base model names to cover in <strong>Settings → Dynamic reasoning effort</strong>. ccLoad routes the decision model among enabled System One channels and fails over within the total decision timeout.</li>
               <li data-i18n-html="www.usage.thinking.dynamic.item2">For covered models, requests with no suffix or <code>(auto)</code> are judged, and the result replaces any effort in the body. Explicit levels, <code>(none)</code> and numeric budgets skip the judge.</li>
               <li data-i18n-html="www.usage.thinking.dynamic.item3">The judge picks only among the model's own levels and never chooses <code>max</code>. A timeout (default 2 s) or a low-confidence answer keeps the session's previous level, or sends the request unchanged when there is none.</li>
             </ul>
@@ -282,11 +282,20 @@ supports_websockets = true</code></pre>
             </ul>
           </article>
           <article class="www-info-card">
-            <h3>Z.ai Coding Plan</h3>
+            <h3>Accio / Qoder / Loomy</h3>
             <ul class="www-check-list">
-              <li data-i18n-html="www.usage.oauth.zai.item1">Complete the browser authorization flow, or import a Coding Plan API key when the provider OAuth poll endpoint is unavailable.</li>
-              <li data-i18n-html="www.usage.oauth.zai.item2">The model catalog is loaded from the account, then models.dev, then the built-in list.</li>
-              <li data-i18n-html="www.usage.oauth.zai.item3">Quota windows are shown on the channel card and are not billed as standard cost.</li>
+              <li data-i18n-html="www.usage.oauth.more.accio">Accio: select the China or international edition, then authorize in the browser or import credential JSON.</li>
+              <li data-i18n-html="www.usage.oauth.more.qoder">Qoder: select the China or international edition, then authorize in the browser, import a PAT, or import credential JSON.</li>
+              <li data-i18n-html="www.usage.oauth.more.loomy">Loomy: sign in with your phone number and SMS code to create a session channel.</li>
+            </ul>
+          </article>
+          <article class="www-info-card">
+            <h3>ZCode / Z.ai Coding Plan</h3>
+            <ul class="www-check-list">
+              <li data-i18n-html="www.usage.oauth.zai.item1">Select BigModel (China) or Z.ai (international), then sign in through the browser for ZCode trial access and paid Coding Plan access according to your account entitlements.</li>
+              <li data-i18n-html="www.usage.oauth.zai.item2">Ordinary models prefer trial access by default; turn off trial-first to prefer paid access. Explicit <code>-Trial</code> models never fall back to paid access.</li>
+              <li data-i18n-html="www.usage.oauth.zai.item3">Importing only a Coding Plan API key enables paid access; trial access requires a ZCode login credential.</li>
+              <li data-i18n-html="www.usage.oauth.zai.item4">Paid models are loaded from the account, then models.dev, then the built-in list; trial models come only from account plans. Paid quota windows and trial balances appear on the channel card and are not billed as standard cost.</li>
             </ul>
           </article>
           <article class="www-info-card">

@@ -113,7 +113,7 @@ curl http://localhost:8080/health
 进入 **渠道管理** 页，点击 **添加渠道**：
 
 - **API Key 类上游**（官方 API、第三方中转站）：最简单的是点 **一键填充渠道配置**，粘贴服务商给你的地址和 Key（例如 `OPENAI_BASE_URL=https://api.example.com` 和 `OPENAI_API_KEY=sk-...`），ccLoad 会检查连通性并自动拉取模型列表。手动填写时，API URL 只填基础地址，不要带 `/v1` 或具体接口路径。OpenCode Zen / Zen Go 有单独的入口，选好后地址已预填，只需填 Key。
-- **订阅账号**（Codex/ChatGPT、Claude、Antigravity、xAI、CodeBuddy、Z.ai Coding Plan、Cursor、Zed）：在渠道管理中选择对应的账号类型，按页面提示在浏览器授权或导入凭证。
+- **订阅账号**（Codex/ChatGPT、Claude、Antigravity、xAI、CodeBuddy、Accio、Qoder、Loomy、Z.ai Coding Plan、Cursor、Zed）：在渠道管理中选择对应的账号类型，按页面提示授权或导入凭证。Accio 支持浏览器授权或凭据 JSON，Qoder 还支持 PAT，两者均需选择与账号一致的国内版或国际版；Loomy 使用短信登录，支持每日签到。
 - **Google Vertex AI**：导入 Google Cloud 服务账号密钥 JSON，ccLoad 自动换取访问令牌，提供 Gemini 模型。
 
 **模型列表决定渠道会不会被选中。** ccLoad 按客户端请求的模型名挑选渠道：客户端要 `claude-sonnet-4-6`，就必须有渠道配置了 `claude-sonnet-4-6`。可以用 **获取模型** 或 **常用模型** 按钮添加；上游的模型名和客户端不一样时，在 **重定向目标** 里填上游的模型名。
@@ -220,7 +220,7 @@ curl -X POST http://localhost:8080/v1/messages \
 
 反向代理只负责转发。ccLoad 面向的是会长时间流式输出、连续运行数小时、并且真金白银计费的编程智能体，所有设计都围绕两件事：会话不断、账单可控。
 
-- **订阅账号也能当渠道，不只是 API Key**：把 Codex（ChatGPT）、Claude、Antigravity、xAI、CodeBuddy、Z.ai Coding Plan、Cursor、Zed 账号以及 Vertex AI 服务账号接入为渠道。令牌自动刷新，额度用量按各家的重置窗口统计。
+- **订阅账号也能当渠道，不只是 API Key**：把 Codex（ChatGPT）、Claude、Antigravity、xAI、CodeBuddy、Accio、Qoder、Loomy、Z.ai Coding Plan、Cursor、Zed 账号以及 Vertex AI 服务账号接入为渠道。支持的提供商自动刷新令牌，额度按各家的重置窗口或积分余额展示。
 - **任意客户端用任意上游**：Anthropic Messages、OpenAI Chat、Codex Responses、Gemini 四种客户端都能使用任何提供该模型的渠道。协议不同时自动转换请求和流式响应，Codex 的 Responses WebSocket 也一样。
 - **客户端无感的故障切换**：上游在首字节到达客户端之前失败，ccLoad 就直接重试下一个候选渠道。伪装成 HTTP 200 的错误、SSE 流里的限流标记同样按失败处理。
 - **按准确范围冷却**：失效的 Key、被限流的模型、不可用的 URL 各自按指数退避冷却，并遵循上游给出的重置时间；同一渠道的其余部分照常服务。
@@ -245,9 +245,10 @@ curl -X POST http://localhost:8080/v1/messages \
 
 - **每个渠道接受四种客户端协议**：Anthropic、OpenAI、Codex（Responses）和 Gemini。每个上游 URL 可声明支持的线协议，留空则由 ccLoad 探测并缓存；客户端协议与上游不一致时自动转换。
 - **Responses WebSocket**：Codex 客户端保持下游 WebSocket，各候选渠道使用原生 Codex WebSocket 或 HTTP/SSE。
-- **账号类渠道**：Codex（ChatGPT）OAuth 与个人访问令牌、Anthropic（Claude）、Antigravity、xAI OAuth，以及 CodeBuddy、Z.ai Coding Plan、Cursor、Zed 和 Vertex AI 服务账号；支持的提供商自动刷新令牌，可批量导入、刷新额度，凭证被上游永久拒绝时自动禁用。
+- **账号类渠道**：Codex（ChatGPT）OAuth 与个人访问令牌、Anthropic（Claude）、Antigravity、xAI OAuth，以及 CodeBuddy、Accio、Qoder、Loomy、Z.ai Coding Plan、Cursor、Zed 和 Vertex AI 服务账号；支持的提供商自动刷新令牌，可批量导入、刷新额度，凭证被上游永久拒绝时自动禁用。
+- **ZCode 体验套餐**：浏览器登录支持仅有体验套餐或同时有付费套餐的账号。默认优先使用可用体验额度，普通模型可在输出前失败时回退付费服务，显式 `-Trial` 模型不回退付费。仅有 Coding Plan API Key 时只能使用付费服务，详见[使用指南](docs/guide/usage.zh-CN.md#zai-coding-planzcode)。
 - **模型思考后缀**：`model(high)` 或 `model(16384)` 映射为上游协议的思考参数，选路仍按基础模型名。
-- **动态思考等级**：对选定的模型，由决策渠道（System One）按每轮对话判断该用多深的思考，在模型支持的档位内自动调整；客户端显式指定等级时不干预。
+- **动态思考等级**：对选定的模型，由决策模型按每轮对话判断该用多深的思考，在模型支持的档位内自动调整。判断请求按模型选择启用的 System One 渠道，并在总判断超时内故障切换；客户端显式指定等级时不干预。
 - **多模态回退**：含图片或文件的请求在选路前从非视觉模型改用配置的回退模型。
 - **自定义请求规则**：渠道级请求头和 JSON 请求体改写，认证头受保护。
 - **本地 Token 计数**：`/v1/messages/count_tokens` 在本地计算，不调用上游。
@@ -257,7 +258,7 @@ curl -X POST http://localhost:8080/v1/messages \
 - **API 令牌**：每个令牌可设费用上限、模型限制、渠道白名单/黑名单和并发上限。上游凭证留在网关。
 - **成本核算**：OpenAI `service_tier` 倍率、长上下文分层定价、缓存 Token 折扣和图像生成工具计费。
 - **OAuth 额度成本**：按凭证累计周/月标准成本，对齐上游额度窗口。
-- **令牌只读登录**：API 令牌可登录管理后台，只能查看自己的用量。
+- **令牌只读登录**：管理员启用 `api_token_login_enabled` 后，API 令牌可登录管理后台查看自己的用量；此设置默认关闭，保存后重启生效。渠道信息默认隐藏，需另行开启 `api_token_show_channels`。
 - **隐私脱敏**：发往上游前识别密钥、密码、个人信息和自定义词表/规则，替换为占位符，在 HTTP、SSE 和 Responses WebSocket 回复中还原；映射按调用方令牌隔离，只存在内存里。
 
 ### 可观测

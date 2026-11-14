@@ -177,10 +177,10 @@
           <span class="www-feature-icon" data-icon="key"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.accounts.title">Subscription accounts, not just API keys</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.accounts.desc">
-            Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels, or import a Vertex AI service account. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
+            Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor and Zed accounts as channels, or import a Vertex AI service account. Tokens refresh where supported, and quota windows or credit balances follow each provider.
           </p>
           <div class="www-bento-visual www-chip-cloud" aria-hidden="true">
-            <span>Codex</span><span>Claude</span><span>Antigravity</span><span>xAI</span><span>CodeBuddy</span><span>Z.ai</span><span>Cursor</span><span>Zed</span><span>Vertex AI</span><span class="is-key">API Key</span>
+            <span>Codex</span><span>Claude</span><span>Antigravity</span><span>xAI</span><span>CodeBuddy</span><span>Accio</span><span>Qoder</span><span>Loomy</span><span>Z.ai</span><span>Cursor</span><span>Zed</span><span>Vertex AI</span><span class="is-key">API Key</span>
           </div>
         </div>
         <div class="www-feature-card www-bento-wide">
@@ -273,7 +273,7 @@
         <li data-i18n="www.home.compare.choose.clients">Claude Code and Codex are your main clients, including Codex Responses over WebSocket.</li>
         <li data-i18n="www.home.compare.choose.failover">Errors disguised as HTTP 200 and rate limits inside SSE streams should count as failures, and cooldown should hit only the failing key, model or URL.</li>
         <li data-i18n="www.home.compare.choose.cost">You want cost per request (cache, long-context tiers and OpenAI service_tier) with daily and monthly caps per token.</li>
-        <li data-i18n="www.home.compare.choose.accounts">You also sign in CodeBuddy, Z.ai Coding Plan, Cursor or Zed accounts.</li>
+        <li data-i18n="www.home.compare.choose.accounts">You also sign in CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor or Zed accounts.</li>
       </ul>
       <p class="www-compare-note" data-i18n="www.home.compare.note">ccLoad's protocol conversion core is synchronized from CLIProxyAPI (MIT). Summaries follow each project's README as of October 2026.</p>
     </div>
@@ -354,7 +354,7 @@
           <span class="www-feature-icon" data-icon="gauge"></span>
           <h3 class="www-feature-title" data-i18n="www.home.features.reasoningAuto.title">Dynamic Reasoning Effort</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.reasoningAuto.desc">
-            For models you list, a System One channel picks the reasoning effort when a request sets no level, choosing only among the model's own levels. Explicit suffixes always win.
+            For models you list, a decision model picks the reasoning effort when a request sets no level, choosing only among the model's own levels. Decisions route across matching System One channels with failover within the shared timeout. Explicit suffixes always win.
           </p>
         </div>
 
@@ -438,10 +438,31 @@
           </p>
         </div>
         <div class="www-feature-card">
+          <span class="www-feature-icon" data-icon="key"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.oauth.accio.title">Accio</h3>
+          <p class="www-feature-desc" data-i18n="www.home.oauth.accio.desc">
+            Browser authorization or credential JSON, with China and international regions. Select the region that matches your account.
+          </p>
+        </div>
+        <div class="www-feature-card">
+          <span class="www-feature-icon" data-icon="key"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.oauth.qoder.title">Qoder</h3>
+          <p class="www-feature-desc" data-i18n="www.home.oauth.qoder.desc">
+            Browser sign-in, PAT or credential JSON, with China and international regions. Supports automatic daily check-in; international check-in requires the official UMID component.
+          </p>
+        </div>
+        <div class="www-feature-card">
+          <span class="www-feature-icon" data-icon="key"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.oauth.loomy.title">Loomy</h3>
+          <p class="www-feature-desc" data-i18n="www.home.oauth.loomy.desc">
+            Sign in by SMS from Channels → Add → Loomy. Supports daily check-in and credit balance queries.
+          </p>
+        </div>
+        <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="code"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.zai.title">Z.ai Coding Plan</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.zai.desc">
-            Browser authorization or a Coding Plan API key. The model catalog is loaded from the account; quota windows are not billed as standard cost.
+            ZCode browser sign-in supports trial and paid plans; a Coding Plan API key provides paid access only. Eligible trial quota is preferred by default. Ordinary models may fall back to paid service before output starts; explicit -Trial models never do.
           </p>
         </div>
         <div class="www-feature-card">
@@ -477,7 +498,7 @@
           <div class="www-section-header">
             <p class="www-eyebrow" data-i18n="www.home.eyebrow.admin">Admin console</p>
             <h2 data-i18n="www.home.admin.title">Not a black-box proxy</h2>
-            <p data-i18n="www.home.admin.desc">ccLoad puts channels, OAuth credentials, models, tokens, cost, first-byte latency, failure reasons, and model verification into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.</p>
+            <p data-i18n="www.home.admin.desc">ccLoad puts channels, OAuth credentials, models, tokens, cost, first-byte latency, failure reasons, and model verification into one console. Administrators manage the gateway. API-token sign-in is off by default; once enabled, token users can view their own usage. Channel information remains hidden unless the administrator enables it separately.</p>
           </div>
           <ul class="www-check-list">
             <li data-i18n="www.home.admin.item1">Track requests, tokens, cost and latency system-wide as an administrator or within one API token's scope.</li>
@@ -659,7 +680,7 @@ brew services start caidaoli/ccload/ccload</code></pre>
       </details>
       <details class="www-faq-item">
         <summary data-i18n="www.home.faq.accounts.q">Can I use my ChatGPT or Claude subscription through ccLoad?</summary>
-        <p data-i18n="www.home.faq.accounts.a">Yes. Import Codex (ChatGPT) or Claude credentials as channels in the admin console; Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts are supported too. ccLoad refreshes tokens and tracks quota windows. Make sure your usage follows each provider's terms.</p>
+        <p data-i18n="www.home.faq.accounts.a">Yes. Import Codex (ChatGPT) or Claude credentials as channels in the admin console; Antigravity, xAI, CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor and Zed accounts are supported too. ccLoad refreshes tokens where supported and tracks provider quota windows or credit balances. Make sure your usage follows each provider's terms.</p>
       </details>
       <details class="www-faq-item">
         <summary data-i18n="www.home.faq.terms.q">Is using subscription accounts through ccLoad against provider terms?</summary>

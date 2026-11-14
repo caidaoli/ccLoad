@@ -113,7 +113,7 @@ Open `http://localhost:8080/web/` and sign in with the `CCLOAD_PASS` from step 1
 Go to **Channels** and click **Add Channel**:
 
 - **API-key upstreams** (official APIs, relay services): the easiest way is **Auto-fill channel configuration**. Paste the address and key your provider gave you (for example `OPENAI_BASE_URL=https://api.example.com` and `OPENAI_API_KEY=sk-...`); ccLoad checks the connection and fetches the model list. When filling the form by hand, enter only the base URL, without `/v1` or an endpoint path. OpenCode Zen / Zen Go have their own entry that prefills the address, so you only add the key.
-- **Subscription accounts** (Codex/ChatGPT, Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, Zed): choose the account type in Channels and follow the prompts to authorize in the browser or import credentials.
+- **Subscription accounts** (Codex/ChatGPT, Claude, Antigravity, xAI, CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor, Zed): choose the account type in Channels and follow the prompts to authorize in the browser or import credentials. Accio supports browser authorization or credential JSON; Qoder also accepts a PAT. Select the matching China or international region for both. Loomy uses SMS sign-in and supports daily check-in.
 - **Google Vertex AI**: import a Google Cloud service account key (JSON); ccLoad exchanges it for access tokens and serves Gemini models.
 
 **The model list decides whether a channel is used.** ccLoad picks channels by the model name the client requests: if the client asks for `claude-sonnet-4-6`, some channel must list `claude-sonnet-4-6`. Add models with **Fetch Models** or **Common Models**; when the upstream uses a different name, put the upstream name in **Redirect Target**.
@@ -220,7 +220,7 @@ The client protocol does not have to match the upstream; ccLoad converts between
 
 A reverse proxy forwards requests. ccLoad is built for coding agents that stream long responses, run for hours, and spend real money, so every design choice is about keeping the session alive and the bill predictable.
 
-- **Subscription accounts, not just API keys**: Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts, or import Vertex AI service accounts, as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
+- **Subscription accounts, not just API keys**: Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor and Zed accounts, or import Vertex AI service accounts, as channels. Tokens refresh where supported, and quota windows or credit balances follow each provider.
 - **Any client on any upstream**: Anthropic Messages, OpenAI Chat, Codex Responses and Gemini clients can all use every channel that serves the model. Requests and streamed responses are converted when the protocols differ, including Codex Responses over WebSocket.
 - **Failover your client never sees**: If an upstream fails before the first byte reaches the client, ccLoad retries the next candidate. Errors disguised as HTTP 200 and rate limits inside SSE streams count as failures too.
 - **Cooldown at the right scope**: A revoked key, a rate-limited model, or a dead URL cools down on its own with exponential backoff and honors upstream reset times. The rest of the channel keeps serving.
@@ -245,9 +245,10 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 
 - **Four client protocols on every channel**: Anthropic, OpenAI, Codex (Responses), and Gemini. Each upstream URL declares the wire protocols it accepts, or ccLoad detects and caches them; requests are converted between protocols when client and upstream differ.
 - **Responses WebSocket**: Codex clients keep a downstream WebSocket while each candidate uses native Codex WebSocket or HTTP/SSE.
-- **Account-based channels**: Codex (ChatGPT) OAuth and personal access tokens, Anthropic (Claude), Antigravity, and xAI OAuth, CodeBuddy, Z.ai Coding Plan, Cursor, Zed, and Vertex AI service accounts, with token refresh where supported, batch import, quota refresh, and automatic disabling of permanently rejected credentials.
+- **Account-based channels**: Codex (ChatGPT) OAuth and personal access tokens, Anthropic (Claude), Antigravity, and xAI OAuth, CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor, Zed, and Vertex AI service accounts, with token refresh where supported, batch import, quota refresh, and automatic disabling of permanently rejected credentials.
+- **ZCode trial plans**: Browser sign-in supports trial-only and paid accounts. Eligible trial quota is preferred by default; ordinary models may fall back to paid service before output starts, while explicit `-Trial` models never do. Coding Plan API keys alone provide paid access. See the [usage guide](docs/guide/usage.md#zai-coding-plan-zcode).
 - **Model thinking suffix**: `model(high)` or `model(16384)` maps to the upstream protocol's thinking parameters while routing uses the base model name.
-- **Dynamic reasoning effort**: For selected models, a decision channel (System One) judges each turn and picks a reasoning level the model supports; an explicit level from the client is left alone.
+- **Dynamic reasoning effort**: For selected models, a decision model judges each turn and picks a reasoning level the model supports. Requests route across enabled System One channels serving that decision model, with failover within the shared timeout; an explicit level from the client is left alone.
 - **Multimodal fallback**: Requests with images or files are moved from non-vision models to configured fallback models before routing.
 - **Custom request rules**: Per-channel header and JSON body rewriting, with protected authentication headers.
 - **Local token counting**: `/v1/messages/count_tokens` is answered locally without an upstream call.
@@ -257,7 +258,7 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 - **API tokens**: Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps. Upstream credentials stay in the gateway.
 - **Cost accounting**: OpenAI `service_tier` multipliers, tiered long-context pricing, cache-token discounts, and image-generation tool billing.
 - **OAuth quota cost**: Per-credential weekly and monthly standard cost aligned with upstream quota windows.
-- **Read-only token login**: An API token can sign in to the web console and see only its own usage.
+- **Read-only token login**: After an administrator enables `api_token_login_enabled` (off by default; restart required after saving), an API token can sign in to the web console and see its own usage. Channel information stays hidden unless `api_token_show_channels` is enabled.
 - **Privacy masking**: Keys, passwords, personal data and custom word lists or rules are replaced with placeholders before the upstream sees them, and restored in HTTP, SSE and Responses WebSocket replies. Mappings are isolated per caller token and kept in memory only.
 
 ### Observability

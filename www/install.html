@@ -99,7 +99,7 @@
             <div class="www-step">
               <div>
                 <h3 data-i18n-html="www.install.docker.step3.title">Create access tokens</h3>
-                <p data-i18n-html="www.install.docker.step3.desc">After logging in as an administrator, create API tokens on the token page. API-token users can also sign in to the Web console for a read-only dashboard scoped to their permitted channels and usage data. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
+                <p data-i18n-html="www.install.docker.step3.desc">After logging in as an administrator, create API tokens on the token page. API-token users can sign in to the Web console to read their own usage only after an administrator enables <code>api_token_login_enabled</code> (default false). Channel information is controlled separately by <code>api_token_show_channels</code> (default false). Both settings take effect after saving and restarting. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
               </div>
             </div>
           </div>
