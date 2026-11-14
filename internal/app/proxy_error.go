@@ -768,10 +768,20 @@ func (s *Server) handleProxySuccess(
 	}, cooldown.ActionReturnClient
 }
 
-// handleStreamingErrorNoRetry 处理流式响应中途检测到的错误（597/599）
-// 场景：HTTP 200 已发送，流传输中途检测到 SSE error 或流不完整
-// 关键：响应头已发送，重试在 HTTP 协议层面不可能，只记录日志并返回客户端。
-// 普通 SSE/HTTP 故障仍做模型冷却；原生 WS 1006 由目标级 tracker 处理。
+/**
+ * @brief 记录已提交响应的流错误与部分用量，并按错误性质冷却或停用账号。
+ * @param ctx 请求上下文。
+ * @param cfg 实际发送请求使用的渠道及凭证快照。
+ * @param keyIndex 当前 Key 索引。
+ * @param actualModel 实际上游模型。
+ * @param selectedKey 当前凭证。
+ * @param res 已提交的上游响应及流错误。
+ * @param duration 本次尝试耗时，单位秒。
+ * @param reqCtx 当前代理请求状态。
+ * @return 标记响应已提交的失败结果，避免重复下发响应。
+ * @return 始终返回客户端，不在已提交流上重试。
+ * @note TOS 拒绝持久停用账号且不再写冷却；原生 WS 传输故障由目标级 tracker 处理。
+ */
 func (s *Server) handleStreamingErrorNoRetry(
 	ctx context.Context,
 	cfg *model.Config,
@@ -782,6 +792,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 	duration float64,
 	reqCtx *proxyRequestContext,
 ) (*proxyResult, cooldown.Action) {
+	tosRejected := s.disableAntigravityTOSCredential(ctx, cfg, res)
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
 	if cfg.UsesZAIOAuth() && res.zaiTrial {
 		input.Model = zaiTrialModelKey(actualModel)
@@ -792,7 +803,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 
 	// 原生 WS close 1006/心跳传输错误按“两个新物理连接连续失败”冷却具体目标。
 	// 这里再做模型冷却会把网络抖动错误扩大到同渠道的整个模型。
-	if !res.UpstreamWebsocketTransportFailure {
+	if !tosRejected && !res.UpstreamWebsocketTransportFailure {
 		_ = s.applyCooldownDecision(ctx, cfg, input)
 	}
 
@@ -863,7 +874,7 @@ func countTokensUpstreamErrorResult(cfg *model.Config, res *fwResult, duration f
 }
 
 /**
- * @brief 记录上游业务错误并按 Key、模型或渠道范围决定故障转移
+ * @brief 记录上游业务错误，停用 TOS 违规账号或按 Key、模型及渠道范围决定故障转移
  * @param ctx 请求上下文
  * @param cfg 当前渠道
  * @param keyIndex 当前 Key 索引
@@ -877,6 +888,7 @@ func countTokensUpstreamErrorResult(cfg *model.Config, res *fwResult, duration f
  * @param modelCapacityRateLimited 是否已处理模型容量冷却
  * @return 保留 HTTP 状态、响应头及错误事件来源的失败结果
  * @return 下一次重试或返回客户端的动作
+ * @note TOS 拒绝先持久停用账号并切换渠道，不再写入普通冷却。
  */
 func (s *Server) handleProxyErrorResponse(
 	ctx context.Context,
@@ -894,6 +906,7 @@ func (s *Server) handleProxyErrorResponse(
 	if failure := zaiLocalPlanFailure(cfg, res, forceReturnClient); failure != nil {
 		return failure, failure.nextAction
 	}
+	tosRejected := s.disableAntigravityTOSCredential(ctx, cfg, res)
 
 	if reqCtx.countTokens() {
 		s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, "")
@@ -943,6 +956,10 @@ func (s *Server) handleProxyErrorResponse(
 		failure.proxyLogWritten = true
 	}
 
+	if tosRejected {
+		failure.nextAction = cooldown.ActionRetryChannel
+		return failure, cooldown.ActionRetryChannel
+	}
 	if forceReturnClient {
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient

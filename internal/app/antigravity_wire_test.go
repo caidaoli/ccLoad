@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -19,6 +21,157 @@ import (
 )
 
 const antigravitySchemaTestModel = "gemini-3-pro"
+
+/**
+ * @brief 验证只有完整 TOS 违规签名会持久停用渠道，HTTP 与流内错误均生效且不暂停其他账号。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravityTOSViolation(t *testing.T) {
+	t.Parallel()
+	tosBody := []byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Account suspended for TOS_VIOLATION","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"TOS_VIOLATION","metadata":{"appeal_url":"https://example.com/appeal?id=private","appeal_url_link_text":"Appeal"}}]}}`)
+	textFrame := `data: {"response":{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+	completeFrame := `data: {"response":{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"complete"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+	for _, tc := range []struct {
+		name         string
+		body         []byte
+		streamPrefix string
+		stream       bool
+		disabled     bool
+	}{
+		{name: "http", body: tosBody, disabled: true},
+		{name: "first SSE error", body: tosBody, stream: true, disabled: true},
+		{name: "midstream SSE error", body: tosBody, stream: true, streamPrefix: textFrame, disabled: true},
+		{name: "error after completed stream", body: tosBody, stream: true, streamPrefix: completeFrame},
+		{name: "ordinary permission error", body: setJSONValue(tosBody, "error.details.0.reason", "ACCESS_DENIED")},
+		{name: "wrong RPC detail type", body: setJSONValue(tosBody, "error.details.0.@type", "type.googleapis.com/google.rpc.BadRequest")},
+		{name: "wrong RPC status", body: setJSONValue(tosBody, "error.status", "UNAVAILABLE")},
+		{name: "wrong RPC code", body: setJSONValue(tosBody, "error.code", 429)},
+		{name: "string RPC code", body: setJSONValue(tosBody, "error.code", "403")},
+		{name: "fractional RPC code", body: setJSONValue(tosBody, "error.code", 403.5)},
+		{name: "invalid JSON", body: append(append([]byte(nil), tosBody...), []byte("trailing")...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var primaryCalls atomic.Int32
+			primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryCalls.Add(1)
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, tc.streamPrefix+"data: "+string(tc.body)+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(tc.body)
+			}))
+			var fallbackCalls atomic.Int32
+			fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackCalls.Add(1)
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, strings.ReplaceAll(completeFrame, "complete", "fallback"))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"fallback"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash"}}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "tos-primary", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "tos-at")},
+				{name: "tos-fallback", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 10, authType: model.AuthTypeAntigravityOAuth, oauthCredential: string(setJSONValue([]byte(antigravityProxyTestCredential(t, "fallback-at")), "refresh_token", "fallback-rt"))},
+			}, map[int]string{0: primary.URL, 1: fallback.URL})
+			ctx := context.Background()
+			cached, err := env.server.GetEnabledChannelsByModel(ctx, "gemini-3-flash")
+			if err != nil || len(cached) != 2 {
+				t.Fatalf("initial channels=%d err=%v", len(cached), err)
+			}
+			request := map[string]any{"model": "gemini-3-flash", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": tc.stream}
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", request, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+			}
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cfg := range configs {
+				if cfg.Name == "tos-primary" {
+					if cfg.Enabled == tc.disabled {
+						t.Fatalf("primary enabled=%v, want %v", cfg.Enabled, !tc.disabled)
+					}
+					if tc.disabled && (cfg.CooldownUntil != 0 || cfg.CooldownDurationMs != 0) {
+						t.Fatalf("disabled channel retains cooldown: %+v", cfg)
+					}
+				} else if !cfg.Enabled {
+					t.Fatal("TOS violation disabled another account")
+				}
+			}
+			if !tc.disabled {
+				return
+			}
+			cached, err = env.server.GetEnabledChannelsByModel(ctx, "gemini-3-flash")
+			if err != nil || len(cached) != 1 || cached[0].Name != "tos-fallback" {
+				t.Fatalf("enabled channels after TOS=%v err=%v", cached, err)
+			}
+			response = doProxyRequest(t, env.engine, "/v1/chat/completions", request, nil)
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "fallback") || fallbackCalls.Load() == 0 {
+				t.Fatalf("other account unavailable: status=%d body=%s", response.Code, response.Body.String())
+			}
+			if primaryCalls.Load() != 1 {
+				t.Fatalf("disabled account requested %d times", primaryCalls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证在途 TOS 结果跨 access token 刷新仍停用原账号，替换为另一账号后不受旧结果影响。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravityTOSViolationCredentialReplacement(t *testing.T) {
+	t.Parallel()
+	for _, replaceAccount := range []bool{false, true} {
+		name := "same account refresh"
+		if replaceAccount {
+			name = "different account"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var env *proxyTestEnv
+			var channelID int64
+			original := antigravityProxyTestCredential(t, "old-at")
+			renewed := string(setJSONValue([]byte(original), "access_token", "new-at"))
+			if replaceAccount {
+				renewed = string(setJSONValue([]byte(renewed), "refresh_token", "new-account-rt"))
+			}
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				updated, err := env.store.CompareAndSwapOAuthCredential(context.Background(), channelID, model.AuthTypeAntigravityOAuth, original, renewed)
+				if err != nil || !updated {
+					t.Errorf("concurrent credential update=%v err=%v", updated, err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"TOS_VIOLATION"}]}}`)
+			}))
+			env = setupProxyTestEnv(t, []testChannel{{name: "tos-race", upstreamProtocol: "gemini", models: "gemini-3-flash", authType: model.AuthTypeAntigravityOAuth, oauthCredential: original}}, map[int]string{0: upstream.URL})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+			channelID = configs[0].ID
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "gemini-3-flash", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+			}
+			current, err := env.store.GetConfig(context.Background(), channelID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Enabled != replaceAccount || current.OAuthCredential != renewed || current.CooldownUntil != 0 {
+				t.Fatalf("concurrent credential result: enabled=%v credential=%s cooldown=%d", current.Enabled, current.OAuthCredential, current.CooldownUntil)
+			}
+		})
+	}
+}
 
 /**
  * @brief 验证最终发送的 Antigravity 请求按模型能力保留 xhigh，并兼容旧等级映射。

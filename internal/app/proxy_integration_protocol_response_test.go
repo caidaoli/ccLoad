@@ -1219,3 +1219,275 @@ func TestProxy_StreamingGeminiResponseToCodexTransform_MultipleToolCallsAcrossCh
 		t.Fatalf("expected Codex completion event with usage, got %s", body)
 	}
 }
+
+/**
+ * @brief 验证 Gemini 与 Antigravity 空壳、签名和零输出异常在提交前故障转移，四种客户端均不接收假成功。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiZeroOutputFailover(t *testing.T) {
+	for _, provider := range []string{"gemini", "antigravity"} {
+		for _, client := range []string{"gemini", "openai", "anthropic", "codex"} {
+			for _, reason := range []string{"signature_eof", "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE"} {
+				t.Run(provider+"/"+client+"/"+reason, func(t *testing.T) {
+					var primaryCalls, fallbackCalls atomic.Int32
+					wrap := func(payload string) string {
+						if provider == "antigravity" {
+							return `{"response":` + payload + `}`
+						}
+						return payload
+					}
+					primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						primaryCalls.Add(1)
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: "+wrap(`{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"opaque-signature"},{"functionCall":{"args":{}}},{"inlineData":{"data":""}}]}}]}`)+"\n\n")
+						w.(http.Flusher).Flush()
+						if reason != "signature_eof" {
+							_, _ = io.WriteString(w, "data: "+wrap(`{"candidates":[{"finishReason":"`+reason+`"}]}`)+"\n\n")
+							w.(http.Flusher).Flush()
+						}
+						_, _ = io.WriteString(w, "data: "+wrap(`{"usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":0,"thoughtsTokenCount":2,"totalTokenCount":15}}`)+"\n\n")
+					}))
+					fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						fallbackCalls.Add(1)
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: "+wrap(`{"candidates":[{"content":{"role":"model","parts":[{"text":"recovered"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash","usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)+"\n\n")
+					}))
+					channels := []testChannel{
+						{name: "zero-output", upstreamProtocol: "gemini", models: "gemini-3-flash"},
+						{name: "fallback", upstreamProtocol: "gemini", models: "gemini-3-flash"},
+					}
+					if provider == "antigravity" {
+						for i := range channels {
+							channels[i].authType = model.AuthTypeAntigravityOAuth
+							channels[i].oauthCredential = antigravityProxyTestCredential(t, "zero-output-at")
+						}
+					}
+					env := setupProxyTestEnv(t, channels, map[int]string{0: primary.URL, 1: fallback.URL})
+					path, request := geminiOutputTestRequest(client, true)
+					response := doProxyRequest(t, env.engine, path, request, nil)
+					if response.Code != http.StatusOK || primaryCalls.Load() != 1 || fallbackCalls.Load() != 1 {
+						t.Fatalf("status=%d calls=%d/%d body=%s", response.Code, primaryCalls.Load(), fallbackCalls.Load(), response.Body.String())
+					}
+					var text string
+					for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
+						_, data := parseSSEEventChunk([]byte(block))
+						payload := gjson.ParseBytes(data)
+						if payload.Get("error").Exists() || payload.Get("type").String() == "response.failed" {
+							t.Fatalf("failed attempt leaked into successful stream: %s", data)
+						}
+						switch client {
+						case "gemini":
+							text += payload.Get("candidates.0.content.parts.0.text").String()
+						case "openai":
+							text += payload.Get("choices.0.delta.content").String()
+						case "anthropic":
+							text += payload.Get("delta.text").String()
+						case "codex":
+							if payload.Get("type").String() == "response.output_text.delta" {
+								text += payload.Get("delta").String()
+							}
+						}
+					}
+					if text != "recovered" {
+						t.Fatalf("text=%q body=%s", text, response.Body.String())
+					}
+					entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.StatusCode == http.StatusBadGateway })
+					if entry == nil {
+						t.Fatal("missing failed attempt log")
+					}
+					if entry.InputTokens != 13 || entry.OutputTokens != 2 {
+						t.Fatalf("failed attempt usage=%d/%d, want 13/2", entry.InputTokens, entry.OutputTokens)
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
+ * @brief 构造四协议客户端的 Gemini 响应测试请求。
+ * @param client 客户端协议。
+ * @param stream 是否请求流式响应。
+ * @return 客户端入口路径。
+ * @return 客户端请求体。
+ */
+func geminiOutputTestRequest(client string, stream bool) (string, map[string]any) {
+	request := map[string]any{"model": "gemini-3-flash", "stream": stream}
+	switch client {
+	case "gemini":
+		request["contents"] = []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}
+		method := "generateContent"
+		if stream {
+			method = "streamGenerateContent?alt=sse"
+		}
+		return "/v1beta/models/gemini-3-flash:" + method, request
+	case "codex":
+		request["input"] = "hello"
+		return "/v1/responses", request
+	default:
+		request["messages"] = []any{map[string]any{"role": "user", "content": "hello"}}
+		if client == "anthropic" {
+			request["max_tokens"] = 100
+			return "/v1/messages", request
+		}
+		return "/v1/chat/completions", request
+	}
+}
+
+/**
+ * @brief 验证正常终态、部分正文和工具不误重试；真实思考后零输出异常通过流错误结束并保留用量。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiZeroOutputBoundaries(t *testing.T) {
+	for _, provider := range []string{"gemini", "antigravity"} {
+		for _, client := range []string{"gemini", "openai", "anthropic", "codex"} {
+			for _, tc := range []struct {
+				name   string
+				parts  string
+				reason string
+				failed bool
+			}{
+				{"partial_text", `[{"text":"partial"}]`, "MALFORMED_FUNCTION_CALL", false},
+				{"tool_call", `[{"functionCall":{"name":"lookup","args":{}}}]`, "MALFORMED_FUNCTION_CALL", false},
+				{"normal_empty_stop", `[]`, "STOP", false},
+				{"normal_empty_max_tokens", `[]`, "MAX_TOKENS", false},
+				{"safety", `[]`, "SAFETY", false},
+				{"thinking_then_error", `[{"thought":true,"text":"working"}]`, "UNEXPECTED_TOOL_CALL", true},
+			} {
+				t.Run(provider+"/"+client+"/"+tc.name, func(t *testing.T) {
+					wrap := func(payload string) string {
+						if provider == "antigravity" {
+							return `{"response":` + payload + `}`
+						}
+						return payload
+					}
+					var calls atomic.Int32
+					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						calls.Add(1)
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: "+wrap(`{"candidates":[{"content":{"role":"model","parts":`+tc.parts+`}}],"modelVersion":"gemini-3-flash"}`)+"\n\n")
+						w.(http.Flusher).Flush()
+						_, _ = io.WriteString(w, "data: "+wrap(`{"candidates":[{"finishReason":"`+tc.reason+`"}]}`)+"\n\n")
+						_, _ = io.WriteString(w, "data: "+wrap(`{"usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":0,"thoughtsTokenCount":2,"totalTokenCount":15}}`)+"\n\n")
+					}))
+					ch := testChannel{name: "boundary", upstreamProtocol: "gemini", models: "gemini-3-flash"}
+					if provider == "antigravity" {
+						ch.authType, ch.oauthCredential = model.AuthTypeAntigravityOAuth, antigravityProxyTestCredential(t, "boundary-at")
+					}
+					env := setupProxyTestEnv(t, []testChannel{ch}, map[int]string{0: upstream.URL})
+					path, request := geminiOutputTestRequest(client, true)
+					response := doProxyRequest(t, env.engine, path, request, nil)
+					if response.Code != http.StatusOK || calls.Load() != 1 {
+						t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+					}
+					errorsSeen := 0
+					for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
+						_, data := parseSSEEventChunk([]byte(block))
+						payload := gjson.ParseBytes(data)
+						if payload.Get("error").Exists() || payload.Get("type").String() == "response.failed" {
+							errorsSeen++
+						}
+					}
+					wantErrors := 0
+					if tc.failed {
+						wantErrors = 1
+					}
+					if errorsSeen != wantErrors {
+						t.Fatalf("errors=%d want=%d body=%s", errorsSeen, wantErrors, response.Body.String())
+					}
+					if tc.failed {
+						entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.StatusCode == http.StatusBadGateway })
+						if entry == nil || entry.InputTokens != 13 || entry.OutputTokens != 2 {
+							t.Fatalf("missing partial-stream error usage: %+v", entry)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证原生与转换非流式 Gemini 零输出异常返回 502，并保留正常部分文本。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiNonStreamZeroOutput(t *testing.T) {
+	for _, provider := range []string{"gemini", "antigravity"} {
+		for _, client := range []string{"gemini", "openai", "anthropic", "codex"} {
+			for _, reason := range []string{"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE"} {
+				for _, text := range []string{"", "partial"} {
+					t.Run(provider+"/"+client+"/"+reason+"/"+text, func(t *testing.T) {
+						upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							w.Header().Set("Content-Type", "application/json")
+							payload := `{"candidates":[{"content":{"role":"model","parts":[{"text":"` + text + `"}]},"finishReason":"` + reason + `"}],"modelVersion":"gemini-3-flash","usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":0,"totalTokenCount":13}}`
+							if provider == "antigravity" {
+								payload = `{"response":` + payload + `}`
+							}
+							_, _ = io.WriteString(w, payload)
+						}))
+						ch := testChannel{name: "nonstream", upstreamProtocol: "gemini", models: "gemini-3-flash"}
+						if provider == "antigravity" {
+							ch.authType, ch.oauthCredential = model.AuthTypeAntigravityOAuth, antigravityProxyTestCredential(t, "nonstream-at")
+						}
+						env := setupProxyTestEnv(t, []testChannel{ch}, map[int]string{0: upstream.URL})
+						path, request := geminiOutputTestRequest(client, false)
+						response := doProxyRequest(t, env.engine, path, request, nil)
+						wantStatus := http.StatusOK
+						if text == "" {
+							wantStatus = http.StatusBadGateway
+						}
+						if response.Code != wantStatus || !json.Valid(response.Body.Bytes()) {
+							t.Fatalf("status=%d want=%d body=%s", response.Code, wantStatus, response.Body.String())
+						}
+						if text == "" && gjson.GetBytes(response.Body.Bytes(), "error.code").String() != "gemini_zero_output" {
+							t.Fatalf("missing zero-output error: %s", response.Body.String())
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+/**
+ * @brief 异常终态后等尾部用量时，取消和读取中断保留原分类，不能被零输出错误覆盖。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiZeroOutputPreservesReadFailure(t *testing.T) {
+	for _, client := range []string{"gemini", "anthropic"} {
+		for _, tc := range []struct {
+			name   string
+			err    error
+			status int
+		}{
+			{"cancel", context.Canceled, 499},
+			{"truncated", io.ErrUnexpectedEOF, 599},
+		} {
+			t.Run(client+"/"+tc.name, func(t *testing.T) {
+				env := setupProxyTestEnv(t, []testChannel{{name: "read-failure", upstreamProtocol: "gemini", models: "gemini-3-flash"}}, map[int]string{0: "https://gemini-read-failure.example"})
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+						Body: io.NopCloser(io.MultiReader(
+							strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"MALFORMED_FUNCTION_CALL\"}]}\n\n"),
+							&errorReader{err: tc.err},
+						)),
+					}, nil
+				})}
+				path, request := geminiOutputTestRequest(client, true)
+				doProxyRequest(t, env.engine, path, request, nil)
+				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.ChannelID > 0 })
+				if entry == nil || entry.StatusCode != tc.status {
+					t.Fatalf("log=%+v, want status %d", entry, tc.status)
+				}
+				if tc.status == 499 {
+					cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+					if err != nil || len(cooldowns) != 0 {
+						t.Fatalf("cancellation cooled model: %v err=%v", cooldowns, err)
+					}
+				}
+			})
+		}
+	}
+}

@@ -137,6 +137,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	}
 
 	// Process the main content part of the response.
+	hasDeltaContent := false
 	partsResult := gjson.GetBytes(rawJSON, "response.candidates.0.content.parts")
 	if partsResult.IsArray() {
 		partResults := partsResult.Array()
@@ -179,6 +180,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 				}
 				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 			} else if functionCallResult.Exists() {
+				hasDeltaContent = true
 				// Handle function call content.
 				(*param).(*convertCliResponseToOpenAIChatParams).SawToolCall = true // Persist across chunks
 				toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
@@ -223,6 +225,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 				imagePayload := []byte(`{"type":"image_url","image_url":{"url":""}}`)
 				imagePayload, _ = sjson.SetBytes(imagePayload, "index", imageIndex)
 				imagePayload, _ = sjson.SetBytes(imagePayload, "image_url.url", imageURL)
+				hasDeltaContent = true
 				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 				template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
 			}
@@ -233,6 +236,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 		if hasReasoningContent {
 			template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", reasoningContent.String())
 		}
+		hasDeltaContent = hasDeltaContent || hasTextContent || hasReasoningContent
 	}
 
 	// Determine finish_reason only on the final chunk, which upstream marks with
@@ -251,18 +255,40 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 		params.SawFinishReason = true
 	}
 
+	if !hasDeltaContent && !isFinalChunk && !usageResult.Exists() {
+		return [][]byte{}
+	}
+
 	return [][]byte{template}
 }
 
 // hasAntigravityResponsePayload reports whether a chunk carries actual generated
-// content or token accounting. Presence alone is not enough: an envelope such as
-// `{}`, `{"response":{}}` or `{"response":{"candidates":[]}}` must not count as a
-// started stream, otherwise a keepalive or malformed event would be enough to
+// content or non-zero output token accounting. Presence alone is not enough: an
+// envelope such as `{}`, `{"response":{}}`, `{"response":{"candidates":[]}}`, or
+// a signature-only empty-text part with zero output tokens must not count as a
+// started stream, otherwise a keepalive or zero-output event would be enough to
 // finalize a stream that produced nothing.
 func hasAntigravityResponsePayload(rawJSON []byte) bool {
 	for _, path := range []string{"response.candidates", "candidates"} {
-		if candidates := gjson.GetBytes(rawJSON, path); candidates.IsArray() && len(candidates.Array()) > 0 {
-			return true
+		if candidates := gjson.GetBytes(rawJSON, path); candidates.IsArray() {
+			for _, cand := range candidates.Array() {
+				if strings.TrimSpace(cand.Get("finishReason").String()) != "" {
+					return true
+				}
+				if chunks := cand.Get("groundingMetadata.groundingChunks"); chunks.IsArray() && len(chunks.Array()) > 0 {
+					return true
+				}
+				for _, part := range cand.Get("content.parts").Array() {
+					if part.Get("text").String() != "" ||
+						part.Get("functionCall").Exists() || part.Get("function_call").Exists() ||
+						part.Get("inlineData").Exists() || part.Get("inline_data").Exists() ||
+						part.Get("fileData").Exists() || part.Get("file_data").Exists() ||
+						part.Get("executableCode").Exists() || part.Get("executable_code").Exists() ||
+						part.Get("codeExecutionResult").Exists() || part.Get("code_execution_result").Exists() {
+						return true
+					}
+				}
+			}
 		}
 	}
 	// FilterSSEUsageMetadata renames non-terminal usage to cpaUsageMetadata before
@@ -271,8 +297,10 @@ func hasAntigravityResponsePayload(rawJSON []byte) bool {
 		"response.usageMetadata", "response.cpaUsageMetadata",
 		"usageMetadata", "cpaUsageMetadata",
 	} {
-		if usage := gjson.GetBytes(rawJSON, path); usage.IsObject() && len(usage.Map()) > 0 {
-			return true
+		if usage := gjson.GetBytes(rawJSON, path); usage.IsObject() {
+			if usage.Get("candidatesTokenCount").Int() > 0 || usage.Get("thoughtsTokenCount").Int() > 0 {
+				return true
+			}
 		}
 	}
 	return false

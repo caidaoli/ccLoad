@@ -1958,3 +1958,83 @@ func TestGeminiClaudeThoughtSignatureRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertGeminiResponseToClaude_PartialVisibleTextWithMalformedFunctionCallPreservesText(t *testing.T) {
+	request := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	for _, split := range []bool{false, true} {
+		var state any
+		visible := []byte(`{"candidates":[{"content":{"parts":[{"text":"partial answer"}]}}]}`)
+		terminal := []byte(`{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":3,"totalTokenCount":53}}`)
+		raw, _ := sjson.SetRawBytes(terminal, "candidates.0.content.parts", []byte(`[{"text":"partial answer"}]`))
+		nonStream := ConvertGeminiResponseToClaudeNonStream(context.Background(), "gemini-2.5-pro", request, request, raw, nil)
+		if gjson.GetBytes(nonStream, "type").String() != "message" || gjson.GetBytes(nonStream, "content.0.text").String() != "partial answer" || gjson.GetBytes(nonStream, "stop_reason").String() != "end_turn" {
+			t.Fatalf("partial answer was not preserved: %s", nonStream)
+		}
+		chunks := [][]byte{raw, []byte("[DONE]")}
+		if split {
+			chunks = [][]byte{visible, terminal, []byte("[DONE]")}
+		}
+		var output []byte
+		for _, chunk := range chunks {
+			output = append(output, bytes.Join(ConvertGeminiResponseToClaude(context.Background(), "gemini-2.5-pro", request, request, chunk, &state), nil)...)
+		}
+		if got := gjson.GetBytes(claudeContentFromGeminiStream(t, output), "0.text").String(); got != "partial answer" {
+			t.Fatalf("stream text = %q: %s", got, output)
+		}
+		stops := 0
+		for _, line := range strings.Split(string(output), "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			if event.Get("type").String() == "error" {
+				t.Fatalf("unexpected error: %s", event.Raw)
+			}
+			if event.Get("type").String() == "message_stop" {
+				stops++
+			}
+			if event.Get("type").String() == "message_delta" && event.Get("delta.stop_reason").String() != "end_turn" {
+				t.Fatalf("unexpected stop reason: %s", event.Raw)
+			}
+		}
+		if stops != 1 {
+			t.Fatalf("message_stop count = %d: %s", stops, output)
+		}
+	}
+}
+
+func TestConvertGeminiResponseToClaude_EmptyFunctionCallPlaceholderReturnsError(t *testing.T) {
+	for _, part := range []string{`{"functionCall":{}}`, `{"functionCall":{"args":{}}}`, `{"text":"  "}`, `{"thought":true,"text":"thinking"}`, `{"text":"","thoughtSignature":"opaque-signature"}`} {
+		raw := []byte(`{"candidates":[{"content":{"parts":[` + part + `]},"finishReason":" malformed_function_call "}]}`)
+		nonStream := ConvertGeminiResponseToClaudeNonStream(context.Background(), "gemini-2.5-pro", nil, nil, raw, nil)
+		if gjson.GetBytes(nonStream, "error.type").String() != "api_error" {
+			t.Fatalf("expected api_error for %s: %s", part, nonStream)
+		}
+		var state any
+		output := bytes.Join(ConvertGeminiResponseToClaude(context.Background(), "gemini-2.5-pro", nil, nil, raw, &state), nil)
+		errorCount := 0
+		for _, line := range strings.Split(string(output), "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			switch event.Get("type").String() {
+			case "error":
+				errorCount++
+				if event.Get("error.type").String() != "api_error" {
+					t.Fatalf("unexpected error: %s", event.Raw)
+				}
+			case "message_delta", "message_stop":
+				t.Fatalf("unexpected normal completion: %s", event.Raw)
+			}
+		}
+		if errorCount != 1 {
+			t.Fatalf("error count = %d: %s", errorCount, output)
+		}
+		for _, late := range [][]byte{[]byte(`{"candidates":[{"content":{"parts":[{"text":"late"}]}}]}`), []byte("[DONE]")} {
+			if got := ConvertGeminiResponseToClaude(context.Background(), "gemini-2.5-pro", nil, nil, late, &state); len(got) != 0 {
+				t.Fatalf("unexpected events after error: %s", bytes.Join(got, nil))
+			}
+		}
+	}
+}

@@ -24,6 +24,38 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-14)
+
+The targeted changes below were reviewed against official `v8.0.70`,
+`905e70c48b47b7a1cb4a27dd3abc901e2cdd1e4a`, in the local CLIProxyAPI checkout.
+The full snapshot baseline and provider provenance above remain unchanged.
+
+- Adapt `cf07c78abdc23a7e9aae5e028e81f43d523f3b27` and
+  `f2efe2c41305ceb88043d34ce91f61b7765100fe`: Gemini/Antigravity-to-Claude
+  retain partial visible text and valid tools before `MALFORMED_FUNCTION_CALL`;
+  empty tool placeholders and signature carriers do not establish visible output.
+  Antigravity-to-Chat omits contentless deltas and cannot synthesize a successful
+  stop from signature-only zero-output frames. Preserve ccLoad's partial-argument
+  validation, signature carriers, search grounding, cache usage and MAX_TOKENS mapping.
+- The app parser and forwarding boundary own zero-output failure detection for
+  native Gemini and Antigravity HTTP/SSE: withhold leading shells, reject empty
+  abnormal finishes or signature-only EOF before commit, retain trailing usage,
+  and emit a protocol error without replay after real thought output was committed.
+  Normal STOP/MAX_TOKENS and safety refusals retain their completion semantics.
+  The app error code is now `gemini_zero_output` for these failures, replacing
+  the previous Antigravity non-stream `malformed_function_call` code.
+- Independently adapt `5a351d957091351541c0170a20f1ee064cb7690b` in the app's
+  credential/error paths: persistently disable only the exact Antigravity TOS
+  account, including same-account access-token refresh races. Do not add a pool
+  pause or import upstream auth/executor code.
+- Independently adapt `4da9f68527611a2d88b3cc6a9d30e38e1d0b846a` at the app's
+  HTTP/WebSocket failure boundary: terminal upstream 429 responses expose the
+  eligible pool's earliest cooldown recovery while preserving the error body
+  and existing Codex status mapping.
+
+Registry/provider tests and real proxy regressions cover these local adaptations.
+No runtime dependencies, provider registrations, or license changes are introduced.
+
 ## Post-snapshot compatibility fixes (2026-11-13)
 
 These targeted fixes use the local CLIProxyAPI checkout and the immutable

@@ -30,7 +30,7 @@ func TestConvertAntigravityResponseToClaude_FinishReasons(t *testing.T) {
 		{reason: "BLOCKLIST", want: "refusal", parts: `[]`},
 		{reason: "IMAGE_SAFETY", want: "refusal", parts: `[]`},
 		{reason: "MALFORMED_RESPONSE", want: "refusal", parts: `[]`},
-		{reason: "MALFORMED_FUNCTION_CALL", want: "end_turn", parts: `[]`},
+		{reason: "MALFORMED_FUNCTION_CALL", want: "end_turn", parts: `[{"text":"partial answer"}]`},
 		{reason: " safety ", want: "refusal", parts: `[]`},
 		{reason: "MAX_TOKENS", want: "max_tokens", parts: `[{"text":"partial answer"}]`},
 		{reason: "STOP", want: "end_turn", parts: `[]`},
@@ -423,5 +423,74 @@ func TestConvertClaudeRequestToAntigravity_PreservesToolResultErrors(t *testing.
 				}
 			})
 		}
+	}
+}
+
+func TestConvertAntigravityResponseToClaudeStream_MalformedFunctionCallEmitsAPIError(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-4-6"}`)
+	for _, tc := range []struct{ name, part, want string }{
+		{"empty", `{}`, "error"},
+		{"placeholder", `{"functionCall":{}}`, "error"},
+		{"empty_args", `{"functionCall":{"args":{}}}`, "error"},
+		{"thinking", `{"text":"planning","thought":true}`, "error"},
+		{"signature", `{"text":"","thoughtSignature":"opaque-signature"}`, "error"},
+		{"whitespace", `{"text":"  "}`, "error"},
+		{"text", `{"text":"partial answer"}`, "end_turn"},
+		{"tool", `{"functionCall":{"name":"lookup","args":{}}}`, "tool_use"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, split := range []bool{false, true} {
+				visible := []byte(`{"response":{"candidates":[{"content":{"parts":[` + tc.part + `]}}]}}`)
+				terminal := []byte(`{"response":{"candidates":[{"finishReason":" malformed_function_call "}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":7,"thoughtsTokenCount":3,"totalTokenCount":110}}}`)
+				raw := []byte(`{"response":{"candidates":[{"content":{"parts":[` + tc.part + `]},"finishReason":" malformed_function_call "}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":7,"thoughtsTokenCount":3,"totalTokenCount":110}}}`)
+				response := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", request, request, raw, nil)
+				if tc.want == "error" {
+					if gjson.GetBytes(response, "error.type").String() != "api_error" {
+						t.Fatalf("expected api_error: %s", response)
+					}
+				} else if gjson.GetBytes(response, "stop_reason").String() != tc.want {
+					t.Fatalf("unexpected response: %s", response)
+				}
+				var state any
+				chunks := [][]byte{raw, []byte("[DONE]")}
+				if split {
+					chunks = [][]byte{visible, terminal, []byte("[DONE]")}
+				}
+				var output []byte
+				for _, chunk := range chunks {
+					output = append(output, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", request, request, chunk, &state), nil)...)
+				}
+				errors, stops := 0, 0
+				for _, event := range antigravityClaudeStreamEvents(t, output) {
+					switch event.Get("type").String() {
+					case "error":
+						errors++
+						if event.Get("error.type").String() != "api_error" {
+							t.Fatalf("unexpected error: %s", event.Raw)
+						}
+					case "message_stop":
+						stops++
+					case "message_delta":
+						if event.Get("delta.stop_reason").String() != tc.want {
+							t.Fatalf("unexpected stop reason: %s", event.Raw)
+						}
+						usage := event.Get("usage")
+						if usage.Get("input_tokens").Int() != 10 || usage.Get("output_tokens").Int() != 10 || usage.Get("cache_read_input_tokens").Int() != 90 {
+							t.Fatalf("usage changed: %s", event.Raw)
+						}
+					}
+				}
+				if tc.want == "error" {
+					if errors != 1 || stops != 0 {
+						t.Fatalf("expected one error and no stop: %s", output)
+					}
+					if late := ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", request, request, visible, &state); len(late) != 0 {
+						t.Fatalf("unexpected events after error: %s", bytes.Join(late, nil))
+					}
+				} else if errors != 0 || stops != 1 {
+					t.Fatalf("expected one stop and no error: %s", output)
+				}
+			}
+		})
 	}
 }

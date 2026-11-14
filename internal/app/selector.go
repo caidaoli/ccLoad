@@ -29,10 +29,30 @@ func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientPro
 	return s.filterCooldownChannels(ctx, channels, "*", clientProtocol)
 }
 
-// selectSystemOneCandidates 只从 System One 渠道精确匹配模型：它不做协议转换，
-// 聊天渠道既不能服务 /v1/systemone，也不会被模糊匹配补进来。
+/**
+ * @brief 仅从 System One 渠道精确匹配模型并应用冷却和排序
+ * @param ctx 请求上下文
+ * @param model 路由模型，不做模糊回退
+ * @return 可用候选；无可用渠道时为空
+ * @return 候选或冷却状态加载失败
+ */
 func (s *Server) selectSystemOneCandidates(ctx context.Context, model string) ([]*modelpkg.Config, error) {
-	channels, err := readThroughChannelCache(
+	channels, err := s.systemOneCandidatePool(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterCooldownChannels(ctx, channels, model, util.ProtocolSystemOne)
+}
+
+/**
+ * @brief 获取支持模型的全部启用 System One 渠道，不提前剔除冷却候选
+ * @param ctx 请求上下文
+ * @param model 精确匹配的路由模型
+ * @return 原始合格候选，外层切片归调用方所有
+ * @return 存储读取失败
+ */
+func (s *Server) systemOneCandidatePool(ctx context.Context, model string) ([]*modelpkg.Config, error) {
+	return readThroughChannelCache(
 		s,
 		func(cache *storage.ChannelCache) ([]*modelpkg.Config, error) {
 			return cache.GetEnabledSystemOneChannelsSnapshotByModel(ctx, model)
@@ -41,10 +61,6 @@ func (s *Server) selectSystemOneCandidates(ctx context.Context, model string) ([
 			return s.store.GetEnabledSystemOneChannelsByModel(ctx, model)
 		},
 	)
-	if err != nil {
-		return nil, err
-	}
-	return s.filterCooldownChannels(ctx, channels, model, util.ProtocolSystemOne)
 }
 
 // alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and
@@ -100,7 +116,33 @@ func alphaSearchCredentialAllowsURL(cfg *modelpkg.Config, entry modelpkg.Channel
 	return slices.Contains(entry.Protocols, string(protocol.Codex))
 }
 
+/**
+ * @brief 选择具有 Alpha Search 端点能力的渠道，并应用冷却和排序
+ * @param ctx 请求上下文
+ * @param modelName 路由模型；空值匹配所有模型
+ * @return 可用候选；无可用渠道时为空
+ * @return 候选或冷却状态加载失败
+ */
 func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {
+	channels, err := s.alphaSearchCandidatePool(ctx, modelName)
+	if err != nil {
+		return nil, err
+	}
+	routeModel := modelName
+	if routeModel == "" {
+		routeModel = "*"
+	}
+	return s.filterCooldownChannels(ctx, channels, routeModel, string(protocol.Codex))
+}
+
+/**
+ * @brief 获取具备 Alpha Search 端点能力的全部启用候选，保留冷却渠道
+ * @param ctx 请求上下文
+ * @param modelName 路由模型；空值匹配所有模型
+ * @return 端点能力过滤后的候选，外层切片归调用方所有
+ * @return 存储读取失败
+ */
+func (s *Server) alphaSearchCandidatePool(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {
 	routeModel := modelName
 	if routeModel == "" {
 		routeModel = "*"
@@ -137,7 +179,7 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 		compatible = append(compatible, cfg)
 	}
 
-	return s.filterCooldownChannels(ctx, compatible, routeModel, string(protocol.Codex))
+	return compatible, nil
 }
 
 // fuzzyModelCandidates 返回按模糊匹配支持 model 的全部启用渠道（不做冷却过滤）。

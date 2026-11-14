@@ -17,6 +17,7 @@
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
 - Gemini/Antigravity 转 Chat 时，同一 SSE 帧中的多个正文和思考 Part 分别按源顺序累计；空文本签名载体不清空之前的内容。partialArgs 未完成时的正文中断校验仍先于聚合。
+- Gemini/Antigravity 转 Claude 时，`MALFORMED_FUNCTION_CALL` 只有没有可见正文/有效工具时才输出错误，已有部分输出保留；空工具占位和签名载体不算有效输出。Antigravity 转 Chat 不输出无内容的空 delta，也不凭仅签名和零输出计量在 `[DONE]` 合成 stop。app 在转换前处理零输出异常，转换器保留自己的纯协议错误语义。
 - Gemini/Antigravity 的 `MAX_TOKENS` 转 Chat 时使用标准 `finish_reason=length`，`native_finish_reason` 保留 `max_tokens`，工具调用仍优先 `tool_calls`。
 - Gemini 转 Chat 的工具签名放在 `tool_calls[].extra_content.google.thought_signature`，延迟签名仅绑定当前候选最近的工具，正文、附件和不支持的 Part 隔断绑定。Gemini 经 Claude 回放的签名载体按标记恢复原 Part；不跨消息或语义边界，不降低提供商签名兼容性检查。
 - Chat 转 Responses 的 JSON/SSE 支持 typed content 数组及结构化 reasoning，思考和正文分别输出，未知 typed Part 不序列化成正文。同一消息/流帧的顶层 reasoning 表示非空时优先于内容数组的 thinking，避免重复输出；顶层表示为空时仍使用 typed thinking，普通正文始终保留。流式交错正文/思考保持独立 item 与顺序，已关闭的消息不因后续截断改为 incomplete；纯思考流有明确 finish_reason 才允许终结，缺失源协议终态不能伪造成功。

@@ -41,16 +41,48 @@ func antigravityClaudeModel(name string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "claude-")
 }
 
-// Keep paid candidates after all ordinary candidates, including when the latter
-// are empty. General cooldowns stay strict; standard quota has its own state.
+/**
+ * @brief 在普通候选之后追加通过严格冷却过滤的 Credits 候选
+ * @param ctx 请求上下文，含令牌渠道范围
+ * @param ordinary 已选出的普通候选；可为空
+ * @param modelName 路由模型
+ * @param clientProtocol 客户端协议
+ * @param body 用于排除不支持 Credits 的搜索请求
+ * @return 普通候选与可尝试的 Credits 候选；查询失败时保留普通候选
+ */
 func (s *Server) appendAntigravityCreditsCandidates(ctx context.Context, ordinary []*model.Config, modelName, clientProtocol string, body []byte) []*model.Config {
-	if s.antigravityCredentials == nil || wantsAntigravityWebSearch(body) {
-		return ordinary
-	}
-	source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
+	paid, err := s.antigravityCreditsCandidatePool(ctx, modelName, body)
 	if err != nil {
 		log.Printf("[WARN] Antigravity credits candidates unavailable: %v", err)
 		return ordinary
+	}
+	paid, err = s.filterCooldownChannelsStrict(ctx, paid, modelName, clientProtocol)
+	if err != nil {
+		log.Printf("[WARN] Antigravity credits cooldown check failed: %v", err)
+		return ordinary
+	}
+	for _, cfg := range paid {
+		cfg.AntigravityCredits = true
+		cfg.CooldownFallback = false
+	}
+	return append(ordinary, paid...)
+}
+
+/**
+ * @brief 获取可参与 Credits 尝试的全部模型匹配候选，保留仍在冷却的渠道
+ * @param ctx 请求上下文
+ * @param modelName 路由模型
+ * @param body 用于排除不支持 Credits 的搜索请求
+ * @return 请求私有的配置副本，初始设置 CooldownFallback 供现有准入探测使用；不支持时为空
+ * @return 候选存储读取失败
+ */
+func (s *Server) antigravityCreditsCandidatePool(ctx context.Context, modelName string, body []byte) ([]*model.Config, error) {
+	if s.antigravityCredentials == nil || wantsAntigravityWebSearch(body) {
+		return nil, nil
+	}
+	source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
+	if err != nil {
+		return nil, err
 	}
 	paid := make([]*model.Config, 0)
 	for _, cfg := range source {
@@ -71,16 +103,7 @@ func (s *Server) appendAntigravityCreditsCandidates(ctx context.Context, ordinar
 		clone.CooldownFallback = true
 		paid = append(paid, clone)
 	}
-	paid, err = s.filterCooldownChannelsStrict(ctx, paid, modelName, clientProtocol)
-	if err != nil {
-		log.Printf("[WARN] Antigravity credits cooldown check failed: %v", err)
-		return ordinary
-	}
-	for _, cfg := range paid {
-		cfg.AntigravityCredits = true
-		cfg.CooldownFallback = false
-	}
-	return append(ordinary, paid...)
+	return paid, nil
 }
 
 func (m *antigravityCredentialManager) standardQuotaUntil(cfg *model.Config, modelName string) time.Time {

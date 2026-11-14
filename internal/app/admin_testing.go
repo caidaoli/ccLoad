@@ -2318,8 +2318,18 @@ func (s *Server) doChannelTestCodexWebsocket(
 	return resp, nil
 }
 
-// parseTestNonStreamResponse 解析非流式响应（成功/失败两路），写入 result 并返回。
-// 提取自 testChannelAPIWithURL 内嵌闭包，行为保持不变。
+/**
+ * @brief 解析管理测试非流式响应，按代理边界拒绝 Gemini 零输出异常并写入测试结果。
+ * @param ctx 测试请求上下文。
+ * @param requestPlan 已确定客户端、上游协议和提供商的请求计划。
+ * @param testReq 测试模型、计费和图片选项。
+ * @param resp 上游 HTTP 响应。
+ * @param contentType 上游响应内容类型。
+ * @param start 本次测试开始时间。
+ * @param bodyBytes 完整上游响应体。
+ * @param result 待写入的测试结果。
+ * @return 含成功状态、响应或错误诊断的原结果映射。
+ */
 func (s *Server) parseTestNonStreamResponse(
 	ctx context.Context,
 	requestPlan *channelTestRequestPlan,
@@ -2351,7 +2361,16 @@ func (s *Server) parseTestNonStreamResponse(
 				result["raw_response"] = string(bodyBytes)
 				return result
 			}
-			if errorBody := antigravityNonStreamResponseErrorBody(upstreamBody); len(errorBody) > 0 {
+			translatedRequestBody, unwrapErr = unwrapAntigravityRequest(requestPlan.requestBody)
+			if unwrapErr != nil {
+				result["success"] = false
+				result["error"] = "解包 Antigravity 测试请求失败: " + unwrapErr.Error()
+				return result
+			}
+			parseBody = upstreamBody
+		}
+		if requestPlan.upstreamProtocol == util.ProtocolGemini {
+			if errorBody := geminiNonStreamResponseErrorBody(upstreamBody); len(errorBody) > 0 {
 				result["success"] = false
 				result["upstream_status_code"] = resp.StatusCode
 				result["status_code"] = http.StatusBadGateway
@@ -2360,13 +2379,6 @@ func (s *Server) parseTestNonStreamResponse(
 				result["upstream_response_body"] = string(bodyBytes)
 				return result
 			}
-			translatedRequestBody, unwrapErr = unwrapAntigravityRequest(requestPlan.requestBody)
-			if unwrapErr != nil {
-				result["success"] = false
-				result["error"] = "解包 Antigravity 测试请求失败: " + unwrapErr.Error()
-				return result
-			}
-			parseBody = upstreamBody
 		}
 		if (requestPlan.clientProtocol != requestPlan.upstreamProtocol || requestPlan.antigravityOAuth) && len(bodyBytes) > 0 {
 			translatedBody, translateErr := s.protocolRegistry.TranslateResponseNonStream(

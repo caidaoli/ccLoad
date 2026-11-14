@@ -5721,6 +5721,11 @@ func TestResponsesWebsocketMapsFinal429To503ForCodexRetry(t *testing.T) {
 		errorBody["type"] != "server_error" || errorBody["code"] != "upstream_rate_limited" {
 		t.Fatalf("websocket retry event=%#v, want 503 server_error/upstream_rate_limited", event)
 	}
+	headers, _ := event["headers"].(map[string]any)
+	retryAfter, _ := headers["Retry-After"].(string)
+	if seconds, err := strconv.Atoi(retryAfter); err != nil || seconds < 58 || seconds > 60 {
+		t.Fatalf("mapped websocket Retry-After=%q, want pool cooldown of 60 seconds", retryAfter)
+	}
 	if _, _, err := conn.ReadMessage(); !websocket.IsCloseError(err, websocket.CloseInternalServerErr) {
 		t.Fatalf("websocket close error=%v, want 1011", err)
 	}
@@ -5839,6 +5844,34 @@ func TestResponsesWebsocketPreservesFinalHTTPError(t *testing.T) {
 			}
 			wantHeaders := map[string]string{
 				"Retry-After": "120", "X-Request-Id": "request-final-error", "X-Ratelimit-Remaining-Requests": "0",
+			}
+			if tt.status == http.StatusTooManyRequests {
+				seconds, err := strconv.Atoi(event.Headers["Retry-After"])
+				if err != nil || seconds <= 0 {
+					t.Fatalf("Retry-After=%q, want a positive pool cooldown", event.Headers["Retry-After"])
+				}
+				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				until := cooldowns[1]["gpt-test"]
+				channels, err := env.store.GetAllChannelCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				keys, err := env.store.GetAllKeyCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, deadline := range []time.Time{channels[1], keys[1][0]} {
+					if deadline.After(until) {
+						until = deadline
+					}
+				}
+				if delta := time.Now().Add(time.Duration(seconds) * time.Second).Sub(until); delta < -2*time.Second || delta > 2*time.Second {
+					t.Fatalf("Retry-After=%q differs from stored pool deadline %s", event.Headers["Retry-After"], until)
+				}
+				wantHeaders["Retry-After"] = event.Headers["Retry-After"]
 			}
 			if !reflect.DeepEqual(event.Headers, wantHeaders) {
 				t.Fatalf("headers=%#v, want safe headers %#v", event.Headers, wantHeaders)

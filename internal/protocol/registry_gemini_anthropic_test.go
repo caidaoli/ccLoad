@@ -290,10 +290,68 @@ func TestRegistry_TranslateResponseNonStream_GeminiMalformedFunctionCallToAnthro
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	rawResp := []byte(`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":3,"totalTokenCount":3},"modelVersion":"gemini-2.5-pro"}`)
-	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, rawResp)
-	if err == nil || !strings.Contains(err.Error(), "MALFORMED_FUNCTION_CALL") {
-		t.Fatalf("malformed Gemini function call must fail translation, got err=%v body=%s", err, got)
+	for _, parts := range []string{`[]`, `[{"functionCall":{}}]`, `[{"functionCall":{"args":{}}}]`, `[{"text":"thinking","thought":true}]`, `[{"thoughtSignature":"opaque-signature","text":""}]`} {
+		rawResp := []byte(fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":%s},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":3,"totalTokenCount":3},"modelVersion":"gemini-2.5-pro"}`, parts))
+		got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, rawResp)
+		if err == nil || !strings.Contains(err.Error(), "MALFORMED_FUNCTION_CALL") {
+			t.Fatalf("malformed Gemini function call must fail translation, got err=%v body=%s", err, got)
+		}
+	}
+}
+
+/**
+ * @brief Gemini 异常工具终止保留已生成正文和有效调用，流式与非流式均正常收尾
+ * @param t 测试上下文
+ */
+func TestRegistryGeminiMalformedFunctionCallPreservesVisibleOutput(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct{ part, reason, contentType string }{
+		{`{"text":"partial answer"}`, "end_turn", "text"},
+		{`{"functionCall":{"name":"lookup","args":{"query":"go"}}}`, "tool_use", "tool_use"},
+	} {
+		raw := []byte(fmt.Sprintf(`{"candidates":[{"content":{"parts":[%s]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":3,"totalTokenCount":103}}`, tc.part))
+		response, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.Anthropic, "gemini-2.5-pro", nil, nil, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gjson.GetBytes(response, "stop_reason").String() != tc.reason || gjson.GetBytes(response, "content.0.type").String() != tc.contentType {
+			t.Fatalf("unexpected response: %s", response)
+		}
+		if tc.contentType == "text" && gjson.GetBytes(response, "content.0.text").String() != "partial answer" || tc.contentType == "tool_use" && gjson.GetBytes(response, "content.0.input.query").String() != "go" {
+			t.Fatalf("generated content changed: %s", response)
+		}
+		var state any
+		var output []byte
+		for _, chunk := range [][]byte{append(append([]byte("data: "), raw...), []byte("\n\n")...), []byte("data: [DONE]\n\n")} {
+			frames, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "gemini-2.5-pro", nil, nil, chunk, &state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output = append(output, bytes.Join(frames, nil)...)
+		}
+		stops, deltas := 0, 0
+		for line := range strings.SplitSeq(string(output), "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			switch event.Get("type").String() {
+			case "error":
+				t.Fatalf("visible output became an error: %s", event.Raw)
+			case "message_stop":
+				stops++
+			case "message_delta":
+				deltas++
+				if event.Get("delta.stop_reason").String() != tc.reason || event.Get("usage.input_tokens").Int() != 10 || event.Get("usage.cache_read_input_tokens").Int() != 90 || event.Get("usage.output_tokens").Int() != 3 {
+					t.Fatalf("unexpected terminal delta: %s", event.Raw)
+				}
+			}
+		}
+		if stops != 1 || deltas != 1 {
+			t.Fatalf("expected one terminal delta and stop: %s", output)
+		}
 	}
 }
 

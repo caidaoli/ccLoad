@@ -5151,6 +5151,10 @@ func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 非流式 Gemini 异常终止只拒绝零输出，保留部分答案并维持失败用量及冷却契约
+ * @param t 测试上下文
+ */
 func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 	t.Parallel()
 	for _, adapter := range antigravityProviderAdapterCases() {
@@ -5158,10 +5162,11 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 			name       string
 			candidates string
 			fallback   bool
+			partial    bool
 		}{
 			{name: "without-parts", candidates: `[{"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
-			{name: "with-text", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
-			{name: "later-candidate", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"STOP"},{"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
+			{name: "with-text", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]`, partial: true},
+			{name: "later-candidate", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"STOP"},{"finishReason":"MALFORMED_FUNCTION_CALL"}]`, partial: true},
 			{name: "channel-fallback", candidates: `[{"finishReason":"MALFORMED_FUNCTION_CALL"}]`, fallback: true},
 		} {
 			t.Run(adapter.name+"/"+test.name, func(t *testing.T) {
@@ -5192,11 +5197,15 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 				}
 				env := setupProxyTestEnv(t, channels, map[int]string{0: primary.URL, 1: fallback.URL})
 				response := doProxyRequest(t, env.engine, adapter.path, adapter.body, nil)
-				if test.fallback {
+				if test.partial {
+					if response.Code != http.StatusOK || gjson.Get(response.Body.String(), adapter.nonStreamTextPath).String() != "not a successful answer" {
+						t.Fatalf("partial output status=%d body=%s", response.Code, response.Body.String())
+					}
+				} else if test.fallback {
 					if response.Code != http.StatusOK || gjson.Get(response.Body.String(), adapter.nonStreamTextPath).String() != "fallback answer" {
 						t.Fatalf("fallback status=%d body=%s", response.Code, response.Body.String())
 					}
-				} else if response.Code != http.StatusBadGateway || gjson.Get(response.Body.String(), "error.code").String() != "malformed_function_call" {
+				} else if response.Code != http.StatusBadGateway || gjson.Get(response.Body.String(), "error.code").String() != "gemini_zero_output" {
 					t.Fatalf("status=%d body=%s, want structured 502", response.Code, response.Body.String())
 				}
 				var wantFallbackHits int64
@@ -5207,9 +5216,19 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 					t.Fatalf("primary=%d fallback=%d", primaryHits.Load(), fallbackHits.Load())
 				}
 				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
-					return entry.StatusCode == http.StatusBadGateway && entry.ChannelID > 0
+					wantStatus := http.StatusBadGateway
+					if test.partial {
+						wantStatus = http.StatusOK
+					}
+					return entry.StatusCode == wantStatus && entry.ChannelID > 0
 				})
-				if entry.Cost != 0 || entry.InputTokens != 9 || entry.OutputTokens != 5 || !strings.Contains(entry.Message, "MALFORMED_FUNCTION_CALL") {
+				if entry == nil {
+					t.Fatal("missing primary generation log")
+				}
+				if entry.InputTokens != 9 || entry.OutputTokens != 5 {
+					t.Fatalf("generation log=%+v, want usage preserved", entry)
+				}
+				if !test.partial && (entry.Cost != 0 || !strings.Contains(entry.Message, "MALFORMED_FUNCTION_CALL")) {
 					t.Fatalf("failed generation log=%+v, want usage preserved and no charge", entry)
 				}
 				ctx := context.Background()
@@ -5217,7 +5236,11 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if until := cooldowns[entry.ChannelID]["gemini-3-flash"]; !until.After(time.Now()) || len(cooldowns[entry.ChannelID]) != 1 {
+				if test.partial {
+					if len(cooldowns[entry.ChannelID]) != 0 {
+						t.Fatalf("partial output unexpectedly cooled models: %v", cooldowns[entry.ChannelID])
+					}
+				} else if until := cooldowns[entry.ChannelID]["gemini-3-flash"]; !until.After(time.Now()) || len(cooldowns[entry.ChannelID]) != 1 {
 					t.Fatalf("model cooldowns=%v, want only failed model", cooldowns[entry.ChannelID])
 				}
 				stored, err := env.store.GetConfig(ctx, entry.ChannelID)
@@ -12236,8 +12259,9 @@ func TestProxy_CodexMap429To503Setting(t *testing.T) {
 				t.Fatalf("client protocol %s status=%d, want %d; body=%s",
 					tt.clientProtocol, response.Code, tt.wantStatus, response.Body.String())
 			}
-			if response.Header().Get("Retry-After") != "60" || response.Body.String() != upstreamBody {
-				t.Fatalf("upstream response changed: headers=%v body=%s", response.Header(), response.Body.String())
+			seconds, err := strconv.Atoi(response.Header().Get("Retry-After"))
+			if err != nil || seconds < 58 || seconds > 60 || response.Body.String() != upstreamBody {
+				t.Fatalf("unexpected pool retry time or upstream body: headers=%v body=%s", response.Header(), response.Body.String())
 			}
 		})
 	}
@@ -12283,6 +12307,202 @@ func TestProxy_CodexMap429To503Setting(t *testing.T) {
 		}
 		t.Fatal("proxy summary log not found within deadline")
 	})
+}
+
+/**
+ * @brief 验证 HTTP、流式 HTTP 和 WebSocket 的最终限流使用整个合格池的真实恢复时间
+ * @param t 测试上下文
+ */
+func TestProxy_TerminalRateLimitPoolRetryAfter(t *testing.T) {
+	t.Parallel()
+	for _, transport := range []string{"http", "http-stream", "websocket"} {
+		for _, tc := range []struct {
+			name        string
+			status      int
+			firstDelay  int64
+			wantSeconds int
+			wantCalls   int32
+		}{
+			{name: "earliest attempted channel", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 2},
+			{name: "already cooled model key and channel", status: 429, firstDelay: 120, wantSeconds: 30, wantCalls: 1},
+			{name: "candidate recovered during request", status: 429, firstDelay: 120, wantSeconds: 777, wantCalls: 1},
+			{name: "requested channel", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
+			{name: "token channel restriction", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
+			{name: "unauthorized key", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
+			{name: "outside availability window", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
+			{name: "cost limit", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
+			{name: "fuzzy candidate available", status: 429, firstDelay: 40, wantSeconds: 777, wantCalls: 1},
+			{name: "fuzzy Antigravity ordinary candidate available", status: 429, firstDelay: 40, wantSeconds: 777, wantCalls: 1},
+			{name: "cooled Credits candidate recovers first", status: 429, firstDelay: 40, wantSeconds: 20, wantCalls: 1},
+			{name: "non 429 preserves hint", status: 503, firstDelay: 40, wantSeconds: 777, wantCalls: 2},
+		} {
+			t.Run(transport+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				const requestModel = "claude-sonnet-4-5"
+				const upstreamBody = `{"error":{"type":"rate_limit_error","code":"pool_test","message":"retry later"}}`
+				ctx := context.Background()
+				var env *proxyTestEnv
+				var calls atomic.Int32
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls.Add(1)
+					if tc.name == "candidate recovered during request" {
+						if err := env.store.ResetAllCooldowns(ctx, 2); err != nil {
+							t.Error(err)
+						}
+						env.server.invalidateChannelRelatedCache(2)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Retry-After", "777")
+					w.Header().Set("X-Request-Id", "pool-request")
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, upstreamBody)
+				}))
+				defer upstream.Close()
+				channels := []testChannel{
+					{name: "pool-first", upstreamProtocol: util.ProtocolCodex, modelEntries: []model.ModelEntry{{Model: requestModel, RedirectModel: "actual-first"}}},
+					{name: "pool-second", upstreamProtocol: util.ProtocolCodex, modelEntries: []model.ModelEntry{{Model: requestModel, RedirectModel: "actual-second"}}},
+				}
+				for i := range channels {
+					delay := int64(120)
+					if i == 0 {
+						delay = tc.firstDelay
+					}
+					channels[i].cooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+						Enabled: true, Name: "pool recovery", StatusCodes: []int{tc.status}, Scope: model.CooldownScopeModel,
+						Mode: model.CooldownModeFixed, CooldownSeconds: delay,
+					}}}
+				}
+				if tc.name == "fuzzy candidate available" {
+					channels[1].modelEntries[0].Model = requestModel + "-20250929"
+				}
+				if tc.name == "fuzzy Antigravity ordinary candidate available" || tc.name == "cooled Credits candidate recovers first" {
+					credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "pool-antigravity")))
+					if err != nil {
+						t.Fatal(err)
+					}
+					credential.StandardQuota = map[string]time.Time{"claude-opus-4-6": time.Now().Add(5 * time.Minute)}
+					channels[1].oauthCredential, err = credential.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					channels[1].authType = model.AuthTypeAntigravityOAuth
+					channels[1].upstreamProtocol = util.ProtocolGemini
+					channels[1].modelEntries = []model.ModelEntry{
+						{Model: requestModel + "-20250929", RedirectModel: "claude-sonnet-4-6"},
+						{Model: requestModel + "-20250929", RedirectModel: "claude-opus-4-6"},
+					}
+					if tc.name == "cooled Credits candidate recovers first" {
+						channels[1].modelEntries = channels[1].modelEntries[1:]
+					}
+				}
+				env = setupProxyTestEnv(t, channels, map[int]string{0: upstream.URL, 1: upstream.URL})
+				headers := map[string]string{"User-Agent": "openai-python/2.21.0"}
+				switch tc.name {
+				case "already cooled model key and channel", "candidate recovered during request":
+					for _, err := range []error{
+						env.store.SetModelCooldown(ctx, 2, "actual-second", time.Now().Add(15*time.Second)),
+						env.store.SetKeyCooldown(ctx, 2, 0, time.Now().Add(30*time.Second)),
+						env.store.SetChannelCooldown(ctx, 2, time.Now().Add(20*time.Second)),
+					} {
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "requested channel":
+					headers["X-Ccload-Channel-Id"] = "1"
+				case "token channel restriction":
+					env.server.authService.authTokensMux.Lock()
+					env.server.authService.authTokenChannels[model.HashToken("test-api-key")] = mustChannelRestriction(t, model.ChannelRestrictionModeAllow, 1)
+					env.server.authService.authTokensMux.Unlock()
+				case "unauthorized key":
+					if err := env.store.UpdateAPIKeyModelScopes(ctx, 2, map[int]model.APIKeyModelScope{0: {AllowedModels: []string{"another-model"}}}); err != nil {
+						t.Fatal(err)
+					}
+				case "outside availability window", "cost limit":
+					cfg, err := env.store.GetConfig(ctx, 2)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if tc.name == "outside availability window" {
+						cfg.AvailableTimeStart = time.Now().Add(time.Hour).Format("15:04")
+						cfg.AvailableTimeEnd = time.Now().Add(2 * time.Hour).Format("15:04")
+					} else {
+						cfg.DailyCostLimit = 1
+						env.server.costCache.Add(2, 2)
+					}
+					if _, err := env.store.UpdateConfig(ctx, 2, cfg); err != nil {
+						t.Fatal(err)
+					}
+				case "fuzzy candidate available":
+					env.server.modelFuzzyMatch = true
+				case "fuzzy Antigravity ordinary candidate available", "cooled Credits candidate recovers first":
+					env.server.modelFuzzyMatch = true
+					delay := 2 * time.Minute
+					if tc.name == "cooled Credits candidate recovers first" {
+						delay = 20 * time.Second
+					}
+					if err := env.store.SetModelCooldown(ctx, 2, "claude-opus-4-6", time.Now().Add(delay)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				env.server.InvalidateChannelListCache()
+				env.server.InvalidateAPIKeysCache(2)
+				env.server.invalidateCooldownCache()
+				body := map[string]any{"model": requestModel, "input": "hello", "stream": transport != "http"}
+				var status int
+				var retryAfter, requestID string
+				var responseError map[string]any
+				if transport == "websocket" {
+					wsHeaders := make(http.Header)
+					for name, value := range headers {
+						wsHeaders.Set(name, value)
+					}
+					conn := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", wsHeaders)
+					if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+						t.Fatal(err)
+					}
+					body["type"] = "response.create"
+					if err := conn.WriteJSON(body); err != nil {
+						t.Fatal(err)
+					}
+					var event struct {
+						Status  int               `json:"status"`  ///< 最终上游状态
+						Error   map[string]any    `json:"error"`   ///< 保留的上游错误对象
+						Headers map[string]string `json:"headers"` ///< 可透传的响应头
+					}
+					if err := conn.ReadJSON(&event); err != nil {
+						t.Fatal(err)
+					}
+					status, responseError = event.Status, event.Error
+					retryAfter, requestID = event.Headers["Retry-After"], event.Headers["X-Request-Id"]
+				} else {
+					response := doProxyRequest(t, env.engine, "/v1/responses", body, headers)
+					status = response.Code
+					retryAfter, requestID = response.Header().Get("Retry-After"), response.Header().Get("X-Request-Id")
+					var payload struct {
+						Error map[string]any `json:"error"` ///< 保留的上游错误对象
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+						t.Fatalf("invalid error response: %v: %s", err, response.Body.String())
+					}
+					responseError = payload.Error
+				}
+				if status != tc.status || requestID != "pool-request" || !reflect.DeepEqual(responseError, map[string]any{"type": "rate_limit_error", "code": "pool_test", "message": "retry later"}) {
+					t.Fatalf("status=%d request-id=%q error=%v", status, requestID, responseError)
+				}
+				seconds, err := strconv.Atoi(retryAfter)
+				if err != nil || seconds < tc.wantSeconds-2 || seconds > tc.wantSeconds {
+					t.Fatalf("Retry-After=%q, want %d seconds (within 2s processing time)", retryAfter, tc.wantSeconds)
+				}
+				if tc.wantSeconds == 777 && seconds != tc.wantSeconds {
+					t.Fatalf("upstream Retry-After changed to %q without an exhausted cooldown pool", retryAfter)
+				}
+				if got := calls.Load(); got != tc.wantCalls {
+					t.Fatalf("upstream calls=%d, want %d", got, tc.wantCalls)
+				}
+			})
+		}
+	}
 }
 
 func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) {

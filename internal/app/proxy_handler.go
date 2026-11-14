@@ -844,6 +844,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		s.handleLocalCountTokens(c, all, localCountTokensLog("upstream failed"))
 		return
 	}
+	s.annotatePoolCooldownRetryAfter(ctx, reqCtx, lastResult)
 
 	channelIDs := make(map[int64]struct{}, len(cands))
 	for _, cfg := range cands {

@@ -1543,7 +1543,7 @@ func (s *Server) handleSuccessResponse(
 
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) &&
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || upstreamProtocol == util.ProtocolGemini) &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
 		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
@@ -1551,7 +1551,7 @@ func (s *Server) handleSuccessResponse(
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.responsesCompaction != nil) {
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.responsesCompaction != nil || upstreamProtocol == util.ProtocolGemini) {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
@@ -1710,6 +1710,18 @@ func (s *Server) handleSuccessResponse(
 	return finishStreaming(result, reqCtx.Duration().Seconds(), streamErr)
 }
 
+/**
+ * @brief 校验完整上游响应并转换客户端协议；Gemini 零输出异常在提交前返回 502。
+ * @param reqCtx 请求身份、转换计划及提供商状态。
+ * @param resp 成功状态的上游 HTTP 响应。
+ * @param hdrClone 上游响应头快照。
+ * @param w 客户端写入端。
+ * @param upstreamProtocol 实际上游协议。
+ * @param readStats 上游读取统计。
+ * @return 转发结果，包含失败响应的原始用量；信封解包失败时可能为 nil。
+ * @return 本次请求耗时，单位秒。
+ * @return 读取、解包、转换、写入或提示词拦截错误；已分类零输出异常以结果状态返回。
+ */
 func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
@@ -1780,8 +1792,8 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), blockErr
 	}
 
-	if reqCtx.antigravityOAuth {
-		if errorBody := antigravityNonStreamResponseErrorBody(responseBody); len(errorBody) > 0 {
+	if upstreamProtocol == util.ProtocolGemini {
+		if errorBody := geminiNonStreamResponseErrorBody(responseBody); len(errorBody) > 0 {
 			result.Status = http.StatusBadGateway
 			result.Body = errorBody
 			result.Header.Set("Content-Type", "application/json")
@@ -1949,6 +1961,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		return nil
 	}
 	translateEvent := func(rawEvent []byte) ([][]byte, error) {
+		if parser.geminiAbnormalFinish != "" {
+			return nil, nil
+		}
 		if reqCtx.codeBuddyOAuth && len(rawEvent) > 0 {
 			rawEvent = normalizeCodeBuddySSEEvent(rawEvent)
 		}
@@ -2043,7 +2058,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if shouldMarkUpstreamFirstByte(parser) {
 				markFirstStreamResponse(reqCtx, readStats)
 			}
-			if !deferredWriter.Committed() && parser.GetLastError() != nil {
+			if !deferredWriter.Committed() && parser.GetLastError() != nil && parser.geminiAbnormalFinish == "" {
 				return errAbortStreamBeforeWrite
 			}
 			if !deferredWriter.Committed() {
@@ -2055,6 +2070,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		},
 		translateEvent,
 		func() bool {
+			if parser.geminiErrorUsage {
+				return true
+			}
 			if reqCtx.codeBuddyOAuth {
 				return codeBuddyDone
 			}
@@ -2064,6 +2082,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		},
 	)
 	streamErr = parser.geminiFilterBlockError(streamErr)
+	if streamErr == nil {
+		parser.finalizeGeminiOutput()
+	}
 
 	// 上游已给出语义终态（如 finish_reason、stop_reason）时先补发终止事件，转换器据此完成收尾；
 	// 之后的 Finalize 只拦截真正缺少终态的截断流。
@@ -2073,7 +2094,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		reqCtx.transformPlan.ClientProtocol,
 		parser.IsStreamComplete(),
 		translatedComplete,
-		deferredWriter.Committed(),
+		deferredWriter.Committed() || upstreamProtocol == util.ProtocolGemini && parser.HasStreamOutput(),
 	)
 	if terminator != nil && protocol.ResponseToolInputError(state) == nil && parser.GetLastError() == nil {
 		chunks, doneErr := translateEvent(terminator)
@@ -2100,7 +2121,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	}
 	toolInputErr := protocol.ResponseToolInputError(state)
 
-	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
+	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite) ||
+		(streamErr == nil && !deferredWriter.Committed() && parser.GetLastError() != nil)
 	if abortedBeforeCommit {
 		streamErr = nil
 	} else if !deferredWriter.Committed() {
@@ -2384,8 +2406,11 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamP
 	return strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")
 }
 
-// classifySSEErrorStatus 根据响应体内容判定 SSE 错误的状态码：
-// 上下文超限、加密内容失效、跨资源条目 → 400；上游流中断 → 599；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
+/**
+ * @brief 将 SSE 错误映射为代理失败状态，保留可重试零输出与明确上游状态。
+ * @param body 上游或本地合成的 SSE 错误 JSON。
+ * @return 对应 HTTP 状态或 596/597/599 内部错误状态。
+ */
 func classifySSEErrorStatus(body []byte) int {
 	// 加密内容失效与 HTTP 400 同属请求语义错误：按 400 才能触发同渠道修复重试，
 	// 冷却也只限当前模型，而不是冷却整个 Key。
@@ -2394,6 +2419,9 @@ func classifySSEErrorStatus(body []byte) int {
 	}
 	if gjson.GetBytes(body, "error.code").String() == responsesWebsocketInterruptedCode {
 		return util.StatusStreamIncomplete
+	}
+	if gjson.GetBytes(body, "error.code").String() == "gemini_zero_output" {
+		return http.StatusBadGateway
 	}
 	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
 		return status
@@ -3383,6 +3411,21 @@ func markIncompleteStreamForwardResult(res *fwResult) {
 	}
 }
 
+/**
+ * @brief 按响应是否提交决定故障转移或协议内报错，已提交流不重放。
+ * @param ctx 请求上下文。
+ * @param cfg 本次渠道快照。
+ * @param keyIndex 当前凭据索引。
+ * @param actualModel 实际上游模型。
+ * @param selectedKey 本次凭据。
+ * @param res 上游失败与提交状态。
+ * @param duration 尝试耗时，单位秒。
+ * @param reqCtx 代理请求状态。
+ * @param w 客户端写入端。
+ * @param deferChannelCooldown 是否延迟渠道冷却。
+ * @return 已记录日志及部分用量的代理结果。
+ * @return 未提交时允许故障转移；已提交时返回客户端。
+ */
 func (s *Server) handleCommittedAwareProxyError(
 	ctx context.Context,
 	cfg *model.Config,
@@ -3413,11 +3456,14 @@ func (s *Server) handleCommittedAwareProxyError(
 	// close 1011 通知客户端重放，补终态会让客户端把回合当作失败结束。
 	if reqCtx.isStreaming && ctx.Err() == nil && w != nil {
 		message := committedStreamFailureMessage(res.SSEErrorEvent)
+		geminiZeroOutput := gjson.GetBytes(res.SSEErrorEvent, "error.code").String() == "gemini_zero_output"
 		switch {
 		case reqCtx.clientProtocol == protocol.Anthropic:
-			if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() {
+			if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() || geminiZeroOutput {
 				writeAnthropicStreamErrorEvent(w, message)
 			}
+		case reqCtx.clientProtocol == protocol.Gemini && geminiZeroOutput:
+			_ = writeSSEChunks(w, [][]byte{fmt.Appendf(nil, "data: {\"error\":{\"code\":502,\"status\":\"INTERNAL\",\"message\":%q}}\n\n", message)})
 		case res.UnterminatedTranslatedStream == nil:
 		case reqCtx.clientProtocol == protocol.OpenAI:
 			writeOpenAIStreamErrorEvent(w, message)

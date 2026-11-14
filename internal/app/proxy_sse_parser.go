@@ -66,8 +66,12 @@ type sseUsageParser struct {
 	sanitizer        sseLargeFieldSanitizer
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
-	lastError          []byte // 最后一个error事件的完整JSON（data字段内容）
-	geminiFilterNotice string ///< 最后一个非心跳帧是缺少生成身份和终态的过滤通知
+	lastError            []byte // 最后一个error事件的完整JSON（data字段内容）
+	geminiFilterNotice   string ///< 最后一个非心跳帧是缺少生成身份和终态的过滤通知
+	geminiVisibleOutput  bool   ///< 已见非思考文本、有效工具调用、媒体或搜索结果。
+	geminiSawPayload     bool   ///< 已见 Gemini candidate 或用量，纯签名不能构成输出。
+	geminiAbnormalFinish string ///< 零可见输出时的异常结束原因，锁定后只继续收集用量。
+	geminiErrorUsage     bool   ///< 异常结束帧或后续帧已提供用量，可以停止读取。
 
 	// streamComplete 表示上游已给出语义终态，用于判定流是否完整：[DONE]、message_stop、
 	// Responses/Images 终态，以及 OpenAI finish_reason、Gemini finishReason、
@@ -599,6 +603,9 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
 	if data == "[DONE]" {
+		if p.geminiAbnormalFinish != "" || p.upstreamProtocol == util.ProtocolGemini && !p.hasStreamOutput && !p.streamComplete {
+			return nil
+		}
 		p.streamComplete, p.streamEnded = true, true
 		return nil
 	}
@@ -637,11 +644,16 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 	}
 	p.captureResponseModel(event, p.upstreamProtocol)
-	if usage := extractUsage(event); usage != nil {
+	usage := extractUsage(event)
+	if usage != nil {
 		p.applyUsage(usage, p.upstreamProtocol)
 	}
 	p.applyToolUsageFromPayload(event)
 	if p.upstreamProtocol == util.ProtocolGemini {
+		if p.geminiAbnormalFinish != "" {
+			p.geminiErrorUsage = p.geminiErrorUsage || usage != nil
+			return nil
+		}
 		if notice := geminiFilterNotice(event); notice != "" {
 			p.geminiFilterNotice = notice
 			return nil
@@ -669,7 +681,19 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// Responses 元数据与空骨架事件不构成语义输出：客户端可以在这些事件后重新开始回合。
 	// event: 行与 JSON type 都要认，和 isSuccessfulResponsesTerminal 一样。只有真正的
 	// 内容事件才标记为有流输出，以便 deferredWriter 在 error 到来前不会过早 commit。
-	if isResponsesPreOutputEvent(payloadType, data) || isResponsesPreOutputEvent(eventType, data) {
+	if p.upstreamProtocol == util.ProtocolGemini {
+		visible, thought := geminiPayloadOutput(event)
+		p.geminiVisibleOutput = p.geminiVisibleOutput || visible
+		_, hasCandidates := event["candidates"]
+		p.geminiSawPayload = p.geminiSawPayload || hasCandidates || usage != nil
+		if reason := geminiAbnormalFinishReason(event); reason != "" && !p.geminiVisibleOutput {
+			p.geminiAbnormalFinish = reason
+			p.geminiErrorUsage = usage != nil
+			p.recordError(geminiZeroOutputErrorBody(reason))
+			return nil
+		}
+		p.hasStreamOutput = p.hasStreamOutput || visible || thought || geminiStreamPayloadComplete(event)
+	} else if isResponsesPreOutputEvent(payloadType, data) || isResponsesPreOutputEvent(eventType, data) {
 		p.hasResponsesMetadata = true
 	} else {
 		p.hasStreamOutput = true
@@ -713,8 +737,6 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if effort := extractThinkingEffortFromPayload(event); effort != "" {
 		p.ThinkingEffort = effort
 	}
-
-	usage := extractUsage(event)
 
 	if usage == nil {
 		return nil
@@ -1142,6 +1164,133 @@ func anthropicStreamPayloadComplete(payload map[string]any) bool {
 	delta, _ := payload["delta"].(map[string]any)
 	reason, _ := delta["stop_reason"].(string)
 	return strings.TrimSpace(reason) != ""
+}
+
+/**
+ * @brief 区分 Gemini 可见输出与真实思考；签名载体和空对象不算输出。
+ * @param payload 已解码的 Gemini 响应或流事件，不含 provider 信封。
+ * @return 是否包含非空白文本、有效工具/媒体/执行结果或搜索依据。
+ * @return 是否包含真实思考内容；用于保持思考首字节及时下发。
+ */
+func geminiPayloadOutput(payload map[string]any) (bool, bool) {
+	visible, thought := false, false
+	candidates, _ := payload["candidates"].([]any)
+	for _, item := range candidates {
+		candidate, _ := item.(map[string]any)
+		grounding, _ := candidate["groundingMetadata"].(map[string]any)
+		chunks, _ := grounding["groundingChunks"].([]any)
+		visible = visible || len(chunks) > 0
+		content, _ := candidate["content"].(map[string]any)
+		parts, _ := content["parts"].([]any)
+		for _, item := range parts {
+			part, _ := item.(map[string]any)
+			text, _ := part["text"].(string)
+			hasContent := geminiPartHasStructuredOutput(part)
+			if isThought, _ := part["thought"].(bool); isThought {
+				thought = thought || text != "" || hasContent
+			} else {
+				visible = visible || strings.TrimSpace(text) != "" || hasContent
+			}
+		}
+	}
+	return visible, thought
+}
+
+/**
+ * @brief 检查 Gemini part 中实际生成的结构化内容，兼容官方两种字段拼写。
+ * @param part 上游 part 对象。
+ * @return 有工具身份/参数、媒体、可执行代码或执行结果时为 true。
+ */
+func geminiPartHasStructuredOutput(part map[string]any) bool {
+	for _, key := range []string{"functionCall", "function_call"} {
+		call, _ := part[key].(map[string]any)
+		for _, field := range []string{"name", "id"} {
+			if value, _ := call[field].(string); strings.TrimSpace(value) != "" {
+				return true
+			}
+		}
+		if args, _ := call["args"].(map[string]any); len(args) > 0 {
+			return true
+		}
+		for _, field := range []string{"partialArgs", "partial_args"} {
+			if args, _ := call[field].([]any); len(args) > 0 {
+				return true
+			}
+		}
+	}
+	for _, fields := range [][2]string{
+		{"inlineData", "data"}, {"inline_data", "data"},
+		{"fileData", "fileUri"}, {"fileData", "file_uri"},
+		{"file_data", "fileUri"}, {"file_data", "file_uri"},
+		{"executableCode", "code"}, {"executable_code", "code"},
+		{"codeExecutionResult", "output"}, {"codeExecutionResult", "outcome"},
+		{"code_execution_result", "output"}, {"code_execution_result", "outcome"},
+	} {
+		value, _ := part[fields[0]].(map[string]any)
+		if text, _ := value[fields[1]].(string); strings.TrimSpace(text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+/**
+ * @brief 识别上游明确的生成异常，不把正常限长和内容拒绝当作可重试失败。
+ * @param payload 已解码的 Gemini 响应或流事件。
+ * @return 已识别的异常 finishReason；正常或未知原因返回空字符串。
+ */
+func geminiAbnormalFinishReason(payload map[string]any) string {
+	candidates, _ := payload["candidates"].([]any)
+	for _, item := range candidates {
+		candidate, _ := item.(map[string]any)
+		reason, _ := candidate["finishReason"].(string)
+		switch reason = strings.ToUpper(strings.TrimSpace(reason)); reason {
+		case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE":
+			return reason
+		}
+	}
+	return ""
+}
+
+/**
+ * @brief 将零输出异常表示为可跨协议传递的上游错误。
+ * @param reason geminiAbnormalFinishReason 返回的原因；空字符串表示无终态 EOF。
+ * @return 带 gemini_zero_output 错误码的 JSON。
+ */
+func geminiZeroOutputErrorBody(reason string) []byte {
+	message := "Gemini stream closed with zero output"
+	if reason != "" {
+		message = "Gemini response finished with " + reason
+	}
+	return fmt.Appendf(nil, `{"error":{"type":"api_error","code":"gemini_zero_output","message":%q}}`, message)
+}
+
+/**
+ * @brief 在协议转换前识别 Gemini 非流式零输出异常，已有有效输出保持原语义。
+ * @param response 已去除 provider 信封的响应 JSON。
+ * @return 零输出异常错误体；其他响应返回 nil，由原有响应校验继续处理。
+ */
+func geminiNonStreamResponseErrorBody(response []byte) []byte {
+	payload, err := sseJSONObjectMap(response)
+	if err != nil {
+		return nil
+	}
+	if reason := geminiAbnormalFinishReason(payload); reason != "" {
+		if visible, _ := geminiPayloadOutput(payload); !visible {
+			return geminiZeroOutputErrorBody(reason)
+		}
+	}
+	return nil
+}
+
+/**
+ * @brief 流结束时拒绝只有签名、空壳或用量且没有正常终态的 Gemini 流。
+ * @note 仅补充没有既有上游错误的解析状态，不覆盖传输错误与取消。
+ */
+func (p *sseUsageParser) finalizeGeminiOutput() {
+	if p.geminiSawPayload && !p.hasStreamOutput && !p.streamComplete && p.lastError == nil {
+		p.recordError(geminiZeroOutputErrorBody(""))
+	}
 }
 
 // geminiStreamPayloadComplete 判断 Gemini 流分片是否给出终态。

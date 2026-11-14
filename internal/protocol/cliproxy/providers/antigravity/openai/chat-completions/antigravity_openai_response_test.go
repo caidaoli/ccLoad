@@ -1,6 +1,7 @@
 package chat_completions
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -18,7 +19,6 @@ func TestAntigravityMultiPartContent(t *testing.T) {
 		{"mixed", `[{"text":"first ","thought":true},{"text":"Hello "},{"text":"second","thought":true},{"text":"world"}]`, "Hello world", "first second"},
 		{"text_signature", `[{"text":"answer"},{"text":"","thoughtSignature":"sig"}]`, "answer", ""},
 		{"reasoning_signature", `[{"text":"thought","thought":true},{"text":"","thought":true,"thought_signature":"sig"}]`, "", "thought"},
-		{"signature_only", `[{"text":"","thoughtSignature":"sig"}]`, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := []byte(`{"response":{"candidates":[{"content":{"parts":` + tc.parts + `}}]}}`)
@@ -466,6 +466,18 @@ func TestConvertAntigravityResponseToOpenAI_OmitToolCallsWhenAbsentInStreamingDe
 	if len(doneResults) == 1 {
 		if tcDone := gjson.GetBytes(doneResults[0], "choices.0.delta.tool_calls"); tcDone.Exists() {
 			t.Fatalf("choices.0.delta.tool_calls must not exist in synthesized DONE chunk, got: %s (type: %s)", tcDone.Raw, tcDone.Type)
+		}
+	}
+}
+
+func TestConvertAntigravityResponseToOpenAI_SignatureOnlyEmptyTextDoesNotStartStreamOrEmitNullDelta(t *testing.T) {
+	for _, part := range []string{`{"thoughtSignature":"opaque-sig","text":""}`, `{"thought":true,"thought_signature":"opaque-sig","text":""}`, `{}`} {
+		var state any
+		chunk := []byte(`{"response":{"candidates":[{"content":{"parts":[` + part + `]}}],"cpaUsageMetadata":{"promptTokenCount":378515,"cachedContentTokenCount":376466,"totalTokenCount":378515},"modelVersion":"gemini-4-hydrogen","responseId":"resp-7536"}}`)
+		for _, raw := range [][]byte{chunk, []byte("[DONE]")} {
+			if output := ConvertAntigravityResponseToOpenAI(context.Background(), "gemini-4-hydrogen", nil, nil, raw, &state); len(output) != 0 {
+				t.Fatalf("signature-only stream emitted %s", bytes.Join(output, nil))
+			}
 		}
 	}
 }

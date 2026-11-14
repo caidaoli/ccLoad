@@ -519,8 +519,12 @@ func (r responsesWebsocketTurnResult) finishPrivacy() {
 	}
 }
 
-// Final errors are emitted after execution returns, so include them in the
-// same turn diagnostic.
+/**
+ * @brief 输出回合最终错误及安全重试时间，并完成同一回合的隐私诊断
+ * @param conn 下游 WebSocket 连接
+ * @param turnErr 回合执行失败；重放错误保持其状态与错误码
+ * @return 编码或下游写入失败；成功返回 nil
+ */
 func (r responsesWebsocketTurnResult) writeError(conn *websocket.Conn, turnErr error) error {
 	defer r.finishPrivacy()
 	var payload []byte
@@ -529,12 +533,18 @@ func (r responsesWebsocketTurnResult) writeError(conn *websocket.Conn, turnErr e
 	} else {
 		status := http.StatusBadRequest
 		body := responsesWebsocketErrorBody{Type: "invalid_request_error", Code: "upstream_error", Message: turnErr.Error()}
+		var retryAfter string
 		if retryErr, ok := errors.AsType[*responsesWebsocketClientRetryError](turnErr); ok {
 			status = retryErr.responseStatus()
 			body = responsesWebsocketErrorBody{Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error()}
+			retryAfter = retryErr.retryAfter
+		}
+		event := gin.H{"type": "error", "status": status, "error": body}
+		if retryAfter != "" {
+			event["headers"] = map[string]string{"Retry-After": retryAfter}
 		}
 		var err error
-		payload, err = json.Marshal(gin.H{"type": "error", "status": status, "error": body})
+		payload, err = json.Marshal(event)
 		if err != nil {
 			return err
 		}
@@ -560,10 +570,14 @@ func (e *responsesWebsocketTerminalError) Error() string {
 	return safeBodyToString(e.payload)
 }
 
+/**
+ * @brief 以 1011 关闭连接并要求客户端完整重放的回合错误
+ */
 type responsesWebsocketClientRetryError struct {
-	status  int
-	code    string
-	message string
+	status     int    ///< 客户端可见状态；零值使用默认网关错误
+	code       string ///< 客户端错误码；空值使用默认重放错误码
+	message    string ///< 错误说明；空值使用默认重放提示
+	retryAfter string ///< 最终限流响应的安全重试时间；空值不输出
 }
 
 func (e *responsesWebsocketClientRetryError) Error() string {
@@ -871,13 +885,15 @@ func (s *Server) executeResponsesWebsocketTurn(
 			pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(bridgeWriter.completedOutput),
 		}, nil
 	}
+	s.annotatePoolCooldownRetryAfter(ctx, reqCtx, lastResult)
 	originalStatus := determineFinalClientStatus(lastResult)
 	status := s.clientFacingFinalStatus(reqCtx.codexClient, lastResult)
 	if originalStatus == http.StatusTooManyRequests && status == http.StatusServiceUnavailable {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{
-			status:  http.StatusServiceUnavailable,
-			code:    "upstream_rate_limited",
-			message: "all upstream channels were rate limited; reconnect and retry the request",
+			status:     http.StatusServiceUnavailable,
+			code:       "upstream_rate_limited",
+			message:    "all upstream channels were rate limited; reconnect and retry the request",
+			retryAfter: lastResult.header.Get("Retry-After"),
 		}
 	}
 	if lastResult != nil && status == http.StatusRequestEntityTooLarge &&

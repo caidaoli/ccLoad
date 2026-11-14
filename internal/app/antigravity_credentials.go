@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"net/http"
 	"sync"
@@ -14,8 +16,86 @@ import (
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 
+	"github.com/tidwall/gjson"
 	"golang.org/x/sync/singleflight"
 )
+
+/**
+ * @brief 停用被 Antigravity 明确以 TOS_VIOLATION 拒绝的账号对应渠道。
+ * @param ctx 本次请求上下文；已取消时使用既有冷却写入预算持久化停用。
+ * @param cfg 实际发送请求使用的 Antigravity 凭证快照。
+ * @param res HTTP 或 SSE 错误结果；调用方保证非 nil。
+ * @return 已处理 TOS 拒绝时返回 true，包括账号已替换或渠道已停用；非 TOS 或持久化失败返回 false。
+ * @note 同一 refresh token 下的 access token 刷新不影响停用；更换账号后的旧结果不改动新账号。成功停用后失效凭证、渠道与冷却缓存。
+ */
+func (s *Server) disableAntigravityTOSCredential(ctx context.Context, cfg *model.Config, res *fwResult) bool {
+	if !cfg.UsesAntigravityOAuth() {
+		return false
+	}
+	body := res.SSEErrorEvent
+	if len(body) == 0 {
+		status := res.UpstreamStatus
+		if status == 0 {
+			status = res.Status
+		}
+		if status != http.StatusForbidden {
+			return false
+		}
+		body = res.Body
+	}
+	var payload struct {
+		Error struct {
+			Code    int    `json:"code"`   ///< Google RPC 错误对应的 HTTP 状态。
+			Status  string `json:"status"` ///< Google RPC 标准状态名。
+			Details []struct {
+				Type   string `json:"@type"`  ///< Google RPC 详情的类型标识。
+				Reason string `json:"reason"` ///< ErrorInfo 的结构化拒绝原因。
+			} `json:"details"` ///< 供精确识别服务级账号停用的错误详情。
+		} `json:"error"` ///< 上游原始错误，普通消息文本不参与识别。
+	}
+	if json.Unmarshal(body, &payload) != nil || payload.Error.Code != http.StatusForbidden || payload.Error.Status != "PERMISSION_DENIED" {
+		return false
+	}
+	matched := false
+	for _, detail := range payload.Error.Details {
+		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == "TOS_VIOLATION" {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+
+	disableCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+	expected := cfg.OAuthCredential
+	refreshToken := gjson.Get(expected, "refresh_token").String()
+	for {
+		disabled, err := s.store.DisableOAuthChannelIfCredentialMatches(disableCtx, cfg.ID, model.AuthTypeAntigravityOAuth, expected)
+		if err != nil {
+			log.Printf("[ERROR] 停用 Antigravity TOS 违规渠道失败: channel_id=%d err=%v", cfg.ID, err)
+			return false
+		}
+		if disabled {
+			s.antigravityCredentials.invalidate(cfg.ID)
+			s.invalidateChannelRelatedCache(cfg.ID)
+			s.InvalidateChannelListCache()
+			log.Printf("[DISABLED] Antigravity 账号被上游以 TOS_VIOLATION 停用: channel_id=%d", cfg.ID)
+			return true
+		}
+		current, err := s.store.GetConfig(disableCtx, cfg.ID)
+		if err != nil {
+			log.Printf("[ERROR] 核对 Antigravity TOS 违规账号失败: channel_id=%d err=%v", cfg.ID, err)
+			return false
+		}
+		if !current.Enabled || !current.UsesAntigravityOAuth() ||
+			gjson.Get(current.OAuthCredential, "refresh_token").String() != refreshToken {
+			return true
+		}
+		expected = current.OAuthCredential
+	}
+}
 
 type antigravityCredentialManager struct {
 	mu               sync.RWMutex

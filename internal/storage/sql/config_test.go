@@ -300,6 +300,55 @@ func TestConfig_DisableOAuthChannelIfCredentialMatches(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Antigravity 账号停用状态重开数据库后仍生效，并保留 OAuth 凭证供后续刷新或重新授权。
+ * @param t 测试上下文。
+ */
+func TestConfig_DisabledAntigravityOAuthPersists(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "antigravity-disabled.db")
+	store, err := storage.CreateSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	credential := `{"type":"antigravity","access_token":"at","refresh_token":"rt","expired":"2031-01-01T00:00:00Z"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "tos-disabled", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"gemini"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gemini-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChannelCooldown(ctx, created.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if disabled, err := store.DisableOAuthChannelIfCredentialMatches(ctx, created.ID, model.AuthTypeAntigravityOAuth, credential); err != nil || !disabled {
+		t.Fatalf("disable=(%v, %v), want (true, nil)", disabled, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := storage.CreateSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = reopened
+	current, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Enabled || current.OAuthCredential != credential || current.CooldownUntil != 0 || current.CooldownDurationMs != 0 {
+		t.Fatalf("reopened disabled channel: %+v", current)
+	}
+	available, err := store.GetEnabledChannelsByModel(ctx, "gemini-test")
+	if err != nil || len(available) != 0 {
+		t.Fatalf("disabled channel available after reopen: channels=%v err=%v", available, err)
+	}
+}
+
 func TestConfig_CreateWithExistingExplicitOAuthIDCannotReplaceCredential(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
