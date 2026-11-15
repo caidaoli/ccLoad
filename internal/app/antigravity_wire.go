@@ -58,6 +58,16 @@ This information may or may not be relevant to the coding task, it is up for you
 const stripAntigravityInvalidThinkingSignatureStrategy = "strip_antigravity_invalid_thinking_signature"
 
 /**
+ * @brief 按 sub2api 的已知开场白限定身份中和范围，不匹配正文中的产品名称。
+ */
+var antigravitySystemIdentityOpeners = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are a Claude agent, built on Anthropic'?s Claude Agent SDK\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are Claude Code, Anthropic'?s official CLI for Claude\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are Codex,? (?:a coding agent |an agent )?based on GPT-[0-9]+(?:\.[0-9]+)*(?:-[a-z0-9]+)*\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are GPT-[0-9]+(?:\.[0-9]+)*(?:-[a-z0-9]+)* running in the Codex CLI\.?`),
+}
+
+/**
  * @brief 构建 Antigravity 与 CodeBuddy 共用的大小写不敏感、长词优先匹配器。
  * @param words 配置的敏感词；忽略单字符、重复项与已含混淆字符的词。
  * @return 匹配器；无有效词时返回 nil，表示禁用混淆。
@@ -321,6 +331,17 @@ func antigravitySSEData(event []byte) []byte {
 	return payload
 }
 
+/**
+ * @brief 将转换及渠道规则处理后的请求收敛为 Antigravity 出站信封。
+ * @param cfg 渠道凭据与积分模式；非 Antigravity 渠道或 nil 时原样返回。
+ * @param modelName 实际上游模型，用于工具、思考和输出限制的模型分支。
+ * @param body Gemini 请求对象，可包含 request 信封。
+ * @param sourceBody 客户端原始请求，用于搜索意图、工具 ID 与会话恢复。
+ * @param headers 客户端会话头，用于稳定会话标识。
+ * @param matcher 可选系统敏感词匹配器；nil 不影响已知客户端身份中和。
+ * @return 最终出站 JSON；失败时为 nil。
+ * @return 项目缺失、请求格式无效、积分模式不适用或 JSON 写入失败时返回错误。
+ */
 func prepareAntigravityRequestBody(
 	cfg *model.Config,
 	modelName string,
@@ -429,7 +450,10 @@ func prepareAntigravityRequestBody(
 	if err != nil {
 		return nil, fmt.Errorf("encode Antigravity request: %w", err)
 	}
-	raw = obfuscateAntigravitySystemInstruction(raw, matcher)
+	raw, err = rewriteAntigravitySystemInstruction(raw, matcher)
+	if err != nil {
+		return nil, fmt.Errorf("rewrite Antigravity system instruction: %w", err)
+	}
 	if structuredOutputPrompt != "" {
 		// 在混淆之后追加，schema 字段名里的敏感词不能被插入零宽字符。
 		raw = setJSONValue(raw, "request.systemInstruction.parts.-1.text", structuredOutputPrompt)
@@ -1017,34 +1041,57 @@ func antigravityNegativeSessionID(seed string) string {
 	return "-" + strconv.FormatInt(value, 10)
 }
 
-func obfuscateAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) []byte {
-	if matcher == nil || !gjson.ParseBytes(body).IsObject() {
-		return body
-	}
-	instruction := gjson.GetBytes(body, "request.systemInstruction")
-	if !instruction.Exists() {
-		return body
-	}
-	updated := body
-	var err error
-	switch {
-	case instruction.Type == gjson.String:
-		updated, err = sjson.SetBytes(updated, "request.systemInstruction", obfuscateAntigravityText(instruction.String(), matcher))
-	case instruction.IsObject():
-		for index, part := range instruction.Get("parts").Array() {
-			if part.Get("text").Type != gjson.String {
+/**
+ * @brief 在系统文本块开头中和已知客户端身份，再按配置混淆其余敏感词。
+ * @param body 已注入 Antigravity 身份的出站信封，系统指令可为字符串或 parts 对象。
+ * @param matcher 可选敏感词匹配器；nil 只关闭混淆，不关闭身份中和。
+ * @return 改写后的信封；失败时为 nil。
+ * @return 写入系统文本失败时返回 JSON 修改错误。
+ */
+func rewriteAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) ([]byte, error) {
+	rewriteText := func(original string) string {
+		rewritten := original
+		for _, opener := range antigravitySystemIdentityOpeners {
+			loc := opener.FindStringIndex(original)
+			if loc == nil {
 				continue
 			}
-			updated, err = sjson.SetBytes(updated, fmt.Sprintf("request.systemInstruction.parts.%d.text", index), obfuscateAntigravityText(part.Get("text").String(), matcher))
-			if err != nil {
-				return body
+			rest := original[loc[1]:]
+			if strings.HasPrefix(rest, ",") {
+				rewritten = "You are an AI agent" + rest
+			} else if rest == "" || strings.ContainsAny(rest[:1], " \t\r\n") {
+				rewritten = "You are an AI agent." + rest
+			} else {
+				continue
 			}
+			break
+		}
+		if matcher != nil {
+			rewritten = obfuscateAntigravityText(rewritten, matcher)
+		}
+		return rewritten
+	}
+	instruction := gjson.GetBytes(body, "request.systemInstruction")
+	if instruction.Type == gjson.String {
+		return sjson.SetBytes(body, "request.systemInstruction", rewriteText(instruction.String()))
+	}
+	for index, part := range instruction.Get("parts").Array() {
+		text := part.Get("text")
+		if text.Type != gjson.String {
+			continue
+		}
+		original := text.String()
+		rewritten := rewriteText(original)
+		if rewritten == original {
+			continue
+		}
+		var err error
+		body, err = sjson.SetBytes(body, fmt.Sprintf("request.systemInstruction.parts.%d.text", index), rewritten)
+		if err != nil {
+			return nil, err
 		}
 	}
-	if err != nil {
-		return body
-	}
-	return updated
+	return body, nil
 }
 
 // obfuscateChatSystemMessages only rewrites system/developer text. User content,

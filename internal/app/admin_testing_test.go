@@ -3385,6 +3385,10 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 管理测试使用 OAuth 凭据，并在出站前中和 Anthropic 测试模板的身份句。
+ * @param t 测试上下文。
+ */
 func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	t.Parallel()
 	var upstreamBody []byte
@@ -3404,7 +3408,7 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
 	channelID := fmt.Sprintf("%d", created.ID)
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
-		"model": "gemini-3-flash", "client_protocol": "openai", "stream": false, "content": "hello",
+		"model": "gemini-3-flash", "client_protocol": "anthropic", "stream": false, "content": "hello",
 	}))
 	c.Params = gin.Params{{Key: "id", Value: channelID}}
 	srv.HandleChannelTest(c)
@@ -3421,6 +3425,11 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	}
 	if gjson.GetBytes(upstreamBody, "project").String() != "gravity-admin-project" || gjson.GetBytes(upstreamBody, "request.contents").Array() == nil {
 		t.Fatalf("invalid Antigravity request envelope: %s", upstreamBody)
+	}
+	parts := gjson.GetBytes(upstreamBody, "request.systemInstruction.parts").Array()
+	if len(parts) != 3 || parts[1].Get("text").String() != "You are an AI agent." ||
+		parts[2].Get("text").String() != "Answer the user's questions clearly and help with software engineering tasks." {
+		t.Fatalf("Anthropic test identity not neutralized or instructions changed: %s", upstreamBody)
 	}
 	if got, _ := resp.Data["total_keys"].(float64); got != 0 {
 		t.Fatalf("total_keys=%v, want 0", resp.Data["total_keys"])

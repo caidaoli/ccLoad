@@ -23,6 +23,133 @@ import (
 const antigravitySchemaTestModel = "gemini-3-pro"
 
 /**
+ * @brief 代理出站仅中和系统文本块开头的已知客户端身份，保留后文、用户消息与工具描述。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravitySystemIdentity(t *testing.T) {
+	t.Parallel()
+	const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+	for _, tc := range []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{"claude code", identity + "\nKeep all instructions.", "You are an AI agent.\nKeep all instructions."},
+		{"claude sdk", "You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are an AI agent."},
+		{"codex", "You are Codex, an agent based on GPT-5.", "You are an AI agent."},
+		{"codex coding agent", "You are Codex, a coding agent based on GPT-6.1-sol.\nKeep all instructions.", "You are an AI agent.\nKeep all instructions."},
+		{"codex cli", "You are GPT-5.4 running in the Codex CLI.", "You are an AI agent."},
+		{"comma continuation", "You are Codex, based on GPT-5, with access to tools.", "You are an AI agent, with access to tools."},
+		{"case and whitespace", " \t\nYOU ARE CLAUDE CODE, ANTHROPICS OFFICIAL CLI FOR CLAUDE", "You are an AI agent."},
+		{"ordinary mention", "Discuss this sentence: " + identity, "Discuss this sentence: " + identity},
+		{"later line", "Keep all instructions.\n" + identity, "Keep all instructions.\n" + identity},
+		{"different product", "You are Claude Code, Anthropic's official CLI for ClaudeX.", "You are Claude Code, Anthropic's official CLI for ClaudeX."},
+		{"suffix boundary", identity + "example", identity + "example"},
+		{"neutral", "You are an AI agent.", "You are an AI agent."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				parts := gjson.GetBytes(body, "request.systemInstruction.parts").Array()
+				if len(parts) != 2 || parts[1].Get("text").String() != tc.want {
+					t.Errorf("system instruction=%s, want final part %q", gjson.GetBytes(body, "request.systemInstruction"), tc.want)
+				}
+				if gjson.GetBytes(body, "request.contents.0.parts.0.text").String() != identity ||
+					gjson.GetBytes(body, "request.tools.0.functionDeclarations.0.description").String() != identity {
+					t.Errorf("identity rewrite changed user content or tool description: %s", body)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
+				name: "identity", upstreamProtocol: "gemini", models: "gemini-3-flash",
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "identity-at"),
+			}}, map[int]string{0: upstream.URL}, map[string]string{"antigravity_sensitive_words": `[]`})
+			response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", map[string]any{
+				"system_instruction": map[string]any{"parts": []any{map[string]any{"text": tc.prompt}}},
+				"contents":           []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": identity}}}},
+				"tools": []any{map[string]any{"functionDeclarations": []any{map[string]any{
+					"name": "lookup", "description": identity, "parameters": map[string]any{"type": "object"},
+				}}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 四种客户端协议的系统身份在敏感词混淆前中和，其他系统文本继续按配置处理。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravitySystemIdentityAcrossProtocols(t *testing.T) {
+	t.Parallel()
+	const identity = "You are Claude Code, Anthropic's official CLI for Claude.\nKeep API instructions."
+	for _, clientProtocol := range []string{"anthropic", "openai", "codex", "gemini", "gemini existing identity"} {
+		t.Run(clientProtocol, func(t *testing.T) {
+			t.Parallel()
+			var rules *model.CustomRequestRules
+			if clientProtocol == "gemini existing identity" {
+				value, err := json.Marshal(identity + "\nYou are Antigravity.")
+				if err != nil {
+					t.Fatal(err)
+				}
+				rules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "request.systemInstruction", Value: value}}}
+			}
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				instruction := gjson.GetBytes(body, "request.systemInstruction")
+				parts := instruction.Get("parts").Array()
+				if clientProtocol == "gemini existing identity" {
+					if instruction.String() != "You are an AI agent.\nKeep A\u034FPI instructions.\nYou are Antigravity." {
+						t.Errorf("existing string identity not rewritten: %s", body)
+					}
+				} else if len(parts) != 2 || parts[1].Get("text").String() != "You are an AI agent.\nKeep A\u034FPI instructions." {
+					t.Errorf("identity not neutralized before obfuscation: %s", body)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "identity", upstreamProtocol: "gemini", models: "gemini-3-flash",
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "identity-at"),
+				customRequestRules: rules,
+			}}, map[int]string{0: upstream.URL})
+			body := map[string]any{"model": "gemini-3-flash"}
+			path := "/v1/messages"
+			switch clientProtocol {
+			case "anthropic":
+				body["system"] = identity
+				body["messages"] = []any{map[string]any{"role": "user", "content": "hello"}}
+				body["max_tokens"] = 128
+			case "openai":
+				path = "/v1/chat/completions"
+				body["messages"] = []any{map[string]any{"role": "system", "content": identity}, map[string]any{"role": "user", "content": "hello"}}
+			case "codex":
+				path = "/v1/responses"
+				body["input"] = []any{map[string]any{"role": "developer", "content": identity}, map[string]any{"role": "user", "content": "hello"}}
+			case "gemini", "gemini existing identity":
+				path = "/v1beta/models/gemini-3-flash:generateContent"
+				body["systemInstruction"] = identity
+				body["contents"] = []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}
+			}
+			response := doProxyRequest(t, env.engine, path, body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+/**
  * @brief 验证只有完整 TOS 违规签名会持久停用渠道，HTTP 与流内错误均生效且不暂停其他账号。
  * @param t 测试上下文。
  */
