@@ -4,9 +4,7 @@ ccLoad 是 Claude/OpenAI/Gemini/Codex 多协议 API 网关，负责渠道选择�
 
 ## 工作方式
 
-- 修改任务完成到实现、相关验证及本次引入问题的修复；常规本地操作按现有授权连续执行。
 - 按下表读取与当前改动有关的契约。新增或修正规则写入对应专题，根文件只保留通用约束与入口。
-- 发布使用仓库 `ccload-release`；CLIProxyAPI 核心及 provider adapter 的同步/同步审计使用 `sync-cliproxy-core`。
 - 上游参照源码优先用本机 checkout：CLIProxyAPI `~/Source/go/CLIProxyAPI`、sub2api `~/Source/go/sub2api`（`~/Source` 即 `~/Share/Source`）。checkout 不钉提交，对照时按专题文档或 `internal/protocol/cliproxy/UPSTREAM.md` 记录的提交用 `git -C <repo> show <commit>:<path>` 读，不读 HEAD；本机不存在时按记录的仓库与提交获取。
 
 ## 命令与验证
@@ -25,13 +23,13 @@ golangci-lint run ./...                            # Go 改动提交前零警告
 
 - 迭代运行受影响包；Go 改动提交前跑全量测试与 lint，前端改动跑 `make verify-web`；独立检查可并行。
 - 不用 `-count=1`，除非排查缓存、不稳定测试或测量性能。
-- 调整测试并行度时读 [测试并行化](.claude/agent-guide/testing.md)。发布和核心同步的专属验证命令见各自技能。
+- 调整测试并行度时读 [测试并行化](.claude/agent-guide/testing.md)。
 
 ## 通用代码约束
 
 - Git 提交说明（subject 与 body）、Tag 注释和 Release 说明一律用英文，格式遵循 Conventional Commits；对用户的回复语言不受影响。
 - 用 `any`；配置错误 fail-fast；`defer cancel()` 无条件调用，取消监听用 `context.AfterFunc`。
-- lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose/modernize；gosec 已禁，revive `exported` 因与 Doxygen 注释冲突已禁，modernize 不检查 `internal/protocol/cliproxy/` 快照。
+- lint 配置见 `.golangci.yml`：revive `exported` 因与 Doxygen 注释冲突已禁；modernize 不检查 `internal/protocol/cliproxy/` 快照。
 - JSON 重复 key 按 `encoding/json` 后者胜出，不加检测、拒绝或兼容兜底，审查也不作为问题；只有改写与渲染不一致时才就地收敛（见 `ordered_json.go`）。
 - Web 单选下拉必须可搜索：统一由 `searchable-select.js` 增强并复用 `createSearchableCombobox`；原生 `<select>` 仅作隐藏的表单/业务值载体。保留动态选项、禁用态、`input/change`、表单提交、键盘/ARIA 与 `<dialog>` 顶层菜单；多选控件未提供可搜索实现前禁止新增。
 
@@ -79,6 +77,7 @@ type credential struct {
 | Admin API、管理账户与定时任务 | `admin_types.go` → `admin_<feature>.go` → `server.go:SetupRoutes`；账户核心为 `channel_management_service.go`；[管理与定时任务](.claude/agent-guide/runtime-storage.md#渠道管理与定时检测) |
 | 发布、容器与进程内更新 | [.agents/skills/ccload-release/SKILL.md](.agents/skills/ccload-release/SKILL.md)；[更新机制](.claude/agent-guide/runtime-storage.md#发布与更新) |
 | 管理后台 / 独立介绍站 | `web/` 是管理后台；`www/` 是独立介绍站，`make www-setup` 复制共享资源后可独立部署 |
+
 ## Agent skills
 
 ### Issue tracker
@@ -91,4 +90,4 @@ type credential struct {
 
 ### Domain docs
 
-采用 single-context 布局；探索业务代码前，按 `docs/agents/domain.md` 读取领域文档。
+采用 single-context 布局；使用 domain-modeling 技能或根目录存在 `GLOSSARY.md` 时，按 `docs/agents/domain.md` 读取领域文档。
