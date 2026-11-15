@@ -2,9 +2,39 @@ name: Test
 
 on:
   pull_request:
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'web/**'
+      - 'www/**'
+      - 'scripts/**'
+      - 'Formula/**'
+      - 'Makefile'
+      - '.golangci.yml'
+      - '.github/workflows/test.yml'
+      - '.github/actions/**'
+      - '.github/scripts/**'
   push:
     branches:
       - master
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'web/**'
+      - 'www/**'
+      - 'scripts/**'
+      - 'Formula/**'
+      - 'Makefile'
+      - '.golangci.yml'
+      - '.github/workflows/test.yml'
+      - '.github/actions/**'
+      - '.github/scripts/**'
 
 permissions:
   contents: read

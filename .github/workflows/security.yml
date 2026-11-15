@@ -2,9 +2,21 @@ name: Security
 
 on:
   pull_request:
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/security.yml'
+      - '.github/actions/setup-go/**'
+      - '.github/actions/save-go-cache/**'
   push:
     branches:
       - master
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/security.yml'
+      - '.github/actions/setup-go/**'
+      - '.github/actions/save-go-cache/**'
   schedule:
     - cron: '17 3 * * 1'
   workflow_dispatch:
