@@ -2025,6 +2025,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/settings/:key", s.AdminGetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
 		admin.POST("/privacy-redaction/preview", s.HandlePrivacyRedactionPreview)
+		admin.GET("/reasoning-auto/prompts", s.HandleReasoningPrompts)
 
 		// 手动触发完整更新流程（检查、下载、校验、替换、空闲后重启）
 		admin.POST("/update/check", s.HandleManualUpdate)

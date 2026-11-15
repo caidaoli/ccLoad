@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -580,5 +581,226 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 		if entry.ReasoningDecision == nil || entry.ReasoningDecision.Reason != "timeout" || entry.ReasoningDecision.DurationMS < 90 || entry.ReasoningDecision.DurationMS > 400 {
 			t.Fatalf("timeout fallback metadata = %+v", entry.ReasoningDecision)
 		}
+	}
+}
+
+/**
+ * @brief 原生决策按重定向后的模型选择协议，提示词模板独立决定评分或双选择题
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionNativeProviders(t *testing.T) {
+	t.Parallel()
+	const score = `"effort":{"type":"score","score":1.1,"confidence":0.01,"probabilities":{"0":0.1,"1":0.2,"2":0.35,"3":0.35,"4":0}}`
+	const choice = `"effort":{"type":"choice","choice":"high","confidence":0.6},"depth":{"type":"choice","choice":"max","confidence":0.1}`
+	for _, tc := range []struct {
+		name, actualModel, template, basePath, path, questionType, effort, response string
+		input, output, cached                                                       int
+		unknown                                                                     bool
+	}{
+		{name: "aliyun root", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":12}}`, input: 12, unknown: true},
+		{name: "gemini version", actualModel: "gemini-decision-1", basePath: "/v1beta", path: "/v1beta/decisions", questionType: "score", effort: "max", response: `{"answers":{"effort":{"type":"score","confidence":0.01,"probabilities":{"0":0.1,"1":0.1,"2":0.1,"3":0.1,"4":0.6}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`, input: 13},
+		{name: "openai endpoint", actualModel: "gpt-6-luna", basePath: "/v1/decisions", path: "/v1/decisions", questionType: "score", effort: "high", response: `{"model":"gpt-6-luna-served","answers":[{"name":"effort","type":"score","score":0,"confidence":0.01,"probabilities":[{"value":3,"label":"xhigh","probability":0.35},{"value":0,"label":"low","probability":0.1},{"value":4,"label":"max","probability":0},{"value":1,"label":"medium","probability":0.2},{"value":2,"label":"high","probability":0.35}]}],"usage":{"input_tokens":14,"output_tokens":0,"input_tokens_details":{"cached_tokens":8}}}`, input: 14, cached: 8},
+		{name: "jev with native template", actualModel: "jev-latest", template: "gemini", basePath: "/v1/systemone", path: "/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":15,"output_tokens":1}}`, input: 15, output: 1},
+		{name: "aliyun with jev template", actualModel: "decision-model-preview", template: "jev", basePath: "/compatible-mode/v1", path: "/compatible-mode/v1/systemone", questionType: "choice", effort: "xhigh", response: `{"answers":{` + choice + `},"usage":{"input_tokens":16,"output_tokens":1}}`, input: 16, output: 1},
+		{name: "gemini with jev template", actualModel: "gemini-decision-1", template: "jev", basePath: "/v1beta/decisions", path: "/v1beta/decisions", questionType: "choice", effort: "xhigh", response: `{"answers":{` + choice + `},"usage":{"total_input_tokens":17,"total_output_tokens":1}}`, input: 17, output: 1},
+		{name: "openai with jev template", actualModel: "gpt-6-luna", template: "jev", basePath: "/v1", path: "/v1/decisions", questionType: "choice", effort: "xhigh", response: `{"answers":[{"name":"effort","type":"choice","choice":"high","confidence":0.6},{"name":"depth","type":"choice","choice":"max","confidence":0.1}],"usage":{"input_tokens":18,"output_tokens":1}}`, input: 18, output: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			levels := []string{"low", "medium", "high", "xhigh", "max"}
+			env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "logical-judge", apiKey: "judge-key", authType: model.AuthTypeSystemOne,
+				modelEntries: []model.ModelEntry{{Model: "logical-judge", RedirectModel: tc.actualModel, Pricing: channelPrice(1, 2)}}}, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Method != http.MethodPost {
+					t.Errorf("native endpoint=%s %s, want POST %s", r.Method, r.URL.Path, tc.path)
+				}
+				gemini := strings.HasPrefix(tc.actualModel, "gemini-")
+				if gemini && (r.Header.Get("x-goog-api-key") != "judge-key" || r.Header.Get("Authorization") != "") || !gemini && (r.Header.Get("Authorization") != "Bearer judge-key" || r.Header.Get("x-goog-api-key") != "") {
+					t.Errorf("native authentication=%v", r.Header)
+				}
+				body, _ := io.ReadAll(r.Body)
+				inputField := "state"
+				if gemini || tc.actualModel == "gpt-6-luna" {
+					inputField = "input"
+				}
+				input := gjson.GetBytes(body, inputField)
+				if gjson.GetBytes(body, "model").String() != tc.actualModel || input.Type != gjson.String || gjson.Get(input.String(), "conversation").String() != "task data" {
+					t.Errorf("native input=%s", body)
+				}
+				question := gjson.GetBytes(body, "questions.effort")
+				if tc.actualModel == "gpt-6-luna" {
+					question = gjson.GetBytes(body, "questions.0")
+					if question.Get("name").String() != "effort" {
+						t.Errorf("native named question=%s", body)
+					}
+					optionsField, labelField := "levels", "label"
+					if tc.questionType == "choice" {
+						optionsField, labelField = "choices", "value"
+					}
+					options := question.Get(optionsField).Array()
+					if len(options) != len(levels) {
+						t.Errorf("native options=%s", body)
+					} else {
+						for i, option := range options {
+							if option.Get(labelField).String() != levels[i] || option.Get("description").String() == "" {
+								t.Errorf("native option=%s", option.Raw)
+								break
+							}
+						}
+					}
+				} else if tc.questionType == "score" && (!question.Get("criteria").IsArray() || len(question.Get("criteria").Array()) != len(levels)) {
+					t.Errorf("native score criteria=%s", body)
+				}
+				if question.Get("type").String() != tc.questionType || question.Get("instructions").String() == "" {
+					t.Errorf("native question=%s", body)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.response)
+			})
+			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.PromptTemplate = tc.template })
+			cfg, err := env.store.GetConfig(context.Background(), 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.URLs[0].URL += tc.basePath
+			if _, err = env.store.UpdateConfig(context.Background(), 2, cfg); err != nil {
+				t.Fatal(err)
+			}
+			env.server.InvalidateChannelListCache()
+			result, err := env.server.executeReasoningDecision(context.Background(), "task data", levels)
+			if err != nil || result.effort != tc.effort || result.actualModel != tc.actualModel || result.costUnknown != tc.unknown || calls.Load() != 1 {
+				t.Fatalf("native decision=%+v error=%v calls=%d", result, err, calls.Load())
+			}
+			if result.usage.InputTokens != tc.input || result.usage.OutputTokens != tc.output || result.usage.CacheReadInputTokens != tc.cached {
+				t.Fatalf("native usage=%+v", result.usage)
+			}
+			if tc.questionType == "score" && result.confidence != nil || tc.questionType == "choice" && (result.confidence == nil || *result.confidence != 0.6) {
+				t.Fatalf("native confidence=%v", result.confidence)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 原生拒答与损坏概率不能伪造 low，仍保留已发生的用量
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionNativeInvalidAnswers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, actualModel, answer string
+	}{
+		{name: "refusal", actualModel: "gpt-6-luna", answer: `[{"name":"effort","type":"refusal"}]`},
+		{name: "missing probability", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","probabilities":{"0":0.1,"1":0.2,"2":0.7}}}`},
+		{name: "non numeric", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","probabilities":{"0":"0.1","1":0.2,"2":0.7,"3":0}}}`},
+		{name: "negative", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","probabilities":{"0":-0.1,"1":0.2,"2":0.7,"3":0.2}}}`},
+		{name: "above one", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","probabilities":{"0":1.1,"1":0,"2":0,"3":0}}}`},
+		{name: "all zero", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","score":0,"probabilities":{"0":0,"1":0,"2":0,"3":0}}}`},
+		{name: "invalid distribution", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","probabilities":{"0":1,"1":1,"2":1,"3":1}}}`},
+		{name: "unknown level", actualModel: "decision-model-preview", answer: `{"effort":{"type":"score","probabilities":{"0":0.1,"1":0.2,"2":0.7,"other":0}}}`},
+		{name: "mismatched label", actualModel: "gpt-6-luna", answer: `[{"name":"effort","type":"score","probabilities":[{"value":0,"label":"xhigh","probability":0.1},{"value":1,"label":"medium","probability":0.1},{"value":2,"label":"high","probability":0.7},{"value":3,"label":"low","probability":0.1}]}]`},
+		{name: "duplicate index", actualModel: "gpt-6-luna", answer: `[{"name":"effort","type":"score","probabilities":[{"value":0,"label":"low","probability":0.1},{"value":1,"label":"medium","probability":0.1},{"value":2,"label":"high","probability":0.7},{"value":2,"label":"high","probability":0.1}]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, _ := reasoningExecutorEnv(t, testChannel{name: "judge", models: tc.actualModel, authType: model.AuthTypeSystemOne, apiKey: "judge-key"}, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				_, _ = io.WriteString(w, `{"answers":`+tc.answer+`,"usage":{"input_tokens":12,"output_tokens":0}}`)
+			})
+			result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
+			if err == nil || result.effort != "" || result.reason != "invalid_response" || result.usage.InputTokens != 12 {
+				t.Fatalf("invalid native decision=%+v error=%v", result, err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 判断故障切换沿用一次配置快照，下一次管理测试使用最新自定义提示词
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionPromptSnapshotAndAdminTest(t *testing.T) {
+	t.Parallel()
+	var env *proxyTestEnv
+	var secondCalls atomic.Int32
+	first := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) {
+			cfg.PromptTemplate = "custom"
+			cfg.CustomPrompt = &model.ReasoningPrompt{Instructions: "custom instructions", Criteria: map[string]string{
+				"low": "custom low", "medium": "custom medium", "high": "custom high", "xhigh": "custom xhigh", "max": "custom max",
+			}}
+		})
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(first.Close)
+	second := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		question := gjson.GetBytes(body, "questions.0")
+		if r.URL.Path != "/v1/decisions" || gjson.GetBytes(body, "model").String() != "gpt-6-luna" {
+			t.Errorf("redirected decision path=%s body=%s", r.URL.Path, body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if secondCalls.Add(1) == 1 {
+			if question.Get("type").String() != "choice" || question.Get("instructions").String() != reasoningDecisionInstructions {
+				t.Errorf("decision mixed prompt snapshots: %s", body)
+			}
+			_, _ = io.WriteString(w, `{"answers":[{"name":"effort","type":"choice","choice":"high","confidence":0.8}],"usage":{"input_tokens":12,"output_tokens":0}}`)
+			return
+		}
+		if question.Get("type").String() != "score" || question.Get("instructions").String() != "custom instructions" || question.Get("levels.0.description").String() != "custom low" || question.Get("levels.3.description").String() != "custom xhigh" {
+			t.Errorf("admin test did not use current custom prompt: %s", body)
+		}
+		_, _ = io.WriteString(w, `{"answers":[{"name":"effort","type":"score","probabilities":[{"value":0,"label":"low","probability":0.1},{"value":1,"label":"medium","probability":0.1},{"value":2,"label":"high","probability":0.1},{"value":3,"label":"xhigh","probability":0.7}]}],"usage":{"input_tokens":12,"output_tokens":0}}`)
+	}))
+	t.Cleanup(second.Close)
+	env = setupReasoningAutoTestEnv(t, first.URL, []testChannel{{name: "second-judge", models: "judge", authType: model.AuthTypeSystemOne,
+		modelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "gpt-6-luna"}}, apiKey: "judge-key", priority: -10}}, []string{second.URL})
+	editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.PromptTemplate = "jev" })
+	result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
+	if err != nil || result.effort != "high" || secondCalls.Load() != 1 {
+		t.Fatalf("snapshot decision=%+v error=%v calls=%d", result, err, secondCalls.Load())
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/2/test", map[string]any{"model": "judge", "content": "task data"}))
+	c.Params = gin.Params{{Key: "id", Value: "2"}}
+	env.server.HandleChannelTest(c)
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if w.Code != http.StatusOK || response.Data["success"] != true || response.Data["effort"] != "xhigh" || secondCalls.Load() != 2 {
+		t.Fatalf("admin native test=%d %s calls=%d", w.Code, w.Body.String(), secondCalls.Load())
+	}
+}
+
+/**
+ * @brief 原生拒答使业务请求沿用原有等级并记录降级，绝不写入伪造的 low
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionNativeRefusalFallback(t *testing.T) {
+	t.Parallel()
+	judge := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, `{"answers":[{"name":"effort","type":"refusal"}],"usage":{"input_tokens":12,"output_tokens":0}}`)
+	}))
+	t.Cleanup(judge.Close)
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.URL, []testChannel{{name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol"}}, []string{business.server.URL})
+	cfg, err := env.store.GetConfig(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ModelEntries[0].RedirectModel = "gpt-6-luna"
+	if _, err = env.store.UpdateConfig(context.Background(), 1, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	body := reasoningAutoChatBody("Investigate an unresolved protocol mismatch.")
+	body["reasoning_effort"] = "high"
+	reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+	assertReasoningAutoEfforts(t, business.snapshot(), "high")
+	entry := waitForProxyLog(t, env, "gpt-5.6-sol")
+	if entry.ReasoningDecision == nil || entry.ReasoningDecision.Status != "fallback" || entry.ReasoningDecision.Reason != "invalid_response" || entry.ReasoningDecision.SuggestedEffort != "" {
+		t.Fatalf("refusal business metadata=%+v", entry.ReasoningDecision)
+	}
+	decision := waitForDecisionLog(t, env)
+	if decision.InputTokens != 12 || decision.ReasoningDecision == nil || decision.ReasoningDecision.Status != "fallback" {
+		t.Fatalf("refusal usage log=%+v", decision)
 	}
 }

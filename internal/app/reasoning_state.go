@@ -388,7 +388,8 @@ func reasoningDecisionContext(ctx context.Context) context.Context {
 func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, apiKey, modelName, state string) map[string]any {
 	start := time.Now()
 	row, _ := s.firstModelRow(cfg, modelName)
-	result, err := s.callSystemOne(ctx, cfg, apiKey, row, state, reasoningDefaultLevels)
+	decision := s.reasoningAuto.Load()
+	result, err := s.callSystemOne(ctx, cfg, apiKey, row, state, reasoningDefaultLevels, decision.PromptTemplate, decision.CustomPrompt)
 	if errors.Is(err, ErrChannelRPMExceeded) {
 		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
 	}

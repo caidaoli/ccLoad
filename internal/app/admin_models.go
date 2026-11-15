@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -62,7 +63,7 @@ type FetchModelsRequest struct {
 	PerKey                 bool                      `json:"per_key,omitempty"`
 	LowercaseModels        bool                      `json:"lowercase_models,omitempty"`
 	StripModelSourcePrefix bool                      `json:"strip_model_source_prefix,omitempty"`
-	AuthType               string                    `json:"auth_type,omitempty"`            // 空值按 api_key；system_one 固定走决策模型接口
+	AuthType               string                    `json:"auth_type,omitempty"`            // 空值按 api_key；system_one 仅发现决策模型
 	CustomRequestRules     *model.CustomRequestRules `json:"custom_request_rules,omitempty"` ///< 复用渠道规则；模型发现仅应用请求头改写
 }
 
@@ -1004,8 +1005,13 @@ func (s *Server) fetchModelsForChannel(
 	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys, client, cfg.HeaderRules())
 }
 
-// modelDiscoveryProtocol 决定模型发现的上游协议：决策渠道固定走 System One，
-// 其余渠道只接受聊天协议覆盖。
+/**
+ * @brief 将决策渠道的模型发现与聊天协议覆盖隔离。
+ * @param authType 渠道认证类型；决策渠道固定使用独立目录语义
+ * @param override 显式模型发现协议；其他渠道允许聊天协议覆盖
+ * @return 模型发现协议；空值按渠道 URL 声明探测
+ * @return 非决策渠道指定不支持的协议时返回错误
+ */
 func modelDiscoveryProtocol(authType, override string) (string, error) {
 	if model.NormalizeAuthType(authType) == model.AuthTypeSystemOne {
 		return util.ProtocolSystemOne, nil
@@ -1937,14 +1943,36 @@ func parseFetchModelsStatus(err error) (statusCode int, headers http.Header, bod
  * @param headerRules 已校验的请求头规则，在默认 UA 和认证头设置后执行
  * @return 模型目录；失败时为 nil
  * @return 协议无目录或上游请求失败时返回错误，保留上游错误链
+ * @details 官方原生决策目录与接口已支持模型取交集，不合成上游未列出的模型。
  */
 func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, client *http.Client, headerRules []model.CustomHeaderRule) (*FetchModelsResponse, error) {
 	official := isOpenCodeOfficialEndpoint(channelURL)
-	// OpenCode has no System One catalog; its jev-* models sit in the OpenAI one.
-	systemOne := official && util.NormalizeProtocol(upstreamProtocol) == util.ProtocolSystemOne
+	systemOne := util.NormalizeProtocol(upstreamProtocol) == util.ProtocolSystemOne
 	fetchProtocol := upstreamProtocol
+	fetchURL := channelURL
+	decisionModel := ""
 	if systemOne {
-		fetchProtocol = util.ProtocolOpenAI
+		fetchURL = strings.TrimRight(model.StripExactUpstreamURLMarker(channelURL), "/")
+		target, err := url.Parse(channelURL)
+		if err != nil {
+			return nil, fmt.Errorf("解析模型目录 URL 失败: %w", err)
+		}
+		switch {
+		case official:
+			// OpenCode lists its jev-* models in the OpenAI catalog.
+			fetchProtocol = util.ProtocolOpenAI
+			fetchURL = strings.TrimSuffix(strings.TrimSuffix(fetchURL, "/systemone"), "/v1")
+		case isGeminiAPIURL(target):
+			fetchProtocol = util.ProtocolGemini
+			decisionModel = "gemini-decision-1"
+			fetchURL = strings.TrimSuffix(strings.TrimSuffix(fetchURL, "/decisions"), "/v1beta")
+		case strings.EqualFold(target.Hostname(), "api.openai.com"):
+			fetchProtocol = util.ProtocolOpenAI
+			decisionModel = "gpt-6-luna"
+			fetchURL = strings.TrimSuffix(strings.TrimSuffix(fetchURL, "/decisions"), "/v1")
+		default:
+			fetchURL = strings.TrimSuffix(fetchURL, "/systemone")
+		}
 	}
 	normalizedProtocol := util.NormalizeProtocol(fetchProtocol)
 	source := determineSource(fetchProtocol)
@@ -1969,7 +1997,7 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		fetcher := util.NewModelsFetcher(fetchProtocol, client)
 		fetcherStr = fmt.Sprintf("%T", fetcher)
 
-		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey, func(req *http.Request) {
+		modelNames, err = fetcher.FetchModels(ctx, fetchURL, apiKey, func(req *http.Request) {
 			applyHeaderRules(req.Header, headerRules)
 		})
 		if err != nil {
@@ -1980,7 +2008,9 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		}
 	}
 
-	if official {
+	if decisionModel != "" {
+		modelNames = slices.DeleteFunc(modelNames, func(name string) bool { return name != decisionModel })
+	} else if official {
 		filtered := modelNames[:0]
 		for _, name := range modelNames {
 			if isOpenCodeSystemOneModel(name) == systemOne {

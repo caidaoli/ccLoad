@@ -102,6 +102,53 @@ func TestChannelRequestValidate_XAIVersionedBaseURLRejectsEndpointPath(t *testin
 	}
 }
 
+/**
+ * @brief 决策渠道可保存原生版本基址和完整端点，聊天渠道维持原有路径限制。
+ * @param t 测试上下文
+ */
+func TestChannelRequestValidate_SystemOneNativeURLs(t *testing.T) {
+	t.Parallel()
+	for _, authType := range []string{model.AuthTypeAPIKey, model.AuthTypeSystemOne} {
+		for _, tc := range []struct {
+			url           string
+			exact, reject bool
+		}{
+			{url: "https://api.openai.com/v1/"},
+			{url: "https://generativelanguage.googleapis.com/v1beta"},
+			{url: "https://deployment.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"},
+			{url: "https://api.typesafe.ai/v1/systemone"},
+			{url: "https://generativelanguage.googleapis.com/v1beta/decisions"},
+			{url: "https://api.openai.com/v1/decisions"},
+			{url: "https://api.openai.com/v1/decisions", exact: true},
+			{url: "https://api.openai.com/v1/responses", reject: true},
+			{url: "https://api.typesafe.ai/v1/messages", reject: true},
+			{url: "https://generativelanguage.googleapis.com/v1beta/models", reject: true},
+		} {
+			t.Run(authType+"/"+tc.url, func(t *testing.T) {
+				req := ChannelRequest{
+					Name: "Decision channel", AuthType: authType, APIKey: "catalog-key",
+					URLs: model.ChannelURLs{{URL: tc.url, Exact: tc.exact}}, Models: []model.ModelEntry{{Model: "jev-latest"}},
+				}
+				err := req.Validate()
+				wantError := tc.reject || (authType == model.AuthTypeAPIKey && !tc.exact)
+				if wantError {
+					if err == nil || !strings.Contains(err.Error(), "API endpoint path") {
+						t.Fatalf("Validate() error=%v, want endpoint path rejection", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("Validate() error=%v", err)
+				}
+				got := req.ToConfig().URLs[0]
+				if got.URL != strings.TrimRight(tc.url, "/") || got.Exact != tc.exact {
+					t.Fatalf("normalized URL=%+v", got)
+				}
+			})
+		}
+	}
+}
+
 func TestChannelRequestValidate_NormalizesProtocolTransformMode(t *testing.T) {
 	t.Parallel()
 

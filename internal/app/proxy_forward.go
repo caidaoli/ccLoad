@@ -261,7 +261,7 @@ func (s *Server) buildProxyRequest(
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
 	if upstreamProtocol == protocol.SystemOne {
-		upstreamURL = systemOneURL(baseURL)
+		upstreamURL = reasoningDecisionURL(baseURL, "jev")
 	}
 	if !isOpenCodeAPIKeyEndpoint(cfg, baseURL) && (isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) ||
 		isAnthropicCountTokensRequest(upstreamProtocol, requestPath)) {

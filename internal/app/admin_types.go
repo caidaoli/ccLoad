@@ -196,6 +196,13 @@ func apiKeyStrings(keys []ChannelAPIKeyRequest) []string {
 	return values
 }
 
+/**
+ * @brief 校验渠道地址，决策渠道允许版本基址与原生决策端点。
+ * @param raw 渠道地址；尾部 # 表示保持原始精确端点
+ * @param authType 渠道认证类型，用于选择提供商基址规则
+ * @return 去除尾斜线的标准化地址，保留精确端点标记；失败时为空
+ * @return 地址格式、认证类型的路径规则不合法时返回错误
+ */
 func validateChannelBaseURL(raw, authType string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -226,6 +233,10 @@ func validateChannelBaseURL(raw, authType string) (string, error) {
 	// xAI OAuth 是提供商例外：其固定 base URL 本身以 /v1 结尾，运行时只追加 /responses。
 	isXAIVersionedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeXAIOAuth &&
 		strings.HasSuffix(strings.TrimRight(u.Path, "/"), "/v1")
+	decisionPath := strings.TrimRight(u.Path, "/")
+	isSystemOneBasePath := model.NormalizeAuthType(authType) == model.AuthTypeSystemOne &&
+		(strings.HasSuffix(decisionPath, "/v1") || strings.HasSuffix(decisionPath, "/v1beta") ||
+			strings.HasSuffix(decisionPath, "/systemone") || strings.HasSuffix(decisionPath, "/decisions"))
 	// 允许读取旧 ZCode 付费地址；URL 列表校验会将其归一为站点直连地址。
 	isZAIRoutedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeZAIOAuth
 	// Vertex publisher bases are versioned (…/v1/projects/{p}/locations/{l}/publishers/google
@@ -234,7 +245,7 @@ func validateChannelBaseURL(raw, authType string) (string, error) {
 	if !exactURL && !isVertexPublisherBasePath && model.NormalizeAuthType(authType) == model.AuthTypeVertexOAuth {
 		return "", fmt.Errorf("vertex_oauth url must end with %s (current path: %q)", vertexPublisherPathSuffix, u.Path)
 	}
-	if !exactURL && !isXAIVersionedBasePath && !isZAIRoutedBasePath && !isVertexPublisherBasePath && strings.Contains(u.Path, "/v1") {
+	if !exactURL && !isXAIVersionedBasePath && !isSystemOneBasePath && !isZAIRoutedBasePath && !isVertexPublisherBasePath && strings.Contains(u.Path, "/v1") {
 		return "", fmt.Errorf("url should not contain API endpoint path like /v1 (current path: %q)", u.Path)
 	}
 

@@ -173,6 +173,148 @@ func TestAdminModels_OpenCodeOfficialDiscoveryCatalog(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 决策渠道按官方域名读取原生目录，仅暴露目录内已支持的决策模型。
+ * @param t 测试上下文
+ */
+func TestAdminModels_SystemOneNativeDiscoveryCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name, endpoint, upstream, authHeader, authValue, catalog string
+		wantModels                                               []string
+	}{
+		{
+			name: "gemini root", endpoint: "https://generativelanguage.googleapis.com", upstream: "https://generativelanguage.googleapis.com/v1beta/models",
+			authHeader: "X-Goog-Api-Key", authValue: "catalog-key",
+			catalog:    `{"models":[{"name":"models/gemini-3-flash-preview"},{"name":"models/gemini-decision-1","supportedGenerationMethods":["createDecision"]}]}`,
+			wantModels: []string{"gemini-decision-1"},
+		},
+		{
+			name: "gemini version", endpoint: "https://generativelanguage.googleapis.com/v1beta/", upstream: "https://generativelanguage.googleapis.com/v1beta/models",
+			authHeader: "X-Goog-Api-Key", authValue: "catalog-key",
+			catalog: `{"models":[{"name":"models/gemini-decision-1"}]}`, wantModels: []string{"gemini-decision-1"},
+		},
+		{
+			name: "gemini endpoint", endpoint: "https://generativelanguage.googleapis.com/v1beta/decisions", upstream: "https://generativelanguage.googleapis.com/v1beta/models",
+			authHeader: "X-Goog-Api-Key", authValue: "catalog-key",
+			catalog: `{"models":[{"name":"models/gemini-decision-1"}]}`, wantModels: []string{"gemini-decision-1"},
+		},
+		{
+			name: "gemini unavailable", endpoint: "https://generativelanguage.googleapis.com", upstream: "https://generativelanguage.googleapis.com/v1beta/models",
+			authHeader: "X-Goog-Api-Key", authValue: "catalog-key",
+			catalog: `{"models":[{"name":"models/gemini-3-flash-preview"}]}`,
+		},
+		{
+			name: "openai root", endpoint: "https://api.openai.com", upstream: "https://api.openai.com/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"data":[{"id":"gpt-5.6-luna"},{"id":"gpt-6-luna"},{"id":"gpt-6"}]}`, wantModels: []string{"gpt-6-luna"},
+		},
+		{
+			name: "openai version", endpoint: "https://api.openai.com/v1/", upstream: "https://api.openai.com/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"data":[{"id":"gpt-6-luna"}]}`, wantModels: []string{"gpt-6-luna"},
+		},
+		{
+			name: "openai endpoint", endpoint: "https://api.openai.com/v1/decisions", upstream: "https://api.openai.com/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"data":[{"id":"gpt-6-luna"}]}`, wantModels: []string{"gpt-6-luna"},
+		},
+		{
+			name: "openai unavailable", endpoint: "https://api.openai.com", upstream: "https://api.openai.com/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"data":[{"id":"gpt-5.6-luna"}]}`,
+		},
+		{
+			name: "aliyun", endpoint: "https://deployment.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", upstream: "https://deployment.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"object":"list","data":[{"id":"qwen-max"}],"has_more":false}`,
+		},
+		{
+			name: "relay", endpoint: "https://generativelanguage.googleapis.com.example/v1", upstream: "https://generativelanguage.googleapis.com.example/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"models":[{"name":"jev-latest"},{"name":"gemini-decision-1"}]}`, wantModels: []string{"jev-latest", "gemini-decision-1"},
+		},
+		{
+			name: "jev endpoint", endpoint: "https://api.typesafe.ai/v1/systemone", upstream: "https://api.typesafe.ai/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"models":[{"name":"jev-latest"}]}`, wantModels: []string{"jev-latest"},
+		},
+		{
+			name: "opencode version", endpoint: "https://opencode.ai/zen/v1", upstream: "https://opencode.ai/zen/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"data":[{"id":"jev-latest"},{"id":"gpt-6"}]}`, wantModels: []string{"jev-latest"},
+		},
+		{
+			name: "opencode endpoint", endpoint: "https://opencode.ai/zen/v1/systemone", upstream: "https://opencode.ai/zen/v1/models",
+			authHeader: "Authorization", authValue: "Bearer catalog-key",
+			catalog: `{"data":[{"id":"jev-latest"},{"id":"gpt-6"}]}`, wantModels: []string{"jev-latest"},
+		},
+	} {
+		for _, saved := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/saved=%v", tc.name, saved), func(t *testing.T) {
+				server := newInMemoryServer(t)
+				requests := 0
+				client := &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					requests++
+					if r.Method != http.MethodGet || r.URL.String() != tc.upstream || r.Header.Get(tc.authHeader) != tc.authValue {
+						t.Errorf("unexpected catalog request: %s %s, headers=%v", r.Method, r.URL, r.Header)
+					}
+					if tc.authHeader != "Authorization" && r.Header.Get("Authorization") != "" {
+						t.Error("Gemini catalog received Bearer authentication")
+					}
+					return jsonResponse(r, tc.catalog)
+				})}
+				util.SetModelsFetcherHTTPClientForTesting(client)
+				t.Cleanup(func() { util.SetModelsFetcherHTTPClientForTesting(sharedTestHTTPClient) })
+				var response *httptest.ResponseRecorder
+				if saved {
+					ctx := context.Background()
+					cfg, err := server.store.CreateConfig(ctx, &model.Config{
+						Name: "Decision catalog", AuthType: model.AuthTypeSystemOne, Enabled: true,
+						URLs: model.ChannelURLs{{URL: tc.endpoint}}, ModelEntries: []model.ModelEntry{{Model: "old-decision-model"}},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "catalog-key"}}); err != nil {
+						t.Fatal(err)
+					}
+					c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch?protocol=openai&per_key=true", cfg.ID), nil))
+					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+					server.HandleFetchModels(c)
+					response = w
+				} else {
+					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", map[string]any{
+						"auth_type": model.AuthTypeSystemOne, "protocol": "openai", "api_keys": []string{"catalog-key"}, "per_key": true,
+						"urls": []map[string]any{{"url": tc.endpoint}},
+					}))
+					server.HandleFetchModelsPreview(c)
+					response = w
+				}
+				result := mustParseAPIResponse[FetchModelsResponse](t, response.Body.Bytes())
+				if len(tc.wantModels) == 0 {
+					if response.Code != http.StatusOK || result.Success || !strings.Contains(result.Error, "上游未返回任何模型") || requests != 1 {
+						t.Fatalf("unavailable decision model: status=%d requests=%d response=%s", response.Code, requests, response.Body.String())
+					}
+					return
+				}
+				if response.Code != http.StatusOK || !result.Success || result.Data.Source != "api" || result.Data.Protocol != util.ProtocolSystemOne || requests != 1 {
+					t.Fatalf("catalog status=%d requests=%d response=%s", response.Code, requests, response.Body.String())
+				}
+				names := make([]string, 0, len(result.Data.Models))
+				for _, entry := range result.Data.Models {
+					names = append(names, entry.Model)
+					if entry.RedirectModel != entry.Model {
+						t.Errorf("model redirect=%q, want %q", entry.RedirectModel, entry.Model)
+					}
+				}
+				if !slices.Equal(names, tc.wantModels) || len(result.Data.KeyModels) != 1 || !slices.Equal(result.Data.KeyModels[0].Models, result.Data.Models) {
+					t.Fatalf("catalog models=%v per-key=%+v, want %v", names, result.Data.KeyModels, tc.wantModels)
+				}
+			})
+		}
+	}
+}
+
 func TestAdminModels_FetchModelsPreview(t *testing.T) {
 	var gotAuth string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

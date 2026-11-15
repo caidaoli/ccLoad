@@ -289,6 +289,14 @@ function validateCustomPricingInput(value) {
 
 const reasoningAutoDefaults = { enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 };
 let reasoningAutoChannels = [];
+/**
+ * @brief 已加载的判断指令模板；null 表示尚不可安全编辑。
+ */
+let reasoningAutoTemplates = null;
+/**
+ * @brief 服务端按最终上游路由计算的模型模板集合；null 表示尚未加载。
+ */
+let reasoningAutoModelTemplates = null;
 // 持久化值无效时编辑器锁定：控件只能显示默认值，任何编辑都会覆盖真实配置，只允许通过重置恢复。
 let reasoningAutoLocked = false;
 
@@ -304,15 +312,49 @@ function parseReasoningAuto(value) {
   return validateReasoningAuto(value) ? { ...reasoningAutoDefaults } : { ...reasoningAutoDefaults, ...JSON.parse(value) };
 }
 
+/**
+ * @brief 序列化编辑器字段，未设置指令模板的旧配置不新增字段。
+ * @param config 动态思考配置草稿。
+ * @return 可保存的 JSON。
+ */
 function formatReasoningAuto(config) {
   const { enabled, decision_model, business_models, timeout_ms } = config;
-  return JSON.stringify({ enabled, decision_model, business_models, timeout_ms });
+  return JSON.stringify({ enabled, decision_model, business_models, timeout_ms,
+    ...(Object.hasOwn(config, 'prompt_template') ? { prompt_template: config.prompt_template } : {}),
+    ...(Object.hasOwn(config, 'custom_prompt') ? { custom_prompt: config.custom_prompt } : {}) });
 }
 
+/**
+ * @brief 检查来自配置或模板接口的完整指令，拒绝未知字段和超过字节限制的文本。
+ * @param prompt 指令对象。
+ * @return true 表示内容完整且可编辑。
+ */
+function validReasoningPrompt(prompt) {
+  const objectWithFields = (object, fields) => object && typeof object === 'object' && !Array.isArray(object)
+    && Object.keys(object).every(key => fields.includes(key));
+  const validText = value => typeof value === 'string' && value.trim() && new TextEncoder().encode(value).length <= 8192;
+  const validCriteria = (criteria, levels) => objectWithFields(criteria, levels) && levels.every(level => validText(criteria[level]));
+  return Boolean(objectWithFields(prompt, ['instructions', 'criteria', 'depth']) && validText(prompt.instructions)
+    && validCriteria(prompt.criteria, ['low', 'medium', 'high', 'xhigh', 'max'])
+    && (prompt.depth == null || (objectWithFields(prompt.depth, ['instructions', 'criteria'])
+      && validText(prompt.depth.instructions) && validCriteria(prompt.depth.criteria, ['high', 'xhigh', 'max']))));
+}
+
+/**
+ * @brief 校验保存边界，包含关闭状态下的指令格式与 UTF-8 大小限制。
+ * @param value 待保存 JSON。
+ * @return 无效时返回本地化提示，有效时返回空字符串。
+ */
 function validateReasoningAuto(value) {
   let config;
   try { config = JSON.parse(value); } catch (_) { return t('settings.reasoningAuto.invalid'); }
   if (!config || typeof config !== 'object' || Array.isArray(config)) return t('settings.reasoningAuto.invalid');
+  if ((Object.hasOwn(config, 'prompt_template') && !['', 'auto', 'jev', 'aliyun', 'gemini', 'openai', 'custom'].includes(config.prompt_template))
+    || (config.prompt_template === 'custom'
+      ? !validReasoningPrompt(config.custom_prompt) || new TextEncoder().encode(JSON.stringify(config.custom_prompt)).length > 65536
+      : Object.hasOwn(config, 'custom_prompt'))) {
+    return t('settings.reasoningAuto.promptInvalid');
+  }
   config = { ...reasoningAutoDefaults, ...config };
   if (typeof config.enabled !== 'boolean'
     || typeof config.decision_model !== 'string'
@@ -331,6 +373,10 @@ let reasoningAutoModels = [];
 let reasoningAutoPreviousFocus = null;
 let reasoningShowSelectedOnly = false;
 
+/**
+ * @brief 渲染模态框草稿；无效配置保持锁定直到用户明确重置。
+ * @param value 当前设置 JSON。
+ */
 function renderReasoningAutoEditor(value) {
   reasoningAutoDraft = parseReasoningAuto(value);
   reasoningAutoLocked = Boolean(validateReasoningAuto(value));
@@ -353,6 +399,7 @@ function renderReasoningAutoEditor(value) {
         <input class="form-input" id="reasoningTimeout" type="number" min="0.1" max="10" step="0.1" data-reasoning-field="timeout_ms" value="${config.timeout_ms / 1000}"${disabled}>
       </div>
     </div>
+    <section id="reasoningPromptEditor" class="reasoning-prompt-editor"></section>
     <div class="settings-dialog-toolbar">
       <h3 id="reasoningBusinessModelsTitle" class="settings-dialog-section-title">${label('businessModels')}
         <button type="button" id="reasoningModelsCount" class="settings-dialog-count" data-action="toggle-reasoning-selected" aria-pressed="false" data-i18n-title="settings.reasoningAuto.showSelectedOnly" title="${escapeHtml(t('settings.reasoningAuto.showSelectedOnly'))}"></button>
@@ -369,7 +416,106 @@ function renderReasoningAutoEditor(value) {
     <p class="settings-dialog-note">${label('note')}</p>
   </div>`;
   refreshReasoningModelOptions(config.decision_model);
+  renderReasoningPromptEditor();
   renderReasoningBusinessModels();
+}
+
+/**
+ * @brief 按服务端登记的前缀查找上游模型的内置模板，未登记模型沿用 Jev。
+ * @param model 实际上游模型名。
+ * @return 内置模板 ID。
+ */
+function reasoningTemplateForModel(model) {
+  const trimmed = model.trim();
+  const name = (hasThinkingSuffix(trimmed) ? trimmed.slice(0, trimmed.lastIndexOf('(')) : trimmed).trim().toLowerCase();
+  return reasoningAutoTemplates.find(template => template.model_prefixes.some(prefix => name.startsWith(prefix)))?.id || 'jev';
+}
+
+/**
+ * @brief 使用服务端的最终路由模板集合；不存在的历史模型仅按名称预览默认模板。
+ * @return 已确定的模板 ID；模板映射未加载或存在渠道冲突时返回空字符串。
+ */
+function reasoningAutomaticTemplate() {
+  if (!reasoningAutoModelTemplates || !reasoningAutoTemplates) return '';
+  const trimmed = reasoningAutoDraft.decision_model.trim();
+  const selected = (hasThinkingSuffix(trimmed) ? trimmed.slice(0, trimmed.lastIndexOf('(')) : trimmed).trim();
+  if (!Object.hasOwn(reasoningAutoModelTemplates, selected)) return reasoningTemplateForModel(selected);
+  const templates = reasoningAutoModelTemplates[selected];
+  return templates.length === 1 ? templates[0] : '';
+}
+
+/**
+ * @brief 获取当前可展示和编辑的完整指令，自动模板存在渠道冲突时不提供误导性预览。
+ * @return 指令对象；内置模板尚未加载或自动模板不确定时返回 null。
+ */
+function currentReasoningPrompt() {
+  const selected = reasoningAutoDraft.prompt_template || 'auto';
+  if (selected === 'custom') return reasoningAutoDraft.custom_prompt;
+  if (!reasoningAutoTemplates) return null;
+  const id = selected === 'auto' ? reasoningAutomaticTemplate() : selected;
+  return reasoningAutoTemplates.find(template => template.id === id)?.prompt || null;
+}
+
+/**
+ * @brief 更新模板选择和提示，不替换文本框以保留编辑焦点与光标。
+ */
+function refreshReasoningPromptSelection() {
+  const select = document.getElementById('reasoningPromptTemplate');
+  const selected = reasoningAutoDraft.prompt_template || 'auto';
+  const automatic = reasoningAutomaticTemplate();
+  const templates = reasoningAutoTemplates || [];
+  const automaticName = templates.find(template => template.id === automatic)?.name;
+  select.innerHTML = `<option value="auto">${escapeHtml(t('settings.reasoningAuto.promptAuto'))}${automaticName ? ` (${escapeHtml(automaticName)})` : ''}</option>`
+    + templates.map(template => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('')
+    + (!templates.length && selected !== 'auto' && selected !== 'custom' ? `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>` : '')
+    + (selected === 'custom' ? `<option value="custom">${escapeHtml(t('settings.reasoningAuto.promptCustom'))}</option>` : '');
+  select.value = selected;
+  select.disabled = reasoningAutoLocked || !reasoningAutoTemplates;
+  document.getElementById('reasoningPromptRestore').disabled = reasoningAutoLocked || !reasoningAutoTemplates;
+  const status = !reasoningAutoTemplates ? 'promptUnavailable' : selected === 'custom' ? 'promptCustomNote'
+    : selected === 'auto' && !automatic ? 'promptAmbiguous' : 'promptNote';
+  document.getElementById('reasoningPromptStatus').textContent = t('settings.reasoningAuto.' + status);
+}
+
+/**
+ * @brief 展示可直接编辑的指令与五档标准，Jev 深度判断保留为可折叠高级选项。
+ */
+function renderReasoningPromptEditor() {
+  const prompt = currentReasoningPrompt();
+  const disabled = reasoningAutoLocked || !reasoningAutoTemplates || !prompt ? ' disabled' : '';
+  const label = key => escapeHtml(t('settings.reasoningAuto.' + key));
+  const textarea = (id, path, title, value, rows = 2) => `<div class="reasoning-prompt-field"><label class="form-label" for="${id}">${title}</label><textarea id="${id}" class="form-input" rows="${rows}" data-reasoning-prompt="${path}"${disabled}>${escapeHtml(value)}</textarea></div>`;
+  const criteria = (levels, values, prefix = '') => levels.map(level => textarea(`reasoningPrompt${prefix}${level}`, `${prefix ? 'depth.' : ''}criteria.${level}`, level, values[level])).join('');
+  document.getElementById('reasoningPromptEditor').innerHTML = `<div class="reasoning-prompt-toolbar">
+    <div><label class="form-label" for="reasoningPromptTemplate">${label('promptTemplate')}</label><select id="reasoningPromptTemplate" class="form-input" data-reasoning-field="prompt_template"></select></div>
+    <button type="button" id="reasoningPromptRestore" class="btn btn-secondary" data-action="restore-reasoning-prompt">${label('promptRestore')}</button>
+    </div><p id="reasoningPromptStatus" class="settings-dialog-note" role="status"></p>
+    ${prompt ? `<details class="reasoning-prompt-details"><summary>${label('promptEdit')}</summary>
+      ${textarea('reasoningPromptInstructions', 'instructions', label('promptInstructions'), prompt.instructions, 5)}
+      <h4 class="settings-dialog-section-title">${label('promptCriteria')}</h4>
+      <div class="reasoning-prompt-criteria">${criteria(['low', 'medium', 'high', 'xhigh', 'max'], prompt.criteria)}</div>
+      ${prompt.depth ? `<details class="reasoning-prompt-details"><summary>${label('promptDepth')}</summary>
+        ${textarea('reasoningPromptDepthInstructions', 'depth.instructions', label('promptInstructions'), prompt.depth.instructions, 4)}
+        <div class="reasoning-prompt-criteria">${criteria(['high', 'xhigh', 'max'], prompt.depth.criteria, 'Depth')}</div></details>` : ''}
+    </details>` : ''}`;
+  refreshReasoningPromptSelection();
+}
+
+/**
+ * @brief 首次编辑复制完整模板为自定义快照，后续切换模型不覆盖已编辑的任何字段。
+ * @param input 用户正在编辑的指令文本框。
+ */
+function editReasoningPrompt(input) {
+  if (input.disabled || reasoningAutoLocked || !reasoningAutoTemplates) return;
+  if (reasoningAutoDraft.prompt_template !== 'custom') {
+    reasoningAutoDraft.custom_prompt = structuredClone(currentReasoningPrompt());
+    reasoningAutoDraft.prompt_template = 'custom';
+  }
+  const parts = input.dataset.reasoningPrompt.split('.');
+  let object = reasoningAutoDraft.custom_prompt;
+  for (const part of parts.slice(0, -1)) object = object[part];
+  object[parts.at(-1)] = input.value;
+  refreshReasoningPromptSelection();
 }
 
 // 界面以秒输入，持久化契约仍为整数毫秒；取整消除 0.3 * 1000 这类浮点误差。
@@ -421,28 +567,67 @@ function showReasoningAutoError(message) {
   error.hidden = !message;
 }
 
+/**
+ * @brief 独立加载模型与指令模板；模板失败时保留自定义数据，并允许调整其他设置。
+ * @return 所有加载结果处理完毕后完成的 Promise；已关闭或被重置的草稿不接收结果。
+ */
 async function loadReasoningAutoOptions() {
   const draft = reasoningAutoDraft;
-  try {
-    const [channels, options] = await Promise.all([
-      fetchDataWithAuth('/admin/channels'),
-      fetchDataWithAuth('/admin/channels/filter-options?status=enabled')
-    ]);
-    if (reasoningAutoDraft !== draft) return;
-    reasoningAutoChannels = Array.isArray(channels) ? channels : [];
-    reasoningAutoModels = [...new Set([...reasoningAutoModels, ...(options?.models || [])])].filter(model => typeof model === 'string' && model.trim() && !/[*?]/.test(model) && !hasThinkingSuffix(model));
-    refreshReasoningModelOptions(reasoningAutoDraft.decision_model);
-    renderReasoningBusinessModels();
-  } catch (error) {
-    if (reasoningAutoDraft === draft) showReasoningAutoError(t('settings.reasoningAuto.loadFailed') + ': ' + error.message);
-  }
+  const [channels, options, prompts] = await Promise.allSettled([
+    fetchDataWithAuth('/admin/channels'),
+    fetchDataWithAuth('/admin/channels/filter-options?status=enabled'),
+    fetchDataWithAuth('/admin/reasoning-auto/prompts')
+  ]);
+  if (reasoningAutoDraft !== draft) return;
+  const errors = [];
+  if (channels.status === 'fulfilled') {
+    reasoningAutoChannels = Array.isArray(channels.value) ? channels.value : [];
+  } else errors.push(t('settings.reasoningAuto.loadFailed') + ': ' + channels.reason.message);
+  if (options.status === 'fulfilled') {
+    const decisionModels = new Set();
+    const businessModels = new Set();
+    for (const channel of reasoningAutoChannels.filter(channel => channel.enabled)) {
+      const target = channel.auth_type === 'system_one' ? decisionModels : businessModels;
+      for (const item of (channel.models || []).filter(item => !item.disabled)) target.add(typeof item === 'string' ? item : item.model);
+    }
+    const candidates = (options.value?.models || []).filter(model => !decisionModels.has(model) || businessModels.has(model));
+    reasoningAutoModels = [...new Set([...reasoningAutoModels, ...candidates])].filter(model => typeof model === 'string' && model.trim() && !/[*?]/.test(model) && !hasThinkingSuffix(model));
+  } else errors.push(t('settings.reasoningAuto.loadFailed') + ': ' + options.reason.message);
+  reasoningAutoTemplates = null;
+  reasoningAutoModelTemplates = null;
+  if (prompts.status === 'fulfilled') {
+    const templates = prompts.value?.templates;
+    const modelTemplates = prompts.value?.model_templates;
+    if (Array.isArray(templates) && templates.length === 4 && new Set(templates.map(template => template?.id)).size === 4
+      && templates.every(template => ['jev', 'aliyun', 'gemini', 'openai'].includes(template?.id)
+        && typeof template.name === 'string' && template.name.trim()
+        && Array.isArray(template.model_prefixes) && template.model_prefixes.every(prefix => typeof prefix === 'string' && prefix.length)
+        && validReasoningPrompt(template.prompt))
+      && modelTemplates && typeof modelTemplates === 'object' && !Array.isArray(modelTemplates)
+      && Object.values(modelTemplates).every(ids => Array.isArray(ids) && ids.length > 0
+        && ids.every(id => templates.some(template => template.id === id)))) {
+      reasoningAutoTemplates = templates;
+      reasoningAutoModelTemplates = modelTemplates;
+    } else errors.push(t('settings.reasoningAuto.promptLoadFailed'));
+  } else errors.push(t('settings.reasoningAuto.promptLoadFailed') + ': ' + prompts.reason.message);
+  refreshReasoningModelOptions(reasoningAutoDraft.decision_model);
+  renderReasoningPromptEditor();
+  renderReasoningBusinessModels();
+  if (errors.length) showReasoningAutoError(errors.join('\n'));
 }
 
+/**
+ * @brief 打开独立草稿并重新加载模板，关闭或取消不改写设置。
+ * @param trigger 用于关闭后恢复焦点的触发元素。
+ */
 function openReasoningAutoModal(trigger) {
   const modal = document.getElementById('reasoningAutoModal');
   const input = document.getElementById('reasoning_auto');
   if (!modal || !input || !settingDefinitions.has('reasoning_auto')) return;
   reasoningAutoPreviousFocus = trigger || document.activeElement;
+  reasoningAutoTemplates = null;
+  reasoningAutoModelTemplates = null;
+  reasoningAutoChannels = [];
   reasoningAutoModels = [...parseReasoningAuto(input.value).business_models];
   renderReasoningAutoEditor(input.value);
   showReasoningAutoError(null);
@@ -477,6 +662,9 @@ function applyReasoningAuto() {
   closeReasoningAutoModal();
 }
 
+/**
+ * @brief 绑定动态思考编辑交互，指令编辑从当前内置模板产生自定义快照。
+ */
 function bindReasoningAutoModal() {
   const modal = document.getElementById('reasoningAutoModal');
   if (!modal || modal.dataset.bound) return;
@@ -485,6 +673,11 @@ function bindReasoningAutoModal() {
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (event.target === modal || action === 'close-reasoning-auto') closeReasoningAutoModal();
     else if (action === 'apply-reasoning-auto') applyReasoningAuto();
+    else if (action === 'restore-reasoning-prompt' && reasoningAutoDraft && !reasoningAutoLocked && reasoningAutoTemplates) {
+      delete reasoningAutoDraft.prompt_template;
+      delete reasoningAutoDraft.custom_prompt;
+      renderReasoningPromptEditor();
+    }
     else if (action === 'toggle-reasoning-selected') {
       // 只看已选：取消勾选的行保留到下次重绘，误点可直接勾回
       reasoningShowSelectedOnly = !reasoningShowSelectedOnly;
@@ -498,6 +691,7 @@ function bindReasoningAutoModal() {
   });
   modal.addEventListener('input', event => {
     if (event.target.id === 'reasoningModelSearch') renderReasoningBusinessModels();
+    else if (reasoningAutoDraft && event.target.dataset.reasoningPrompt) editReasoningPrompt(event.target);
     else if (!reasoningAutoLocked && reasoningAutoDraft && event.target.id === 'reasoningTimeout') {
       reasoningAutoDraft.timeout_ms = reasoningTimeoutMs(event.target.value);
     }
@@ -522,7 +716,15 @@ function bindReasoningAutoModal() {
       reasoningAutoDraft.business_models = [...models];
       updateReasoningModelsSelectAll();
     } else if (field === 'enabled') reasoningAutoDraft.enabled = input.checked;
-    else if (field === 'decision_model') reasoningAutoDraft.decision_model = input.value;
+    else if (field === 'decision_model') {
+      reasoningAutoDraft.decision_model = input.value;
+      renderReasoningPromptEditor();
+    } else if (field === 'prompt_template' && reasoningAutoTemplates && !input.disabled) {
+      if (input.value === 'auto') delete reasoningAutoDraft.prompt_template;
+      else reasoningAutoDraft.prompt_template = input.value;
+      if (input.value !== 'custom') delete reasoningAutoDraft.custom_prompt;
+      renderReasoningPromptEditor();
+    }
     else if (field === 'timeout_ms') reasoningAutoDraft.timeout_ms = reasoningTimeoutMs(input.value);
   });
   modal.addEventListener('keydown', event => {

@@ -1,3 +1,58 @@
+/* ===== 动态思考判断指令 ===== */
+.reasoning-prompt-editor {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 22px;
+  padding: 16px;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+}
+
+.reasoning-prompt-toolbar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.reasoning-prompt-toolbar > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.reasoning-prompt-toolbar .form-input,
+.reasoning-prompt-field textarea {
+  width: 100%;
+}
+
+.reasoning-prompt-editor .settings-dialog-note {
+  margin: 0;
+}
+
+.reasoning-prompt-details > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.reasoning-prompt-details > .reasoning-prompt-field,
+.reasoning-prompt-details > .settings-dialog-section-title,
+.reasoning-prompt-details > .reasoning-prompt-details {
+  margin-top: 12px;
+}
+
+.reasoning-prompt-criteria {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.reasoning-prompt-field textarea {
+  resize: vertical;
+  min-height: 60px;
+  line-height: 1.5;
+}
+
 /* ===== 隐私脱敏 =====
  * 字号只用两级：控件与标题 text-sm，说明 text-xs。
  * 间距三级：分组之间 16px，组内块之间 12px，标题与说明之间 4px。

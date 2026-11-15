@@ -9,9 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"slices"
-	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -133,7 +131,7 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		result, err = s.attemptReasoningDecision(ctx, channel, cfg.DecisionModel, transcript, levels)
+		result, err = s.attemptReasoningDecision(ctx, channel, cfg.DecisionModel, transcript, levels, cfg.PromptTemplate, cfg.CustomPrompt)
 		if err == nil {
 			return result, nil
 		}
@@ -148,11 +146,13 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
  * @param modelName 判断逻辑模型名
  * @param transcript 已投影的判断上下文
  * @param levels 按强度升序排列的候选等级
+ * @param template 本次判断快照中的提示词模板
+ * @param custom 本次判断快照中的自定义提示词；非自定义模板时忽略
  * @return 本次尝试的结果与耗时
  * @return 凭据、请求、响应或取消错误；成功时为 nil
  * @note 失败冷却写入使用 ctx，不延长总判断预算
  */
-func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Config, modelName, transcript string, levels []string) (result reasoningCallResult, err error) {
+func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Config, modelName, transcript string, levels []string, template string, custom *model.ReasoningPrompt) (result reasoningCallResult, err error) {
 	start := time.Now()
 	result.reason = "decision_unavailable"
 	keys, err := s.getAPIKeys(ctx, channel.ID)
@@ -168,7 +168,7 @@ func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Co
 	if err != nil {
 		return result, err
 	}
-	result, err = s.callSystemOne(ctx, channel, apiKey, row, transcript, levels)
+	result, err = s.callSystemOne(ctx, channel, apiKey, row, transcript, levels, template, custom)
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
 	}
@@ -272,21 +272,25 @@ func (s *Server) decisionURL(cfg *model.Config) (string, error) {
 }
 
 /**
- * @brief 发送固定模型行的非流式 System One 判断请求
+ * @brief 按固定模型行的实际提供商发送非流式原生判断请求
  * @param ctx 判断超时或管理测试上下文
  * @param cfg 渠道配置快照
  * @param key 已选中的凭据
  * @param row 本次调用固定的模型行，用于重定向和定价
  * @param transcript 判断文本
  * @param levels 按强度升序排列的候选等级
+ * @param template 本次判断快照中的提示词模板
+ * @param custom 本次判断快照中的自定义提示词；非自定义模板时忽略
  * @return 上游原始结果、解析等级和用量，失败时保留已获取的数据
  * @return 限流、传输、隐私遮蔽或响应格式错误；成功时为 nil
  * @note 请求遵守渠道请求规则与隐私边界，响应体最多读取 1 MiB
  */
-func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key string, row modelRoutingSelection, transcript string, levels []string) (result reasoningCallResult, err error) {
+func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key string, row modelRoutingSelection, transcript string, levels []string, template string, custom *model.ReasoningPrompt) (result reasoningCallResult, err error) {
 	start := time.Now()
 	defer func() { result.duration = time.Since(start) }()
 	result.actualModel = s.resolveFinalUpstreamModel(cfg, row, string(protocol.SystemOne))
+	provider := reasoningProvider(result.actualModel)
+	prompt := resolveReasoningPrompt(template, custom, result.actualModel)
 	baseURL, err := s.decisionURL(cfg)
 	if err != nil {
 		return result, err
@@ -302,25 +306,20 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key strin
 			return result, errors.New("privacy masking failed; decision request was not sent")
 		}
 	}
-	state, _ := json.Marshal(map[string]string{"conversation": transcript})
-	questions := struct {
-		Effort systemOneQuestion  `json:"effort"`
-		Depth  *systemOneQuestion `json:"depth,omitempty"`
-	}{Effort: systemOneQuestion{"choice", reasoningDecisionInstructions, reasoningDecisionCriteria(levels, reasoningLevelCriteria)}}
-	depthLevels := reasoningDepthLevels(levels)
-	if depthLevels != nil {
-		questions.Depth = &systemOneQuestion{"choice", reasoningDepthInstructions, reasoningDecisionCriteria(depthLevels, reasoningDepthCriteria)}
-	}
-	body, err := json.Marshal(map[string]any{"model": result.actualModel, "state": string(state), "questions": questions})
+	body, err := reasoningDecisionBody(provider, result.actualModel, transcript, levels, prompt)
 	if err != nil {
 		return result, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, systemOneURL(baseURL), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reasoningDecisionURL(baseURL, provider), bytes.NewReader(body))
 	if err != nil {
 		return result, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	if provider == "gemini" {
+		req.Header.Set("x-goog-api-key", key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	body = applyBodyRules("application/json", body, cfg.BodyRules())
 	body, err = maskPrivacyBodyFromContext(ctx, body, "application/json")
@@ -359,29 +358,9 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key strin
 	if !json.Valid(response) {
 		return result, errors.New("system one response is not JSON")
 	}
-	result.usage = systemOneUsage(response)
-	result.usageKnown = systemOneUsagePresent(response)
-	effort, confidence, err := systemOneChoice(gjson.GetBytes(response, "answers.effort"), "effort", levels)
-	if err != nil {
-		return result, err
-	}
-	// The confidence gate stays on the effort answer: it is how sure the judge is
-	// that the step is difficult at all. A judge that ignores the depth question
-	// leaves the answer at high.
-	if depth := gjson.GetBytes(response, "answers.depth"); effort == "high" && depthLevels != nil && depth.Exists() {
-		if effort, _, err = systemOneChoice(depth, "depth", depthLevels); err != nil {
-			return result, err
-		}
-	}
-	// Automatic decisions stop one level below max (levels ascend, at least two).
-	if effort == "max" {
-		effort = levels[slices.Index(levels, effort)-1]
-	}
-	result.effort, result.confidence = effort, confidence
-	if responseModel := gjson.GetBytes(response, "model").String(); responseModel != "" {
-		result.usage.ResponseModel = responseModel
-	}
-	return result, nil
+	result.usage, result.usageKnown = reasoningDecisionUsage(response, provider)
+	result.effort, result.confidence, err = parseReasoningDecision(response, provider, prompt, levels)
+	return result, err
 }
 
 func systemOneChoice(answer gjson.Result, question string, levels []string) (string, *float64, error) {
@@ -427,14 +406,6 @@ func reasoningDecisionCriteria(levels []string, criteria map[string]string) json
 func (s *Server) reasoningCostUnknown(row modelRoutingSelection, result reasoningCallResult) bool {
 	_, known := util.LookupEffectiveModelPricing(util.ResolveBillingModel(result.actualModel, row.logicalModel))
 	return !result.usageKnown || (!known && row.entry.Pricing == nil)
-}
-
-func systemOneURL(baseURL string) string {
-	path := "/v1/systemone"
-	if parsed, err := url.Parse(model.StripExactUpstreamURLMarker(baseURL)); err == nil && strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/v1") {
-		path = "/systemone"
-	}
-	return buildUpstreamURL(baseURL, path, "")
 }
 
 // systemOneUsagePresent reports whether the upstream returned exact token

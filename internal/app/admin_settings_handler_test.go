@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -956,6 +957,126 @@ func TestReasoningAutoSettingsValidateModelAndPersist(t *testing.T) {
 	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, legacyPolicy)
 	if w.Code != http.StatusOK || server.reasoningAuto.Load().DecisionModel != "jev-latest" {
 		t.Fatalf("legacy model policy status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+/**
+ * @brief 管理端模板可作为完整自定义快照保存并热更新，非法修改不覆盖原设置
+ * @param t 测试上下文
+ */
+func TestReasoningPromptTemplatesAndSettings(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/reasoning-auto/prompts", nil)
+	server.HandleReasoningPrompts(c)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Templates []struct {
+				ID            string                `json:"id"`
+				ModelPrefixes []string              `json:"model_prefixes"`
+				Prompt        model.ReasoningPrompt `json:"prompt"`
+			} `json:"templates"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || !response.Success || len(response.Data.Templates) != 4 {
+		t.Fatalf("templates response=%s", w.Body.String())
+	}
+	restarted := make(chan struct{}, 1)
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
+	for _, template := range response.Data.Templates {
+		if len(template.ModelPrefixes) == 0 {
+			t.Fatalf("missing matching rules for %s", template.ID)
+		}
+		if (template.Prompt.Depth != nil) != (template.ID == "jev") {
+			t.Fatalf("unexpected question strategy for %s", template.ID)
+		}
+		template.Prompt.Instructions += "\nAdditional custom instruction."
+		cfg := model.ReasoningAutoConfig{BusinessModels: []string{}, TimeoutMS: 2000, PromptTemplate: "custom", CustomPrompt: &template.Prompt}
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = batchUpdateSetting(t, server, reasoningAutoSettingKey, string(raw))
+		if w.Code != http.StatusOK {
+			t.Fatalf("save %s: %s", template.ID, w.Body.String())
+		}
+		setting, err := server.store.GetSetting(context.Background(), reasoningAutoSettingKey)
+		if err != nil || setting.Value != string(raw) {
+			t.Fatalf("custom prompt not persisted: %v", err)
+		}
+		if got := server.reasoningAuto.Load(); got.PromptTemplate != "custom" || got.CustomPrompt.Instructions != template.Prompt.Instructions {
+			t.Fatal("custom prompt not hot reloaded")
+		}
+		cfg.CustomPrompt.Instructions = ""
+		invalid, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = batchUpdateSetting(t, server, reasoningAutoSettingKey, string(invalid))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid prompt accepted: %s", w.Body.String())
+		}
+		setting, err = server.store.GetSetting(context.Background(), reasoningAutoSettingKey)
+		if err != nil || setting.Value != string(raw) {
+			t.Fatal("invalid prompt overwrote persisted config")
+		}
+	}
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, `{"enabled":false}`)
+	if w.Code != http.StatusOK || server.reasoningAuto.Load().CustomPrompt != nil {
+		t.Fatal("restore automatic defaults failed")
+	}
+	assertNoRestart(t, restarted)
+}
+
+/**
+ * @brief 自动模板预览与实际重定向和请求体模型规则一致，并保留跨渠道歧义
+ * @param t 测试上下文
+ */
+func TestReasoningPromptResolvedModelTemplates(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	for _, cfg := range []*model.Config{
+		{Name: "redirect", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{
+			{Model: "judge", RedirectModel: "alias"}, {Model: "alias", RedirectModel: "gpt-6-luna"},
+			{Model: "mixed", RedirectModel: "jev-latest"}, {Model: "disabled", RedirectModel: "jev-latest", Disabled: true},
+		}},
+		{Name: "override", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "override", RedirectModel: "jev-latest"}},
+			CustomRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: "override", Path: "model", Value: json.RawMessage(`"gemini-decision-1"`)}}}},
+		{Name: "other", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "mixed", RedirectModel: "decision-model-preview"}}},
+		{Name: "disabled", Enabled: false, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "jev-latest"}}},
+		{Name: "chat", Enabled: true, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "gemini-decision-1"}}},
+	} {
+		cfg.URLs = model.ChannelURLs{{URL: "https://decision.example"}}
+		if _, err := server.store.CreateConfig(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/reasoning-auto/prompts", nil)
+	server.HandleReasoningPrompts(c)
+	var response struct {
+		Data struct {
+			Models map[string][]string `json:"model_templates"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"judge": {"openai"}, "alias": {"openai"}, "override": {"gemini"}, "mixed": {"aliyun", "jev"}}
+	if w.Code != http.StatusOK || len(response.Data.Models) != len(want) {
+		t.Fatalf("model templates: %s", w.Body.String())
+	}
+	for name, templates := range want {
+		if !slices.Equal(response.Data.Models[name], templates) {
+			t.Fatalf("%s templates=%v, want %v", name, response.Data.Models[name], templates)
+		}
 	}
 }
 

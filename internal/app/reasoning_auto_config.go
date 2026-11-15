@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,8 @@ func ParseReasoningAutoConfig(raw string) (model.ReasoningAutoConfig, error) {
 		DecisionModel  json.RawMessage `json:"decision_model"`
 		BusinessModels json.RawMessage `json:"business_models"`
 		TimeoutMS      json.RawMessage `json:"timeout_ms"`
+		PromptTemplate json.RawMessage `json:"prompt_template"`
+		CustomPrompt   json.RawMessage `json:"custom_prompt"`
 	}
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
 		return cfg, fmt.Errorf("reasoning_auto must be a JSON object: %w", err)
@@ -35,6 +38,7 @@ func ParseReasoningAutoConfig(raw string) (model.ReasoningAutoConfig, error) {
 	for field, value := range map[string]json.RawMessage{
 		"enabled":        fields.Enabled,
 		"decision_model": fields.DecisionModel, "business_models": fields.BusinessModels, "timeout_ms": fields.TimeoutMS,
+		"prompt_template": fields.PromptTemplate, "custom_prompt": fields.CustomPrompt,
 	} {
 		if strings.TrimSpace(string(value)) == "null" {
 			return cfg, fmt.Errorf("%s must not be null", field)
@@ -42,6 +46,9 @@ func ParseReasoningAutoConfig(raw string) (model.ReasoningAutoConfig, error) {
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return cfg, fmt.Errorf("reasoning_auto must be a JSON object: %w", err)
+	}
+	if err := validateReasoningPromptConfig(cfg, fields.CustomPrompt); err != nil {
+		return cfg, err
 	}
 	if cfg.TimeoutMS < 100 || cfg.TimeoutMS > 10000 {
 		return cfg, fmt.Errorf("timeout_ms must be between 100 and 10000")
@@ -63,6 +70,46 @@ func ParseReasoningAutoConfig(raw string) (model.ReasoningAutoConfig, error) {
 		return cfg, fmt.Errorf("enabled reasoning_auto requires a decision model and business models")
 	}
 	return cfg, nil
+}
+
+/**
+ * @brief 验证持久化模板选择和自定义快照的完整性
+ * @param cfg 已完成 JSON 类型解析的配置
+ * @param rawPrompt 自定义模板原始 JSON，用于限制持久化内容大小
+ * @return 模板名、字段或文本边界不合法时返回错误
+ */
+func validateReasoningPromptConfig(cfg model.ReasoningAutoConfig, rawPrompt json.RawMessage) error {
+	switch cfg.PromptTemplate {
+	case "", "auto", "jev", "aliyun", "gemini", "openai":
+		if cfg.CustomPrompt != nil {
+			return fmt.Errorf("custom_prompt requires prompt_template custom")
+		}
+		return nil
+	case "custom":
+		if cfg.CustomPrompt == nil {
+			return fmt.Errorf("prompt_template custom requires custom_prompt")
+		}
+	default:
+		return fmt.Errorf("unknown prompt_template %q", cfg.PromptTemplate)
+	}
+	if len(rawPrompt) > 65536 {
+		return fmt.Errorf("custom_prompt must not exceed 65536 bytes")
+	}
+	prompt := cfg.CustomPrompt
+	decoder := json.NewDecoder(bytes.NewReader(rawPrompt))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(prompt); err != nil {
+		return fmt.Errorf("custom_prompt: %w", err)
+	}
+	if err := validateReasoningPromptQuestion(prompt.Instructions, prompt.Criteria, []string{"low", "medium", "high", "xhigh", "max"}); err != nil {
+		return fmt.Errorf("custom_prompt: %w", err)
+	}
+	if prompt.Depth != nil {
+		if err := validateReasoningPromptQuestion(prompt.Depth.Instructions, prompt.Depth.Criteria, []string{"high", "xhigh", "max"}); err != nil {
+			return fmt.Errorf("custom_prompt.depth: %w", err)
+		}
+	}
+	return nil
 }
 
 /**

@@ -4,11 +4,26 @@ const test = require('node:test');
 const confirmMessage = '保存任意设置后,服务会在约 2 秒后自动重启以生效，是否继续';
 const confirmHotMessage = '这些设置保存后立即生效，无需重启服务，是否继续？';
 
+const reasoningTemplateFixtures = ['jev', 'aliyun', 'gemini', 'openai'].map((id, index) => ({
+  id, name: ['Jev', 'Aliyun', 'Gemini', 'OpenAI'][index],
+  model_prefixes: [['jev-'], ['decision-model'], ['gemini-decision'], ['gpt-6-luna']][index],
+  prompt: {
+    instructions: `${id} instructions`,
+    criteria: Object.fromEntries(['low', 'medium', 'high', 'xhigh', 'max'].map(level => [level, `${id} ${level}`])),
+    ...(id === 'jev' ? { depth: {
+      instructions: 'jev depth instructions',
+      criteria: Object.fromEntries(['high', 'xhigh', 'max'].map(level => [level, `depth ${level}`]))
+    } } : {})
+  }
+}));
+
 function flushAsyncWork() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function loadSettingsPage(t, settings, inputValues, { filterModels = [], channels = [], reasoningLoadError = null, initialLoadError = null, extraElements = {} } = {}) {
+async function loadSettingsPage(t, settings, inputValues, { filterModels = [], channels = [], reasoningLoadError = null,
+  reasoningPromptLoadError = null, reasoningTemplates = reasoningTemplateFixtures, reasoningModelTemplates = { judge: ['jev'], 'other-judge': ['jev'] },
+  initialLoadError = null, extraElements = {} } = {}) {
   const clickListeners = [];
   const bodyListeners = new Map();
   const multimodalModalListeners = new Map();
@@ -223,7 +238,7 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
     return {
       id: attribute('id'), type: attribute('type'), value: attribute('value'),
       checked: /\bchecked\b/.test(tag), disabled: /\bdisabled\b/.test(tag),
-      dataset: { reasoningField: attribute('data-reasoning-field') },
+      dataset: { reasoningField: attribute('data-reasoning-field'), reasoningPrompt: attribute('data-reasoning-prompt') },
       hasAttribute: name => new RegExp(`(?:^|\\s)${name}(?:=|\\s|$)`).test(tag),
       setAttribute: (name, value) => attributes.set(name, String(value)),
       removeAttribute: name => attributes.delete(name),
@@ -256,6 +271,21 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
     set innerHTML(html) {
       reasoningFields = [...html.matchAll(/<(?:input|select)\b([^>]*)>/g)].map(match => reasoningControl(match[1]));
       for (const field of reasoningFields) if (field.id) elements.set(field.id, field);
+      let promptControls = [];
+      elements.set('reasoningPromptEditor', {
+        set innerHTML(promptHTML) {
+          for (const field of promptControls) elements.delete(field.id);
+          reasoningFields = reasoningFields.filter(field => !promptControls.includes(field));
+          promptControls = [...promptHTML.matchAll(/<(?:input|select|button)\b([^>]*)>|<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g)].map(match => {
+            const field = reasoningControl(match[1] || match[2]);
+            if (match[2]) field.value = match[3];
+            return field;
+          });
+          reasoningFields.push(...promptControls);
+          for (const field of promptControls) if (field.id) elements.set(field.id, field);
+          elements.set('reasoningPromptStatus', { textContent: '' });
+        }
+      });
       elements.set('reasoningAutoEditor', { querySelectorAll: () => [...reasoningFields, ...reasoningModels] });
       elements.set('reasoningBusinessModels', {
         querySelectorAll: () => reasoningModels,
@@ -502,6 +532,10 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
       if (reasoningLoadError) throw new Error(reasoningLoadError);
       return url === '/admin/channels' ? channels : { models: filterModels };
     }
+    if (url === '/admin/reasoning-auto/prompts') {
+      if (reasoningPromptLoadError) throw new Error(reasoningPromptLoadError);
+      return { templates: reasoningTemplates, model_templates: reasoningModelTemplates };
+    }
     if (!options) {
       if (failNextLoad) {
         const error = failNextLoad;
@@ -635,6 +669,13 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
       if (field === 'enabled') target.checked = value;
       else target.value = String(value);
       reasoningListeners.get(field === 'timeout_ms' ? 'input' : 'change')?.({ target });
+    },
+    editReasoningPrompt(path, value) {
+      const target = reasoningFields.find(input => input.dataset.reasoningPrompt === path);
+      assert.ok(target, path);
+      if (target.disabled) return;
+      target.value = value;
+      reasoningListeners.get('input')?.({ target });
     },
     selectReasoningModel(model, checked) {
       const target = reasoningModels.find(input => input.value === model);
@@ -1808,6 +1849,36 @@ test('reasoning modal selected-count toggle lists only selected models and combi
   assert.deepEqual(page.reasoningModels().map(input => input.value).sort(), ['claude', 'foo(bar)', 'gpt-5']);
 });
 
+test('reasoning request-model candidates exclude decision-only models but retain shared names and selected history', async (t) => {
+  const config = { ...reasoningConfigured, business_models: ['retired-judge', 'gpt-5'] };
+  const page = await loadReasoningPage(t, config, {
+    channels: [
+      { enabled: true, auth_type: 'system_one', models: ['judge', 'retired-judge', 'shared', 'offline-chat', 'disabled-chat'] },
+      { enabled: true, auth_type: 'api_key', models: ['gpt-5', { model: 'shared' }, { model: 'disabled-chat', disabled: true }] },
+      { enabled: false, auth_type: 'api_key', models: ['offline-chat'] }
+    ],
+    filterModels: ['judge', 'retired-judge', 'shared', 'offline-chat', 'disabled-chat', 'gpt-5']
+  });
+  await page.openReasoning();
+  assert.deepEqual(page.reasoningModels().map(input => [input.value, input.checked]), [
+    ['gpt-5', true], ['retired-judge', true], ['shared', false]
+  ]);
+  page.selectReasoningModel('retired-judge', false);
+  page.selectReasoningModel('shared', true);
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value).business_models, ['gpt-5', 'shared']);
+});
+
+test('reasoning request-model candidates are empty when all enabled models belong only to decision channels', async (t) => {
+  const page = await loadReasoningPage(t, reasoningDefaults, {
+    channels: [{ enabled: true, auth_type: 'system_one', models: ['jev-latest', 'decision-model', 'gemini-decision', 'gpt-6-luna'] }],
+    filterModels: ['jev-latest', 'decision-model', 'gemini-decision', 'gpt-6-luna']
+  });
+  await page.openReasoning();
+  assert.deepEqual(page.reasoningModels(), []);
+  assert.equal(page.reasoningField('reasoningModelsEmpty').hidden, false);
+});
+
 test('reasoning modal preserves checked models across filters and applies through save-all', async (t) => {
   const page = await loadReasoningPage(t);
   await page.openReasoning();
@@ -2019,4 +2090,317 @@ test('reasoning header checkbox is disabled for no matches and invalid stored co
   assert.equal(header.checked, true);
   page.reasoningAction('close-reasoning-auto');
   assert.equal(page.hasUnsavedChanges(), false);
+});
+
+test('reasoning prompt defaults follow server model templates without dirtying legacy settings', async (t) => {
+  const page = await loadReasoningPage(t, reasoningConfigured, {
+    reasoningModelTemplates: { judge: ['jev'], 'aliyun-alias': ['aliyun'], 'gemini-alias': ['gemini'], 'openai-alias': ['openai'] },
+    channels: [{ enabled: true, auth_type: 'system_one', models: [
+      { model: 'judge', redirect_model: ' JEV-latest(high) ' },
+      { model: 'aliyun-alias', redirect_model: 'decision-model-v2' },
+      { model: 'gemini-alias', redirect_model: 'gemini-decision-latest' },
+      { model: 'openai-alias', redirect_model: 'GPT-6-LUNA(high)' }
+    ] }]
+  });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptTemplate').value, 'auto');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'jev instructions');
+  assert.equal(page.reasoningField('reasoningPromptDepthInstructions').value, 'jev depth instructions');
+  for (const [model, template] of [['aliyun-alias', 'aliyun'], ['gemini-alias', 'gemini'], ['openai-alias', 'openai'], ['judge', 'jev']]) {
+    page.editReasoningField('decision_model', model);
+    assert.equal(page.reasoningField('reasoningPromptInstructions').value, `${template} instructions`);
+    assert.equal(Boolean(page.reasoningField('reasoningPromptDepthInstructions')), template === 'jev');
+  }
+  page.reasoningAction('apply-reasoning-auto');
+  assert.equal(page.hasUnsavedChanges(), false);
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), reasoningConfigured);
+});
+
+test('reasoning previews use server routing results for chained redirects and body model overrides', async (t) => {
+  const page = await loadReasoningPage(t, reasoningConfigured, {
+    channels: [
+      { enabled: true, auth_type: 'system_one', models: [
+        { model: 'judge', redirect_model: 'intermediate' }, { model: 'intermediate', redirect_model: 'gpt-6-luna' }
+      ] },
+      { enabled: true, auth_type: 'system_one', models: [{ model: 'body-override', redirect_model: 'jev-latest' }],
+        custom_request_rules: { body: [{ action: 'override', path: 'model', value: 'decision-model' }] } }
+    ],
+    reasoningModelTemplates: { judge: ['openai'], 'body-override': ['aliyun'] }
+  });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  page.editReasoningField('decision_model', 'body-override');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'aliyun instructions');
+  page.editReasoningPrompt('instructions', 'edited from routed template');
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value).custom_prompt, {
+    ...reasoningTemplateFixtures[1].prompt, instructions: 'edited from routed template'
+  });
+});
+
+test('historical decision models missing from the server map use registered prefixes or the Jev default', async (t) => {
+  const page = await loadReasoningPage(t, { ...reasoningConfigured, decision_model: 'retired-judge' }, { reasoningModelTemplates: {} });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'jev instructions');
+  page.editReasoningField('decision_model', ' GPT-6-LUNA(high) ');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+});
+
+test('reasoning model-template lookup strips thinking suffixes while preserving logical-name case', async (t) => {
+  const page = await loadReasoningPage(t, { ...reasoningConfigured, decision_model: ' judge(high) ' }, {
+    reasoningModelTemplates: { judge: ['openai'], Judge: ['aliyun'], 'judge(bar)': ['gemini'] }
+  });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  assert.equal(page.reasoningField('reasoningPromptDepthInstructions'), undefined);
+  page.editReasoningField('decision_model', 'Judge(high)');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'aliyun instructions');
+  page.editReasoningField('decision_model', 'judge(bar)');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'gemini instructions');
+});
+
+test('malformed server model-template maps disable automatic prompt editing without modifying settings', async (t) => {
+  for (const modelTemplates of [null, [], 'invalid', { judge: 'openai' }, { judge: [] }, { judge: ['unknown'] }]) {
+    await t.test(JSON.stringify(modelTemplates), async (t) => {
+      const page = await loadReasoningPage(t, reasoningConfigured, { reasoningModelTemplates: modelTemplates });
+      await page.openReasoning();
+      assert.equal(page.reasoningField('reasoningPromptTemplate').disabled, true);
+      assert.equal(page.reasoningField('reasoningPromptInstructions'), undefined);
+      assert.equal(page.reasoningError.hidden, false);
+      page.reasoningAction('apply-reasoning-auto');
+      assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), reasoningConfigured);
+      assert.equal(page.hasUnsavedChanges(), false);
+    });
+  }
+});
+
+test('reasoning builtin selection saves only its ID and persists across decision model changes', async (t) => {
+  const page = await loadReasoningPage(t);
+  await page.openReasoning();
+  page.editReasoningField('prompt_template', 'openai');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  page.editReasoningField('decision_model', 'other-judge');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...reasoningConfigured, decision_model: 'other-judge', prompt_template: 'openai' });
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  const saved = JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto);
+  assert.equal(saved.prompt_template, 'openai');
+  assert.equal(Object.hasOwn(saved, 'custom_prompt'), false);
+});
+
+test('editing any reasoning prompt field creates a complete custom snapshot and preserves model-independent edits', async (t) => {
+  const page = await loadReasoningPage(t);
+  await page.openReasoning();
+  const expected = structuredClone(reasoningTemplateFixtures[0].prompt);
+  page.editReasoningPrompt('criteria.low', 'first edit');
+  assert.equal(page.reasoningField('reasoningPromptTemplate').value, 'custom');
+  page.editReasoningField('decision_model', 'other-judge');
+  assert.equal(page.reasoningField('reasoningPromptlow').value, 'first edit');
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value).custom_prompt, {
+    ...expected, criteria: { ...expected.criteria, low: 'first edit' }
+  });
+  await page.openReasoning();
+  const paths = ['instructions', ...['low', 'medium', 'high', 'xhigh', 'max'].map(level => `criteria.${level}`),
+    'depth.instructions', ...['high', 'xhigh', 'max'].map(level => `depth.criteria.${level}`)];
+  for (const path of paths) {
+    page.editReasoningPrompt(path, `edited ${path}`);
+    const parts = path.split('.');
+    let object = expected;
+    for (const part of parts.slice(0, -1)) object = object[part];
+    object[parts.at(-1)] = `edited ${path}`;
+  }
+  page.reasoningAction('apply-reasoning-auto');
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  const saved = JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto);
+  assert.equal(saved.prompt_template, 'custom');
+  assert.deepEqual(saved.custom_prompt, expected);
+});
+
+test('restoring model defaults or choosing automatic mode clears the custom snapshot', async (t) => {
+  const custom = { ...reasoningConfigured, prompt_template: 'custom', custom_prompt: reasoningTemplateFixtures[0].prompt };
+  const page = await loadReasoningPage(t, custom, {
+    reasoningModelTemplates: { judge: ['openai'] },
+    channels: [{ enabled: true, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'gpt-6-luna' }] }]
+  });
+  await page.openReasoning();
+  page.reasoningAction('restore-reasoning-prompt');
+  assert.equal(page.reasoningField('reasoningPromptTemplate').value, 'auto');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), reasoningConfigured);
+  await page.openReasoning();
+  page.editReasoningPrompt('instructions', 'custom again');
+  page.editReasoningField('prompt_template', 'auto');
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), reasoningConfigured);
+});
+
+test('cancelling reasoning instruction edits or model-default restoration preserves the stored custom prompt', async (t) => {
+  const config = { ...reasoningConfigured, prompt_template: 'custom', custom_prompt: reasoningTemplateFixtures[0].prompt };
+  const page = await loadReasoningPage(t, config);
+  await page.openReasoning();
+  page.editReasoningPrompt('instructions', 'discard me');
+  page.reasoningAction('close-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), config);
+  assert.equal(page.hasUnsavedChanges(), false);
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, config.custom_prompt.instructions);
+  page.reasoningAction('restore-reasoning-prompt');
+  page.pressDocumentKey('Escape');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), config);
+  assert.equal(page.hasUnsavedChanges(), false);
+});
+
+test('reasoning aliases with conflicting channel templates require an explicit template before editing', async (t) => {
+  const page = await loadReasoningPage(t, reasoningConfigured, {
+    reasoningModelTemplates: { judge: ['jev', 'openai'] },
+    channels: [
+      { enabled: true, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'jev-latest' }] },
+      { enabled: true, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'gpt-6-luna' }] },
+      { enabled: false, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'decision-model' }] }
+    ]
+  });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptStatus').textContent, 'settings.reasoningAuto.promptAmbiguous');
+  assert.equal(page.reasoningField('reasoningPromptInstructions'), undefined);
+  page.reasoningAction('apply-reasoning-auto');
+  assert.equal(page.hasUnsavedChanges(), false);
+  await page.openReasoning();
+  page.editReasoningField('prompt_template', 'jev');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'jev instructions');
+  page.editReasoningPrompt('instructions', 'chosen baseline');
+  page.reasoningAction('apply-reasoning-auto');
+  const saved = JSON.parse(page.inputs.reasoning_auto.value);
+  assert.equal(saved.prompt_template, 'custom');
+  assert.equal(saved.custom_prompt.instructions, 'chosen baseline');
+  assert.deepEqual(saved.custom_prompt.depth, reasoningTemplateFixtures[0].prompt.depth);
+});
+
+test('different redirected models using the same provider keep automatic instructions editable', async (t) => {
+  const page = await loadReasoningPage(t, reasoningConfigured, {
+    reasoningModelTemplates: { judge: ['openai'] },
+    channels: [{ enabled: true, auth_type: 'system_one', models: [
+      { model: 'judge', redirect_model: 'gpt-6-luna' }, { model: 'judge', redirect_model: 'gpt-6-luna-fast' },
+      { model: 'judge', redirect_model: 'jev-latest', disabled: true }
+    ] }]
+  });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').disabled, false);
+});
+
+test('failed prompt loading preserves custom instructions and permits applying unrelated reasoning fields', async (t) => {
+  const config = { ...reasoningConfigured, prompt_template: 'custom', custom_prompt: reasoningTemplateFixtures[0].prompt };
+  const page = await loadReasoningPage(t, config, { reasoningPromptLoadError: 'offline' });
+  await page.openReasoning();
+  assert.equal(page.reasoningError.hidden, false);
+  assert.equal(page.reasoningField('reasoningPromptStatus').textContent, 'settings.reasoningAuto.promptUnavailable');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, config.custom_prompt.instructions);
+  assert.equal(page.reasoningField('reasoningPromptInstructions').disabled, true);
+  assert.equal(page.reasoningField('reasoningPromptTemplate').disabled, true);
+  assert.equal(page.reasoningField('reasoningPromptRestore').disabled, true);
+  page.reasoningAction('restore-reasoning-prompt');
+  page.editReasoningPrompt('instructions', 'cannot edit');
+  page.editReasoningField('timeout_ms', 2.5);
+  page.reasoningAction('apply-reasoning-auto');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...config, timeout_ms: 2500 });
+});
+
+test('malformed prompt responses disable instruction changes and preserve builtin selections', async (t) => {
+  for (const templates of [[], reasoningTemplateFixtures.slice(1),
+    reasoningTemplateFixtures.map(template => ({ ...template, id: 'jev' })),
+    reasoningTemplateFixtures.map(template => ({ ...template, prompt: { instructions: '' } }))]) {
+    await t.test(JSON.stringify(templates).slice(0, 60), async (t) => {
+      const config = { ...reasoningConfigured, prompt_template: 'openai' };
+      const page = await loadReasoningPage(t, config, { reasoningTemplates: templates });
+      await page.openReasoning();
+      assert.equal(page.reasoningField('reasoningPromptTemplate').disabled, true);
+      assert.equal(page.reasoningField('reasoningPromptTemplate').value, 'openai');
+      assert.ok(page.reasoningField('reasoningPromptTemplate').options.some(option => option.value === 'openai'));
+      assert.equal(page.reasoningField('reasoningPromptRestore').disabled, true);
+      assert.equal(page.reasoningError.hidden, false);
+      page.editReasoningField('timeout_ms', 3);
+      page.reasoningAction('apply-reasoning-auto');
+      assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...config, timeout_ms: 3000 });
+    });
+  }
+});
+
+test('channel loading failure preserves automatic instructions from the server model-template map', async (t) => {
+  const page = await loadReasoningPage(t, reasoningConfigured, { reasoningLoadError: 'offline', reasoningModelTemplates: { judge: ['openai'] } });
+  await page.openReasoning();
+  assert.equal(page.reasoningField('reasoningPromptStatus').textContent, 'settings.reasoningAuto.promptNote');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').disabled, false);
+  page.editReasoningField('prompt_template', 'gemini');
+  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'gemini instructions');
+  page.editReasoningPrompt('criteria.max', 'my maximum');
+  page.reasoningAction('apply-reasoning-auto');
+  const config = JSON.parse(page.inputs.reasoning_auto.value);
+  assert.equal(config.prompt_template, 'custom');
+  assert.equal(config.custom_prompt.criteria.max, 'my maximum');
+});
+
+test('unknown or incomplete stored reasoning prompts stay locked until an explicit reset', async (t) => {
+  const complete = reasoningTemplateFixtures[0].prompt;
+  const invalid = [
+    { prompt_template: 'future-template' }, { prompt_template: null }, { custom_prompt: null },
+    { prompt_template: 'openai', custom_prompt: complete }, { prompt_template: 'custom' },
+    { prompt_template: 'custom', custom_prompt: null },
+    { prompt_template: 'custom', custom_prompt: { instructions: 'incomplete' } },
+    { prompt_template: 'custom', custom_prompt: { ...complete, unknown: true } },
+    { prompt_template: 'custom', custom_prompt: { ...complete, criteria: { ...complete.criteria, extra: 'unknown' } } },
+    { prompt_template: 'custom', custom_prompt: { ...complete, depth: { instructions: 'incomplete' } } }
+  ];
+  for (const fields of invalid) {
+    await t.test(JSON.stringify(fields).slice(0, 80), async (t) => {
+      const config = { ...reasoningConfigured, ...fields };
+      const page = await loadReasoningPage(t, config);
+      const original = page.inputs.reasoning_auto.value;
+      await page.openReasoning();
+      assert.equal(page.reasoningField('reasoningPromptTemplate').disabled, true);
+      assert.equal(page.reasoningField('reasoningTimeout').disabled, true);
+      page.reasoningAction('apply-reasoning-auto');
+      assert.equal(page.inputs.reasoning_auto.value, original);
+      assert.equal(page.hasUnsavedChanges(), false);
+      page.reasoningAction('reset-reasoning-auto');
+      page.reasoningAction('apply-reasoning-auto');
+      assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), reasoningDefaults);
+    });
+  }
+});
+
+test('reasoning prompt edits enforce nonempty text and UTF-8 field limits before applying', async (t) => {
+  const page = await loadReasoningPage(t);
+  await page.openReasoning();
+  const original = page.inputs.reasoning_auto.value;
+  for (const text of ['', ' \n ', '😀'.repeat(2049)]) {
+    page.editReasoningPrompt('instructions', text);
+    page.reasoningAction('apply-reasoning-auto');
+    assert.equal(page.inputs.reasoning_auto.value, original);
+    assert.equal(page.reasoningError.hidden, false);
+    assert.equal(page.reasoningModal.classList.contains('show'), true);
+  }
+  page.editReasoningPrompt('instructions', '😀'.repeat(2048));
+  page.reasoningAction('apply-reasoning-auto');
+  assert.equal(JSON.parse(page.inputs.reasoning_auto.value).custom_prompt.instructions, '😀'.repeat(2048));
+});
+
+test('reasoning apply rejects oversized custom snapshots even when every individual field is valid', async (t) => {
+  const page = await loadReasoningPage(t);
+  await page.openReasoning();
+  const text = 'x'.repeat(8192);
+  for (const path of ['instructions', 'depth.instructions',
+    ...['low', 'medium', 'high', 'xhigh', 'max'].map(level => `criteria.${level}`),
+    ...['high', 'xhigh', 'max'].map(level => `depth.criteria.${level}`)]) page.editReasoningPrompt(path, text);
+  page.reasoningAction('apply-reasoning-auto');
+  assert.equal(page.hasUnsavedChanges(), false);
+  assert.equal(page.reasoningError.hidden, false);
+  assert.equal(page.reasoningModal.classList.contains('show'), true);
 });
