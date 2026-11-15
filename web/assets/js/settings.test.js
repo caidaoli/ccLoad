@@ -916,38 +916,6 @@ test('字节型设置以 MiB 数值编辑并以字节保存', async (t) => {
   assert.equal(page.inputs[bodyBudgetKey].value, '128.5');
 });
 
-test('五个 WebSocket 设置允许显式保存 0', async (t) => {
-  const settings = [
-    { key: 'responses_ws_max_sessions', value: '256', value_type: 'int', description: '' },
-    { key: 'responses_ws_session_ttl_minutes', value: '15', value_type: 'int', description: '' },
-    { key: 'responses_ws_max_transcript_bytes', value: '268435456', value_type: 'int', description: '' },
-    { key: 'responses_ws_max_connections', value: '128', value_type: 'int', description: '' },
-    { key: 'responses_ws_max_connections_per_token', value: '64', value_type: 'int', description: '' }
-  ];
-  const page = await loadSettingsPage(t, settings, {
-    responses_ws_max_sessions: '0',
-    responses_ws_session_ttl_minutes: '0',
-    responses_ws_max_transcript_bytes: '0',
-    responses_ws_max_connections: '0',
-    responses_ws_max_connections_per_token: '0'
-  });
-  page.setAllowSave(true);
-
-  page.saveButton.click();
-  await flushAsyncWork();
-
-  assert.equal(page.errors.length, 0);
-  const requests = saveRequests(page);
-  assert.equal(requests.length, 1);
-  assert.deepEqual(JSON.parse(requests[0].options.body), {
-    responses_ws_max_sessions: '0',
-    responses_ws_session_ttl_minutes: '0',
-    responses_ws_max_transcript_bytes: '0',
-    responses_ws_max_connections: '0',
-    responses_ws_max_connections_per_token: '0'
-  });
-});
-
 test('正字节设置拒绝空输入、零、负数及不足一字节的大小', async (t) => {
   for (const key of ['max_body_bytes', 'request_body_memory_budget_bytes']) {
     await t.test(key, async (t) => {

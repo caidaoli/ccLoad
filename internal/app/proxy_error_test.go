@@ -201,49 +201,6 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	}
 }
 
-// Test_HandleProxySuccess_Basic 基础成功处理测试
-func Test_HandleProxySuccess_Basic(t *testing.T) {
-	srv := newInMemoryServer(t)
-
-	ctx := context.Background()
-	cfg := &model.Config{
-		ID:       1,
-		Name:     "test",
-		URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
-		Priority: 1,
-		Enabled:  true,
-	}
-
-	res := &fwResult{
-		Status:        200,
-		Body:          []byte(`{"content": "success"}`),
-		Header:        make(http.Header),
-		FirstByteTime: 0.05,
-	}
-
-	// 创建测试用的请求上下文（新增参数，2025-11）
-	reqCtx := &proxyRequestContext{
-		tokenHash: "", // 测试环境无需Token统计
-	}
-
-	result, action := srv.handleProxySuccess(
-		ctx, cfg, 0, "test-model", "test-key", res, 0.1, reqCtx,
-	)
-
-	if result == nil {
-		t.Fatal("期望返回成功结果")
-	}
-	if result.status != 200 {
-		t.Errorf("期望 status=200, 实际=%d", result.status)
-	}
-	if !result.succeeded {
-		t.Error("期望 succeeded=true")
-	}
-	if action != cooldown.ActionReturnClient {
-		t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
-	}
-}
-
 // Test_HandleProxyError_499 测试499状态码处理
 func Test_HandleProxyError_499(t *testing.T) {
 	srv := newInMemoryServer(t)

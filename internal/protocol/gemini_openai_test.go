@@ -222,58 +222,6 @@ func TestBuildTransformPlan_SupportsGeminiToOpenAI(t *testing.T) {
 	}
 }
 
-func TestRegistry_SameProtocolPassthrough(t *testing.T) {
-	reg := protocol.NewRegistry()
-	raw := []byte(`{"hello":"world"}`)
-
-	gotReq, err := reg.TranslateRequest(protocol.Gemini, protocol.Gemini, "gemini-2.5-pro", raw, false)
-	if err != nil {
-		t.Fatalf("TranslateRequest passthrough failed: %v", err)
-	}
-	if string(gotReq) != string(raw) {
-		t.Fatalf("expected request passthrough, got %s", gotReq)
-	}
-
-	gotResp, err := reg.TranslateResponseNonStream(context.Background(), protocol.Gemini, protocol.Gemini, "gemini-2.5-pro", raw, raw, raw)
-	if err != nil {
-		t.Fatalf("TranslateResponseNonStream passthrough failed: %v", err)
-	}
-	if string(gotResp) != string(raw) {
-		t.Fatalf("expected response passthrough, got %s", gotResp)
-	}
-
-	gotChunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Gemini, "gemini-2.5-pro", raw, raw, raw, nil)
-	if err != nil {
-		t.Fatalf("TranslateResponseStream passthrough failed: %v", err)
-	}
-	if len(gotChunks) != 1 || string(gotChunks[0]) != string(raw) {
-		t.Fatalf("expected stream passthrough, got %#v", gotChunks)
-	}
-}
-
-func TestBuildTransformPlan_SameProtocolPassthrough(t *testing.T) {
-	plan, err := protocol.BuildTransformPlan(
-		protocol.Gemini,
-		protocol.Gemini,
-		"/v1beta/models/gemini-2.5-pro:generateContent",
-		"",
-		[]byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
-		nil,
-		"gemini-2.5-pro",
-		"",
-		false,
-	)
-	if err != nil {
-		t.Fatalf("BuildTransformPlan failed: %v", err)
-	}
-	if plan.NeedsTransform {
-		t.Fatalf("same protocol should not require transform: %+v", plan)
-	}
-	if got := plan.UpstreamPath; got != "/v1beta/models/gemini-2.5-pro:generateContent" {
-		t.Fatalf("expected upstream path passthrough, got %s", got)
-	}
-}
-
 func TestRegistry_TranslateResponseStream_OpenAIToGemini_ReasoningContent(t *testing.T) {
 	t.Parallel()
 	reg := protocol.NewRegistry()

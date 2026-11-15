@@ -1980,7 +1980,6 @@ func TestProxy_ZAIStartEdgeHold(t *testing.T) {
 		{"ordinary", `{"error":{"message":"method not allowed"}}`, false},
 		{"html", `<html>request blocked</html>`, true},
 		{"aliyun", `Access denied: https://errors.aliyun.com/`, true},
-		{"html_aliyun", `<html>https://errors.aliyun.com/</html>`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)

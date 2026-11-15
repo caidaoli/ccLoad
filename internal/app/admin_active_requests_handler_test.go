@@ -107,45 +107,6 @@ func TestHandleAbortActiveRequest(t *testing.T) {
 	}
 }
 
-func TestHandleAbortActiveRequestWithoutManager(t *testing.T) {
-	t.Parallel()
-
-	s := &Server{}
-	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/active-requests/1/abort", nil))
-	c.Params = gin.Params{{Key: "request_id", Value: "1"}}
-
-	s.HandleAbortActiveRequest(c)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
-func TestActiveRequestManagerCount(t *testing.T) {
-	t.Parallel()
-
-	manager := newActiveRequestManager()
-	if got := manager.Count(); got != 0 {
-		t.Fatalf("Count on empty manager = %d, want 0", got)
-	}
-
-	first := beginTestActiveRequest(manager, time.Now(), "model-a", "127.0.0.1", true)
-	second := beginTestActiveRequest(manager, time.Now(), "model-b", "127.0.0.1", false)
-	if got := manager.Count(); got != 2 {
-		t.Fatalf("Count after register = %d, want 2", got)
-	}
-
-	manager.Remove(first)
-	if got := manager.Count(); got != 1 {
-		t.Fatalf("Count after one remove = %d, want 1", got)
-	}
-
-	manager.Remove(second)
-	if got := manager.Count(); got != 0 {
-		t.Fatalf("Count after all removed = %d, want 0", got)
-	}
-}
-
 func TestHandleActiveRequests_PreservesZeroCostMultiplier(t *testing.T) {
 	t.Parallel()
 

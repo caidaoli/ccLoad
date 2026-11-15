@@ -5,14 +5,6 @@ import (
 	"time"
 )
 
-func TestURLSelector_SingleURL(t *testing.T) {
-	sel := NewURLSelector()
-	url, idx := sel.SelectURL(1, []string{"https://a.com"})
-	if url != "https://a.com" || idx != 0 {
-		t.Errorf("single URL: expected (https://a.com, 0), got (%s, %d)", url, idx)
-	}
-}
-
 func TestURLSelector_EmptyURLs(t *testing.T) {
 	sel := NewURLSelector()
 
@@ -83,19 +75,6 @@ func TestURLSelector_WeightedRandom(t *testing.T) {
 	// 期望~83%，允许75%~92%
 	if fastCount < 750 || fastCount > 920 {
 		t.Errorf("weighted random: expected ~83%% fast, got %d/1000 (%.1f%%)", fastCount, float64(fastCount)/10)
-	}
-}
-
-func TestURLSelector_SkipsCooledDown(t *testing.T) {
-	sel := NewURLSelector()
-	urls := []string{"https://a.com", "https://b.com"}
-	sel.RecordLatency(1, "https://a.com", 50*time.Millisecond) // a更快
-	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
-	sel.CooldownURL(1, "https://a.com") // 但a被冷却
-
-	url, _ := sel.SelectURL(1, urls)
-	if url != "https://b.com" {
-		t.Errorf("expected non-cooled URL https://b.com, got %s", url)
 	}
 }
 

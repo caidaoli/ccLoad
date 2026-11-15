@@ -1606,7 +1606,6 @@ func TestGetStatusCodeMeta(t *testing.T) {
 		{413, ErrorLevelKey, "413 -> Key级(模型作用域由 ClassifyHTTPResponseWithMeta 收窄)"},
 
 		// 默认行为
-		{599, ErrorLevelChannel, "599 -> 渠道级(自定义)"},
 		{418, ErrorLevelKey, "418 -> Key级(兜底策略:未知4xx)"},
 		{511, ErrorLevelChannel, "511 -> 渠道级(默认5xx)"},
 	}

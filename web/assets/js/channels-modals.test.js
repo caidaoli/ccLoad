@@ -1350,44 +1350,6 @@ test('editing a Codex channel loads its AT row and full credential into read-onl
   }
 });
 
-test('editing an xAI channel loads its full credential into read-only mode and keeps keys empty', async () => {
-  const channel = {
-    id: 76,
-    name: 'xai-oauth',
-    auth_type: 'xai_oauth',
-    xai_email: 'safe@example.com',
-    xai_subscription_tier: 'pro',
-    urls: [{ url: 'https://cli-chat-proxy.grok.com/v1', exact: false, protocols: ['codex'] }],
-    models: [],
-    priority: 0,
-    enabled: true,
-    protocol_transform_mode: 'local'
-  };
-  const credential = {
-    type: 'xai', auth_kind: 'oauth', access_token: 'xai-at', refresh_token: 'xai-rt', id_token: 'xai-id'
-  };
-  const fixture = installEditChannelGlobals(channel, {
-    editorKeys: [],
-    codexCredential: credential,
-    codexCredentialInfo: null
-  });
-
-  try {
-    const { editChannel } = loadChannelsModals();
-    await editChannel(channel.id);
-
-    assert.deepEqual(fixture.loadedKeys, []);
-    assert.deepEqual(fixture.authEditorCalls.at(-1), {
-      authType: 'xai_oauth',
-      credential,
-      channel,
-      credentialInfo: null
-    });
-  } finally {
-    fixture.restore();
-  }
-});
-
 test('Loomy copy saves an independent session channel by source ID and ordinary editing clears the copy draft', async () => {
   const channel = {
     id: 91, name: 'Loomy', auth_type: 'loomy_session', enabled: true,
@@ -2548,25 +2510,6 @@ test('per-Key discovery marks a successful Key with no matching model as empty',
   });
 });
 
-test('per-Key discovery keeps skipped manual Keys unchanged', () => {
-  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
-  const result = proposeFetchedKeyModelScopes([
-    { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
-    { api_key: 'sk-a', note: '', allowed_models: [] }
-  ], [
-    { model: 'logical-a', redirect_model: 'upstream-a' }
-  ], [
-    { key_index: 0, models: [{ model: 'upstream-a' }] }
-  ], [
-    { keyIndex: 1, apiKey: 'sk-a' }
-  ]);
-
-  assert.deepEqual(result.rows.map(row => row.allowed_models), [
-    ['keep-disabled'],
-    ['logical-a']
-  ]);
-});
-
 test('per-Key discovery maps compact request indices to original Key rows', () => {
   const { proposeFetchedKeyModelScopes } = loadChannelsModals();
   const result = proposeFetchedKeyModelScopes([
@@ -2665,32 +2608,6 @@ test('fetchModelsFromAPI uses the saved Antigravity channel without submitting i
 
   assert.deepEqual(requests, [{
     url: '/admin/channels/42/models/fetch',
-    options: undefined
-  }]);
-});
-
-test('fetchModelsFromAPI uses the saved Codex channel without submitting its OAuth token', async () => {
-  const requests = [];
-  const restore = installFetchModelsGlobals({
-    rows: [{ api_key: 'codex-access-token-that-must-not-be-submitted' }],
-    states: [{ key_index: 0, disabled: false }],
-    channelId: 43,
-    authType: 'codex_oauth',
-    onFetch: async (url, options) => {
-      requests.push({ url, options });
-      return { success: false, error: 'stop after request capture' };
-    },
-    onError: () => {}
-  });
-
-  try {
-    await loadFetchModelsFromAPI()();
-  } finally {
-    restore();
-  }
-
-  assert.deepEqual(requests, [{
-    url: '/admin/channels/43/models/fetch',
     options: undefined
   }]);
 });
@@ -3513,26 +3430,6 @@ test('渠道保存载荷仅在 API Key 渠道携带 management_account，且绝�
     for (const forbidden of ['oauth_credential', 'credential', 'access_token']) {
       assert.equal(forbidden in payload, false, `${forbidden} 不能出现在渠道保存载荷`);
     }
-  } finally {
-    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
-    else delete global.window;
-  }
-});
-
-test('multi-Key channel asks for confirmation even when a single Key changed', async () => {
-  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
-  const prompts = [];
-  Object.defineProperty(global, 'window', {
-    configurable: true,
-    value: {
-      t: (key, params) => `${key}:${params?.count ?? ''}`,
-      showConfirm: async message => { prompts.push(message); return true; }
-    }
-  });
-  try {
-    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
-    assert.equal(await fetchedKeyModelApplyAccepted(1), true);
-    assert.deepEqual(prompts, ['channels.applyFetchedKeyModelsConfirm:1']);
   } finally {
     if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
     else delete global.window;

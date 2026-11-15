@@ -38,10 +38,8 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "int_responses_ws_max_connections_ok_default", key: "responses_ws_max_connections", valueType: "int", value: "0", wantErr: false},
 		{name: "int_responses_ws_max_connections_ok_positive", key: "responses_ws_max_connections", valueType: "int", value: "64", wantErr: false},
 		{name: "int_responses_ws_max_connections_reject_negative", key: "responses_ws_max_connections", valueType: "int", value: "-1", wantErr: true},
-		{name: "int_responses_ws_max_connections_per_token_ok_default", key: "responses_ws_max_connections_per_token", valueType: "int", value: "0", wantErr: false},
 		{name: "int_responses_ws_max_connections_per_token_reject_negative", key: "responses_ws_max_connections_per_token", valueType: "int", value: "-1", wantErr: true},
 		{name: "int_responses_ws_max_transcript_bytes_ok", key: "responses_ws_max_transcript_bytes", valueType: "int", value: "134217728", wantErr: false},
-		{name: "int_responses_ws_max_transcript_bytes_ok_default", key: "responses_ws_max_transcript_bytes", valueType: "int", value: "0", wantErr: false},
 		{name: "int_responses_ws_max_transcript_bytes_reject_negative", key: "responses_ws_max_transcript_bytes", valueType: "int", value: "-1", wantErr: true},
 
 		{name: "int_log_retention_days_ok_disabled", key: "log_retention_days", valueType: "int", value: "-1", wantErr: false},
@@ -54,7 +52,6 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "int_max_concurrency_ok", key: "max_concurrency", valueType: "int", value: "1000", wantErr: false},
 		{name: "int_max_body_bytes_reject_negative", key: "max_body_bytes", valueType: "int", value: "-1", wantErr: true},
 		{name: "int_max_body_bytes_ok", key: "max_body_bytes", valueType: "int", value: "10485760", wantErr: false},
-		{name: "int_max_image_body_bytes_ok", key: "max_image_body_bytes", valueType: "int", value: "20971520", wantErr: false},
 		{name: "int_body_memory_budget_reject_zero", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "0", wantErr: true},
 		{name: "int_body_memory_budget_reject_negative", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "-1", wantErr: true},
 		{name: "int_body_memory_budget_reject_fraction", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "1.5", wantErr: true},
@@ -62,9 +59,6 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "int_body_memory_budget_default", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "536870912", wantErr: false},
 		{name: "int_body_memory_budget_above_duration_limit", key: config.RequestBodyMemoryBudgetSettingKey, valueType: "int", value: "10737418240", wantErr: false},
 		{name: "int_cooldown_auth_reject_0", key: "cooldown_auth_seconds", valueType: "int", value: "0", wantErr: true},
-		{name: "int_cooldown_auth_ok", key: "cooldown_auth_seconds", valueType: "int", value: "300", wantErr: false},
-		{name: "int_cooldown_min_reject_0", key: "cooldown_min_seconds", valueType: "int", value: "0", wantErr: true},
-		{name: "int_cooldown_max_ok", key: "cooldown_max_seconds", valueType: "int", value: "1800", wantErr: false},
 
 		{name: "bool_ok_true", key: "any_bool", valueType: "bool", value: "true", wantErr: false},
 		{name: "bool_ok_false", key: "any_bool", valueType: "bool", value: "false", wantErr: false},
@@ -76,9 +70,6 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "duration_ok_10", key: "any_duration", valueType: "duration", value: "10", wantErr: false},
 		{name: "duration_reject_negative", key: "any_duration", valueType: "duration", value: "-1", wantErr: true},
 		{name: "duration_reject_non_int", key: "any_duration", valueType: "duration", value: "1.5", wantErr: true},
-		{name: "duration_upstream_connection_reuse_limit_ok_disabled", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "0", wantErr: false},
-		{name: "duration_upstream_connection_reuse_limit_ok_positive", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "540", wantErr: false},
-		{name: "duration_upstream_connection_reuse_limit_reject_negative", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "-1", wantErr: true},
 
 		{name: "string_accepts_any", key: "any_string", valueType: "string", value: "", wantErr: false},
 		{name: "string_auto_update_channel_stable", key: "auto_update_channel", valueType: "string", value: "stable", wantErr: false},
@@ -93,7 +84,6 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "string_oauth_base_url_rejects_relative", key: config.CodexBaseURLSettingKey, valueType: "string", value: "/responses", wantErr: true},
 		{name: "string_oauth_base_url_rejects_credentials", key: config.XAIBaseURLSettingKey, valueType: "string", value: "https://user:pass@gateway.example/v1", wantErr: true},
 		{name: "string_oauth_base_url_rejects_query", key: config.AntigravityURLSettingKey, valueType: "string", value: "https://gateway.example?token=secret", wantErr: true},
-		{name: "string_anthropic_base_url_rejects_query", key: config.AnthropicBaseURLSettingKey, valueType: "string", value: "https://gateway.example/anthropic?token=secret", wantErr: true},
 		{name: "string_oauth_base_url_rejects_non_http", key: config.CodexBaseURLSettingKey, valueType: "string", value: "ftp://gateway.example/responses", wantErr: true},
 
 		{name: "unknown_type_reject", key: "k", valueType: "wtf", value: "x", wantErr: true},

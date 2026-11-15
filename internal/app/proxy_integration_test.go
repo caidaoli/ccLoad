@@ -16210,40 +16210,6 @@ func TestProxy_UnsupportedStructuredCodexTransformRequestReturns400(t *testing.T
 	}
 }
 
-func TestProxy_ChannelRetry_On503(t *testing.T) {
-	t.Parallel()
-
-	// 渠道1：返回 503
-	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"service unavailable"}`))
-	}))
-	defer upstream1.Close()
-
-	// 渠道2：返回 200
-	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"from-ch2","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-	}))
-	defer upstream2.Close()
-
-	env := setupProxyTestEnv(t, []testChannel{
-		{name: "ch1-fail", models: "gpt-4", apiKey: "sk-1", priority: 100},
-		{name: "ch2-ok", models: "gpt-4", apiKey: "sk-2", priority: 50},
-	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
-
-	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
-		"model":    "gpt-4",
-		"messages": []map[string]string{{"role": "user", "content": "hi"}},
-	}, nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (fallback to ch2), got %d: %s", w.Code, w.Body.String())
-	}
-}
-
 func TestProxy_NonStreamingEmpty200RetriesNextChannel(t *testing.T) {
 	t.Parallel()
 

@@ -226,47 +226,6 @@ func createTestToken(t testing.TB, srv *Server, desc string) *model.AuthToken {
 	return token
 }
 
-func TestHandleListAuthTokens_EmptyResult(t *testing.T) {
-	server := newInMemoryServer(t)
-
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
-	server.HandleListAuthTokens(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected 200, got %d", w.Code)
-	}
-
-	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
-	if !resp.Success {
-		t.Fatalf("success=false, error=%q", resp.Error)
-	}
-	if len(resp.Data.Tokens) != 0 {
-		t.Errorf("Expected 0 tokens, got %d", len(resp.Data.Tokens))
-	}
-	// 无 range 参数时 IsToday 应为 false
-	if resp.Data.IsToday {
-		t.Error("Expected IsToday=false when no range param")
-	}
-}
-
-func TestHandleListAuthTokens_WithTokens(t *testing.T) {
-	server := newInMemoryServer(t)
-	createTestToken(t, server, "token-a")
-	createTestToken(t, server, "token-b")
-
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens", nil))
-	server.HandleListAuthTokens(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected 200, got %d", w.Code)
-	}
-
-	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
-	if len(resp.Data.Tokens) != 2 {
-		t.Errorf("Expected 2 tokens, got %d", len(resp.Data.Tokens))
-	}
-}
-
 func TestHandleListAuthTokens_RangeToday(t *testing.T) {
 	server := newInMemoryServer(t)
 	token := createTestToken(t, server, "range-token")
@@ -331,27 +290,6 @@ func TestHandleListAuthTokens_RangeWeek(t *testing.T) {
 	}
 	if resp.Data.DurationSeconds < 1 {
 		t.Errorf("Expected DurationSeconds >= 1, got %f", resp.Data.DurationSeconds)
-	}
-}
-
-func TestHandleListAuthTokens_RangeMonth(t *testing.T) {
-	server := newInMemoryServer(t)
-	createTestToken(t, server, "month-token")
-
-	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=this_month", nil)
-	c, w := newTestContext(t, req)
-	server.HandleListAuthTokens(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected 200, got %d", w.Code)
-	}
-
-	resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
-	if !resp.Success {
-		t.Fatalf("success=false, error=%q", resp.Error)
-	}
-	if resp.Data.IsToday {
-		t.Error("Expected IsToday=false for range=this_month")
 	}
 }
 

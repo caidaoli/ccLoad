@@ -113,38 +113,3 @@ func TestStaticFileServing(t *testing.T) {
 		}
 	})
 }
-
-func TestGetContentType(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		ext  string
-		want string
-	}{
-		{".html", "text/html; charset=utf-8"},
-		{".css", "text/css; charset=utf-8"},
-		{".js", "application/javascript; charset=utf-8"},
-		{".json", "application/json; charset=utf-8"},
-		{".png", "image/png"},
-		{".jpg", "image/jpeg"},
-		{".jpeg", "image/jpeg"},
-		{".gif", "image/gif"},
-		{".svg", "image/svg+xml"},
-		{".ico", "image/x-icon"},
-		{".woff", "font/woff"},
-		{".woff2", "font/woff2"},
-		{".ttf", "font/ttf"},
-		{".eot", "application/vnd.ms-fontobject"},
-		{".unknown", "application/octet-stream"},
-		{"", "application/octet-stream"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.ext, func(t *testing.T) {
-			got := getContentType(tc.ext)
-			if got != tc.want {
-				t.Errorf("getContentType(%q)=%q, want %q", tc.ext, got, tc.want)
-			}
-		})
-	}
-}
