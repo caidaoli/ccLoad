@@ -1954,88 +1954,112 @@ func TestAdminModels_HandleFetchModels_AntigravityCapacityDoesNotCooldownURLs(t 
 	}
 }
 
+/**
+ * @brief 验证模型发现与批量刷新合并套餐允许的图片模型，去重并保留原始能力快照和自定义价格
+ * @param t 测试上下文
+ */
 func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
-	const accessToken = "codex-access-token-that-must-not-leak"
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	server.channelCache = storage.NewChannelCache(store, time.Minute)
-	var manifestRequests atomic.Int32
-	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
-		manifestRequests.Add(1)
-		if r.URL.Path != "/backend-api/codex/models" || r.URL.Query().Get("client_version") != codexauth.DefaultClientVersion ||
-			r.Header.Get("Authorization") != "Bearer "+accessToken || r.Header.Get("ChatGPT-Account-Id") != "account-models" {
-			t.Fatalf("unexpected Codex manifest request: %s, headers=%v", r.URL, r.Header)
-		}
-		return jsonResponse(r, `{"models":[{"slug":"gpt-6-astra","service_tiers":[{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}]},{"slug":"unknown-tier"},{"slug":"no-tiers","service_tiers":[]}]}`)
-	})}
-	server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), store, nil, nil)
+	for _, plan := range []string{"free", "pro", "unknown"} {
+		t.Run(plan, func(t *testing.T) {
+			const accessToken = "codex-access-token-that-must-not-leak"
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			server.channelCache = storage.NewChannelCache(store, time.Minute)
+			var manifestRequests atomic.Int32
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				manifestRequests.Add(1)
+				if r.URL.Path != "/backend-api/codex/models" || r.URL.Query().Get("client_version") != codexauth.DefaultClientVersion ||
+					r.Header.Get("Authorization") != "Bearer "+accessToken || r.Header.Get("ChatGPT-Account-Id") != "account-models" {
+					t.Fatalf("unexpected Codex manifest request: %s, headers=%v", r.URL, r.Header)
+				}
+				return jsonResponse(r, `{"models":[{"slug":"gpt-6-astra","service_tiers":[{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}]},{"slug":"unknown-tier"},{"slug":"no-tiers","service_tiers":[]},{"slug":"gpt-image-2.6"}]}`)
+			})}
+			server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), store, nil, nil)
 
-	credential := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: "refresh-token",
-		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-models", PlanType: "free",
-	}
-	payload, err := credential.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := store.CreateConfig(context.Background(), &model.Config{
-		Name: "Codex models", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
-		URLs:         model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
-		ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra", RedirectModel: "gpt-6-astra", Pricing: &util.CustomModelPrice{InputPrice: new(3.0), OutputPrice: new(5.0)}}}, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+			credential := &codexauth.Credential{
+				Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: "refresh-token",
+				Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-models", PlanType: plan,
+			}
+			payload, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := store.CreateConfig(context.Background(), &model.Config{
+				Name: "Codex models", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
+				URLs:         model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
+				ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra", RedirectModel: "gpt-6-astra", Pricing: &util.CustomModelPrice{InputPrice: new(3.0), OutputPrice: new(5.0)}}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
-	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
-	server.HandleFetchModels(c)
+			c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+			server.HandleFetchModels(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), accessToken) {
-		t.Fatalf("response leaked OAuth token: %s", w.Body.String())
-	}
-	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
-	if !resp.Success || len(resp.Data.Models) != 3 || resp.Data.Protocol != "codex" || resp.Data.Source != "api" {
-		t.Fatalf("unexpected response: %s", w.Body.String())
-	}
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), accessToken) {
+				t.Fatalf("response leaked OAuth token: %s", w.Body.String())
+			}
+			wantModels := []string{"gpt-6-astra", "unknown-tier", "no-tiers", "gpt-image-2.6"}
+			if plan != "free" {
+				wantModels = append(wantModels, "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst")
+			}
+			resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+			if !resp.Success || len(resp.Data.Models) != len(wantModels) || resp.Data.Protocol != "codex" || resp.Data.Source != "api" {
+				t.Fatalf("unexpected response: %s", w.Body.String())
+			}
 
-	batchRequest := map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "replace"}
-	batchContext, batchResponse := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", batchRequest))
-	server.HandleBatchRefreshModels(batchContext)
-	var batchResult struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Updated int `json:"updated"`
-			Failed  int `json:"failed"`
-		} `json:"data"`
-	}
-	mustUnmarshalJSON(t, batchResponse.Body.Bytes(), &batchResult)
-	if batchResponse.Code != http.StatusOK || !batchResult.Success || batchResult.Data.Updated != 1 || batchResult.Data.Failed != 0 {
-		t.Fatalf("unexpected batch response: %s", batchResponse.Body.String())
-	}
-	persisted, err := store.GetConfig(context.Background(), cfg.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantPersisted := make([]string, len(resp.Data.Models))
-	for i, entry := range resp.Data.Models {
-		if entry.RedirectModel != entry.Model {
-			t.Fatalf("model[%d]=%+v, want identity redirect", i, entry)
-		}
-		wantPersisted[i] = entry.Model
-	}
-	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
-		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
-	}
-	if manifestRequests.Load() != 2 || persisted.ModelEntries[0].Pricing == nil {
-		t.Fatalf("manifest requests=%d, model pricing=%+v", manifestRequests.Load(), persisted.ModelEntries)
-	}
-	storedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil || storedCredential.ModelManifest == nil || len(storedCredential.ModelManifest.Models) != 3 {
-		t.Fatalf("manifest not persisted: credential=%+v, error=%v", storedCredential, err)
+			for _, name := range wantModels {
+				count := 0
+				for _, entry := range resp.Data.Models {
+					if entry.Model == name {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Fatalf("model %q occurs %d times, want exactly once", name, count)
+				}
+			}
+
+			batchRequest := map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "replace"}
+			batchContext, batchResponse := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", batchRequest))
+			server.HandleBatchRefreshModels(batchContext)
+			var batchResult struct {
+				Success bool `json:"success"`
+				Data    struct {
+					Updated int `json:"updated"`
+					Failed  int `json:"failed"`
+				} `json:"data"`
+			}
+			mustUnmarshalJSON(t, batchResponse.Body.Bytes(), &batchResult)
+			if batchResponse.Code != http.StatusOK || !batchResult.Success || batchResult.Data.Updated != 1 || batchResult.Data.Failed != 0 {
+				t.Fatalf("unexpected batch response: %s", batchResponse.Body.String())
+			}
+			persisted, err := store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPersisted := make([]string, len(resp.Data.Models))
+			for i, entry := range resp.Data.Models {
+				if entry.RedirectModel != entry.Model {
+					t.Fatalf("model[%d]=%+v, want identity redirect", i, entry)
+				}
+				wantPersisted[i] = entry.Model
+			}
+			if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
+				t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
+			}
+			if manifestRequests.Load() != 2 || persisted.ModelEntries[0].Pricing == nil {
+				t.Fatalf("manifest requests=%d, model pricing=%+v", manifestRequests.Load(), persisted.ModelEntries)
+			}
+			storedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil || storedCredential.ModelManifest == nil || len(storedCredential.ModelManifest.Models) != 4 {
+				t.Fatalf("manifest not persisted: credential=%+v, error=%v", storedCredential, err)
+			}
+		})
 	}
 }
 

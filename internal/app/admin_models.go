@@ -1427,7 +1427,14 @@ func vertexCatalogModels() []string {
 	return models
 }
 
-// Antigravity 和 Codex 是产品名称；注释与用户可见文本必须保持首字母大写。
+/**
+ * @brief 获取 Codex 账号目录并补入套餐允许的内置图片模型，能力快照只保存上游原始目录
+ * @param ctx 请求上下文
+ * @param cfg 待发现模型的 Codex OAuth 渠道
+ * @param overrideProtocol 协议覆盖；空值或 codex 有效
+ * @return 模型列表及来源信息；失败时为 nil
+ * @return 凭证、协议、上游目录获取或快照持久化失败时返回错误
+ */
 func (s *Server) fetchCodexOAuthModels(
 	ctx context.Context,
 	cfg *model.Config,
@@ -1495,6 +1502,15 @@ func (s *Server) fetchCodexOAuthModels(
 	models := make([]model.ModelEntry, len(catalog))
 	for i, entry := range catalog {
 		models[i] = model.ModelEntry{Model: entry.Slug, RedirectModel: entry.Slug}
+	}
+	for _, name := range codexOAuthDefaultModels {
+		if _, imageModel := canonicalCodexImageModel(name); !imageModel || !codexOAuthModelAllowed(name, credential.PlanType) {
+			continue
+		}
+		if slices.ContainsFunc(models, func(entry model.ModelEntry) bool { return entry.Model == name }) {
+			continue
+		}
+		models = append(models, model.ModelEntry{Model: name, RedirectModel: name})
 	}
 	models = model.CarryModelPricing(cfg.ModelEntries, models)
 	channelURL := ""
