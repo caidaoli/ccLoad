@@ -412,6 +412,7 @@ type proxyResult struct {
 	proxyLogWritten           bool
 	antigravityCapacity429    bool
 	protocolCapabilityMissing bool
+	protocolCandidateSkipped  bool ///< 无兼容协议而跳过请求的本地结果，不覆盖其他渠道的实际失败。
 	// 本地转换无法表示本次请求，不代表端点能力；回退成功后也不写能力缓存。
 	requestScopedProtocolMiss bool
 	websocketTargetCooling    bool

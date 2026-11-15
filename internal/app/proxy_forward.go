@@ -4744,12 +4744,22 @@ func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlStr 
 	}
 }
 
-// attemptKeyAcrossURLs 在选定 Key 上按 URL 顺序尝试上游：
-//   - immediate != nil 表示调用方需立即 `return immediate, nil`（成功 / ActionReturnClient / ctx 取消）
-//   - immediate == nil 时 urlLastFailure 给 Key 重试循环用于决定 continue/break
-//
-// 多URL场景下：只有真正的 URL/渠道级故障才会冷却 URL 并继续下一个 URL。
-// 模型级错误与 URL 无关，直接切换渠道。
+/**
+ * @brief 在选定 Key 上尝试兼容的 URL，跳过候选时保留已有请求失败。
+ * @param ctx 请求上下文；取消后停止尝试。
+ * @param cfg 当前渠道配置。
+ * @param urls 当前渠道的运行时 URL 列表。
+ * @param selector URL 排序与冷却状态；nil 时按配置顺序尝试。
+ * @param keyIndex 当前 Key 序号，OAuth 使用 cooldown.NoKeyIndex。
+ * @param selectedKey 本轮上游认证材料。
+ * @param selectedAPIKey 当前 Key 的模型范围；OAuth 可为 nil。
+ * @param reqCtx 本轮代理状态，随尝试更新。
+ * @param w 客户端响应写入器。
+ * @return 必须立即返回的结果；nil 时由调用方处理最后失败。
+ * @return 供 Key 重试决策的最后失败；尚无失败时为 nil。
+ * @return URL 配置无效或尝试无法执行时返回错误，正常完成尝试返回 nil。
+ * @note 可发送上游请求、写客户端响应、更新冷却和日志；模型级错误不触发同渠道 URL 回退。
+ */
 func (s *Server) attemptKeyAcrossURLs(
 	ctx context.Context,
 	cfg *model.Config,
@@ -4877,13 +4887,16 @@ func (s *Server) attemptKeyAcrossURLs(
 			protocolCandidates = eligible
 		}
 		if len(protocolCandidates) == 0 {
-			urlLastFailure = &proxyResult{
-				status:                    http.StatusNotFound,
-				body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
-				channelID:                 &cfg.ID,
-				succeeded:                 false,
-				nextAction:                cooldown.ActionRetryChannel,
-				protocolCapabilityMissing: true,
+			if urlLastFailure == nil {
+				urlLastFailure = &proxyResult{
+					status:                    http.StatusNotFound,
+					body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
+					channelID:                 &cfg.ID,
+					succeeded:                 false,
+					nextAction:                cooldown.ActionRetryChannel,
+					protocolCapabilityMissing: true,
+					protocolCandidateSkipped:  true,
+				}
 			}
 			if cfg.UsesAntigravityOAuth() {
 				break

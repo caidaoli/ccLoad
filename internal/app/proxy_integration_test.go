@@ -11327,6 +11327,165 @@ func TestProxy_URLProtocolsSkipNativeProbeAndUseDeclaredChannelProtocol(t *testi
 	}
 }
 
+/**
+ * @brief 各代理入口跳过不兼容 URL 时保留上游错误、状态码和响应头。
+ * @param t 测试上下文。
+ */
+func TestProxy_IncompatibleURLPreservesUpstreamFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, protocol, path, body string
+		websocket, invalidGzip     bool
+	}{
+		{name: "messages", protocol: "anthropic", path: "/v1/messages", body: `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`},
+		{name: "messages_gzip", protocol: "anthropic", path: "/v1/messages", body: `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`, invalidGzip: true},
+		{name: "chat", protocol: "openai", path: "/v1/chat/completions", body: `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`},
+		{name: "responses", protocol: "codex", path: "/v1/responses", body: `{"model":"claude-sonnet-4-5","input":"hello"}`},
+		{name: "gemini", protocol: "gemini", path: "/v1beta/models/claude-sonnet-4-5:generateContent", body: `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`},
+		{name: "responses_websocket", protocol: "codex", path: "/v1/responses", body: `{"type":"response.create","model":"claude-sonnet-4-5","input":"hello"}`, websocket: true},
+	} {
+		for _, compatibleFirst := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/compatible_first=%v", tc.name, compatibleFirst), func(t *testing.T) {
+				var paths []string
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("X-Request-Id", "original-failure")
+					if tc.invalidGzip {
+						w.Header().Set("Content-Encoding", "gzip")
+					} else {
+						w.WriteHeader(http.StatusNotFound)
+					}
+					_, _ = io.WriteString(w, `{"error":{"type":"not_found_error","message":"original endpoint failure"}}`)
+				}))
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: "preserve-error", upstreamProtocol: tc.protocol,
+					protocolTransformMode: model.ProtocolTransformModeUpstream, models: "claude-sonnet-4-5",
+				}}, map[int]string{0: upstream.URL})
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := configs[0]
+				compatible := model.ChannelURL{URL: upstream.URL, Protocols: []string{tc.protocol}}
+				incompatible := model.ChannelURL{URL: upstream.URL + "/incompatible", Protocols: []string{"codex"}}
+				if tc.protocol == "codex" {
+					incompatible.Protocols = []string{"anthropic"}
+				}
+				cfg.URLs = model.ChannelURLs{compatible, incompatible}
+				if !compatibleFirst {
+					cfg.URLs = model.ChannelURLs{incompatible, compatible}
+				}
+				if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+				env.server.InvalidateChannelListCache()
+				env.server.urlSelector = nil
+
+				var payload struct {
+					Type   string `json:"type"`   ///< WebSocket 错误事件类型。
+					Status int    `json:"status"` ///< WebSocket 保留的失败状态码。
+					Error  struct {
+						Message string `json:"message"` ///< 原始失败原因。
+					} `json:"error"` ///< 客户端协议错误。
+					Headers map[string]string `json:"headers"` ///< WebSocket 透传的安全响应头。
+				}
+				status, requestID := 0, ""
+				if tc.websocket {
+					conn := dialResponsesWebsocket(t, env.engine)
+					if err := conn.WriteJSON(json.RawMessage(tc.body)); err != nil {
+						t.Fatal(err)
+					}
+					if err := conn.ReadJSON(&payload); err != nil {
+						t.Fatal(err)
+					}
+					if payload.Type != "error" {
+						t.Errorf("event type=%q, want error", payload.Type)
+					}
+					status, requestID = payload.Status, payload.Headers["X-Request-Id"]
+				} else {
+					response := doProxyRequest(t, env.engine, tc.path, json.RawMessage(tc.body), nil)
+					if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+						t.Fatal(err)
+					}
+					status, requestID = response.Code, response.Header().Get("X-Request-Id")
+				}
+				wantStatus, wantMessage := http.StatusNotFound, "original endpoint failure"
+				if tc.invalidGzip {
+					wantStatus, wantMessage = http.StatusBadGateway, "decode gzip body: gzip: invalid header"
+				} else if requestID != "original-failure" {
+					t.Errorf("X-Request-Id=%q, want original-failure", requestID)
+				}
+				if status != wantStatus || payload.Error.Message != wantMessage {
+					t.Errorf("status=%d error=%q, want %d %q", status, payload.Error.Message, wantStatus, wantMessage)
+				}
+				if !slices.Equal(paths, []string{tc.path}) {
+					t.Errorf("requested paths=%v, want [%s]", paths, tc.path)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 已缓存为不支持的渠道不发送请求，也不覆盖其他渠道的真实失败。
+ * @param t 测试上下文。
+ */
+func TestProxy_CachedUnsupportedChannelPreservesUpstreamFailure(t *testing.T) {
+	for _, realFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("real_first=%v", realFirst), func(t *testing.T) {
+			var realHits, skippedHits atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				realHits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Request-Id", "real-channel-error")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":{"type":"server_error","message":"real channel unavailable"}}`)
+			}))
+			skipped := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				skippedHits.Add(1)
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			realPriority, skippedPriority := 100, 90
+			if !realFirst {
+				realPriority, skippedPriority = skippedPriority, realPriority
+			}
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "real", upstreamProtocol: "anthropic", protocolTransformMode: model.ProtocolTransformModeUpstream, models: "claude-sonnet-4-5", priority: realPriority},
+				{name: "cached", upstreamProtocol: "anthropic", protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-sonnet-4-5", priority: skippedPriority},
+			}, map[int]string{0: upstream.URL, 1: skipped.URL})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cfg := range configs {
+				if cfg.Name == "cached" {
+					env.server.protocolCapabilities.set(protocolCapabilityKey{
+						channelID: cfg.ID, baseURL: skipped.URL, clientProtocol: protocol.Anthropic,
+						requestFamily: protocol.RequestFamilyMessages, upstreamModel: "claude-sonnet-4-5",
+					}, protocolUnsupported)
+				}
+			}
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "claude-sonnet-4-5", "messages": []map[string]string{{"role": "user", "content": "hello"}},
+			}, nil)
+			var payload struct {
+				Error struct {
+					Message string `json:"message"` ///< 原始上游失败原因。
+				} `json:"error"` ///< Anthropic 协议错误。
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusServiceUnavailable || payload.Error.Message != "real channel unavailable" || response.Header().Get("X-Request-Id") != "real-channel-error" {
+				t.Errorf("status=%d body=%s headers=%v", response.Code, response.Body.String(), response.Header())
+			}
+			if realHits.Load() != 1 || skippedHits.Load() != 0 {
+				t.Errorf("requests: real=%d cached=%d, want 1/0", realHits.Load(), skippedHits.Load())
+			}
+		})
+	}
+}
+
 func TestProxy_URLProtocolsSkipIncompatibleEndpointWithoutCoolingChannel(t *testing.T) {
 	t.Parallel()
 	var incompatibleHits atomic.Int64

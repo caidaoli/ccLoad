@@ -2354,6 +2354,83 @@ func TestHandleChannelWebsocketProbeRejectsUnsupportedUpstreamWithoutHTTPFallbac
 	}
 }
 
+/**
+ * @brief 直通测试与聊天跳过不兼容 URL 时保留实际请求错误，与 URL 顺序无关。
+ * @param t 测试上下文。
+ */
+func TestChannelAdminUpstreamModePreservesAttemptError(t *testing.T) {
+	for _, endpoint := range []string{"test", "chat"} {
+		for _, order := range []string{"compatible_first", "compatible_last", "incompatible_only"} {
+			t.Run(endpoint+"/"+order, func(t *testing.T) {
+				var paths []string
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Encoding", "gzip")
+					_, _ = io.WriteString(w, `{"type":"message","content":[]}`)
+				}))
+				compatible := model.ChannelURL{URL: upstream.URL + "/v1/messages", Exact: true, Protocols: []string{util.ProtocolAnthropic}}
+				incompatible := model.ChannelURL{URL: upstream.URL + "/v1/responses", Exact: true, Protocols: []string{util.ProtocolCodex}}
+				urls := model.ChannelURLs{compatible, incompatible}
+				wantPaths := []string{"/v1/messages"}
+				label := "测试"
+				if endpoint == "chat" {
+					label = "对话"
+				}
+				wantError := "解码 Anthropic " + label + "响应失败: decode gzip body: gzip: invalid header"
+				wantURL := compatible.RuntimeURL()
+				switch order {
+				case "compatible_last":
+					urls = model.ChannelURLs{incompatible, compatible}
+				case "incompatible_only":
+					urls = model.ChannelURLs{incompatible}
+					wantPaths = nil
+					wantError = "URL 不支持当前协议 anthropic"
+					wantURL = incompatible.RuntimeURL()
+				}
+
+				srv := newInMemoryServer(t)
+				srv.urlSelector = nil
+				ctx := context.Background()
+				cfg, err := srv.store.CreateConfig(ctx, &model.Config{
+					Name: "upstream-errors", URLs: urls, ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+					ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5"}}, Enabled: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+					t.Fatal(err)
+				}
+				channelID := strconv.FormatInt(cfg.ID, 10)
+				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/"+endpoint, map[string]any{
+					"model": "claude-sonnet-4-5", "client_protocol": "anthropic", "content": "hello", "stream": false, "api_key": "sk-test",
+				}))
+				c.Params = gin.Params{{Key: "id", Value: channelID}}
+				if endpoint == "test" {
+					srv.HandleChannelTest(c)
+					result := mustParseAPIResponse[map[string]any](t, w.Body.Bytes()).Data
+					if result["success"] != false || result["error"] != wantError || result["base_url"] != wantURL {
+						t.Errorf("result=%+v, want error=%q base_url=%q", result, wantError, wantURL)
+					}
+					if order != "incompatible_only" && result["status_code"] != float64(http.StatusOK) {
+						t.Errorf("status_code=%v, want upstream status 200", result["status_code"])
+					}
+				} else {
+					srv.HandleChannelChat(c)
+					_, _, _, failures := parseChatFrontendEvents(t, w.Body.String())
+					if !slices.Equal(failures, []string{wantError}) {
+						t.Errorf("errors=%v, want [%s]", failures, wantError)
+					}
+				}
+				if !slices.Equal(paths, wantPaths) {
+					t.Errorf("requested paths=%v, want %v", paths, wantPaths)
+				}
+			})
+		}
+	}
+}
+
 func TestTestChannelAPI_MultiURL5xxDoesNotFallbackOrCooldownURL(t *testing.T) {
 	t.Parallel()
 	failCalls := 0

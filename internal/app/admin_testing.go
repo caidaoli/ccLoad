@@ -1670,10 +1670,12 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 			upstreamProtocols = resolveConfiguredURLUpstreamProtocols(cfg, configuredURL, clientProtocol)
 		}
 		if len(upstreamProtocols) == 0 {
-			lastResult = map[string]any{
-				"success":  false,
-				"error":    fmt.Sprintf("URL 不支持当前协议 %s", clientProtocol),
-				"base_url": entry.url,
+			if lastResult == nil {
+				lastResult = map[string]any{
+					"success":  false,
+					"error":    fmt.Sprintf("URL 不支持当前协议 %s", clientProtocol),
+					"base_url": entry.url,
+				}
 			}
 			continue
 		}

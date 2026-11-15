@@ -1057,7 +1057,9 @@ func (s *Server) runProxyAttemptPass(
 				return result, true
 			}
 
-			lastResult = selectZAIStartResult(lastResult, result)
+			if lastResult == nil || !result.protocolCandidateSkipped {
+				lastResult = selectZAIStartResult(lastResult, result)
+			}
 			if result.operatorAborted {
 				operatorSkipped[cfg.ID] = true
 			}

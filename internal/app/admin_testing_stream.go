@@ -22,11 +22,11 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// HandleChannelChat 对话端点：流式上游实时透传，非流式上游归一化为前端 SSE。
-// POST /admin/channels/:id/chat
-// 请求体与 /test 完全一致，stream=false 时上游走非流式请求。
-// 响应始终为 text/event-stream，每条事件包含 delta 文本，结束时发送 [DONE]。
-// 错误时发送 data: {"error":"..."} 事件。
+/**
+ * @brief 渠道对话端点，将流式或非流式上游响应归一化为前端 SSE。
+ * @param c POST /admin/channels/:id/chat 上下文，请求体与 /test 一致。
+ * @note stream=false 时上游走非流式请求；前端接收 delta、[DONE] 或 error 事件，并保存检测日志。
+ */
 func (s *Server) HandleChannelChat(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
 	if err != nil {
@@ -122,10 +122,12 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
 		)
 		if len(upstreamProtocols) == 0 {
-			lastResult = map[string]any{
-				"success":  false,
-				"error":    fmt.Sprintf("URL 不支持当前协议 %s", clientProtocol),
-				"base_url": entry.url,
+			if lastResult == nil {
+				lastResult = map[string]any{
+					"success":  false,
+					"error":    fmt.Sprintf("URL 不支持当前协议 %s", clientProtocol),
+					"base_url": entry.url,
+				}
 			}
 			continue
 		}
