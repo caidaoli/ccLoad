@@ -402,3 +402,29 @@ func validateCustomModelPricing(pricing ModelPricing) error {
 	}
 	return nil
 }
+
+/**
+ * @brief 为原生 Luna 决策请求选择输出免费的系统价，保留渠道及全局自定义覆盖优先级。
+ * @param model 决策请求的计费模型。
+ * @param channelPrice 当前渠道模型价格；非 nil 时原样返回。
+ * @return 决策专用完整价目；nil 表示继续使用普通全局定价。
+ * @note 仅用于 Decisions 调用，不改变相同模型的 Responses 定价。
+ */
+func DecisionModelPrice(model string, channelPrice *CustomModelPrice) *CustomModelPrice {
+	if channelPrice != nil || !strings.HasPrefix(strings.ToLower(model), "gpt-6-luna") {
+		return channelPrice
+	}
+	pricing, found := getPricing(model)
+	if !found || pricing.isCustom {
+		return nil
+	}
+	pricing = withEffectiveSystemDefaults(model, pricing)
+	return &CustomModelPrice{
+		InputPrice: new(pricing.InputPrice), OutputPrice: new(float64),
+		CacheReadPrice: new(pricing.CacheReadPrice), CacheWritePrice: new(pricing.CacheWritePrice),
+		CacheWrite12hPrice: new(pricing.CacheWrite12hPrice),
+		InputPriceHigh:     new(pricing.InputPriceHigh), OutputPriceHigh: new(float64),
+		CacheReadPriceHigh: new(pricing.CacheReadPriceHigh), CacheWritePriceHigh: new(pricing.CacheWritePriceHigh),
+		CacheWrite12hPriceHigh: new(pricing.CacheWrite12hPriceHigh),
+	}
+}

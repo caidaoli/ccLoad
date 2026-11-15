@@ -137,6 +137,9 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 		}
 	}
 	billingModel := util.ResolveBillingModel(entry.ActualModel, entry.Model)
+	if entry.UpstreamProtocol == util.ProtocolSystemOne {
+		price = util.DecisionModelPrice(billingModel, price)
+	}
 	cache5mTokens := entry.Cache5mInputTokens
 	cache1hTokens := entry.Cache1hInputTokens
 	if cache5mTokens+cache1hTokens+entry.Cache30mInputTokens+entry.Cache12hInputTokens == 0 && entry.CacheCreationInputTokens > 0 {

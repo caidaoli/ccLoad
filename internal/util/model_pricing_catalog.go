@@ -16,6 +16,7 @@ const BillingModelSearchCall = "search_call"
  * @brief 模型计费价目（美元/百万 token），显式价格标志区分默认值与免费。
  */
 type ModelPricing struct {
+	isCustom           bool    ///< 当前价目来自全局自定义覆盖；不对外序列化。
 	InputPrice         float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
 	OutputPrice        float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
 	TokenPricingTiers  []TokenPricingTier
@@ -396,6 +397,8 @@ var basePricing = map[string]ModelPricing{
 	"babbage-002":          {InputPrice: 0.40, OutputPrice: 0.40},
 
 	// ========== Gemini 模型 ==========
+	// https://aistudio.google.com/docs/pricing#gemini-decision：仅输入计费，不支持缓存。
+	"gemini-decision-1": {InputPrice: 0.10, OutputPrice: 0.00},
 	// 官方 2026-10-14 核实（Global，无长上下文分档）：Argon 优惠价至 2026-11-30，
 	// 2026-12-01 起为 $4/$20/$0.20；Cyber Permissive 不享受优惠价。
 	"gemini-4-argon":                  {InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.10, HasCacheReadPrice: true},
@@ -489,6 +492,9 @@ var basePricing = map[string]ModelPricing{
 	"kimi-vl-a3b-thinking:free":    {InputPrice: 0.00, OutputPrice: 0.00},
 
 	// ========== Qwen 模型 ==========
+	// https://help.aliyun.com/zh/model-studio/decision-model-preview/：当前限时免费。
+	"decision-model-preview": {InputPrice: 0.00, OutputPrice: 0.00},
+
 	// 来源: 阿里云 Model Studio 官方价格页 International 部分
 	// https://www.alibabacloud.com/help/en/model-studio/model-pricing
 	"qwen3-max":            {TokenPricingTiers: qwen3MaxTiers},
@@ -957,6 +963,7 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, custom map[string]
 		pricing[id] = cloneModelPricing(entry)
 	}
 	for id, entry := range custom {
+		entry.isCustom = true
 		// 目录可能在自定义价格保存后才新增该模型或新增分层。最终快照必须仍让
 		// 系统分层价格胜出，不能让历史覆盖静默抹掉中间档。
 		if systemEntry, ok := lookupModelPricingWithFallback(systemPricing, systemAliases, systemPrefixBuckets, id); ok {

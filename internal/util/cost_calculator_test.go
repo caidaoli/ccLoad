@@ -80,12 +80,22 @@ func TestCalculateCost_Haiku45(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 决策模型仅收输入费用，免费模型仍能查到已知系统价格
+ * @param t 测试上下文
+ */
 func TestCalculateCost_SystemOneInputOnly(t *testing.T) {
 	// System One 模型只按输入计费，输出免费；别名与版本号都按前缀命中
 	for model, expected := range map[string]float64{
 		"jev-latest": 0.042, "jev-preview": 0.042, "jev-1.13.0": 0.042,
 		"drex-latest": 0.05, "drex-v1.5": 0.05, "drex-v1.1": 0.05,
+		"gemini-decision-1": 0.10, "gemini-decision-1-preview": 0.10,
+		"decision-model-preview": 0, "decision-model-preview-2026-11-15": 0,
 	} {
+		pricing, found := LookupSystemModelPricing(model)
+		if !found || pricing.InputPrice != expected || pricing.OutputPrice != 0 {
+			t.Errorf("%s 系统价格 = %+v, found = %t, 期望输入 %.3f、输出免费", model, pricing, found, expected)
+		}
 		cost := CalculateCostDetailed(model, 1_000_000, 500_000, 0, 0, 0)
 		if !floatEquals(cost, expected, 0.0000001) {
 			t.Errorf("%s 成本 = %.7f, 期望 %.3f", model, cost, expected)

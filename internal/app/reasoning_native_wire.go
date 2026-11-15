@@ -235,11 +235,16 @@ func reasoningScoreChoice(answer gjson.Result, provider string, levels []string)
  * @param response 上游 JSON 响应
  * @param provider 实际模型的提供商
  * @return 已报告的用量；计数缺失时保留其余有效字段
- * @return 输入和输出精确计数均存在时为 true
+ * @return 精确计数完整时为 true；阿里云不生成输出，允许缺省 output_tokens。
  */
 func reasoningDecisionUsage(response []byte, provider string) (*fwResult, bool) {
 	if provider != "gemini" {
-		return systemOneUsage(response), systemOneUsagePresent(response)
+		known := systemOneUsagePresent(response)
+		if provider == "aliyun" && !gjson.GetBytes(response, "usage.output_tokens").Exists() {
+			input := gjson.GetBytes(response, "usage.input_tokens")
+			known = input.Type == gjson.Number && input.Int() >= 0 && input.Float() == float64(input.Int())
+		}
+		return systemOneUsage(response, provider), known
 	}
 	result := &fwResult{ResponseModel: gjson.GetBytes(response, "model").String()}
 	known := true

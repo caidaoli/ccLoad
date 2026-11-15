@@ -597,9 +597,9 @@ func TestReasoningDecisionNativeProviders(t *testing.T) {
 		input, output, cached                                                       int
 		unknown                                                                     bool
 	}{
-		{name: "aliyun root", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":12}}`, input: 12, unknown: true},
+		{name: "aliyun root", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":12}}`, input: 12},
 		{name: "gemini version", actualModel: "gemini-decision-1", basePath: "/v1beta", path: "/v1beta/decisions", questionType: "score", effort: "max", response: `{"answers":{"effort":{"type":"score","confidence":0.01,"probabilities":{"0":0.1,"1":0.1,"2":0.1,"3":0.1,"4":0.6}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`, input: 13},
-		{name: "openai endpoint", actualModel: "gpt-6-luna", basePath: "/v1/decisions", path: "/v1/decisions", questionType: "score", effort: "high", response: `{"model":"gpt-6-luna-served","answers":[{"name":"effort","type":"score","score":0,"confidence":0.01,"probabilities":[{"value":3,"label":"xhigh","probability":0.35},{"value":0,"label":"low","probability":0.1},{"value":4,"label":"max","probability":0},{"value":1,"label":"medium","probability":0.2},{"value":2,"label":"high","probability":0.35}]}],"usage":{"input_tokens":14,"output_tokens":0,"input_tokens_details":{"cached_tokens":8}}}`, input: 14, cached: 8},
+		{name: "openai endpoint", actualModel: "gpt-6-luna", basePath: "/v1/decisions", path: "/v1/decisions", questionType: "score", effort: "high", response: `{"model":"gpt-6-luna-served","answers":[{"name":"effort","type":"score","score":0,"confidence":0.01,"probabilities":[{"value":3,"label":"xhigh","probability":0.35},{"value":0,"label":"low","probability":0.1},{"value":4,"label":"max","probability":0},{"value":1,"label":"medium","probability":0.2},{"value":2,"label":"high","probability":0.35}]}],"usage":{"input_tokens":14,"output_tokens":0,"input_tokens_details":{"cached_tokens":8}}}`, input: 6, cached: 8},
 		{name: "jev with native template", actualModel: "jev-latest", template: "gemini", basePath: "/v1/systemone", path: "/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":15,"output_tokens":1}}`, input: 15, output: 1},
 		{name: "aliyun with jev template", actualModel: "decision-model-preview", template: "jev", basePath: "/compatible-mode/v1", path: "/compatible-mode/v1/systemone", questionType: "choice", effort: "xhigh", response: `{"answers":{` + choice + `},"usage":{"input_tokens":16,"output_tokens":1}}`, input: 16, output: 1},
 		{name: "gemini with jev template", actualModel: "gemini-decision-1", template: "jev", basePath: "/v1beta/decisions", path: "/v1beta/decisions", questionType: "choice", effort: "xhigh", response: `{"answers":{` + choice + `},"usage":{"total_input_tokens":17,"total_output_tokens":1}}`, input: 17, output: 1},
@@ -802,5 +802,59 @@ func TestReasoningDecisionNativeRefusalFallback(t *testing.T) {
 	decision := waitForDecisionLog(t, env)
 	if decision.InputTokens != 12 || decision.ReasoningDecision == nil || decision.ReasoningDecision.Status != "fallback" {
 		t.Fatalf("refusal usage log=%+v", decision)
+	}
+}
+
+/**
+ * @brief 内置决策价格在自动判断、管理测试及日志明细中使用同一口径，缓存用量只计一次。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionBuiltInBilling(t *testing.T) {
+	t.Parallel()
+	const score = `"effort":{"type":"score","probabilities":{"0":0.1,"1":0.7,"2":0.1,"3":0.1}}`
+	for _, tc := range []struct {
+		model, response                    string
+		input, read, shortWrite, longWrite int
+		cost                               float64
+	}{
+		{model: "gemini-decision-1", response: `{"answers":{` + score + `},"usage":{"total_input_tokens":1000,"total_output_tokens":0}}`, input: 1000, cost: 0.0001},
+		{model: "decision-model-preview", response: `{"answers":{` + score + `},"usage":{"input_tokens":1000}}`, input: 1000, cost: 0},
+		{model: "gpt-6-luna", response: `{"answers":[{"type":"score","name":"effort","probabilities":[{"value":0,"label":"low","probability":0.1},{"value":1,"label":"medium","probability":0.7},{"value":2,"label":"high","probability":0.1},{"value":3,"label":"xhigh","probability":0.1}]}],"usage":{"input_tokens":1000,"output_tokens":7,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":500,"cache_write_tokens_details":{"ttl_30m_tokens":200,"ttl_12h_tokens":300}}}}`, input: 200, read: 300, shortWrite: 200, longWrite: 300, cost: 0.000123},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			env, _ := reasoningExecutorEnv(t, testChannel{name: "judge", models: tc.model, apiKey: "key", authType: model.AuthTypeSystemOne}, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.response)
+			})
+			result, err := env.server.executeReasoningDecision(context.Background(), "settled task", reasoningDefaultLevels)
+			if err != nil || result.costUnknown {
+				t.Fatalf("decision=%+v error=%v", result, err)
+			}
+			entry := waitForDecisionLog(t, env)
+			if entry.InputTokens != tc.input || entry.CacheReadInputTokens != tc.read || entry.Cache30mInputTokens != tc.shortWrite || entry.Cache12hInputTokens != tc.longWrite || math.Abs(entry.Cost-tc.cost) > 1e-12 || entry.ReasoningDecision.CostUnknown {
+				t.Fatalf("decision log=%+v, want cost %v", entry, tc.cost)
+			}
+			cfg, err := env.store.GetConfig(context.Background(), 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tested := env.server.testSystemOneChannel(context.Background(), cfg, "key", tc.model, "settled task")
+			if tested["success"] != true || tested["cost_unknown"] != false || math.Abs(tested["cost_usd"].(float64)-tc.cost) > 1e-12 {
+				t.Fatalf("test=%+v", tested)
+			}
+			manual := detectionLogFromResult(cfg, model.LogSourceManualTest, tc.model, tc.model, channelTestKeySelection{}, "", "", tested)
+			if manual.InputTokens != tc.input || manual.CacheReadInputTokens != tc.read || manual.Cache30mInputTokens != tc.shortWrite || manual.Cache12hInputTokens != tc.longWrite || math.Abs(manual.Cost-tc.cost) > 1e-12 {
+				t.Fatalf("manual log=%+v", manual)
+			}
+			if tc.cost > 0 {
+				for _, logged := range []*model.LogEntry{entry, manual} {
+					breakdown := buildLogCostBreakdown(logged, nil)
+					if breakdown == nil || math.Abs(breakdown.Total-tc.cost) > 1e-12 || breakdown.Output.PricePerMillion != 0 {
+						t.Fatalf("breakdown=%+v", breakdown)
+					}
+				}
+			}
+		})
 	}
 }

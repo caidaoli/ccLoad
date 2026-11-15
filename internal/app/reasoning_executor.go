@@ -202,7 +202,7 @@ func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Co
 			RequestPath: "/v1/systemone", ChannelID: channel.ID, StatusCode: result.status,
 			Duration: result.duration.Seconds(), APIKeyUsed: apiKey, StartTime: start,
 			UpstreamProtocol: protocol.SystemOne, BaseURL: result.baseURL,
-			CostMultiplier: apiKeyCostMultiplierAt(channel, keys, keyIndex), ModelPrice: row.entry.Pricing, Result: result.usage, DebugData: result.debug}
+			CostMultiplier: apiKeyCostMultiplierAt(channel, keys, keyIndex), ModelPrice: util.DecisionModelPrice(util.ResolveBillingModel(result.actualModel, modelName), row.entry.Pricing), Result: result.usage, DebugData: result.debug}
 		if result.usage != nil {
 			params.ResponseModel = result.usage.ResponseModel
 		}
@@ -435,8 +435,18 @@ func readReasoningResponse(reader io.Reader) ([]byte, error) {
 	return body, nil
 }
 
-func systemOneUsage(body []byte) *fwResult {
-	parser := newJSONUsageParser(string(protocol.SystemOne))
+/**
+ * @brief 解析决策用量；OpenAI 输入总量扣除其已包含的缓存读写 token。
+ * @param body 原生决策响应。
+ * @param provider 决策提供商。
+ * @return 保留已报告用量及缓存 TTL 分项的转发结果。
+ */
+func systemOneUsage(body []byte, provider string) *fwResult {
+	upstream := string(protocol.SystemOne)
+	if provider == "openai" {
+		upstream = string(protocol.OpenAI)
+	}
+	parser := newJSONUsageParser(upstream)
 	_ = parser.Feed(body)
 	input, output, read, creation := parser.GetUsage()
 	cache5m, cache1h, tier := parser.GetCacheBreakdown()

@@ -7,6 +7,79 @@ import (
 	"ccLoad/internal/util"
 )
 
+/**
+ * @brief Luna 决策输出免费，保留输入与缓存费率及完整上下文分档。
+ * @param t 测试上下文。
+ */
+func TestDecisionModelPriceLuna(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	if err := util.InstallCustomModelPricing(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := util.CalculateCostDetailed("gpt-6-luna", 0, 1_000_000, 0, 0, 0); got != 0.50 {
+		t.Fatalf("ordinary Luna output cost=%v, want 0.50", got)
+	}
+	price := util.DecisionModelPrice("gpt-6-luna", nil)
+	if price == nil {
+		t.Fatal("Luna decision pricing missing")
+	}
+	for _, tc := range []struct {
+		name                     string
+		input, read, short, long int
+		high                     bool
+	}{
+		{name: "standard", input: 100_000, read: 50_000, short: 30_000, long: 40_000},
+		{name: "boundary", input: 152_000, read: 50_000, short: 30_000, long: 40_000},
+		{name: "above boundary", input: 152_001, read: 50_000, short: 30_000, long: 40_000, high: true},
+		{name: "cache read crosses", input: 200_000, read: 100_000, high: true},
+		{name: "short write crosses", input: 200_000, short: 100_000, high: true},
+		{name: "long write crosses", input: 200_000, long: 100_000, high: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, read, short, long := 0.10, 0.01, 0.125, 0.25
+			if tc.high {
+				input, read, short, long = 0.20, 0.02, 0.25, 0.50
+			}
+			got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "", util.OpenAIRateCardAPI, price, tc.input, 1_000_000, tc.read, 0, 0, tc.short, tc.long)
+			wantInput := float64(tc.input) * input / 1e6
+			wantRead := float64(tc.read) * read / 1e6
+			wantWrite := (float64(tc.short)*short + float64(tc.long)*long) / 1e6
+			if math.Abs(got.Input.Cost-wantInput) > 1e-12 || got.Output.Cost != 0 ||
+				math.Abs(got.CacheRead.Cost-wantRead) > 1e-12 || math.Abs(got.CacheWrite.Cost-wantWrite) > 1e-12 ||
+				math.Abs(got.Total-wantInput-wantRead-wantWrite) > 1e-12 {
+				t.Fatalf("decision breakdown=%+v, want input/read/write=%v/%v/%v and free output", got, wantInput, wantRead, wantWrite)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 决策系统价不覆盖渠道或全局自定义价格。
+ * @param t 测试上下文。
+ */
+func TestDecisionModelPriceOverrides(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	if err := util.InstallCustomModelPricingJSON(`{"gpt-6-luna":{"input_price":7,"output_price":11}}`); err != nil {
+		t.Fatal(err)
+	}
+	if price := util.DecisionModelPrice("gpt-6-luna", nil); price != nil {
+		t.Fatalf("global custom must use normal pricing path, got %+v", price)
+	}
+	if got := util.CalculateCostDetailedWithPrice("gpt-6-luna", util.DecisionModelPrice("gpt-6-luna", nil), 1_000_000, 1_000_000, 0, 0, 0); got != 18 {
+		t.Fatalf("global custom decision cost=%v, want 18", got)
+	}
+	channelPrice := &util.CustomModelPrice{InputPrice: new(1.0), OutputPrice: new(2.0)}
+	price := util.DecisionModelPrice("gpt-6-luna", channelPrice)
+	if price != channelPrice {
+		t.Fatal("channel price must be returned unchanged")
+	}
+	if got := util.CalculateCostDetailedWithPrice("gpt-6-luna", price, 1_000_000, 1_000_000, 0, 0, 0); got != 3 {
+		t.Fatalf("channel decision cost=%v, want 3", got)
+	}
+}
+
 func TestCalculateCostWithPriceReplacesGlobalPricing(t *testing.T) {
 	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
 	if err := util.InstallCustomModelPricingJSON(`{"gpt-4o": {"input_price": 7, "output_price": 11}}`); err != nil {

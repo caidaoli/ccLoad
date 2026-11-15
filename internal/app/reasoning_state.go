@@ -410,10 +410,18 @@ func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, ap
 		out["debug_data"] = result.debug
 	}
 	if result.usage != nil {
-		out["usage"] = map[string]any{"input_tokens": result.usage.InputTokens, "output_tokens": result.usage.OutputTokens}
+		out["usage"] = map[string]any{
+			"input_tokens": result.usage.InputTokens, "output_tokens": result.usage.OutputTokens,
+			"cache_read_input_tokens":     result.usage.CacheReadInputTokens,
+			"cache_creation_input_tokens": result.usage.CacheCreationInputTokens,
+			"cache_5m_input_tokens":       result.usage.Cache5mInputTokens,
+			"cache_1h_input_tokens":       result.usage.Cache1hInputTokens,
+			"cache_30m_input_tokens":      result.usage.Cache30mInputTokens,
+			"cache_12h_input_tokens":      result.usage.Cache12hInputTokens,
+		}
 		if !result.costUnknown {
-			row, _ := s.firstModelRow(cfg, modelName)
-			out["cost_usd"] = computeRequestCostWithPrice(util.ResolveBillingModel(result.actualModel, modelName), "", row.entry.Pricing, result.usage)
+			billingModel := util.ResolveBillingModel(result.actualModel, modelName)
+			out["cost_usd"] = computeRequestCostWithPrice(billingModel, "", util.DecisionModelPrice(billingModel, row.entry.Pricing), result.usage)
 		}
 	}
 	if err != nil {
