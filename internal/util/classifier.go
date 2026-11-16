@@ -199,8 +199,9 @@ type structuredQuotaErrorObject struct {
 }
 
 type structuredQuotaErrorDetail struct {
-	Reason   string `json:"reason"`
-	Metadata struct {
+	Reason     string `json:"reason"`
+	RetryDelay string `json:"retryDelay"` ///< google.rpc.RetryInfo 的恢复时长，如 "37s"
+	Metadata   struct {
 		Model               string `json:"model"`
 		QuotaResetDelay     string `json:"quotaResetDelay"`
 		QuotaResetTimeStamp string `json:"quotaResetTimeStamp"`
@@ -217,6 +218,7 @@ type structuredQuotaError struct {
 	status              string
 	quotaResetDelay     string
 	quotaResetTimeStamp string
+	retryDelay          string ///< google.rpc.RetryInfo.retryDelay，上游明确给出的恢复时长
 }
 
 // ErrorType 返回错误类型（优先使用type字段，如果为空则使用code字段）
@@ -1224,8 +1226,8 @@ func mergeStructuredQuotaDetails(parsed *structuredQuotaError, details []structu
 		if parsed.quotaResetDelay == "" {
 			parsed.quotaResetDelay = strings.TrimSpace(detail.Metadata.QuotaResetDelay)
 		}
-		if parsed.quotaResetTimeStamp != "" && parsed.quotaResetDelay != "" && parsed.model != "" {
-			return
+		if parsed.retryDelay == "" {
+			parsed.retryDelay = strings.TrimSpace(detail.RetryDelay)
 		}
 	}
 }
@@ -1299,8 +1301,8 @@ func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) 
 		}
 	}
 
-	if quotaErr.quotaResetDelay != "" {
-		duration, err := time.ParseDuration(quotaErr.quotaResetDelay)
+	for _, delay := range [...]string{quotaErr.retryDelay, quotaErr.quotaResetDelay} {
+		duration, err := time.ParseDuration(delay)
 		if err == nil && duration > 0 {
 			return now.Add(duration), true
 		}

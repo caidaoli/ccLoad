@@ -187,6 +187,20 @@ func TestClassifyHTTPResponseWithMeta_GeminiResourceExhaustedUsesRetryIn(t *test
 	}
 }
 
+func TestClassifyHTTPResponseWithMeta_GeminiResourceExhaustedUsesRetryInfo(t *testing.T) {
+	now := time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC)
+	body := []byte(`{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.Help","links":[{"url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"37s"}]}}`)
+
+	got := classifyHTTPResponseWithMetaAt(429, nil, body, now)
+
+	if got.Level != ErrorLevelKey || !got.HasKeyCooldownUntil || got.KeyCooldownReason != "RESOURCE_EXHAUSTED" {
+		t.Fatalf("classification=%+v, want RESOURCE_EXHAUSTED key cooldown", got)
+	}
+	if want := now.Add(37 * time.Second); !got.KeyCooldownUntil.Equal(want) {
+		t.Fatalf("KeyCooldownUntil=%s, want %s", got.KeyCooldownUntil.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
 func TestClassifyHTTPResponseWithMeta_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.T) {
 	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
 	now := time.Date(2026, 6, 17, 11, 30, 0, 0, loc)

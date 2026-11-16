@@ -60,7 +60,7 @@
 
 - **Responses WebSocket 最终 HTTP 错误**：候选耗尽后将真实状态、上游 error 对象和允许的响应头封装为 `type=error` 帧；保留 Retry-After、请求 ID 与限流响应头，不泄漏其他头。普通上游 429 不再丢为通用 400。错误来自 SSE/原生 WS 的标记随代理结果传递，不能仅凭 HTTP body 的 `type=error` 将它误判为裸流错误。原生 WS 终态原文及显式启用的 Codex 429→503/close 1011 策略保持。
 - **最终 429 恢复时间**（`selector_cooldown.go:annotatePoolCooldownRetryAfter`）：HTTP 与 Responses WS 在候选耗尽后，按原始完整候选池重算模型、Key、渠道冷却的最早恢复时间；复用 Token/指定渠道、模型授权、时段与成本硬约束，不只看最后尝试或已过滤候选。只有全部合格候选确实冷却且存在未来恢复时间时覆盖 `Retry-After`（向上取整秒），保留原错误体；存在可用候选、非上游 429 或本地 ZAI 准入错误时保持原响应。Codex 429→503 映射仍在此后执行。
-- **容量型 429**：`turn_rate_limit_exceeded`/模型容量错误即使只在 SSE/WS error.code 出现也归为 429，事件与握手的 Retry-After 保留。仅识别出的容量错误按有效 Retry-After（秒或 HTTP 日期）设置精确模型冷却截止时间；普通 429 即使带 Retry-After 也按既有策略指数退避，遵守其上下限；已识别配额 reset 优先，Anthropic 每分钟限流仍沿用指数退避。最终 Codex 429→503 的重试契约不变。
+- **容量型 429**：`turn_rate_limit_exceeded`/模型容量错误即使只在 SSE/WS error.code 出现也归为 429，事件与握手的 Retry-After 保留。仅识别出的容量错误按有效 Retry-After（秒或 HTTP 日期）设置精确模型冷却截止时间；普通 429 即使带 Retry-After 也按既有策略指数退避，遵守其上下限；已识别配额 reset 优先（Google `RESOURCE_EXHAUSTED` 依次取结构化 reset、`RetryInfo.retryDelay`、`ErrorInfo.metadata.quotaResetDelay`、文案 `retry in`，命中即 Key 级精确冷却），Anthropic 每分钟限流仍沿用指数退避。最终 Codex 429→503 的重试契约不变。
 
 ## 自定义状态码(改相关代码前先读语义)
 

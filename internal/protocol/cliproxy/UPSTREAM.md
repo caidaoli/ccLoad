@@ -51,10 +51,14 @@ The full snapshot baseline and provider provenance remain unchanged.
   to an adjacent item (non-stream), because image items are not replayed to
   Gemini. Request-side replay of `image_generation_call` is not added.
 
-The Gemini 429 RetryInfo cooldown (`ed1c23f9a`), zero-output credential
-cooldown skip (`7e82d0d1c`) and Responses WebSocket pre-commit failover
-(`a8c9c8a4a`) are runtime/executor changes outside this snapshot; ccLoad keeps
-its existing app-level cooldown and failover contracts.
+The Gemini 429 RetryInfo cooldown (`ed1c23f9a`) is an executor change outside
+this snapshot; its missing piece for ccLoad, `google.rpc.RetryInfo.retryDelay`,
+is applied in `internal/util/classifier.go` as one more exact reset source for
+`RESOURCE_EXHAUSTED` (ErrorInfo `quotaResetDelay` and message `retry in` were
+already honored). Plain 429 `Retry-After` stays on exponential backoff. The
+zero-output credential cooldown skip (`7e82d0d1c`) and Responses WebSocket
+pre-commit failover (`a8c9c8a4a`) are runtime changes; ccLoad keeps its
+existing app-level cooldown and failover contracts.
 
 ## Post-snapshot compatibility fixes (2026-11-14)
 
