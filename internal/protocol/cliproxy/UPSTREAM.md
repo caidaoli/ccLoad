@@ -50,6 +50,16 @@ The full snapshot baseline and provider provenance remain unchanged.
   standalone carrier in both paths instead of being dropped (stream) or bound
   to an adjacent item (non-stream), because image items are not replayed to
   Gemini. Request-side replay of `image_generation_call` is not added.
+- Adapt the missing catalog entries from `a16da834a5039d7a08b273ef61623c238ab523a0`
+  (including earlier `19a0a8541`, `effbac168` and `1fcb14322` entries): Vertex
+  `gemini-4-carbon`/`gemini-4-hydrogen`, AIStudio `gemini-4-argon`/`carbon`/
+  `hydrogen`, Antigravity `gemini-4-carbon-high`, Gemini/Vertex/AIStudio
+  `gemini-omni-1.2-flash`, Claude `claude-fable-5-2` and meta `muse-ember-1.0`,
+  inserted in upstream order. Hydrogen keeps the 65,536-token output limit from
+  the 2026-11-13 entry. Existing local entries are not rewritten. The paired
+  `3d1a0e0d1` thinkingLevel/provider-lookup fix targets runtime `thinking/apply.go`
+  and the dynamic `ModelRegistry`; ccLoad has neither path (native Gemini
+  `thinkingLevel` is forwarded unchanged and static lookups are provider-scoped).
 
 The Gemini 429 RetryInfo cooldown (`ed1c23f9a`) is an executor change outside
 this snapshot; its missing piece for ccLoad, `google.rpc.RetryInfo.retryDelay`,

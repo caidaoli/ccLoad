@@ -16,7 +16,7 @@ file|test|internal/translator/openai/openai/responses/openai_openai-responses_ro
 file|source|internal/misc/mime-type.go|internal/protocol/cliproxy/misc/mime_type.go|6c7fcafd6003880c81a3c9f964684bc74acbf31d|6c7fcafd6003880c81a3c9f964684bc74acbf31d
 file|test|internal/util/claude_tool_result_test.go|internal/protocol/cliproxy/util/claude_tool_id_test.go|fc1f309d7fcb1a7301cc84aed046f1048053f9af|3cf29440c7e32ea477f4116d626fd1674227da85
 file|test|internal/translator/gemini/claude/gemini_claude_tool_result_error_test.go|internal/protocol/cliproxy/gemini/claude/gemini_claude_request_test.go|956995f95692f0e4069fad76513ba4c92e2b1dba|24a39b0583d378ac18615f97127276e2243bb0d3
-file|source|internal/registry/models/models.json|internal/protocol/cliproxy/registry/models/models.json|8e1a0205a0f5bd86a575e2b7f79378c35a918e7d|2ce45329261e5dec0e739e2827121ec8e52277cd
+file|source|internal/registry/models/models.json|internal/protocol/cliproxy/registry/models/models.json|8e1a0205a0f5bd86a575e2b7f79378c35a918e7d|9d7d92a5b9094966ffb1d4449238df720d167673
 file|test|internal/translator/codex/claude/public_commentary_test.go|internal/protocol/cliproxy/codex/claude/codex_claude_commentary_replay_test.go|ed512f8beaf2e640c582cff4d13373c8b790c625|0a9b4488dfe7046c01cda55c872a4d0c4aaf23cc
 
 # ccLoad-owned pure wire helpers with no direct upstream source file.
