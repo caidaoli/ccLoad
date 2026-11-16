@@ -678,3 +678,37 @@ func TestConvertGeminiResponseToOpenAI_PartialArgsIDAliases(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertGeminiResponseToOpenAI_SkipsThoughtInlineDataImages(t *testing.T) {
+	ctx := context.Background()
+	const finalURL = "data:image/png;base64,RklOQUxfSU1BR0U="
+
+	t.Run("non-stream", func(t *testing.T) {
+		raw := []byte(`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"text":"Drafting."},{"thought":true,"inlineData":{"mimeType":"image/png","data":"RFJBRlRfSU1BR0U="}},{"thought":true,"text":"Refining."},{"inlineData":{"mimeType":"image/png","data":"RklOQUxfSU1BR0U="},"thoughtSignature":"EjQKDg=="}]},"finishReason":"STOP"}]}`)
+		out := ConvertGeminiResponseToOpenAINonStream(ctx, "gemini-3-pro-image", nil, nil, raw, nil)
+		if got := gjson.GetBytes(out, "choices.0.message.reasoning_content").String(); got != "Drafting.Refining." {
+			t.Fatalf("reasoning_content = %q; payload=%s", got, out)
+		}
+		images := gjson.GetBytes(out, "choices.0.message.images").Array()
+		if len(images) != 1 || images[0].Get("index").Int() != 0 || images[0].Get("image_url.url").String() != finalURL {
+			t.Fatalf("message.images must contain only the final image at index 0: %s", out)
+		}
+	})
+
+	t.Run("stream drops standalone thought image frame", func(t *testing.T) {
+		var param any
+		thought := []byte(`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"inlineData":{"mimeType":"image/png","data":"RFJBRlRfSU1BR0U="}}]}}],"modelVersion":"gemini-3-pro-image","responseId":"resp_7566"}`)
+		if out := ConvertGeminiResponseToOpenAI(ctx, "gemini-3-pro-image", nil, nil, thought, &param); len(out) != 0 {
+			t.Fatalf("thought image chunk must not emit a delta, got %s", out[0])
+		}
+		final := []byte(`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"inline_data":{"mime_type":"image/png","data":"RFJBRlRfMg=="}},{"inlineData":{"mimeType":"image/png","data":"RklOQUxfSU1BR0U="}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1120,"totalTokenCount":1132},"modelVersion":"gemini-3-pro-image","responseId":"resp_7566"}`)
+		out := ConvertGeminiResponseToOpenAI(ctx, "gemini-3-pro-image", nil, nil, final, &param)
+		if len(out) != 1 {
+			t.Fatalf("final chunk count = %d, want 1", len(out))
+		}
+		images := gjson.GetBytes(out[0], "choices.0.delta.images").Array()
+		if len(images) != 1 || images[0].Get("index").Int() != 0 || images[0].Get("image_url.url").String() != finalURL {
+			t.Fatalf("delta.images must contain only the final image at index 0: %s", out[0])
+		}
+	})
+}

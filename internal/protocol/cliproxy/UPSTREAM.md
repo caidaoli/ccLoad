@@ -39,6 +39,17 @@ The full snapshot baseline and provider provenance remain unchanged.
   DeepSeek and similar models over Anthropic-compatible endpoints that may
   ignore it. The executor token-estimation change is not adopted; ccLoad's
   local count_tokens path only receives native Anthropic bodies.
+- Adapt `6684f3b5d985fce84c1ff27ff7b0f9e752067126`: drop Gemini/Antigravity
+  `thought=true` inlineData draft images from Chat output. Standalone thought
+  image frames emit no delta and cannot start a stream on `[DONE]`.
+- Adapt `0f8c40e1fe7f023ecec3257f6ff11447635e5087`: surface Gemini (and the
+  Antigravity adapter, which delegates to it) non-thought inlineData images as
+  Responses `image_generation_call` items in streaming and non-streaming paths,
+  with supported-mime gating and per-part sha256 deduplication. Local
+  difference: an image signature not absorbed by open reasoning becomes a
+  standalone carrier in both paths instead of being dropped (stream) or bound
+  to an adjacent item (non-stream), because image items are not replayed to
+  Gemini. Request-side replay of `image_generation_call` is not added.
 
 The Gemini 429 RetryInfo cooldown (`ed1c23f9a`), zero-output credential
 cooldown skip (`7e82d0d1c`) and Responses WebSocket pre-commit failover
