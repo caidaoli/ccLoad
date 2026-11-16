@@ -308,22 +308,3 @@ func TestSmoothWeightedRR_Cleanup_RemovesOldStates(t *testing.T) {
 		t.Fatalf("expected expired state cleaned up")
 	}
 }
-
-func TestSmoothWeightedRR_ResetAll_ClearsStates(t *testing.T) {
-	rr := NewSmoothWeightedRR()
-
-	channels := []*modelpkg.Config{
-		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
-		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
-	}
-	first := rrSelect(rr, channels, []int{1, 1})
-	if first[0].ID != 1 {
-		t.Fatalf("首次选择渠道=%d, want 1", first[0].ID)
-	}
-
-	rr.ResetAll()
-	afterReset := rrSelect(rr, channels, []int{1, 1})
-	if afterReset[0].ID != 1 {
-		t.Fatalf("重置后选择渠道=%d, want 1", afterReset[0].ID)
-	}
-}

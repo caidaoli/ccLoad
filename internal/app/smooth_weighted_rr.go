@@ -158,13 +158,6 @@ func (rr *SmoothWeightedRR) Cleanup(maxAge time.Duration) {
 	}
 }
 
-// ResetAll 重置所有轮询状态（渠道配置变更时调用）
-func (rr *SmoothWeightedRR) ResetAll() {
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-	rr.states = make(map[rrGroupKey]*rrGroupState)
-}
-
 // calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）
 func calcEffectiveKeyCount(cfg *modelpkg.Config, keyCooldowns map[int64]map[int]time.Time, now time.Time) int {
 	total := cfg.KeyCount

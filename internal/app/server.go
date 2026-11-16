@@ -1730,13 +1730,11 @@ func (s *Server) getAllModelCooldowns(ctx context.Context) (map[int64]map[string
 // 不清协议能力学习结果：OAuth 刷新、额度元数据等运行时写库也走这里，全局清空会让
 // 所有渠道反复重新探测；URL/协议相关配置变更须用 protocolCapabilities.clearChannels
 // 只清受影响渠道。
+// 也不重置渠道轮询：轮询组按渠道 ID 集合区分、权重每次选路重算，配置变更自然生效；
+// 而高频运行时写库若清零状态，同档渠道会反复从零起步并偏向最小 ID。
 func (s *Server) InvalidateChannelListCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
-	}
-	// 渠道配置变更时重置轮询状态，确保新配置下的分布正确
-	if s.channelBalancer != nil {
-		s.channelBalancer.ResetAll()
 	}
 }
 

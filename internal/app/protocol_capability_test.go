@@ -88,6 +88,26 @@ func TestInvalidateChannelListCacheKeepsLearnedProtocols(t *testing.T) {
 	}
 }
 
+func TestInvalidateChannelListCacheKeepsChannelRoundRobinState(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelBalancer = NewSmoothWeightedRR()
+	pick := func() int64 {
+		group := []*model.Config{{ID: 1}, {ID: 2}}
+		return server.channelBalancer.selectByWeight(group, []int{1, 1})[0].ID
+	}
+	if got := pick(); got != 1 {
+		t.Fatalf("first pick = %d, want 1", got)
+	}
+
+	// 被动额度、Token 刷新、额度页刷新都会走这里；清零会让同档渠道总从最小 ID 起步。
+	server.InvalidateChannelListCache()
+
+	if got := pick(); got != 2 {
+		t.Fatalf("pick after InvalidateChannelListCache = %d, want 2", got)
+	}
+}
+
 func TestHandleUpdateChannelClearsProtocolCapabilitiesOnlyForRelevantChanges(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -123,12 +123,7 @@ func (s *Server) persistCodexPassiveUsageUpdate(ctx context.Context, cfg *model.
 		return
 	}
 	if updated {
-		// Quota metadata does not affect routing. Only expire the channel data
-		// snapshot; resetting balancers and protocol capability learning here would
-		// turn every quota change into unrelated routing churn.
-		if cache := s.getChannelCache(); cache != nil {
-			cache.InvalidateCache()
-		}
+		s.InvalidateChannelListCache()
 	}
 }
 
