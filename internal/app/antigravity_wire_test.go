@@ -44,6 +44,14 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 		{"pi different product", "You are a coding assistant running inside pip.", "You are a coding assistant running inside pip."},
 		{"deepseek harness", "You are an AI agent powered by DeepSeek Harness.\nKeep instructions.", "You are an AI agent.\nKeep instructions."},
 		{"hermes", "You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "You are an AI agent."},
+		{"opencode", "You are OpenCode, an interactive CLI agent that helps users with software engineering tasks.", "You're OpenCode, an interactive CLI agent that helps users with software engineering tasks."},
+		{"opencode different product", "You are OpenCodeX, an interactive CLI agent.", "You are OpenCodeX, an interactive CLI agent."},
+		{"opencode unicode product suffix", "You are OpenCode工具, an interactive CLI agent.", "You are OpenCode工具, an interactive CLI agent."},
+		{"opencode whitespace", "\tYOU\n ARE\u00a0OpenCode,\r\nan interactive CLI agent.", "\tYOU're OpenCode,\r\nan interactive CLI agent."},
+		{"codex generic cli", "You are a coding agent running in the Codex CLI.", "You're a coding agent running in the Codex CLI."},
+		{"sdk whitespace", "\tYou \nare a\tClaude agent,\u00a0built on Anthropic's Claude Agent SDK.\r\n保留\t  原文。", "You are an AI agent.\r\n保留\t  原文。"},
+		{"sdk invisible characters", "Y\u200bou are a Cl\u034faude agent, built on Anthropic's Claude Agent SDK.\nKeep instructions.", "You are an AI agent.\nKeep instructions."},
+		{"invisible suffix boundary", identity + "\u200bexample", identity + "\u200bexample"},
 		{"ordinary harness mention", "Explain DeepSeek Harness and Hermes Agent.", "Explain DeepSeek Harness and Hermes Agent."},
 		{
 			"security authorization",
@@ -56,6 +64,16 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 			"Before using a tool for the first time, read its full documentation and JSON schema at xd://<tool>.",
 		},
 		{
+			"omp whitespace and uri case",
+			"保\u034f留\t  原文🙂\nREAD\t XD://<TOOL>\nFOR  FULL\u00a0DOCS + JSON SCHEMA BEFORE FIRST USE.\r\n结束\u200b。",
+			"保\u034f留\t  原文🙂\nBefore using a tool for the first time, read its full documentation and JSON schema at XD://<TOOL>.\r\n结束\u200b。",
+		},
+		{
+			"omp invisible characters",
+			"Re\u200bad xd://<tool> for fu\u034fll docs + JSON schema before first use.",
+			"Before using a tool for the first time, read its full documentation and JSON schema at xd://<tool>.",
+		},
+		{
 			"different tool documentation",
 			"Read xd://example for full docs + JSON schema before first use.",
 			"Read xd://example for full docs + JSON schema before first use.",
@@ -64,6 +82,16 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 			"astrbot sessions",
 			"Use `astrbot_shell_session` to list, poll, write raw text or complete lines to, interrupt, or terminate those sessions.\nKeep instructions.",
 			"Manage these command sessions with `astrbot_shell_session`: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them.\nKeep instructions.",
+		},
+		{
+			"astrbot preserves tool name case",
+			"USE `ASTRBOT_SHELL_SESSION` TO LIST,\nPOLL, WRITE RAW TEXT OR COMPLETE LINES TO, INTERRUPT, OR TERMINATE THOSE SESSIONS.",
+			"Manage these command sessions with `ASTRBOT_SHELL_SESSION`: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them.",
+		},
+		{
+			"rfc and repeated matches preserve surrounding text",
+			"前文\u034f。\nRFC 2119 KEYWORDS:\nMUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n\t中间🙂\nRFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n后文。",
+			"前文\u034f。\nRFC 2119 KEY WORDS:\nMUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n\t中间🙂\nRFC 2119 key words: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n后文。",
 		},
 		{"tool identifiers", "Use tools.opencode.session_move to move a session.", "Use tools.opencode.session_move to move a session."},
 		{"comma continuation", "You are Codex, based on GPT-5, with access to tools.", "You are an AI agent, with access to tools."},

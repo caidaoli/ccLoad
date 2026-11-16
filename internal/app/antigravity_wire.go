@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"ccLoad/internal/model"
@@ -71,17 +72,29 @@ var antigravitySystemIdentityOpeners = []*regexp.Regexp{
 }
 
 /**
- * @brief 改写已复现裸 429 的精确系统指令，保留授权限制、工具标识、文档 URI 与操作含义。
- * @details 触发依据见 sub2api #8824、CLIProxyAPI #7562 及 #7553 的 AstrBot 对照；只用于 Antigravity 系统指令。
+ * @brief 改写已复现裸 429 的固定系统指令，捕获组保留原文中的工具标识、URI 与 RFC 关键词。
+ * @details 在匹配文本上忽略大小写和排版差异，替换回原文；规则互不重叠，捕获组均为必选组。
  */
-var antigravitySystemInstructionReplacer = strings.NewReplacer(
-	"Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.",
-	"Security tooling, including command-and-control frameworks, credential checks, and exploit development, may be used only with explicit authorization for penetration tests, CTFs, security research, or defensive work.",
-	"Read xd://<tool> for full docs + JSON schema before first use.",
-	"Before using a tool for the first time, read its full documentation and JSON schema at xd://<tool>.",
-	"Use `astrbot_shell_session` to list, poll, write raw text or complete lines to, interrupt, or terminate those sessions",
-	"Manage these command sessions with `astrbot_shell_session`: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them",
-)
+var antigravitySystemInstructionRules = []struct {
+	pattern     *regexp.Regexp ///< 匹配归一文本的固定指令。
+	replacement string         ///< 以原文字节位置展开捕获组的替换模板。
+}{
+	{
+		regexp.MustCompile("(?i)" + regexp.QuoteMeta("Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.")),
+		"Security tooling, including command-and-control frameworks, credential checks, and exploit development, may be used only with explicit authorization for penetration tests, CTFs, security research, or defensive work.",
+	},
+	{
+		regexp.MustCompile(`(?i)Read (xd://<tool>) for full docs \+ JSON schema before first use\.`),
+		"Before using a tool for the first time, read its full documentation and JSON schema at ${1}.",
+	},
+	{
+		regexp.MustCompile("(?i)Use (`astrbot_shell_session`) to list, poll, write raw text or complete lines to, interrupt, or terminate those sessions"),
+		"Manage these command sessions with ${1}: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them",
+	},
+	{regexp.MustCompile(`(?i)^( *)(You) are (OpenCode)([., ]|$)`), "${1}${2}'re ${3}${4}"},
+	{regexp.MustCompile(`(?i)^( *)(You) are (a coding agent running in the Codex CLI)([., ]|$)`), "${1}${2}'re ${3}${4}"},
+	{regexp.MustCompile(`(?i)(RFC 2119 key)(words)(: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL\.)`), "${1} ${2}${3}"},
+}
 
 /**
  * @brief 构建 Antigravity 与 CodeBuddy 共用的大小写不敏感、长词优先匹配器。
@@ -1058,7 +1071,44 @@ func antigravityNegativeSessionID(seed string) string {
 }
 
 /**
- * @brief 中和系统文本块开头的已知身份、等义改写精确触发句，再按配置混淆其余敏感词。
+ * @brief 创建仅供触发句匹配使用的文本，折叠空白并忽略已实测无效的 U+200B/U+034F 混淆。
+ * @param text 原始系统文本，不修改。
+ * @return 保留大小写及其他字符的匹配文本。
+ * @return 匹配文本各字节边界对应的原文字节位置，用于仅替换命中片段。
+ */
+func antigravityPromptMatchText(text string) (string, []int) {
+	var normalized strings.Builder
+	normalized.Grow(len(text))
+	offsets := make([]int, 1, len(text)+1)
+	wasSpace := false
+	for start := 0; start < len(text); {
+		r, size := utf8.DecodeRuneInString(text[start:])
+		end := start + size
+		switch {
+		case r == '\u200b' || r == '\u034f':
+			offsets[len(offsets)-1] = end
+		case unicode.IsSpace(r):
+			if wasSpace {
+				offsets[len(offsets)-1] = end
+			} else {
+				normalized.WriteByte(' ')
+				offsets = append(offsets, end)
+			}
+			wasSpace = true
+		default:
+			normalized.WriteString(text[start:end])
+			for pos := start + 1; pos <= end; pos++ {
+				offsets = append(offsets, pos)
+			}
+			wasSpace = false
+		}
+		start = end
+	}
+	return normalized.String(), offsets
+}
+
+/**
+ * @brief 容忍已验证的排版和混淆变体，仅改写原文中的已知身份及触发句，再按配置混淆敏感词。
  * @param body 已注入 Antigravity 身份的出站信封，系统指令可为字符串或 parts 对象。
  * @param matcher 可选敏感词匹配器；nil 只关闭混淆，不关闭身份中和或触发句改写。
  * @return 改写后的信封；失败时为 nil。
@@ -1066,23 +1116,50 @@ func antigravityNegativeSessionID(seed string) string {
  */
 func rewriteAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) ([]byte, error) {
 	rewriteText := func(original string) string {
-		rewritten := original
+		/**
+		 * @brief 一处互不重叠的原文替换，按字节位置保留其余文本。
+		 */
+		type change struct {
+			start, end int    ///< 原文中的半开字节区间。
+			text       string ///< 替换后的指令。
+		}
+		matchText, offsets := antigravityPromptMatchText(original)
+		var changes []change
 		for _, opener := range antigravitySystemIdentityOpeners {
-			loc := opener.FindStringIndex(original)
+			loc := opener.FindStringIndex(matchText)
 			if loc == nil {
 				continue
 			}
-			rest := original[loc[1]:]
+			rest := matchText[loc[1]:]
+			replacement := "You are an AI agent."
 			if strings.HasPrefix(rest, ",") {
-				rewritten = "You are an AI agent" + rest
-			} else if rest == "" || strings.ContainsAny(rest[:1], " \t\r\n") {
-				rewritten = "You are an AI agent." + rest
-			} else {
+				replacement = "You are an AI agent"
+			} else if rest != "" && rest[0] != ' ' {
 				continue
 			}
+			changes = append(changes, change{0, offsets[loc[1]], replacement})
 			break
 		}
-		rewritten = antigravitySystemInstructionReplacer.Replace(rewritten)
+		for _, rule := range antigravitySystemInstructionRules {
+			for _, loc := range rule.pattern.FindAllStringSubmatchIndex(matchText, -1) {
+				for i, pos := range loc {
+					loc[i] = offsets[pos]
+				}
+				replacement := rule.pattern.ExpandString(nil, rule.replacement, original, loc)
+				changes = append(changes, change{loc[0], loc[1], string(replacement)})
+			}
+		}
+		slices.SortFunc(changes, func(a, b change) int { return a.start - b.start })
+		var result strings.Builder
+		result.Grow(len(original))
+		cursor := 0
+		for _, edit := range changes {
+			result.WriteString(original[cursor:edit.start])
+			result.WriteString(edit.text)
+			cursor = edit.end
+		}
+		result.WriteString(original[cursor:])
+		rewritten := result.String()
 		if matcher != nil {
 			rewritten = obfuscateAntigravityText(rewritten, matcher)
 		}
