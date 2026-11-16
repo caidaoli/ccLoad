@@ -31,6 +31,7 @@ local|source|internal/protocol/cliproxy/openai/openai/responses/openai_openai-re
 local|source|internal/protocol/cliproxy/common/gemini_claude_carrier.go|post-snapshot-91aca317-gemini-carrier|dde0028be0b4d9bfe4d35674b7a18bbd4f234810
 local|source|internal/protocol/cliproxy/gemini/claude/signature_carrier.go|post-snapshot-91aca317-gemini-carrier|9e4ee786704423b72fbf9614eb38f71f1a713181
 local|source|internal/protocol/cliproxy/gemini/common/parts.go|post-snapshot-91aca317-gemini-parts|359ac93b93ac0c681f60e83dc72c98e527b7b1cd
+local|test|internal/protocol/cliproxy/gemini/openai/responses/gemini_openai-responses_image_test.go|post-snapshot-0f8c40e1-gemini-image-contract|aef97fecf675a764b03a14411903191c128a52a0
 
 # Translator runtime registration, unsupported protocols, no-op paths, and benchmarks.
 exclude|internal/translator/init.go|dynamic-registry

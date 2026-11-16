@@ -82,6 +82,32 @@ func isAnthropicJSONObject(body []byte) bool {
 	return gjson.ValidBytes(body) && gjson.ParseBytes(body).IsObject()
 }
 
+/**
+ * @brief 去掉 advisor 服务端工具自身模型的已知思考后缀，保留未知后缀和其他工具。
+ * @param body Anthropic 请求正文。
+ * @return 仅改写 advisor 工具模型后的正文；没有已知后缀时返回原正文。
+ * @note 在渠道 BodyRules 之前调用，用户显式覆盖的模型不再归一。
+ */
+func normalizeAnthropicAdvisorToolModels(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body
+	}
+	for i, tool := range tools.Array() {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(tool.Get("type").String())), "advisor_") {
+			continue
+		}
+		toolModel := tool.Get("model")
+		if toolModel.Type != gjson.String {
+			continue
+		}
+		if base, _, ok := model.ParseThinkingSuffix(strings.TrimSpace(toolModel.String())); ok {
+			body = setJSONValue(body, fmt.Sprintf("tools.%d.model", i), base)
+		}
+	}
+	return body
+}
+
 // encodeNormalizedAnthropicRequest 只收尾 Anthropic Messages 的通用 wire 形状。
 // 入口守卫由调用方（normalizeAnthropicMessagesBody / 最终化边界）负责，这里三步
 // 都不会失败，所以不返回 error。

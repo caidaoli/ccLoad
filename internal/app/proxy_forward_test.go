@@ -2031,6 +2031,129 @@ func TestAnthropicRetryBodyFor400PreservesOrderWhileDowngradingThinking(t *testi
 	assertFieldOrder(t, string(got), `"model"`, `"messages"`, `"output_config"`, `"metadata"`)
 }
 
+/**
+ * @brief 验证 API Key/OAuth 的 Messages 与计数出站保留各 advisor 基模型及渠道规则优先级。
+ * @param t 测试上下文。
+ */
+func TestAnthropicBuildProxyRequestNormalizesAdvisorToolModels(t *testing.T) {
+	credentialJSON := anthropicProxyTestCredential(t, "advisor-access")
+	const tools = `[
+		{"type":"advisor_20260301","name":"advisor","model":"claude-opus-5-5(high)"},
+		{"type":" ADVISOR_20260301 ","name":"budget","model":" claude-haiku-4-5-20251001(8192) "},
+		{"type":"advisor_20260301","name":"disabled","model":"claude-sonnet-4-6(none)"},
+		{"type":"advisor_20260301","name":"auto","model":"claude-opus-4-6(auto)"},
+		{"type":"advisor_20260301","name":"custom","model":"claude-opus-5-5(custom)"},
+		{"type":"advisor_20260301","name":"plain","model":"claude-haiku-4-5-20251001"},
+		{"type":"custom_tool","name":"helper","model":"keep-me(high)"},
+		{"name":"Read","model":"keep-me(8192)","input_schema":{"type":"object"}},
+		{"type":"advisor_20260301","name":"numeric","model":42},
+		{"type":"advisor_20260301","name":"null","model":null},
+		{"type":"advisor_20260301","name":"missing"},
+		{"type":"advisor_20260301","name":"empty","model":""},
+		{"type":"advisor_20260301","name":"no-base","model":"(high)"}
+	]`
+	wantModels := []any{
+		"claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-6",
+		"claude-opus-5-5(custom)", "claude-haiku-4-5-20251001", "keep-me(high)", "keep-me(8192)",
+		float64(42), nil, nil, "", "(high)",
+	}
+	for _, oauth := range []bool{false, true} {
+		for _, native := range []bool{false, true} {
+			for _, mode := range []string{"messages", "stream", "count_tokens"} {
+				for _, override := range []bool{false, true} {
+					t.Run(fmt.Sprintf("oauth=%t/native=%t/%s/override=%t", oauth, native, mode, override), func(t *testing.T) {
+						cfg := &model.Config{ID: 93, Name: "advisor", URLs: channelURLsForTest("https://api.anthropic.com")}
+						if oauth {
+							cfg.AuthType, cfg.OAuthCredential = model.AuthTypeAnthropicOAuth, credentialJSON
+						}
+						if override {
+							cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+								Action: model.RuleActionOverride, Path: "tools.0.model", Value: json.RawMessage(`"override-model(high)"`),
+							}}}
+						}
+						body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"tools":` + tools + `}`)
+						headers := http.Header{"Content-Type": {"application/json"}}
+						if native {
+							body = setJSONValue(body, "metadata.user_id", `{"device_id":"advisor-device","account_uuid":"","session_id":"advisor-session"}`)
+							body = setJSONRaw(body, "system", `[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.325.abc; cc_entrypoint=cli; cch=4d721;"}]`)
+							headers.Set("User-Agent", "claude-cli/"+anthropicCLIVersion+" (external, cli)")
+						}
+						requestPath := "/v1/messages"
+						if mode == "count_tokens" {
+							requestPath += "/count_tokens"
+						}
+						body = setJSONValue(body, "stream", mode == "stream")
+						requestContext := &requestContext{
+							ctx: context.Background(), startTime: time.Now(), isStreaming: mode == "stream",
+							clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
+						}
+						request, err := (&Server{}).buildProxyRequest(requestContext, cfg, "advisor-access", http.MethodPost,
+							body, headers, "", requestPath, cfg.GetURLs()[0])
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer func() { _ = request.Body.Close() }()
+						out, err := io.ReadAll(request.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got := gjson.GetBytes(out, "model").String(); got != "claude-sonnet-4-6" {
+							t.Fatalf("request model=%q, body=%s", got, out)
+						}
+						for i, want := range wantModels {
+							if i == 0 && override {
+								want = "override-model(high)"
+							}
+							if got := gjson.GetBytes(out, fmt.Sprintf("tools.%d.model", i)).Value(); !reflect.DeepEqual(got, want) {
+								t.Fatalf("tool %d model=%#v, want %#v; body=%s", i, got, want, out)
+							}
+						}
+						if gjson.GetBytes(out, "tools.10.model").Exists() {
+							t.Fatalf("missing advisor model was added: %s", out)
+						}
+						if native && mode != "count_tokens" {
+							resigned, err := finalizeAnthropicCCH(bytes.Clone(out))
+							if err != nil || !bytes.Equal(resigned, out) {
+								t.Fatalf("advisor rewrite left stale CCH: err=%v body=%s", err, out)
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证 advisor 归一不会改写已应用渠道规则的重放或 ZAI 专有请求。
+ * @param t 测试上下文。
+ */
+func TestAnthropicAdvisorToolModelsPreserveReplayAndZAI(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name   string
+		cfg    *model.Config
+		replay bool
+		model  string
+	}{
+		{name: "replay", cfg: &model.Config{}, replay: true, model: "claude-sonnet-4-6"},
+		{name: "ZAI", cfg: &model.Config{AuthType: model.AuthTypeZAIOAuth}, model: "GLM-5.1"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + testCase.model + `","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"advisor_20260301","name":"advisor","model":"override-model(high)"}]}`)
+			out, _, err := (&Server{}).prepareTranslatedUpstreamBody(testCase.cfg, protocol.Anthropic, "/v1/messages",
+				testCase.model, body, body, "advisor-access", http.Header{}, testCase.replay,
+				anthropicOfficialTestURL, testCase.replay, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(out, "tools.0.model").String(); got != "override-model(high)" {
+				t.Fatalf("advisor model=%q, want existing override; body=%s", got, out)
+			}
+		})
+	}
+}
+
 func TestNormalizeAnthropicMessagesBodyPatchesOnlyChangedMembers(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"thinking":{"type":"adaptive","budget_tokens":4096},"metadata":{"z":1,"a":2}}`)

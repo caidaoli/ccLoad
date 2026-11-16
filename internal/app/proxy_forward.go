@@ -613,6 +613,9 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		} else if !wireBodyRulesApplied {
 			body = prepareAnthropicConvertedRequest(body, requestModel)
 		}
+		if !wireBodyRulesApplied && !isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+			body = normalizeAnthropicAdvisorToolModels(body)
+		}
 	}
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	if !wireBodyRulesApplied && isAccioChatRequest(cfg, upstreamProtocol) {

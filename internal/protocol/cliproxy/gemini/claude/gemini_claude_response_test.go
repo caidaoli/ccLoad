@@ -1551,15 +1551,28 @@ func TestGeminiClaudePartMetadataPreservesSupportedPayload(t *testing.T) {
 	}
 }
 
+func TestGeminiClaudeUnsignedTextCoalesces(t *testing.T) {
+	parts := []string{`{"text":"First chunk, "}`, `{"text":"second chunk, "}`, `{"text":"third chunk."}`}
+	for _, mode := range []string{"nonstream", "stream same chunk", "stream split chunks"} {
+		t.Run(mode, func(t *testing.T) {
+			content := geminiClaudeContentForParts(t, parts, mode)
+			blocks := gjson.Parse(content).Array()
+			if len(blocks) != 1 || blocks[0].Get("type").String() != "text" || blocks[0].Get("text").String() != "First chunk, second chunk, third chunk." {
+				t.Fatalf("unsigned text chunks should share one Claude text block: %s", content)
+			}
+		})
+	}
+}
+
 func TestGeminiClaudeDelayedTextSignaturePartBoundaryRoundTrip(t *testing.T) {
-	parts := []string{`{"text":"unsigned"}`, `{"text":"signed"}`, `{"thoughtSignature":"` + capturedGeminiThinkingSignature + `"}`}
+	parts := []string{`{"text":"first "}`, `{"text":"second"}`, `{"thoughtSignature":"` + capturedGeminiThinkingSignature + `"}`}
 	for _, mode := range []string{"nonstream", "stream same chunk", "stream split chunks"} {
 		t.Run(mode, func(t *testing.T) {
 			content := geminiClaudeContentForParts(t, parts, mode)
 			output := replayGeminiClaudeContent(t, content)
 			actual := gjson.GetBytes(output, "contents.0.parts").Array()
-			if len(actual) != 2 || actual[0].Get("text").String() != "unsigned" || actual[0].Get("thoughtSignature").Exists() || actual[1].Get("text").String() != "signed" || actual[1].Get("thoughtSignature").String() != capturedGeminiThinkingSignature {
-				t.Fatalf("delayed signature changed native text part contents: %s; content=%s", output, content)
+			if len(actual) != 1 || actual[0].Get("text").String() != "first second" || actual[0].Get("thoughtSignature").String() != capturedGeminiThinkingSignature {
+				t.Fatalf("delayed signature should bind to coalesced unsigned text block: %s; content=%s", output, content)
 			}
 		})
 	}
@@ -1620,30 +1633,19 @@ func geminiClaudeContentForParts(t *testing.T, parts []string, mode string) stri
 }
 
 func TestGeminiClaudeSignedTextPartBoundaryRoundTrip(t *testing.T) {
-	signed := `{"text":"signed","thoughtSignature":"` + capturedGeminiThinkingSignature + `"}`
-	unsigned := `{"text":"unsigned"}`
-	full := `{"candidates":[{"content":{"parts":[` + signed + `,` + unsigned + `]},"finishReason":"STOP"}]}`
+	inputParts := []string{
+		`{"text":"before-1 "}`,
+		`{"text":"before-2 "}`,
+		`{"text":"signed","thoughtSignature":"` + capturedGeminiThinkingSignature + `"}`,
+		`{"text":"after-1 "}`,
+		`{"text":"after-2"}`,
+	}
 	for _, mode := range []string{"nonstream", "stream same chunk", "stream split chunks"} {
 		t.Run(mode, func(t *testing.T) {
-			var content string
-			if mode == "nonstream" {
-				response := ConvertGeminiResponseToClaudeNonStream(context.Background(), "gemini-4-carbon", nil, nil, []byte(full), nil)
-				content = gjson.GetBytes(response, "content").Raw
-			} else {
-				chunks := []string{full, "[DONE]"}
-				if mode == "stream split chunks" {
-					chunks = []string{`{"candidates":[{"content":{"parts":[` + signed + `]}}]}`, `{"candidates":[{"content":{"parts":[` + unsigned + `]},"finishReason":"STOP"}]}`, "[DONE]"}
-				}
-				var param any
-				var events []byte
-				for _, chunk := range chunks {
-					events = append(events, bytes.Join(ConvertGeminiResponseToClaude(context.Background(), "gemini-4-carbon", nil, nil, []byte(chunk), &param), nil)...)
-				}
-				content = string(claudeContentFromGeminiStream(t, events))
-			}
+			content := geminiClaudeContentForParts(t, inputParts, mode)
 			output := replayGeminiClaudeContent(t, content)
 			parts := gjson.GetBytes(output, "contents.0.parts").Array()
-			if len(parts) != 2 || parts[0].Get("text").String() != "signed" || parts[0].Get("thoughtSignature").String() != capturedGeminiThinkingSignature || parts[1].Get("text").String() != "unsigned" || parts[1].Get("thoughtSignature").Exists() {
+			if len(parts) != 3 || parts[0].Get("text").String() != "before-1 before-2 " || parts[0].Get("thoughtSignature").Exists() || parts[1].Get("text").String() != "signed" || parts[1].Get("thoughtSignature").String() != capturedGeminiThinkingSignature || parts[2].Get("text").String() != "after-1 after-2" || parts[2].Get("thoughtSignature").Exists() {
 				t.Fatalf("signed text was merged with another native part: %s; content=%s", output, content)
 			}
 		})

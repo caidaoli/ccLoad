@@ -190,6 +190,7 @@
 
 ## Anthropic / Claude Code
 
+- **advisor 模型后缀**（CLIProxyAPI `8bdffcadc`）：Anthropic Messages（流式/非流式）与 count_tokens 在渠道 BodyRules 前，按 ccLoad 的已知等级/特殊值/非负预算规则去除 `advisor_*` 工具各自 `model` 的思考后缀；未知括号后缀与非 advisor 工具原样保留，不借用顶层模型。API Key、OAuth 与原生调用方共用，渠道规则覆盖优先，重试沿用最终 wire，不再次改写。
 - **2026-11-10 请求兼容补齐**（CLIProxyAPI 固定参照 `6db7d4b839d86c5b24e17bbe73bcd4db18ef1b1a`，仅 app 规则移植）：顶层 `cache_control` 纳入TTL识别与四断点限制；模拟路径在改写前将有效自动缓存落在末尾可缓存块，保留调用方ttl/scope，不重复注入该消息断点；原生保持自动缓存字段。官方模拟请求重塑前缀后，对支持preserved thinking且仍保留签名历史的模型补 `thinking.block_binding.prefix_mismatch_behavior=drop_block`，尊重显式策略、禁用思考和强制工具选择，原生不注入。模拟beta按实际 timing/thread 字段与模型能力补齐，不生成不存在的字段。原生旧软件组合回退完整基线时保留本次UA请求扩展，不缓存到账号，也不混搭旧Agent SDK软件身份。
 
 - **OAuth 模型发现与额度**：模型发现使用渠道 OAuth 凭证及隔离 Client 请求 `/v1/models`，携带 OAuth beta 和 `anthropic-version`，按 `has_more` / `last_id` 继续分页；失败返回错误，不回退静态目录。新账号登录及凭证导入共用该目录查询，成功后才创建渠道；重新授权保留已有模型配置且不查询目录。过期凭证导入复用现有刷新回执存储，按 Anthropic OAuth client ID 与 token 指纹隔离，先保存轮换结果再查询目录；目录失败后重导原文件恢复新凭证，不重复消费旧 refresh token。额度同时识别旧字段和新 `limits`：`session` / `weekly_all` 对应 5 小时/总周额度，`weekly_scoped` 的模型范围 Fable/Sonnet 对应独立周额度；有效的新字段优先且不重复展示，`is_active=false` 不隐藏窗口。Fable 保持 `Claude Fable|seven_day_fable` 账本身份。较新的被动响应头采样只更新它提供的窗口，保留主动查询独有的窗口，避免下一次请求后 Fable 消失。被动响应头的使用率可能超过 1（如 429 的 `5h-utilization: 1.05`）；有限非负值在采样边界以 1 封顶，显示剩余 0%，不得当作无效值丢弃而保留旧额度。5h、总周与 Fable 周按各自响应头独立更新，负数和非有限值仍拒绝。

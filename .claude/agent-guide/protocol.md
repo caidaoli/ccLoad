@@ -17,6 +17,7 @@
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
 - Gemini/Antigravity 转 Chat 时，同一 SSE 帧中的多个正文和思考 Part 分别按源顺序累计；空文本签名载体不清空之前的内容。partialArgs 未完成时的正文中断校验仍先于聚合。
+- Gemini 转 Claude 的流式与非流式响应合并连续无签名正文，显式签名与非文本 Part 保留块边界；延迟文本签名绑定合并后的正文，不跨工具、思考或不支持的 Part。无签名正文仍更新可见输出状态，不得误报零输出。参照 CLIProxyAPI `4a9effcbf`；Antigravity 独立适配器保留既有聚合行为。
 - Gemini/Antigravity 转 Claude 时，`MALFORMED_FUNCTION_CALL` 只有没有可见正文/有效工具时才输出错误，已有部分输出保留；空工具占位和签名载体不算有效输出。Antigravity 转 Chat 不输出无内容的空 delta，也不凭仅签名和零输出计量在 `[DONE]` 合成 stop。app 在转换前处理零输出异常，转换器保留自己的纯协议错误语义。
 - Chat `response_format` / Responses `text.format` 的 `json_schema` 转 Claude 时，只有模型名含 `claude` 且不属于老模型清单（claude-3/2/instant、opus-4/4.1、sonnet-4，见 `common/claude_system.go`）才写入原生 `output_config.format`，system 只保留 schema 名称与描述的短指令；GLM/Kimi/DeepSeek 等走 Anthropic 兼容端点的非 Claude 模型、老模型、`json_object` 及非对象 schema 继续用 system 提示词兜底（参照 CLIProxyAPI `43806c86`，非 Claude 门禁为本地差异）。
 - Gemini/Antigravity 转 Chat 丢弃 `thought=true` 的 inlineData 草稿图，单独的思考图片帧不输出空 delta，Antigravity 也不凭它在 `[DONE]` 合成 stop；转 Responses 时非思考图片（png/jpeg/webp/gif，空 mime 视为 png）输出 `image_generation_call`，流式同一 Part 按 sha256 去重。图片 Part 的签名仅在打开的 reasoning 中吸收，否则作为 standalone 载体，不绑定相邻正文或工具（图片项不回放给 Gemini）。参照 CLIProxyAPI `6684f3b5`、`0f8c40e1`。

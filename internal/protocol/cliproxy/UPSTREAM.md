@@ -26,6 +26,27 @@ version of this file stored in Git `HEAD` before the synchronization edits.
 
 ## Post-snapshot compatibility fixes (2026-11-16)
 
+Additional targeted fixes were reviewed against official `v8.0.74`,
+`14144df573c77e8e0e1eeaa450d3e63a068372df`:
+
+- Adapt `4a9effcbfa3ca0d9baa30f8d84edc06746a9795d`: coalesce consecutive
+  unsigned Gemini text parts into one Claude text block in streaming and
+  non-streaming responses. Preserve explicit signature and non-text boundaries,
+  delayed signature carriers, and ccLoad's visible-output tracking. Antigravity's
+  independent Claude adapter already coalesces unsigned text.
+- Adapt `8bdffcadc1a4cc049d27fdbe5b252253c8c61a72` at the app request boundary:
+  strip recognized thinking suffixes from each `advisor_*` tool's own model.
+  Unlike upstream's generic suffix parser, ccLoad retains unknown parenthesized
+  suffixes and leaves non-advisor tools unchanged.
+- The WebSocket duplex quota-error fix `14144df573c77e8e0e1eeaa450d3e63a068372df`
+  needs no runtime import: ccLoad already routes native WebSocket failures through
+  shared error classification, buffers pre-output metadata, and forbids failover
+  after semantic output. The moego JSON/regexp migration is not adopted.
+
+The existing Gemini image response contract test is now registered as a local
+post-snapshot test in the core manifest. The full snapshot baseline, provider
+provenance, and license remain unchanged.
+
 These targeted fixes were reviewed against official `v8.0.73`,
 `43806c865da7d47f9252316e95e315ad9f885b84`, in the local CLIProxyAPI checkout.
 The full snapshot baseline and provider provenance remain unchanged.

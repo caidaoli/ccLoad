@@ -617,7 +617,9 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 					if strings.TrimSpace(partText) != "" {
 						p.HasVisibleOutput = true
 					}
-					// Preserve native part boundaries for signatures that may arrive later.
+				}
+				if hasThoughtSignature && partText != "" {
+					// Keep explicitly signed text parts isolated from subsequent unsigned text.
 					appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, p.ResponseIndex))
 					p.ResponseIndex++
 					p.ResponseType = 0
@@ -880,7 +882,9 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 					hasVisibleOutput = true
 				}
 				lastSignatureTarget = translatorcommon.GeminiClaudeCarrierText
-				flushText()
+				if partSig != "" {
+					flushText()
+				}
 				continue
 			}
 
