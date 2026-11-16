@@ -1729,7 +1729,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemFallbacksKeepSour
 	}
 	root := gjson.ParseBytes(out)
 	system := root.Get("system").Array()
-	if len(system) != 7 || root.Get("system.#.type").Raw != `["text","text","text","input_image","text","text","text"]` {
+	if len(system) != 6 || root.Get("system.#.type").Raw != `["text","text","text","input_image","text","text"]` {
 		t.Fatalf("fallback system = %s", root.Get("system").Raw)
 	}
 	for index, text := range map[int]string{0: "top", 1: "typed note", 2: "image context", 4: "trailing instruction", 5: "trailing note"} {
@@ -1737,7 +1737,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemFallbacksKeepSour
 			t.Fatalf("system[%d] = %q, want %q", index, got, text)
 		}
 	}
-	if !strings.Contains(system[6].Get("text").String(), "facts") || strings.Contains(root.Get("messages.#.role").Raw, "system") {
+	if root.Get("output_config.format.schema.properties.facts.type").String() != "string" || strings.Contains(root.Get("messages.#.role").Raw, "system") {
 		t.Fatalf("fallback order changed: %s", out)
 	}
 }
@@ -2438,19 +2438,18 @@ func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *tes
 			}
 		}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
-		system := gjson.GetBytes(out, "system")
-		if !system.Exists() || len(system.Array()) == 0 {
-			t.Fatalf("system blocks missing. Output: %s", string(out))
+		if gjson.GetBytes(out, "output_config.format.type").String() != "json_schema" ||
+			gjson.GetBytes(out, "output_config.format.schema.required.0").String() != "facts" {
+			t.Fatalf("expected native output_config.format. Output: %s", string(out))
 		}
-		found := false
-		for _, block := range system.Array() {
-			if strings.Contains(block.Get("text").String(), "facts") {
-				found = true
-				break
-			}
+		if gjson.GetBytes(out, "system").Exists() {
+			t.Fatalf("schema without description must not add a system instruction. Output: %s", string(out))
 		}
-		if !found {
-			t.Fatalf("expected structured schema instruction in system prompt. Output: %s", string(out))
+
+		legacy, _ := ConvertOpenAIResponsesRequestToClaude("claude-3-7-sonnet-20250219", input, false)
+		if gjson.GetBytes(legacy, "output_config.format").Exists() ||
+			!strings.Contains(gjson.GetBytes(legacy, "system.0.text").String(), `"facts"`) {
+			t.Fatalf("legacy model must keep the system prompt schema fallback. Output: %s", string(legacy))
 		}
 	})
 
@@ -2511,12 +2510,15 @@ func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *tes
 			if strings.Contains(text, "Be concise.") {
 				hasInstructions = true
 			}
-			if strings.Contains(text, "winning_schema") && strings.Contains(text, "Primary facts") && strings.Contains(text, "item") {
+			if strings.Contains(text, "winning_schema") && strings.Contains(text, "Primary facts") && !strings.Contains(text, `"properties"`) {
 				hasWinningSchema = true
 			}
 			if strings.Contains(text, "valid JSON object") {
 				hasFallbackObject = true
 			}
+		}
+		if gjson.GetBytes(out, "output_config.format.schema.properties.item.type").String() != "string" {
+			t.Fatalf("expected winning schema in output_config.format. Output: %s", string(out))
 		}
 		if !hasInstructions || !hasWinningSchema || hasFallbackObject {
 			t.Fatalf("expected instructions and winning schema without fallback. Output: %s", string(out))

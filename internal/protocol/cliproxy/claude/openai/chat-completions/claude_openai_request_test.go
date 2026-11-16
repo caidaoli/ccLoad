@@ -921,37 +921,42 @@ func TestConvertOpenAIRequestToClaude_ResponseFormatJSONSchema(t *testing.T) {
 			"type": "json_schema",
 			"json_schema": {
 				"name": "extracted_facts",
+				"description": "Facts stated in the input",
 				"strict": true,
-				"schema": {
-					"type": "object",
-					"properties": {
-						"facts": {
-							"type": "array",
-							"items": { "type": "string" }
-						}
-					},
-					"required": ["facts"]
-				}
+				"schema": {"type":"object","properties":{"facts":{"type":"array","items":{"type":"string"}}},"required":["facts"]}
 			}
 		}
 	}`)
 
-	out, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
-	system := gjson.GetBytes(out, "system")
-	if !system.Exists() || !system.IsArray() || len(system.Array()) == 0 {
-		t.Fatalf("system blocks missing or empty. Output: %s", string(out))
-	}
-
-	foundSchemaInstruction := false
-	for _, block := range system.Array() {
-		text := block.Get("text").String()
-		if strings.Contains(text, "JSON") && strings.Contains(text, "facts") {
-			foundSchemaInstruction = true
-			break
+	t.Run("native output_config.format", func(t *testing.T) {
+		out, _ := ConvertOpenAIRequestToClaude("claude-sonnet-4-6", inputJSON, false)
+		if got := gjson.GetBytes(out, "output_config.format.type").String(); got != "json_schema" {
+			t.Fatalf("output_config.format.type = %q. Output: %s", got, out)
 		}
-	}
-	if !foundSchemaInstruction {
-		t.Fatalf("expected structured output instructions containing schema in system prompt. Output: %s", string(out))
+		if got := gjson.GetBytes(out, "output_config.format.schema.required.0").String(); got != "facts" {
+			t.Fatalf("output_config.format.schema not forwarded. Output: %s", out)
+		}
+		system := gjson.GetBytes(out, "system").Array()
+		if len(system) != 1 {
+			t.Fatalf("expected one short description block. Output: %s", out)
+		}
+		text := system[0].Get("text").String()
+		if !strings.Contains(text, "Schema Name: extracted_facts") || !strings.Contains(text, "Facts stated in the input") || strings.Contains(text, `"properties"`) {
+			t.Fatalf("description block must keep name/description without repeating the schema: %q", text)
+		}
+	})
+
+	for _, model := range []string{"claude-sonnet-4-20250514", "glm-5.1"} {
+		t.Run(model+" keeps system prompt fallback", func(t *testing.T) {
+			out, _ := ConvertOpenAIRequestToClaude(model, inputJSON, false)
+			if gjson.GetBytes(out, "output_config.format").Exists() {
+				t.Fatalf("model must not receive output_config.format. Output: %s", out)
+			}
+			system := gjson.GetBytes(out, "system").Array()
+			if len(system) != 1 || !strings.Contains(system[0].Get("text").String(), `"facts"`) {
+				t.Fatalf("expected schema instruction in system prompt. Output: %s", out)
+			}
+		})
 	}
 }
 

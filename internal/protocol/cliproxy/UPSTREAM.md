@@ -24,6 +24,27 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-16)
+
+These targeted fixes were reviewed against official `v8.0.73`,
+`43806c865da7d47f9252316e95e315ad9f885b84`, in the local CLIProxyAPI checkout.
+The full snapshot baseline and provider provenance remain unchanged.
+
+- Adapt `43806c865da7d47f9252316e95e315ad9f885b84`: map Chat
+  `response_format` and Responses `text.format` json_schema payloads to Claude
+  `output_config.format`, keeping only the schema name/description as a short
+  system instruction. Legacy Claude models, `json_object` and non-object
+  schemas keep the system prompt fallback. Local difference: only model names
+  containing `claude` use the native field, because ccLoad routes GLM, Kimi,
+  DeepSeek and similar models over Anthropic-compatible endpoints that may
+  ignore it. The executor token-estimation change is not adopted; ccLoad's
+  local count_tokens path only receives native Anthropic bodies.
+
+The Gemini 429 RetryInfo cooldown (`ed1c23f9a`), zero-output credential
+cooldown skip (`7e82d0d1c`) and Responses WebSocket pre-commit failover
+(`a8c9c8a4a`) are runtime/executor changes outside this snapshot; ccLoad keeps
+its existing app-level cooldown and failover contracts.
+
 ## Post-snapshot compatibility fixes (2026-11-14)
 
 The targeted changes below were reviewed against official `v8.0.70`,

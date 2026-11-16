@@ -611,7 +611,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	if !formatResult.Exists() {
 		formatResult = root.Get("response_format")
 	}
-	if formatInstruction := common.BuildClaudeStructuredOutputInstruction(formatResult); formatInstruction != "" {
+	formatInstruction := common.BuildClaudeStructuredOutputInstruction(formatResult)
+	if schema, ok := common.ClaudeOutputFormatSchema(modelName, formatResult); ok {
+		out, _ = sjson.SetBytes(out, "output_config.format.type", "json_schema")
+		out, _ = sjson.SetRawBytes(out, "output_config.format.schema", []byte(schema.Raw))
+		formatInstruction = common.BuildClaudeOutputFormatDescription(formatResult)
+	}
+	if formatInstruction != "" {
 		appendSystemText(formatInstruction)
 	}
 	hadMessages := len(messageBlocks) > 0
