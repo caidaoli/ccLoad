@@ -6784,10 +6784,14 @@
       display: none;
     }
 
-    .advanced-settings-other-fields {
+    .advanced-settings-other-fields,
+    .advanced-settings-management {
       --advanced-settings-label-width: 88px;
       --advanced-settings-control-width: 320px;
       --advanced-settings-help-font-size: 12px;
+    }
+
+    .advanced-settings-other-fields {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
       align-content: start;
