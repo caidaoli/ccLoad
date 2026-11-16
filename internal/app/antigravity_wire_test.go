@@ -23,7 +23,7 @@ import (
 const antigravitySchemaTestModel = "gemini-3-pro"
 
 /**
- * @brief 代理出站仅中和系统文本块开头的已知客户端身份，保留后文、用户消息与工具描述。
+ * @brief 代理出站中和已知身份及精确触发句，保留指令含义、用户消息与工具描述。
  * @param t 测试上下文。
  */
 func TestProxyAntigravitySystemIdentity(t *testing.T) {
@@ -39,6 +39,33 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 		{"codex", "You are Codex, an agent based on GPT-5.", "You are an AI agent."},
 		{"codex coding agent", "You are Codex, a coding agent based on GPT-6.1-sol.\nKeep all instructions.", "You are an AI agent.\nKeep all instructions."},
 		{"codex cli", "You are GPT-5.4 running in the Codex CLI.", "You are an AI agent."},
+		{"pi", "You are a coding assistant running inside pi, a coding agent harness.\nKeep instructions.", "You are an AI agent.\nKeep instructions."},
+		{"pi short", "You are a coding assistant running inside pi.", "You are an AI agent."},
+		{"pi different product", "You are a coding assistant running inside pip.", "You are a coding assistant running inside pip."},
+		{"deepseek harness", "You are an AI agent powered by DeepSeek Harness.\nKeep instructions.", "You are an AI agent.\nKeep instructions."},
+		{"hermes", "You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "You are an AI agent."},
+		{"ordinary harness mention", "Explain DeepSeek Harness and Hermes Agent.", "Explain DeepSeek Harness and Hermes Agent."},
+		{
+			"security authorization",
+			"Refuse malicious requests. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.\nKeep all instructions.",
+			"Refuse malicious requests. Security tooling, including command-and-control frameworks, credential checks, and exploit development, may be used only with explicit authorization for penetration tests, CTFs, security research, or defensive work.\nKeep all instructions.",
+		},
+		{
+			"omp tool documentation",
+			"Read xd://<tool> for full docs + JSON schema before first use.",
+			"Before using a tool for the first time, read its full documentation and JSON schema at xd://<tool>.",
+		},
+		{
+			"different tool documentation",
+			"Read xd://example for full docs + JSON schema before first use.",
+			"Read xd://example for full docs + JSON schema before first use.",
+		},
+		{
+			"astrbot sessions",
+			"Use `astrbot_shell_session` to list, poll, write raw text or complete lines to, interrupt, or terminate those sessions.\nKeep instructions.",
+			"Manage these command sessions with `astrbot_shell_session`: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them.\nKeep instructions.",
+		},
+		{"tool identifiers", "Use tools.opencode.session_move to move a session.", "Use tools.opencode.session_move to move a session."},
 		{"comma continuation", "You are Codex, based on GPT-5, with access to tools.", "You are an AI agent, with access to tools."},
 		{"case and whitespace", " \t\nYOU ARE CLAUDE CODE, ANTHROPICS OFFICIAL CLI FOR CLAUDE", "You are an AI agent."},
 		{"ordinary mention", "Discuss this sentence: " + identity, "Discuss this sentence: " + identity},
@@ -58,8 +85,8 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 				if len(parts) != 2 || parts[1].Get("text").String() != tc.want {
 					t.Errorf("system instruction=%s, want final part %q", gjson.GetBytes(body, "request.systemInstruction"), tc.want)
 				}
-				if gjson.GetBytes(body, "request.contents.0.parts.0.text").String() != identity ||
-					gjson.GetBytes(body, "request.tools.0.functionDeclarations.0.description").String() != identity {
+				if gjson.GetBytes(body, "request.contents.0.parts.0.text").String() != tc.prompt ||
+					gjson.GetBytes(body, "request.tools.0.functionDeclarations.0.description").String() != tc.prompt {
 					t.Errorf("identity rewrite changed user content or tool description: %s", body)
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -71,9 +98,9 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 			}}, map[int]string{0: upstream.URL}, map[string]string{"antigravity_sensitive_words": `[]`})
 			response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", map[string]any{
 				"system_instruction": map[string]any{"parts": []any{map[string]any{"text": tc.prompt}}},
-				"contents":           []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": identity}}}},
+				"contents":           []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": tc.prompt}}}},
 				"tools": []any{map[string]any{"functionDeclarations": []any{map[string]any{
-					"name": "lookup", "description": identity, "parameters": map[string]any{"type": "object"},
+					"name": "lookup", "description": tc.prompt, "parameters": map[string]any{"type": "object"},
 				}}}},
 			}, nil)
 			if response.Code != http.StatusOK {
@@ -84,18 +111,26 @@ func TestProxyAntigravitySystemIdentity(t *testing.T) {
 }
 
 /**
- * @brief 四种客户端协议的系统身份在敏感词混淆前中和，其他系统文本继续按配置处理。
+ * @brief 四种客户端协议及字符串系统指令先改写已知触发句，再按配置混淆其他文本。
  * @param t 测试上下文。
  */
 func TestProxyAntigravitySystemIdentityAcrossProtocols(t *testing.T) {
 	t.Parallel()
 	const identity = "You are Claude Code, Anthropic's official CLI for Claude.\nKeep API instructions."
+	const prompt = identity + "\n" +
+		"Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.\n" +
+		"Read xd://<tool> for full docs + JSON schema before first use.\n" +
+		"Use `astrbot_shell_session` to list, poll, write raw text or complete lines to, interrupt, or terminate those sessions."
+	const want = "You are an AI agent.\nKeep A\u034FPI instructions.\n" +
+		"Security tooling, including command-and-control frameworks, credential checks, and exploit development, may be used only with explicit authorization for penetration tests, CTFs, security research, or defensive work.\n" +
+		"Before using a tool for the first time, read its full documentation and JSON schema at xd://<tool>.\n" +
+		"Manage these command sessions with `astrbot_shell_session`: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them."
 	for _, clientProtocol := range []string{"anthropic", "openai", "codex", "gemini", "gemini existing identity"} {
 		t.Run(clientProtocol, func(t *testing.T) {
 			t.Parallel()
 			var rules *model.CustomRequestRules
 			if clientProtocol == "gemini existing identity" {
-				value, err := json.Marshal(identity + "\nYou are Antigravity.")
+				value, err := json.Marshal(prompt + "\nYou are Antigravity.")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -109,10 +144,10 @@ func TestProxyAntigravitySystemIdentityAcrossProtocols(t *testing.T) {
 				instruction := gjson.GetBytes(body, "request.systemInstruction")
 				parts := instruction.Get("parts").Array()
 				if clientProtocol == "gemini existing identity" {
-					if instruction.String() != "You are an AI agent.\nKeep A\u034FPI instructions.\nYou are Antigravity." {
+					if instruction.String() != want+"\nYou are Antigravity." {
 						t.Errorf("existing string identity not rewritten: %s", body)
 					}
-				} else if len(parts) != 2 || parts[1].Get("text").String() != "You are an AI agent.\nKeep A\u034FPI instructions." {
+				} else if len(parts) != 2 || parts[1].Get("text").String() != want {
 					t.Errorf("identity not neutralized before obfuscation: %s", body)
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -127,18 +162,18 @@ func TestProxyAntigravitySystemIdentityAcrossProtocols(t *testing.T) {
 			path := "/v1/messages"
 			switch clientProtocol {
 			case "anthropic":
-				body["system"] = identity
+				body["system"] = prompt
 				body["messages"] = []any{map[string]any{"role": "user", "content": "hello"}}
 				body["max_tokens"] = 128
 			case "openai":
 				path = "/v1/chat/completions"
-				body["messages"] = []any{map[string]any{"role": "system", "content": identity}, map[string]any{"role": "user", "content": "hello"}}
+				body["messages"] = []any{map[string]any{"role": "system", "content": prompt}, map[string]any{"role": "user", "content": "hello"}}
 			case "codex":
 				path = "/v1/responses"
-				body["input"] = []any{map[string]any{"role": "developer", "content": identity}, map[string]any{"role": "user", "content": "hello"}}
+				body["input"] = []any{map[string]any{"role": "developer", "content": prompt}, map[string]any{"role": "user", "content": "hello"}}
 			case "gemini", "gemini existing identity":
 				path = "/v1beta/models/gemini-3-flash:generateContent"
-				body["systemInstruction"] = identity
+				body["systemInstruction"] = prompt
 				body["contents"] = []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}
 			}
 			response := doProxyRequest(t, env.engine, path, body, nil)

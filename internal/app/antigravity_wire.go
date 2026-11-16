@@ -58,14 +58,30 @@ This information may or may not be relevant to the coding task, it is up for you
 const stripAntigravityInvalidThinkingSignatureStrategy = "strip_antigravity_invalid_thinking_signature"
 
 /**
- * @brief 按 sub2api 的已知开场白限定身份中和范围，不匹配正文中的产品名称。
+ * @brief 按已复现的客户端开场白限定身份中和范围，不匹配正文中的产品名称。
  */
 var antigravitySystemIdentityOpeners = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are a Claude agent, built on Anthropic'?s Claude Agent SDK\.?`),
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are Claude Code, Anthropic'?s official CLI for Claude\.?`),
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are Codex,? (?:a coding agent |an agent )?based on GPT-[0-9]+(?:\.[0-9]+)*(?:-[a-z0-9]+)*\.?`),
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are GPT-[0-9]+(?:\.[0-9]+)*(?:-[a-z0-9]+)* running in the Codex CLI\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are a coding assistant running inside pi(?:, a coding agent harness)?\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are an AI agent powered by DeepSeek Harness\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are Hermes Agent, an intelligent AI assistant created by Nous Research\.?`),
 }
+
+/**
+ * @brief 改写已复现裸 429 的精确系统指令，保留授权限制、工具标识、文档 URI 与操作含义。
+ * @details 触发依据见 sub2api #8824、CLIProxyAPI #7562 及 #7553 的 AstrBot 对照；只用于 Antigravity 系统指令。
+ */
+var antigravitySystemInstructionReplacer = strings.NewReplacer(
+	"Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.",
+	"Security tooling, including command-and-control frameworks, credential checks, and exploit development, may be used only with explicit authorization for penetration tests, CTFs, security research, or defensive work.",
+	"Read xd://<tool> for full docs + JSON schema before first use.",
+	"Before using a tool for the first time, read its full documentation and JSON schema at xd://<tool>.",
+	"Use `astrbot_shell_session` to list, poll, write raw text or complete lines to, interrupt, or terminate those sessions",
+	"Manage these command sessions with `astrbot_shell_session`: list sessions, poll their output, send raw text or complete input lines, interrupt them, or terminate them",
+)
 
 /**
  * @brief 构建 Antigravity 与 CodeBuddy 共用的大小写不敏感、长词优先匹配器。
@@ -1042,9 +1058,9 @@ func antigravityNegativeSessionID(seed string) string {
 }
 
 /**
- * @brief 在系统文本块开头中和已知客户端身份，再按配置混淆其余敏感词。
+ * @brief 中和系统文本块开头的已知身份、等义改写精确触发句，再按配置混淆其余敏感词。
  * @param body 已注入 Antigravity 身份的出站信封，系统指令可为字符串或 parts 对象。
- * @param matcher 可选敏感词匹配器；nil 只关闭混淆，不关闭身份中和。
+ * @param matcher 可选敏感词匹配器；nil 只关闭混淆，不关闭身份中和或触发句改写。
  * @return 改写后的信封；失败时为 nil。
  * @return 写入系统文本失败时返回 JSON 修改错误。
  */
@@ -1066,6 +1082,7 @@ func rewriteAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) ([
 			}
 			break
 		}
+		rewritten = antigravitySystemInstructionReplacer.Replace(rewritten)
 		if matcher != nil {
 			rewritten = obfuscateAntigravityText(rewritten, matcher)
 		}
