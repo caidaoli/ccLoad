@@ -285,7 +285,8 @@ func TestAdminAPI_CSVImportLoomyCredentialValidation(t *testing.T) {
 				}
 				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 			})}
-			credential := `{"session":"imported-session","user_id":"loomy-user","onboarding_completed_at":"2030-01-01T00:00:00Z"}`
+			// 远期签到时点让启动扫描与导入并发时也不会发起签到请求。
+			credential := `{"session":"imported-session","user_id":"loomy-user","onboarding_completed_at":"2030-01-01T00:00:00Z","next_checkin_attempt_at":"2099-01-01T00:01:00+08:00"}`
 			switch outcome {
 			case "invalid_json":
 				credential = `{`
