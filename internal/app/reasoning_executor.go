@@ -379,7 +379,7 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key strin
 		return result, errors.New("system one response is not JSON")
 	}
 	result.usage, result.usageKnown = reasoningDecisionUsage(response, provider)
-	result.effort, result.confidence, err = parseReasoningDecision(response, provider, prompt, levels)
+	result.effort, result.confidence, err = parseReasoningDecision(response, provider, result.actualModel, prompt, levels)
 	return result, err
 }
 

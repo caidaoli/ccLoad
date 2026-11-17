@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/url"
@@ -175,16 +176,90 @@ func reasoningDecisionAnswer(response []byte, provider, name string) gjson.Resul
 }
 
 /**
+ * @brief 按判断模型校准的 Jev 双题概率阈值
+ */
+type reasoningChoiceThresholds struct {
+	high  int ///< 千分比；effort 低于 high 时，high 及以上概率之和达到该值即升为 high
+	xhigh int ///< 千分比；effort 为 high 时，depth 的 xhigh 及以上概率之和达到该值判 xhigh，否则为 high
+}
+
+/**
+ * @brief 已校准判断模型的名称前缀与阈值；未列出的模型直接采用 choice
+ * @details 2026-11-17 离线主集回放：Jev 与 D3 按 choice 都把大量 high/xhigh 判成 medium，
+ * 改用阈值后 Jev 可接受率 75.9→85.3%、D3 75.0→87.9%。阈值依附模型而非模板：
+ * D3 的阈值套到 Jev 上偏高从 10% 升到 24%。
+ */
+var reasoningChoiceCalibrations = []struct {
+	prefix     string                    ///< 去掉思考后缀并转小写后的实际模型名前缀
+	thresholds reasoningChoiceThresholds ///< 该模型的阈值
+}{
+	{prefix: "jev-", thresholds: reasoningChoiceThresholds{high: 400, xhigh: 650}},
+	{prefix: "vllm-sr/d3", thresholds: reasoningChoiceThresholds{high: 200, xhigh: 350}},
+}
+
+/**
+ * @brief 查找实际判断模型的概率阈值
+ * @param actualModel 完成重定向后的上游模型名
+ * @return 该模型的阈值；未校准时为零值
+ * @return 已校准时为 true
+ */
+func reasoningChoiceCalibration(actualModel string) (reasoningChoiceThresholds, bool) {
+	name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(actualModel)))
+	for _, calibration := range reasoningChoiceCalibrations {
+		if strings.HasPrefix(name, calibration.prefix) {
+			return calibration.thresholds, true
+		}
+	}
+	return reasoningChoiceThresholds{}, false
+}
+
+/**
+ * @brief 汇总 choice 答案中从指定档位起的概率
+ * @param answer 已校验 choice 的答案
+ * @param question 题目名，用于错误信息
+ * @param levels 该题按强度升序排列的档位
+ * @param from 起始档位名，须在 levels 中
+ * @return 从 from 起各档概率之和，四舍五入为千分比；取整消除浮点累加误差
+ *         （0.36+0.04 累加为 0.39999999999999997），使两位小数概率恰好等于阈值时也算达到
+ * @return 答案未附概率时为 false
+ * @return 概率存在但缺档位或越界时返回错误；成功时为 nil
+ */
+func reasoningChoiceMass(answer gjson.Result, question string, levels []string, from string) (int, bool, error) {
+	probabilities := answer.Get("probabilities")
+	if !probabilities.Exists() {
+		return 0, false, nil
+	}
+	if !probabilities.IsObject() {
+		return 0, false, fmt.Errorf("system one %s probabilities invalid", question)
+	}
+	mass, start := 0.0, slices.Index(levels, from)
+	for i, level := range levels {
+		value := probabilities.Get(level)
+		if value.Type != gjson.Number || value.Float() < 0 || value.Float() > 1 {
+			return 0, false, fmt.Errorf("system one %s probabilities invalid", question)
+		}
+		if i >= start {
+			mass += value.Float()
+		}
+	}
+	return int(math.Round(mass * 1000)), true, nil
+}
+
+/**
  * @brief 保留 Jev 双题置信度与封顶语义，单评分题使用原生概率的最大项
  * @param response 上游 JSON 响应
  * @param provider 实际模型的提供商
+ * @param actualModel 完成重定向后的上游模型名，决定双题是否按校准阈值取档
  * @param prompt 本次请求使用的提示词
  * @param levels 按强度升序排列的候选等级
  * @return 建议等级；拒答或无效答案时为空
  * @return Jev 主选择题的置信度；单评分题始终为 nil
  * @return 答案或概率无效时返回错误；成功时为 nil
+ * @details 已校准模型的 effort 低于 high 且 high 及以上概率之和达到阈值时升为 high；
+ * 进入 depth 后按 xhigh 及以上概率之和判 xhigh 或 high，不再采用 depth 的 choice。
+ * 未附概率时沿用 choice；置信度始终取 effort 原始答案。
  */
-func parseReasoningDecision(response []byte, provider string, prompt model.ReasoningPrompt, levels []string) (string, *float64, error) {
+func parseReasoningDecision(response []byte, provider, actualModel string, prompt model.ReasoningPrompt, levels []string) (string, *float64, error) {
 	answer := reasoningDecisionAnswer(response, provider, "effort")
 	if prompt.Depth == nil {
 		effort, err := reasoningScoreChoice(answer, provider, levels)
@@ -194,10 +269,32 @@ func parseReasoningDecision(response []byte, provider string, prompt model.Reaso
 	if err != nil {
 		return "", nil, err
 	}
+	thresholds, calibrated := reasoningChoiceCalibration(actualModel)
+	if high := slices.Index(levels, "high"); calibrated && high >= 0 && slices.Index(levels, effort) < high {
+		mass, ok, err := reasoningChoiceMass(answer, "effort", levels, "high")
+		if err != nil {
+			return "", nil, err
+		}
+		if ok && mass >= thresholds.high {
+			effort = "high"
+		}
+	}
 	depthLevels := reasoningDepthLevels(levels)
 	if depth := reasoningDecisionAnswer(response, provider, "depth"); effort == "high" && depthLevels != nil && depth.Exists() {
 		if effort, _, err = systemOneChoice(depth, "depth", depthLevels); err != nil {
 			return "", nil, err
+		}
+		if calibrated {
+			mass, ok, err := reasoningChoiceMass(depth, "depth", depthLevels, "xhigh")
+			if err != nil {
+				return "", nil, err
+			}
+			if ok {
+				effort = "high"
+				if mass >= thresholds.xhigh {
+					effort = "xhigh"
+				}
+			}
 		}
 	}
 	if effort == "max" {
