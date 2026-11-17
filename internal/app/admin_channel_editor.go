@@ -18,7 +18,6 @@ import (
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -142,13 +141,6 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesCodeBuddyOAuth() {
 		if _, parseErr := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesZedOAuth() {
-		_, parseErr := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}

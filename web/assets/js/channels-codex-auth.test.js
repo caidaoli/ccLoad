@@ -510,28 +510,16 @@ test('Vertex import posts the raw key and passes location only when set', async 
   }
 });
 
-test('OAuth login start submits the session proxy and Zed installation identity', () => {
-  const previousWindow = global.window;
-  global.window = { t: key => key };
-  try {
-    const options = oauthStartOptions('zed', {
-      proxyURL: ' socks5://127.0.0.1:1080 ', systemID: ' 9d4b8c17-12ae-4091-96bc-1a79ce2de601 '
-    });
-    assert.equal(options.method, 'POST');
-    assert.equal(options.headers['Content-Type'], 'application/json');
-    assert.deepEqual(JSON.parse(options.body), {
-      proxy_url: 'socks5://127.0.0.1:1080', system_id: '9d4b8c17-12ae-4091-96bc-1a79ce2de601'
-    });
-    assert.deepEqual(JSON.parse(oauthStartOptions('codex', { systemID: 'ignored' }).body), { proxy_url: '' });
-    for (const site of ['zai', 'bigmodel']) {
-      assert.deepEqual(JSON.parse(oauthStartOptions('zai', { site }).body), { proxy_url: '', site });
-    }
-    assert.deepEqual(JSON.parse(oauthStartOptions('zai').body), { proxy_url: '', site: 'zai' });
-    assert.deepEqual(JSON.parse(oauthStartOptions('codex', { site: 'bigmodel' }).body), { proxy_url: '' });
-    assert.throws(() => oauthStartOptions('zed', { systemID: 'not-a-uuid' }), /channels\.zed\.systemIDInvalid/);
-  } finally {
-    global.window = previousWindow;
+test('OAuth login start submits the session proxy', () => {
+  const options = oauthStartOptions('codex', { proxyURL: ' socks5://127.0.0.1:1080 ' });
+  assert.equal(options.method, 'POST');
+  assert.equal(options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(options.body), { proxy_url: 'socks5://127.0.0.1:1080' });
+  for (const site of ['zai', 'bigmodel']) {
+    assert.deepEqual(JSON.parse(oauthStartOptions('zai', { site }).body), { proxy_url: '', site });
   }
+  assert.deepEqual(JSON.parse(oauthStartOptions('zai').body), { proxy_url: '', site: 'zai' });
+  assert.deepEqual(JSON.parse(oauthStartOptions('codex', { site: 'bigmodel' }).body), { proxy_url: '' });
 });
 
 test('ZCode key import preserves the selected site and clears the submitted secret', async () => {
@@ -2379,22 +2367,6 @@ test('manual Z.ai credential refresh targets the saved channel', async () => {
   await assert.rejects(() => refreshOAuthCredential(0, async () => response, 'zai_oauth'), /saved Z.ai channel/);
 });
 
-test('manual Zed credential refresh targets the saved channel', async () => {
-  let captured;
-  const response = { oauth_credential: { access_token: 'zed-jwt' } };
-  const result = await refreshOAuthCredential(42, async (url, options) => {
-    captured = { url, options };
-    return response;
-  }, 'zed_oauth');
-
-  assert.equal(result, response);
-  assert.deepEqual(captured, {
-    url: '/admin/channels/42/zed-credential/refresh',
-    options: { method: 'POST' }
-  });
-  await assert.rejects(() => refreshOAuthCredential(0, async () => response, 'zed_oauth'), /saved Zed channel/);
-});
-
 test('manual CodeBuddy credential refresh targets the saved channel', async () => {
   let captured;
   const response = { oauth_credential: { access_token: 'codebuddy-access', refresh_token: 'rotated-refresh' } };
@@ -3135,7 +3107,7 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
   try {
     for (const authType of [
       'codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth',
-      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth', 'loomy_session'
+      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'vertex_oauth', 'loomy_session'
     ]) {
       elements.get('channelOAuthQuotaPassthrough').checked = true;
       applyChannelAuthEditorMode(authType);

@@ -26,7 +26,6 @@ import (
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -968,9 +967,6 @@ func (s *Server) fetchModelsForChannel(
 	if cfg.UsesCursorOAuth() {
 		return sortOAuthFetchModels(s.fetchCursorOAuthModels(ctx, cfg, overrideProtocol))
 	}
-	if cfg.UsesZedOAuth() {
-		return sortOAuthFetchModels(s.fetchZedOAuthModels(ctx, cfg, overrideProtocol))
-	}
 	if cfg.UsesVertexOAuth() {
 		return sortOAuthFetchModels(s.fetchVertexOAuthModels(ctx, cfg, overrideProtocol))
 	}
@@ -1090,47 +1086,6 @@ func (s *Server) fetchCodeBuddyOAuthModels(ctx context.Context, cfg *model.Confi
 		entries[i] = model.ModelEntry{Model: name}
 	}
 	return &FetchModelsResponse{Models: entries, Protocol: util.ProtocolOpenAI, Source: "api"}, nil
-}
-
-func (s *Server) fetchZedOAuthModels(ctx context.Context, cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
-	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
-	if overrideProtocol != "" {
-		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
-			return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
-		}
-		if util.NormalizeProtocol(overrideProtocol) != util.ProtocolCodex {
-			return nil, errors.New("模型发现: Zed 仅支持 codex 协议")
-		}
-	}
-	if s.zedCredentials == nil {
-		return nil, errors.New("模型发现: Zed 凭证管理器不可用")
-	}
-	credential, err := s.zedCredentials.credential(ctx, cfg, false)
-	if err != nil {
-		return nil, fmt.Errorf("模型发现: 加载 Zed 凭证失败: %w", err)
-	}
-	service := zedauth.NewService(s.getClientForChannel(cfg))
-	if s.zedService != nil {
-		service.ModelsURL = s.zedService.ModelsURL
-		service.LLMTokensURL = s.zedService.LLMTokensURL
-		service.CurrentUserURL = s.zedService.CurrentUserURL
-	}
-	names, err := service.FetchModels(ctx, credential)
-	if err != nil {
-		return nil, fmt.Errorf("模型发现: 请求 Zed 模型目录失败: %w", err)
-	}
-	models := make([]model.ModelEntry, len(names))
-	for i, name := range names {
-		models[i] = model.ModelEntry{Model: name}
-	}
-	channelURL := ""
-	if len(cfg.URLs) > 0 {
-		channelURL = cfg.URLs[0].RuntimeURL()
-	}
-	return &FetchModelsResponse{
-		Models: models, Protocol: util.ProtocolCodex, Source: "api",
-		Debug: &FetchModelsDebug{NormalizedProtocol: util.ProtocolCodex, Fetcher: "zed_model_catalog", ChannelURL: channelURL},
-	}, nil
 }
 
 // fetchZAIOAuthModels lists the Coding Plan lineup live from the account

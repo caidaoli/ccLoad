@@ -307,14 +307,6 @@ supports_websockets = true</code></pre>
             </ul>
           </article>
           <article class="www-info-card">
-            <h3>Zed</h3>
-            <ul class="www-check-list">
-              <li data-i18n-html="www.usage.oauth.zed.item1">Native app sign-in exchanges an ephemeral RSA public key on a random loopback port; the callback token is decrypted into a long-lived native credential and the private key is never persisted.</li>
-              <li data-i18n-html="www.usage.oauth.zed.item2">Trial access depends on a real Zed installation <code>system_id</code>. Without one, ccLoad still allows sign-in and lets the upstream decide account eligibility.</li>
-              <li data-i18n-html="www.usage.oauth.zed.item3">A fixed exact <code>/completions</code> upstream runs Codex-protocol local transforms with WebSocket disabled; quota is read from <code>/client/users/me</code>.</li>
-            </ul>
-          </article>
-          <article class="www-info-card">
             <h3>Vertex AI</h3>
             <ul class="www-check-list">
               <li data-i18n-html="www.usage.oauth.vertex.item1">Import a Google Cloud service account key JSON or a CLIProxyAPI Vertex credential file. Re-importing the same service account replaces the key on its existing channel.</li>
@@ -603,7 +595,7 @@ supports_websockets = true</code></pre>
               <p data-i18n-html="www.usage.admin.desc">The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
             </div>
             <ul class="www-check-list">
-              <li data-i18n-html="www.usage.admin.channels">Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai / Zed credentials and Vertex AI service accounts; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules and daily scheduled checks; import or export CSV.</li>
+              <li data-i18n-html="www.usage.admin.channels">Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai credentials and Vertex AI service accounts; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules and daily scheduled checks; import or export CSV.</li>
               <li data-i18n-html="www.usage.admin.tokens">Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
               <li data-i18n-html="www.usage.admin.logs">Logs: filter requests by status code, channel, model and token to locate failures.</li>
               <li data-i18n-html="www.usage.admin.overview">Overview: compare traffic by client protocol and inspect seven-day service health.</li>

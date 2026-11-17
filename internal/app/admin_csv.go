@@ -29,7 +29,6 @@ import (
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -894,9 +893,6 @@ func (s *Server) parseChannelImportRow(
 	} else if hasWebsocketsColumn {
 		websockets = false
 	}
-	if authType == model.AuthTypeZedOAuth {
-		websockets = false
-	}
 
 	// 构建模型条目（合并models和modelRedirects）
 	modelEntries := make([]model.ModelEntry, 0, len(models))
@@ -1226,12 +1222,6 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 			return "", err
 		}
 		return credential.JSON()
-	case model.AuthTypeZedOAuth:
-		credential, err := zedauth.ParseCredential([]byte(raw))
-		if err != nil {
-			return "", err
-		}
-		return credential.JSON()
 	case model.AuthTypeVertexOAuth:
 		credential, err := vertexauth.ParseCredential([]byte(raw))
 		if err != nil {
@@ -1508,22 +1498,6 @@ func (s *Server) validateCSVImportOAuthCredential(
 			if _, probeErr := requestCursorUsage(ctx, service, credential.AccessToken); probeErr != nil {
 				return "", probeErr
 			}
-		}
-		return credential.JSON()
-
-	case model.AuthTypeZedOAuth:
-		credential, err := zedauth.ParseCredential([]byte(imported.OAuthCredential))
-		if err != nil {
-			return "", err
-		}
-		service := zedauth.NewService(s.getClientForChannel(existing))
-		if s.zedService != nil {
-			service.CurrentUserURL = s.zedService.CurrentUserURL
-			service.LLMTokensURL = s.zedService.LLMTokensURL
-			service.ModelsURL = s.zedService.ModelsURL
-		}
-		if _, err := service.FetchUsage(ctx, credential); err != nil {
-			return "", err
 		}
 		return credential.JSON()
 

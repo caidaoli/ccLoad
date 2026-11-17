@@ -20,7 +20,6 @@ import (
 	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 )
 
 type oauthUsageCredentialState struct {
@@ -192,19 +191,6 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		// tracks no standard-cost windows for it.
 		return &oauthUsageCredentialState{
 			provider: cursorauth.ChannelType, authType: model.AuthTypeCursorOAuth,
-			oauthUsage: credential.OAuthUsage,
-			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
-				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
-				return credential.JSON()
-			},
-		}, nil
-	case cfg.UsesZedOAuth():
-		credential, err := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if err != nil {
-			return nil, err
-		}
-		return &oauthUsageCredentialState{
-			provider: zedauth.ChannelType, authType: model.AuthTypeZedOAuth,
 			oauthUsage: credential.OAuthUsage,
 			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)

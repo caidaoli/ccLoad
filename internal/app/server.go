@@ -42,7 +42,6 @@ import (
 	"ccLoad/internal/version"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -130,9 +129,6 @@ type Server struct {
 	codeBuddyCredentials          *codeBuddyCredentialManager
 	codeBuddyOAuth                *codeBuddyOAuthManager
 	codeBuddyCommas               codeBuddyCommaCache ///< 已成功的 CodeBuddy 身份句修复，仅保留有界内存摘要。
-	zedService                    *zedauth.Service
-	zedCredentials                *zedCredentialManager
-	zedOAuth                      *codexOAuthManager
 	cursorService                 *cursorauth.Service
 	cursorCredentials             *cursorCredentialManager
 	vertexCredentials             *vertexCredentialManager
@@ -486,16 +482,6 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 			return cfg.ID, cfg.Name, nil
 		},
 	)
-	s.zedService = zedauth.NewService(s.client)
-	s.zedCredentials = newZedCredentialManager(s.zedService, store, s.getClientForChannel, func(int64) {
-		s.InvalidateChannelListCache()
-	})
-	s.zedCredentials.refreshTracker = s.oauthCredentialRefreshes
-	s.zedOAuth = newZedOAuthManager(s.zedService, store, func(channelID int64) {
-		s.zedCredentials.invalidate(channelID)
-		s.invalidateCooldownCache()
-		s.InvalidateChannelListCache()
-	})
 	s.cursorService = cursorauth.NewService(s.client)
 	s.cursorCredentials = newCursorCredentialManager(store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
@@ -1404,7 +1390,6 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 		Subject       string `json:"sub"`
 		TeamID        string `json:"team_id"`
 		UserID        string `json:"user_id"`
-		SystemID      string `json:"system_id"`
 		Region        string `json:"region"`
 		MachineID     string `json:"machine_id"`
 		UID           string `json:"uid"`
@@ -1460,10 +1445,6 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 				[2]string{"refresh", credential.RefreshToken},
 			); value != "" {
 				identity = value
-			}
-		case model.AuthTypeZedOAuth:
-			if credential.UserID != "" {
-				identity = fmt.Sprintf("user:%q:system:%q", credential.UserID, credential.SystemID)
 			}
 		case model.AuthTypeAccioOAuth:
 			if credential.UserID != "" {
@@ -1963,11 +1944,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
 		admin.POST("/channels/:id/zai-credential/refresh", s.HandleRefreshZAICredential)
 		admin.PATCH("/channels/:id/zai-options", s.HandleZAIOptions)
-		admin.POST("/zed/oauth/start", s.HandleStartZedOAuth)
-		admin.GET("/zed/oauth/status", s.HandleZedOAuthStatus)
-		admin.POST("/zed/oauth/cancel", s.HandleCancelZedOAuth)
-		admin.POST("/zed/oauth/callback", s.HandleSubmitZedOAuthCallback)
-		admin.POST("/channels/:id/zed-credential/refresh", s.HandleRefreshZedCredential)
 		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
 		admin.POST("/vertex/credentials/import", s.HandleImportVertexCredential)
 		admin.POST("/channels/:id/cursor-credential/refresh", s.HandleRefreshCursorCredential)
@@ -2226,9 +2202,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.codeBuddyOAuth != nil {
 		s.codeBuddyOAuth.close()
-	}
-	if s.zedOAuth != nil {
-		s.zedOAuth.close()
 	}
 	if s.accioOAuth != nil {
 		s.accioOAuth.close()

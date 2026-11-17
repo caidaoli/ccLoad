@@ -828,7 +828,7 @@ func (s *Server) commitPreparedOAuthCredentialImport(
 				return prepared.Result
 			}
 		}
-		prepared.ChannelName = uniqueZedChannelName(configs, prepared.ChannelName)
+		prepared.ChannelName = uniqueChannelName(configs, prepared.ChannelName)
 		prepared.Config.Name = prepared.ChannelName
 	}
 	normalizedName := normalizeOAuthCredentialChannelName(prepared.ChannelName)
@@ -1059,4 +1059,28 @@ func isTransientOAuthUsageError(err error) bool {
 	var statusErr *oauthUsageHTTPStatusError
 	return errors.As(err, &statusErr) &&
 		(statusErr.statusCode == http.StatusTooManyRequests || statusErr.statusCode >= http.StatusInternalServerError)
+}
+
+/**
+ * @brief 为新建渠道生成不与现有渠道重名的名称
+ * @param configs 现有渠道配置；名称按去空白、忽略大小写比较
+ * @param base 期望名称
+ * @return 未占用时原样返回 base，否则追加 " (n)" 后缀（n 从 2 起）
+ */
+func uniqueChannelName(configs []*model.Config, base string) string {
+	used := make(map[string]struct{}, len(configs))
+	for _, cfg := range configs {
+		if cfg != nil {
+			used[strings.ToLower(strings.TrimSpace(cfg.Name))] = struct{}{}
+		}
+	}
+	if _, ok := used[strings.ToLower(base)]; !ok {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s (%d)", base, suffix)
+		if _, ok := used[strings.ToLower(candidate)]; !ok {
+			return candidate
+		}
+	}
 }

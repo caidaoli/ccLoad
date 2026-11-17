@@ -97,7 +97,6 @@
       zai_oauth: 'channels.authTypeZAI',
       system_one: 'channels.authTypeSystemOne',
       cursor_oauth: 'channels.authTypeCursor',
-      zed_oauth: 'channels.authTypeZed',
       vertex_oauth: 'channels.authTypeVertex'
     });
 

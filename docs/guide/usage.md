@@ -300,12 +300,6 @@ The SDK Agent allows only Cursor's `mcp` capability group: SDK custom tools are 
 
 The channel card can refresh included / API / Auto spend windows from `DashboardService/GetCurrentPeriodUsage`.
 
-### Zed
-
-In the channel manager, choose **Zed** and complete the native sign-in. This is not an OAuth code/PKCE flow: each sign-in generates a temporary RSA-2048 key on a random loopback port, passes its PKCS#1 DER public key (base64url) to `zed.dev/native_app_signin`, and decrypts the returned `access_token` with RSA-OAEP/SHA-256 into a long-lived native credential; the temporary private key is never persisted. `system_id` is an optional Zed installation identity used primarily to bind trial entitlement to a real installation (form value → `CCLOAD_ZED_SYSTEM_ID` → local Zed `db/0-global/db.sqlite`); sign-in can be attempted without it, requests omit `x-zed-system-id`, and the upstream decides whether the account has trial access. Never generate a random value or copy a fixed value from another machine; re-authorizing an account keeps the stored value.
-
-Data requests first exchange the native credential for a short-lived JWT via `/client/llm_tokens` (refreshed 60 seconds early, single-flight, CAS-persisted), then call `/completions` with `Authorization: Bearer`. Channels use a fixed exact `/completions` URL, the Codex protocol with local conversion, and WebSockets disabled. ccLoad exposes the Zed `/models` entries it can convert across the OpenAI/Anthropic/Google providers; requests are wrapped in a Zed `thread_id/prompt_id/intent/provider/model/provider_request` envelope. A `plan` 403 cools only the current model and switches channels, while other 401/403 errors refresh the credential.
-
 ### Vertex AI
 
 In channel management, click **Add → Vertex** and upload or paste a Google Cloud service account key JSON (a CLIProxyAPI Vertex credential file also works). The location is optional and defaults to `global`; `us` and `eu` use regional endpoints (REP), and other regions such as `us-central1` use their regional host. The location only sets the upstream URL of a new channel. ccLoad signs a JWT with the service account to mint access tokens and serves Gemini models through the Vertex publisher endpoint. Model fetch is supported; quota queries are not. Re-importing the same service account replaces the key on its existing channel and enables it instead of creating a new channel.

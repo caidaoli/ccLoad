@@ -31,7 +31,6 @@ import (
 	"ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
@@ -396,15 +395,6 @@ func (s *Server) buildProxyRequest(
 			body = scopeCodexAccountIdentityBody(body, codexIdentityNamespace)
 		}
 	}
-	if isZedResponsesRequest(cfg, upstreamProtocol) {
-		body, reqCtx.zedWire, err = finalizeZedResponsesBodyWithOptions(
-			s.protocolRegistry, body, reqCtx.originalBody, zedBodyRulesPreserveThinking(cfg.BodyRules()),
-		)
-		if err != nil {
-			return nil, err
-		}
-		upstreamStreaming = true
-	}
 
 	// 2. 创建带上下文的请求
 	req, err := buildUpstreamRequest(reqCtx.ctx, method, upstreamURL, body)
@@ -451,9 +441,6 @@ func (s *Server) buildProxyRequest(
 		if err := injectCodeBuddyHeaders(req, cfg, apiKey); err != nil {
 			return nil, err
 		}
-		wireRebuilt = true
-	} else if cfg.UsesZedOAuth() {
-		injectZedResponsesHeaders(req, apiKey)
 		wireRebuilt = true
 	} else if cfg.UsesVertexOAuth() {
 		injectVertexAuthHeaders(req, apiKey)
@@ -2939,8 +2926,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.codeBuddyOAuth = isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
 	reqCtx.responsesSSEUpstreamNonStream = !plan.Streaming &&
 		(isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath) ||
-			isXAIOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath) ||
-			isZedResponsesRequest(cfg, plan.UpstreamProtocol))
+			isXAIOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath))
 
 	// 2. 构建上游请求
 	replaySourceBody := bytes.Clone(reqCtx.transformPlan.TranslatedBody)
@@ -3033,9 +3019,6 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		observer.OnUpstreamWebsocket(usedNativeWebsocket)
 	}
 	if resp != nil {
-		if err == nil && cfg.UsesZedOAuth() {
-			err = prepareZedResponsesResponse(resp, reqCtx.zedWire, s.protocolRegistry)
-		}
 		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp, gjson.GetBytes(sentBody, "model").String())
 		s.persistAnthropicPassiveUsage(cfg, resp)
 		// Claude Code 的 Accept-Encoding 声明了 br/zstd；请求显式带了该头时 Go transport
@@ -3074,7 +3057,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	dc := s.captureDebugRequest(debugReq, debugBody)
 	dc.captureUpstreamError(err)
-	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.xaiResponses || reqCtx.openCodeResponses != nil {
+	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.xaiResponses || reqCtx.openCodeResponses != nil {
 		originalReqURL := reqCtx.transformPlan.OriginalPath
 		if rawQuery != "" {
 			separator := "?"
@@ -3139,7 +3122,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	cancelableWriter, stopWrites := newCancelableResponseWriter(reqCtx.ctx, w)
 	defer stopWrites()
 	var responseWriter http.ResponseWriter = cancelableWriter
-	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.xaiResponses || reqCtx.openCodeResponses != nil) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.xaiResponses || reqCtx.openCodeResponses != nil) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		responseWriter = dc.wrapTranslatedResponseWriter(cancelableWriter)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
@@ -3652,7 +3635,7 @@ func (s *Server) forwardAttempt(
 		plan.OriginalBody = bodyToSend
 	}
 	var nativeAttempt *nativeCodexWebsocketAttempt
-	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && !cfg.UsesZedOAuth() && upstreamProtocol == protocol.Codex &&
+	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && upstreamProtocol == protocol.Codex &&
 		protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyResponses && !plan.NeedsTransform {
 		requestedModel := reqCtx.requestedModel
 		if requestedModel == "" {
@@ -5183,9 +5166,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if cfg.UsesCursorOAuth() {
 		return s.tryCursorOAuthChannel(ctx, cfg, reqCtx, w)
 	}
-	if cfg.UsesZedOAuth() {
-		return s.tryZedOAuthChannel(ctx, cfg, reqCtx, w)
-	}
 	if cfg.UsesVertexOAuth() {
 		return s.tryVertexOAuthChannel(ctx, cfg, reqCtx, w)
 	}
@@ -5670,29 +5650,6 @@ func (s *Server) tryZAIOAuthChannel(
 		return runtimeCfg, key, err
 	}, func(result *proxyResult) bool {
 		return result != nil && !result.succeeded && !result.zaiTrial && !isZAITrialModel(reqCtx.attemptModelOrOriginal()) && zaiCredentialRejected(result.status)
-	})
-}
-
-func (s *Server) tryZedOAuthChannel(
-	ctx context.Context,
-	cfg *model.Config,
-	reqCtx *proxyRequestContext,
-	w http.ResponseWriter,
-) (*proxyResult, error) {
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Zed", true, func(forceRefresh bool, rejectedAccessToken string) (*model.Config, string, error) {
-		var credential *zedauth.Credential
-		var err error
-		if forceRefresh {
-			credential, err = s.zedCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
-		} else {
-			credential, err = s.zedCredentials.credential(ctx, cfg, false)
-		}
-		if credential == nil {
-			return cfg, "", err
-		}
-		return cfg, credential.AccessToken, err
-	}, func(result *proxyResult) bool {
-		return result != nil && !result.succeeded && zedCredentialRejected(result.status, result.body)
 	})
 }
 

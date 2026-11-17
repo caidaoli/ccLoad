@@ -65,7 +65,6 @@ function getChannelAuthTypeOptions() {
     { value: 'loomy_session', label: window.t('channels.authTypeLoomy') },
     { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
     { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },
-    { value: 'zed_oauth', label: window.t('channels.authTypeZed') },
     { value: 'zai_oauth', label: window.t('channels.authTypeZAI') },
     { value: 'vertex_oauth', label: window.t('channels.authTypeVertex') },
     { value: 'system_one', label: window.t('channels.authTypeSystemOne') }

@@ -71,10 +71,6 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   zai: Object.freeze({
     provider: 'zai', label: 'Z.ai', i18n: 'channels.zai',
     callbackPlaceholder: '', pollOnly: true
-  }),
-  zed: Object.freeze({
-    provider: 'zed', label: 'Zed', i18n: 'channels.zed',
-    callbackPlaceholder: 'http://localhost:PORT/?user_id=...&access_token=...'
   })
 });
 
@@ -728,7 +724,6 @@ function syncOAuthProviderFields() {
   const codex = provider === 'codex';
   const zai = provider === 'zai';
   const cursor = provider === 'cursor';
-  const zed = provider === 'zed';
   const vertex = provider === 'vertex';
   const zaiAPIKey = zai && zaiMethod === 'api_key';
   const cursorAPIKey = cursor;
@@ -742,8 +737,6 @@ function syncOAuthProviderFields() {
   const cursorControls = document.getElementById('cursorOAuthControls');
   const cursorAPIKeyField = document.getElementById('cursorAPIKeyField');
   const cursorAPIKeyInput = document.getElementById('cursorUserAPIKey');
-  const zedControls = document.getElementById('zedOAuthControls');
-  const zedSystemID = document.getElementById('zedSystemID');
   const vertexControls = document.getElementById('vertexOAuthControls');
   const vertexFile = document.getElementById('vertexCredentialFile');
   const vertexContent = document.getElementById('vertexCredentialContent');
@@ -759,8 +752,6 @@ function syncOAuthProviderFields() {
   if (codexControls) codexControls.hidden = !codex;
   if (zaiControls) zaiControls.hidden = !zai;
   if (cursorControls) cursorControls.hidden = !cursor;
-  if (zedControls) zedControls.hidden = !zed;
-  if (zedSystemID && !zed) zedSystemID.removeAttribute?.('aria-invalid');
   if (vertexControls) vertexControls.hidden = !vertex;
   if (vertexContent) vertexContent.required = vertex;
   if (!vertex) {
@@ -804,8 +795,6 @@ function syncOAuthProviderFields() {
       ? 'channels.codex.personalAccessTokenDescription'
       : vertex
       ? 'channels.vertex.description'
-      : zed
-      ? 'channels.zed.oauthDescription'
       : cursor
       ? 'channels.cursor.apiKeyDescription'
       : zai
@@ -1589,19 +1578,7 @@ async function startOAuth(provider, button, site = undefined) {
   try {
     if (button) button.disabled = true;
     setCodexAuthStatus(window.t(`${config.i18n}.oauthStarting`));
-    const systemIDInput = config.provider === 'zed' ? document.getElementById('zedSystemID') : null;
-    let startOptions;
-    try {
-      startOptions = oauthStartOptions(config.provider, {
-        proxyURL: oauthProxyURLValue(),
-        systemID: systemIDInput?.value
-      });
-      systemIDInput?.removeAttribute?.('aria-invalid');
-    } catch (error) {
-      systemIDInput?.setAttribute?.('aria-invalid', 'true');
-      systemIDInput?.focus?.();
-      throw error;
-    }
+    let startOptions = oauthStartOptions(config.provider, { proxyURL: oauthProxyURLValue() });
     if (config.provider === 'accio') {
       const region = document.getElementById('accioOAuthRegion')?.value;
       if (!['cn', 'global'].includes(region)) throw new Error(window.t('channels.accio.invalidRegion'));
@@ -1662,16 +1639,9 @@ function oauthProxyURLValue() {
 
 // oauthStartOptions builds the start request; the proxy carries the whole login
 // and is saved on the channel it creates.
-function oauthStartOptions(provider, { proxyURL = '', systemID = '', site = 'zai' } = {}) {
+function oauthStartOptions(provider, { proxyURL = '', site = 'zai' } = {}) {
   const body = { proxy_url: String(proxyURL || '').trim() };
   if (provider === 'zai') body.site = site;
-  if (provider === 'zed') {
-    body.system_id = String(systemID || '').trim();
-    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (body.system_id && (!uuidPattern.test(body.system_id) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(body.system_id))) {
-      throw new Error(window.t('channels.zed.systemIDInvalid'));
-    }
-  }
   return {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2567,8 +2537,6 @@ function oauthCredentialRefreshTarget(authType) {
       return { resource: 'anthropic-credential', label: 'Anthropic', i18n: 'channels.anthropic', keyNote: 'Anthropic OAuth AT' };
     case 'cursor_oauth':
       return { resource: 'cursor-credential', label: 'Cursor', i18n: 'channels.cursor', keyNote: 'Cursor OAuth AT' };
-    case 'zed_oauth':
-      return { resource: 'zed-credential', label: 'Zed', i18n: 'channels.zed', keyNote: 'Zed LLM JWT' };
     case 'xai_oauth':
       return { resource: 'xai-credential', label: 'xAI', i18n: 'channels.xai', keyNote: 'xAI OAuth AT' };
     case 'zai_oauth':

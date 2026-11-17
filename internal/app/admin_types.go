@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	neturl "net/url"
@@ -327,9 +326,6 @@ func (cr *ChannelRequest) Validate() error {
 		return fmt.Errorf("invalid auth_type %q", cr.AuthType)
 	}
 	cr.AuthType = authType
-	if authType == model.AuthTypeZedOAuth && cr.Websockets {
-		return errors.New("zed OAuth channels do not support WebSocket transport")
-	}
 	apiKeys := cr.normalizeAPIKeys()
 	if model.UsesAPIKeyCredentials(authType) && len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")

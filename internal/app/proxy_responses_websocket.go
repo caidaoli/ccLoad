@@ -975,7 +975,7 @@ func responsesWebsocketGenerateDisabled(payload []byte) bool {
 }
 
 func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
-	return candidate != nil && candidate.Websockets && !candidate.UsesXAIOAuth() && !candidate.UsesZedOAuth() &&
+	return candidate != nil && candidate.Websockets && !candidate.UsesXAIOAuth() &&
 		configCanUseUpstreamProtocol(candidate, protocol.Codex)
 }
 

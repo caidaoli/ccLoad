@@ -286,7 +286,7 @@ func (s *Server) commitLoomyCredential(ctx context.Context, credential *loomyaut
 	cfg := &model.Config{Name: fmt.Sprintf("Loomy-%x", digest[:4]), AuthType: model.AuthTypeLoomySession, OAuthCredential: payload,
 		URLs:                  model.ChannelURLs{{URL: loomyauth.CompletionsURL, Exact: true, Protocols: []string{util.ProtocolOpenAI}}},
 		ProtocolTransformMode: model.ProtocolTransformModeLocal, Enabled: true, CostMultiplier: 1, ProxyURL: proxy, ModelEntries: oauthModelEntries(names)}
-	cfg.Name = uniqueZedChannelName(configs, cfg.Name)
+	cfg.Name = uniqueChannelName(configs, cfg.Name)
 	cfg, err = s.store.CreateConfig(ctx, cfg)
 	if err == nil {
 		s.InvalidateChannelListCache()

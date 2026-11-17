@@ -96,7 +96,7 @@ func (s *Server) commitQoderCredential(ctx context.Context, credential *qoderaut
 	created := cfg == nil
 	if created {
 		name := qoderChannelBaseName(credential)
-		cfg, err = s.prepareQoderChannel(ctx, uniqueZedChannelName(configs, name), payload)
+		cfg, err = s.prepareQoderChannel(ctx, uniqueChannelName(configs, name), payload)
 		if err != nil {
 			return nil, false, err
 		}

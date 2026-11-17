@@ -28,7 +28,6 @@ import (
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -686,14 +685,6 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, cursorauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
 	}
-	if cfg.UsesZedOAuth() {
-		credential, err := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if err != nil {
-			return channelOAuthMetadata{}
-		}
-		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zedauth.ChannelType)
-		return channelOAuthMetadata{oauthUsage: usage}
-	}
 	if !cfg.UsesCodexOAuth() {
 		return channelOAuthMetadata{}
 	}
@@ -1068,12 +1059,6 @@ func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err e
 			return "", "", err
 		}
 		return credential.AccessToken, "Cursor session", nil
-	case cfg.UsesZedOAuth():
-		credential, err := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if err != nil {
-			return "", "", err
-		}
-		return credential.AccessToken, "Zed LLM JWT", nil
 	case cfg.UsesVertexOAuth():
 		credential, err := vertexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {
@@ -2456,9 +2441,6 @@ func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	}
 	if s.anthropicCredentials != nil {
 		s.anthropicCredentials.invalidate(id)
-	}
-	if s.zedCredentials != nil {
-		s.zedCredentials.invalidate(id)
 	}
 	if s.zaiCredentials != nil {
 		s.zaiCredentials.invalidate(id)

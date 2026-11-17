@@ -215,7 +215,7 @@ func (s *Server) commitVertexCredential(ctx context.Context, credential *vertexa
 		s.InvalidateChannelListCache()
 		return cfg, false, nil
 	}
-	cfg := newVertexOAuthChannel(uniqueZedChannelName(configs, vertexChannelBaseName(credential)), payload, credential)
+	cfg := newVertexOAuthChannel(uniqueChannelName(configs, vertexChannelBaseName(credential)), payload, credential)
 	cfg.ProxyURL = proxyURL
 	if err := s.validateVertexCredential(ctx, cfg, credential); err != nil {
 		return nil, false, err

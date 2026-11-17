@@ -109,7 +109,7 @@ func (s *Server) commitCodeBuddyCredential(
 	created := cfg == nil
 	if created {
 		name := codeBuddyChannelBaseName(credential)
-		cfg, err = s.prepareCodeBuddyChannel(ctx, uniqueZedChannelName(configs, name), payload, proxyURL)
+		cfg, err = s.prepareCodeBuddyChannel(ctx, uniqueChannelName(configs, name), payload, proxyURL)
 		if err != nil {
 			return nil, false, err
 		}

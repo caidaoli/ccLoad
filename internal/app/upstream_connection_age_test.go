@@ -404,8 +404,6 @@ func TestServerIsolatesOtherOAuthConnectionsByAccountAndProxy(t *testing.T) {
 			return fmt.Sprintf(`{"type":"zai","user_id":%q,"api_key":"key","access_token":%q}`, account, access)
 		case model.AuthTypeCursorOAuth:
 			return fmt.Sprintf(`{"type":"cursor","user_id":%q,"access_token":%q}`, account, access)
-		case model.AuthTypeZedOAuth:
-			return fmt.Sprintf(`{"type":"zed","user_id":%q,"access_token":%q}`, account, access)
 		case model.AuthTypeCodeBuddyOAuth:
 			return fmt.Sprintf(`{"type":"codebuddy","uid":%q,"access_token":%q}`, account, access)
 		default:
@@ -419,7 +417,6 @@ func TestServerIsolatesOtherOAuthConnectionsByAccountAndProxy(t *testing.T) {
 		model.AuthTypeXAIOAuth,
 		model.AuthTypeZAIOAuth,
 		model.AuthTypeCursorOAuth,
-		model.AuthTypeZedOAuth,
 		model.AuthTypeCodeBuddyOAuth,
 	} {
 		for _, useProxy := range []bool{false, true} {
@@ -528,8 +525,6 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 			credential: `{"type":"zai","user_id":"account-a","api_key":"key"}`},
 		{name: "Cursor direct", authType: model.AuthTypeCursorOAuth,
 			credential: `{"type":"cursor","user_id":"account-a","access_token":"access"}`},
-		{name: "Zed direct", authType: model.AuthTypeZedOAuth,
-			credential: `{"type":"zed","user_id":"account-a","access_token":"access"}`},
 		{name: "CodeBuddy direct", authType: model.AuthTypeCodeBuddyOAuth,
 			credential: `{"type":"codebuddy","uid":"account-a","access_token":"access"}`},
 	} {

@@ -8,18 +8,6 @@ import (
 	"ccLoad/internal/model"
 )
 
-func TestChannelRequestValidateRejectsZedWebsocket(t *testing.T) {
-	t.Parallel()
-	req := ChannelRequest{
-		Name: "Zed", AuthType: model.AuthTypeZedOAuth, Websockets: true,
-		URLs:   model.ChannelURLs{{URL: "https://cloud.zed.dev/completions", Exact: true, Protocols: []string{"codex"}}},
-		Models: []model.ModelEntry{{Model: "gpt-5.6-sol"}},
-	}
-	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "do not support WebSocket") {
-		t.Fatalf("Validate() error=%v, want Zed WebSocket rejection", err)
-	}
-}
-
 /**
  * @brief 编辑输入转换旧 ZCode 付费地址，保留协议与精确模式，拒绝归一后的重复地址。
  * @param t 测试上下文。

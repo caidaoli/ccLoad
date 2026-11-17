@@ -1126,7 +1126,6 @@ html[data-resolved-theme="dark"] .login-brand-wordmark {
 /* 线条图标留白多于实心品牌标志，略放大 */
 .channel-provider-avatar[data-auth-type="api_key"] { --provider-icon-scale: 0.65; }
 .channel-provider-avatar[data-auth-type="system_one"] { --provider-icon-scale: 0.65; background: #7c3aed; }
-.channel-provider-avatar[data-auth-type="zed_oauth"] { background: #084ccf; }
 .channel-provider-avatar[data-auth-type="vertex_oauth"] { background: #4285f4; }
 
 /* ===== 首页总览 ===== */

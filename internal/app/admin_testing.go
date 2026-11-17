@@ -35,7 +35,6 @@ import (
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
-	"ccLoad/internal/zedauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -199,7 +198,6 @@ type channelTestRequestPlan struct {
 	anthropicOAuthFingerprint *anthropicOAuthFingerprint
 	anthropicMappedSessionID  string
 	anthropicTestBody         []byte
-	zedWire                   *zedWirePlan
 	openCodeResponses         *openCodeResponsesPlan
 	xaiTools                  *xaiResponsesToolsPlan
 	timeout                   *channelTestTimeout
@@ -673,13 +671,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	}
 
 	// 协议转换负责消息和工具的格式变换；上游测试器负责系统提示、请求选项和协议默认值。
-	// Zed 的上游协议名义上是 Codex，实际发出的是 provider_request，Codex 测试模板对任何
-	// Zed provider 都不成立，所以对全部 Zed 渠道跳过——不只 Anthropic。具体到 Anthropic：
-	// 模板的 instructions/reasoning.medium 会变成 Anthropic system + thinking.budget_tokens，
-	// 再和保守的 max_tokens 默认值撞成上游 400。Zed 测试只保留客户端转换结果。
-	if !cfgForBuild.UsesZedOAuth() {
-		translatedBody = patchUpstreamTestFields(translatedBody, upstreamBody, upstreamProtocol)
-	}
+	translatedBody = patchUpstreamTestFields(translatedBody, upstreamBody, upstreamProtocol)
 	if transformPlan.UpstreamProtocol == protocol.Anthropic {
 		translatedBody = prepareAnthropicConvertedRequest(translatedBody, transformPlan.RequestModel())
 	}
@@ -1293,28 +1285,6 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		selection.requestCredential = credential.AccessToken
 		if err != nil {
 			return cfg.Clone(), selection, true, fmt.Errorf("加载 Cursor 凭证失败: %w", err)
-		}
-		return cfg.Clone(), selection, true, nil
-	case cfg.UsesZedOAuth():
-		var credential *zedauth.Credential
-		var err error
-		switch mode {
-		case oauthCredentialUseCurrent:
-			credential, err = zedauth.ParseCredential([]byte(cfg.OAuthCredential))
-		case oauthCredentialForceRefresh:
-			credential, err = s.zedCredentials.credential(ctx, cfg, true)
-		default:
-			credential, err = s.zedCredentials.credential(ctx, cfg, false)
-		}
-		if credential == nil {
-			if err == nil {
-				err = errors.New("zed credential is unavailable")
-			}
-			return nil, selection, true, fmt.Errorf("加载 Zed 凭证失败: %w", err)
-		}
-		selection.requestCredential = credential.AccessToken
-		if err != nil {
-			return cfg.Clone(), selection, true, fmt.Errorf("加载 Zed 凭证失败: %w", err)
 		}
 		return cfg.Clone(), selection, true, nil
 	case cfg.UsesVertexOAuth():
@@ -1994,7 +1964,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	defer func() { cancel() }()
 	ctx := req.Context()
-	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && !cfg.UsesZedOAuth() && testReq.Stream &&
+	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && testReq.Stream &&
 		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
 	if useNativeCodexWebsocket {
 		prepareCodexWebsocketInputHeaders(req.Header, requestPlan.upstreamHeaders, cfg.HeaderRules())
@@ -2088,15 +2058,6 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	s.persistDetectionCodexPassiveUsage(ctx, cfg, resp, gjson.GetBytes(requestPlan.requestBody, "model").String())
 	s.persistDetectionAnthropicPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
-	if cfg.UsesZedOAuth() {
-		if zedErr := prepareZedResponsesResponse(resp, requestPlan.zedWire, s.protocolRegistry); zedErr != nil {
-			return attachTestDebugData(requestPlan, resp, map[string]any{
-				"success": false, "error": "解包 Zed 测试响应失败: " + zedErr.Error(),
-				"duration_ms": time.Since(start).Milliseconds(), "status_code": resp.StatusCode,
-				"is_streaming": testReq.Stream,
-			})
-		}
-	}
 	if isAnthropicClaudeCodeMessagesRequest(cfg, protocol.Protocol(requestPlan.upstreamProtocol), requestPlan.endpointPath) {
 		if decodeErr := decodeAnthropicResponse(resp); decodeErr != nil {
 			return attachTestDebugData(requestPlan, resp, map[string]any{
@@ -2630,16 +2591,6 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		sessionID := testReq.ResolveSessionID()
 		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
 	}
-	if cfgForBuild.UsesZedOAuth() {
-		requestPlan.requestBody, requestPlan.zedWire, err = finalizeZedResponsesBodyWithOptions(
-			s.protocolRegistry, requestPlan.requestBody, requestPlan.clientBody,
-			zedBodyRulesPreserveThinking(cfgForBuild.BodyRules()),
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("finalize Zed test request body: %w", err)
-		}
-		requestPlan.upstreamStreaming = true
-	}
 	requestPlan.endpointPath = requestPath
 	requestPlan.codeBuddyOAuth = cfgForBuild.UsesCodeBuddyOAuth()
 	// Same model source as prepareTranslatedUpstreamBody, so body shaping and transport agree.
@@ -2729,9 +2680,6 @@ func (s *Server) buildTestUpstreamHTTPRequest(ctx context.Context, cfgForBuild *
 		}
 		requestPlan.fullURL = req.URL.String()
 		wireRebuilt = true
-	} else if cfgForBuild.UsesZedOAuth() {
-		injectZedResponsesHeaders(req, requestPlan.apiKey)
-		wireRebuilt = true
 	} else if cfgForBuild.UsesVertexOAuth() {
 		injectVertexAuthHeaders(req, requestPlan.apiKey)
 	} else if requestPlan.xaiOAuth {
@@ -2797,7 +2745,7 @@ func (s *Server) buildTestUpstreamHTTPRequest(ctx context.Context, cfgForBuild *
 		setAdminTestAcceptEncoding(cfgForBuild, req)
 	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
-	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesZedOAuth() || cfgForBuild.UsesAccioOAuth() {
+	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesAccioOAuth() {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)
 		for key, value := range testReq.Headers {
 			originalHeaders.Set(key, value)

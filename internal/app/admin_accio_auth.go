@@ -255,7 +255,7 @@ func (s *Server) commitAccioCredential(ctx context.Context, credential *accioaut
 	created := cfg == nil
 	if created {
 		name := accioChannelBaseName(credential)
-		cfg, err = s.prepareAccioChannel(ctx, uniqueZedChannelName(configs, name), payload)
+		cfg, err = s.prepareAccioChannel(ctx, uniqueChannelName(configs, name), payload)
 		if err != nil {
 			return nil, false, err
 		}

@@ -143,14 +143,6 @@
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerCursorDesc">粘贴 Cursor User API Key</span>
                       </span>
                     </button>
-                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="zed"
-                      data-i18n-title="channels.oauth.providerZedDesc" title="使用 Zed 原生应用登录">
-                      <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="zed_oauth" data-provider-icon aria-hidden="true"></span>
-                      <span class="channel-page-menu__text">
-                        <span class="channel-page-menu__title" data-i18n="channels.oauth.providerZed">Zed</span>
-                        <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerZedDesc">使用 Zed 原生应用登录</span>
-                      </span>
-                    </button>
                     <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="zai"
                       data-i18n-title="channels.oauth.providerZAIDesc" title="ZCode 登录或 Coding Plan API Key">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="zai_oauth" data-provider-icon aria-hidden="true"></span>
@@ -354,8 +346,6 @@
                     data-i18n-description="channels.oauth.providerXAIDesc" data-description="刷新令牌、SSO Cookie 或手动授权">xAI</option>
                   <option value="cursor" data-i18n="channels.oauth.providerCursor" data-icon-auth-type="cursor_oauth"
                     data-i18n-description="channels.oauth.providerCursorDesc" data-description="粘贴 Cursor User API Key">Cursor</option>
-                  <option value="zed" data-i18n="channels.oauth.providerZed" data-icon-auth-type="zed_oauth"
-                    data-i18n-description="channels.oauth.providerZedDesc" data-description="使用 Zed 原生应用登录">Zed</option>
                   <option value="zai" data-i18n="channels.oauth.providerZAI" data-icon-auth-type="zai_oauth"
                     data-i18n-description="channels.oauth.providerZAIDesc" data-description="ZCode 登录或 Coding Plan API Key">Z.ai</option>
                   <option value="vertex" data-i18n="channels.oauth.providerVertex" data-icon-auth-type="vertex_oauth"
@@ -538,17 +528,6 @@
                     data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
                 </div>
               </div>
-              <div id="zedOAuthControls" class="oauth-provider-controls" hidden>
-                <div class="oauth-field">
-                  <label for="zedSystemID" data-i18n="channels.zed.systemIDLabel">Zed system ID（可选；试用需要）</label>
-                  <input id="zedSystemID" name="zed_system_id" type="text"
-                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
-                    placeholder="9d4b8c17-12ae-4091-96bc-1a79ce2de601"
-                    aria-describedby="zedSystemIDHint oauthLoginDialogStatus">
-                  <p id="zedSystemIDHint" class="oauth-field-hint"
-                    data-i18n="channels.zed.systemIDHint">本机运行 ccLoad 时会自动读取 Zed。没有该值时仍可尝试登录，但 Zed 试用权限可能不可用；远程或容器部署可填写本机 Zed 数据库中的 system_id。</p>
-                </div>
-              </div>
               <div id="vertexOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="vertexCredentialFile" data-i18n="channels.vertex.fileLabel">服务账号密钥文件</label>
@@ -729,7 +708,6 @@
                   <option value="codebuddy_oauth">CodeBuddy</option>
                   <option value="xai_oauth">xAI</option>
                   <option value="cursor_oauth">Cursor</option>
-                  <option value="zed_oauth">Zed</option>
                   <option value="zai_oauth">Z.ai</option>
                   <option value="vertex_oauth">Vertex</option>
                   <option value="loomy_session">Loomy</option>

@@ -451,7 +451,7 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
-		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth, model.AuthTypeQoderOAuth, model.AuthTypeAccioOAuth,
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeCodeBuddyOAuth, model.AuthTypeQoderOAuth, model.AuthTypeAccioOAuth,
 		model.AuthTypeVertexOAuth, model.AuthTypeLoomySession:
 		return authType
 	default:
@@ -1076,7 +1076,7 @@ func oauthCredentialTestAccessToken(
 		return runtimeCfg.CodexAccessToken
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
-	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(), persisted.UsesZedOAuth(),
+	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(),
 		persisted.UsesVertexOAuth(), persisted.UsesLoomySession(), persisted.UsesAccioOAuth(), persisted.UsesQoderOAuth():
 		return selection.requestCredential
 	}
@@ -1095,7 +1095,7 @@ func oauthCredentialCleanupProtocol(cfg *model.Config) string {
 	switch {
 	case cfg.UsesLoomySession(), cfg.UsesAccioOAuth():
 		return string(protocol.OpenAI)
-	case cfg.UsesCodexOAuth(), cfg.UsesXAIOAuth(), cfg.UsesZedOAuth():
+	case cfg.UsesCodexOAuth(), cfg.UsesXAIOAuth():
 		return string(protocol.Codex)
 	case cfg.UsesAntigravityOAuth(), cfg.UsesVertexOAuth():
 		return string(protocol.Gemini)

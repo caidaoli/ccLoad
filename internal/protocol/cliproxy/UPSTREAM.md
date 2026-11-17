@@ -599,7 +599,7 @@ The Gemini-to-Responses converter now waits for usage or `[DONE]` after a
 `finishReason`. Gemini has no `[DONE]` on the wire; upstream's executor feeds
 one at EOF, and ccLoad's application boundary now synthesizes the same
 terminator for Gemini upstreams with Responses clients when the source stream
-is semantically complete (Zed's Gemini relay does the same on `stream_ended`).
+is semantically complete.
 Gemini-to-Claude is not fed a synthetic `[DONE]`: it drops `finishReason` on
 `[DONE]` and would report `MAX_TOKENS` as `end_turn`.
 
@@ -643,7 +643,7 @@ truncated patch-enabled streams; transport errors keep their original error.
 Failure chunks
 are delivered before returning conversion errors, and a completed upstream
 cannot erase a conversion failure. Existing upstream errors take precedence
-over missing-terminator checks. HTTP, Antigravity, Cursor and Zed paths retain
+over missing-terminator checks. HTTP, Antigravity and Cursor paths retain
 their cancellation and error behavior; parsed usage is preserved even when
 non-stream response translation fails. Native same-protocol passthrough and
 the client model catalog's disabled `apply_patch_tool_type` remain unchanged.

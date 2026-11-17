@@ -10545,3 +10545,35 @@ func TestHandleOAuthUsageAnthropicLimitsRetainsFableAfterPassiveSample(t *testin
 		})
 	}
 }
+
+/**
+ * @brief 在模型状态快照提交前注入一次并发编辑的测试存储
+ */
+type modelStateEditStore struct {
+	storage.Store
+	edit func(context.Context) error ///< 首次提交前执行一次的并发编辑；执行后清空
+}
+
+/**
+ * @brief 先执行一次注入的并发编辑，再委托底层存储按快照条件提交模型状态
+ * @param ctx 请求上下文
+ * @param expected 调用方读取时的渠道快照
+ * @param entries 待写入的模型条目
+ * @param scheduledCheckModel 定时检测模型
+ * @param maxConcurrency 最大并发数；nil 表示不修改
+ * @return 快照仍匹配并写入时为 true
+ * @return 注入编辑或底层存储失败时的错误
+ */
+func (s *modelStateEditStore) UpdateModelStateIfSnapshotMatches(
+	ctx context.Context, expected *model.Config,
+	entries []model.ModelEntry, scheduledCheckModel string, maxConcurrency *int,
+) (bool, error) {
+	if s.edit != nil {
+		edit := s.edit
+		s.edit = nil
+		if err := edit(ctx); err != nil {
+			return false, err
+		}
+	}
+	return s.Store.UpdateModelStateIfSnapshotMatches(ctx, expected, entries, scheduledCheckModel, maxConcurrency)
+}

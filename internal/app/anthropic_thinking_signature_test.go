@@ -389,7 +389,6 @@ func TestCloakOfficialAnthropicThinkingHistorySkipsOtherAuthTypes(t *testing.T) 
 		{AuthType: model.AuthTypeAntigravityOAuth, URLs: channelURLsForTest("https://daily-cloudcode-pa.googleapis.com")},
 		{AuthType: model.AuthTypeCodexOAuth},
 		{AuthType: model.AuthTypeCodeBuddyOAuth, URLs: channelURLsForTest("https://www.workbuddy.ai/v2/chat/completions")},
-		{AuthType: model.AuthTypeZedOAuth},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://open.bigmodel.cn/api/paas/v4")},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.deepseek.com")},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.openai.com/v1")},

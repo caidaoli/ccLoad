@@ -164,7 +164,6 @@ const CREDENTIAL_CHANNEL_AUTH_TYPES = [
   'anthropic_oauth',
   'zai_oauth',
   'cursor_oauth',
-  'zed_oauth',
   'codebuddy_oauth',
   'vertex_oauth',
   'qoder_oauth',
@@ -836,19 +835,6 @@ function formatCursorUsageNotice(value) {
   return message;
 }
 
-function formatZedUsageNotice(data) {
-  switch (String(data?.entitlement_status || '').trim().toLowerCase()) {
-    case 'unmetered':
-      return window.t('channels.zed.usageUnmetered');
-    case 'restricted':
-      return window.t('channels.zed.usageRestricted');
-    case 'exhausted':
-      return window.t('channels.zed.usageExhausted');
-    default:
-      return '';
-  }
-}
-
 const QUOTA_ACTION_ICONS = {
   checkin: '<svg class="ch-oauth-usage__action-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="m9 15.5 2 2 4-4"/></svg>',
   loading: '<svg class="ch-oauth-usage__action-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>'
@@ -1436,7 +1422,6 @@ function buildOAuthUsageStatusHtml(channel) {
   const isXAI = channel?.auth_type === 'xai_oauth' || state.data?.provider === 'xai';
   const isCodex = channel?.auth_type === 'codex_oauth';
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
-  const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
   const isQoder = channel?.auth_type === 'qoder_oauth' || state.data?.provider === 'qoder';
   const isAccio = channel?.auth_type === 'accio_oauth' || state.data?.provider === 'accio';
   const isCodeBuddy = channel?.auth_type === 'codebuddy_oauth' || state.data?.provider === 'codebuddy';
@@ -1549,9 +1534,7 @@ function buildOAuthUsageStatusHtml(channel) {
   }
   const notice = isCursor
     ? formatCursorUsageNotice(state.data?.display_message)
-    : isZed
-      ? formatZedUsageNotice(state.data)
-      : state.data?.display_message === 'zai_login_required' ? '' : String(state.data?.display_message || '').trim();
+    : state.data?.display_message === 'zai_login_required' ? '' : String(state.data?.display_message || '').trim();
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';

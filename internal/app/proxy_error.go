@@ -913,9 +913,6 @@ func (s *Server) handleProxyErrorResponse(
 		return countTokensUpstreamErrorResult(cfg, res, duration)
 	}
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
-	if cfg.UsesZedOAuth() && zedModelPlanRejected(res.Status, res.Body) {
-		input.ModelScoped = true
-	}
 	if cfg.UsesZAIOAuth() && res.zaiTrial {
 		input.Model = zaiTrialModelKey(actualModel)
 	}

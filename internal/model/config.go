@@ -25,7 +25,6 @@ const (
 	AuthTypeAnthropicOAuth   = "anthropic_oauth"
 	AuthTypeZAIOAuth         = "zai_oauth"
 	AuthTypeCursorOAuth      = "cursor_oauth"
-	AuthTypeZedOAuth         = "zed_oauth"
 	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
 	AuthTypeLoomySession     = "loomy_session" ///< Loomy 会话认证，无已知续期接口。
 	AuthTypeQoderOAuth       = "qoder_oauth"
@@ -67,8 +66,6 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeZAIOAuth
 	case AuthTypeCursorOAuth:
 		return AuthTypeCursorOAuth
-	case AuthTypeZedOAuth:
-		return AuthTypeZedOAuth
 	case AuthTypeAccioOAuth:
 		return AuthTypeAccioOAuth
 	case AuthTypeQoderOAuth:
@@ -868,11 +865,6 @@ func (c *Config) UsesZAIOAuth() bool {
 // UsesCursorOAuth reports whether this channel is backed by a Cursor credential.
 func (c *Config) UsesCursorOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeCursorOAuth
-}
-
-// UsesZedOAuth reports whether this channel is backed by a Zed credential.
-func (c *Config) UsesZedOAuth() bool {
-	return c != nil && c.GetAuthType() == AuthTypeZedOAuth
 }
 
 // UsesVertexOAuth reports whether this channel is backed by a Vertex AI service account.

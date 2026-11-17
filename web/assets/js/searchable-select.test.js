@@ -174,7 +174,7 @@ test('native select enhancement preserves semantic values, events and disabled s
       { value: 'codex', label: 'Codex', disabled: false },
       { value: 'antigravity', label: 'Antigravity', disabled: false },
       { value: 'loading', label: '加载中', disabled: true },
-      { value: 'zed', label: 'Zed', disabled: false },
+      { value: 'cursor', label: 'Cursor', disabled: false },
       { value: 'custom', label: '自定义', disabled: false },
       { value: '__custom_reselect__', label: '自定义', disabled: false, hidden: true }
     ], 'antigravity');
@@ -188,12 +188,12 @@ test('native select enhancement preserves semantic values, events and disabled s
     assert.equal(comboboxConfig.getOptions()[2].disabled, true);
     assert.deepEqual(
       comboboxConfig.getOptions().map(option => option.value),
-      ['codex', 'antigravity', 'loading', 'zed', 'custom']
+      ['codex', 'antigravity', 'loading', 'cursor', 'custom']
     );
 
-    select.value = 'zed';
-    assert.equal(comboboxValue, 'zed');
-    assert.equal(instance.input.value, 'Zed');
+    select.value = 'cursor';
+    assert.equal(comboboxValue, 'cursor');
+    assert.equal(instance.input.value, 'Cursor');
 
     comboboxConfig.onSelect('codex', 'Codex');
     assert.equal(select.value, 'codex');
