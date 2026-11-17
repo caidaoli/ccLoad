@@ -16,7 +16,6 @@ import (
 	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/protocol/cliproxy/thinking"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -501,11 +500,6 @@ func (c *codexNonStreamCollector) patchedTerminal() []byte {
 	return patched
 }
 
-// codexRequestZstdEncoder 对应官方 zstd::stream::encode_all(level 3)：libzstd 默认不写
-// 帧校验和。EncodeAll 可并发调用。
-var codexRequestZstdEncoder, _ = zstd.NewWriter(nil,
-	zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(3)), zstd.WithEncoderCRC(false))
-
 // compressCodexOAuthResponsesBody 对齐官方 Codex（rust-v0.157.1 core/src/client.rs
 // responses_request_compression）：ChatGPT 登录的流式 /responses HTTP 请求默认以 zstd
 // 压缩请求体（enable_request_compression，Stable 且默认开启）。WebSocket 帧与
@@ -529,10 +523,6 @@ func compressCodexOAuthResponsesBody(cfg *model.Config, req *http.Request) error
 	if len(body) == 0 {
 		return nil
 	}
-	compressed := codexRequestZstdEncoder.EncodeAll(body, nil)
-	req.Header.Set("Content-Encoding", "zstd")
-	req.Body = io.NopCloser(bytes.NewReader(compressed))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(compressed)), nil }
-	req.ContentLength = int64(len(compressed))
+	compressRequestBody(req, "zstd", body)
 	return nil
 }

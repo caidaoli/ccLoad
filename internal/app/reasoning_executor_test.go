@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -675,6 +676,108 @@ func TestReasoningDecisionNativeProviders(t *testing.T) {
 			}
 			if tc.questionType == "score" && result.confidence != nil || tc.questionType == "choice" && (result.confidence == nil || *result.confidence != 0.6) {
 				t.Fatalf("native confidence=%v", result.confidence)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 大决策请求按提供商实测支持的编码压缩，阿里云与小请求保持明文
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionRequestCompression(t *testing.T) {
+	t.Parallel()
+	const scoreResponse = `{"answers":{"effort":{"type":"score","score":2,"probabilities":{"0":0,"1":0,"2":1,"3":0,"4":0}}},"usage":{"input_tokens":1}}`
+	const openAIResponse = `{"answers":[{"name":"effort","type":"score","score":2,"probabilities":[{"value":0,"label":"low","probability":0},{"value":1,"label":"medium","probability":0},{"value":2,"label":"high","probability":1},{"value":3,"label":"xhigh","probability":0},{"value":4,"label":"max","probability":0}]}],"usage":{"input_tokens":1}}`
+	large := strings.Repeat("task data ", 1000)
+	for _, tc := range []struct {
+		name, actualModel, transcript, encoding, response string
+	}{
+		{name: "jev zstd", actualModel: "jev-latest", transcript: large, encoding: "zstd", response: scoreResponse},
+		{name: "openai zstd", actualModel: "gpt-6-luna", transcript: large, encoding: "zstd", response: openAIResponse},
+		{name: "gemini gzip", actualModel: "gemini-decision-1", transcript: large, encoding: "gzip", response: scoreResponse},
+		{name: "aliyun plain", actualModel: "decision-model-preview", transcript: large, response: scoreResponse},
+		{name: "small plain", actualModel: "jev-latest", transcript: "task data", response: scoreResponse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "logical-judge", apiKey: "judge-key", authType: model.AuthTypeSystemOne,
+				modelEntries: []model.ModelEntry{{Model: "logical-judge", RedirectModel: tc.actualModel}}}, func(w http.ResponseWriter, r *http.Request) {
+				encoding := r.Header.Get("Content-Encoding")
+				if encoding != tc.encoding {
+					t.Errorf("Content-Encoding=%q, want %q", encoding, tc.encoding)
+				}
+				// The test transport already decodes zstd request bodies, as chatgpt.com does.
+				reader := r.Body
+				if encoding == "gzip" {
+					var err error
+					if reader, err = decodeContentEncodingBody(r.Body, []string{"gzip"}); err != nil {
+						t.Errorf("decode body: %v", err)
+						return
+					}
+				}
+				body, err := io.ReadAll(reader)
+				if err != nil || gjson.GetBytes(body, "model").String() != tc.actualModel || !strings.Contains(string(body), tc.transcript) {
+					t.Errorf("decoded body err=%v size=%d", err, len(body))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.response)
+			})
+			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.PromptTemplate = "gemini" })
+			result, err := env.server.executeReasoningDecision(context.Background(), tc.transcript, []string{"low", "medium", "high", "xhigh", "max"})
+			if err != nil || result.effort != "high" || calls.Load() != 1 {
+				t.Fatalf("decision=%+v error=%v calls=%d", result, err, calls.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 压缩体被拒时以明文重发；仅明文成功才记住该渠道域名只发明文
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionCompressionFallback(t *testing.T) {
+	t.Parallel()
+	const response = `{"answers":{"effort":{"type":"score","score":2,"probabilities":{"0":0,"1":0,"2":1,"3":0,"4":0}}},"usage":{"input_tokens":1}}`
+	transcript := strings.Repeat("task data ", 1000)
+	for _, tc := range []struct {
+		name        string
+		plainStatus int
+		want        []string
+	}{
+		{name: "plain success remembered", plainStatus: http.StatusOK, want: []string{"zstd", "", ""}},
+		{name: "plain failure keeps compression", plainStatus: http.StatusBadRequest, want: []string{"zstd", "", "zstd", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var encodings []string
+			env, _ := reasoningExecutorEnv(t, testChannel{name: "judge", models: "jev-latest", apiKey: "judge-key", authType: model.AuthTypeSystemOne}, func(w http.ResponseWriter, r *http.Request) {
+				encoding := r.Header.Get("Content-Encoding")
+				mu.Lock()
+				encodings = append(encodings, encoding)
+				mu.Unlock()
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				if encoding != "" {
+					w.WriteHeader(http.StatusUnsupportedMediaType)
+					_, _ = io.WriteString(w, `{"error":"unsupported content encoding"}`)
+					return
+				}
+				w.WriteHeader(tc.plainStatus)
+				_, _ = io.WriteString(w, response)
+			})
+			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.PromptTemplate = "gemini" })
+			for range 2 {
+				result, err := env.server.executeReasoningDecision(context.Background(), transcript, []string{"low", "medium", "high", "xhigh", "max"})
+				if tc.plainStatus == http.StatusOK && (err != nil || result.effort != "high") {
+					t.Fatalf("decision=%+v error=%v", result, err)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(encodings, tc.want) {
+				t.Fatalf("encodings=%q, want %q", encodings, tc.want)
 			}
 		})
 	}

@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -2484,23 +2483,12 @@ func compressAnthropicFirstPartyBody(req *http.Request) error {
 	if jsStringLength(body) < anthropicGzipRequestMinChars {
 		return nil
 	}
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
 	padding := make([]byte, 1+rand.IntN(257))
 	padding[0] = '\n'
 	for i := 1; i < len(padding); i++ {
 		padding[i] = " \t"[rand.IntN(2)]
 	}
-	_, _ = writer.Write(body)
-	_, _ = writer.Write(padding)
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("gzip Anthropic request body: %w", err)
-	}
-	payload := compressed.Bytes()
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Body = io.NopCloser(bytes.NewReader(payload))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(payload)), nil }
-	req.ContentLength = int64(len(payload))
+	compressRequestBody(req, "gzip", append(body, padding...))
 	return nil
 }
 

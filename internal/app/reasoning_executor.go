@@ -332,12 +332,32 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key strin
 	// upstream response, so a decision can be inspected like any other call.
 	debug := s.captureDebugRequest(req, body)
 	defer func() { result.debug = debug.buildEntry(nil) }()
+	target := reasoningCompressionTarget{channelID: cfg.ID, host: req.URL.Host, provider: provider}
+	encoding := reasoningDecisionEncoding(provider, req.Header, body)
+	if _, plain := s.reasoningPlainTargets.Load(target); plain {
+		encoding = ""
+	}
+	outbound := req
+	if encoding != "" {
+		outbound = req.Clone(ctx)
+		compressRequestBody(outbound, encoding, body)
+	}
 	// As with proxy attempts, a call rejected by the channel's local limits was never sent.
 	release, err := s.reserveUpstreamRequest(cfg)
 	if err == nil {
 		result.privacyMasked = session.CountSent(body)
 	}
-	resp, err := s.doReservedUpstreamRequest(cfg, req, release, err)
+	resp, err := s.doReservedUpstreamRequest(cfg, outbound, release, err)
+	// Rejections seen in probes: OpenAI 400 for gzip, Gemini 415 for zstd, Aliyun 400
+	// parsing compressed bytes as JSON. Only a plain success proves compression was the cause.
+	if err == nil && encoding != "" && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnsupportedMediaType) {
+		_ = resp.Body.Close()
+		release, err = s.reserveUpstreamRequest(cfg)
+		resp, err = s.doReservedUpstreamRequest(cfg, req, release, err)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			s.reasoningPlainTargets.Store(target, struct{}{})
+		}
+	}
 	if err != nil {
 		debug.captureUpstreamError(err)
 		return result, err

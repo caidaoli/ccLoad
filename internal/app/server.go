@@ -144,6 +144,7 @@ type Server struct {
 	startCursorBridge             func(context.Context, string) (cursorauth.Runner, error)
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning sync.Map // channel ID -> in-flight detection
+	reasoningPlainTargets         sync.Map ///< reasoningCompressionTarget -> struct{}：压缩被拒且明文成功的决策目标，进程内只发明文
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh                   chan tokenStatsUpdate

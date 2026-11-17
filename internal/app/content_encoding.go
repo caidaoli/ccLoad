@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
@@ -22,6 +23,35 @@ var errUnsupportedContentEncoding = errors.New("unsupported content encoding")
 // klauspost 默认允许 512MB 窗口并开多个解码 goroutine，入站请求体由调用方控制，
 // 不能让一个帧头声明的窗口撑大内存。
 const zstdContentEncodingMaxWindow = 8 << 20
+
+// requestZstdEncoder 对应官方 Codex zstd::stream::encode_all(level 3)：libzstd 默认不写
+// 帧校验和。EncodeAll 可并发调用。
+var requestZstdEncoder, _ = zstd.NewWriter(nil,
+	zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(3)), zstd.WithEncoderCRC(false))
+
+/**
+ * @brief 以 gzip 或 zstd 压缩出站请求体并原位替换
+ * @param req 待发送的请求；替换 Body、GetBody、ContentLength 并设置 Content-Encoding
+ * @param encoding 内容编码，仅 "gzip" 或 "zstd"
+ * @param body 待压缩的明文；调用方保留的明文继续用于调试与失败重放
+ * @note GetBody 重放同一份压缩字节，供 uTLS 等传输层重试
+ */
+func compressRequestBody(req *http.Request, encoding string, body []byte) {
+	var payload []byte
+	if encoding == "zstd" {
+		payload = requestZstdEncoder.EncodeAll(body, nil)
+	} else {
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		_, _ = writer.Write(body)
+		_ = writer.Close()
+		payload = compressed.Bytes()
+	}
+	req.Header.Set("Content-Encoding", encoding)
+	req.Body = io.NopCloser(bytes.NewReader(payload))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(payload)), nil }
+	req.ContentLength = int64(len(payload))
+}
 
 type compositeReadCloser struct {
 	io.Reader

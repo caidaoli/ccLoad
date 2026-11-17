@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -76,6 +77,43 @@ func reasoningDecisionBody(provider, actualModel, transcript string, levels []st
 		body["questions"] = openAIQuestions
 	}
 	return json.Marshal(body)
+}
+
+/**
+ * @brief 决策请求体压缩门槛（字节）；更小的请求省下的传输不抵压缩开销
+ */
+const reasoningDecisionCompressMinBytes = 4 << 10
+
+/**
+ * @brief 已确认拒收压缩决策请求的目标；同一渠道不同域名或提供商的网关能力互不相同
+ */
+type reasoningCompressionTarget struct {
+	channelID int64  ///< 决策渠道
+	host      string ///< 实际请求的域名与端口
+	provider  string ///< 实际模型的提供商，决定尝试的编码
+}
+
+/**
+ * @brief 按实际模型的提供商选择达到门槛的决策请求体编码
+ * @param provider 实际模型的提供商
+ * @param header 已应用渠道请求规则的请求头
+ * @param body 最终发送的明文 JSON
+ * @return "zstd"、"gzip"；小请求、阿里云或请求规则已设置 Content-Encoding 时为空
+ * @details 2026-11-16 官方端点实测：Jev 与 OpenAI 接受 zstd（OpenAI 拒收 gzip），Gemini 只接受 gzip
+ * （zstd 返回 415），阿里云忽略 Content-Encoding 并把压缩字节当 JSON 解析，因此保持明文。
+ * 第三方网关由调用方按渠道和域名在拒收后回退明文。
+ */
+func reasoningDecisionEncoding(provider string, header http.Header, body []byte) string {
+	if len(body) < reasoningDecisionCompressMinBytes || header.Get("Content-Encoding") != "" {
+		return ""
+	}
+	switch provider {
+	case "jev", "openai":
+		return "zstd"
+	case "gemini":
+		return "gzip"
+	}
+	return ""
 }
 
 /**
