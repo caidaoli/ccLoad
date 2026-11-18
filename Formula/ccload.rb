@@ -1,28 +1,28 @@
 class Ccload < Formula
   desc "Multi-protocol AI API gateway"
   homepage "https://github.com/caidaoli/ccLoad"
-  version "5.0.0"
+  version "5.0.1"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/caidaoli/ccLoad/releases/download/v#{version}/ccload-darwin-arm64"
-      sha256 "9907838034fb678782f6adca691b344a49164eb4b1fb24985ff47ac11ce66307"
+      sha256 "ac32536cea48e181523ea09fbffa7899a00d67c1211b53380343c8147447aee2"
     end
     on_intel do
       url "https://github.com/caidaoli/ccLoad/releases/download/v#{version}/ccload-darwin-amd64"
-      sha256 "d76c236281e7a13e5e2ddb675408881172ef5fc576b3fb6ead6cce4cade9ac8b"
+      sha256 "fc42f3c11477184f524b01166b0e9c249efc81230469d07af70073c78caa7496"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/caidaoli/ccLoad/releases/download/v#{version}/ccload-linux-arm64"
-      sha256 "2cdd39f6cca6c4f7c852ed9ede91b0ffdd1334cb40a7b9b30c5ee778595cfe9d"
+      sha256 "d05db74d290117d0630ffef3da8b904d2928962fc0636b0504f80edbc601e193"
     end
     on_intel do
       url "https://github.com/caidaoli/ccLoad/releases/download/v#{version}/ccload-linux-amd64"
-      sha256 "e605c630735449ed4604cff866c30c824e769d428aca5d9742761814a5234416"
+      sha256 "0dd55b6b33ba3a38a2745d78d7e3f02558694f399c93dbe995e9b6464af9a785"
     end
   end
 
