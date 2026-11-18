@@ -146,8 +146,9 @@ func validateReasoningPromptQuestion(instructions string, criteria map[string]st
 }
 
 /**
- * @brief 返回判断模板及匹配规则，保证编辑器与实际请求使用相同内置内容
+ * @brief 返回判断模板、匹配规则及可选判断/业务模型，保证编辑器与实际请求使用相同内置内容和等级目录
  * @param c 已认证的管理请求上下文
+ * @note decision_models 为启用决策渠道的逻辑模型；business_models 只含启用聊天渠道中可判断等级不少于两档的逻辑模型
  */
 func (s *Server) HandleReasoningPrompts(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -157,11 +158,28 @@ func (s *Server) HandleReasoningPrompts(c *gin.Context) {
 		return
 	}
 	models := make(map[string][]string)
+	decision, business := []string{}, []string{}
+	checked := make(map[string]struct{})
 	for _, channel := range channels {
-		if !channel.Enabled || !channel.IsSystemOne() {
+		if !channel.Enabled {
+			continue
+		}
+		if !channel.IsSystemOne() {
+			for _, logical := range channel.GetModels() {
+				if _, ok := checked[logical]; ok {
+					continue
+				}
+				checked[logical] = struct{}{}
+				if reasoningDecisionLevels(logical) != nil {
+					business = append(business, logical)
+				}
+			}
 			continue
 		}
 		for _, logical := range channel.GetModels() {
+			if !slices.Contains(decision, logical) {
+				decision = append(decision, logical)
+			}
 			for _, row := range s.enumerateModelRows(channel, logical) {
 				provider := reasoningProvider(s.resolveFinalUpstreamModel(channel, row, string(protocol.SystemOne)))
 				if !slices.Contains(models[logical], provider) {
@@ -173,5 +191,8 @@ func (s *Server) HandleReasoningPrompts(c *gin.Context) {
 	for _, templates := range models {
 		slices.Sort(templates)
 	}
-	RespondJSON(c, http.StatusOK, gin.H{"templates": reasoningPromptTemplates(), "model_templates": models})
+	slices.Sort(decision)
+	slices.Sort(business)
+	RespondJSON(c, http.StatusOK, gin.H{"templates": reasoningPromptTemplates(), "model_templates": models,
+		"decision_models": decision, "business_models": business})
 }

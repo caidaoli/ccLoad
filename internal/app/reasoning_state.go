@@ -88,6 +88,7 @@ type reasoningTurn struct {
 	pendingCount int
 	toolTurns    int
 	force        bool
+	levels       []string ///< 逻辑业务模型的可判断等级；实际模型未收录时按它裁剪
 }
 
 func reasoningRank(effort string) int {
@@ -266,6 +267,13 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	if !s.reasoningTarget(r) {
 		return
 	}
+	// A model without two known levels has nothing to choose between; the
+	// result could not be written, so the judge is not called at all.
+	levels := reasoningDecisionLevels(r.originalModel)
+	if levels == nil {
+		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "unknown_model_capability"}}
+		return
+	}
 	if r.clientProtocol == protocol.Codex && responsesCompactionRequested(r.requestPath, original) {
 		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "compaction"}}
 		return
@@ -286,7 +294,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	// share the prompt cache. They read the session's level without judging and
 	// neither move it nor count toward its downgrade.
 	if r.clientProtocol == protocol.Anthropic && claudeCodeAuxiliaryRequest(original) {
-		t := &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{
+		t := &reasoningTurn{state: &reasoningState{}, levels: levels, metadata: model.ReasoningDecision{
 			Status: "skipped", Trigger: "auxiliary", ClientEffort: r.thinkingEffort}}
 		if explicit {
 			t.metadata.Reason = "client_explicit"
@@ -307,7 +315,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	state.mu.Lock()
 	state.version++
 	t := &reasoningTurn{state: state, version: state.version, effort: state.effort,
-		pending: state.pending, pendingCount: state.pendingCount, toolTurns: state.toolTurns, force: state.force}
+		pending: state.pending, pendingCount: state.pendingCount, toolTurns: state.toolTurns, force: state.force, levels: levels}
 	state.lastAccess = time.Now()
 	state.mu.Unlock()
 	t.metadata = model.ReasoningDecision{Status: "skipped", ClientEffort: r.thinkingEffort, PreviousEffort: t.effort}
@@ -347,7 +355,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 		t.metadata.Status = "reused"
 		return
 	}
-	result, err := s.executeReasoningDecision(ctx, projection.text, reasoningDecisionLevels(r.originalModel))
+	result, err := s.executeReasoningDecision(ctx, projection.text, levels)
 	// Decision cost belongs to the System One log row, not the business turn.
 	t.metadata.DurationMS = result.duration.Milliseconds()
 	if err != nil {

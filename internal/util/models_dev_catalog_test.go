@@ -21,6 +21,11 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 		"last_updated": "2026-07-10",
 		"status":       "active",
 		"modalities":   map[string]any{"output": []string{"text"}},
+		"reasoning_options": []any{
+			map[string]any{"type": "toggle"},
+			map[string]any{"type": "effort", "values": []string{"Low", "medium", "xhigh", "low"}},
+			map[string]any{"type": "budget_tokens", "min": 0, "max": 262144},
+		},
 		"cost": map[string]any{
 			"input": 2.5, "output": 15.0, "cache_read": 0.25,
 			"tiers": []any{map[string]any{
@@ -43,6 +48,9 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	}
 	if entry.ReleaseDate != "2026-07-09" || entry.LastUpdated != "2026-07-10" || entry.Status != "active" || entry.Family != "gpt" || !reflect.DeepEqual(entry.OutputModalities, []string{"text"}) {
 		t.Fatalf("metadata = %#v", entry)
+	}
+	if want := []string{"low", "medium", "xhigh"}; !reflect.DeepEqual(entry.ReasoningEfforts, want) {
+		t.Fatalf("reasoning efforts = %#v, want %#v", entry.ReasoningEfforts, want)
 	}
 	if entry.Pricing.InputPrice != 2.5 || entry.Pricing.OutputPrice != 15 || entry.Pricing.CacheReadPrice != 0.25 || !entry.Pricing.HasCacheReadPrice {
 		t.Fatalf("pricing = %#v", entry.Pricing)
@@ -68,6 +76,12 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	}
 	if got, want := util.CalculateCostDetailed("gpt-next", 100_000, 1_000, 200_000, 0, 0), 0.6225; math.Abs(got-want) > 0.000001 {
 		t.Fatalf("installed OpenAI tiered cost = %v, want %v", got, want)
+	}
+	if got, want := util.ModelReasoningEfforts("GPT-Next"), []string{"low", "medium", "xhigh"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("installed reasoning efforts = %#v, want %#v", got, want)
+	}
+	if got := util.ModelReasoningEfforts("openai-model"); got != nil {
+		t.Fatalf("model without effort options = %#v, want nil", got)
 	}
 }
 
@@ -263,6 +277,10 @@ func TestModelCatalogLegacyCachePricingStillDecodes(t *testing.T) {
 	}
 	if got := util.CalculateCostDetailed("legacy-cached-model", 1_000_000, 1_000_000, 0, 0, 0); got != 18 {
 		t.Fatalf("legacy cached model cost = %v, want 18", got)
+	}
+	// v1 缓存没有思考等级；丢弃 ETag 才能让下一次同步全量拉取，而不是得到 304。
+	if etag := util.CurrentModelCatalogETag(); etag != "" {
+		t.Fatalf("legacy cache ETag = %q, want empty", etag)
 	}
 }
 

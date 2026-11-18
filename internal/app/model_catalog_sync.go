@@ -240,9 +240,6 @@ func (s *ModelCatalogSyncer) LoadCache() error {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return fmt.Errorf("decode model catalog cache: %w", err)
 	}
-	if snapshot.Version != util.ModelCatalogSchemaVersion {
-		return fmt.Errorf("unsupported model catalog cache version %d", snapshot.Version)
-	}
 	if err := util.InstallModelCatalog(&snapshot, "cache"); err != nil {
 		return fmt.Errorf("install model catalog cache: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"ccLoad/internal/protocol"
 	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/protocol/cliproxy/thinking"
+	"ccLoad/internal/util"
 
 	"github.com/tidwall/sjson"
 )
@@ -21,8 +22,9 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
 	}
 	levels := reasoningModelLevels(actualModel, upstream)
 	if len(levels) == 0 {
-		r.reasoningApplyReason = "unknown_model_capability"
-		return body
+		// The decision chose among the logical model's levels; a redirect name
+		// the catalogs cannot resolve still serves that model.
+		levels = turn.levels
 	}
 	effort := clampEffortToLevels(turn.effort, levels)
 	if !thinking.HasLevel(levels, effort) || effort == "none" || effort == "auto" {
@@ -39,10 +41,10 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
 }
 
 /**
- * @brief 优先读取上游目录能力，缺失时补齐尚未进入快照的 Anthropic 5.2 官方等级。
- * @param model 实际路由后的模型名。
- * @param upstream 本次使用的上游协议。
- * @return 模型允许的思考等级；没有目录或已确认能力时返回 nil。
+ * @brief 读取实际上游模型允许的思考等级
+ * @param model 实际路由后的模型名，可带供应商前缀，大小写无关
+ * @param upstream 本次使用的上游协议，决定优先查询的目录
+ * @return 模型允许的思考等级；所有目录都未收录时返回 nil
  */
 func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
 	provider := "openai"
@@ -52,31 +54,48 @@ func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
 	case protocol.Gemini:
 		provider = "gemini"
 	}
-	if info := modelregistry.LookupModelInfo(model, provider); info != nil && info.Thinking != nil && len(info.Thinking.Levels) > 0 {
+	if info := modelregistry.LookupModelInfo(anthropicCanonicalModelName(model), provider); info != nil && info.Thinking != nil && len(info.Thinking.Levels) > 0 {
 		return info.Thinking.Levels
 	}
-	if levels := modelregistry.LookupThinkingLevels(model); len(levels) > 0 {
+	return reasoningCatalogLevels(model)
+}
+
+/**
+ * @brief 按模型名查询已知思考等级，不区分上游协议
+ * @param model 模型名，可带供应商前缀（如 `Qwen/Qwen3.8-Max`），大小写无关
+ * @return 依次取 CLIProxy 内置目录、models.dev 目录、尚未进入快照的 Anthropic 5.2 官方等级；都未收录时返回 nil
+ */
+func reasoningCatalogLevels(model string) []string {
+	name := anthropicCanonicalModelName(model)
+	if levels := modelregistry.LookupThinkingLevels(name); len(levels) > 0 {
 		return levels
 	}
-	if upstream == protocol.Anthropic && anthropicClaude52Family(anthropicCanonicalModelName(model)) != "" {
+	if levels := util.ModelReasoningEfforts(name); len(levels) > 0 {
+		return levels
+	}
+	if anthropicClaude52Family(name) != "" {
 		return []string{string(thinking.LevelLow), string(thinking.LevelMedium), string(thinking.LevelHigh),
 			string(thinking.LevelXHigh), string(thinking.LevelMax)}
 	}
 	return nil
 }
 
-// Levels the decision may choose for a business model, ascending. A redirected
-// model is still clamped to its own levels at send time.
+/**
+ * @brief 业务模型可交给判断模型选择的等级
+ * @param model 逻辑业务模型名
+ * @return 按强度升序的可判断等级；可选等级不足两档（含未收录）时返回 nil，表示无需判断
+ * @note 重定向后的实际模型在发送时仍按自身等级裁剪
+ */
 func reasoningDecisionLevels(model string) []string {
 	var levels []string
-	catalog := modelregistry.LookupThinkingLevels(model)
+	catalog := reasoningCatalogLevels(model)
 	for _, level := range openAIStyleLevelOrder {
 		if reasoningLevelCriteria[level] != "" && thinking.HasLevel(catalog, level) {
 			levels = append(levels, level)
 		}
 	}
 	if len(levels) < 2 {
-		return reasoningDefaultLevels
+		return nil
 	}
 	return levels
 }

@@ -226,7 +226,7 @@ func setupReasoningAutoTestEnv(t testing.TB, judgeURL string, channels []testCha
 	}
 	policy, err := json.Marshal(model.ReasoningAutoConfig{
 		Enabled: true, DecisionModel: "judge",
-		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-chat-thinking", "kimi-k3", "grok-4.7"}, TimeoutMS: 2000,
+		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-chat-thinking", "kimi-k3", "grok-4.7", "Moonshotai/Kimi-K3", "private-chat"}, TimeoutMS: 2000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -361,6 +361,8 @@ func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 		{"gpt-6-chat-thinking", "max", "xhigh", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"kimi-k3", "max", "high", []string{"low", "high", "max"}},
 		{"grok-4.7", "xhigh", "xhigh", []string{"low", "medium", "high", "xhigh"}},
+		// Vendor prefix and case do not hide the catalog entry.
+		{"Moonshotai/Kimi-K3", "max", "high", []string{"low", "high", "max"}},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			t.Parallel()
@@ -378,6 +380,35 @@ func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
 				t.Fatalf("decision levels=%v, want the %s catalog in ascending order", decisions, tc.model)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 等级目录未收录的业务模型不调用判断模型，请求体保持客户端原值
+ * @param t 测试生命周期
+ */
+func TestReasoningAutoSkipsModelWithoutKnownLevels(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "low")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "business", upstreamProtocol: "openai", models: "private-chat",
+	}}, []string{business.server.URL})
+	headers := map[string]string{"Session-Id": "unknown-levels"}
+	for range 2 {
+		body := reasoningAutoChatBody("Prove the scheduler never deadlocks under any interleaving.")
+		body["model"], body["reasoning_effort"] = "private-chat", "high"
+		reasoningAutoRequest(t, env, "/v1/chat/completions", body, headers)
+	}
+	assertReasoningAutoEfforts(t, business.snapshot(), "high", "high")
+	if got := len(judge.snapshot()); got != 0 {
+		t.Fatalf("decision calls=%d, want none for a model without known levels", got)
+	}
+	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+		return entry.ClientProtocol != util.ProtocolSystemOne && entry.ReasoningDecision != nil
+	})
+	if decision := entry.ReasoningDecision; decision.Status != "skipped" || decision.Reason != "unknown_model_capability" {
+		t.Fatalf("reasoning decision=%+v, want skipped unknown_model_capability", decision)
 	}
 }
 
@@ -1579,7 +1610,9 @@ func TestReasoningAutoStateCapacityKeepsExistingSessionsAndIndependentOverflow(t
 func TestReasoningAutoFailoverReusesSuggestionAndCommitsSupportedTarget(t *testing.T) {
 	t.Parallel()
 	for _, target := range []struct{ name, model, effort string }{
-		{name: "unknown", model: "private-unknown-model"},
+		// An uncatalogued redirect target still serves the logical model, so the
+		// suggestion is clamped to the logical model's levels.
+		{name: "unknown", model: "private-unknown-model", effort: "xhigh"},
 		{name: "supported", model: "gpt-5.5", effort: "xhigh"},
 	} {
 		t.Run(target.name, func(t *testing.T) {
@@ -1602,7 +1635,7 @@ func TestReasoningAutoFailoverReusesSuggestionAndCommitsSupportedTarget(t *testi
 			headers := map[string]string{"Session-Id": "retry-turn"}
 			reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Complex migration."), headers)
 			assertReasoningAutoEfforts(t, [][]byte{<-firstRequests}, target.effort)
-			// The unsupported first target must not consume the supported target's commit.
+			// The failed first attempt must not consume the successful target's commit.
 			reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoToolBody("mechanical step completed"), headers)
 			assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "xhigh")
 			if got := len(judge.snapshot()); got != 1 {

@@ -5,13 +5,20 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 )
 
 // ModelCatalogSchemaVersion 是持久化归一化目录的版本。
-const ModelCatalogSchemaVersion = 1
+const ModelCatalogSchemaVersion = 2
+
+/**
+ * @brief 不含思考等级字段的旧版缓存格式
+ * @details 仍可安装价格；安装时丢弃 ETag，使下一次同步全量拉取等级数据。
+ */
+const modelCatalogSchemaVersionWithoutReasoning = 1
 
 // ModelsDevOfficialProviders 是允许覆盖内置官方价格的 models.dev provider。
 var ModelsDevOfficialProviders = []string{
@@ -36,6 +43,7 @@ type ModelCatalogEntry struct {
 	LastUpdated      string       `json:"last_updated,omitempty"`
 	Status           string       `json:"status,omitempty"`
 	OutputModalities []string     `json:"output_modalities,omitempty"`
+	ReasoningEfforts []string     `json:"reasoning_efforts,omitempty"` ///< models.dev 声明的思考等级，保持上游顺序；空表示未声明
 	Pricing          ModelPricing `json:"pricing"`
 }
 
@@ -62,6 +70,15 @@ type modelsDevModel struct {
 	Status      string              `json:"status"`
 	Modalities  modelsDevModalities `json:"modalities"`
 	Cost        *modelsDevCost      `json:"cost"`
+	Reasoning   []modelsDevOption   `json:"reasoning_options"`
+}
+
+/**
+ * @brief models.dev 的单个推理参数选项
+ */
+type modelsDevOption struct {
+	Type   string   `json:"type"`   ///< 选项类型；只读取 effort
+	Values []string `json:"values"` ///< effort 可选等级
 }
 
 type modelsDevModalities struct {
@@ -206,8 +223,30 @@ func normalizeModelsDevModel(provider string, raw modelsDevModel) (ModelCatalogE
 		LastUpdated:      raw.LastUpdated,
 		Status:           raw.Status,
 		OutputModalities: append([]string(nil), raw.Modalities.Output...),
+		ReasoningEfforts: modelsDevReasoningEfforts(raw.Reasoning),
 		Pricing:          pricing,
 	}, true
+}
+
+/**
+ * @brief 提取 models.dev effort 选项的等级
+ * @param options 模型的 reasoning_options
+ * @return 小写去重后的等级；没有 effort 选项时返回 nil
+ */
+func modelsDevReasoningEfforts(options []modelsDevOption) []string {
+	var efforts []string
+	for _, option := range options {
+		if option.Type != "effort" {
+			continue
+		}
+		for _, value := range option.Values {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value != "" && !slices.Contains(efforts, value) {
+				efforts = append(efforts, value)
+			}
+		}
+	}
+	return efforts
 }
 
 func normalizeModelsDevContextTiers(cost *modelsDevCost, base ModelPricing) ([]TokenPricingTier, bool) {
@@ -301,6 +340,23 @@ func ModelOutputModalities(id string) ([]string, bool) {
 	return append([]string(nil), entry.OutputModalities...), true
 }
 
+/**
+ * @brief 查询 models.dev 声明的模型思考等级
+ * @param id 模型 ID，大小写无关
+ * @return 等级副本；目录未安装、未收录或未声明等级时返回 nil
+ */
+func ModelReasoningEfforts(id string) []string {
+	snapshot := activeModelPricing.Load()
+	if snapshot == nil {
+		return nil
+	}
+	efforts := snapshot.metadata[strings.ToLower(strings.TrimSpace(id))].ReasoningEfforts
+	if len(efforts) == 0 {
+		return nil
+	}
+	return slices.Clone(efforts)
+}
+
 // ModelFamily returns the known model family for an exact model ID.
 func ModelFamily(id string) string {
 	snapshot := activeModelPricing.Load()
@@ -312,6 +368,7 @@ func ModelFamily(id string) string {
 
 func cloneModelCatalogEntry(entry ModelCatalogEntry) ModelCatalogEntry {
 	entry.OutputModalities = append([]string(nil), entry.OutputModalities...)
+	entry.ReasoningEfforts = append([]string(nil), entry.ReasoningEfforts...)
 	entry.Pricing = cloneModelPricing(entry.Pricing)
 	return entry
 }
@@ -321,7 +378,12 @@ func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 	if snapshot == nil {
 		return fmt.Errorf("model catalog is nil")
 	}
-	if snapshot.Version != ModelCatalogSchemaVersion {
+	etag := snapshot.ETag
+	switch snapshot.Version {
+	case ModelCatalogSchemaVersion:
+	case modelCatalogSchemaVersionWithoutReasoning:
+		etag = ""
+	default:
 		return fmt.Errorf("unsupported model catalog version %d", snapshot.Version)
 	}
 	source = strings.TrimSpace(source)
@@ -336,9 +398,9 @@ func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 	}
 
 	installed := &ModelCatalogSnapshot{
-		Version:       snapshot.Version,
+		Version:       ModelCatalogSchemaVersion,
 		Source:        source,
-		ETag:          snapshot.ETag,
+		ETag:          etag,
 		FetchedAt:     snapshot.FetchedAt,
 		SkippedModels: snapshot.SkippedModels,
 		Models:        make([]ModelCatalogEntry, 0, len(snapshot.Models)),

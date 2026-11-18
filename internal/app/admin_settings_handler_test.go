@@ -884,10 +884,10 @@ func TestReasoningAutoSettingsValidateModelAndPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := server.store.CreateConfig(ctx, &model.Config{Name: "business", Enabled: true,
-		URLs: model.ChannelURLs{{URL: "https://chat.example", Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "gpt-5", RedirectModel: "gpt-5.4"}}}); err != nil {
+		URLs: model.ChannelURLs{{URL: "https://chat.example", Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "gpt-5.5"}, {Model: "private-chat"}}}); err != nil {
 		t.Fatal(err)
 	}
-	policy := `{"enabled":true,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":2000}`
+	policy := `{"enabled":true,"decision_model":"jev-latest","business_models":["gpt-5.5"],"timeout_ms":2000}`
 	w := batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing credentials status=%d body=%s", w.Code, w.Body.String())
@@ -905,9 +905,14 @@ func TestReasoningAutoSettingsValidateModelAndPersist(t *testing.T) {
 	if err != nil || setting.Value != policy {
 		t.Fatalf("persisted policy = %+v, error = %v", setting, err)
 	}
-	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, strings.Replace(policy, `"gpt-5"`, `"missing-model"`, 1))
-	if w.Code != http.StatusBadRequest {
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, strings.Replace(policy, `"gpt-5.5"`, `"gpt-6.2-sol"`, 1))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no enabled chat channel") {
 		t.Fatalf("missing business model status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 渠道存在但等级目录未收录的模型无从判断，不能保存。
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, strings.Replace(policy, `"gpt-5.5"`, `"private-chat"`, 1))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no known reasoning levels") {
+		t.Fatalf("unknown reasoning levels status=%d body=%s", w.Code, w.Body.String())
 	}
 	for _, field := range []string{"enabled", "decision_model", "business_models", "timeout_ms"} {
 		w = batchUpdateSetting(t, server, reasoningAutoSettingKey, fmt.Sprintf(`{"enabled":false,%q:null}`, field))
@@ -1035,7 +1040,7 @@ func TestReasoningPromptTemplatesAndSettings(t *testing.T) {
 }
 
 /**
- * @brief 自动模板预览与实际重定向和请求体模型规则一致，并保留跨渠道歧义
+ * @brief 自动模板预览与实际重定向和请求体模型规则一致，并保留跨渠道歧义；可选业务模型按等级目录过滤
  * @param t 测试上下文
  */
 func TestReasoningPromptResolvedModelTemplates(t *testing.T) {
@@ -1048,9 +1053,12 @@ func TestReasoningPromptResolvedModelTemplates(t *testing.T) {
 		}},
 		{Name: "override", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "override", RedirectModel: "jev-latest"}},
 			CustomRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: "override", Path: "model", Value: json.RawMessage(`"gemini-decision-1"`)}}}},
-		{Name: "other", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "mixed", RedirectModel: "decision-model-preview"}}},
+		{Name: "other", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "mixed", RedirectModel: "decision-model-preview"}, {Model: "gpt-6-luna"}}},
 		{Name: "disabled", Enabled: false, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "jev-latest"}}},
-		{Name: "chat", Enabled: true, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "gemini-decision-1"}}},
+		{Name: "chat", Enabled: true, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "gemini-decision-1"},
+			{Model: "Moonshotai/Kimi-K3"}, {Model: "private-chat"}, {Model: "gpt-6.2-sol", Disabled: true}}},
+		{Name: "chat copy", Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-5.5"}, {Model: "Moonshotai/Kimi-K3"}}},
+		{Name: "chat disabled", Enabled: false, ModelEntries: []model.ModelEntry{{Model: "gpt-6.1-sol"}}},
 	} {
 		cfg.URLs = model.ChannelURLs{{URL: "https://decision.example"}}
 		if _, err := server.store.CreateConfig(context.Background(), cfg); err != nil {
@@ -1063,13 +1071,23 @@ func TestReasoningPromptResolvedModelTemplates(t *testing.T) {
 	server.HandleReasoningPrompts(c)
 	var response struct {
 		Data struct {
-			Models map[string][]string `json:"model_templates"`
+			Models   map[string][]string `json:"model_templates"`
+			Decision []string            `json:"decision_models"`
+			Business []string            `json:"business_models"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][]string{"judge": {"openai"}, "alias": {"openai"}, "override": {"gemini"}, "mixed": {"aliyun", "jev"}}
+	// 判断模型只来自启用决策渠道的启用行，跨渠道去重；聊天渠道同名模型不算。
+	if wantDecision := []string{"alias", "gpt-6-luna", "judge", "mixed", "override"}; !slices.Equal(response.Data.Decision, wantDecision) {
+		t.Fatalf("decision models=%v, want %v", response.Data.Decision, wantDecision)
+	}
+	// 只列启用聊天渠道中等级目录可判断的模型；决策渠道、停用行与停用渠道不参与。
+	if wantBusiness := []string{"Moonshotai/Kimi-K3", "gpt-5.5"}; !slices.Equal(response.Data.Business, wantBusiness) {
+		t.Fatalf("business models=%v, want %v", response.Data.Business, wantBusiness)
+	}
+	want := map[string][]string{"judge": {"openai"}, "alias": {"openai"}, "override": {"gemini"}, "mixed": {"aliyun", "jev"}, "gpt-6-luna": {"openai"}}
 	if w.Code != http.StatusOK || len(response.Data.Models) != len(want) {
 		t.Fatalf("model templates: %s", w.Body.String())
 	}

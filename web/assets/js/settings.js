@@ -288,7 +288,10 @@ function validateCustomPricingInput(value) {
 }
 
 const reasoningAutoDefaults = { enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 };
-let reasoningAutoChannels = [];
+/**
+ * @brief 已加载的启用决策渠道逻辑模型，作为判断模型候选。
+ */
+let reasoningAutoDecisionModels = [];
 /**
  * @brief 已加载的判断指令模板；null 表示尚不可安全编辑。
  */
@@ -550,12 +553,7 @@ function updateReasoningModelsSelectAll() {
 function refreshReasoningModelOptions(selected) {
   const select = document.getElementById('reasoningDecisionModel');
   if (!select) return;
-  const models = [...new Set(reasoningAutoChannels
-    .filter(channel => channel.auth_type === 'system_one' && channel.enabled)
-    .flatMap(channel => channel.models || [])
-    .filter(item => !item.disabled)
-    .map(item => typeof item === 'string' ? item : item.model)
-    .filter(Boolean))];
+  const models = [...reasoningAutoDecisionModels];
   if (selected && !models.includes(selected)) models.unshift(selected);
   select.innerHTML = `<option value="">—</option>` + models.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join('');
   select.value = selected || '';
@@ -568,36 +566,32 @@ function showReasoningAutoError(message) {
 }
 
 /**
- * @brief 独立加载模型与指令模板；模板失败时保留自定义数据，并允许调整其他设置。
- * @return 所有加载结果处理完毕后完成的 Promise；已关闭或被重置的草稿不接收结果。
+ * @brief 一次加载判断模型、可选业务模型与指令模板；模板失败时保留自定义数据，并允许调整其他设置。
+ * @return 加载结果处理完毕后完成的 Promise；已关闭或被重置的草稿不接收结果。
+ * @note 候选模型由服务端按启用渠道与等级目录给出，未收录等级的模型不可新选，已选历史仍可取消。
  */
 async function loadReasoningAutoOptions() {
   const draft = reasoningAutoDraft;
-  const [channels, options, prompts] = await Promise.allSettled([
-    fetchDataWithAuth('/admin/channels'),
-    fetchDataWithAuth('/admin/channels/filter-options?status=enabled'),
-    fetchDataWithAuth('/admin/reasoning-auto/prompts')
-  ]);
+  let prompts = null;
+  let failure = null;
+  try {
+    prompts = await fetchDataWithAuth('/admin/reasoning-auto/prompts');
+  } catch (error) {
+    failure = error;
+  }
   if (reasoningAutoDraft !== draft) return;
   const errors = [];
-  if (channels.status === 'fulfilled') {
-    reasoningAutoChannels = Array.isArray(channels.value) ? channels.value : [];
-  } else errors.push(t('settings.reasoningAuto.loadFailed') + ': ' + channels.reason.message);
-  if (options.status === 'fulfilled') {
-    const decisionModels = new Set();
-    const businessModels = new Set();
-    for (const channel of reasoningAutoChannels.filter(channel => channel.enabled)) {
-      const target = channel.auth_type === 'system_one' ? decisionModels : businessModels;
-      for (const item of (channel.models || []).filter(item => !item.disabled)) target.add(typeof item === 'string' ? item : item.model);
-    }
-    const candidates = (options.value?.models || []).filter(model => !decisionModels.has(model) || businessModels.has(model));
-    reasoningAutoModels = [...new Set([...reasoningAutoModels, ...candidates])].filter(model => typeof model === 'string' && model.trim() && !/[*?]/.test(model) && !hasThinkingSuffix(model));
-  } else errors.push(t('settings.reasoningAuto.loadFailed') + ': ' + options.reason.message);
   reasoningAutoTemplates = null;
   reasoningAutoModelTemplates = null;
-  if (prompts.status === 'fulfilled') {
-    const templates = prompts.value?.templates;
-    const modelTemplates = prompts.value?.model_templates;
+  if (!failure) {
+    const decisionModels = prompts?.decision_models;
+    const candidates = prompts?.business_models;
+    if (Array.isArray(decisionModels) && Array.isArray(candidates)) {
+      reasoningAutoDecisionModels = decisionModels.filter(model => typeof model === 'string' && model);
+      reasoningAutoModels = [...new Set([...reasoningAutoModels, ...candidates])].filter(model => typeof model === 'string' && model.trim() && !/[*?]/.test(model) && !hasThinkingSuffix(model));
+    } else errors.push(t('settings.reasoningAuto.loadFailed'));
+    const templates = prompts?.templates;
+    const modelTemplates = prompts?.model_templates;
     if (Array.isArray(templates) && templates.length === 4 && new Set(templates.map(template => template?.id)).size === 4
       && templates.every(template => ['jev', 'aliyun', 'gemini', 'openai'].includes(template?.id)
         && typeof template.name === 'string' && template.name.trim()
@@ -609,7 +603,7 @@ async function loadReasoningAutoOptions() {
       reasoningAutoTemplates = templates;
       reasoningAutoModelTemplates = modelTemplates;
     } else errors.push(t('settings.reasoningAuto.promptLoadFailed'));
-  } else errors.push(t('settings.reasoningAuto.promptLoadFailed') + ': ' + prompts.reason.message);
+  } else errors.push(t('settings.reasoningAuto.loadFailed') + ': ' + failure.message, t('settings.reasoningAuto.promptLoadFailed'));
   refreshReasoningModelOptions(reasoningAutoDraft.decision_model);
   renderReasoningPromptEditor();
   renderReasoningBusinessModels();
@@ -627,7 +621,7 @@ function openReasoningAutoModal(trigger) {
   reasoningAutoPreviousFocus = trigger || document.activeElement;
   reasoningAutoTemplates = null;
   reasoningAutoModelTemplates = null;
-  reasoningAutoChannels = [];
+  reasoningAutoDecisionModels = [];
   reasoningAutoModels = [...parseReasoningAuto(input.value).business_models];
   renderReasoningAutoEditor(input.value);
   showReasoningAutoError(null);

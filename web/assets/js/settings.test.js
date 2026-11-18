@@ -21,7 +21,7 @@ function flushAsyncWork() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function loadSettingsPage(t, settings, inputValues, { filterModels = [], channels = [], reasoningLoadError = null,
+async function loadSettingsPage(t, settings, inputValues, { filterModels = [], reasoningBusinessModels = [], reasoningDecisionModels = [],
   reasoningPromptLoadError = null, reasoningTemplates = reasoningTemplateFixtures, reasoningModelTemplates = { judge: ['jev'], 'other-judge': ['jev'] },
   initialLoadError = null, extraElements = {} } = {}) {
   const clickListeners = [];
@@ -528,13 +528,11 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
         resolveModelPricingRequest = resolve;
       });
     }
-    if (url === '/admin/channels' || url === '/admin/channels/filter-options?status=enabled') {
-      if (reasoningLoadError) throw new Error(reasoningLoadError);
-      return url === '/admin/channels' ? channels : { models: filterModels };
-    }
+    if (url === '/admin/channels/filter-options?status=enabled') return { models: filterModels };
     if (url === '/admin/reasoning-auto/prompts') {
       if (reasoningPromptLoadError) throw new Error(reasoningPromptLoadError);
-      return { templates: reasoningTemplates, model_templates: reasoningModelTemplates };
+      return { templates: reasoningTemplates, model_templates: reasoningModelTemplates,
+        decision_models: reasoningDecisionModels, business_models: reasoningBusinessModels };
     }
     if (!options) {
       if (failNextLoad) {
@@ -1788,12 +1786,8 @@ async function loadReasoningPage(t, config = reasoningConfigured, options = {}) 
   const value = JSON.stringify(config);
   return loadSettingsPage(t, [{ key: 'reasoning_auto', value, value_type: 'json', default_value: JSON.stringify(reasoningDefaults) }],
     { reasoning_auto: value }, {
-      channels: [
-        { id: 7, enabled: true, auth_type: 'system_one', name: 'Judge', models: ['judge'] },
-        { id: 8, enabled: true, auth_type: 'system_one', name: 'Other', models: ['other-judge'] },
-        { id: 9, enabled: true, auth_type: 'api_key', name: 'Chat', models: ['gpt-5'] }
-      ],
-      filterModels: ['gpt-5', 'claude', 'foo(bar)', 'gpt-5(high)', 'wild-*'], ...options
+      reasoningDecisionModels: ['judge', 'other-judge'],
+      reasoningBusinessModels: ['gpt-5', 'claude', 'foo(bar)', 'gpt-5(high)', 'wild-*'], ...options
     });
 }
 
@@ -1817,16 +1811,9 @@ test('reasoning modal selected-count toggle lists only selected models and combi
   assert.deepEqual(page.reasoningModels().map(input => input.value).sort(), ['claude', 'foo(bar)', 'gpt-5']);
 });
 
-test('reasoning request-model candidates exclude decision-only models but retain shared names and selected history', async (t) => {
+test('reasoning request-model candidates come from server business models and retain selected history', async (t) => {
   const config = { ...reasoningConfigured, business_models: ['retired-judge', 'gpt-5'] };
-  const page = await loadReasoningPage(t, config, {
-    channels: [
-      { enabled: true, auth_type: 'system_one', models: ['judge', 'retired-judge', 'shared', 'offline-chat', 'disabled-chat'] },
-      { enabled: true, auth_type: 'api_key', models: ['gpt-5', { model: 'shared' }, { model: 'disabled-chat', disabled: true }] },
-      { enabled: false, auth_type: 'api_key', models: ['offline-chat'] }
-    ],
-    filterModels: ['judge', 'retired-judge', 'shared', 'offline-chat', 'disabled-chat', 'gpt-5']
-  });
+  const page = await loadReasoningPage(t, config, { reasoningBusinessModels: ['gpt-5', 'shared'] });
   await page.openReasoning();
   assert.deepEqual(page.reasoningModels().map(input => [input.value, input.checked]), [
     ['gpt-5', true], ['retired-judge', true], ['shared', false]
@@ -1837,11 +1824,8 @@ test('reasoning request-model candidates exclude decision-only models but retain
   assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value).business_models, ['gpt-5', 'shared']);
 });
 
-test('reasoning request-model candidates are empty when all enabled models belong only to decision channels', async (t) => {
-  const page = await loadReasoningPage(t, reasoningDefaults, {
-    channels: [{ enabled: true, auth_type: 'system_one', models: ['jev-latest', 'decision-model', 'gemini-decision', 'gpt-6-luna'] }],
-    filterModels: ['jev-latest', 'decision-model', 'gemini-decision', 'gpt-6-luna']
-  });
+test('reasoning request-model candidates are empty when the server lists no business models', async (t) => {
+  const page = await loadReasoningPage(t, reasoningDefaults, { reasoningBusinessModels: [] });
   await page.openReasoning();
   assert.deepEqual(page.reasoningModels(), []);
   assert.equal(page.reasoningField('reasoningModelsEmpty').hidden, false);
@@ -1896,19 +1880,14 @@ test('Escape closes the reasoning modal even when focus left the modal', async (
   assert.equal(page.inputs.reasoning_auto.value, original);
 });
 
-test('reasoning decision models combine enabled System One channels and deduplicate enabled models', async (t) => {
-  const page = await loadReasoningPage(t, reasoningConfigured, {
-    channels: [
-      { id: 7, enabled: true, auth_type: 'system_one', models: ['judge', { model: 'shared', disabled: false }, { model: 'disabled', disabled: true }] },
-      { id: 8, enabled: true, auth_type: 'system_one', models: [{ model: 'other-judge' }, 'shared', { model: 'judge', disabled: true }] },
-      { id: 9, enabled: true, auth_type: 'api_key', models: ['chat'] },
-      { id: 10, enabled: false, auth_type: 'system_one', models: ['offline-judge'] }
-    ]
+test('reasoning decision models come from the server list and keep a stored model the server no longer lists', async (t) => {
+  const page = await loadReasoningPage(t, { ...reasoningConfigured, decision_model: 'retired-judge' }, {
+    reasoningDecisionModels: ['judge', 'other-judge']
   });
   await page.openReasoning();
   const select = page.reasoningField('reasoningDecisionModel');
-  assert.deepEqual(select.options.map(option => option.value), ['', 'judge', 'shared', 'other-judge']);
-  assert.equal(select.value, 'judge');
+  assert.deepEqual(select.options.map(option => option.value), ['', 'retired-judge', 'judge', 'other-judge']);
+  assert.equal(select.value, 'retired-judge');
 });
 
 test('reasoning decision model is required when enabled and can change across channels', async (t) => {
@@ -1996,7 +1975,7 @@ test('invalid persisted reasoning is locked until reset and reset cancellation p
 });
 
 test('reasoning option load failure preserves the stored decision and selected models', async (t) => {
-  const page = await loadReasoningPage(t, reasoningConfigured, { reasoningLoadError: 'offline' });
+  const page = await loadReasoningPage(t, reasoningConfigured, { reasoningPromptLoadError: 'offline' });
   await page.openReasoning();
   assert.equal(page.reasoningError.hidden, false);
   assert.equal(page.reasoningField('reasoningDecisionModel').value, 'judge');
@@ -2063,12 +2042,7 @@ test('reasoning header checkbox is disabled for no matches and invalid stored co
 test('reasoning prompt defaults follow server model templates without dirtying legacy settings', async (t) => {
   const page = await loadReasoningPage(t, reasoningConfigured, {
     reasoningModelTemplates: { judge: ['jev'], 'aliyun-alias': ['aliyun'], 'gemini-alias': ['gemini'], 'openai-alias': ['openai'] },
-    channels: [{ enabled: true, auth_type: 'system_one', models: [
-      { model: 'judge', redirect_model: ' JEV-latest(high) ' },
-      { model: 'aliyun-alias', redirect_model: 'decision-model-v2' },
-      { model: 'gemini-alias', redirect_model: 'gemini-decision-latest' },
-      { model: 'openai-alias', redirect_model: 'GPT-6-LUNA(high)' }
-    ] }]
+    reasoningDecisionModels: ['aliyun-alias', 'gemini-alias', 'judge', 'openai-alias']
   });
   await page.openReasoning();
   assert.equal(page.reasoningField('reasoningPromptTemplate').value, 'auto');
@@ -2086,13 +2060,7 @@ test('reasoning prompt defaults follow server model templates without dirtying l
 
 test('reasoning previews use server routing results for chained redirects and body model overrides', async (t) => {
   const page = await loadReasoningPage(t, reasoningConfigured, {
-    channels: [
-      { enabled: true, auth_type: 'system_one', models: [
-        { model: 'judge', redirect_model: 'intermediate' }, { model: 'intermediate', redirect_model: 'gpt-6-luna' }
-      ] },
-      { enabled: true, auth_type: 'system_one', models: [{ model: 'body-override', redirect_model: 'jev-latest' }],
-        custom_request_rules: { body: [{ action: 'override', path: 'model', value: 'decision-model' }] } }
-    ],
+    reasoningDecisionModels: ['body-override', 'intermediate', 'judge'],
     reasoningModelTemplates: { judge: ['openai'], 'body-override': ['aliyun'] }
   });
   await page.openReasoning();
@@ -2193,8 +2161,7 @@ test('editing any reasoning prompt field creates a complete custom snapshot and 
 test('restoring model defaults or choosing automatic mode clears the custom snapshot', async (t) => {
   const custom = { ...reasoningConfigured, prompt_template: 'custom', custom_prompt: reasoningTemplateFixtures[0].prompt };
   const page = await loadReasoningPage(t, custom, {
-    reasoningModelTemplates: { judge: ['openai'] },
-    channels: [{ enabled: true, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'gpt-6-luna' }] }]
+    reasoningModelTemplates: { judge: ['openai'] }
   });
   await page.openReasoning();
   page.reasoningAction('restore-reasoning-prompt');
@@ -2227,12 +2194,7 @@ test('cancelling reasoning instruction edits or model-default restoration preser
 
 test('reasoning aliases with conflicting channel templates require an explicit template before editing', async (t) => {
   const page = await loadReasoningPage(t, reasoningConfigured, {
-    reasoningModelTemplates: { judge: ['jev', 'openai'] },
-    channels: [
-      { enabled: true, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'jev-latest' }] },
-      { enabled: true, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'gpt-6-luna' }] },
-      { enabled: false, auth_type: 'system_one', models: [{ model: 'judge', redirect_model: 'decision-model' }] }
-    ]
+    reasoningModelTemplates: { judge: ['jev', 'openai'] }
   });
   await page.openReasoning();
   assert.equal(page.reasoningField('reasoningPromptStatus').textContent, 'settings.reasoningAuto.promptAmbiguous');
@@ -2252,11 +2214,7 @@ test('reasoning aliases with conflicting channel templates require an explicit t
 
 test('different redirected models using the same provider keep automatic instructions editable', async (t) => {
   const page = await loadReasoningPage(t, reasoningConfigured, {
-    reasoningModelTemplates: { judge: ['openai'] },
-    channels: [{ enabled: true, auth_type: 'system_one', models: [
-      { model: 'judge', redirect_model: 'gpt-6-luna' }, { model: 'judge', redirect_model: 'gpt-6-luna-fast' },
-      { model: 'judge', redirect_model: 'jev-latest', disabled: true }
-    ] }]
+    reasoningModelTemplates: { judge: ['openai'] }
   });
   await page.openReasoning();
   assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
@@ -2298,21 +2256,6 @@ test('malformed prompt responses disable instruction changes and preserve builti
       assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...config, timeout_ms: 3000 });
     });
   }
-});
-
-test('channel loading failure preserves automatic instructions from the server model-template map', async (t) => {
-  const page = await loadReasoningPage(t, reasoningConfigured, { reasoningLoadError: 'offline', reasoningModelTemplates: { judge: ['openai'] } });
-  await page.openReasoning();
-  assert.equal(page.reasoningField('reasoningPromptStatus').textContent, 'settings.reasoningAuto.promptNote');
-  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'openai instructions');
-  assert.equal(page.reasoningField('reasoningPromptInstructions').disabled, false);
-  page.editReasoningField('prompt_template', 'gemini');
-  assert.equal(page.reasoningField('reasoningPromptInstructions').value, 'gemini instructions');
-  page.editReasoningPrompt('criteria.max', 'my maximum');
-  page.reasoningAction('apply-reasoning-auto');
-  const config = JSON.parse(page.inputs.reasoning_auto.value);
-  assert.equal(config.prompt_template, 'custom');
-  assert.equal(config.custom_prompt.criteria.max, 'my maximum');
 });
 
 test('unknown or incomplete stored reasoning prompts stay locked until an explicit reset', async (t) => {

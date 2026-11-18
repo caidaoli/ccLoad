@@ -113,16 +113,19 @@ func validateReasoningPromptConfig(cfg model.ReasoningAutoConfig, rawPrompt json
 }
 
 /**
- * @brief 保存配置时确认业务模型和判断模型至少存在可用的渠道配置
+ * @brief 保存配置时确认业务模型可判断等级，且业务模型和判断模型至少存在可用的渠道配置
  * @param ctx 数据库读取上下文
  * @param cfg 已通过字段校验的配置
- * @return 模型无启用渠道、判断模型无授权凭据或读取失败时返回错误；关闭判断时为 nil
+ * @return 业务模型可选等级不足两档、模型无启用渠道、判断模型无授权凭据或读取失败时返回错误；关闭判断时为 nil
  */
 func (s *Server) validateReasoningAutoModels(ctx context.Context, cfg model.ReasoningAutoConfig) error {
 	if !cfg.Enabled {
 		return nil
 	}
 	for _, name := range cfg.BusinessModels {
+		if reasoningDecisionLevels(name) == nil {
+			return fmt.Errorf("business model %q has no known reasoning levels", name)
+		}
 		channels, err := s.store.GetEnabledChannelsByModel(ctx, name)
 		if err != nil {
 			return fmt.Errorf("load business model %q: %w", name, err)
