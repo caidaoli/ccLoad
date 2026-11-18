@@ -803,6 +803,9 @@ var basePricing = map[string]ModelPricing{
 	"jev": {InputPrice: 0.042, OutputPrice: 0},
 	// 来源: Nace Drex 文档 /docs/drex/reference/pricing（50 nUSD/输入 token；退役版本按 drex-v1.5 计价）
 	"drex": {InputPrice: 0.05, OutputPrice: 0},
+	// 来源: https://app.vllm-sr.ai/docs（2026-11-18 核对）：官方 API 免费，仅按配额限流；
+	// 前缀覆盖 d3-ultra 及官方别名 d3、d3-turbo（2026-10-28 起均由 d3-ultra 应答）。
+	"vllm-sr/d3": {InputPrice: 0.00, OutputPrice: 0.00},
 }
 
 // modelAliases 模型别名映射（多对一）

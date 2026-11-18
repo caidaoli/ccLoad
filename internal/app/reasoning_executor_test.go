@@ -64,7 +64,6 @@ func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 		name, modelName, response string
 		status                    int
 		valid                     bool
-		unpriced                  bool ///< 判断模型没有内置价格
 		effort                    string
 		levels                    []string
 	}{
@@ -80,7 +79,7 @@ func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 		// reported two-decimal precision promotes, and depth no longer follows its choice.
 		{name: "jev mass reaches high", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.24,"probabilities":{"low":0.1,"medium":0.5,"high":0.36,"xhigh":0.04,"max":0}},"depth":{"type":"choice","choice":"xhigh","probabilities":{"high":0.4,"xhigh":0.55,"max":0.05}}}` + usage, status: 200, valid: true, effort: "high", levels: []string{"low", "medium", "high", "xhigh", "max"}},
 		{name: "jev mass reaches xhigh", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"high","confidence":0.5,"probabilities":{"low":0,"medium":0.2,"high":0.5,"xhigh":0.3,"max":0}},"depth":{"type":"choice","choice":"max","probabilities":{"high":0.35,"xhigh":0.25,"max":0.4}}}` + usage, status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"}},
-		{name: "d3 lower thresholds", modelName: "vllm-sr/d3-ultra", response: `{"model":"vllm-sr/d3-ultra","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.7,"probabilities":{"low":0.1,"medium":0.68,"high":0.2,"xhigh":0.01,"max":0.01}},"depth":{"type":"choice","choice":"high","probabilities":{"high":0.6,"xhigh":0.35,"max":0.05}}}` + usage, status: 200, valid: true, unpriced: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"}},
+		{name: "d3 lower thresholds", modelName: "vllm-sr/d3-ultra", response: `{"model":"vllm-sr/d3-ultra","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.7,"probabilities":{"low":0.1,"medium":0.68,"high":0.2,"xhigh":0.01,"max":0.01}},"depth":{"type":"choice","choice":"high","probabilities":{"high":0.6,"xhigh":0.35,"max":0.05}}}` + usage, status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"}},
 		{name: "uncalibrated model keeps choice", modelName: "drex-latest", response: `{"model":"drex-v2.0","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.5,"probabilities":{"low":0,"medium":0.5,"high":0.5,"xhigh":0}}}` + usage, status: 200, valid: true, effort: "medium"},
 		{name: "calibrated probabilities missing level", modelName: "jev-latest", response: `{"answers":{"effort":{"type":"choice","choice":"medium","probabilities":{"low":0.5,"medium":0.5}}}}`, status: 200},
 		{name: "missing answer", modelName: "jev-latest", response: `{"answers":{}}`, status: 200},
@@ -140,7 +139,7 @@ func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 			if (err == nil) != tc.valid {
 				t.Fatalf("decision=%+v, error=%v", result, err)
 			}
-			if tc.valid && (result.effort != effort || result.costUnknown != tc.unpriced || result.usage.InputTokens != 12 || result.usage.OutputTokens != 6) {
+			if tc.valid && (result.effort != effort || result.costUnknown || result.usage.InputTokens != 12 || result.usage.OutputTokens != 6) {
 				t.Fatalf("decision=%+v", result)
 			}
 			// The confidence gate reads the effort answer, never the depth answer.

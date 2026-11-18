@@ -93,6 +93,7 @@ func TestCalculateCost_SystemOneInputOnly(t *testing.T) {
 		"drex-latest": 0.05, "drex-v1.5": 0.05, "drex-v1.1": 0.05,
 		"gemini-decision-1": 0.10, "gemini-decision-1-preview": 0.10,
 		"decision-model-preview": 0, "decision-model-preview-2026-11-15": 0,
+		"vllm-sr/d3-ultra": 0, "vllm-sr/d3-turbo": 0, "vllm-sr/d3": 0,
 	} {
 		pricing, found := LookupSystemModelPricing(model)
 		if !found || pricing.InputPrice != expected || pricing.OutputPrice != 0 {
