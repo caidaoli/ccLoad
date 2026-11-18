@@ -309,9 +309,9 @@ func convertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 								if audioData != "" {
 									part := []byte(`{}`)
 									part, _ = sjson.SetBytes(part, "type", "input_audio")
-									part, _ = sjson.SetBytes(part, "data", audioData)
+									part, _ = sjson.SetBytes(part, "input_audio.data", audioData)
 									if audioFormat != "" {
-										part, _ = sjson.SetBytes(part, "format", audioFormat)
+										part, _ = sjson.SetBytes(part, "input_audio.format", audioFormat)
 									}
 									contentItems = append(contentItems, part)
 									turnSendable++

@@ -24,6 +24,44 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-18)
+
+These targeted fixes were reviewed against official `v8.0.77`,
+`a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`, in the local CLIProxyAPI checkout.
+The full snapshot baseline, provider provenance and license remain unchanged.
+Upstream's moego `ojson` API is not adopted; behavior is ported onto gjson/sjson.
+
+- Adapt `e3d19b2458e759eac9d895744cceb289cde9982c`: OpenAI Chat `input_audio`
+  converts to the nested Responses `input_audio.{data,format}` shape. Local
+  difference: an absent format is omitted instead of written as an empty string.
+- Adapt the translator part of `34d8fe0f68137d6b22fcba3d52d7a352c916f2c3`:
+  Gemini `functionResponse.parts` media reach Claude `tool_result` content,
+  Codex `function_call_output` (audio relayed as a follow-up user message) and
+  Chat (media relayed after the parallel tool batch completes). The response
+  `result` is used only when it is the sole key, as upstream. Interactions and
+  the OAuth model alias changes are not imported. Role detection keeps
+  `GeminiMessageRole`.
+- Adapt `e1384430b6b32fee9ee4375315984c3136cb933b` and
+  `e21cf8a5c71f19269dd1096c7ba94eaa8038c96b`: Claude `tool_result` base64
+  documents and `text`/`content`/URL document sources across Gemini,
+  Antigravity, Codex and OpenAI request translators. Local differences: Codex
+  keeps non-PDF base64 documents as raw `input_file` data, filenames prefer the
+  block title, Gemini keeps URL images as `fileData`, and OpenAI keeps
+  tool_result media inside the tool message content array instead of the
+  upstream user-message relay. Interactions is skipped.
+- Adapt `f08cb93189420cad286bd9f66d8f3d6f5fa3b48e`: Responses `input_file`
+  PDF inference (filename or `%PDF-` prefix), `text/plain` decoding and HTTP
+  `file_url` URL documents for Claude; single-object `function_call_output`
+  media follow the array path, and unsupported media return
+  `UnsupportedPartError`. Chat keeps forwarding `file_url` as ccLoad's wire
+  extension, and `tool_search_output` does not flush pending relayed files early.
+- Adapt the GPT-6.2 Astra/Sol catalog entries from
+  `a5e8f69e56309e1ef6d6872e667da81fdfbce2ce` for codex team/plus/pro. The
+  app-level Codex fallback client version moves to `0.169.0` because the
+  models declare `minimal_client_version` 0.166.0.
+
+The core manifest local blobs are refreshed for the touched mapped files.
+
 ## Post-snapshot compatibility fixes (2026-11-16)
 
 Additional targeted fixes were reviewed against official `v8.0.74`,

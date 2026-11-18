@@ -140,9 +140,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 		if content.IsArray() {
 			content.ForEach(func(_, item gjson.Result) bool {
-				if contentItem, ok := convertClaudeContentPart(item); ok {
-					systemContentItems = append(systemContentItems, []byte(contentItem))
-				}
+				systemContentItems = append(systemContentItems, convertClaudeContentParts(item, nil)...)
 				return true
 			})
 		}
@@ -229,11 +227,11 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					// Explicitly ignore redacted_thinking - never map to reasoning_content (AC2)
 
 					case "text", "image", "document", "container_upload":
-						if contentItem, ok := convertClaudeContentPart(part); ok {
-							contentItems = append(contentItems, []byte(contentItem))
-						} else if role == "user" && partType != "text" {
-							drops.Drop(partType)
+						var onDrop func(string)
+						if role == "user" && partType != "text" {
+							onDrop = drops.Drop
 						}
+						contentItems = append(contentItems, convertClaudeContentParts(part, onDrop)...)
 
 					case "tool_use":
 						// Only allow tool_use -> tool_calls for assistant messages (security: prevent injection).
@@ -588,6 +586,51 @@ func convertClaudeContentPart(part gjson.Result) (string, bool) {
 	}
 }
 
+// convertClaudeContentParts converts a Claude content block into OpenAI parts.
+// Text-source and content-source documents expand into text and image parts.
+// onDrop, when set, reports the block (or a nested image) that cannot be sent.
+func convertClaudeContentParts(part gjson.Result, onDrop func(string)) [][]byte {
+	if part.Get("type").String() == "document" {
+		if docText, ok := translatorcommon.ClaudeDocumentTextBlock(part); ok {
+			return [][]byte{openAITextPart(docText)}
+		}
+		var items [][]byte
+		var onImageDrop func()
+		if onDrop != nil {
+			onImageDrop = func() { onDrop("image") }
+		}
+		if translatorcommon.ExpandClaudeContentDocument(
+			part,
+			func(text string) { items = append(items, openAITextPart(text)) },
+			func(img gjson.Result) ([]byte, bool) {
+				contentItem, ok := convertClaudeContentPart(img)
+				return []byte(contentItem), ok
+			},
+			func(img []byte) { items = append(items, img) },
+			onImageDrop,
+		) {
+			return items
+		}
+	}
+	if contentItem, ok := convertClaudeContentPart(part); ok {
+		return [][]byte{[]byte(contentItem)}
+	}
+	if onDrop != nil {
+		onDrop(part.Get("type").String())
+	}
+	return nil
+}
+
+func openAITextPart(text string) []byte {
+	textContent := []byte(`{"type":"text","text":""}`)
+	textContent, _ = sjson.SetBytes(textContent, "text", text)
+	return textContent
+}
+
+// toolResultUnsupportedDocumentPlaceholder avoids dumping raw base64 JSON into
+// tool text when a document block cannot be converted into an OpenAI part.
+const toolResultUnsupportedDocumentPlaceholder = "[Unsupported document content]"
+
 // convertClaudeFilePartToOpenAI emits an OpenAI file part. Inline base64 bytes
 // become a data URL; ccLoad also forwards a url as file_url and a file id as
 // file_id. Anything else stays unconverted and the caller reports it.
@@ -648,16 +691,25 @@ func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
 			case item.Type == gjson.String:
 				text := item.String()
 				parts = append(parts, text)
-				textContent := []byte(`{"type":"text","text":""}`)
-				textContent, _ = sjson.SetBytes(textContent, "text", text)
-				contentItems = append(contentItems, textContent)
+				contentItems = append(contentItems, openAITextPart(text))
 			case item.IsObject() && item.Get("type").String() == "text":
 				text := item.Get("text").String()
 				parts = append(parts, text)
-				textContent := []byte(`{"type":"text","text":""}`)
-				textContent, _ = sjson.SetBytes(textContent, "text", text)
-				contentItems = append(contentItems, textContent)
-			case item.IsObject() && (item.Get("type").String() == "image" || item.Get("type").String() == "document"):
+				contentItems = append(contentItems, openAITextPart(text))
+			case item.IsObject() && item.Get("type").String() == "document":
+				docItems := convertClaudeContentParts(item, nil)
+				if len(docItems) == 0 {
+					docItems = [][]byte{openAITextPart(toolResultUnsupportedDocumentPlaceholder)}
+				}
+				for _, docItem := range docItems {
+					if gjson.GetBytes(docItem, "type").String() == "text" {
+						parts = append(parts, gjson.GetBytes(docItem, "text").String())
+					} else {
+						hasStructuredPart = true
+					}
+				}
+				contentItems = append(contentItems, docItems...)
+			case item.IsObject() && item.Get("type").String() == "image":
 				contentItem, ok := convertClaudeContentPart(item)
 				if ok {
 					contentItems = append(contentItems, []byte(contentItem))
@@ -685,11 +737,8 @@ func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
 	}
 
 	if content.IsObject() {
-		if content.Get("type").String() == "image" || content.Get("type").String() == "document" {
-			contentItem, ok := convertClaudeContentPart(content)
-			if ok {
-				return string(translatorcommon.JoinRawArray([][]byte{[]byte(contentItem)})), true
-			}
+		if blockType := content.Get("type").String(); blockType == "image" || blockType == "document" {
+			return convertClaudeToolResultContent(gjson.Parse("[" + content.Raw + "]"))
 		}
 		if text := content.Get("text"); text.Exists() && text.Type == gjson.String {
 			return text.String(), false

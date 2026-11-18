@@ -313,6 +313,9 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						partItems = append(partItems, part)
 
 					case "image", "document", "container_upload":
+						if contentResult.Get("type").String() == "document" && appendGeminiClaudeDocumentText(contentResult, carrierSignature, originalRole == "user", &partItems, &drops) {
+							return true
+						}
 						if part := claudeSourceToGeminiPart(contentResult.Get("type").String(), contentResult.Get("source")); part != nil {
 							partItems = append(partItems, part)
 						} else if originalRole == "user" {
@@ -495,6 +498,38 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 
 // claudeSourceToGeminiPart maps a Claude image or document source to a Gemini
 // part. Base64 sources are inlined; url and file sources become fileData.
+// appendGeminiClaudeDocumentText converts Claude text and content document
+// sources into Gemini parts. It reports whether any part was emitted; nested
+// images without a Gemini equivalent count as dropped user image parts.
+func appendGeminiClaudeDocumentText(document gjson.Result, carrierSignature string, userTurn bool, partItems *[][]byte, drops *translatorcommon.UserTurnDrops) bool {
+	emitText := func(text string) {
+		part := []byte(`{"text":""}`)
+		part, _ = sjson.SetBytes(part, "text", text)
+		if carrierSignature != "" {
+			part, _ = sjson.SetBytes(part, "thoughtSignature", carrierSignature)
+		}
+		*partItems = append(*partItems, part)
+	}
+	if text, ok := translatorcommon.ClaudeDocumentTextBlock(document); ok {
+		emitText(text)
+		return true
+	}
+	var onImageDrop func()
+	if userTurn {
+		onImageDrop = func() { drops.Drop("image") }
+	}
+	return translatorcommon.ExpandClaudeContentDocument(
+		document,
+		emitText,
+		func(image gjson.Result) ([]byte, bool) {
+			part := claudeSourceToGeminiPart("image", image.Get("source"))
+			return part, part != nil
+		},
+		func(part []byte) { *partItems = append(*partItems, part) },
+		onImageDrop,
+	)
+}
+
 func claudeSourceToGeminiPart(blockType string, source gjson.Result) []byte {
 	switch blockType {
 	case "image":

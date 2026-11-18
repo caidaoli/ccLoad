@@ -46,6 +46,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	var drops translatorcommon.UserTurnDrops
+	var toolOutputErr error
 
 	userID := translatorcommon.DeriveClaudeUserID(rawJSON)
 
@@ -366,11 +367,10 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						}
 						toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", toolID)
 
-						// Extract result content from the function response
-						if result := fr.Get("response.result"); result.Exists() {
-							toolResult, _ = sjson.SetBytes(toolResult, "content", result.String())
-						} else if response := fr.Get("response"); response.Exists() {
-							toolResult, _ = sjson.SetBytes(toolResult, "content", response.Raw)
+						var errTool error
+						toolResult, errTool = setClaudeToolResultContentFromGemini(toolResult, fr, &drops)
+						if errTool != nil && toolOutputErr == nil {
+							toolOutputErr = errTool
 						}
 						contentItems = append(contentItems, toolResult)
 						sendable++
@@ -461,7 +461,10 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Stream setting configuration
 	out, _ = sjson.SetBytes(out, "stream", stream)
 
-	return out, drops.Err()
+	if err := drops.Err(); err != nil {
+		return out, err
+	}
+	return out, toolOutputErr
 }
 
 // orderGeminiClaudeToolResults keeps tool results before other user content,
@@ -633,4 +636,123 @@ func claudeTextContentPart(text string) []byte {
 	textContent := []byte(`{"type":"text","text":""}`)
 	textContent, _ = sjson.SetBytes(textContent, "text", text)
 	return textContent
+}
+
+/**
+ * @brief 判断 Gemini functionResponse.response 是否没有可转发内容
+ * @param v response 字段
+ * @return 字段缺失、空对象或空白原文时返回 true
+ */
+func isEmptyGeminiClaudeResponseObject(v gjson.Result) bool {
+	if !v.Exists() {
+		return true
+	}
+	if v.IsObject() {
+		empty := true
+		v.ForEach(func(_, _ gjson.Result) bool {
+			empty = false
+			return false
+		})
+		return empty
+	}
+	return strings.TrimSpace(v.Raw) == ""
+}
+
+/**
+ * @brief 判断 response 对象是否只有 result 一个键
+ * @param responseField functionResponse.response 字段
+ * @return 仅含 result 时返回 true；带 error 等兄弟字段时返回 false，以便整体转发不丢信息
+ */
+func geminiClaudeResponseHasOnlyResultKey(responseField gjson.Result) bool {
+	if !responseField.IsObject() {
+		return false
+	}
+	hasResult := false
+	onlyResult := true
+	responseField.ForEach(func(key, _ gjson.Result) bool {
+		if key.String() == "result" {
+			hasResult = true
+			return true
+		}
+		onlyResult = false
+		return false
+	})
+	return hasResult && onlyResult
+}
+
+/**
+ * @brief 把 Gemini functionResponse 的结果与 parts 媒体写入 Claude tool_result.content
+ * @param toolResult 待写入的 tool_result 块
+ * @param fr Gemini functionResponse 节点
+ * @param drops 当前用户轮次的丢弃记录；Claude 无法表示的嵌套媒体记入其中
+ * @return 写入 content 后的 tool_result
+ * @return 嵌套媒体全部无法表示且没有任何文本结果时返回 *translatorcommon.UnsupportedPartError
+ * @details 有嵌套文本或媒体时 content 为块数组：首块是 response 文本（只有 result 键时取其值，
+ *          否则取整个 response 原文），随后按序追加嵌套块；没有嵌套块时保持字符串 content。
+ */
+func setClaudeToolResultContentFromGemini(toolResult []byte, fr gjson.Result, drops *translatorcommon.UserTurnDrops) ([]byte, error) {
+	resultField := fr.Get("response.result")
+	responseField := fr.Get("response")
+	resultOnly := resultField.Exists() && geminiClaudeResponseHasOnlyResultKey(responseField)
+	hasBaseText := false
+	baseText := ""
+	if resultOnly {
+		baseText = resultField.String()
+		hasBaseText = strings.TrimSpace(baseText) != ""
+	} else if !isEmptyGeminiClaudeResponseObject(responseField) {
+		baseText = responseField.Raw
+		hasBaseText = true
+	}
+
+	var nestedBlocks [][]byte
+	droppedType := ""
+	fr.Get("parts").ForEach(func(_, nested gjson.Result) bool {
+		if text := nested.Get("text"); text.Exists() {
+			if strings.TrimSpace(text.String()) != "" {
+				nestedBlocks = append(nestedBlocks, claudeTextContentPart(text.String()))
+			}
+			return true
+		}
+		partType := ""
+		var contentPart []byte
+		ok := false
+		if inlineData := geminiClaudeInlineData(nested); inlineData.Exists() {
+			partType = "inlineData"
+			contentPart, ok = claudeContentPartFromGeminiInlineData(inlineData, false)
+		} else if fileData := geminiClaudeFileData(nested); fileData.Exists() {
+			partType = "fileData"
+			contentPart, ok = claudeContentPartFromGeminiFileData(fileData)
+		} else {
+			return true
+		}
+		if ok {
+			nestedBlocks = append(nestedBlocks, contentPart)
+			return true
+		}
+		if droppedType == "" {
+			droppedType = partType
+		}
+		drops.Drop(partType)
+		return true
+	})
+
+	if len(nestedBlocks) > 0 {
+		blocks := make([][]byte, 0, len(nestedBlocks)+1)
+		if hasBaseText {
+			blocks = append(blocks, claudeTextContentPart(baseText))
+		}
+		blocks = append(blocks, nestedBlocks...)
+		toolResult, _ = sjson.SetRawBytes(toolResult, "content", translatorcommon.JoinRawArray(blocks))
+		return toolResult, nil
+	}
+
+	if resultOnly {
+		toolResult, _ = sjson.SetBytes(toolResult, "content", resultField.String())
+	} else if responseField.Exists() {
+		toolResult, _ = sjson.SetBytes(toolResult, "content", responseField.Raw)
+	}
+	if droppedType != "" && !hasBaseText {
+		return toolResult, &translatorcommon.UnsupportedPartError{Type: droppedType}
+	}
+	return toolResult, nil
 }

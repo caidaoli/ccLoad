@@ -232,22 +232,9 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 				bufferedSendable++
 			}
 
-			appendFileContent := func(fileID, fileData, filename string) bool {
-				if fileID == "" && fileData == "" {
-					return false
-				}
-				content := []byte(`{"type":"input_file"}`)
-				if fileID != "" {
-					content, _ = sjson.SetBytes(content, "file_id", fileID)
-				} else {
-					content, _ = sjson.SetBytes(content, "file_data", fileData)
-				}
-				if filename != "" {
-					content, _ = sjson.SetBytes(content, "filename", filename)
-				}
+			appendFileContent := func(content []byte) {
 				contentItems = append(contentItems, content)
 				bufferedSendable++
-				return true
 			}
 
 			appendCommentaryContent := func(part gjson.Result) {
@@ -347,23 +334,30 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							inputItems = append(inputItems, pendingSystemReminders...)
 							pendingSystemReminders = nil
 						}
-						sourceResult := messageContentResult.Get("source")
-						fileData := sourceResult.Get("data").String()
-						if fileData == "" {
-							fileData = sourceResult.Get("base64").String()
-						}
-						filename := messageContentResult.Get("title").String()
-						if filename == "" {
-							filename = sourceResult.Get("filename").String()
-						}
-						mediaType := strings.TrimSpace(sourceResult.Get("media_type").String())
-						if sourceResult.Get("type").String() == "base64" && strings.EqualFold(mediaType, "application/pdf") && fileData != "" {
-							fileData = fmt.Sprintf("data:%s;base64,%s", mediaType, fileData)
-							if filename == "" {
-								filename = "document.pdf"
+						if contentType == "document" {
+							if docText, ok := translatorcommon.ClaudeDocumentTextBlock(messageContentResult); ok {
+								appendTextContent(docText)
+								break
+							}
+							var onImageDrop func()
+							if messageRole == "user" {
+								onImageDrop = func() { drops.Drop("image") }
+							}
+							if translatorcommon.ExpandClaudeContentDocument(
+								messageContentResult,
+								appendTextContent,
+								func(image gjson.Result) ([]byte, bool) {
+									return claudeImageInputPart(image.Get("source"))
+								},
+								appendImageContent,
+								onImageDrop,
+							) {
+								break
 							}
 						}
-						if !appendFileContent(sourceResult.Get("file_id").String(), fileData, filename) && messageRole == "user" {
+						if filePart, ok := claudeDocumentInputFile(messageContentResult); ok {
+							appendFileContent(filePart)
+						} else if messageRole == "user" {
 							drops.Drop(contentType)
 						}
 					case "tool_use":
@@ -424,28 +418,13 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 								toolResultContentType := contentResults[k].Get("type").String()
 								switch toolResultContentType {
 								case "image":
-									sourceResult := contentResults[k].Get("source")
-									if sourceResult.Exists() {
-										data := sourceResult.Get("data").String()
-										if data == "" {
-											data = sourceResult.Get("base64").String()
-										}
-										if data != "" {
-											mediaType := sourceResult.Get("media_type").String()
-											if mediaType == "" {
-												mediaType = sourceResult.Get("mime_type").String()
-											}
-											if mediaType == "" {
-												mediaType = "application/octet-stream"
-											}
-											dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
-
-											toolResultContent := []byte(`{"type":"input_image","image_url":""}`)
-											toolResultContent, _ = sjson.SetBytes(toolResultContent, "image_url", dataURL)
-											toolResultContentItems = append(toolResultContentItems, toolResultContent)
-											hasRichContent = true
-										}
+									if imagePart, ok := claudeImageInputPart(part.Get("source")); ok {
+										toolResultContentItems = append(toolResultContentItems, imagePart)
+										hasRichContent = true
 									}
+								case "document":
+									toolResultContentItems = append(toolResultContentItems, codexToolResultDocumentParts(part)...)
+									hasRichContent = true
 								case "text":
 									toolResultContent := []byte(`{"type":"input_text","text":""}`)
 									toolResultContent, _ = sjson.SetBytes(toolResultContent, "text", contentResults[k].Get("text").String())
@@ -478,6 +457,10 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							} else {
 								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", contentResult.String())
 							}
+						} else if imagePart, ok := claudeImageInputPart(contentResult.Get("source")); ok && contentResult.Get("type").String() == "image" {
+							functionCallOutputMessage, _ = sjson.SetRawBytes(functionCallOutputMessage, "output", translatorcommon.JoinRawArray([][]byte{imagePart}))
+						} else if contentResult.IsObject() && contentResult.Get("type").String() == "document" {
+							functionCallOutputMessage, _ = sjson.SetRawBytes(functionCallOutputMessage, "output", translatorcommon.JoinRawArray(codexToolResultDocumentParts(contentResult)))
 						} else {
 							functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
 						}
@@ -1228,6 +1211,88 @@ func codexSchemaMissesRequired(schema gjson.Result) bool {
 		}
 	}
 	return false
+}
+
+// claudeDocumentInputFile maps a Claude document block onto a Responses
+// input_file part. A file id or base64 data is carried as-is (base64 PDF becomes
+// a data URL) and an HTTP(S) url becomes file_url. Text and content sources are
+// converted by the caller, so they report false here like an empty source.
+func claudeDocumentInputFile(part gjson.Result) ([]byte, bool) {
+	source := part.Get("source")
+	filename := part.Get("title").String()
+	if filename == "" {
+		filename = source.Get("filename").String()
+	}
+	content := []byte(`{"type":"input_file"}`)
+	switch source.Get("type").String() {
+	case "text", "content":
+		return nil, false
+	case "url":
+		fileURL := strings.TrimSpace(source.Get("url").String())
+		if !translatorcommon.IsHTTPURL(fileURL) {
+			return nil, false
+		}
+		content, _ = sjson.SetBytes(content, "file_url", fileURL)
+	default:
+		fileID := source.Get("file_id").String()
+		fileData := source.Get("data").String()
+		if fileData == "" {
+			fileData = source.Get("base64").String()
+		}
+		mediaType := strings.TrimSpace(source.Get("media_type").String())
+		if source.Get("type").String() == "base64" && strings.EqualFold(mediaType, "application/pdf") && fileData != "" {
+			fileData = fmt.Sprintf("data:%s;base64,%s", mediaType, fileData)
+			if filename == "" {
+				filename = "document.pdf"
+			}
+		}
+		switch {
+		case fileID != "":
+			content, _ = sjson.SetBytes(content, "file_id", fileID)
+		case fileData != "":
+			content, _ = sjson.SetBytes(content, "file_data", fileData)
+		default:
+			return nil, false
+		}
+	}
+	if filename != "" {
+		content, _ = sjson.SetBytes(content, "filename", filename)
+	}
+	return content, true
+}
+
+// codexUnsupportedDocumentPlaceholder replaces a tool_result document that has
+// no Responses representation, so the model still sees that one was returned.
+const codexUnsupportedDocumentPlaceholder = "[Unsupported document content]"
+
+func codexInputTextPart(text string) []byte {
+	part := []byte(`{"type":"input_text","text":""}`)
+	part, _ = sjson.SetBytes(part, "text", text)
+	return part
+}
+
+// codexToolResultDocumentParts converts a Claude document nested in a
+// tool_result into Responses function_call_output content items.
+func codexToolResultDocumentParts(part gjson.Result) [][]byte {
+	if text, ok := translatorcommon.ClaudeDocumentTextBlock(part); ok {
+		return [][]byte{codexInputTextPart(text)}
+	}
+	var items [][]byte
+	if translatorcommon.ExpandClaudeContentDocument(
+		part,
+		func(text string) { items = append(items, codexInputTextPart(text)) },
+		func(image gjson.Result) ([]byte, bool) {
+			return claudeImageInputPart(image.Get("source"))
+		},
+		func(image []byte) { items = append(items, image) },
+		nil,
+	) {
+		return items
+	}
+	if filePart, ok := claudeDocumentInputFile(part); ok {
+		return [][]byte{filePart}
+	}
+	return [][]byte{codexInputTextPart(codexUnsupportedDocumentPlaceholder)}
 }
 
 // claudeImageInputPart maps a Claude image source onto a Responses input_image

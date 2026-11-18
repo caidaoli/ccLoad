@@ -2,12 +2,16 @@ package responses
 
 import (
 	"context"
+	"encoding/base64"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	applypatch "ccLoad/internal/protocol/cliproxy/applypatch"
 	"ccLoad/internal/protocol/cliproxy/common"
+	"ccLoad/internal/protocol/cliproxy/misc"
 	"ccLoad/internal/protocol/cliproxy/registry"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/thinking"
@@ -57,6 +61,7 @@ func ConvertOpenAIResponsesRequestToClaudeWithCompatContext(ctx context.Context,
 func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks, toolSearch bool) ([]byte, error) {
 	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
 	var drops common.UserTurnDrops
+	var toolOutputErr error
 
 	userID := common.DeriveClaudeUserID(rawJSON)
 
@@ -403,23 +408,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 							}
 						}
 					case "input_file":
-						fileData := part.Get("file_data").String()
-						if fileData != "" {
-							mediaType := "application/octet-stream"
-							data := fileData
-							if strings.HasPrefix(fileData, "data:") {
-								trimmed := strings.TrimPrefix(fileData, "data:")
-								mediaAndData := strings.SplitN(trimmed, ";base64,", 2)
-								if len(mediaAndData) == 2 {
-									if mediaAndData[0] != "" {
-										mediaType = mediaAndData[0]
-									}
-									data = mediaAndData[1]
-								}
-							}
-							contentPart := []byte(`{"type":"document","source":{"type":"base64","media_type":"","data":""}}`)
-							contentPart, _ = sjson.SetBytes(contentPart, "source.media_type", mediaType)
-							contentPart, _ = sjson.SetBytes(contentPart, "source.data", data)
+						if contentPart, ok := convertResponsesInputFileToClaude(part); ok {
 							contentPart = common.AttachCacheControl(contentPart, part)
 							partsJSON = append(partsJSON, contentPart)
 							if role == "" {
@@ -543,7 +532,11 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			// decided on the raw id so two distinct ids that sanitize to the
 			// same Claude id are not mistaken for the same call.
 			if _, paired := emittedRawToolUses[rawID]; rawID == "" || !paired {
-				appendParts("user", convertResponsesStandaloneToolOutputToClaudeText(output)...)
+				standaloneParts, errStandalone := convertResponsesStandaloneToolOutputToClaudeText(output)
+				if errStandalone != nil && toolOutputErr == nil {
+					toolOutputErr = errStandalone
+				}
+				appendParts("user", standaloneParts...)
 				turnHasEmptyWebSearchResult = false
 				continue
 			}
@@ -556,7 +549,11 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			if strings.EqualFold(strings.TrimSpace(outputItem.Get("status").String()), "incomplete") {
 				toolResult, _ = sjson.SetBytes(toolResult, "is_error", true)
 			}
-			toolResult = applyResponsesToolResultContent(toolResult, output)
+			var errToolResult error
+			toolResult, errToolResult = applyResponsesToolResultContent(toolResult, output)
+			if errToolResult != nil && toolOutputErr == nil {
+				toolOutputErr = errToolResult
+			}
 
 			appendParts("user", toolResult)
 
@@ -769,7 +766,10 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 	}
 
-	return out, drops.Err()
+	if errDrops := drops.Err(); errDrops != nil {
+		return out, errDrops
+	}
+	return out, toolOutputErr
 }
 
 func defaultClaudeResponsesMaxTokensForModel(modelName string) int {
@@ -1100,50 +1100,102 @@ func claudeThinkingSeparatorForToolUse(parts [][]byte) []byte {
 	return nil
 }
 
-func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) []byte {
-	if output.Exists() && output.IsArray() {
+func isResponsesStructuredToolOutputPart(part gjson.Result) bool {
+	if !part.IsObject() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(part.Get("type").String())) {
+	case "input_text", "output_text", "input_image", "input_file", "file", "input_audio", "audio", "input_video", "video":
+		return true
+	case "text":
+		return part.Get("text").Type == gjson.String
+	default:
+		return false
+	}
+}
+
+func unsupportedResponsesToolPartType(part gjson.Result) string {
+	ptype := strings.TrimSpace(part.Get("type").String())
+	switch strings.ToLower(ptype) {
+	case "input_file", "file", "input_audio", "audio", "input_video", "video", "input_image":
+		return ptype
+	default:
+		return ""
+	}
+}
+
+// responsesToolOutputItems treats a single structured content part the same
+// as a one-element array so media objects are converted instead of being
+// serialized as raw JSON text.
+func responsesToolOutputItems(output gjson.Result) ([]gjson.Result, bool) {
+	if !output.Exists() {
+		return nil, false
+	}
+	if output.IsArray() {
+		return output.Array(), true
+	}
+	if isResponsesStructuredToolOutputPart(output) {
+		return []gjson.Result{output}, true
+	}
+	return nil, false
+}
+
+func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]byte, error) {
+	if items, ok := responsesToolOutputItems(output); ok {
 		var partsJSON [][]byte
 		hasImage := false
 		hasFile := false
 		droppedEmptyPart := false
-		output.ForEach(func(_, part gjson.Result) bool {
-			if partJSON := convertResponsesContentPartToClaude(part); len(partJSON) > 0 {
-				if !contentPartHasVisibleContent(partJSON) {
-					droppedEmptyPart = true
-					return true
+		var unsupportedType string
+		for _, part := range items {
+			partJSON := convertResponsesContentPartToClaude(part)
+			if len(partJSON) == 0 {
+				if unsupportedType == "" {
+					unsupportedType = unsupportedResponsesToolPartType(part)
 				}
-				partsJSON = append(partsJSON, partJSON)
-				partType := gjson.ParseBytes(partJSON).Get("type").String()
-				if partType == "image" {
-					hasImage = true
-				}
-				if partType == "document" {
-					hasFile = true
-				}
+				continue
 			}
-			return true
-		})
+			if !contentPartHasVisibleContent(partJSON) {
+				droppedEmptyPart = true
+				continue
+			}
+			partsJSON = append(partsJSON, partJSON)
+			partType := gjson.ParseBytes(partJSON).Get("type").String()
+			if partType == "image" {
+				hasImage = true
+			}
+			if partType == "document" {
+				hasFile = true
+			}
+		}
+		if unsupportedType != "" {
+			return toolResult, &common.UnsupportedPartError{Type: unsupportedType}
+		}
 		if len(partsJSON) == 0 {
 			if droppedEmptyPart {
 				toolResult, _ = sjson.SetBytes(toolResult, "content", "")
-				return toolResult
+				return toolResult, nil
 			}
-			toolResult, _ = sjson.SetBytes(toolResult, "content", output.Raw)
-			return toolResult
+			if output.IsArray() {
+				toolResult, _ = sjson.SetBytes(toolResult, "content", output.Raw)
+			} else {
+				toolResult, _ = sjson.SetBytes(toolResult, "content", output.String())
+			}
+			return toolResult, nil
 		}
 		if len(partsJSON) == 1 && !hasImage && !hasFile {
 			textPart := gjson.ParseBytes(partsJSON[0])
 			if textPart.Get("type").String() == "text" {
 				toolResult, _ = sjson.SetBytes(toolResult, "content", textPart.Get("text").String())
-				return toolResult
+				return toolResult, nil
 			}
 		}
 		toolResult, _ = sjson.DeleteBytes(toolResult, "content")
 		toolResult, _ = sjson.SetRawBytes(toolResult, "content", common.JoinRawArray(partsJSON))
-		return toolResult
+		return toolResult, nil
 	}
 	toolResult, _ = sjson.SetBytes(toolResult, "content", output.String())
-	return toolResult
+	return toolResult, nil
 }
 
 // repairClaudeToolPairing enforces the Anthropic invariant that every
@@ -1336,35 +1388,43 @@ func toolResultTextParts(block gjson.Result) [][]byte {
 
 // convertResponsesStandaloneToolOutputToClaudeText renders a tool output that
 // has no matching tool_use as ordinary user content blocks.
-func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) [][]byte {
-	if output.Exists() && output.IsArray() {
+func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]byte, error) {
+	if items, ok := responsesToolOutputItems(output); ok {
 		var partsJSON [][]byte
-		output.ForEach(func(_, part gjson.Result) bool {
-			if partJSON := convertResponsesContentPartToClaude(part); len(partJSON) > 0 {
-				// Drop empty text parts so a mixed array never emits blocks
-				// Anthropic rejects; images and documents always count.
-				if !contentPartHasVisibleContent(partJSON) {
-					return true
+		var unsupportedType string
+		for _, part := range items {
+			partJSON := convertResponsesContentPartToClaude(part)
+			if len(partJSON) == 0 {
+				if unsupportedType == "" {
+					unsupportedType = unsupportedResponsesToolPartType(part)
 				}
-				partsJSON = append(partsJSON, partJSON)
+				continue
 			}
-			return true
-		})
+			// Drop empty text parts so a mixed array never emits blocks
+			// Anthropic rejects; images and documents always count.
+			if !contentPartHasVisibleContent(partJSON) {
+				continue
+			}
+			partsJSON = append(partsJSON, partJSON)
+		}
+		if unsupportedType != "" {
+			return nil, &common.UnsupportedPartError{Type: unsupportedType}
+		}
 		if len(partsJSON) > 0 {
-			return partsJSON
+			return partsJSON, nil
 		}
 	}
 	text := output.String()
-	if output.IsArray() || strings.TrimSpace(text) == "" {
+	if output.IsArray() || isResponsesStructuredToolOutputPart(output) || strings.TrimSpace(text) == "" {
 		// An empty standalone output still needs a block so the user message
-		// it joins never degenerates to an empty content array. The IsArray
-		// guard keeps the raw array dump from leaking in as literal text when
-		// every converted part was empty.
-		return [][]byte{[]byte(`{"type":"text","text":"Tool result was empty."}`)}
+		// it joins never degenerates to an empty content array. The structured
+		// guard keeps a raw array or part dump from leaking in as literal text
+		// when every converted part was empty.
+		return [][]byte{[]byte(`{"type":"text","text":"Tool result was empty."}`)}, nil
 	}
 	contentPart := []byte(`{"type":"text","text":""}`)
 	contentPart, _ = sjson.SetBytes(contentPart, "text", text)
-	return [][]byte{contentPart}
+	return [][]byte{contentPart}, nil
 }
 
 // contentPartHasVisibleContent reports whether a converted Claude content
@@ -1382,7 +1442,7 @@ func contentPartHasVisibleContent(part []byte) bool {
 func convertResponsesContentPartToClaude(part gjson.Result) []byte {
 	ptype := part.Get("type").String()
 	switch ptype {
-	case "input_text", "output_text":
+	case "input_text", "output_text", "text":
 		if t := part.Get("text"); t.Exists() {
 			contentPart := []byte(`{"type":"text","text":""}`)
 			contentPart, _ = sjson.SetBytes(contentPart, "text", t.String())
@@ -1418,29 +1478,135 @@ func convertResponsesContentPartToClaude(part gjson.Result) []byte {
 		contentPart := []byte(`{"type":"image","source":{"type":"url","url":""}}`)
 		contentPart, _ = sjson.SetBytes(contentPart, "source.url", url)
 		return contentPart
-	case "input_file":
-		fileData := part.Get("file_data").String()
-		if fileData == "" {
-			return nil
+	case "input_file", "file":
+		if contentPart, ok := convertResponsesInputFileToClaude(part); ok {
+			return contentPart
 		}
-		mediaType := "application/octet-stream"
-		data := fileData
-		if strings.HasPrefix(fileData, "data:") {
-			trimmed := strings.TrimPrefix(fileData, "data:")
-			mediaAndData := strings.SplitN(trimmed, ";base64,", 2)
-			if len(mediaAndData) == 2 {
-				if mediaAndData[0] != "" {
-					mediaType = mediaAndData[0]
-				}
-				data = mediaAndData[1]
-			}
-		}
-		contentPart := []byte(`{"type":"document","source":{"type":"base64","media_type":"","data":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "source.media_type", mediaType)
-		contentPart, _ = sjson.SetBytes(contentPart, "source.data", data)
-		return contentPart
 	}
 	return nil
+}
+
+func isGenericClaudeInputFileMIME(mimeType string) bool {
+	m := strings.ToLower(strings.TrimSpace(mimeType))
+	return m == "" || m == "application/octet-stream" || m == "binary/octet-stream"
+}
+
+func isSupportedClaudeDocumentMIME(mimeType string) bool {
+	m := strings.ToLower(strings.TrimSpace(mimeType))
+	return m == "application/pdf" || m == "text/plain"
+}
+
+func resolveClaudeInputFileFallbackMIME(part gjson.Result, filename string) string {
+	for _, candidate := range []string{
+		part.Get("mime_type").String(),
+		part.Get("file.mime_type").String(),
+		part.Get("format").String(),
+		part.Get("file.format").String(),
+	} {
+		candidate = strings.TrimSpace(candidate)
+		if isGenericClaudeInputFileMIME(candidate) {
+			continue
+		}
+		if strings.Contains(candidate, "/") {
+			return candidate
+		}
+		if mapped := misc.MimeTypes[strings.ToLower(strings.TrimPrefix(candidate, "."))]; !isGenericClaudeInputFileMIME(mapped) {
+			return mapped
+		}
+	}
+	if filename != "" {
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+		if mapped := misc.MimeTypes[ext]; !isGenericClaudeInputFileMIME(mapped) {
+			return mapped
+		}
+	}
+	return ""
+}
+
+// convertResponsesInputFileToClaude maps a Responses/Chat file part to a
+// Claude document. Claude documents accept only PDF and plain text, so other
+// binary MIME types are refused instead of being sent as octet-stream.
+// Raw base64 without a MIME type is inferred from the filename or the %PDF-
+// magic prefix; text/plain is decoded into a text-source document; an HTTP(S)
+// file_url becomes a URL document.
+func convertResponsesInputFileToClaude(part gjson.Result) ([]byte, bool) {
+	filename := strings.TrimSpace(part.Get("filename").String())
+	if filename == "" {
+		filename = strings.TrimSpace(part.Get("file.filename").String())
+	}
+	fileData := strings.TrimSpace(part.Get("file_data").String())
+	if fileData == "" {
+		fileData = strings.TrimSpace(part.Get("file.file_data").String())
+	}
+	fileURL := strings.TrimSpace(part.Get("file_url").String())
+	if fileURL == "" {
+		fileURL = strings.TrimSpace(part.Get("file.file_url").String())
+	}
+	if fileData == "" && len(fileURL) >= 5 && strings.EqualFold(fileURL[:5], "data:") {
+		fileData = fileURL
+		fileURL = ""
+	}
+
+	if fileData == "" {
+		if common.IsHTTPURL(fileURL) {
+			contentPart := []byte(`{"type":"document","source":{"type":"url","url":""}}`)
+			contentPart, _ = sjson.SetBytes(contentPart, "source.url", fileURL)
+			return contentPart, true
+		}
+		return nil, false
+	}
+
+	fallbackMIME := resolveClaudeInputFileFallbackMIME(part, filename)
+	var mediaType, data string
+	if len(fileData) >= 5 && strings.EqualFold(fileData[:5], "data:") {
+		metadata, payload, found := strings.Cut(fileData[5:], ",")
+		payload = strings.TrimSpace(payload)
+		if !found || payload == "" {
+			return nil, false
+		}
+		fields := strings.Split(metadata, ";")
+		isBase64 := false
+		for _, field := range fields[1:] {
+			if strings.EqualFold(strings.TrimSpace(field), "base64") {
+				isBase64 = true
+				break
+			}
+		}
+		if !isBase64 {
+			return nil, false
+		}
+		mediaType = strings.TrimSpace(fields[0])
+		data = payload
+	} else {
+		mediaType, data = fallbackMIME, fileData
+	}
+	if isGenericClaudeInputFileMIME(mediaType) {
+		if fallbackMIME != "" {
+			mediaType = fallbackMIME
+		} else if strings.HasPrefix(data, "JVBERi0") {
+			mediaType = "application/pdf"
+		}
+	}
+	mediaType = strings.ToLower(mediaType)
+	if !isSupportedClaudeDocumentMIME(mediaType) {
+		return nil, false
+	}
+	if mediaType == "text/plain" {
+		decoded, errDecode := base64.StdEncoding.DecodeString(data)
+		if errDecode != nil {
+			decoded, errDecode = base64.RawStdEncoding.DecodeString(data)
+		}
+		if errDecode != nil || len(decoded) == 0 || !utf8.Valid(decoded) {
+			return nil, false
+		}
+		contentPart := []byte(`{"type":"document","source":{"type":"text","media_type":"text/plain","data":""}}`)
+		contentPart, _ = sjson.SetBytes(contentPart, "source.data", string(decoded))
+		return contentPart, true
+	}
+	contentPart := []byte(`{"type":"document","source":{"type":"base64","media_type":"","data":""}}`)
+	contentPart, _ = sjson.SetBytes(contentPart, "source.media_type", mediaType)
+	contentPart, _ = sjson.SetBytes(contentPart, "source.data", data)
+	return contentPart, true
 }
 
 func convertResponsesToolDescriptorToClaude(descriptor responsesToolDescriptor, claudeName string) ([]byte, bool) {

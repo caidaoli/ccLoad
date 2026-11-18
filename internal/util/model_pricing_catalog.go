@@ -247,6 +247,17 @@ var basePricing = map[string]ModelPricing{
 	"gpt-6-chat-thinking": {
 		InputPrice: 4.00, OutputPrice: 20.00, CacheReadPrice: 0.40, HasCacheReadPrice: true,
 	},
+	// GPT-6.2 官方价格（2026-11-18 核实）：缓存读为输入价格的 5%，>272K 整段按高价计费。
+	"gpt-6.2-astra": {
+		InputPrice: 8.00, OutputPrice: 40.00, CacheReadPrice: 0.40, HasCacheReadPrice: true,
+		InputPriceHigh: 16.00, OutputPriceHigh: 60.00, CacheReadPriceHigh: 0.80, // >272K context
+		CacheReadCountsTowardTier: true,
+	},
+	"gpt-6.2-sol": {
+		InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.10, HasCacheReadPrice: true,
+		InputPriceHigh: 4.00, OutputPriceHigh: 15.00, CacheReadPriceHigh: 0.20, // >272K context
+		CacheReadCountsTowardTier: true,
+	},
 	// GPT-6.1 Sol 官方价格：缓存读为输入价格的 5%，>272K 整段按高价计费。
 	"gpt-6.1-sol": {
 		InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.10, HasCacheReadPrice: true,

@@ -494,3 +494,103 @@ func TestConvertAntigravityResponseToClaudeStream_MalformedFunctionCallEmitsAPIE
 		})
 	}
 }
+
+func TestClaudeToAntigravityDocumentTextAndContentSources(t *testing.T) {
+	envelope := claudeImageTurnToAntigravity(`{"type":"document","title":"note.txt","context":"secret note","source":{"type":"text","media_type":"text/plain","data":"Secret codeword: ORANGE-42"}},{"type":"text","text":"What is the secret codeword?"}`)
+	if envelope.Err != nil {
+		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
+	}
+	parts := gjson.GetBytes(envelope.Body, "request.contents.2.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("got %d parts, want 2: %s", len(parts), envelope.Body)
+	}
+	docText := parts[0].Get("text").String()
+	if !strings.Contains(docText, "note.txt") || !strings.Contains(docText, "secret note") || !strings.Contains(docText, "ORANGE-42") {
+		t.Fatalf("document text was dropped or missing metadata: %q", docText)
+	}
+
+	contentEnv := claudeImageTurnToAntigravity(`{"type":"document","title":"bundle","context":"mixed","source":{"type":"content","content":[{"type":"text","text":"inside doc"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}`)
+	if contentEnv.Err != nil {
+		t.Fatalf("content document err = %v, body = %s", contentEnv.Err, contentEnv.Body)
+	}
+	var sawText, sawImage bool
+	for _, p := range gjson.GetBytes(contentEnv.Body, "request.contents.2.parts").Array() {
+		if strings.Contains(p.Get("text").String(), "inside doc") {
+			sawText = true
+		}
+		if p.Get("inlineData.mimeType").String() == "image/png" && p.Get("inlineData.data").String() == "aGVsbG8=" {
+			sawImage = true
+		}
+	}
+	if !sawText || !sawImage {
+		t.Fatalf("content document lost parts (sawText=%v, sawImage=%v): %s", sawText, sawImage, contentEnv.Body)
+	}
+
+	emptyTextEnv := claudeImageTurnToAntigravity(`{"type":"document","title":"empty.txt","source":{"type":"text","media_type":"text/plain","data":"  "}}`)
+	var unsupported *translatorcommon.UnsupportedPartError
+	if !errors.As(emptyTextEnv.Err, &unsupported) || unsupported.Type != "document" || unsupported.StatusCode() != 400 {
+		t.Fatalf("empty text document err = %v, want unsupported document; body = %s", emptyTextEnv.Err, emptyTextEnv.Body)
+	}
+
+	badContentEnv := claudeImageTurnToAntigravity(`{"type":"document","title":"bad","source":{"type":"content","content":[{"type":"image","source":{"type":"file","file_id":"f1"}}]}}`)
+	if !errors.As(badContentEnv.Err, &unsupported) || unsupported.Type != "image" || unsupported.StatusCode() != 400 {
+		t.Fatalf("unrepresentable content image err = %v, want unsupported image; body = %s", badContentEnv.Err, badContentEnv.Body)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_ToolResultDocumentExtractedToParts(t *testing.T) {
+	tests := []struct {
+		name       string
+		content    string
+		wantResult string
+	}{
+		{
+			name:       "array text and pdf document",
+			content:    `[{"type":"text","text":"Loaded sample.pdf"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]`,
+			wantResult: "Loaded sample.pdf",
+		},
+		{
+			name:    "array pdf document only",
+			content: `[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]`,
+		},
+		{
+			name:    "object pdf document",
+			content: `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte(fmt.Sprintf(`{
+				"model": "claude-sonnet-4-6",
+				"messages": [
+					{"role": "assistant", "content": [{"type": "tool_use", "id": "call_pdf", "name": "read_file", "input": {}}]},
+					{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_pdf", "content": %s}]}
+				]
+			}`, tt.content))
+
+			output, err := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", input, false)
+			if err != nil {
+				t.Fatalf("ConvertClaudeRequestToAntigravity failed: %v", err)
+			}
+			fr := gjson.GetBytes(output, "request.contents.1.parts.0.functionResponse")
+			if !fr.Exists() {
+				t.Fatalf("functionResponse missing: %s", output)
+			}
+			pdf := fr.Get("parts.0.inlineData")
+			if pdf.Get("mimeType").String() != "application/pdf" || pdf.Get("data").String() != "JVBERi0xLjQK" {
+				t.Fatalf("functionResponse.parts[0].inlineData = %s, want pdf inlineData; fr=%s", pdf.Raw, fr.Raw)
+			}
+			if strings.Contains(fr.Get("response.result").Raw, "JVBERi0xLjQK") {
+				t.Fatalf("base64 PDF leaked into response.result: %s", fr.Get("response.result").Raw)
+			}
+			if tt.wantResult == "" {
+				if fr.Get("response.result").String() != "" {
+					t.Fatalf("response.result = %s, want empty string", fr.Get("response.result").Raw)
+				}
+			} else if got := fr.Get("response.result.text").String(); got != tt.wantResult {
+				t.Fatalf("response.result.text = %q, want %q (raw=%s)", got, tt.wantResult, fr.Get("response.result").Raw)
+			}
+		})
+	}
+}

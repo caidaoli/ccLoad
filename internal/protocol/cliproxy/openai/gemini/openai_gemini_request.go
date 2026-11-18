@@ -174,9 +174,51 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	if contents := root.Get("contents"); contents.Exists() && contents.IsArray() {
 		msgIdx := 0
+		// OpenAI tool messages cannot carry image/file parts, and parallel tool
+		// messages must stay contiguous. Media from functionResponse.parts and user
+		// content sent before the batch is fully answered wait in these buffers.
+		pendingTurnCallCount := 0
+		var pendingToolRelayMedia []openAIGeminiToolRelayGroup
+		var pendingUserContentItems [][]byte
+		var pendingUserTextBuilder strings.Builder
+		pendingUserOnlyText := true
+		resetPendingUser := func() {
+			pendingToolRelayMedia = nil
+			pendingUserContentItems = nil
+			pendingUserTextBuilder.Reset()
+			pendingUserOnlyText = true
+		}
+		flushPendingUserAndRelay := func() {
+			if len(pendingToolRelayMedia) == 0 && len(pendingUserContentItems) == 0 {
+				return
+			}
+			relayMsg := []byte(`{"role":"user","content":""}`)
+			switch {
+			case len(pendingToolRelayMedia) > 0:
+				relayItems := buildOpenAIGeminiToolRelayItems(pendingToolRelayMedia)
+				relayItems = append(relayItems, pendingUserContentItems...)
+				relayMsg, _ = sjson.SetRawBytes(relayMsg, "content", translatorcommon.JoinRawArray(relayItems))
+			case pendingUserOnlyText:
+				relayMsg, _ = sjson.SetBytes(relayMsg, "content", pendingUserTextBuilder.String())
+			default:
+				relayMsg, _ = sjson.SetRawBytes(relayMsg, "content", translatorcommon.JoinRawArray(pendingUserContentItems))
+			}
+			messageItems = append(messageItems, relayMsg)
+			resetPendingUser()
+		}
 		contents.ForEach(func(_, content gjson.Result) bool {
 			parts := content.Get("parts")
 			role := translatorcommon.GeminiMessageRole(content.Get("role").String(), parts)
+			hasTurnFR := translatorcommon.ContentHasGeminiFunctionResponse([]byte(content.Raw))
+			if !hasTurnFR && (len(pendingToolRelayMedia) > 0 || len(pendingUserContentItems) > 0) {
+				pendingTurnCallCount = 0
+				if role != "user" {
+					flushPendingUserAndRelay()
+				}
+			}
+			if role == "assistant" && !hasTurnFR {
+				pendingTurnCallCount = 0
+			}
 
 			msg := []byte(`{"role":"","content":""}`)
 			msg, _ = sjson.SetBytes(msg, "role", role)
@@ -246,24 +288,62 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						}
 
 						toolCallItems = append(toolCallItems, toolCall)
+						pendingTurnCallCount++
 					}
 
 					// Handle function responses (Gemini) -> tool role messages (OpenAI)
 					if functionResponse := translatorcommon.GeminiPartFunctionResponse(part); functionResponse.Exists() {
+						if pendingTurnCallCount > 0 {
+							pendingTurnCallCount--
+						}
 						funcName := functionResponse.Get("name").String()
 						// Create tool message for function response
 						toolMsg := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 
 						responseRaw := ""
+						responseNonEmpty := false
 						// Convert response.content to JSON string
 						if response := functionResponse.Get("response"); response.Exists() {
 							if contentField := response.Get("content"); contentField.Exists() {
 								responseRaw = contentField.Raw
-								toolMsg, _ = sjson.SetBytes(toolMsg, "content", responseRaw)
+								responseNonEmpty = !isEmptyGeminiOpenAIResponseValue(contentField)
 							} else {
 								responseRaw = response.Raw
-								toolMsg, _ = sjson.SetBytes(toolMsg, "content", responseRaw)
+								responseNonEmpty = !isEmptyGeminiOpenAIResponseValue(response)
 							}
+						}
+
+						var frTextParts []string
+						var thisResponseMedia [][]byte
+						functionResponse.Get("parts").ForEach(func(_, nested gjson.Result) bool {
+							if text := nested.Get("text"); text.Exists() {
+								if strings.TrimSpace(text.String()) != "" {
+									frTextParts = append(frTextParts, text.String())
+								}
+								return true
+							}
+							if contentPart, ok := openAIContentPartFromGeminiInlineData(nested); ok {
+								thisResponseMedia = append(thisResponseMedia, contentPart)
+							} else if contentPart, ok := openAIContentPartFromGeminiFileData(nested); ok {
+								thisResponseMedia = append(thisResponseMedia, contentPart)
+							}
+							return true
+						})
+						toolContent := responseRaw
+						if len(thisResponseMedia) > 0 || len(frTextParts) > 0 {
+							var textSegments []string
+							if responseNonEmpty {
+								textSegments = append(textSegments, responseRaw)
+							}
+							textSegments = append(textSegments, frTextParts...)
+							if joined := strings.Join(textSegments, "\n\n"); strings.TrimSpace(joined) != "" {
+								toolContent = joined
+							} else if len(thisResponseMedia) > 0 {
+								toolContent = geminiToolResultRelayPlaceholder(thisResponseMedia)
+							}
+						}
+						if toolContent != "" || functionResponse.Get("response").Exists() {
+							toolMsg, _ = sjson.SetBytes(toolMsg, "content", toolContent)
 						}
 
 						if toolCallID := explicitGeminiToolID(functionResponse); toolCallID != "" {
@@ -285,12 +365,53 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							toolMsg, _ = sjson.SetBytes(toolMsg, "tool_call_id", fallbackID)
 						}
 
+						if len(thisResponseMedia) > 0 {
+							pendingToolRelayMedia = append(pendingToolRelayMedia, openAIGeminiToolRelayGroup{
+								toolName: funcName,
+								callID:   gjson.GetBytes(toolMsg, "tool_call_id").String(),
+								items:    thisResponseMedia,
+							})
+						}
+
 						messageItems = append(messageItems, toolMsg)
 						hasFunctionResponse = true
 					}
 
 					return true
 				})
+			}
+
+			if hasTurnFR && pendingTurnCallCount > 0 {
+				// The batch is still being answered: hold user content behind the tool messages.
+				if role == "user" && len(contentItems) > 0 {
+					pendingUserContentItems = append(pendingUserContentItems, contentItems...)
+					pendingUserTextBuilder.WriteString(textBuilder.String())
+					pendingUserOnlyText = pendingUserOnlyText && onlyTextContent
+					contentItems = contentItems[:0]
+					textBuilder.Reset()
+				}
+			} else if len(pendingToolRelayMedia) > 0 || len(pendingUserContentItems) > 0 {
+				if role == "user" && len(contentItems) > 0 {
+					var prefixItems [][]byte
+					if len(pendingToolRelayMedia) > 0 {
+						prefixItems = buildOpenAIGeminiToolRelayItems(pendingToolRelayMedia)
+						onlyTextContent = false
+					}
+					if len(pendingUserContentItems) > 0 {
+						prefixItems = append(prefixItems, pendingUserContentItems...)
+						if len(pendingToolRelayMedia) == 0 && pendingUserOnlyText && onlyTextContent {
+							combined := pendingUserTextBuilder.String() + textBuilder.String()
+							textBuilder.Reset()
+							textBuilder.WriteString(combined)
+						} else {
+							onlyTextContent = false
+						}
+					}
+					contentItems = append(prefixItems, contentItems...)
+					resetPendingUser()
+				} else {
+					flushPendingUserAndRelay()
+				}
 			}
 
 			// Set content
@@ -316,6 +437,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			msgIdx++
 			return true
 		})
+		flushPendingUserAndRelay()
 	}
 	out = translatorcommon.SetRawArrayItems(out, "messages", messageItems)
 
@@ -441,9 +563,13 @@ func openAIContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 		contentPart, _ = sjson.SetBytes(contentPart, "video_url.url", dataURL)
 		return contentPart, true
 	default:
+		fileData := dataURL
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(data)), "data:") {
+			fileData = data
+		}
 		contentPart := []byte(`{"type":"file","file":{"filename":"","file_data":""}}`)
 		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
-		contentPart, _ = sjson.SetBytes(contentPart, "file.file_data", data)
+		contentPart, _ = sjson.SetBytes(contentPart, "file.file_data", fileData)
 		return contentPart, true
 	}
 }
@@ -525,5 +651,138 @@ func openAIFileNameFromMIME(mimeType string) string {
 			return "video"
 		}
 		return "document"
+	}
+}
+
+/**
+ * @brief 归类转发的工具媒体
+ * @param items OpenAI Chat 内容块
+ * @return hasImage 含 image_url
+ * @return hasFile 含 file、input_audio 或 video_url
+ */
+func classifyGeminiRelayedToolMedia(items [][]byte) (hasImage, hasFile bool) {
+	for _, item := range items {
+		switch gjson.GetBytes(item, "type").String() {
+		case "image_url":
+			hasImage = true
+		case "file", "input_audio", "video_url":
+			hasFile = true
+		}
+	}
+	return hasImage, hasFile
+}
+
+/**
+ * @brief 工具只返回媒体时 tool 消息使用的占位文本
+ * @param items 随后由用户消息转发的媒体块
+ * @return 指明媒体将在下一条用户消息出现的说明
+ */
+func geminiToolResultRelayPlaceholder(items [][]byte) string {
+	hasImage, hasFile := classifyGeminiRelayedToolMedia(items)
+	switch {
+	case hasFile && !hasImage:
+		return "[Tool returned document content; the documents follow in the next user message.]"
+	case hasFile && hasImage:
+		return "[Tool returned media content; the attachments follow in the next user message.]"
+	default:
+		return "[Tool returned image content; the images follow in the next user message.]"
+	}
+}
+
+/**
+ * @brief 判断 Gemini functionResponse 的响应值是否没有可转发内容
+ * @param v response 或 response.content 字段
+ * @return 字段缺失、空对象或空白原文时返回 true
+ */
+func isEmptyGeminiOpenAIResponseValue(v gjson.Result) bool {
+	if !v.Exists() {
+		return true
+	}
+	if v.IsObject() {
+		empty := true
+		v.ForEach(func(_, _ gjson.Result) bool {
+			empty = false
+			return false
+		})
+		return empty
+	}
+	return strings.TrimSpace(v.Raw) == ""
+}
+
+/**
+ * @brief 一次工具调用返回、需改由用户消息转发的媒体
+ */
+type openAIGeminiToolRelayGroup struct {
+	toolName string   ///< 工具名，用于转发说明中的归属
+	callID   string   ///< 已配对的 tool_call_id
+	items    [][]byte ///< OpenAI Chat 媒体内容块
+}
+
+/**
+ * @brief 构建工具媒体转发用户消息的内容块
+ * @param groups 按工具消息顺序收集的媒体组
+ * @return 首块为归属说明；多组时每组前另加工具标签，避免把媒体误归给其他并行调用
+ */
+func buildOpenAIGeminiToolRelayItems(groups []openAIGeminiToolRelayGroup) [][]byte {
+	textPart := func(text string) []byte {
+		part := []byte(`{"type":"text","text":""}`)
+		part, _ = sjson.SetBytes(part, "text", text)
+		return part
+	}
+	if len(groups) == 1 {
+		g := groups[0]
+		kind := geminiToolResultRelayMediaKind(g.items)
+		var notice string
+		switch {
+		case g.toolName != "" && g.callID != "":
+			notice = fmt.Sprintf("%s returned by tool %s (%s):", kind, g.toolName, g.callID)
+		case g.toolName != "":
+			notice = fmt.Sprintf("%s returned by tool %s:", kind, g.toolName)
+		case g.callID != "":
+			notice = fmt.Sprintf("%s returned by tool call %s:", kind, g.callID)
+		default:
+			notice = kind + " returned by the preceding tool call(s):"
+		}
+		relayItems := make([][]byte, 0, len(g.items)+1)
+		relayItems = append(relayItems, textPart(notice))
+		return append(relayItems, g.items...)
+	}
+	var allItems [][]byte
+	for _, group := range groups {
+		allItems = append(allItems, group.items...)
+	}
+	relayItems := [][]byte{textPart(geminiToolResultRelayMediaKind(allItems) + " returned by the preceding tool call(s):")}
+	for _, group := range groups {
+		var label string
+		switch {
+		case group.toolName != "" && group.callID != "":
+			label = fmt.Sprintf("Tool %s (%s):", group.toolName, group.callID)
+		case group.toolName != "":
+			label = fmt.Sprintf("Tool %s:", group.toolName)
+		case group.callID != "":
+			label = fmt.Sprintf("Tool call %s:", group.callID)
+		default:
+			label = "Tool:"
+		}
+		relayItems = append(relayItems, textPart(label))
+		relayItems = append(relayItems, group.items...)
+	}
+	return relayItems
+}
+
+/**
+ * @brief 转发说明中的媒体类别名
+ * @param items 媒体内容块
+ * @return Documents、Media 或 Images
+ */
+func geminiToolResultRelayMediaKind(items [][]byte) string {
+	hasImage, hasFile := classifyGeminiRelayedToolMedia(items)
+	switch {
+	case hasFile && !hasImage:
+		return "Documents"
+	case hasFile && hasImage:
+		return "Media"
+	default:
+		return "Images"
 	}
 }

@@ -1671,3 +1671,39 @@ func TestConvertClaudeRequestToOpenAI_MidConversationToolAdditionAppendsToTools(
 		t.Fatalf("ConvertOpenAIResponseToClaudeNonStream tool name = %q, want SubagentHandback; resp=%s", got, claudeResp)
 	}
 }
+
+// ccLoad keeps tool_result media inside the tool message instead of upstream's
+// follow-up user relay, and forwards file_id documents as file parts.
+func TestConvertClaudeRequestToOpenAI_ToolResultDocumentParts(t *testing.T) {
+	const pdfPart = `{"type":"file","file":{"file_data":"data:application/pdf;base64,JVBERi0xLjQK"}}`
+	pdfDoc := `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"array text and pdf document", `[{"type":"text","text":"Loaded"},` + pdfDoc + `]`, `[{"type":"text","text":"Loaded"},` + pdfPart + `]`},
+		{"singleton object pdf document", pdfDoc, `[` + pdfPart + `]`},
+		{"file id document", `[{"type":"document","source":{"type":"file","file_id":"file-123"}}]`, `[{"type":"file","file":{"file_id":"file-123"}}]`},
+		{"unconvertible document does not leak raw base64", `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"not-valid-base64!!!"}}`, `"` + toolResultUnsupportedDocumentPlaceholder + `"`},
+		{"mixed text and unconvertible document", `[{"type":"text","text":"Header"},{"type":"document","source":{"type":"text","data":"  "}}]`, `"Header\n\n` + toolResultUnsupportedDocumentPlaceholder + `"`},
+		{"array text-source document preserves text", `[{"type":"document","title":"notes.txt","source":{"type":"text","media_type":"text/plain","data":"ORANGE-42"}}]`, `"Document: notes.txt\nORANGE-42"`},
+		{"singleton text-source document preserves text", `{"type":"document","source":{"type":"text","media_type":"text/plain","data":"ORANGE-42"}}`, `"ORANGE-42"`},
+		{"content-source document keeps text and images", `{"type":"document","title":"bundle","source":{"type":"content","content":[{"type":"text","text":"inside"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}`, `[{"type":"text","text":"Document: bundle"},{"type":"text","text":"inside"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := `{"model":"gpt-5","messages":[` +
+				`{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{}}]},` +
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":` + tt.content + `}]}]}`
+			out, err := ConvertClaudeRequestToOpenAI("gpt-5", []byte(input), false)
+			if err != nil {
+				t.Fatalf("ConvertClaudeRequestToOpenAI error: %v", err)
+			}
+			got := gjson.GetBytes(out, `messages.#(role=="tool").content`)
+			if got.Raw != tt.want {
+				t.Fatalf("tool content = %s, want %s", got.Raw, tt.want)
+			}
+		})
+	}
+}

@@ -128,6 +128,19 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	contents := root.Get("contents")
 	if contents.IsArray() {
 		items := contents.Array()
+		// Calls of the latest model turn still awaiting a functionResponse; audio
+		// relays wait until the batch is answered so tool outputs stay contiguous.
+		pendingTurnCallCount := 0
+		var pendingToolAudioRelay []codexGeminiToolAudioGroup
+		flushPendingToolAudioRelay := func() {
+			if len(pendingToolAudioRelay) == 0 {
+				return
+			}
+			msg := []byte(`{"type":"message","role":"user","content":[]}`)
+			msg, _ = sjson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(buildCodexGeminiToolAudioRelayItems(pendingToolAudioRelay)))
+			inputItems = append(inputItems, msg)
+			pendingToolAudioRelay = nil
+		}
 		for i := 0; i < len(items); i++ {
 			item := items[i]
 			parts := item.Get("parts")
@@ -135,6 +148,10 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				continue
 			}
 			role := translatorcommon.GeminiMessageRole(item.Get("role").String(), parts)
+			if !translatorcommon.ContentHasGeminiFunctionResponse([]byte(item.Raw)) {
+				pendingTurnCallCount = 0
+				flushPendingToolAudioRelay()
+			}
 			parr := parts.Array()
 			var pendingThoughtSummaryParts [][]byte
 			for j := 0; j < len(parr); j++ {
@@ -230,19 +247,16 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					fn, _ = sjson.SetBytes(fn, "call_id", id)
 					pendingCallIDs = append(pendingCallIDs, id)
 					inputItems = append(inputItems, fn)
+					pendingTurnCallCount++
 					continue
 				}
 
 				// function response from user
 				if fr := translatorcommon.GeminiPartFunctionResponse(p); fr.Exists() {
-					fno := []byte(`{"type":"function_call_output"}`)
-					// Prefer a string result if present; otherwise embed the raw response as a string
-					if res := fr.Get("response.result"); res.Exists() {
-						fno, _ = sjson.SetBytes(fno, "output", res.String())
-					} else if resp := fr.Get("response"); resp.Exists() {
-						fno, _ = sjson.SetBytes(fno, "output", resp.Raw)
+					if pendingTurnCallCount > 0 {
+						pendingTurnCallCount--
 					}
-					// fno, _ = sjson.SetBytes(fno, "call_id", "call_W6nRJzFXyPM2LFBbfo98qAbq")
+					fno, audioItems := codexFunctionCallOutputFromGemini(fr)
 					// attach the oldest queued call_id to pair the response
 					// with its call. If the queue is empty, generate a new id.
 					var id string
@@ -257,12 +271,23 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 						callCounter++
 						id = fmt.Sprintf("call_gemini_%016d", callCounter)
 					}
+					if len(audioItems) > 0 {
+						pendingToolAudioRelay = append(pendingToolAudioRelay, codexGeminiToolAudioGroup{
+							toolName: fr.Get("name").String(),
+							callID:   id,
+							items:    audioItems,
+						})
+					}
 					fno, _ = sjson.SetBytes(fno, "call_id", id)
 					inputItems = append(inputItems, fno)
 					continue
 				}
 			}
+			if pendingTurnCallCount == 0 {
+				flushPendingToolAudioRelay()
+			}
 		}
+		flushPendingToolAudioRelay()
 	}
 
 	out = translatorcommon.SetRawArrayItems(out, "input", inputItems)
@@ -490,6 +515,177 @@ func normalizeGeminiCodexServiceTier(serviceTier gjson.Result) string {
 	return ""
 }
 
+/**
+ * @brief 一次工具调用返回、需改由用户消息转发的音频
+ */
+type codexGeminiToolAudioGroup struct {
+	toolName string   ///< 工具名，用于转发说明中的归属
+	callID   string   ///< 已配对的 call_id
+	items    [][]byte ///< input_audio 内容块
+}
+
+/**
+ * @brief 把 Gemini 工具文本表示为 Codex input_text 块
+ * @param text 文本内容
+ * @return input_text 内容块
+ */
+func codexInputTextPart(text string) []byte {
+	part := []byte(`{"type":"input_text","text":""}`)
+	part, _ = sjson.SetBytes(part, "text", text)
+	return part
+}
+
+/**
+ * @brief 构建工具音频转发用户消息的内容块
+ * @param groups 按工具输出顺序收集的音频组
+ * @return 首块为归属说明；多组时每组前另加工具标签，避免把音频误归给其他并行调用
+ */
+func buildCodexGeminiToolAudioRelayItems(groups []codexGeminiToolAudioGroup) [][]byte {
+	if len(groups) == 1 {
+		g := groups[0]
+		var notice string
+		switch {
+		case g.toolName != "" && g.callID != "":
+			notice = fmt.Sprintf("Audio returned by tool %s (%s):", g.toolName, g.callID)
+		case g.toolName != "":
+			notice = fmt.Sprintf("Audio returned by tool %s:", g.toolName)
+		case g.callID != "":
+			notice = fmt.Sprintf("Audio returned by tool call %s:", g.callID)
+		default:
+			notice = "Audio returned by the preceding tool call(s):"
+		}
+		relayItems := make([][]byte, 0, len(g.items)+1)
+		relayItems = append(relayItems, codexInputTextPart(notice))
+		return append(relayItems, g.items...)
+	}
+	relayItems := [][]byte{codexInputTextPart("Audio returned by the preceding tool call(s):")}
+	for _, group := range groups {
+		var label string
+		switch {
+		case group.toolName != "" && group.callID != "":
+			label = fmt.Sprintf("Tool %s (%s):", group.toolName, group.callID)
+		case group.toolName != "":
+			label = fmt.Sprintf("Tool %s:", group.toolName)
+		case group.callID != "":
+			label = fmt.Sprintf("Tool call %s:", group.callID)
+		default:
+			label = "Tool:"
+		}
+		relayItems = append(relayItems, codexInputTextPart(label))
+		relayItems = append(relayItems, group.items...)
+	}
+	return relayItems
+}
+
+/**
+ * @brief 判断 Gemini functionResponse.response 是否没有可转发内容
+ * @param v response 字段
+ * @return 字段缺失、空对象或空白原文时返回 true
+ */
+func isEmptyGeminiCodexResponseObject(v gjson.Result) bool {
+	if !v.Exists() {
+		return true
+	}
+	if v.IsObject() {
+		empty := true
+		v.ForEach(func(_, _ gjson.Result) bool {
+			empty = false
+			return false
+		})
+		return empty
+	}
+	return strings.TrimSpace(v.Raw) == ""
+}
+
+/**
+ * @brief 判断 response 对象是否只有 result 一个键
+ * @param responseField functionResponse.response 字段
+ * @return 仅含 result 时返回 true；带 error 等兄弟字段时返回 false，以便整体转发不丢信息
+ */
+func geminiCodexResponseHasOnlyResultKey(responseField gjson.Result) bool {
+	if !responseField.IsObject() {
+		return false
+	}
+	hasResult := false
+	onlyResult := true
+	responseField.ForEach(func(key, _ gjson.Result) bool {
+		if key.String() == "result" {
+			hasResult = true
+			return true
+		}
+		onlyResult = false
+		return false
+	})
+	return hasResult && onlyResult
+}
+
+/**
+ * @brief 把 Gemini functionResponse 转为不含 call_id 的 Codex function_call_output
+ * @param fr Gemini functionResponse 节点
+ * @return function_call_output 项；有嵌套文本、图片或文件时 output 为内容块数组，否则为字符串
+ * @return 需在本批工具输出之后以用户消息转发的 input_audio 块；function_call_output.output
+ *         只接受 input_text/input_image/input_file
+ */
+func codexFunctionCallOutputFromGemini(fr gjson.Result) ([]byte, [][]byte) {
+	fno := []byte(`{"type":"function_call_output"}`)
+	res := fr.Get("response.result")
+	resp := fr.Get("response")
+	resultOnly := res.Exists() && geminiCodexResponseHasOnlyResultKey(resp)
+	hasBaseText := false
+	baseText := ""
+	if resultOnly {
+		baseText = res.String()
+		hasBaseText = strings.TrimSpace(baseText) != ""
+	} else if !isEmptyGeminiCodexResponseObject(resp) {
+		baseText = resp.Raw
+		hasBaseText = true
+	}
+
+	var nestedItems, relayedAudioItems [][]byte
+	fr.Get("parts").ForEach(func(_, nested gjson.Result) bool {
+		if t := nested.Get("text"); t.Exists() {
+			if strings.TrimSpace(t.String()) != "" {
+				nestedItems = append(nestedItems, codexInputTextPart(t.String()))
+			}
+			return true
+		}
+		if contentPart, ok := codexContentPartFromGeminiInlineData(nested); ok {
+			if gjson.GetBytes(contentPart, "type").String() == "input_audio" {
+				relayedAudioItems = append(relayedAudioItems, contentPart)
+			} else {
+				nestedItems = append(nestedItems, contentPart)
+			}
+			return true
+		}
+		if contentPart, ok := codexContentPartFromGeminiFileData(nested); ok {
+			nestedItems = append(nestedItems, contentPart)
+		}
+		return true
+	})
+
+	if len(nestedItems) > 0 {
+		outputItems := make([][]byte, 0, len(nestedItems)+1)
+		if hasBaseText {
+			outputItems = append(outputItems, codexInputTextPart(baseText))
+		}
+		outputItems = append(outputItems, nestedItems...)
+		fno, _ = sjson.SetRawBytes(fno, "output", translatorcommon.JoinRawArray(outputItems))
+		return fno, relayedAudioItems
+	}
+
+	switch {
+	case resultOnly:
+		fno, _ = sjson.SetBytes(fno, "output", res.String())
+	case !isEmptyGeminiCodexResponseObject(resp):
+		fno, _ = sjson.SetBytes(fno, "output", resp.Raw)
+	case len(relayedAudioItems) > 0:
+		fno, _ = sjson.SetBytes(fno, "output", "[Tool returned audio content; the audio follows in the next user message.]")
+	case resp.Exists():
+		fno, _ = sjson.SetBytes(fno, "output", resp.Raw)
+	}
+	return fno, relayedAudioItems
+}
+
 func codexContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 	inlineData := part.Get("inlineData")
 	if !inlineData.Exists() {
@@ -518,8 +714,12 @@ func codexContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", codexInputAudioFormatFromMIME(mimeType))
 		return contentPart, true
 	default:
+		fileData := data
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(fileData)), "data:") {
+			fileData = fmt.Sprintf("data:%s;base64,%s", mimeType, data)
+		}
 		contentPart := []byte(`{"type":"input_file","file_data":"","filename":""}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file_data", data)
+		contentPart, _ = sjson.SetBytes(contentPart, "file_data", fileData)
 		contentPart, _ = sjson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
 		return contentPart, true
 	}

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
@@ -168,4 +169,36 @@ type requestEnvelope struct {
 
 func newRequestEnvelope(body []byte, err error) requestEnvelope {
 	return requestEnvelope{Body: body, Err: err}
+}
+
+func TestClaudeToGeminiDocumentTextAndContentSources(t *testing.T) {
+	envelope := claudeImageTurnToGemini(`{"type":"document","title":"note.txt","context":"secret note","source":{"type":"text","media_type":"text/plain","data":"Secret codeword: ORANGE-42"}},{"type":"text","text":"What is the secret codeword?"}`)
+	if envelope.Err != nil {
+		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
+	}
+	parts := gjson.GetBytes(envelope.Body, "contents.2.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("got %d parts, want 2: %s", len(parts), envelope.Body)
+	}
+	docText := parts[0].Get("text").String()
+	if !strings.Contains(docText, "note.txt") || !strings.Contains(docText, "secret note") || !strings.Contains(docText, "ORANGE-42") {
+		t.Fatalf("document text was dropped or missing metadata: %q", docText)
+	}
+
+	contentEnv := claudeImageTurnToGemini(`{"type":"document","title":"bundle","context":"mixed","source":{"type":"content","content":[{"type":"text","text":"inside doc"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}`)
+	if contentEnv.Err != nil {
+		t.Fatalf("content document err = %v, body = %s", contentEnv.Err, contentEnv.Body)
+	}
+	var sawText, sawImage bool
+	for _, p := range gjson.GetBytes(contentEnv.Body, "contents.2.parts").Array() {
+		if strings.Contains(p.Get("text").String(), "inside doc") {
+			sawText = true
+		}
+		if p.Get("inlineData.mimeType").String() == "image/png" && p.Get("inlineData.data").String() == "aGVsbG8=" {
+			sawImage = true
+		}
+	}
+	if !sawText || !sawImage {
+		t.Fatalf("content document lost parts (sawText=%v, sawImage=%v): %s", sawText, sawImage, contentEnv.Body)
+	}
 }

@@ -559,6 +559,8 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		// 2025-12更新: OpenAI缓存改为90%折扣（0.1倍，不是50%折扣）
 		{"gpt-6-astra", 1000, 1000, 0, 0.06},                // $10.00/1M input, $50.00/1M output
 		{"gpt-6-astra", 1000, 1000, 1000, 0.061},            // 缓存读取 $1.00/1M
+		{"gpt-6.2-astra", 1000, 1000, 1000, 0.0484},         // $8.00/1M input, $40.00/1M output, 缓存读取 $0.40/1M
+		{"gpt-6.2-sol", 1000, 1000, 1000, 0.0121},           // 与 gpt-6.1-sol 同价
 		{"gpt-6.1-sol", 1000, 1000, 0, 0.012},               // $2.00/1M input, $10.00/1M output
 		{"gpt-6.1-sol", 1000, 1000, 1000, 0.0121},           // 缓存读取 $0.10/1M
 		{"gpt-6.1-terra", 1000, 1000, 0, 0.006},             // $1.00/1M input, $5.00/1M output
@@ -687,6 +689,7 @@ func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.108},
 		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.206008},
 		{name: "bare name boundary", model: "gpt-5.6", inputTokens: 272_000, outputTokens: 1_000, expected: 1.108},
+		{name: "gpt-6.2 astra above boundary", model: "gpt-6.2-astra", inputTokens: 272_001, outputTokens: 1_000, expected: 4.412016},
 		{name: "astra base row", model: "gpt-6-astra", inputTokens: 1000, outputTokens: 1000, expected: 0.06},
 		{name: "gpt-6 sol boundary", model: "gpt-6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 0.554},
 		{name: "gpt-6 sol above boundary", model: "gpt-6-sol", inputTokens: 272_001, outputTokens: 1_000, expected: 1.103004},

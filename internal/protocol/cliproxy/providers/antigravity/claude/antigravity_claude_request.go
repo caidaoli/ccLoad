@@ -563,6 +563,12 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 										imagePartItems = append(imagePartItems, imagePartJSON)
 										continue
 									}
+									if fr.Get("type").String() == "document" {
+										if docPartJSON := claudeBase64InlineData(fr.Get("source")); docPartJSON != nil {
+											imagePartItems = append(imagePartItems, docPartJSON)
+											continue
+										}
+									}
 
 									nonImageItems = append(nonImageItems, []byte(fr.Raw))
 								}
@@ -595,6 +601,9 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 									imagePartJSON := []byte(`{}`)
 									imagePartJSON, _ = sjson.SetRawBytes(imagePartJSON, "inlineData", inlineDataJSON)
 									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "parts", translatorcommon.JoinRawArray([][]byte{imagePartJSON}))
+									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, "")
+								} else if docPartJSON := claudeBase64InlineData(functionResponseResult.Get("source")); functionResponseResult.Get("type").String() == "document" && docPartJSON != nil {
+									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "parts", translatorcommon.JoinRawArray([][]byte{docPartJSON}))
 									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, "")
 								} else {
 									functionResponseJSON = translatorcommon.SetGeminiFunctionResponseResult(functionResponseJSON, responsePath, functionResponseResult)
@@ -630,6 +639,41 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							drops.Drop("image")
 						}
 					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "document" || contentTypeResult.String() == "container_upload") {
+						emitAntigravityText := func(text string) {
+							partJSON := []byte(`{}`)
+							partJSON, _ = sjson.SetBytes(partJSON, "text", text)
+							if pendingDetachedSignature != "" {
+								if pendingDetachedTargetKind == "" || pendingDetachedTargetKind == geminiClaudeCarrierAny || pendingDetachedTargetKind == geminiClaudeCarrierText {
+									partJSON, _ = sjson.SetBytes(partJSON, "thoughtSignature", pendingDetachedSignature)
+								} else {
+									appendDetachedCarrier(pendingDetachedSignature, true)
+								}
+								clearPendingDetachedSignature()
+							}
+							partItems = append(partItems, partJSON)
+						}
+						if contentTypeResult.String() == "document" {
+							if docText, ok := translatorcommon.ClaudeDocumentTextBlock(contentResult); ok {
+								emitAntigravityText(docText)
+								continue
+							}
+							var onImageDrop func()
+							if originalRole == "user" {
+								onImageDrop = func() { drops.Drop("image") }
+							}
+							if translatorcommon.ExpandClaudeContentDocument(
+								contentResult,
+								emitAntigravityText,
+								func(image gjson.Result) ([]byte, bool) {
+									part := claudeBase64InlineData(image.Get("source"))
+									return part, part != nil
+								},
+								func(part []byte) { partItems = append(partItems, part) },
+								onImageDrop,
+							) {
+								continue
+							}
+						}
 						if partJSON := claudeBase64InlineData(contentResult.Get("source")); partJSON != nil {
 							partItems = append(partItems, partJSON)
 						} else if originalRole == "user" {

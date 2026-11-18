@@ -28,7 +28,7 @@ const (
 	DefaultWhoAmIURL        = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
 	DefaultClientID         = "app_EMoamEEZ73f0CkXaXp7hrann"
 	DefaultRedirectURI      = "http://localhost:1455/auth/callback"
-	DefaultClientVersion    = "0.159.2"
+	DefaultClientVersion    = "0.169.0"
 	DefaultOriginator       = "codex-tui"
 	DefaultUserAgent        = DefaultOriginator + "/" + DefaultClientVersion + " (Mac OS 27.0.1; arm64) iTerm.app/3.7.1beta1 (" + DefaultOriginator + "; " + DefaultClientVersion + ")"
 	defaultTokenTimeout     = 30 * time.Second

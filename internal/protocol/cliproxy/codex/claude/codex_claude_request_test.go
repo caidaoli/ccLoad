@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1811,5 +1812,58 @@ func TestShortenNameIfNeededFallsBackForUnknownLongNames(t *testing.T) {
 	}
 	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "mcp__"+strings.Repeat("x", 59) {
 		t.Fatalf("fallback tool name=%q", got)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_ToolResultMediaDocumentAndURLImage(t *testing.T) {
+	const pdfPart = `{"type":"input_file","filename":"document.pdf","file_data":"data:application/pdf;base64,JVBERi0xLjQK"}`
+	pdfDoc := `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`
+	plainDoc := `{"type":"document","source":{"type":"base64","media_type":"text/plain","data":"aGVsbG8="}}`
+	urlImage := `{"type":"image","source":{"type":"url","url":"https://example.com/chart.png"}}`
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{"array text and pdf document", `[{"type":"text","text":"Loaded sample.pdf"},` + pdfDoc + `]`, []string{`{"type":"input_text","text":"Loaded sample.pdf"}`, pdfPart}},
+		{"array pdf document only", `[` + pdfDoc + `]`, []string{pdfPart}},
+		{"singleton object pdf document", pdfDoc, []string{pdfPart}},
+		{"array text and url image", `[{"type":"text","text":"Chart"},` + urlImage + `]`, []string{`{"type":"input_text","text":"Chart"}`, `{"type":"input_image","image_url":"https://example.com/chart.png"}`}},
+		{"singleton object url image", urlImage, []string{`{"type":"input_image","image_url":"https://example.com/chart.png"}`}},
+		{"singleton object base64 image", `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}`, []string{`{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}`}},
+		// ccLoad keeps non-PDF base64 documents as raw file_data instead of upstream's placeholder.
+		{"array text and non-pdf document keeps file data", `[{"type":"text","text":"Header"},` + plainDoc + `]`, []string{`{"type":"input_text","text":"Header"}`, `{"type":"input_file","file_data":"aGVsbG8="}`}},
+		{"singleton non-pdf document keeps file data", plainDoc, []string{`{"type":"input_file","file_data":"aGVsbG8="}`}},
+		{"array text-source document preserves text", `[{"type":"document","title":"notes.txt","source":{"type":"text","media_type":"text/plain","data":"ORANGE-42"}}]`, []string{`{"type":"input_text","text":"Document: notes.txt\nORANGE-42"}`}},
+		{"singleton text-source document preserves text", `{"type":"document","source":{"type":"text","media_type":"text/plain","data":"ORANGE-42"}}`, []string{`{"type":"input_text","text":"ORANGE-42"}`}},
+		{"singleton empty document emits placeholder", `{"type":"document","source":{"type":"text","data":"  "}}`, []string{`{"type":"input_text","text":"` + codexUnsupportedDocumentPlaceholder + `"}`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := `{"model":"gpt-5","messages":[` +
+				`{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read_file","input":{}}]},` +
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":` + tt.content + `}]}]}`
+			out, err := ConvertClaudeRequestToCodex("gpt-5", []byte(input), false)
+			if err != nil {
+				t.Fatalf("ConvertClaudeRequestToCodex error: %v", err)
+			}
+			output := gjson.GetBytes(out, `input.#(type=="function_call_output").output`)
+			arr := output.Array()
+			if !output.IsArray() || len(arr) != len(tt.want) {
+				t.Fatalf("output = %s, want %d items", output.Raw, len(tt.want))
+			}
+			for i, want := range tt.want {
+				var got, exp any
+				if err := json.Unmarshal([]byte(arr[i].Raw), &got); err != nil {
+					t.Fatalf("unmarshal output[%d]: %v", i, err)
+				}
+				if err := json.Unmarshal([]byte(want), &exp); err != nil {
+					t.Fatalf("unmarshal want[%d]: %v", i, err)
+				}
+				if !reflect.DeepEqual(got, exp) {
+					t.Fatalf("output[%d] = %s, want %s", i, arr[i].Raw, want)
+				}
+			}
+		})
 	}
 }

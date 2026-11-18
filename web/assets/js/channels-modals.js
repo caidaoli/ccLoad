@@ -4024,6 +4024,8 @@ const COMMON_MODELS = {
     'claude-sonnet-4-6',
   ],
   codex: [
+    'gpt-6.2-sol',
+    'gpt-6.2-astra',
     'gpt-6.1-sol',
     'gpt-6-astra',
     'gpt-6-luna',

@@ -553,6 +553,8 @@ func isOpenAIModel(model string) bool {
 // 来源：OpenAI 官方 Pricing 页 Priority 表；GPT-6 模型页另明确支持 Fast/Flex。
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
+	"gpt-6.2-astra":     true,
+	"gpt-6.2-sol":       true,
 	"gpt-6-astra":       true,
 	"gpt-6.1-sol":       true,
 	"gpt-6.1-terra":     true,
