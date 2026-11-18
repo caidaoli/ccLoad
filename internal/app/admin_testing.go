@@ -2685,6 +2685,10 @@ func (s *Server) buildTestUpstreamHTTPRequest(ctx context.Context, cfgForBuild *
 	} else if requestPlan.xaiOAuth {
 		injectXAIResponsesHeaders(req, requestPlan.apiKey, requestPlan.xaiConversationID)
 	} else if requestProtocol == protocol.Codex {
+		if cfgForBuild.UsesCodexOAuth() {
+			req.Header.Set("User-Agent", codexUserAgent)
+			req.Header.Set("Version", codexVersion)
+		}
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
 		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。

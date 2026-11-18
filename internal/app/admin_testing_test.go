@@ -3235,6 +3235,84 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 后台 Codex OAuth 推理测试使用服务端客户端版本，不受旧自定义版本头影响。
+ * @param t Go 测试上下文。
+ */
+func TestHandleChannelTest_CodexOAuthUsesServerClientIdentity(t *testing.T) {
+	t.Parallel()
+	for _, useWebSocket := range []bool{false, true} {
+		t.Run(fmt.Sprintf("websocket=%t", useWebSocket), func(t *testing.T) {
+			upgrader := websocket.Upgrader{}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Version"); got != codexauth.DefaultClientVersion {
+					t.Errorf("Version=%q, want %q", got, codexauth.DefaultClientVersion)
+				}
+				if got := r.Header.Get("User-Agent"); got != codexauth.DefaultUserAgent {
+					t.Errorf("User-Agent=%q, want %q", got, codexauth.DefaultUserAgent)
+				}
+				if got := websocket.IsWebSocketUpgrade(r); got != useWebSocket {
+					t.Errorf("WebSocket upgrade=%t, want %t", got, useWebSocket)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				frames := []string{
+					`{"type":"response.output_text.delta","delta":"hello"}`,
+					`{"type":"response.completed","response":{"id":"resp_identity","status":"completed"}}`,
+				}
+				if useWebSocket {
+					conn, err := upgrader.Upgrade(w, r, nil)
+					if err != nil {
+						t.Errorf("upgrade WebSocket: %v", err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					if _, _, err := conn.ReadMessage(); err != nil {
+						t.Errorf("read test request: %v", err)
+						return
+					}
+					for _, frame := range frames {
+						if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+							t.Errorf("write test response: %v", err)
+							return
+						}
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, frame := range frames {
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+				}
+			}))
+			defer upstream.Close()
+
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			cfg := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+			cfg.Websockets = useWebSocket
+			cfg.ModelEntries = []model.ModelEntry{{Model: "gpt-6.2-sol"}}
+			cfg.CustomRequestRules = &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+				{Action: model.RuleActionOverride, Name: "Version", Value: "0.159.2"},
+			}}
+			if _, err := srv.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+				t.Fatalf("update channel: %v", err)
+			}
+			channelID := fmt.Sprint(cfg.ID)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+				"model": "gpt-6.2-sol", "client_protocol": "codex", "stream": true,
+				"headers": map[string]string{"User-Agent": "codex-tui/0.159.2", "Version": "0.159.2"},
+			}))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			srv.HandleChannelTest(c)
+
+			result := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+			if success, _ := result.Data["success"].(bool); w.Code != http.StatusOK || !result.Success || !success {
+				t.Fatalf("channel test failed: status=%d result=%+v", w.Code, result)
+			}
+		})
+	}
+}
+
 func TestHandleChannelTest_CodexOAuthWithoutQuotaHeadersLeavesUsageEmpty(t *testing.T) {
 	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

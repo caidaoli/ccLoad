@@ -30,7 +30,7 @@ const (
 	DefaultRedirectURI      = "http://localhost:1455/auth/callback"
 	DefaultClientVersion    = "0.169.0"
 	DefaultOriginator       = "codex-tui"
-	DefaultUserAgent        = DefaultOriginator + "/" + DefaultClientVersion + " (Mac OS 27.0.1; arm64) iTerm.app/3.7.1beta1 (" + DefaultOriginator + "; " + DefaultClientVersion + ")"
+	DefaultUserAgent        = DefaultOriginator + "/" + DefaultClientVersion + " (Mac OS 27.2.1; arm64) iTerm.app/3.7.8beta2 (" + DefaultOriginator + "; " + DefaultClientVersion + ")"
 	defaultTokenTimeout     = 30 * time.Second
 	maxTokenResponseBytes   = 1 << 20
 )
