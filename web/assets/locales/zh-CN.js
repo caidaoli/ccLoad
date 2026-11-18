@@ -1037,7 +1037,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'tokens.noModelRestriction': '无模型限制（允许所有模型）',
   'tokens.noChannelRestriction': '无渠道限制（允许所有渠道）',
   'tokens.noMatchingChannel': '无匹配渠道',
-  'tokens.noChannelsConfigured': '暂无渠道，请先添加渠道',
+  'tokens.noChannelsConfigured': '暂无已启用的渠道，请先添加或启用渠道',
   'tokens.allChannelsAdded': '所有渠道已添加',
   'tokens.visibleChannelsCount': '({count} 个)',
   'tokens.noMatchingModel': '无匹配模型',

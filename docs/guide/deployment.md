@@ -224,7 +224,7 @@ Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **w
 - ✅ **Stats caching**: Smart TTL cache reduces repetitive aggregate queries
 - Configuration: Add one primary DSN (`CCLOAD_MYSQL` or `CCLOAD_POSTGRES`) plus `CCLOAD_ENABLE_SQLITE_REPLICA=1` in Secrets
 
-For Codex OAuth, hybrid mode also requires retaining the local SQLite refresh records. Restoring only the remote configuration replica requires reauthorization. Deployments without persistent local storage can use pure external database mode below to keep credentials and refresh records together.
+For Codex OAuth, hybrid mode also requires retaining the local SQLite refresh records. If the local database is lost, credentials restored from the remote replica claim a refresh once, which may in rare cases trigger the provider's replay detection. Deployments without persistent local storage can use pure external database mode below to keep credentials and refresh records together.
 
 **Dockerfile**: reuse the Dockerfile from step 3 without the `SQLITE_PATH` line; the DSN goes in Secrets.
 

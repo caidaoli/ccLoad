@@ -1158,15 +1158,31 @@
     }
 
     /**
-     * 从渠道数据聚合所有模型（去重+排序）
+     * @brief 可加入令牌限制的渠道
+     * @return 已启用的渠道；禁用渠道不出现在选择列表，已保存的限制仍按 allChannels 显示名称
+     */
+    function getSelectableChannels() {
+      return allChannels.filter(ch => ch.enabled);
+    }
+
+    /**
+     * @brief 把渠道中未停用的模型名加入集合
+     * @param modelSet 收集模型名的集合，会被原地修改
+     * @param channel 已启用的渠道
+     */
+    function addEnabledChannelModels(modelSet, channel) {
+      (channel.models || []).forEach(m => {
+        if (m.model && !m.disabled) modelSet.add(m.model);
+      });
+    }
+
+    /**
+     * @brief 从已启用渠道聚合可选模型
+     * @return 去重并排序的模型名；禁用渠道和停用模型不计入
      */
     function getAvailableModels() {
       const modelSet = new Set();
-      allChannels.forEach(ch => {
-        (ch.models || []).forEach(m => {
-          if (m.model) modelSet.add(m.model);
-        });
-      });
+      getSelectableChannels().forEach(ch => addEnabledChannelModels(modelSet, ch));
       return Array.from(modelSet).sort();
     }
 
@@ -1191,7 +1207,7 @@
       const restrictedChannelIDs = new Set(editAllowedChannelIDs);
       const deny = editChannelRestrictionMode === 'deny';
       const modelSet = new Set();
-      allChannels.forEach(ch => {
+      getSelectableChannels().forEach(ch => {
         const id = normalizeChannelID(ch.id);
         const inList = restrictedChannelIDs.has(id);
         if (deny) {
@@ -1199,9 +1215,7 @@
         } else if (!inList) {
           return;
         }
-        (ch.models || []).forEach(m => {
-          if (m.model) modelSet.add(m.model);
-        });
+        addEnabledChannelModels(modelSet, ch);
       });
       return Array.from(modelSet).sort();
     }
@@ -1430,7 +1444,8 @@
       if (!container) return;
 
       const existingChannelIDs = new Set(editAllowedChannelIDs);
-      const availableChannels = allChannels.filter(ch => !existingChannelIDs.has(normalizeChannelID(ch.id)));
+      const selectableChannels = getSelectableChannels();
+      const availableChannels = selectableChannels.filter(ch => !existingChannelIDs.has(normalizeChannelID(ch.id)));
       let channels = availableChannels;
 
       if (searchText) {
@@ -1444,7 +1459,7 @@
         const hasFilter = Boolean(searchText);
         const message = hasFilter
           ? t('tokens.noMatchingChannel')
-          : allChannels.length === 0
+          : selectableChannels.length === 0
             ? t('tokens.noChannelsConfigured')
             : t('tokens.allChannelsAdded');
         container.innerHTML = `<div class="available-channels-empty">${message}</div>`;

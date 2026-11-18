@@ -1037,7 +1037,7 @@ window.I18N_LOCALES['en'] = {
   'tokens.noModelRestriction': 'No model restrictions (all models allowed)',
   'tokens.noChannelRestriction': 'No channel restrictions (all channels allowed)',
   'tokens.noMatchingChannel': 'No matching channels',
-  'tokens.noChannelsConfigured': 'No channels configured, create a channel first',
+  'tokens.noChannelsConfigured': 'No enabled channels, create or enable a channel first',
   'tokens.allChannelsAdded': 'All channels already added',
   'tokens.visibleChannelsCount': '({count})',
   'tokens.noMatchingModel': 'No matching models',
