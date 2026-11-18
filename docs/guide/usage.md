@@ -219,7 +219,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 If a Codex OAuth channel reports that automatic renewal has failed, reauthorize the account. Its current access token can continue serving requests while valid. When a refresh outcome is uncertain, such as a response lost after the provider processed the exchange, ccLoad persistently records the attempt and stops resubmitting that refresh token. Restarting, deleting the channel, or importing the same credential does not clear the restriction. Reauthorization with a new grant restores automatic renewal.
 
-Back up and restore the complete authoritative database, including credentials and refresh records. In hybrid storage mode, back up the local SQLite database. If it is lost and only the remote configuration replica is restored, the restored Codex OAuth channels require reauthorization; their access tokens remain usable while valid.
+Back up and restore the complete authoritative database, including credentials and refresh records. In hybrid storage mode, refresh records are written only to the local SQLite database after it is enabled, so back up both. If the local database is lost, restored credentials claim a refresh once, which may in rare cases trigger the provider's replay detection.
 
 Manage channels via Web interface `/web/channels.html` or API:
 

@@ -25,26 +25,55 @@ func createTestStoreForSync(t *testing.T, suffix string) *sqlstore.SQLStore {
 }
 
 /**
- * @brief 验证首次恢复仅封锁 Codex OAuth 刷新授权，并保留已有本地 journal
+ * @brief 验证首次恢复搬运主库刷新记录、保留本地权威记录，且不再伪造未完成申领
  * @param t 测试上下文
  */
-func TestSyncManager_RestoreOnStartup_BlocksRestoredCodexRefreshGrants(t *testing.T) {
+func TestSyncManager_RestoreOnStartup_RestoresCodexRefreshJournal(t *testing.T) {
 	source := createTestStoreForSync(t, "refresh_source")
 	target := createTestStoreForSync(t, "refresh_target")
 	t.Cleanup(func() { _ = source.Close(); _ = target.Close() })
 	ctx := context.Background()
 	channelID := createCodexQuotaChannel(t, source, time.Now())
-	key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "refresh")
-	localKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "local-refresh")
-	for store, claimKey := range map[Store]string{source: key, target: localKey} {
-		if claimed, err := store.RefreshClaim(ctx, claimKey, "test-owner"); err != nil || !claimed {
-			t.Fatalf("claim = (%v, %v)", claimed, err)
-		}
-		if err := store.RefreshComplete(ctx, claimKey, []byte(`{"access_token":"saved"}`)); err != nil {
-			t.Fatal(err)
+	restoredKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "refresh")
+	sharedKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "shared")
+	pendingKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "remote-pending")
+	unknownKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "unknown")
+	localPendingKey := codexauth.RefreshGrantKey(codexauth.DefaultClientID, "local-pending")
+
+	// 主库：渠道 grant 已完成续期；另有与本地重名的完成记录、一条真实未完成记录。
+	for _, key := range []string{restoredKey, sharedKey, pendingKey} {
+		if claimed, err := source.RefreshClaim(ctx, key, "source-owner"); err != nil || !claimed {
+			t.Fatalf("source claim = (%v, %v)", claimed, err)
 		}
 	}
+	if err := source.RefreshComplete(ctx, restoredKey, []byte(`{"access_token":"restored"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.RefreshComplete(ctx, sharedKey, []byte(`{"access_token":"remote"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 本地：同名记录已由本地完成，另一条本地记录仍未完成。
+	if claimed, err := target.RefreshClaim(ctx, sharedKey, "target-owner"); err != nil || !claimed {
+		t.Fatalf("target claim = (%v, %v)", claimed, err)
+	}
+	if err := target.RefreshComplete(ctx, sharedKey, []byte(`{"access_token":"local"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := target.RefreshClaim(ctx, localPendingKey, "target-owner"); err != nil || !claimed {
+		t.Fatalf("target pending claim = (%v, %v)", claimed, err)
+	}
+
+	// 主库没有这条凭据的任何刷新记录：恢复后不得凭空建行。
+	unknownCredential, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "unknown-access", RefreshToken: "unknown",
+		Expired: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, cfg := range []*model.Config{
+		{Name: "codex-unknown", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: unknownCredential},
 		{Name: "codex-pat", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: `{"type":"codex","auth_mode":"personalAccessToken","access_token":"at-static"}`},
 		{Name: "other-provider", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: `{"type":"antigravity","access_token":"access","refresh_token":"other-refresh","expired":"2030-01-01T00:00:00Z"}`},
 	} {
@@ -57,14 +86,24 @@ func TestSyncManager_RestoreOnStartup_BlocksRestoredCodexRefreshGrants(t *testin
 	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
-	if receipt, exists, err := target.RefreshRead(ctx, key); err != nil || !exists || receipt != nil {
-		t.Fatalf("restored grant = (%q, %v, %v), want pending", receipt, exists, err)
+	// 主库的完成回执搬入：渠道 grant 恢复正常续期，不再被伪造成未完成。
+	if receipt, exists, err := target.RefreshRead(ctx, restoredKey); err != nil || !exists || string(receipt) != `{"access_token":"restored"}` {
+		t.Fatalf("restored grant = (%q, %v, %v), want restored receipt", receipt, exists, err)
 	}
-	if claimed, err := target.RefreshClaim(ctx, key, "test-owner"); err != nil || claimed {
-		t.Fatalf("restored claim = (%v, %v), want (false, nil)", claimed, err)
+	// 同名 grant 以本地权威记录为准，不被主库覆盖。
+	if receipt, exists, err := target.RefreshRead(ctx, sharedKey); err != nil || !exists || string(receipt) != `{"access_token":"local"}` {
+		t.Fatalf("local record = (%q, %v, %v), want local receipt", receipt, exists, err)
 	}
-	if receipt, exists, err := target.RefreshRead(ctx, localKey); err != nil || !exists || string(receipt) != `{"access_token":"saved"}` {
-		t.Fatalf("existing local receipt = (%q, %v, %v)", receipt, exists, err)
+	if receipt, exists, err := target.RefreshRead(ctx, localPendingKey); err != nil || !exists || receipt != nil {
+		t.Fatalf("local pending = (%q, %v, %v), want pending", receipt, exists, err)
+	}
+	// 主库搬运的未完成记录保持原样，不得被顺手放行。
+	if receipt, exists, err := target.RefreshRead(ctx, pendingKey); err != nil || !exists || receipt != nil {
+		t.Fatalf("restored pending = (%q, %v, %v), want pending", receipt, exists, err)
+	}
+	// 主库没有记录的 grant 不建行。
+	if receipt, exists, err := target.RefreshRead(ctx, unknownKey); err != nil || exists || receipt != nil {
+		t.Fatalf("unknown grant = (%q, %v, %v), want absent", receipt, exists, err)
 	}
 	cfg, err := target.GetConfig(ctx, channelID)
 	if err != nil {
@@ -75,42 +114,25 @@ func TestSyncManager_RestoreOnStartup_BlocksRestoredCodexRefreshGrants(t *testin
 		t.Fatalf("restored credential changed: %v", err)
 	}
 	configs, err := target.ListConfigs(ctx)
-	if err != nil || len(configs) != 3 {
-		t.Fatalf("restored channels = (%d, %v), want 3", len(configs), err)
+	if err != nil || len(configs) != 4 {
+		t.Fatalf("restored channels = (%d, %v), want 4", len(configs), err)
 	}
 	var journalCount int
-	if err := target.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_refresh_journal`).Scan(&journalCount); err != nil || journalCount != 2 {
-		t.Fatalf("journal count = (%d, %v), want 2", journalCount, err)
+	if err := target.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_refresh_journal`).Scan(&journalCount); err != nil || journalCount != 4 {
+		t.Fatalf("journal count = (%d, %v), want 4", journalCount, err)
 	}
-	if err := target.RefreshComplete(ctx, key, []byte(`{"access_token":"recovered"}`)); err != nil {
-		t.Fatal(err)
+	// 搬入的真实未完成记录仍不可重放；没有记录的 grant 可以正常申领一次。
+	if claimed, err := target.RefreshClaim(ctx, pendingKey, "probe-owner"); err != nil || claimed {
+		t.Fatalf("restored pending claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if claimed, err := target.RefreshClaim(ctx, unknownKey, "probe-owner"); err != nil || !claimed {
+		t.Fatalf("unknown grant claim = (%v, %v), want (true, nil)", claimed, err)
 	}
 	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
-	if receipt, exists, err := target.RefreshRead(ctx, key); err != nil || !exists || string(receipt) != `{"access_token":"recovered"}` {
-		t.Fatalf("restored grant overwrote local receipt = (%q, %v, %v)", receipt, exists, err)
-	}
-}
-
-/**
- * @brief 验证损坏的恢复凭据阻止配置和刷新申领一起提交
- * @param t 测试上下文
- */
-func TestSyncManager_RestoreOnStartup_InvalidCodexCredentialRollsBack(t *testing.T) {
-	source := createTestStoreForSync(t, "invalid_refresh_source")
-	target := createTestStoreForSync(t, "invalid_refresh_target")
-	t.Cleanup(func() { _ = source.Close(); _ = target.Close() })
-	ctx := context.Background()
-	channelID := createCodexQuotaChannel(t, source, time.Now())
-	if _, err := source.ExecContext(ctx, `UPDATE channels SET oauth_credential = ? WHERE id = ?`, "{broken", channelID); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err == nil {
-		t.Fatal("invalid restored credential was accepted")
-	}
-	if configs, err := target.ListConfigs(ctx); err != nil || len(configs) != 0 {
-		t.Fatalf("failed restore left channels = (%d, %v)", len(configs), err)
+	if receipt, exists, err := target.RefreshRead(ctx, sharedKey); err != nil || !exists || string(receipt) != `{"access_token":"local"}` {
+		t.Fatalf("second restore overwrote local record = (%q, %v, %v)", receipt, exists, err)
 	}
 }
 

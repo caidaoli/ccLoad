@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/codexauth"
-	"ccLoad/internal/model"
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
@@ -37,11 +35,11 @@ func NewSyncManager(primary, sqlite *sqlstore.SQLStore) *SyncManager {
 }
 
 /**
- * @brief 首次初始化时从主库快照恢复配置，并封锁无法确认刷新历史的 Codex 授权
+ * @brief 首次初始化时从主库快照恢复配置与 Codex 刷新历史
  * @param ctx 恢复上下文
  * @param logDays 日志恢复天数；-1 为全部，0 跳过日志，正数为最近天数
- * @return 配置快照读取、凭据解析或 SQLite 恢复事务失败时返回错误
- * @note 配置与 Codex 刷新申领在同一事务提交；不清理已有刷新记录
+ * @return 配置快照读取、Codex 刷新记录补录或 SQLite 恢复事务失败时返回错误
+ * @note 配置与 Codex 刷新记录在同一事务提交；刷新记录只补本地缺少的项，不覆盖本地已有记录
  */
 func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error {
 	start := time.Now()
@@ -82,8 +80,8 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 			return fmt.Errorf("恢复表 %s 失败: %w", table, err)
 		}
 	}
-	if err := blockRestoredCodexRefreshGrants(ctx, sqliteTx); err != nil {
-		return fmt.Errorf("封锁恢复的 Codex 刷新授权失败: %w", err)
+	if err := restoreCodexRefreshJournal(ctx, primaryTx, sqliteTx); err != nil {
+		return fmt.Errorf("恢复 Codex 刷新记录失败: %w", err)
 	}
 	if err := primaryTx.Commit(); err != nil {
 		return fmt.Errorf("提交主库配置快照失败: %w", err)
@@ -105,36 +103,54 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 }
 
 /**
- * @brief 为恢复的 Codex OAuth 凭据预置申领，防止旧主库凭据重放未知结果的刷新
+ * @brief 把主库的 Codex 刷新记录补进 SQLite，不覆盖本地已有记录
  * @param ctx 恢复事务上下文
- * @param tx 包含恢复后渠道数据的 SQLite 事务
- * @return 渠道查询、凭据解析或刷新申领插入失败时返回错误
- * @note 仅用于主库首次恢复；保留访问令牌、PAT 与已有刷新回执
+ * @param source 主库只读恢复事务
+ * @param target 包含恢复后渠道数据的 SQLite 事务
+ * @return 主库查询或 SQLite 写入失败时返回错误
+ * @note 只补 SQLite 中不存在的 grant，本地权威记录优先；不复制 claim_owner，
+ *       无回执的记录一律按未完成处理，宁可要求重新授权也不重放。
+ * @details 这里搬迁的是真实提交历史。历史不明确实不能刷新，但不能靠伪造一条
+ *          未完成记录来表达：那会把"我不知道"写成"已申领未完成"，误杀健康凭据。
+ *          搬入的未完成记录保持不可重放；因不复制 claim_owner，它们也无法通过
+ *          RefreshRelease 回收，只能由运维确认安全后手工清理。
  */
-func blockRestoredCodexRefreshGrants(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `SELECT oauth_credential FROM channels WHERE auth_type = ?`, model.AuthTypeCodexOAuth)
+func restoreCodexRefreshJournal(ctx context.Context, source, target *sql.Tx) error {
+	rows, err := source.QueryContext(ctx, `SELECT grant_key, receipt FROM codex_refresh_journal`)
 	if err != nil {
-		return err
+		return fmt.Errorf("读取主库 Codex 刷新记录失败: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+
+	const insertQuery = `INSERT INTO codex_refresh_journal (grant_key, receipt) VALUES (?, ?) ON CONFLICT(grant_key) DO NOTHING`
+	restored := 0
 	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return err
+		var key string
+		var receipt sql.NullString
+		if err := rows.Scan(&key, &receipt); err != nil {
+			return fmt.Errorf("扫描主库 Codex 刷新记录失败: %w", err)
 		}
-		credential, err := codexauth.ParseCredential([]byte(raw))
+		var receiptArg any
+		if receipt.Valid {
+			receiptArg = receipt.String
+		}
+		result, err := target.ExecContext(ctx, insertQuery, key, receiptArg)
 		if err != nil {
-			return fmt.Errorf("解析恢复的 Codex 凭据: %w", err)
+			return fmt.Errorf("补录 Codex 刷新记录失败: %w", err)
 		}
-		if credential.RefreshToken == "" {
-			continue
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("读取 Codex 刷新记录补录结果失败: %w", err)
 		}
-		key := codexauth.RefreshGrantKey(codexauth.DefaultClientID, credential.RefreshToken)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO codex_refresh_journal (grant_key) VALUES (?) ON CONFLICT(grant_key) DO NOTHING`, key); err != nil {
-			return err
+		if affected > 0 {
+			restored++
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("读取主库 Codex 刷新记录失败: %w", err)
+	}
+	log.Printf("[INFO] Codex 刷新记录恢复完成，补录 %d 条", restored)
+	return nil
 }
 
 // RestoreLogsOnStartup 从主库增量补齐 SQLite 日志尾部。
