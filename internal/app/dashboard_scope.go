@@ -150,6 +150,7 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 		billingModel,
 		entry.ServiceTier,
 		rateCard,
+		entry.Time.Time,
 		price,
 		entry.InputTokens,
 		entry.OutputTokens,

@@ -3,6 +3,7 @@ package util_test
 import (
 	"math"
 	"testing"
+	"time"
 
 	"ccLoad/internal/util"
 )
@@ -41,7 +42,7 @@ func TestDecisionModelPriceLuna(t *testing.T) {
 			if tc.high {
 				input, read, short, long = 0.20, 0.02, 0.25, 0.50
 			}
-			got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "", util.OpenAIRateCardAPI, price, tc.input, 1_000_000, tc.read, 0, 0, tc.short, tc.long)
+			got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "", util.OpenAIRateCardAPI, time.Time{}, price, tc.input, 1_000_000, tc.read, 0, 0, tc.short, tc.long)
 			wantInput := float64(tc.input) * input / 1e6
 			wantRead := float64(tc.read) * read / 1e6
 			wantWrite := (float64(tc.short)*short + float64(tc.long)*long) / 1e6
@@ -120,7 +121,7 @@ func TestCalculateCostWithPriceKeepsSystemTierSemantics(t *testing.T) {
 func TestCalculateStandardCostBreakdownWithPriceAppliesFastMode(t *testing.T) {
 	price := &util.CustomModelPrice{InputPrice: new(2.0), OutputPrice: new(10.0)}
 	// 渠道输入、输出及缓存读写均叠加 fast 倍率。
-	fast := util.CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", util.OpenAIRateCardAPI, price, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 0, 0)
+	fast := util.CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", util.OpenAIRateCardAPI, time.Time{}, price, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 0, 0)
 	if math.Abs(fast.Total-37.4) > 1e-12 || fast.ServiceTierMultiplier != 2 {
 		t.Fatalf("fast breakdown=%#v, want total 37.4 with multiplier 2", fast)
 	}
@@ -190,7 +191,7 @@ func TestOpenAICacheWriteTTLCost(t *testing.T) {
 		{"high explicit free", &util.CustomModelPrice{InputPrice: new(1.0), OutputPrice: new(0.0), InputPriceHigh: new(2.0), OutputPriceHigh: new(0.0), CacheWrite12hPriceHigh: new(0.0)}, "", 0, 0, 1_000_000, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", tc.tier, util.OpenAIRateCardAPI, tc.price, tc.input, 0, 0, 0, 0, tc.short, tc.long)
+			got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", tc.tier, util.OpenAIRateCardAPI, time.Time{}, tc.price, tc.input, 0, 0, 0, 0, tc.short, tc.long)
 			if math.Abs(got.Total-tc.want) > 1e-12 || got.CacheWrite.Quantity != tc.short+tc.long {
 				t.Fatalf("breakdown=%+v want=%v", got, tc.want)
 			}
@@ -200,7 +201,7 @@ func TestOpenAICacheWriteTTLCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
-	got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, nil, 0, 0, 0, 0, 0, 0, 1_000_000)
+	got := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, time.Time{}, nil, 0, 0, 0, 0, 0, 0, 1_000_000)
 	if got.Total != 4 {
 		t.Fatalf("global custom TTL=%+v", got)
 	}
@@ -252,8 +253,8 @@ func TestOpenAICacheWriteTTLEffectivePricingRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, input := range []int{0, 300_000} {
-				before := util.CalculateStandardCostBreakdownWithPrice(tc.model, "", util.OpenAIRateCardAPI, nil, input, 0, 0, 0, 0, 100_000, 100_000)
-				after := util.CalculateStandardCostBreakdownWithPrice(tc.model, "", util.OpenAIRateCardAPI, price, input, 0, 0, 0, 0, 100_000, 100_000)
+				before := util.CalculateStandardCostBreakdownWithPrice(tc.model, "", util.OpenAIRateCardAPI, time.Time{}, nil, input, 0, 0, 0, 0, 100_000, 100_000)
+				after := util.CalculateStandardCostBreakdownWithPrice(tc.model, "", util.OpenAIRateCardAPI, time.Time{}, price, input, 0, 0, 0, 0, 100_000, 100_000)
 				if math.Abs(before.Total-after.Total) > 1e-12 {
 					t.Fatalf("input=%d cost changed from %+v to %+v after prefill: %+v", input, before, after, price)
 				}

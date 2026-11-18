@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"testing"
+	"time"
 
 	"ccLoad/internal/util"
 )
@@ -95,8 +96,8 @@ func TestHandleGetModelPricingPreservesFreeHighContextTTL(t *testing.T) {
 	if _, err := price.ModelPricing(); err != nil {
 		t.Fatalf("effective API pricing cannot be saved: %v", err)
 	}
-	before := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, nil, 0, 0, 0, 0, 0, 0, 1_000_000)
-	after := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, price, 0, 0, 0, 0, 0, 0, 1_000_000)
+	before := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, time.Time{}, nil, 0, 0, 0, 0, 0, 0, 1_000_000)
+	after := util.CalculateStandardCostBreakdownWithPrice("gpt-6-luna", "fast", util.OpenAIRateCardAPI, time.Time{}, price, 0, 0, 0, 0, 0, 0, 1_000_000)
 	if before.Total != 4 || after.Total != before.Total {
 		t.Fatalf("effective API changed high-context TTL costs: before=%+v after=%+v", before, after)
 	}

@@ -1409,6 +1409,7 @@ func computeRequestCostWithPrice(model string, serviceTier string, price *util.C
 		model,
 		serviceTier,
 		res.RateCard,
+		time.Now(),
 		price,
 		res.InputTokens,
 		res.OutputTokens,

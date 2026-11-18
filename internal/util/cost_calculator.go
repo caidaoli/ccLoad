@@ -268,6 +268,7 @@ func CalculateCostDetailedWithPrice(model string, price *CustomModelPrice, input
  * @param model 计费模型名称。
  * @param serviceTier 上游实际 service_tier 或 speed。
  * @param rateCard API 或 Codex OAuth 的倍率价目。
+ * @param billedAt 计费时刻，决定限时 service_tier 倍率；看板重算传日志时间。
  * @param price 渠道价格覆盖，nil 时沿用全局或系统目录。
  * @param inputTokens 已归一化的普通输入量。
  * @param outputTokens 输出量。
@@ -281,6 +282,7 @@ func CalculateCostDetailedWithPrice(model string, price *CustomModelPrice, input
 func CalculateStandardCostBreakdownWithPrice(
 	model, serviceTier string,
 	rateCard OpenAIRateCard,
+	billedAt time.Time,
 	price *CustomModelPrice,
 	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens, cache30mTokens, cache12hTokens int,
 ) StandardCostBreakdown {
@@ -303,7 +305,7 @@ func CalculateStandardCostBreakdownWithPrice(
 		cache5mTokens,
 		cache1hTokens, cache30mTokens, cache12hTokens,
 	)
-	multiplier := OpenAIServiceTierMultiplier(model, serviceTier, rateCard)
+	multiplier := OpenAIServiceTierMultiplier(model, serviceTier, rateCard, billedAt)
 	if multiplier != 1 {
 		breakdown.ServiceTierMultiplier = multiplier
 	}
@@ -625,12 +627,19 @@ const (
 	OpenAIRateCardCodexCredits
 )
 
-// OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
-// Codex 的 auto 按 Fast 计费；priority 与 fast 使用相同官方倍率。
-// API 价目的 Ultrafast 按项目计费规则统一为 6x；flex=0.5x。
-// default/standard/""=1x（标准）。
-// https://developers.openai.com/codex/speed （2026-10-12）
-func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateCard) float64 {
+/**
+ * @brief 返回 OpenAI service_tier 的费用倍率
+ * @param model 计费模型名，可带日期快照后缀
+ * @param serviceTier 上游响应的 service_tier；default/standard/空为标准价
+ * @param rateCard API 或 Codex OAuth 的倍率价目
+ * @param billedAt 计费时刻，仅用于判定 GPT-6.2 API Ultrafast 优惠期
+ * @return 倍率；白名单外模型或标准档返回 1
+ * @details Codex 的 auto 按 Fast 计费；priority 与 fast 使用相同官方倍率；flex=0.5x。
+ * API 价目的 Ultrafast 按项目计费规则统一为 6x，GPT-6.2 在官方优惠期内为 3x。
+ * https://developers.openai.com/codex/speed （2026-10-12）、
+ * https://developers.openai.com/api/docs/pricing （2026-11-18）
+ */
+func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateCard, billedAt time.Time) float64 {
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
 	if serviceTier == "" || serviceTier == "default" {
 		return 1.0
@@ -640,8 +649,11 @@ func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateC
 	}
 	switch serviceTier {
 	case "ultrafast":
-		if rateCard == OpenAIRateCardCodexAllowance {
+		switch {
+		case rateCard == OpenAIRateCardCodexAllowance:
 			return 8.0
+		case rateCard == OpenAIRateCardAPI && isGPT62UltrafastPromo(model, billedAt):
+			return 3.0
 		}
 		return 6.0
 	case "auto", "priority", "fast":
@@ -657,6 +669,21 @@ func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateC
 	default:
 		return 1.0
 	}
+}
+
+/**
+ * @brief GPT-6.2 API Ultrafast 优惠截止时刻（不含），官方 "through February 28, 2027"，按 UTC 日界
+ */
+var gpt62UltrafastPromoEnd = time.Date(2027, time.March, 1, 0, 0, 0, 0, time.UTC)
+
+/**
+ * @brief 判断 GPT-6.2 模型在计费时刻是否处于 API Ultrafast 3x 优惠期
+ * @param model 已通过 service_tier 白名单的计费模型名
+ * @param billedAt 计费时刻
+ * @return 属于 gpt-6.2 系列且早于优惠截止时刻时返回 true
+ */
+func isGPT62UltrafastPromo(model string, billedAt time.Time) bool {
+	return strings.HasPrefix(strings.ToLower(model), "gpt-6.2-") && billedAt.Before(gpt62UltrafastPromoEnd)
 }
 
 // IsOpenAIAstraModel identifies Astra and its dated snapshots, excluding other variants.
