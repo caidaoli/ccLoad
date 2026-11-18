@@ -257,7 +257,8 @@ func reasoningChoiceMass(answer gjson.Result, question string, levels []string, 
  * @return 答案或概率无效时返回错误；成功时为 nil
  * @details 已校准模型的 effort 低于 high 且 high 及以上概率之和达到阈值时升为 high；
  * 进入 depth 后按 xhigh 及以上概率之和判 xhigh 或 high，不再采用 depth 的 choice。
- * 未附概率时沿用 choice；置信度始终取 effort 原始答案。
+ * 未附概率时沿用 choice，但 depth 选 max 降为 xhigh：生产盲标注中这类样本多为 xhigh 级；
+ * effort 直接选 max 时保留。置信度始终取 effort 原始答案。
  */
 func parseReasoningDecision(response []byte, provider, actualModel string, prompt model.ReasoningPrompt, levels []string) (string, *float64, error) {
 	answer := reasoningDecisionAnswer(response, provider, "effort")
@@ -296,9 +297,9 @@ func parseReasoningDecision(response []byte, provider, actualModel string, promp
 				}
 			}
 		}
-	}
-	if effort == "max" {
-		effort = levels[slices.Index(levels, effort)-1]
+		if effort == "max" {
+			effort = "xhigh"
+		}
 	}
 	return effort, confidence, nil
 }
