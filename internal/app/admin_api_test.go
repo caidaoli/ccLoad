@@ -205,7 +205,9 @@ func TestAdminAPI_CSVExportImportsChannelManagementEnvelope(t *testing.T) {
 	t.Parallel()
 	server := newInMemoryServer(t)
 	ctx := context.Background()
-	managementEnvelope := `{"kind":"channel_management","version":1,"profile":"new_api","settings":{"base_url":"https://panel.example.com","access_token":"management-export-token","daily_checkin_enabled":true,"daily_checkin_time":"09:30"},"state":{"last_scheduled_day":"2026-08-25","last_checkin_status":"success"}}`
+	// Today's scheduled day keeps the server's background check-in scan from rewriting the envelope.
+	scheduledDay := time.Now().Format("2006-01-02")
+	managementEnvelope := `{"kind":"channel_management","version":1,"profile":"new_api","settings":{"base_url":"https://panel.example.com","access_token":"management-export-token","daily_checkin_enabled":true,"daily_checkin_time":"09:30"},"state":{"last_scheduled_day":"` + scheduledDay + `","last_checkin_status":"success"}}`
 	oauthCredential := `{"type":"codex","access_token":"oauth-export-access","refresh_token":"oauth-export-refresh","expired":"2030-01-01T00:00:00Z"}`
 
 	managed, err := server.store.CreateConfig(ctx, &model.Config{
@@ -331,7 +333,7 @@ func TestAdminAPI_CSVExportImportsChannelManagementEnvelope(t *testing.T) {
 		!persistedManagement.Settings.DailyCheckinEnabled || persistedManagement.Settings.DailyCheckinTime != "09:30" {
 		t.Fatalf("imported management settings=%+v", persistedManagement.Settings)
 	}
-	if persistedManagement.State.LastScheduledDay != "2026-08-25" || persistedManagement.State.LastCheckinStatus != "success" {
+	if persistedManagement.State.LastScheduledDay != scheduledDay || persistedManagement.State.LastCheckinStatus != "success" {
 		t.Fatalf("imported management state changed: %+v", persistedManagement.State)
 	}
 	checkinHeader := append(append([]string(nil), baseHeader...), "management_daily_checkin_enabled", "management_daily_checkin_time")
@@ -354,7 +356,7 @@ func TestAdminAPI_CSVExportImportsChannelManagementEnvelope(t *testing.T) {
 		t.Fatalf("explicit empty checkin settings=%+v", persistedManagement.Settings)
 	}
 	if persistedManagement.Settings.AccessToken != "management-export-token" ||
-		persistedManagement.State.LastScheduledDay != "2026-08-25" || persistedManagement.State.LastCheckinStatus != "success" {
+		persistedManagement.State.LastScheduledDay != scheduledDay || persistedManagement.State.LastCheckinStatus != "success" {
 		t.Fatalf("explicit empty checkin changed private management data: %+v", persistedManagement)
 	}
 }
