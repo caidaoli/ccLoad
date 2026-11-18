@@ -88,6 +88,8 @@
 
 ## 隐私脱敏
 
+- MCP `*_tool_use.input` 以及 Responses `*_call` 的 `arguments/input/action/operation` 属于工具负载；其中的 `data`、`*_id` 等字段是用户数据，而非协议信封。内置规则补充 Cloudflare 凭据及正文中的鉴权头示例（不改实际 HTTP 鉴权头），识别文件名中的邮箱；空赋值不占用下一字段，到期时间不因字段名含 `token` 被遮蔽。对照 Magpie 提交 `d7714b3f3`、`ab98228cc`、`dc133b88f`、`8d4d8b2d5`、`e4b0555a1`，不引入其模型或运行时。
+
 - `privacy.go` 为 HTTP/Responses WS turn 创建按调用方隔离的 Session，在入口协议转换和动态思考判断前遮蔽正文；完整重放体、原生 WS 增量体同时处理。`buildProxyRequest` 在渠道 BodyRules 与 wire 修复后、CCH 重签/压缩/Debug capture 前再处理最终正文，防止注入或重试解码引入明文。ZAI 的该次扫描随最终化移至 `prepareZAIPackageRequest`：Paid 保持在 CCH 前，Trial 在新增环境与包装后再次扫描；仍复用本次 Session，失败在 Debug/外发计数前阻止请求。System One 判断调用的 transcript 与规则处理后正文同样受本次 Session 约束。count_tokens 本地估算的所有出口（含早于共享遮蔽块的令牌模型白名单拒绝）都使用遮蔽后正文，Debug 记录与其他回退路径一致。鉴权头仍为真实凭证，不改模型名、协议 ID、工具名/Schema 结构、签名密文及图片文件数据。
 - `privacy_output.go` 位于下游输出边界，在协议转换和 usage 统计之后还原；HTTP 通过 Gin 适配器接入，Responses WS 在 SSE bridge 前接入。非流式按 JSON 字符串值还原，非 JSON 正文（纯文本/HTML 错误页）按文本还原；SSE 按 choice/tool/block/item/candidate 内容通道拼接跨帧占位符，保留事件顺序、元数据和终态，工具参数做双层 JSON 转义。Gemini 同一 candidate 的非思考文本 part 视为一个通道。客户端会跨工具调用拼接同一 choice/candidate 的文本，所以切到其他通道或工具调用时不释放挂起前缀（含 `{` 等歧义前缀）：续写到达即还原，否则随通道终态或 Finish 原样释放；代价是文本恰以前缀结尾时后续事件延迟到续写或终态，不能为降延迟提前放行。HTTP 最终错误也经过还原；WS 在判断 bridge.completed 前必须 Finish，执行历史存储还原后的输出。
 - 签名推理双向原样透传（`internal/privacy/json.go:signedObject/reasoningObject`）：请求侧跳过带签名的 thinking / `reasoning.*` 块与带 thoughtSignature 且 `thought:true` 的 Gemini part；响应侧不还原 thinking、thinking_delta、`reasoning.*`、`thought:true` part（SSE 不收集这些通道）。厂商签的是遮蔽后的正文，客户端回传占位符即可通过校验，重启丢字典或关闭脱敏也不影响。Gemini 非思考 part 即使带 thoughtSignature 也照常遮蔽/还原；Responses reasoning 摘要无签名，照常处理；opaque encrypted_content 原样保留。普通文本、工具输入输出和工具描述可扫描，Schema枚举/默认值等契约数据不替换。

@@ -197,6 +197,15 @@ func (s *Session) walk(value gjson.Result, restore bool, ctx jsonContext, p *jso
 	return nil
 }
 
+/**
+ * @brief 遍历协议对象，工具负载继承数据语义，调用信封仍保留协议字段。
+ * @param members 当前对象的有序成员。
+ * @param restore 是否还原而非遮蔽。
+ * @param parent 当前对象从父节点继承的上下文。
+ * @param p 当前文档的替换记录。
+ * @param depth JSON 嵌套深度。
+ * @return 遍历或替换失败时的错误，成功为 nil。
+ */
 func (s *Session) walkObject(members []jsonMember, restore bool, parent jsonContext, p *jsonPatcher, depth int) error {
 	event, role := lastString(members, "type"), lastString(members, "role")
 	if !parent.data && (restore && reasoningObject(members, event) || !restore && signedObject(members, event)) {
@@ -226,7 +235,8 @@ func (s *Session) walkObject(members []jsonMember, restore bool, parent jsonCont
 			key == "response" && (parent.key == "functionResponse" || parent.key == "function_response")) {
 			ctx.toolResult = true
 		}
-		if key == "input" && (event == "tool_use" || event == "server_tool_use") ||
+		if key == "input" && (event == "tool_use" || strings.HasSuffix(event, "_tool_use")) ||
+			(key == "input" || key == "action" || key == "operation") && strings.HasSuffix(event, "_call") ||
 			key == "args" && (parent.key == "functionCall" || parent.key == "function_call") ||
 			key == "response" && (parent.key == "functionResponse" || parent.key == "function_response") ||
 			key == "arguments" || key == "output" && event == "function_call_output" || key == "content" && role == "tool" {
@@ -311,7 +321,7 @@ func (s *Session) walkString(value gjson.Result, restore bool, ctx jsonContext, 
 		}
 	case restore:
 		out = s.restore(item, arguments)
-	case ctx.data && s.policy.config.Secrets && len(item) >= 8 && secretName(ctx.key) && realValue(item) && !s.policy.allowed(item):
+	case ctx.data && s.policy.namedSecret(ctx.key, item):
 		out, err = s.apply(item, []match{{0, len(item), "SECRET", ""}})
 	default:
 		out, err = s.maskText(item)
@@ -542,7 +552,7 @@ func (s *Session) collectDecodedMatches(value gjson.Result, key string, p *jsonP
 		return err
 	}
 	found = append([]match(nil), found...)
-	if !p.known && s.policy.config.Secrets && len(text) >= 8 && secretName(key) && realValue(text) && !s.policy.allowed(text) {
+	if !p.known && s.policy.namedSecret(key, text) {
 		found = append(found, match{0, len(text), "SECRET", ""})
 	}
 	if len(found) > maxMatches {

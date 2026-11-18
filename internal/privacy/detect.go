@@ -3,6 +3,8 @@
 package privacy
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/netip"
 	"regexp"
 	"slices"
@@ -21,6 +23,7 @@ type detector struct {
 	check          func(string) bool
 	at             func(string, int, int) bool
 	groups         []string
+	field          bool ///< 捕获组 1 是赋值右侧；空赋值后从下一字段重新匹配。
 	gate           gate // set by NewPolicy
 }
 
@@ -44,13 +47,16 @@ var builtinRules = []detector{
 	pattern("API_KEY", "", `gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|xox[abposr]-[0-9A-Za-z-]{10,}|(?:sk|rk)_live_[0-9A-Za-z]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}`, tokenChars, nil),
 	pattern("API_KEY", "", `hf_[A-Za-z0-9]{30,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{50,}|dop_v1_[a-f0-9]{64}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`, tokenChars, nil),
 	pattern("TOKEN", "", `eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`, tokenChars, nil),
+	pattern("API_KEY", "", `cf(?:ut|at|k|oat)_[A-Za-z0-9_-]{40,}|v1\.0-[A-Za-z0-9]{16,}-[A-Za-z0-9]{40,}`, tokenChars, nil),
+	pattern("TOKEN", "", `eyJhIjoi[A-Za-z0-9+/_-]{40,}={0,2}`, tokenChars, cloudflareTunnel),
+	{kind: "SECRET", field: true, re: regexp.MustCompile(`(?i)\bx-auth-(?:user-service-)?key["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9._-]{16,})`), check: realValue},
 	pattern("PASSWORD", "", `[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]*:([^\s@/?#"'<>]{3,})@`, "", realValue),
-	{kind: "SECRET", re: regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:` + secretNames + `)[A-Za-z0-9_.-]*["']?[ \t]*[:=][ \t]*["']?(` + secretChars + `{8,})`), check: secretValue, at: secretAt},
-	{kind: "SECRET", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*_(?:KEY|PASS)["']?[ \t]*[:=][ \t]*["']?(` + secretChars + `{8,})`), check: secretValue, at: secretAt},
+	{kind: "SECRET", field: true, re: regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:` + secretNames + `)[A-Za-z0-9_.-]*["']?[ \t]*[:=][ \t]*["']?(` + secretChars + `{8,})`), check: secretValue, at: secretAt},
+	{kind: "SECRET", field: true, re: regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*_(?:KEY|PASS)["']?[ \t]*[:=][ \t]*["']?(` + secretChars + `{8,})`), check: secretValue, at: secretAt},
 	pattern("SECRET", "", `(?im)^[ \t]*(?:authorization|cookie)[ \t]*:[ \t]*(\S[^\r\n]{7,})`, "", realValue),
-	{kind: "SECRET", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_.-])["']?key["']?[ \t]*[:=][ \t]*["']?(` + secretChars + `{16,})`), check: secretValue, at: secretAt},
-	pattern("PASSWORD", "", `(?i)(?:密码|密碼|口令|PIN[ ]?[码碼]|安全[码碼]|パスワード|暗証番号|비밀번호|암호|비번)[ \t]*(?:[:：=][ \t]*|[为為是][ \t]*[:：]?[ \t]*|は[ \t]*|는[ \t]*)?["'“「]?(`+secretChars+`{3,63}[A-Za-z0-9_\-/+=~!@#%^&*])`, "", realValue),
-	{kind: "SECRET", re: regexp.MustCompile(`(?i)(?:密[钥鑰]|秘[钥鑰]|私[钥鑰]|金[钥鑰]|令牌|[权權]杖|授[权權][码碼]|秘密鍵|トークン|シークレット|APIキー|アクセスキー|토큰|비밀키|API[ ]?키|` + secretNames + `|api key|key)[ \t]*(?:[:：=][ \t]*|[为為是][ \t]*[:：]?[ \t]*|は[ \t]*|는[ \t]*)["'“「]?(` + secretChars + `{3,63}[A-Za-z0-9_\-/+=~!@#%^&*])`), check: secretValue, at: secretAt},
+	{kind: "SECRET", field: true, re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_.-])["']?key["']?[ \t]*[:=][ \t]*["']?(` + secretChars + `{16,})`), check: secretValue, at: secretAt},
+	{kind: "PASSWORD", field: true, re: regexp.MustCompile(`(?i)(?:密码|密碼|口令|PIN[ ]?[码碼]|安全[码碼]|パスワード|暗証番号|비밀번호|암호|비번)[ \t]*(?:[:：=][ \t]*|[为為是][ \t]*[:：]?[ \t]*|は[ \t]*|는[ \t]*)?["'“「]?(` + secretChars + `{3,63}[A-Za-z0-9_\-/+=~!@#%^&*])`), check: realValue},
+	{kind: "SECRET", field: true, re: regexp.MustCompile(`(?i)(?:密[钥鑰]|秘[钥鑰]|私[钥鑰]|金[钥鑰]|令牌|[权權]杖|授[权權][码碼]|秘密鍵|トークン|シークレット|APIキー|アクセスキー|토큰|비밀키|API[ ]?키|` + secretNames + `|api key|key)[ \t]*(?:[:：=][ \t]*|[为為是][ \t]*[:：]?[ \t]*|は[ \t]*|는[ \t]*)["'“「]?(` + secretChars + `{3,63}[A-Za-z0-9_\-/+=~!@#%^&*])`), check: secretValue, at: secretAt},
 	{kind: "EMAIL", category: "personal", re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`), bound: alnum + "_%+-", check: realEmail},
 	pattern("PHONE", "personal", `(?:\+?86[- ]?)?1[3-9]\d{9}`, alnum, nil),
 	pattern("ID_CARD", "personal", `[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]`, alnum, chineseID),
@@ -74,11 +80,35 @@ var builtinRules = []detector{
 	pattern("BUCKET", "bucket", `(?:s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com|storage\.googleapis\.com|[a-z0-9]{3,24}\.blob\.core\.windows\.net)/([A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9])`, "", bucketOK),
 }
 
-// matches returns the rule's submatch indices in text, searching only the
-// windows its gate allows.
+/**
+ * @brief 在规则允许的文本窗口内查找匹配；空赋值不消耗后续字段。
+ * @param text 待扫描文本。
+ * @param lower 用于定位的 ASCII 小写文本。
+ * @param unusualFold 是否需考虑非 ASCII 大小写折叠。
+ * @return 原文中的匹配及捕获组字节下标，至多超过命中上限一项。
+ */
 func (r detector) matches(text, lower string, unusualFold bool) [][]int {
 	var out [][]int
 	for _, w := range r.gate.windows(text, lower, unusualFold) {
+		if r.field {
+			for start := w[0]; start < w[1] && len(out) <= maxMatches; {
+				indices := r.re.FindStringSubmatchIndex(text[start:w[1]])
+				if indices == nil {
+					break
+				}
+				for index := range indices {
+					indices[index] += start
+				}
+				value := indices[2]
+				if (text[value-1] == ' ' || text[value-1] == '\t') && nextAssignment.MatchString(text[value:w[1]]) {
+					start = value
+					continue
+				}
+				out = append(out, indices)
+				start = indices[1]
+			}
+			continue
+		}
 		for _, indices := range r.re.FindAllStringSubmatchIndex(text[w[0]:w[1]], maxMatches+1-len(out)) {
 			for i := range indices {
 				if indices[i] >= 0 {
@@ -92,6 +122,33 @@ func (r detector) matches(text, lower string, unusualFold bool) [][]int {
 		}
 	}
 	return out
+}
+
+/**
+ * @brief 独立环境变量、logfmt 字段或命令行选项的赋值开头，不将 Base64 的填充等号认作字段。
+ */
+var nextAssignment = regexp.MustCompile(`^(?:[A-Z_][A-Z0-9_]*|[a-z_][a-z0-9_-]*|--?[A-Za-z][A-Za-z0-9_-]*)=[^=\s]`)
+
+/**
+ * @brief Tunnel token 须包含账号、隧道及密钥；避免将同前缀的普通 Base64 JSON 遮蔽。
+ * @param value 规则截取的完整 Base64 串。
+ * @return 是否为含上述三个非空字段的凭据。
+ */
+func cloudflareTunnel(value string) bool {
+	encoding := base64.RawStdEncoding
+	if strings.ContainsAny(value, "-_") {
+		encoding = base64.RawURLEncoding
+	}
+	raw, err := encoding.DecodeString(strings.TrimRight(value, "="))
+	if err != nil {
+		return false
+	}
+	var token struct {
+		Account string `json:"a"`
+		Tunnel  string `json:"t"`
+		Secret  string `json:"s"`
+	}
+	return json.Unmarshal(raw, &token) == nil && token.Account != "" && token.Tunnel != "" && token.Secret != ""
 }
 
 func (r detector) find(text, lower string, unusualFold bool) []match {
@@ -203,7 +260,21 @@ func pathValue(v string) bool {
 	return strings.HasPrefix(v, "~/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../") || strings.HasPrefix(v, "/") && strings.Contains(v[1:], "/")
 }
 
+/**
+ * @brief 校验文本密钥字段的上下文，排除时间戳、计量和代码引用。
+ * @param text 待扫描文本。
+ * @param a 候选值起始字节下标。
+ * @param b 候选值结束字节下标（不含）。
+ * @return 是否应保留这次密钥匹配。
+ */
 func secretAt(text string, a, b int) bool {
+	if b-a == len("2006-01-02T15") && b < len(text) && text[b] == ':' {
+		stamp := fieldTimestamp.FindString(text[a:])
+		end := a + len(stamp)
+		if stamp != "" && (end == len(text) || strings.ContainsRune(" \t\r\n,;\"'`})]", rune(text[end]))) {
+			return false
+		}
+	}
 	if strings.Trim(text[a:b], "0123456789") == "" {
 		after := strings.TrimLeft(text[b:], " \t")
 		for _, unit := range []string{"位", "毫秒", "秒", "分钟", "字节", "bits", "bytes", "tokens", "ms"} {
@@ -245,17 +316,52 @@ func notSlug(v string) bool {
 	return true
 }
 
+/**
+ * @brief 日期时间的文本前缀；调用方按文本分隔符或整个 JSON 值校验结束位置。
+ */
+var fieldTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?`)
+
+/**
+ * @brief 识别真实域名或带文件扩展名的邮箱，不把图片倍率及代码仓库地址当邮箱。
+ * @param v 邮箱候选文本。
+ * @return 去除文件后缀后是否仍有可识别的邮件域名。
+ */
 func realEmail(v string) bool {
 	user, host, ok := strings.Cut(v, "@")
 	if !ok {
 		return false
 	}
+	host = strings.ToLower(host)
+	for {
+		dot := strings.LastIndexByte(host, '.')
+		if dot < 0 {
+			return false
+		}
+		switch host[dot+1:] {
+		case "jpg", "jpeg", "png", "gif", "svg", "webp", "heic", "heif", "avif", "bmp", "tif", "tiff", "ico", "icns", "pdf",
+			"svgz", "apng", "jxl", "psd", "eps", "lottie", "webm", "mkv", "avi", "wav", "ogg", "flac", "aac", "ttf", "otf", "woff", "eot",
+			"json", "yaml", "yml", "toml", "xml", "txt", "csv", "tsv", "log", "html", "htm", "css", "scss", "less", "js", "mjs", "cjs", "jsx", "ts", "tsx",
+			"doc", "docx", "xls", "xlsx", "ppt", "pptx", "tar", "gz", "tgz", "rar", "dmg":
+			host = host[:dot]
+			continue
+		case "zip", "mov", "md", "map":
+			if assetScale.MatchString(host[:dot]) {
+				return false
+			}
+		}
+		break
+	}
 	if user == "git" && (host == "github.com" || host == "gitlab.com" || host == "bitbucket.org") {
 		return false
 	}
-	_, icann := publicsuffix.PublicSuffix(strings.ToLower(host))
+	_, icann := publicsuffix.PublicSuffix(host)
 	return icann && !strings.Contains(host, "..")
 }
+
+/**
+ * @brief 域名与扩展名重名时，用资源倍率（例如 2x）区分文件和邮箱。
+ */
+var assetScale = regexp.MustCompile(`^\d+(?:\.\d+)?x$`)
 
 func phoneAt(text string, a, b int) bool {
 	if b-a > 11 {
@@ -424,8 +530,26 @@ func bucketOK(v string) bool {
 
 var secretNameSeparators = strings.NewReplacer("_", "", "-", "")
 
+/**
+ * @brief 对工具参数及解码后的工具结果使用相同的命名密钥规则，保留完整时间戳。
+ * @param key 解码后的字段名。
+ * @param value 字段的字符串值。
+ * @return 是否应把整个值作为密钥遮蔽。
+ */
+func (p *Policy) namedSecret(key, value string) bool {
+	return p.config.Secrets && len(value) >= 8 && secretName(key) && realValue(value) && fieldTimestamp.FindString(value) != value && !p.allowed(value)
+}
+
+/**
+ * @brief 判定结构化工具数据中表明其值为凭据的字段名。
+ * @param key 字段名原文。
+ * @return 该字段是否按其名称保护。
+ */
 func secretName(key string) bool {
 	lower := strings.ToLower(secretNameSeparators.Replace(key))
+	if lower == "xauthkey" || lower == "xauthuserservicekey" {
+		return true
+	}
 	for _, word := range []string{"password", "passwd", "secret", "apikey", "accesskey", "privatekey", "token", "credential", "authorization", "cookie"} {
 		if strings.Contains(lower, word) && !strings.Contains(lower, "path") && !strings.Contains(lower, "file") && !strings.Contains(lower, "max_token") && !strings.Contains(lower, "maxtoken") {
 			return true

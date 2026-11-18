@@ -1,6 +1,7 @@
 package privacy_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -116,6 +117,16 @@ func TestBuiltinRules(t *testing.T) {
 		{"relay-letters", "oc_sk_AbCDefGHijKLmnOPqrSTuvWX", "oc_sk_"},
 		{"ark", "ark-ABcDef012345678901234567890123456", "ark-"},
 		{"github", "ghp_" + strings.Repeat("A9", 20), "ghp_"},
+		{"cloudflare-user", "cfut_" + strings.Repeat("A9", 20), "cfut_"},
+		{"cloudflare-account", "cfat_" + strings.Repeat("A9", 20), "cfat_"},
+		{"cloudflare-global", "cfk_" + strings.Repeat("A9", 20), "cfk_"},
+		{"cloudflare-oauth", "cfoat_" + strings.Repeat("A9", 20), "cfoat_"},
+		{"cloudflare-origin", "v1.0-" + strings.Repeat("c", 16) + "-" + strings.Repeat("d", 40), "v1.0-"},
+		{"cloudflare-tunnel", base64.StdEncoding.EncodeToString([]byte(`{"a":"account-for-test","t":"tunnel-for-test","s":"synthetic-secret"}`)), "eyJhIjoi"},
+		{"cloudflare-header", "X-Auth-Key: " + strings.Repeat("c", 37), strings.Repeat("c", 37)},
+		{"cloudflare-origin-header", "X-Auth-User-Service-Key: " + strings.Repeat("d", 40), strings.Repeat("d", 40)},
+		{"email-in-pdf", "send invoices/lea" + "@acme.com.PDF", "@acme.com"},
+		{"email-in-archive", "backup lea" + "@acme.com.tar.gz", "@acme.com"},
 		{"aws", "AKIAIOSFODNN7EXAMPLE", "AKIA"},
 		{"jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF0123456789", "eyJ"},
 		{"url", "postgres://alice:s3cr3tPass@db.local/db", "s3cr3tPass"},
@@ -157,6 +168,10 @@ func TestBuiltinRules(t *testing.T) {
 func TestFalsePositives(t *testing.T) {
 	for _, text := range []string{
 		"password=${PASSWORD}", "PRIVATE_KEY_PATH=~/.ssh/id_ed25519", "access_token = get_access_token_v2",
+		"UI_PASSWORD= UI_ADDR=127.0.0.1:39117", "密码： --listen=127.0.0.1:39117",
+		`access_token_expires_at: "2026-11-05T12:34:56.123+08:00"`, "令牌是 2026-11-05T12:34:56Z",
+		"icon@2x.jpg icon@2x.zip logo@final.pdf lib@base.json", "cfut_" + strings.Repeat("c", 39), strings.Repeat("c", 64),
+		base64.StdEncoding.EncodeToString([]byte(`{"a":"account-for-test","t":"ordinary data without a credential"}`)),
 		"max_tokens=max_tokens_v3", "令牌是 300000 毫秒", "token.go:L643-669", `"jsonwebtoken": "9.2.0-beta1"`,
 		"订单号 13800138000", "order_id=13800138000", "9f13800138000abc",
 		"123-45-6789", "999-00-0000", "4111111111111112", "110105194912310021",
@@ -393,6 +408,80 @@ func normalizeArguments(t *testing.T, value any) {
 	case []any:
 		for _, v := range item {
 			normalizeArguments(t, v)
+		}
+	}
+}
+
+/**
+ * @brief 空赋值后继续按下一个字段名判定，带等号的真实密钥仍可还原。
+ * @param t 测试上下文。
+ */
+func TestEmptyAssignmentFollowedBySecret(t *testing.T) {
+	for _, prefix := range []string{"UI_PASSWORD= UI_TOKEN=", "DB_PASS= DB_KEY=", "密码： token=", "token: ", "token= FIELD= token="} {
+		const value = "syntheticAB123=="
+		session := newSession(t, privacy.NewEngine(), "field", enabled())
+		masked, err := session.MaskText(prefix + value)
+		if err != nil || !strings.HasPrefix(masked, prefix+"{{CCLOAD_") || session.RestoreText(masked) != prefix+value {
+			t.Errorf("%q: %s, %v", prefix, masked, err)
+		}
+	}
+}
+
+/**
+ * @brief 工具负载内按用户数据脱敏，调用信封保真；到期时间不是凭据。
+ * @param t 测试上下文。
+ */
+func TestToolCallPrivacyBoundaries(t *testing.T) {
+	const marker = "synthetic-marker"
+	const expiry = "2026-11-05T12:34:56.123+08:00"
+	cfg := enabled()
+	cfg.Words = []string{marker}
+	for _, tc := range []struct{ event, field string }{
+		{"mcp_tool_use", "input"}, {"server_tool_use", "input"}, {"function_call", "arguments"}, {"mcp_call", "arguments"},
+		{"custom_tool_call", "input"}, {"local_shell_call", "action"}, {"shell_call", "action"}, {"computer_call", "action"}, {"apply_patch_call", "operation"},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"type": tc.event, "id": marker, "name": marker, "server_name": marker, tc.field: map[string]string{
+				"data": marker, "customer_id": marker, "access_token_expires_at": expiry, "password": "ordinaryvalue",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := newSession(t, privacy.NewEngine(), "tool", cfg)
+			masked, err := session.MaskJSON(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"id", "name", "server_name"} {
+				if gjson.GetBytes(masked, field).Str != marker {
+					t.Errorf("protocol field %s changed", field)
+				}
+			}
+			for _, field := range []string{"data", "customer_id", "password"} {
+				if !strings.HasPrefix(gjson.GetBytes(masked, tc.field+"."+field).Str, "{{CCLOAD_") {
+					t.Errorf("payload field %s was not masked", field)
+				}
+			}
+			if gjson.GetBytes(masked, tc.field+".access_token_expires_at").Str != expiry {
+				t.Error("expiry was masked")
+			}
+			restored, err := session.RestoreJSON(masked)
+			if err != nil || string(restored) != string(body) {
+				t.Fatalf("tool round trip: %s, %v", restored, err)
+			}
+		})
+	}
+	for _, tc := range []struct{ event, field string }{{"function_call", "arguments"}, {"function_call_output", "output"}} {
+		payload := `{"token_expires_at":"` + expiry + `","token":"2026-11-05T12NotAnExpiry"}`
+		body, err := json.Marshal(map[string]string{"type": tc.event, tc.field: payload})
+		if err != nil {
+			t.Fatal(err)
+		}
+		session := newSession(t, privacy.NewEngine(), "embedded", cfg)
+		masked, err := session.MaskJSON(body)
+		inner := gjson.GetBytes(masked, tc.field).Str
+		if err != nil || gjson.Get(inner, "token_expires_at").Str != expiry || !strings.HasPrefix(gjson.Get(inner, "token").Str, "{{CCLOAD_") {
+			t.Errorf("%s: %s, %v", tc.field, inner, err)
 		}
 	}
 }
