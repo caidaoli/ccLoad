@@ -1873,6 +1873,7 @@ func persistedOAuthUsage(raw json.RawMessage, provider string) (*oauthUsageSumma
 
 /**
  * @brief 选择最新额度采样；Anthropic 被动响应头未包含的主动窗口继续保留。
+ * @details Anthropic 被动独有窗口只有自身采样晚于主动快照时才追加，避免官方已移除的窗口被旧响应头复活。
  * @param active 最近一次主动查询结果
  * @param activeSampledAt 主动采样时间
  * @param passive 最近一次被动额度采样
@@ -1907,7 +1908,10 @@ func latestOAuthUsage(
 					return oauthcost.Key(candidate.LimitName, candidate.Kind) == key
 				})
 				if index < 0 {
-					merged.Windows = append(merged.Windows, window)
+					// 主动快照是完整窗口清单；早于它的被动独有窗口已被官方移除，不能复活。
+					if window.SampledAt.After(activeSampledAt) {
+						merged.Windows = append(merged.Windows, window)
+					}
 					continue
 				}
 				sampledAt := merged.Windows[index].SampledAt

@@ -6814,6 +6814,48 @@ func TestLatestCodexOAuthUsageIgnoresPassiveOnlyWindows(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 官方快照已移除的 Anthropic 窗口不能被更早采样的被动读数复活，更新的被动独有窗口仍追加。
+ * @param t Go 测试上下文
+ */
+func TestLatestAnthropicOAuthUsageDropsPassiveOnlyWindowsOlderThanActive(t *testing.T) {
+	t.Parallel()
+	activeSampledAt := time.Date(2026, time.November, 19, 8, 47, 0, 0, time.UTC)
+	active := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{
+		{Kind: "five_hour", UsedPercent: 0, RemainingPercent: 100, LimitWindowSeconds: 18000},
+		{Kind: "seven_day", UsedPercent: 42, RemainingPercent: 58, LimitWindowSeconds: 604800},
+	}}
+	for _, tc := range []struct {
+		name           string
+		fableSampledAt time.Time
+		wantFable      bool
+	}{
+		{name: "older than active snapshot", fableSampledAt: activeSampledAt.Add(-3 * 24 * time.Hour)},
+		{name: "stale utilization", fableSampledAt: time.Time{}},
+		{name: "newer than active snapshot", fableSampledAt: activeSampledAt.Add(time.Minute), wantFable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			passiveSampledAt := activeSampledAt.Add(time.Hour)
+			passive := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{
+				{Kind: "five_hour", UsedPercent: 10, RemainingPercent: 90, LimitWindowSeconds: 18000, SampledAt: passiveSampledAt},
+				{LimitName: "Claude Fable", Kind: "seven_day_fable", UsedPercent: 1, RemainingPercent: 99, LimitWindowSeconds: 604800, SampledAt: tc.fableSampledAt},
+			}}
+			merged := latestOAuthUsage(active, activeSampledAt, passive, passiveSampledAt.Format(time.RFC3339Nano), nil)
+			got := map[string]float64{}
+			for _, window := range merged.Windows {
+				got[oauthcost.Key(window.LimitName, window.Kind)] = window.UsedPercent
+			}
+			want := map[string]float64{"|five_hour": 10, "|seven_day": 42}
+			if tc.wantFable {
+				want["claude fable|seven_day_fable"] = 1
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("merged Anthropic windows = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestLatestCodexOAuthUsageRequiresSameQuotaPeriod(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC)
