@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -237,42 +238,77 @@ func TestRegistryResponsesPreservesDeveloperRoles(t *testing.T) {
 	}
 }
 
-func TestRegistryGeminiNumericSchemaConstraints(t *testing.T) {
+/**
+ * @brief Gemini 工具的类型和约束按目标协议转换，保留参数字面值
+ * @param t 测试上下文
+ */
+func TestRegistryGeminiToolSchema(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
-	raw := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"check","parameters":{"type":"OBJECT","minProperties":"1","maxProperties":"10","properties":{"text":{"type":"STRING","minLength":"1","maxLength":"200","enum":["1","2"],"default":"1"},"items":{"type":"ARRAY","minItems":"1","maxItems":"5","items":{"type":"STRING","minLength":"2"}}}}}]}]}`)
+	const input = `{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"tools":[{"googleSearch":{}},{"functionDeclarations":[{"name":"check","description":"validate",%q:{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"type":"OBJECT","additionalProperties":true,"minProperties":"1","maxProperties":"10",
+			"properties":{
+				"type":{"type":"STRING","minLength":"1","maxLength":"200","enum":["1","2","MixedCase"],"default":"1"},
+				"items":{"type":"ARRAY","minItems":"1","maxItems":"5","items":{"type":"STRING","minLength":"2"}},
+				"payload":{"type":"OBJECT","const":{"type":"INVOICE"},"enum":[{"type":"INVOICE"},{"type":"RECEIPT"}],
+					"default":{"type":"INVOICE"},"examples":[{"type":"INVOICE"}]},
+				"choice":{"anyOf":[{"type":"NUMBER"},{"type":["string","null"]}]}
+			},
+			"x-metadata":{"type":"KeepCase"}
+		}}]}]
+	}`
+	const wantSchema = `{
+		"type":"object","minProperties":1,"maxProperties":10,
+		"properties":{
+			"type":{"type":"string","minLength":1,"maxLength":200,"enum":["1","2","MixedCase"],"default":"1"},
+			"items":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"string","minLength":2}},
+			"payload":{"type":"object","const":{"type":"INVOICE"},"enum":[{"type":"INVOICE"},{"type":"RECEIPT"}],
+				"default":{"type":"INVOICE"},"examples":[{"type":"INVOICE"}]},
+			"choice":{"anyOf":[{"type":"number"},{"type":["string","null"]}]}
+		},
+		"x-metadata":{"type":"KeepCase"}%s
+	}`
 	for _, target := range []struct {
-		protocol protocol.Protocol
-		model    string
-		path     string
+		protocol     protocol.Protocol
+		model        string
+		tools        string
+		schemaFields string
 	}{
-		{protocol.OpenAI, "gpt-5", "tools.0.function.parameters"},
-		{protocol.Anthropic, "claude-sonnet-4-6", "tools.0.input_schema"},
-		{protocol.Codex, "gpt-5", "tools.0.parameters"},
+		{
+			protocol.OpenAI, "gpt-5",
+			`[{"type":"function","function":{"name":"check","description":"validate","parameters":%s}}]`,
+			`,"additionalProperties":true,"$schema":"https://json-schema.org/draft/2020-12/schema"`,
+		},
+		{
+			protocol.Anthropic, "claude-sonnet-4-6",
+			`[{"name":"check","description":"validate","input_schema":%s}]`,
+			`,"additionalProperties":false,"$schema":"http://json-schema.org/draft-07/schema#"`,
+		},
+		{
+			protocol.Codex, "gpt-5",
+			`[{"type":"function","name":"check","description":"validate","parameters":%s,"strict":false}]`,
+			`,"additionalProperties":false`,
+		},
 	} {
-		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/stream=%t", target.protocol, stream), func(t *testing.T) {
-				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, raw, stream)
-				if err != nil {
-					t.Fatal(err)
-				}
-				schema := gjson.GetBytes(out, target.path)
-				for path, want := range map[string]int64{
-					"minProperties": 1, "maxProperties": 10,
-					"properties.text.minLength": 1, "properties.text.maxLength": 200,
-					"properties.items.minItems": 1, "properties.items.maxItems": 5,
-					"properties.items.items.minLength": 2,
-				} {
-					if got := schema.Get(path); got.Type != gjson.Number || got.Int() != want {
-						t.Errorf("%s = %s, want JSON number %d: %s", path, got.Raw, want, out)
+		schema := fmt.Sprintf(wantSchema, target.schemaFields)
+		want := gjson.Parse(fmt.Sprintf(target.tools, schema))
+		for _, field := range []string{"parameters", "parametersJsonSchema"} {
+			raw := fmt.Appendf(nil, input, field)
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", target.protocol, field, stream), func(t *testing.T) {
+					out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, raw, stream)
+					if err != nil {
+						t.Fatal(err)
 					}
-				}
-				for _, path := range []string{"properties.text.enum.0", "properties.text.default"} {
-					if got := schema.Get(path); got.Type != gjson.String || got.String() != "1" {
-						t.Errorf("literal data changed at %s: %s", path, out)
+					tools := gjson.GetBytes(out, "tools")
+					if !reflect.DeepEqual(tools.Value(), want.Value()) {
+						t.Errorf("tools = %s, want %s", tools.Raw, want.Raw)
 					}
-				}
-			})
+				})
+			}
 		}
 	}
 }

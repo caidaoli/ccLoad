@@ -451,12 +451,12 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					openAITool, _ = sjson.SetBytes(openAITool, "function.name", funcDecl.Get("name").String())
 					openAITool, _ = sjson.SetBytes(openAITool, "function.description", funcDecl.Get("description").String())
 
-					// Convert parameters schema
-					if parameters := funcDecl.Get("parameters"); parameters.Exists() {
-						normalizedParams := util.NormalizeJSONSchemaNumericConstraints(parameters.Raw)
-						openAITool, _ = sjson.SetRawBytes(openAITool, "function.parameters", []byte(normalizedParams))
-					} else if parameters := funcDecl.Get("parametersJsonSchema"); parameters.Exists() {
-						normalizedParams := util.NormalizeJSONSchemaNumericConstraints(parameters.Raw)
+					parameters := funcDecl.Get("parameters")
+					if !parameters.Exists() {
+						parameters = funcDecl.Get("parametersJsonSchema")
+					}
+					if parameters.Exists() {
+						normalizedParams := util.NormalizeGeminiToolSchema(parameters.Raw)
 						openAITool, _ = sjson.SetRawBytes(openAITool, "function.parameters", []byte(normalizedParams))
 					}
 

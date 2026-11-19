@@ -1537,6 +1537,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 			"claude-opus-5-5-high":{},
 			"CLAUDE-SONNET-5-5-HIGH":{},
 			"gemini-4-argon-high":{},
+			"gemini-4-neon-xhigh":{},
 			"gemini-3.8-flash":{},
 			"gemini-3.8-flash-high":{},
 			"gemini-3.8-flash-medium":{},
@@ -1616,6 +1617,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		{Model: "gemini-3.5-flash-lite", RedirectModel: "gemini-3.5-flash-lite"},
 		{Model: "gemini-3.8-flash-high", RedirectModel: "gemini-3.8-flash-high"},
 		{Model: "gemini-4-argon-high", RedirectModel: "gemini-4-argon-high"},
+		{Model: "gemini-4-neon-xhigh", RedirectModel: "gemini-4-neon-xhigh"},
 		{Model: "gpt-oss-120b-medium", RedirectModel: "gpt-oss-120b-medium"},
 	}
 	if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) || resp.Data.Protocol != "gemini" {

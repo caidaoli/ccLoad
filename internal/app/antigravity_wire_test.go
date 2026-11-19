@@ -375,6 +375,7 @@ func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
 		want  string
 	}{
 		{"gemini-4-hydrogen-xhigh", " XHIGH ", "xhigh"},
+		{"gemini-4-neon-xhigh", "xhigh", "xhigh"},
 		{"gemini-3.8-flash-tiered", "xhigh", "high"},
 		{"gemini-3-pro", "xhigh", "high"},
 		{"gemini-unlisted", "xhigh", "high"},

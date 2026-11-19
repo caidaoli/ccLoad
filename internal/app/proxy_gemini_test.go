@@ -871,7 +871,9 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 			{Model: "gemini-2.5-pro"},
 			{Model: "claude-sonnet-4-6"},
 			{Model: "gemini-4-hydrogen"},
+			{Model: "gemini-4-neon"},
 			{Model: "gemini-4-hydrogen-xhigh"},
+			{Model: "gemini-4-neon-xhigh"},
 			{Model: "gemini-3.8-flash-tiered"},
 			{Model: "local-unlisted-model"},
 		},
@@ -913,13 +915,22 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"gemini-4-hydrogen", "gemini-4-hydrogen-xhigh", "gemini-3.8-flash-tiered"} {
-		entry := byName["models/"+name]
-		for field, want := range map[string]int{"inputTokenLimit": 1048576, "outputTokenLimit": 65536} {
+	for _, model := range []struct {
+		name       string
+		inputLimit int
+	}{
+		{"gemini-4-hydrogen", 1048576},
+		{"gemini-4-neon", 1048576},
+		{"gemini-4-hydrogen-xhigh", 1048576},
+		{"gemini-4-neon-xhigh", 524288},
+		{"gemini-3.8-flash-tiered", 1048576},
+	} {
+		entry := byName["models/"+model.name]
+		for field, want := range map[string]int{"inputTokenLimit": model.inputLimit, "outputTokenLimit": 65536} {
 			var limit int
 			mustUnmarshalJSON(t, entry[field], &limit)
 			if limit != want {
-				t.Fatalf("%s %s=%d, want %d", name, field, limit, want)
+				t.Fatalf("%s %s=%d, want %d", model.name, field, limit, want)
 			}
 		}
 	}

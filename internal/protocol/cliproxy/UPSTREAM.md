@@ -24,6 +24,31 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-19)
+
+The upstream reference for these changes is official `v8.0.78`
+(`db7f177d6b0e51eb237daed718de4d25e7a893f5`).
+
+- Adapt `9b4f3f30c603d1ebd72fe7e8cc0904fb15d8ff4c` to lowercase only
+  string-valued JSON Schema `type` keywords when translating Gemini tools to
+  Claude. Union type arrays, boolean schemas, properties named `type` and
+  literal data retain their structure and values. ccLoad also
+  applies the same normalization to its Gemini-to-Codex and Gemini-to-Chat
+  converters so that native Gemini type names become valid JSON Schema types
+  and case-sensitive values inside `const`, `enum` and defaults survive.
+- Adapt `88ef67a178ace952f82897ce6950dac9720830d4` for the Antigravity
+  `gemini-4-neon-xhigh` catalog entry, including its four thinking levels.
+  ccLoad advertises 524,288 context tokens based on the
+  [Antigravity 512K specification](https://antigravity.google/docs/models/#gemini-4-neon).
+  The 65,536 output limit follows the
+  [Google Cloud Neon single-segment limit](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-neon)
+  and ccLoad's single-request execution path. The private Antigravity endpoint's
+  output limit has not been independently measured.
+- The native Vertex `gemini-4-neon` entry is a ccLoad addition based on the
+  [Google Cloud model specification](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-neon).
+  It advertises a 1,048,576-token shared context window, 65,536 output tokens
+  per segment, and low, medium, high and xhigh thinking levels.
+
 ## Post-snapshot compatibility fixes (2026-11-18)
 
 These targeted fixes were reviewed against official `v8.0.77`,

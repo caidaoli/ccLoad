@@ -42,14 +42,17 @@ func TestCatalogModelIDsCodexChatThinking(t *testing.T) {
 
 func TestLookupModelInfoGeminiVariants(t *testing.T) {
 	for _, tc := range []struct {
-		model     string
-		catalog   string
-		levels    []string
-		budgetMax int
+		model         string
+		catalog       string
+		levels        []string
+		budgetMax     int
+		contextLength int
 	}{
-		{"gemini-4-hydrogen", "gemini", []string{"low", "medium", "high", "xhigh"}, 0},
-		{"gemini-4-hydrogen-xhigh", "antigravity", []string{"low", "medium", "high", "xhigh"}, 65535},
-		{"gemini-3.8-flash-tiered", "antigravity", []string{"low", "medium", "high"}, 65535},
+		{"gemini-4-hydrogen", "gemini", []string{"low", "medium", "high", "xhigh"}, 0, 1048576},
+		{"gemini-4-neon", "vertex", []string{"low", "medium", "high", "xhigh"}, 0, 1048576},
+		{"gemini-4-hydrogen-xhigh", "antigravity", []string{"low", "medium", "high", "xhigh"}, 65535, 1048576},
+		{"gemini-4-neon-xhigh", "antigravity", []string{"low", "medium", "high", "xhigh"}, 65535, 524288},
+		{"gemini-3.8-flash-tiered", "antigravity", []string{"low", "medium", "high"}, 65535, 1048576},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			if !slices.Contains(CatalogModelIDs(tc.catalog), tc.model) {
@@ -60,8 +63,8 @@ func TestLookupModelInfoGeminiVariants(t *testing.T) {
 				if info == nil || info.Thinking == nil {
 					t.Fatalf("provider %q missing capabilities for %q: %+v", provider, tc.model, info)
 				}
-				if info.ContextLength != 1048576 || info.MaxCompletionTokens != 65536 {
-					t.Fatalf("provider %q limits = %d/%d, want 1048576/65536", provider, info.ContextLength, info.MaxCompletionTokens)
+				if info.ContextLength != tc.contextLength || info.MaxCompletionTokens != 65536 {
+					t.Fatalf("provider %q limits = %d/%d, want %d/65536", provider, info.ContextLength, info.MaxCompletionTokens, tc.contextLength)
 				}
 				if !slices.Equal(info.Thinking.Levels, tc.levels) || info.Thinking.Max != tc.budgetMax ||
 					info.Thinking.DynamicAllowed != (tc.budgetMax != 0) {
@@ -82,7 +85,12 @@ func TestLookupModelInfoGeminiVariants(t *testing.T) {
 			}
 		})
 	}
-	if info := LookupModelInfo("gemini-4-hydrogen", "antigravity"); info != nil {
-		t.Fatalf("Google model ID leaked into Antigravity provider: %+v", info)
+	for _, model := range []string{"gemini-4-hydrogen", "gemini-4-neon"} {
+		if info := LookupModelInfo(model, "antigravity"); info != nil {
+			t.Fatalf("Google model ID leaked into Antigravity provider: %+v", info)
+		}
+	}
+	if info := LookupModelInfo("gemini-4-neon-xhigh", "vertex"); info != nil {
+		t.Fatalf("Antigravity model ID leaked into Vertex provider: %+v", info)
 	}
 }

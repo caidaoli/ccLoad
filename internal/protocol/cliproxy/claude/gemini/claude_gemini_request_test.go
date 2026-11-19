@@ -2,11 +2,53 @@ package gemini
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func TestConvertGeminiRequestToClaude_PreservesToolSchemaValues(t *testing.T) {
+	for _, field := range []string{"parameters", "parametersJsonSchema"} {
+		t.Run(field, func(t *testing.T) {
+			input := fmt.Sprintf(`{"tools":[{"functionDeclarations":[{"name":"inspect",%q:{
+				"type":"OBJECT",
+				"x-metadata":{"type":"KeepMetadataCase"},
+				"properties":{
+					"type":{"type":"STRING","enum":["ONE","TWO"]},
+					"flags":{"properties":{"type":true}},
+					"tuple":{"type":"ARRAY","items":[false,{"type":"INTEGER"}]},
+					"nullable":{"type":["integer","null"]},
+					"default":{"type":"OBJECT","default":{"type":"KeepCase"},"examples":[{"type":"AlsoKeepCase"}]},
+					"a.b*?|#\\z":{"type":"STRING","minLength":"2"}
+				}
+			}}]}]}`, field)
+			out, err := ConvertGeminiRequestToClaude("claude-test", []byte(input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			schema := gjson.GetBytes(out, "tools.0.input_schema")
+			want := gjson.Parse(`{
+				"type":"object",
+				"additionalProperties":false,
+				"$schema":"http://json-schema.org/draft-07/schema#",
+				"x-metadata":{"type":"KeepMetadataCase"},
+				"properties":{
+					"type":{"type":"string","enum":["ONE","TWO"]},
+					"flags":{"properties":{"type":true}},
+					"tuple":{"type":"array","items":[false,{"type":"integer"}]},
+					"nullable":{"type":["integer","null"]},
+					"default":{"type":"object","default":{"type":"KeepCase"},"examples":[{"type":"AlsoKeepCase"}]},
+					"a.b*?|#\\z":{"type":"string","minLength":2}
+				}
+			}`)
+			if !reflect.DeepEqual(schema.Value(), want.Value()) {
+				t.Fatalf("tools.0.input_schema = %s, want %s", schema.Raw, want.Raw)
+			}
+		})
+	}
+}
 
 func TestConvertGeminiRequestToClaude_OmittedRolesAndToolAliases(t *testing.T) {
 	for _, fields := range [][2]string{{"functionCall", "functionResponse"}, {"function_call", "function_response"}} {

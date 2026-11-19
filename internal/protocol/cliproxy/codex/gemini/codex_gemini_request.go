@@ -321,12 +321,12 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				if v := fn.Get("description"); v.Exists() {
 					tool, _ = sjson.SetBytes(tool, "description", v.String())
 				}
-				if prm := fn.Get("parameters"); prm.Exists() {
-					cleaned := cleanGeminiCodexToolParameters(prm)
-					tool, _ = sjson.SetRawBytes(tool, "parameters", cleaned)
-				} else if prm = fn.Get("parametersJsonSchema"); prm.Exists() {
-					cleaned := cleanGeminiCodexToolParameters(prm)
-					tool, _ = sjson.SetRawBytes(tool, "parameters", cleaned)
+				parameters := fn.Get("parameters")
+				if !parameters.Exists() {
+					parameters = fn.Get("parametersJsonSchema")
+				}
+				if parameters.Exists() {
+					tool, _ = sjson.SetRawBytes(tool, "parameters", cleanGeminiCodexToolParameters(parameters))
 				}
 				tool, _ = sjson.SetBytes(tool, "strict", false)
 				toolItems = append(toolItems, tool)
@@ -406,22 +406,6 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	out, _ = sjson.SetBytes(out, "store", false)
 	out, _ = sjson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})
 
-	var pathsToLower []string
-	toolsResult := gjson.GetBytes(out, "tools")
-	util.Walk(toolsResult, "", "type", &pathsToLower)
-	for _, p := range pathsToLower {
-		fullPath := fmt.Sprintf("tools.%s", p)
-		typeValue := gjson.GetBytes(out, fullPath)
-		if typeValue.Type != gjson.String {
-			continue
-		}
-		normalizedType := strings.ToLower(typeValue.String())
-		if normalizedType == typeValue.String() {
-			continue
-		}
-		out, _ = sjson.SetBytes(out, fullPath, normalizedType)
-	}
-
 	if input := gjson.GetBytes(out, "input"); input.IsArray() && len(input.Array()) == 0 {
 		out, _ = sjson.DeleteBytes(out, "input")
 	}
@@ -487,7 +471,7 @@ func setCodexToolChoiceFromGeminiToolConfig(out []byte, functionCallingConfig gj
 }
 
 func cleanGeminiCodexToolParameters(parameters gjson.Result) []byte {
-	cleaned := []byte(util.NormalizeJSONSchemaNumericConstraints(parameters.Raw))
+	cleaned := []byte(util.NormalizeGeminiToolSchema(parameters.Raw))
 	if parameters.Get("$schema").Exists() {
 		cleaned, _ = sjson.DeleteBytes(cleaned, "$schema")
 	}

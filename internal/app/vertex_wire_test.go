@@ -15,6 +15,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -893,6 +894,9 @@ func TestFetchModelsForVertexOAuthListsPublisherGeminiModels(t *testing.T) {
 			if response.Source != tc.wantSource || response.Protocol != util.ProtocolGemini || len(got) == 0 ||
 				(tc.wantModels != nil && strings.Join(got, ",") != strings.Join(tc.wantModels, ",")) {
 				t.Fatalf("source=%s protocol=%s models=%v", response.Source, response.Protocol, got)
+			}
+			if tc.wantSource == "predefined" && !slices.Contains(got, "gemini-4-neon") {
+				t.Fatalf("Vertex fallback is missing gemini-4-neon: %v", got)
 			}
 			requests, _ := upstream.calls()
 			if len(requests) == 0 {

@@ -1426,7 +1426,7 @@ var numericSchemaConstraintKeywords = []string{
 	"minProperties", "maxProperties",
 }
 
-type numericConstraintEdit struct {
+type schemaEdit struct {
 	offset      int
 	end         int
 	replacement string
@@ -1441,14 +1441,24 @@ func NormalizeJSONSchemaNumericConstraints(jsonStr string) string {
 	if !hasNumericSchemaConstraintKeyword(jsonStr) && !strings.Contains(jsonStr, `\u`) && !strings.Contains(jsonStr, `\U`) {
 		return jsonStr
 	}
+	return normalizeGeminiToolSchema(jsonStr, false)
+}
+
+// NormalizeGeminiToolSchema normalizes numeric constraints and lowercases string type
+// keywords in schema nodes, preserving non-string types and literal values.
+func NormalizeGeminiToolSchema(jsonStr string) string {
+	return normalizeGeminiToolSchema(jsonStr, true)
+}
+
+func normalizeGeminiToolSchema(jsonStr string, lowercaseTypes bool) string {
 	root := gjson.Parse(jsonStr)
 	if !root.IsObject() {
 		return jsonStr
 	}
 	doc := root.Raw
 	root.Index = 0
-	var edits []numericConstraintEdit
-	collectNumericConstraintEdits(doc, root, &edits)
+	var edits []schemaEdit
+	collectSchemaEdits(doc, root, lowercaseTypes, &edits)
 	if len(edits) == 0 {
 		return jsonStr
 	}
@@ -1467,42 +1477,40 @@ func NormalizeJSONSchemaNumericConstraints(jsonStr string) string {
 	return sb.String()
 }
 
-func collectNumericConstraintEdits(doc string, node gjson.Result, edits *[]numericConstraintEdit) {
-	if !node.IsObject() {
-		return
-	}
+func collectSchemaEdits(doc string, node gjson.Result, lowercaseTypes bool, edits *[]schemaEdit) {
 	node.ForEach(func(key, val gjson.Result) bool {
-		keyStr := key.String()
-		switch keyStr {
+		var replacement string
+		switch key.String() {
+		case "type":
+			if lowercaseTypes && val.Type == gjson.String {
+				typeName := val.String()
+				if lower := strings.ToLower(typeName); lower != typeName {
+					encoded, _ := json.Marshal(lower)
+					replacement = string(encoded)
+				}
+			}
 		case "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties":
 			if val.Type == gjson.String {
 				if n, ok := parseSchemaNonNegativeInt(val.String()); ok {
-					end := val.Index + len(val.Raw)
-					if val.Index >= 0 && end <= len(doc) && doc[val.Index:end] == val.Raw {
-						*edits = append(*edits, numericConstraintEdit{
-							offset:      val.Index,
-							end:         end,
-							replacement: strconv.FormatInt(n, 10),
-						})
-					}
+					replacement = strconv.FormatInt(n, 10)
 				}
 			}
 		case "properties", "patternProperties", "dependentSchemas", "dependencies", "$defs", "definitions":
 			if val.IsObject() {
 				val.ForEach(func(_, propVal gjson.Result) bool {
 					if propVal.IsObject() {
-						collectNumericConstraintEdits(doc, propVal, edits)
+						collectSchemaEdits(doc, propVal, lowercaseTypes, edits)
 					}
 					return true
 				})
 			}
 		case "items":
 			if val.IsObject() {
-				collectNumericConstraintEdits(doc, val, edits)
+				collectSchemaEdits(doc, val, lowercaseTypes, edits)
 			} else if val.IsArray() {
 				val.ForEach(func(_, item gjson.Result) bool {
 					if item.IsObject() {
-						collectNumericConstraintEdits(doc, item, edits)
+						collectSchemaEdits(doc, item, lowercaseTypes, edits)
 					}
 					return true
 				})
@@ -1510,15 +1518,25 @@ func collectNumericConstraintEdits(doc string, node gjson.Result, edits *[]numer
 		case "additionalProperties", "additionalItems", "unevaluatedProperties", "unevaluatedItems",
 			"if", "then", "else", "not", "contains", "propertyNames", "contentSchema":
 			if val.IsObject() {
-				collectNumericConstraintEdits(doc, val, edits)
+				collectSchemaEdits(doc, val, lowercaseTypes, edits)
 			}
 		case "prefixItems", "anyOf", "oneOf", "allOf":
 			if val.IsArray() {
 				val.ForEach(func(_, item gjson.Result) bool {
 					if item.IsObject() {
-						collectNumericConstraintEdits(doc, item, edits)
+						collectSchemaEdits(doc, item, lowercaseTypes, edits)
 					}
 					return true
+				})
+			}
+		}
+		if replacement != "" {
+			end := val.Index + len(val.Raw)
+			if val.Index >= 0 && end <= len(doc) && doc[val.Index:end] == val.Raw {
+				*edits = append(*edits, schemaEdit{
+					offset:      val.Index,
+					end:         end,
+					replacement: replacement,
 				})
 			}
 		}

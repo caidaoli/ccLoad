@@ -137,6 +137,8 @@
 
 ## Antigravity
 
+- `gemini-4-neon-xhigh` 的账号发现与出站思考等级共用 Antigravity 静态目录。目录提供 low、medium、high、xhigh 四档，按 Antigravity 公布的 512K 记为 524288 上下文，单段输出参照 Neon 的 Google Cloud 规格记为 65536。[Antigravity 模型规格](https://antigravity.google/docs/models/#gemini-4-neon) · [Google Cloud 单段输出规格](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-neon)
+
 - **客户端身份中和**（`antigravity_wire.go:rewriteAntigravitySystemInstruction`）：普通代理与管理测试在出站 `systemInstruction` 字符串或 `parts[].text` 的开头中和 Claude Code、Claude Agent SDK、Codex/GPT、Pi、DeepSeek Harness、Hermes/Nous Research 的已复现开场白，再执行精确句改写与既有敏感词混淆；参考 sub2api `530c5e3a4f9c73ca2b0881191d0ef8e0d82c5484` 的 `NeutralizeSystemIdentity` 身份匹配分支及 [Pi #8791](https://github.com/Wei-Shaw/sub2api/issues/8791)、[DeepSeek 对照](https://github.com/router-for-me/CLIProxyAPI/issues/7553#issuecomment-6888978152)、[Hermes 原生对照](https://github.com/router-for-me/CLIProxyAPI/issues/4696#issuecomment-5149215145)。替换为 `You are an AI agent.`，逗号延续句不加句点，保留后续指令；不匹配正文提及、后续行或产品名后缀，不改用户消息、工具及其他提供商。空敏感词列表只关闭混淆，身份中和仍生效；不添加配置项或遇到 429 后改写重试。2026-11-15 同账号同请求实测：Anthropic 测试模板身份句即使插入 U+034F 仍返回裸 `RESOURCE_EXHAUSTED`，仅中和该句后 Gemini 返回完整 `200 + STOP`；明确 `QUOTA_EXHAUSTED` 仍按额度契约处理。
 - **系统指令精确改写**（同一出站函数）：仅对已复现的固定措辞做等义替换，覆盖 Claude Code 的 `Dual-use security tools …` 授权句（[sub2api #8824](https://github.com/Wei-Shaw/sub2api/issues/8824)）、OMP 的 `Read xd://<tool> … before first use.`（[CLIProxyAPI #7562](https://github.com/router-for-me/CLIProxyAPI/issues/7562)）和 AstrBot 的会话管理句（[#7553 对照](https://github.com/router-for-me/CLIProxyAPI/issues/7553#issuecomment-6894998140)）。参考 [Magpie `3b643f3` 的固定规则](https://github.com/yetone/magpie/blob/3b643f3978b209dfba3022fb74ef656962fea5d6/internal/gateway/codeassist.go)，补充开头的 OpenCode、通用 Codex CLI 身份（`You are` → `You're`）与完整 RFC 2119 关键词声明（`keywords` → `key words`）。保留明确授权限制、文档 URI、工具名与全部操作含义；不删除安全策略，不改用户消息、工具标识或正文中的品牌提及。2026-11-16 同账号 Claude 目标验证上述新身份/指令原句均裸 429、等义改写均 200；Claude Code 完整长历史仅改授权句后恢复工具生成。原始错误没有可靠的过滤分类字段，因此不把所有裸 429 当作内容拒绝，也不修改既有额度、冷却或重试规则。
 - **触发句匹配容错**：身份及固定指令只在匹配视图中折叠 Unicode 空白、忽略大小写与已验证的 U+200B/U+034F 混淆，再按原文字节位置替换命中片段。URI、工具名与 RFC 关键词通过原文捕获组保留，未命中的文本不归一化；紧随命中末尾的上述混淆字符归入替换区间。2026-11-16 同账号实测 OMP 大写与混合空白、SDK 的 U+200B/U+034F 变体仍触发裸 429；这两种字符不能替代等义改写。修复后这三种变体、OpenCode/Codex CLI/RFC 三个原句及 Claude Code 完整长历史共七次回放均返回 200。
@@ -155,6 +157,8 @@
 - **Antigravity 额度耗尽**:只有实际上游模型为 Claude 时,`QUOTA_EXHAUSTED` 才写入独立 `StandardQuota` 状态,保留积分回退路径。Gemini 等不支持积分回退的模型走通用冷却,按上游 `metadata.model` 与精确 reset 时间冷却模型并切换渠道;所有配置模型均冷却时升级渠道冷却,管理测试与代理遵循相同规则。
 
 ## Vertex
+
+- Vertex 原生模型 `gemini-4-neon` 的静态目录登记 1,048,576 个共享上下文 token 和 65,536 个单段输出 token，供 Vertex 目录回退和 Gemini 模型列表使用。支持 low、medium、high、xhigh 四档思考等级。[Google Cloud 模型规格](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-neon)
 
 - **Gemini Omni 1.2 Flash**：2026-11-10核对[官方模型页](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/omni-1-2-flash)，只支持Interactions，不支持GenerateContent/Chat Completions。当前不把上游目录中的该条目导入普通Gemini能力表；这不限制管理员为自定义中继配置模型名。
 - **Gemini Hydrogen / Flash Tiered 能力目录**：2026-11-13 定点参考 CPA `1fcb143220a464758238617809cc251df8d5806b`，登记 Gemini `gemini-4-hydrogen` 与 Antigravity `gemini-4-hydrogen-xhigh`、`gemini-3.8-flash-tiered` 的上下文、多模态、搜索及思考能力。按 [Hydrogen 官方模型页](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen) 补齐 low/medium/high/xhigh；Hydrogen 统一上下文为 1048576，当前单段执行输出上限记为 65536，百万输出需要额外 continuation 请求，不作为当前能力声明。后缀与 Antigravity 最终化按实际模型能力保留 xhigh，旧模型维持原映射。Antigravity 别名及其预算字段仅据固定上游目录；静态目录不代表账号授权，不新增定价或自动续传。

@@ -1912,6 +1912,37 @@
       }
     },
     {
+      "id": "gemini-4-neon",
+      "object": "model",
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 4 Neon",
+      "name": "gemini-4-neon",
+      "description": "Gemini 4 Neon",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ],
+      "native_capabilities": {
+        "web_search": true
+      }
+    },
+    {
       "id": "gemini-omni-1.2-flash",
       "object": "model",
       "owned_by": "google",
@@ -5016,6 +5047,41 @@
       "name": "gemini-4-hydrogen-xhigh",
       "description": "Gemini 4 Hydrogen (XHigh)",
       "context_length": 1048576,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 1,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "supportedOutputModalities": [
+        "text"
+      ],
+      "native_capabilities": {
+        "web_search": true
+      }
+    },
+    {
+      "id": "gemini-4-neon-xhigh",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "supports_web_search": true,
+      "display_name": "Gemini 4 Neon",
+      "name": "gemini-4-neon-xhigh",
+      "description": "Gemini 4 Neon (XHigh)",
+      "context_length": 524288,
       "max_completion_tokens": 65536,
       "thinking": {
         "min": 1,

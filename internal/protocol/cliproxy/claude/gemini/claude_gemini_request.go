@@ -438,7 +438,6 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", []byte(`{"type":"object","properties":{}}`))
 					}
 
-					anthropicTool = lowercaseClaudeToolSchemaTypes(anthropicTool)
 					anthropicTools = append(anthropicTools, gjson.ParseBytes(anthropicTool).Value())
 					return true
 				})
@@ -494,7 +493,7 @@ func orderGeminiClaudeToolResults(messages [][]byte) {
 }
 
 func normalizeClaudeToolSchema(parameters gjson.Result) []byte {
-	cleaned := []byte(util.NormalizeJSONSchemaNumericConstraints(parameters.Raw))
+	cleaned := []byte(util.NormalizeGeminiToolSchema(parameters.Raw))
 	if parameters.Get("additionalProperties").Type != gjson.False {
 		cleaned, _ = sjson.SetBytes(cleaned, "additionalProperties", false)
 	}
@@ -504,20 +503,6 @@ func normalizeClaudeToolSchema(parameters gjson.Result) []byte {
 		cleaned, _ = sjson.SetBytes(cleaned, "$schema", schema)
 	}
 	return cleaned
-}
-
-func lowercaseClaudeToolSchemaTypes(tool []byte) []byte {
-	var pathsToLower []string
-	util.Walk(gjson.ParseBytes(tool), "", "type", &pathsToLower)
-	for _, path := range pathsToLower {
-		typeValue := gjson.GetBytes(tool, path)
-		normalizedType := strings.ToLower(typeValue.String())
-		if typeValue.Type == gjson.String && normalizedType == typeValue.String() {
-			continue
-		}
-		tool, _ = sjson.SetBytes(tool, path, normalizedType)
-	}
-	return tool
 }
 
 func setClaudeToolChoiceFromGeminiToolConfig(out []byte, funcCalling gjson.Result) []byte {
