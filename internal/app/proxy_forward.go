@@ -4438,6 +4438,14 @@ func codexBodyWithoutThinking(body []byte) ([]byte, bool) {
 	return updated, true
 }
 
+/**
+ * @brief 规整发往 Codex Responses 上游的请求体。
+ * @param cfg 本次使用的渠道配置，可为空。
+ * @param upstreamProtocol 上游协议。
+ * @param requestPath 上游请求路径。
+ * @param body 待规整的请求体。
+ * @return 规整后的请求体，其他请求原样返回。
+ */
 func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string, body []byte) []byte {
 	if upstreamProtocol != protocol.Codex ||
 		protocol.DetectRequestFamily(requestPath) != protocol.RequestFamilyResponses {
@@ -4445,7 +4453,7 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 	}
 	body = clampCodexMaxOutputTokens(body)
 	body = sanitizeCodexInputItemIDs(body)
-	body = normalizeCodexToolSchemas(body)
+	body = normalizeCodexToolSchemas(body, cfg.UsesCodexOAuth())
 	// Anyrouter rejects Codex's per-content classification metadata.
 	if cfg != nil && strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
 		for index, item := range gjson.GetBytes(body, "input").Array() {

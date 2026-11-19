@@ -23,12 +23,14 @@ import (
 // large ones.
 const codexComplexUnionBranchThreshold = 8
 
-// normalizeCodexToolSchemas simplifies tool parameter schemas the Codex backend
-// rejects: pure constant unions become the equivalent enum, and regex patterns
-// with unsupported escapes are dropped. Anything not proven equivalent is left
-// untouched.
-func normalizeCodexToolSchemas(body []byte) []byte {
-	updatedTools, changed := normalizeCodexToolList(gjson.GetBytes(body, "tools"))
+/**
+ * @brief 规整 Codex 上游工具参数 schema。
+ * @param body Responses 请求体。
+ * @param stripUniqueItems 是否为拒收 uniqueItems 的 Codex OAuth 上游移除该关键字。
+ * @return 规整后的请求体，无需改写时返回原文。
+ */
+func normalizeCodexToolSchemas(body []byte, stripUniqueItems bool) []byte {
+	updatedTools, changed := normalizeCodexToolList(gjson.GetBytes(body, "tools"), stripUniqueItems)
 	if !changed {
 		return body
 	}
@@ -39,16 +41,21 @@ func normalizeCodexToolSchemas(body []byte) []byte {
 	return out
 }
 
-// normalizeCodexToolList copies the array once and keeps unchanged tool bytes
-// verbatim, so a long tool list is not rewritten per tool.
-func normalizeCodexToolList(tools gjson.Result) ([]byte, bool) {
+/**
+ * @brief 规整工具数组，保留无需改写的工具原文。
+ * @param tools 顶层或命名空间内的工具数组。
+ * @param stripUniqueItems 是否移除不兼容的 uniqueItems 关键字。
+ * @return 改写后的工具数组，无改写时为 nil。
+ * @return 是否改写了工具数组。
+ */
+func normalizeCodexToolList(tools gjson.Result, stripUniqueItems bool) ([]byte, bool) {
 	if !tools.IsArray() {
 		return nil, false
 	}
 	var out []byte
 	offset := 0
 	tools.ForEach(func(_, tool gjson.Result) bool {
-		updated, changed := normalizeCodexTool(tool)
+		updated, changed := normalizeCodexTool(tool, stripUniqueItems)
 		if !changed {
 			return true
 		}
@@ -67,10 +74,17 @@ func normalizeCodexToolList(tools gjson.Result) ([]byte, bool) {
 	return append(out, tools.Raw[offset:]...), true
 }
 
-func normalizeCodexTool(tool gjson.Result) ([]byte, bool) {
+/**
+ * @brief 规整函数、自定义工具或命名空间内的工具参数。
+ * @param tool Responses 工具声明。
+ * @param stripUniqueItems 是否移除不兼容的 uniqueItems 关键字。
+ * @return 工具的改写结果，仅在改写成功时可用。
+ * @return 是否成功改写了工具。
+ */
+func normalizeCodexTool(tool gjson.Result, stripUniqueItems bool) ([]byte, bool) {
 	toolType := tool.Get("type").String()
 	if toolType == "namespace" {
-		updatedTools, changed := normalizeCodexToolList(tool.Get("tools"))
+		updatedTools, changed := normalizeCodexToolList(tool.Get("tools"), stripUniqueItems)
 		if !changed {
 			return nil, false
 		}
@@ -84,7 +98,7 @@ func normalizeCodexTool(tool gjson.Result) ([]byte, bool) {
 	if !params.IsObject() {
 		return nil, false
 	}
-	updatedParams, changed := normalizeCodexParameters(params)
+	updatedParams, changed := normalizeCodexParameters(params, stripUniqueItems)
 	if !changed {
 		return nil, false
 	}
@@ -92,10 +106,17 @@ func normalizeCodexTool(tool gjson.Result) ([]byte, bool) {
 	return updated, err == nil
 }
 
-func normalizeCodexParameters(params gjson.Result) ([]byte, bool) {
+/**
+ * @brief 清理工具参数中的不兼容关键字，并将符合条件的常量联合折叠为 enum。
+ * @param params 工具参数 schema 对象。
+ * @param stripUniqueItems 是否移除不兼容的 uniqueItems 关键字。
+ * @return 工具参数 schema，无改写时返回原文。
+ * @return 是否改写了参数。
+ */
+func normalizeCodexParameters(params gjson.Result, stripUniqueItems bool) ([]byte, bool) {
 	rawParams := []byte(params.Raw)
 	changed := false
-	if sanitized, ok := stripIncompatibleSchemaPatternsJSON(rawParams); ok {
+	if sanitized, ok := stripIncompatibleCodexSchemaKeywordsJSON(rawParams, stripUniqueItems); ok {
 		rawParams = sanitized
 		changed = true
 		params = gjson.ParseBytes(rawParams)
@@ -118,15 +139,19 @@ func normalizeCodexParameters(params gjson.Result) ([]byte, bool) {
 	return rawParams, changed
 }
 
-// stripIncompatibleSchemaPatternsJSON removes regex patterns strict upstream
-// validators reject (see cliproxyutil.HasUnsupportedUnicodePropertyEscape). It
-// only visits JSON Schema keyword locations, so a "pattern" key inside user data
-// such as description, default or enum is never touched.
-func stripIncompatibleSchemaPatternsJSON(raw []byte) ([]byte, bool) {
+/**
+ * @brief 在工具参数 JSON 中清理上游拒收的 schema 关键字或正则。
+ * @param raw 参数 schema 的 JSON 原文。
+ * @param stripUniqueItems 是否移除不兼容的 uniqueItems 关键字。
+ * @return 改写后的 JSON，无改写时返回原文。
+ * @return 是否成功改写了 schema。
+ */
+func stripIncompatibleCodexSchemaKeywordsJSON(raw []byte, stripUniqueItems bool) ([]byte, bool) {
 	// Patterns arrive JSON-escaped: a regex `\0` is `\\0` in the raw bytes, and
-	// `\u` covers backslashes spelled as unicode escapes.
+	// `\u` covers escaped backslashes or keyword characters.
+	hasUniqueItems := stripUniqueItems && bytes.Contains(raw, []byte(`"uniqueItems"`))
 	if !bytes.Contains(raw, []byte(`\p{`)) && !bytes.Contains(raw, []byte(`\P{`)) &&
-		!bytes.Contains(raw, []byte(`\u`)) && !bytes.Contains(raw, []byte(`\\0`)) {
+		!bytes.Contains(raw, []byte(`\u`)) && !bytes.Contains(raw, []byte(`\\0`)) && !hasUniqueItems {
 		return raw, false
 	}
 	var root any
@@ -139,7 +164,7 @@ func stripIncompatibleSchemaPatternsJSON(raw []byte) ([]byte, bool) {
 	if err := dec.Decode(&trailing); err != io.EOF {
 		return raw, false
 	}
-	if !stripIncompatibleSchemaPatterns(root) {
+	if !stripIncompatibleCodexSchemaKeywords(root, stripUniqueItems) {
 		return raw, false
 	}
 	var buf bytes.Buffer
@@ -151,7 +176,13 @@ func stripIncompatibleSchemaPatternsJSON(raw []byte) ([]byte, bool) {
 	return bytes.TrimSpace(buf.Bytes()), true
 }
 
-func stripIncompatibleSchemaPatterns(v any) bool {
+/**
+ * @brief 清理 schema 节点及子 schema，保留属性名称和默认值等字面数据。
+ * @param v 从 JSON 解码的 schema 节点或 schema 数组。
+ * @param stripUniqueItems 是否移除不兼容的 uniqueItems 关键字。
+ * @return 是否原地改写了任一节点。
+ */
+func stripIncompatibleCodexSchemaKeywords(v any, stripUniqueItems bool) bool {
 	changed := false
 	switch schema := v.(type) {
 	case map[string]any:
@@ -159,12 +190,16 @@ func stripIncompatibleSchemaPatterns(v any) bool {
 			delete(schema, "pattern")
 			changed = true
 		}
+		if _, ok := schema["uniqueItems"]; stripUniqueItems && ok {
+			delete(schema, "uniqueItems")
+			changed = true
+		}
 		if patternProps, ok := schema["patternProperties"].(map[string]any); ok {
 			for key, sub := range patternProps {
 				if cliproxyutil.HasUnsupportedUnicodePropertyEscape(key) {
 					delete(patternProps, key)
 					changed = true
-				} else if stripIncompatibleSchemaPatterns(sub) {
+				} else if stripIncompatibleCodexSchemaKeywords(sub, stripUniqueItems) {
 					changed = true
 				}
 			}
@@ -175,7 +210,7 @@ func stripIncompatibleSchemaPatterns(v any) bool {
 			}
 			if subMap, ok := schema[keyword].(map[string]any); ok {
 				for _, sub := range subMap {
-					if stripIncompatibleSchemaPatterns(sub) {
+					if stripIncompatibleCodexSchemaKeywords(sub, stripUniqueItems) {
 						changed = true
 					}
 				}
@@ -184,12 +219,12 @@ func stripIncompatibleSchemaPatterns(v any) bool {
 		for _, keyword := range cliproxyutil.SchemaValueKeywords {
 			switch sub := schema[keyword].(type) {
 			case map[string]any:
-				if stripIncompatibleSchemaPatterns(sub) {
+				if stripIncompatibleCodexSchemaKeywords(sub, stripUniqueItems) {
 					changed = true
 				}
 			case []any:
 				for _, item := range sub {
-					if stripIncompatibleSchemaPatterns(item) {
+					if stripIncompatibleCodexSchemaKeywords(item, stripUniqueItems) {
 						changed = true
 					}
 				}
@@ -197,7 +232,7 @@ func stripIncompatibleSchemaPatterns(v any) bool {
 		}
 	case []any:
 		for _, item := range schema {
-			if stripIncompatibleSchemaPatterns(item) {
+			if stripIncompatibleCodexSchemaKeywords(item, stripUniqueItems) {
 				changed = true
 			}
 		}

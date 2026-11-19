@@ -3266,6 +3266,10 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证原生 Codex WebSocket 的 OAuth 认证、身份、工具参数和用量上报。
+ * @param t 当前测试上下文。
+ */
 func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T) {
 	t.Parallel()
 	const clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
@@ -3340,6 +3344,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		"type": "response.create", "model": "gpt-test",
 		"max_tokens": 8,
 		"input":      []any{map[string]any{"role": "user", "content": "hello"}},
+		"tools":      json.RawMessage(`[{"type":"function","name":"pick","parameters":{"type":"object","properties":{"options":{"type":"array","items":{"type":"string"},"uniqueItems":true}}}}]`),
 	}); err != nil {
 		t.Fatalf("write downstream request: %v", err)
 	}
@@ -3361,6 +3366,16 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	}
 	if _, exists := request["include"]; exists {
 		t.Fatalf("upstream include = %#v", request["include"])
+	}
+	wantTools := []any{map[string]any{
+		"type": "function", "name": "pick", "parameters": map[string]any{
+			"type": "object", "properties": map[string]any{
+				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+		},
+	}}
+	if !reflect.DeepEqual(request["tools"], wantTools) {
+		t.Fatalf("upstream tools = %#v, want %#v", request["tools"], wantTools)
 	}
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {

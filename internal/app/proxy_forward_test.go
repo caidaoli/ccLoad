@@ -2841,6 +2841,75 @@ func TestPrepareCodexResponsesBodyForUpstream_NormalizesToolSchemas(t *testing.T
 	}
 }
 
+/**
+ * @brief 验证 Codex OAuth HTTP 和 compact 出站只删除工具参数的 uniqueItems 关键字。
+ * @param t 当前测试上下文。
+ */
+func TestCodexOAuthOutboundStripsUniqueItemsFromToolSchemas(t *testing.T) {
+	srv := newInMemoryServer(t)
+	body := []byte(`{"model":"gpt-test","input":[],"tools":[
+		{"type":"function","name":"pick","strict":true,"parameters":{"type":"object","properties":{
+			"options":{"type":"array","items":{"type":"string"},"uniqueItems":true},
+			"uniqueItems":{"type":"boolean","default":{"uniqueItems":true},"enum":[{"uniqueItems":false}]}
+		},"$defs":{"nested":{"anyOf":[{"type":"array","items":{"type":"string"},"uniqueItems":false}]}}}},
+		{"type":"namespace","name":"workspace","tools":[
+			{"type":"function","name":"tag","parameters":{"type":"array","items":{"type":"string"},"\u0075niqueItems":true}}
+		]}
+	],"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"array","items":{"type":"string"},"uniqueItems":true}}}}`)
+	tests := []struct {
+		name     string                 ///< 出站场景。
+		authType string                 ///< 实际上游认证方式。
+		path     string                 ///< 上游请求路径。
+		want     []gjson.Type           ///< 各 schema 关键字的预期类型，Null 表示已移除。
+		rules    []model.CustomBodyRule ///< 最后执行的 OAuth 请求体规则。
+	}{
+		{name: "OAuth Responses", authType: model.AuthTypeCodexOAuth, path: "/v1/responses", want: []gjson.Type{gjson.Null, gjson.Null, gjson.Null}},
+		{name: "OAuth compact", authType: model.AuthTypeCodexOAuth, path: "/v1/responses/compact", want: []gjson.Type{gjson.Null, gjson.Null, gjson.Null}},
+		{name: "API Key Responses", authType: model.AuthTypeAPIKey, path: "/v1/responses", want: []gjson.Type{gjson.True, gjson.False, gjson.True}},
+		{
+			name: "OAuth body rule override", authType: model.AuthTypeCodexOAuth, path: "/v1/responses",
+			want:  []gjson.Type{gjson.False, gjson.Null, gjson.Null},
+			rules: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "tools.0.parameters.properties.options.uniqueItems", Value: json.RawMessage(`false`)}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &model.Config{AuthType: tt.authType, CodexAccessToken: "at-test", CustomRequestRules: &model.CustomRequestRules{Body: tt.rules}}
+			reqCtx := &requestContext{ctx: context.Background(), clientProtocol: protocol.Codex, upstreamProtocol: protocol.Codex}
+			req, err := srv.buildProxyRequest(reqCtx, cfg, "sk-test", http.MethodPost, body,
+				http.Header{"Content-Type": {"application/json"}}, "", tt.path, "https://codex.example.test")
+			if err != nil {
+				t.Fatalf("buildProxyRequest: %v", err)
+			}
+			defer func() { _ = req.Body.Close() }()
+			wire, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read outgoing request: %v", err)
+			}
+			for i, schemaPath := range []string{
+				"tools.0.parameters.properties.options",
+				"tools.0.parameters.$defs.nested.anyOf.0",
+				"tools.1.tools.0.parameters",
+			} {
+				schema := gjson.GetBytes(wire, schemaPath)
+				if schema.Get("type").String() != "array" || schema.Get("items.type").String() != "string" {
+					t.Fatalf("%s array schema was lost: %s", schemaPath, schema.Raw)
+				}
+				if field := schema.Get("uniqueItems"); field.Type != tt.want[i] || field.Exists() != (tt.want[i] != gjson.Null) {
+					t.Errorf("%s.uniqueItems = %s, want %v", schemaPath, field.Raw, tt.want[i])
+				}
+			}
+			literal := gjson.GetBytes(wire, "tools.0.parameters.properties.uniqueItems")
+			if literal.Get("type").String() != "boolean" || literal.Get("default.uniqueItems").Type != gjson.True || literal.Get("enum.0.uniqueItems").Type != gjson.False {
+				t.Errorf("literal property or its data changed: %s", literal.Raw)
+			}
+			if gjson.GetBytes(wire, "text.format.schema.uniqueItems").Type != gjson.True {
+				t.Errorf("output schema changed: %s", gjson.GetBytes(wire, "text.format.schema").Raw)
+			}
+		})
+	}
+}
+
 func TestTranslatedStreamChunkCompletes(t *testing.T) {
 	t.Parallel()
 

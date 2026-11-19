@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -958,22 +960,36 @@ func TestBuildHTTPTransportSizesIdlePoolByChannelCount(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证模型发现直连及经 CONNECT 均使用无 ALPN 的 HTTP/1.1，而同一代理仍支持普通渠道的 HTTP/2。
+ * @param t 测试上下文。
+ */
 func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *testing.T) {
+	const probePath = "/v1internal:fetchAvailableModels"
+	const probeModel = "gemini-3.8-flash-high"
 	type observedRequest struct {
-		path     string
-		protocol int
+		path       string
+		protocol   string
+		negotiated string
 	}
-	observed := make(chan observedRequest, 2)
+	observed := make(chan observedRequest, 3)
+	offered := make(chan []string, 3)
 	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observed <- observedRequest{path: r.URL.Path, protocol: r.ProtoMajor}
-		_, _ = io.WriteString(w, "ok")
+		observed <- observedRequest{path: r.URL.Path, protocol: r.Proto, negotiated: r.TLS.NegotiatedProtocol}
+		_, _ = fmt.Fprintf(w, `{"models":{%q:{}}}`, probeModel)
 	}))
 	upstream.EnableHTTP2 = true
+	upstream.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			offered <- slices.Clone(hello.SupportedProtos)
+			return nil, nil
+		},
+	}
 	upstream.StartTLS()
 	t.Cleanup(upstream.Close)
 
-	connectTargets := make(chan string, 2)
-	proxyAuthorizations := make(chan string, 2)
 	proxyErrors := make(chan error, 2)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
@@ -981,8 +997,12 @@ func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *te
 			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
 			return
 		}
-		connectTargets <- r.Host
-		proxyAuthorizations <- r.Header.Get("Proxy-Authorization")
+		if got := r.Host; got != "upstream.example:443" {
+			t.Errorf("CONNECT target = %q, want upstream.example:443", got)
+		}
+		if got := r.Header.Get("Proxy-Authorization"); got != "Basic cHJveHk6c2VjcmV0" {
+			t.Errorf("Proxy-Authorization = %q, want proxy credentials", got)
+		}
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
 			proxyErrors <- fmt.Errorf("proxy response writer cannot hijack")
@@ -1020,52 +1040,70 @@ func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *te
 	}))
 	t.Cleanup(proxy.Close)
 
-	server := &Server{skipTLSVerify: true}
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	server := &Server{
+		skipTLSVerify:     true,
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true, 1), 0),
+	}
+	server.antigravityService = antigravityauth.NewService(server.antigravityClient)
+	server.antigravityCredentials = newAntigravityCredentialManager(server.antigravityService, store, server.getClientForChannel, nil)
 	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.antigravityClient)
 		if server.credentialTransports != nil {
 			server.credentialTransports.closeAll()
 		}
 	})
 	proxyURL := strings.Replace(proxy.URL, "http://", "http://proxy:secret@", 1)
-	request := func(config *model.Config, path string) {
-		t.Helper()
-		req, err := http.NewRequestWithContext(
-			context.Background(), http.MethodPost, "https://upstream.example"+path, bytes.NewBufferString(`{"request":{}}`),
-		)
-		if err != nil {
-			t.Fatalf("build request: %v", err)
-		}
-		resp, err := server.getClientForChannel(config).Do(req)
-		if err != nil {
-			t.Fatalf("POST %s through proxy: %v", path, err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		if err = resp.Body.Close(); err != nil {
-			t.Fatalf("close %s response: %v", path, err)
-		}
+	client := server.getClientForChannel(&model.Config{ID: 1, ProxyURL: proxyURL})
+	resp, err := client.Post("https://upstream.example/default", "application/json", strings.NewReader(`{"request":{}}`))
+	if err != nil {
+		t.Fatalf("default request through proxy: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close default response: %v", err)
+	}
+	if got := <-observed; got.path != "/default" || got.protocol != "HTTP/2.0" || got.negotiated != "h2" {
+		t.Fatalf("default proxied request = %+v, want /default over HTTP/2", got)
+	}
+	if got := <-offered; !slices.Contains(got, "h2") {
+		t.Fatalf("default ClientHello protocols = %q, want h2 offered", got)
 	}
 
-	request(&model.Config{ID: 1, ProxyURL: proxyURL}, "/default")
-	request(&model.Config{ID: 2, AuthType: model.AuthTypeAntigravityOAuth, ProxyURL: proxyURL}, "/antigravity")
-
-	protocols := make(map[string]int, 2)
-	for range 2 {
-		got := <-observed
-		protocols[got.path] = got.protocol
-	}
-	if got := protocols["/default"]; got != 2 {
-		t.Fatalf("default proxied protocol = HTTP/%d, want HTTP/2", got)
-	}
-	if got := protocols["/antigravity"]; got != 1 {
-		t.Fatalf("Antigravity proxied protocol = HTTP/%d, want HTTP/1.1", got)
-	}
-	for range 2 {
-		if got := <-connectTargets; got != "upstream.example:443" {
-			t.Fatalf("CONNECT target = %q, want upstream.example:443", got)
-		}
-		if got := <-proxyAuthorizations; got != "Basic cHJveHk6c2VjcmV0" {
-			t.Fatalf("Proxy-Authorization = %q, want proxy credentials", got)
-		}
+	for _, tt := range []struct {
+		name     string
+		upstream string
+		proxy    string
+	}{
+		{name: "direct", upstream: upstream.URL},
+		{name: "CONNECT", upstream: "https://upstream.example", proxy: proxyURL},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &model.Config{
+				ID:              2,
+				AuthType:        model.AuthTypeAntigravityOAuth,
+				OAuthCredential: `{"type":"antigravity","access_token":"access","refresh_token":"refresh","project_id":"project","expired":"2099-01-01T00:00:00Z"}`,
+				URLs:            model.ChannelURLs{{URL: tt.upstream, Protocols: []string{"gemini"}}},
+				ProxyURL:        tt.proxy,
+			}
+			result, err := server.fetchModelsForChannel(t.Context(), cfg, "", modelFetchFirstAvailableKey)
+			if err != nil {
+				t.Fatalf("Antigravity model discovery: %v", err)
+			}
+			if len(result.Models) != 1 || result.Models[0].Model != probeModel {
+				t.Errorf("Antigravity models = %+v, want %s", result.Models, probeModel)
+			}
+			if got := <-observed; got.path != probePath || got.protocol != "HTTP/1.1" || got.negotiated != "" {
+				t.Errorf("Antigravity probe request = %+v, want %s over HTTP/1.1 without negotiated ALPN", got, probePath)
+			}
+			if got := <-offered; len(got) != 0 {
+				t.Errorf("Antigravity ClientHello protocols = %q, want no ALPN", got)
+			}
+		})
 	}
 	select {
 	case err := <-proxyErrors:

@@ -114,8 +114,16 @@ func newDefaultUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {
 	return newCodexUTLSRoundTripper(base)
 }
 
+/**
+ * @brief 使用原生 Antigravity 的 HTTP/1.1 握手，不发送 TLS ALPN 扩展。
+ * @param base 要继承代理、TLS 和连接池配置的 Transport。
+ * @return 当前连接池代使用的独立 Transport。
+ */
 func newAntigravityUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {
-	return newStandardHTTP11Transport(base)
+	transport := newStandardHTTP11Transport(base)
+	transport.Protocols = nil
+	transport.TLSClientConfig.NextProtos = nil
+	return transport
 }
 
 func closeUpstreamHTTPClient(client *http.Client) {

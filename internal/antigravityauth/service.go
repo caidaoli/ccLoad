@@ -34,21 +34,28 @@ const (
 	maxManifestBytes        = 4096
 	apiVersion              = "v1internal"
 	antigravityHubPlatform  = "os_type=darwin; arch=arm64"
-	// fallbackHubVersion is reported until the Hub manifest is fetched. Cloud
-	// Code rejects newer models for clients below 2.23.0.
-	fallbackHubVersion = "2.29.0"
 )
 
-// Changelists belong to specific Hub releases; keep the fallback release listed.
-// Unknown releases report their manifest version without claiming another CL.
-var hubChangelists = map[string]string{
-	"2.23.0": "998057262",
-	"2.24.0": "1000335682",
-	"2.29.0": "1013060670",
+/**
+ * @brief Verified Hub versions and their changelists, newest first.
+ * @details The first entry serves as both the startup and unmapped manifest fallback.
+ */
+var hubReleases = [...]struct {
+	version    string ///< Version published in the Hub manifest.
+	changelist string ///< Changelist reported by this release's build metadata.
+}{
+	{"2.33.0", "1023160026"},
+	{"2.32.2", "1022991777"},
+	{"2.32.1", "1021296516"},
+	{"2.29.0", "1013060670"},
+	{"2.24.0", "1000335682"},
+	{"2.23.0", "998057262"},
 }
 
-// DefaultUserAgent is the Hub User-Agent used before the manifest is fetched.
-var DefaultUserAgent = hubUserAgent(fallbackHubVersion)
+/**
+ * @brief Hub User-Agent used before a manifest is fetched.
+ */
+var DefaultUserAgent = hubUserAgent(hubReleases[0].version)
 
 var defaultScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -159,9 +166,12 @@ func NewService(client *http.Client) *Service {
 	}
 }
 
-// RefreshUserAgent loads the current Antigravity Hub version. Call it during
-// startup, before the service is used concurrently. A failed refresh leaves the
-// existing User-Agent unchanged so the production fallback remains usable.
+/**
+ * @brief Reads the Hub manifest and selects a verified User-Agent.
+ * @param ctx Request context for the manifest fetch.
+ * @return Error if the manifest cannot be fetched or contains an invalid version.
+ * @note Call before concurrent use. On error, the existing User-Agent is retained.
+ */
 func (s *Service) RefreshUserAgent(ctx context.Context) error {
 	if s == nil || s.Client == nil {
 		return errors.New("antigravity manifest client is unavailable")
@@ -201,12 +211,20 @@ func (s *Service) RefreshUserAgent(ctx context.Context) error {
 	return nil
 }
 
+/**
+ * @brief Builds a Hub User-Agent from a verified release pair.
+ * @param version Manifest version used to select the release.
+ * @return User-Agent for the matching release or the newest registered release.
+ */
 func hubUserAgent(version string) string {
-	metadata := "aidev_client; " + antigravityHubPlatform
-	if changelist := hubChangelists[version]; changelist != "" {
-		metadata += "; cl=" + changelist
+	release := hubReleases[0]
+	for _, candidate := range hubReleases {
+		if candidate.version == version {
+			release = candidate
+			break
+		}
 	}
-	return fmt.Sprintf("antigravity/hub/%s (%s)", version, metadata)
+	return fmt.Sprintf("antigravity/hub/%s (aidev_client; %s; cl=%s)", release.version, antigravityHubPlatform, release.changelist)
 }
 
 // RequestUserAgent returns the discovered User-Agent or the production fallback.
@@ -217,18 +235,17 @@ func (s *Service) RequestUserAgent() string {
 	return strings.TrimSpace(s.UserAgent)
 }
 
-// hubVersion reports the client version carried by the request User-Agent, as
-// onboarding metadata must agree with it.
+/**
+ * @brief Reads the version sent in the Hub User-Agent for onboarding metadata.
+ * @return Version from the request User-Agent or the newest registered release if absent or invalid.
+ */
 func (s *Service) hubVersion() string {
 	rest, ok := strings.CutPrefix(s.RequestUserAgent(), "antigravity/hub/")
-	if !ok {
-		return fallbackHubVersion
-	}
 	version, _, _ := strings.Cut(rest, " ")
-	if !validVersion(version) {
-		return fallbackHubVersion
+	if ok && validVersion(version) {
+		return version
 	}
-	return version
+	return hubReleases[0].version
 }
 
 func validVersion(version string) bool {
