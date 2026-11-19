@@ -24,7 +24,8 @@ const (
 	// Replays of real traffic put reliable answers at 0.39 and above, while
 	// answers at 0.25 and below flipped between distant levels on identical
 	// input; such an answer is recorded but treated as no decision.
-	reasoningMinConfidence = 0.3
+	reasoningMinConfidence      = 0.3
+	reasoningConfidentDowngrade = 0.5 ///< 报置信度的判断模型降级免确认的下限：离线 D3 低档建议在它以上判低 12%、以下 44%
 )
 
 type reasoningState struct {
@@ -107,7 +108,15 @@ func reasoningRank(effort string) int {
 	return 0
 }
 
-func (t *reasoningTurn) acceptSuggestion(effort string) {
+/**
+ * @brief 按会话当前等级接受一次有效建议
+ * @param effort 判断模型建议的等级
+ * @param confidence 判断模型对 effort 的置信度；不报置信度的模型为 nil
+ * @note 升级立即生效；降级在不报置信度或置信度达到 reasoningConfidentDowngrade 时立即生效，
+ *       否则需连续两次低于当前等级的建议，取两次中较高的一档
+ * @details 2026-11-19 生产盲标：被确认压住的降级 21 条中 8 条因此偏高、仅 2 条被救回
+ */
+func (t *reasoningTurn) acceptSuggestion(effort string, confidence *float64) {
 	t.metadata.SuggestedEffort = effort
 	t.metadata.Status = "decided"
 	t.force = false
@@ -117,6 +126,8 @@ func (t *reasoningTurn) acceptSuggestion(effort string) {
 		t.effort, t.pending, t.pendingCount = effort, "", 0
 	case effort == t.effort:
 		t.pending, t.pendingCount = "", 0
+	case confidence == nil || *confidence >= reasoningConfidentDowngrade:
+		t.effort, t.pending, t.pendingCount = effort, "", 0
 	default:
 		if t.pending == "" || reasoningRank(effort) > reasoningRank(t.pending) {
 			t.pending = effort
@@ -370,7 +381,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	}
 	// Truncation keeps the original task, latest request and recent tail, so it
 	// remains a usable decision and may count toward a downgrade.
-	t.acceptSuggestion(result.effort)
+	t.acceptSuggestion(result.effort, result.confidence)
 }
 
 func containsExact(values []string, value string) bool {

@@ -280,7 +280,7 @@ func assertReasoningAutoEfforts(t testing.TB, requests [][]byte, want ...string)
 
 func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "low", "xhigh", "low", "medium")
+	judge := newReasoningAutoJudge(t, "low", "xhigh", "low:0.4", "medium:0.4")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
@@ -304,6 +304,29 @@ func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 	if !strings.Contains(decisions[2].Conversation, "lock-free migration") || !strings.Contains(decisions[2].Conversation, "继续") || !strings.Contains(decisions[3].Conversation, "finish the mechanical work") {
 		t.Fatalf("decision lost the original task or latest instruction: %q", decisions[3].Conversation)
 	}
+}
+
+/**
+ * @brief 只有报了低于门槛置信度的降级需要确认；达到门槛或不报置信度的降级立即生效
+ * @param t 测试上下文
+ */
+func TestReasoningAutoDowngradeConfirmsOnlyUnsureScores(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "xhigh", "medium:0.45", "low:0.6", "xhigh", "medium")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	headers := map[string]string{"Session-Id": "confident-downgrade"}
+	messages := []any{map[string]any{"role": "user", "content": "Design a lock-free migration with rollback and concurrent writers."}}
+	for _, next := range []string{"", "The design is settled; apply it.", "Now just report the test result.",
+		"A concurrent writer corrupted the ledger; find out why.", "Found it; rename the variable."} {
+		if next != "" {
+			messages = append(messages, map[string]any{"role": "user", "content": next})
+		}
+		reasoningAutoRequest(t, env, "/v1/chat/completions", map[string]any{"model": "gpt-5.6-sol", "messages": messages}, headers)
+	}
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "xhigh", "low", "xhigh", "medium")
 }
 
 /**
@@ -440,7 +463,7 @@ func TestReasoningAutoActiveRequestShowsSentEffort(t *testing.T) {
 // the session's established level stands, and the next turn asks again.
 func TestReasoningAutoLowConfidenceKeepsLevel(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "medium:0.1", "high:0.9", "low:0.2", "low:0.8")
+	judge := newReasoningAutoJudge(t, "medium:0.1", "high:0.9", "low:0.2", "low:0.4")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
@@ -473,7 +496,7 @@ func TestReasoningAutoLowConfidenceKeepsLevel(t *testing.T) {
 
 func TestReasoningAutoToolContinuationAndParallelFailure(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "high", "xhigh", "high", "xhigh")
+	judge := newReasoningAutoJudge(t, "high", "xhigh", "high:0.4", "xhigh")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "tools", upstreamProtocol: "openai", models: "gpt-5.6-sol",
@@ -755,7 +778,7 @@ func TestReasoningAutoCodexGuardianSkipsDecision(t *testing.T) {
 // must neither move it nor count toward its downgrade.
 func TestReasoningAutoClaudeCodeAuxiliaryRequestsLeaveSessionState(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "high", "low")
+	judge := newReasoningAutoJudge(t, "high", "low:0.4")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "claude-code-auxiliary", upstreamProtocol: "anthropic", models: "gpt-5.6-sol",
@@ -1065,7 +1088,7 @@ func TestReasoningAutoExplicitSettingsRequireFreshDecision(t *testing.T) {
 	} {
 		t.Run(explicit.name, func(t *testing.T) {
 			t.Parallel()
-			judge := newReasoningAutoJudge(t, "xhigh", "low", "medium")
+			judge := newReasoningAutoJudge(t, "xhigh", "low:0.4", "medium:0.4")
 			business := newReasoningAutoBusiness(t)
 			env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 				name: "explicit", upstreamProtocol: "openai", models: "gpt-5.6-sol",
@@ -1098,15 +1121,15 @@ func TestReasoningAutoFallbackBreaksDowngradeSequence(t *testing.T) {
 		t.Run(fallback, func(t *testing.T) {
 			t.Parallel()
 			responsesContext := fallback == "incomplete_history" || fallback == "incomplete_tool_history"
-			efforts := []string{"high", "low", "low", "low", "medium"}
+			efforts := []string{"high", "low:0.4", "low:0.4", "low:0.4", "medium:0.4"}
 			if fallback == "invalid_answer" {
 				efforts[2] = "not-an-effort"
 			}
 			if responsesContext || fallback == "multimodal" {
-				efforts = []string{"high", "low", "low", "medium"}
+				efforts = []string{"high", "low:0.4", "low:0.4", "medium:0.4"}
 			}
 			if fallback == "incomplete_tool_history" {
-				efforts[3] = "low"
+				efforts[3] = "low:0.4"
 			}
 			judge := newReasoningAutoJudge(t, efforts...)
 			business := newReasoningAutoBusiness(t)
@@ -1302,7 +1325,7 @@ func TestReasoningAutoToolMultimodalOutputBreaksDowngrade(t *testing.T) {
 				for _, reuse := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%s/%s/encoded=%v/reuse=%v", kind, contentType, encoded, reuse), func(t *testing.T) {
 						t.Parallel()
-						judge := newReasoningAutoJudge(t, "high", "low", "low", "low")
+						judge := newReasoningAutoJudge(t, "high", "low:0.4", "low:0.4", "low:0.4")
 						business := newReasoningAutoBusiness(t)
 						env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 							name: "tool-output", upstreamProtocol: "codex", models: "gpt-5.6-sol",
@@ -1400,7 +1423,7 @@ func TestReasoningAutoTextToolOutputRemainsComplete(t *testing.T) {
 
 func TestReasoningAutoTruncatedContextCountsTowardDowngrade(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "high", "low", "low")
+	judge := newReasoningAutoJudge(t, "high", "low:0.4", "low:0.4")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "truncated", upstreamProtocol: "openai", models: "gpt-5.6-sol",
@@ -1910,7 +1933,7 @@ func TestReasoningAutoWebsocketIncrementalAndReplayShareDecision(t *testing.T) {
 
 func TestReasoningAutoHTTPAndWebsocketShareState(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "high", "low", "medium")
+	judge := newReasoningAutoJudge(t, "high", "low:0.4", "medium:0.4")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "shared-transports", upstreamProtocol: "codex", models: "gpt-5.6-sol",
@@ -1958,7 +1981,7 @@ func TestReasoningAutoHTTPAndWebsocketShareState(t *testing.T) {
 
 func TestReasoningAutoWebsocketInheritedEffortIsNotClientExplicit(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "xhigh", "low", "medium", "high")
+	judge := newReasoningAutoJudge(t, "xhigh", "low:0.4", "medium:0.4", "high")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "ws-explicit", upstreamProtocol: "codex", models: "gpt-5.6-sol",

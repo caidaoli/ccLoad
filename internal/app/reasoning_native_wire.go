@@ -246,10 +246,10 @@ func reasoningChoiceMass(answer gjson.Result, question string, levels []string, 
 }
 
 /**
- * @brief 保留 Jev 双题置信度与封顶语义，单评分题使用原生概率的最大项
+ * @brief 保留 Jev 双题置信度与封顶语义，单评分题按模型取概率期望或最大项
  * @param response 上游 JSON 响应
  * @param provider 实际模型的提供商
- * @param actualModel 完成重定向后的上游模型名，决定双题是否按校准阈值取档
+ * @param actualModel 完成重定向后的上游模型名，决定双题是否按校准阈值、单题是否按期望取档
  * @param prompt 本次请求使用的提示词
  * @param levels 按强度升序排列的候选等级
  * @return 建议等级；拒答或无效答案时为空
@@ -263,7 +263,7 @@ func reasoningChoiceMass(answer gjson.Result, question string, levels []string, 
 func parseReasoningDecision(response []byte, provider, actualModel string, prompt model.ReasoningPrompt, levels []string) (string, *float64, error) {
 	answer := reasoningDecisionAnswer(response, provider, "effort")
 	if prompt.Depth == nil {
-		effort, err := reasoningScoreChoice(answer, provider, levels)
+		effort, err := reasoningScoreChoice(answer, provider, actualModel, levels)
 		return effort, nil, err
 	}
 	effort, confidence, err := systemOneChoice(answer, "effort", levels)
@@ -305,15 +305,23 @@ func parseReasoningDecision(response []byte, provider, actualModel string, promp
 }
 
 /**
- * @brief 校验完整的评分概率并选择最大项，平票选择较低等级
+ * @brief 单评分题按概率期望取档的判断模型名称前缀；未列出的模型取概率最大项
+ * @details 2026-11-19 三方共识金标 230 条回放：gpt-6-luna 可接受率 84.3→90.4%（+15/−1），
+ * dev/test/生产三组各 +5~6pp，档位分布更贴近金标；gemini、阿里云用期望会塌向 high，不采用。
+ */
+var reasoningScoreExpectedPrefixes = []string{"gpt-6-luna"}
+
+/**
+ * @brief 校验完整的评分概率并取档：按模型取期望四舍五入，或取最大项且平票选较低等级
  * @param answer 单个原生评分题答案
  * @param provider 实际模型的提供商
+ * @param actualModel 完成重定向后的上游模型名，决定是否按期望取档
  * @param levels 按强度升序排列的候选等级
- * @return 概率最大的等级；无效时为空
+ * @return 选中的等级；无效时为空
  * @return 拒答、缺失等级或无效概率分布返回错误；成功时为 nil
- * @details 允许提供商将每项概率舍入到两位小数产生的总和误差
+ * @details 允许提供商将每项概率舍入到两位小数产生的总和误差；期望按候选等级下标计算并除以概率总和
  */
-func reasoningScoreChoice(answer gjson.Result, provider string, levels []string) (string, error) {
+func reasoningScoreChoice(answer gjson.Result, provider, actualModel string, levels []string) (string, error) {
 	invalid := errors.New("reasoning score probabilities missing or invalid")
 	if !answer.IsObject() || answer.Get("type").String() != "score" {
 		return "", errors.New("reasoning score answer missing or invalid")
@@ -350,18 +358,23 @@ func reasoningScoreChoice(answer gjson.Result, provider string, levels []string)
 			values[i] = value.Float()
 		}
 	}
-	best, total := 0, 0.0
+	best, total, expected := 0, 0.0, 0.0
 	for i, value := range values {
 		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
 			return "", invalid
 		}
 		total += value
+		expected += float64(i) * value
 		if value > values[best] {
 			best = i
 		}
 	}
 	if math.Abs(total-1) > 0.005*float64(len(values))+1e-9 {
 		return "", invalid
+	}
+	name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(actualModel)))
+	if slices.ContainsFunc(reasoningScoreExpectedPrefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) }) {
+		best = int(math.Floor(expected/total + 0.5))
 	}
 	return levels[best], nil
 }
