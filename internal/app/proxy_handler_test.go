@@ -239,26 +239,26 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 	}
 }
 
-// TestParseIncomingRequest_BodyTooLarge 测试请求体过大
+/**
+ * @brief 验证超限错误报告当前路径的设置值及已知长度或读取下界。
+ * @param t 测试上下文。
+ */
 func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
-	// 设置较小的限制以便测试
-	bodyLimits := newRequestBodyLimits(1048576, 1048576) // 1MB
-
-	// 创建超大请求体（>1MB）
-	largeBody := make([]byte, 2*1024*1024) // 2MB
-	for i := range largeBody {
-		largeBody[i] = 'a'
-	}
-
-	req := newRequest(http.MethodPost, "/v1/messages", bytes.NewReader(largeBody))
-	req.Header.Set("Content-Type", "application/json")
-
-	c, _ := newTestContext(t, req)
-
-	_, err := parseIncomingRequest(c, bodyLimits, testRequestBodyMemory(t))
-
-	if err != errBodyTooLarge {
-		t.Errorf("期望errBodyTooLarge错误, 实际: %v", err)
+	for _, tc := range []struct {
+		path   string
+		length int64
+		want   string
+	}{
+		{"/v1/responses", 2097152, "Content-Length 2097152 bytes (2.00 MiB), max_body_bytes=1048576 bytes (1.00 MiB)"},
+		{"/v1/images/edits", -1, "decoded body at least 513 bytes, max_image_body_bytes=512 bytes"},
+	} {
+		req := newRequest(http.MethodPost, tc.path, bytes.NewReader(make([]byte, 2<<20)))
+		req.ContentLength = tc.length
+		c, _ := newTestContext(t, req)
+		_, err := parseIncomingRequest(c, newRequestBodyLimits(1<<20, 512), testRequestBodyMemory(t))
+		if !errors.Is(err, errBodyTooLarge) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want size error containing %q", tc.path, err, tc.want)
+		}
 	}
 }
 
@@ -330,8 +330,8 @@ func TestParseIncomingRequest_DecodesContentEncoding(t *testing.T) {
 			t.Fatalf("compressed fixture %d bytes must fit the limit", len(bomb))
 		}
 		_, _, err := parse(bytes.NewReader(bomb), "gzip")
-		if !errors.Is(err, errBodyTooLarge) {
-			t.Fatalf("err = %v, want errBodyTooLarge", err)
+		if !errors.Is(err, errBodyTooLarge) || !strings.Contains(err.Error(), "decoded body at least 1025 bytes, max_body_bytes=1024 bytes") {
+			t.Fatalf("expected decoded size lower bound and limit, got %v", err)
 		}
 	})
 	t.Run("read timeout inside decoder", func(t *testing.T) {

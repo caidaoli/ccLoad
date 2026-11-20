@@ -35,7 +35,7 @@ var errUnknownClientProtocol = errors.New("unknown client protocol for path")
 // errBodyTooLarge 与 errBodyReadTimeout 是两种完全不同的失败：前者是请求体超过
 // 配置的大小上限（立即拒绝），后者是客户端在读取超时内没把请求体传完。二者的处置
 // 手段不同（调大小上限 vs 调读取超时），错误文案必须区分，否则会被误判。
-var errBodyTooLarge = errors.New("request body exceeds the configured size limit (settings: max_body_bytes / max_image_body_bytes)")
+var errBodyTooLarge = errors.New("request body exceeds the configured size limit")
 var errBodyReadTimeout = errors.New("timed out reading the request body before the client finished uploading (setting: http_read_timeout_seconds)")
 
 // ErrAllKeysUnavailable 表示所有渠道密钥都不可用
@@ -149,6 +149,13 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits, memory *
 			contentLength = -1
 		}
 		all, err = memory.read(c.Request.Context(), body, maxBody, contentLength)
+		if errors.Is(err, errBodyTooLarge) {
+			size := fmt.Sprintf("decoded body at least %d bytes", maxBody+1)
+			if contentLength > maxBody {
+				size = fmt.Sprintf("Content-Length %d bytes (%.2f MiB)", contentLength, float64(contentLength)/(1<<20))
+			}
+			err = fmt.Errorf("%w: %s, %s=%d bytes (%.2f MiB)", err, size, requestBodyLimitSetting(requestPath), maxBody, float64(maxBody)/(1<<20))
+		}
 		if errors.Is(err, errRequestBodyMemoryBudget) {
 			stopRejectedRequestUpload(c)
 		}
@@ -307,10 +314,22 @@ func (l requestBodyLimits) maxForPath(requestPath string) int64 {
 	if l.images <= 0 {
 		l.images = config.DefaultMaxImageBodyBytes
 	}
-	if strings.HasPrefix(requestPath, "/v1/images/") {
+	if requestBodyLimitSetting(requestPath) == "max_image_body_bytes" {
 		return l.images
 	}
 	return l.standard
+}
+
+/**
+ * @brief 按代理路径选择请求体上限的系统设置。
+ * @param requestPath 客户端请求路径。
+ * @return 当前路径使用的设置键。
+ */
+func requestBodyLimitSetting(requestPath string) string {
+	if strings.HasPrefix(requestPath, "/v1/images/") {
+		return "max_image_body_bytes"
+	}
+	return "max_body_bytes"
 }
 
 // extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
