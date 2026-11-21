@@ -565,7 +565,18 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
 	}, &model.APIKey{APIKey: "sk-disabled", KeyStrategy: model.KeyStrategySequential})
 
-	if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
+	firstSlot := time.Now().Truncate(time.Minute).Add(time.Minute)
+	coolUntil := firstSlot.Add(time.Minute)
+	if err := srv.store.SetChannelCooldown(ctx, eligible.ID, coolUntil); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.runScheduledChannelChecks(ctx, firstSlot); err != nil {
+		t.Fatal(err)
+	}
+	if eligibleCalls != 0 {
+		t.Fatalf("expected no upstream calls during channel cooldown, got %d", eligibleCalls)
+	}
+	if err := srv.runScheduledChannelChecks(ctx, coolUntil); err != nil {
 		t.Fatalf("runScheduledChannelChecks failed: %v", err)
 	}
 

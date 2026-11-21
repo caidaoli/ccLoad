@@ -36,9 +36,13 @@ func (c *Config) NormalizeScheduledCheckSchedule() error {
 	return ValidateScheduledCheckSchedule(c.ScheduledCheckIntervalMinutes, c.ScheduledCheckStartTime)
 }
 
-// ScheduledCheckDueAt uses wall-clock minutes, restarting the schedule each day.
+/**
+ * @brief 判断渠道在指定时间是否应执行定时检测，渠道冷却期间跳过计划时间点。
+ * @param now 服务端本地时间，每天按本地时钟重新计算检测计划。
+ * @return 渠道可检测且当前分钟命中计划时返回 true。
+ */
 func (c *Config) ScheduledCheckDueAt(now time.Time) bool {
-	if c == nil || !c.Enabled || !c.ScheduledCheckEnabled || !c.IsAvailableAt(now) {
+	if c == nil || !c.Enabled || !c.ScheduledCheckEnabled || c.IsCoolingDown(now) || !c.IsAvailableAt(now) {
 		return false
 	}
 	if ValidateScheduledCheckSchedule(c.ScheduledCheckIntervalMinutes, c.ScheduledCheckStartTime) != nil {
