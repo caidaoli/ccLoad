@@ -312,7 +312,14 @@ func parseReasoningDecision(response []byte, provider, actualModel string, promp
 var reasoningScoreExpectedPrefixes = []string{"gpt-6-luna"}
 
 /**
- * @brief 校验完整的评分概率并取档：按模型取期望四舍五入，或取最大项且平票选较低等级
+ * @brief 单评分题最大项为 high 时改判 xhigh 的 xhigh 及以上概率之和阈值（千分比），按判断模型名称前缀匹配
+ * @details 2026-11-21 共识金标 230 条回放（Gemini 现行提示词）：argmax 下 xhigh 召回 7/26；阈值在 dev 选 380，
+ * test+生产 80 条可接受率 93.1%、档位分布 L1 0.08；全集可接受率 90.9% 不变、exact 65.2→66.1%、xhigh 召回 16/26。
+ */
+var reasoningScoreXhighThresholds = map[string]int{"gemini-decision": 380}
+
+/**
+ * @brief 校验完整的评分概率并取档：按模型取期望四舍五入，或取最大项且平票选较低等级；已校准模型的 high 可按 xhigh 概率改判
  * @param answer 单个原生评分题答案
  * @param provider 实际模型的提供商
  * @param actualModel 完成重定向后的上游模型名，决定是否按期望取档
@@ -376,6 +383,19 @@ func reasoningScoreChoice(answer gjson.Result, provider, actualModel string, lev
 	if slices.ContainsFunc(reasoningScoreExpectedPrefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) }) {
 		// 先按千分位取整，避免 1.5 被浮点累加成 1.4999… 而少取一档。
 		best = int(math.Floor(math.Round(expected/total*1000)/1000 + 0.5))
+	}
+	if xhigh := slices.Index(levels, "xhigh"); xhigh > 0 && levels[best] == "high" {
+		for prefix, threshold := range reasoningScoreXhighThresholds {
+			if strings.HasPrefix(name, prefix) {
+				mass := 0.0
+				for _, value := range values[xhigh:] {
+					mass += value
+				}
+				if int(math.Round(mass*1000)) >= threshold {
+					best = xhigh
+				}
+			}
+		}
 	}
 	return levels[best], nil
 }
