@@ -425,6 +425,14 @@ func TestEmptyAssignmentFollowedBySecret(t *testing.T) {
 			t.Errorf("%q: %s, %v", prefix, masked, err)
 		}
 	}
+	for _, text := range []string{"password: hunter2=Xq9zLm", "PASSWORD: ROOT=Zx81kLp9"} {
+		session := newSession(t, privacy.NewEngine(), "field", enabled())
+		masked, err := session.MaskText(text)
+		value := text[strings.Index(text, " ")+1:]
+		if err != nil || strings.Contains(masked, value) || session.RestoreText(masked) != text {
+			t.Errorf("%q: %s, %v", text, masked, err)
+		}
+	}
 }
 
 /**

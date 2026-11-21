@@ -2180,3 +2180,22 @@ func TestConvertCodexResponseToClaude_RestoresLongMidConversationToolAdditionNam
 		t.Fatalf("non-streaming response content.1.name = %q, want %q; body=%s", got, midLongMCPTool, nonStreamOut)
 	}
 }
+
+func TestConvertCodexResponseToClaude_StreamTerminalRecoversMessageBeforeTerminalFunctionCall(t *testing.T) {
+	originalRequest := []byte(`{"tools":[{"name":"lookup","description":"lookup"}]}`)
+	var param any
+	chunks := [][]byte{
+		[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5"}}`),
+		[]byte(`data: {"type":"response.completed","response":{"stop_reason":"stop","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"checking"}]},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}]}}`),
+	}
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		outputs = append(outputs, ConvertCodexResponseToClaude(context.Background(), "", originalRequest, nil, chunk, &param)...)
+	}
+	outputText := string(bytes.Join(outputs, nil))
+	textPosition := strings.Index(outputText, `"text":"checking"`)
+	toolPosition := strings.Index(outputText, `"type":"tool_use"`)
+	if textPosition < 0 || toolPosition < 0 || textPosition > toolPosition {
+		t.Fatalf("recovered message must precede terminal tool_use:\n%s", outputText)
+	}
+}

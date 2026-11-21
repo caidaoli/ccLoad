@@ -344,17 +344,18 @@ func ModelOutputModalities(id string) ([]string, bool) {
  * @brief 查询 models.dev 声明的模型思考等级
  * @param id 模型 ID，大小写无关
  * @return 等级副本；目录未安装、未收录或未声明等级时返回 nil
+ * @return 目录是否收录该模型；收录但未声明等级时为 true
  */
-func ModelReasoningEfforts(id string) []string {
+func ModelReasoningEfforts(id string) ([]string, bool) {
 	snapshot := activeModelPricing.Load()
 	if snapshot == nil {
-		return nil
+		return nil, false
 	}
-	efforts := snapshot.metadata[strings.ToLower(strings.TrimSpace(id))].ReasoningEfforts
-	if len(efforts) == 0 {
-		return nil
+	entry, ok := snapshot.metadata[strings.ToLower(strings.TrimSpace(id))]
+	if len(entry.ReasoningEfforts) == 0 {
+		return nil, ok
 	}
-	return slices.Clone(efforts)
+	return slices.Clone(entry.ReasoningEfforts), true
 }
 
 // ModelFamily returns the known model family for an exact model ID.

@@ -20,8 +20,13 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
 	if turn.metadata.Status == "skipped" || turn.effort == "" {
 		return body
 	}
-	levels := reasoningModelLevels(actualModel, upstream)
+	levels, known := reasoningModelLevels(actualModel, upstream)
 	if len(levels) == 0 {
+		if known {
+			// Budget-only or non-reasoning models reject effort levels.
+			r.reasoningApplyReason = "unknown_model_capability"
+			return body
+		}
 		// The decision chose among the logical model's levels; a redirect name
 		// the catalogs cannot resolve still serves that model.
 		levels = turn.levels
@@ -44,9 +49,10 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
  * @brief 读取实际上游模型允许的思考等级
  * @param model 实际路由后的模型名，可带供应商前缀，大小写无关
  * @param upstream 本次使用的上游协议，决定优先查询的目录
- * @return 模型允许的思考等级；所有目录都未收录时返回 nil
+ * @return 模型允许的思考等级；目录未收录或收录但无档位时返回 nil
+ * @return 任一目录是否收录该模型；收录但无档位（只有预算或不支持思考）时为 true
  */
-func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
+func reasoningModelLevels(model string, upstream protocol.Protocol) ([]string, bool) {
 	provider := "openai"
 	switch upstream {
 	case protocol.Anthropic:
@@ -55,7 +61,7 @@ func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
 		provider = "gemini"
 	}
 	if info := modelregistry.LookupModelInfo(anthropicCanonicalModelName(model), provider); info != nil && info.Thinking != nil && len(info.Thinking.Levels) > 0 {
-		return info.Thinking.Levels
+		return info.Thinking.Levels, true
 	}
 	return reasoningCatalogLevels(model)
 }
@@ -63,21 +69,23 @@ func reasoningModelLevels(model string, upstream protocol.Protocol) []string {
 /**
  * @brief 按模型名查询已知思考等级，不区分上游协议
  * @param model 模型名，可带供应商前缀（如 `Qwen/Qwen3.8-Max`），大小写无关
- * @return 依次取 CLIProxy 内置目录、models.dev 目录、尚未进入快照的 Anthropic 5.2 官方等级；都未收录时返回 nil
+ * @return 依次取 CLIProxy 内置目录、models.dev 目录、尚未进入快照的 Anthropic 5.2 官方等级；都无档位时返回 nil
+ * @return 任一目录是否收录该模型，收录但无档位时为 true
  */
-func reasoningCatalogLevels(model string) []string {
+func reasoningCatalogLevels(model string) ([]string, bool) {
 	name := anthropicCanonicalModelName(model)
 	if levels := modelregistry.LookupThinkingLevels(name); len(levels) > 0 {
-		return levels
+		return levels, true
 	}
-	if levels := util.ModelReasoningEfforts(name); len(levels) > 0 {
-		return levels
+	levels, known := util.ModelReasoningEfforts(name)
+	if len(levels) > 0 {
+		return levels, true
 	}
 	if anthropicClaude52Family(name) != "" {
 		return []string{string(thinking.LevelLow), string(thinking.LevelMedium), string(thinking.LevelHigh),
-			string(thinking.LevelXHigh), string(thinking.LevelMax)}
+			string(thinking.LevelXHigh), string(thinking.LevelMax)}, true
 	}
-	return nil
+	return nil, known || modelregistry.LookupModelInfo(name) != nil
 }
 
 /**
@@ -88,7 +96,7 @@ func reasoningCatalogLevels(model string) []string {
  */
 func reasoningDecisionLevels(model string) []string {
 	var levels []string
-	catalog := reasoningCatalogLevels(model)
+	catalog, _ := reasoningCatalogLevels(model)
 	for _, level := range openAIStyleLevelOrder {
 		if reasoningLevelCriteria[level] != "" && thinking.HasLevel(catalog, level) {
 			levels = append(levels, level)

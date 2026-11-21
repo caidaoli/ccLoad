@@ -3479,6 +3479,67 @@ func TestProxy_ZAITrialConcurrentCooldown(t *testing.T) {
  * @brief 从客户端入口验证套餐选择、认证、请求体隔离和失败后的渠道可用性。
  * @param t 测试上下文。
  */
+/**
+ * @brief 客户端取消前已收到的体验限流仍写入体验冷却，取消本身不跳过写入。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialCanceledStreamKeepsRateLimitCooldown(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	client := &cancelOnSSEOutput{
+		ResponseRecorder: httptest.NewRecorder(), firstOutput: make(chan struct{}),
+		cancelOn: []byte("turn_rate_limit_exceeded"), cancel: cancel,
+	}
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/zcode-plan/billing/balance" {
+			_, _ = io.WriteString(w, `{"code":0,"data":{"plans":[{"plan_id":"gift","status":"active","name":"Start Plan"}],"balances":[{"plan_id":"gift","capabilities":["model:glm-5.3"],"total_units":"10","used_units":1,"remaining_units":"9"}]}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Retry-After", "45")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"GLM-5.3\",\"content\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n"+
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial-answer\"}}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-client.firstOutput:
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			t.Error("stream did not reach the downstream")
+			return
+		}
+		_, _ = io.WriteString(w, "event: error\ndata: "+
+			`{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"at capacity"}}`+"\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	raw, err := (&zaiauth.Credential{JWTToken: "trial-jwt", UserID: "trial-user"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{name: "zai-trial", upstreamProtocol: "anthropic", models: "GLM-5.3-Trial", authType: model.AuthTypeZAIOAuth, oauthCredential: raw}}, map[int]string{0: upstream.URL})
+	env.server.zaiService.OAuthBaseURL = upstream.URL + "/api/v1"
+	env.server.zaiService.BizBaseURL = upstream.URL
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"GLM-5.3-Trial","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	env.engine.ServeHTTP(client, req)
+	if !strings.Contains(client.Body.String(), "turn_rate_limit_exceeded") {
+		t.Fatalf("status=%d body=%s", client.Code, client.Body)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining := time.Until(cooldowns[1]["GLM-5.3-Trial"]); remaining < 42*time.Second || remaining > 45*time.Second {
+		t.Fatalf("trial cooldowns=%v, want about 45s", cooldowns)
+	}
+}
+
 func TestProxy_ZAITrialRouting(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

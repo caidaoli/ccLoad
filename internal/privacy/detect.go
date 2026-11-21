@@ -99,8 +99,7 @@ func (r detector) matches(text, lower string, unusualFold bool) [][]int {
 				for index := range indices {
 					indices[index] += start
 				}
-				value := indices[2]
-				if (text[value-1] == ' ' || text[value-1] == '\t') && nextAssignment.MatchString(text[value:w[1]]) {
+				if value := indices[2]; emptyField(text, value, w[1]) {
 					start = value
 					continue
 				}
@@ -125,9 +124,35 @@ func (r detector) matches(text, lower string, unusualFold bool) [][]int {
 }
 
 /**
- * @brief 独立环境变量、logfmt 字段或命令行选项的赋值开头，不将 Base64 的填充等号认作字段。
+ * @brief 独立环境变量、logfmt 字段或命令行选项的赋值开头，捕获字段名；不将 Base64 的填充等号认作字段。
  */
-var nextAssignment = regexp.MustCompile(`^(?:[A-Z_][A-Z0-9_]*|[a-z_][a-z0-9_-]*|--?[A-Za-z][A-Za-z0-9_-]*)=[^=\s]`)
+var nextAssignment = regexp.MustCompile(`^(--?[A-Za-z][A-Za-z0-9_-]*|[A-Z_][A-Z0-9_]*|[a-z_][a-z0-9_-]*)=[^=\s]`)
+
+/**
+ * @brief 冒号或标签后的下一字段名，其值会由密钥规则自行判定。
+ */
+var secretFieldName = regexp.MustCompile(`(?i)` + secretNames + `|_(?:KEY|PASS)$`)
+
+/**
+ * @brief 判断字段规则截取的值实为空赋值后的下一个字段。
+ * @param text 待扫描文本。
+ * @param value 捕获值起始字节下标。
+ * @param end 当前扫描窗口结束字节下标（不含）。
+ * @return `KEY= NEXT=v` 形式，或冒号/标签后紧跟命令行选项或密钥名字段时为 true。
+ * @details 冒号后的 `name=value` 可能本身就是密钥（如 `password: abc=xyz`），
+ *          只有选项或另一密钥字段才让位给重新扫描，避免整段明文漏检。
+ */
+func emptyField(text string, value, end int) bool {
+	label := strings.TrimRight(text[:value], " \t")
+	if len(label) == value {
+		return false
+	}
+	next := nextAssignment.FindStringSubmatch(text[value:end])
+	if next == nil {
+		return false
+	}
+	return strings.HasSuffix(label, "=") || next[1][0] == '-' || secretFieldName.MatchString(next[1])
+}
 
 /**
  * @brief Tunnel token 须包含账号、隧道及密钥；避免将同前缀的普通 Base64 JSON 遮蔽。

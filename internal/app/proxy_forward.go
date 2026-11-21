@@ -307,7 +307,12 @@ func (s *Server) buildProxyRequest(
 		(isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath)) {
 		owner := sha256.Sum256([]byte(apiKey))
 		if cfg.UsesAnthropicOAuth() {
-			owner = anthropicCredentialDigest(cfg.OAuthCredential)
+			// 缺少账号资料时令牌会随刷新轮换，改用渠道身份保持 advisor 归属。
+			identity, stable := anthropicCredentialIdentity(cfg.OAuthCredential)
+			if !stable {
+				identity = fmt.Sprintf("channel:%d", cfg.ID)
+			}
+			owner = sha256.Sum256([]byte(identity))
 		}
 		advisor := &anthropicAdvisorAttempt{store: &s.anthropicAdvisors, caller: channelRestrictionTokenFromContext(reqCtx.ctx), owner: owner}
 		body = advisor.stripForeign(body)
@@ -3968,8 +3973,15 @@ func (s *Server) forwardAttempt(
 					cooldownModel = zaiTrialModelKey(actualModel)
 				}
 				input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, &rateLimit), cooldownModel)
-				if s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input)).Until.After(time.Now()) {
-					s.applyCooldownDecision(ctx, cfg, input)
+				var until time.Time
+				if cfg.UsesZAIOAuth() && isZAITrialModel(cooldownModel) {
+					until = s.evaluateZAITrialCooldown(cfg, input).Until
+				} else {
+					until = s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input)).Until
+				}
+				if until.After(time.Now()) {
+					// 请求已取消；冷却针对上游限流，ZCode 体验路径不能因取消跳过写入。
+					s.applyCooldownDecision(context.WithoutCancel(ctx), cfg, input)
 				}
 			}
 		}

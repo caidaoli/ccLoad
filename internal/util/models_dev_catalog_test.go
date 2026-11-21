@@ -77,11 +77,11 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	if got, want := util.CalculateCostDetailed("gpt-next", 100_000, 1_000, 200_000, 0, 0), 0.6225; math.Abs(got-want) > 0.000001 {
 		t.Fatalf("installed OpenAI tiered cost = %v, want %v", got, want)
 	}
-	if got, want := util.ModelReasoningEfforts("GPT-Next"), []string{"low", "medium", "xhigh"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("installed reasoning efforts = %#v, want %#v", got, want)
+	if got, known := util.ModelReasoningEfforts("GPT-Next"); !known || !reflect.DeepEqual(got, []string{"low", "medium", "xhigh"}) {
+		t.Fatalf("installed reasoning efforts = %#v known=%v", got, known)
 	}
-	if got := util.ModelReasoningEfforts("openai-model"); got != nil {
-		t.Fatalf("model without effort options = %#v, want nil", got)
+	if got, known := util.ModelReasoningEfforts("openai-model"); got != nil || known {
+		t.Fatalf("uncatalogued model = %#v known=%v, want nil unknown", got, known)
 	}
 }
 

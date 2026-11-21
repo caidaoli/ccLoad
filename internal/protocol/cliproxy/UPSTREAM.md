@@ -38,6 +38,10 @@ These targeted ports use official `v8.0.80` (`f5c5681a8361c9da53e93c60b6507816ee
   ambiguous text. Bare non-stream responses preserve their incomplete status
   when the adapter wraps them for translation. Native Responses forwards the wire
   directly.
+  Upstream synthesizes the missing `output_item.done` events only in its Meta
+  executor, ahead of `response.completed`; ccLoad recovers them in the
+  translators for every Codex upstream. For Claude clients, the recovered messages
+  come before terminal-only tool calls unless a tool_use block is still open.
 - Apply the outstanding Argon and Carbon output limits from `c1040cc0d` in
   the Gemini, Vertex, AI Studio and Antigravity catalogs. They advertise 65,536
   output tokens per segment.

@@ -374,7 +374,8 @@ func reasoningScoreChoice(answer gjson.Result, provider, actualModel string, lev
 	}
 	name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(actualModel)))
 	if slices.ContainsFunc(reasoningScoreExpectedPrefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) }) {
-		best = int(math.Floor(expected/total + 0.5))
+		// 先按千分位取整，避免 1.5 被浮点累加成 1.4999… 而少取一档。
+		best = int(math.Floor(math.Round(expected/total*1000)/1000 + 0.5))
 	}
 	return levels[best], nil
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -536,6 +537,54 @@ func TestProxy_CursorOAuthRemintsRejectedCredentialAndRetries(t *testing.T) {
 	persisted, err := cursorauth.ParseCredential([]byte(configs[0].OAuthCredential))
 	if err != nil || persisted.AccessToken != "cursor-access-new" || persisted.RefreshToken != "cursor-refresh-new" {
 		t.Fatalf("persisted credential = (%+v, %v)", persisted, err)
+	}
+}
+
+/**
+ * @brief 客户端在 re-mint 期间断开不冷却渠道，后台换取的新凭证照常落库。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthCancelDuringRemintDoesNotCooldown(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-old", RefreshToken: "cursor-refresh-old",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode Cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-cancel", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	release := make(chan struct{})
+	exchanged := make(chan struct{})
+	env.server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		cancel()
+		<-release
+		defer close(exchanged)
+		return cursorTestHTTPResponse(
+			request, http.StatusOK,
+			`{"accessToken":"cursor-access-new","refreshToken":"cursor-refresh-new"}`,
+		), nil
+	})}
+	env.server.cursorCredentials = newCursorCredentialManager(
+		env.store, env.server.getClientForChannel, env.server.invalidateChannelRelatedCache,
+	)
+	env.server.cursorRunner = &cursorRefreshOnceRunner{}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	env.engine.ServeHTTP(httptest.NewRecorder(), req)
+	close(release)
+	<-exchanged
+
+	cooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+	if err != nil || len(cooldowns) != 0 {
+		t.Fatalf("client cancellation cooled the channel: %v, %v", cooldowns, err)
 	}
 }
 

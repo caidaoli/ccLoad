@@ -55,8 +55,9 @@ func (s *Server) tryCursorOAuthChannel(
 		}
 		s.applyOAuthCredentialCooldown(ctx, cfg.ID, "Cursor", cfg.GetAuthType(), expected, http.StatusUnauthorized, duration)
 	}
+	// 请求取消本身不施加凭证冷却；后台 re-mint 仍会继续并落库新凭证。
 	if credential == nil {
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			cooldownCredential(nil)
 		}
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
@@ -77,7 +78,9 @@ func (s *Server) tryCursorOAuthChannel(
 		}
 		refreshed, refreshErr := s.cursorCredentials.credentialAfterUnauthorized(ctx, cfg, credential.AccessToken)
 		if refreshErr != nil {
-			cooldownCredential(refreshErr)
+			if ctx.Err() == nil {
+				cooldownCredential(refreshErr)
+			}
 			return result, nil
 		}
 		credential = refreshed

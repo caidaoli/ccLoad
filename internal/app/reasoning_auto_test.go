@@ -1636,6 +1636,8 @@ func TestReasoningAutoFailoverReusesSuggestionAndCommitsSupportedTarget(t *testi
 		// An uncatalogued redirect target still serves the logical model, so the
 		// suggestion is clamped to the logical model's levels.
 		{name: "unknown", model: "private-unknown-model", effort: "xhigh"},
+		// A catalogued budget-only target rejects effort levels, so nothing is injected.
+		{name: "budget only", model: "gemini-2.5-pro", effort: ""},
 		{name: "supported", model: "gpt-5.5", effort: "xhigh"},
 	} {
 		t.Run(target.name, func(t *testing.T) {

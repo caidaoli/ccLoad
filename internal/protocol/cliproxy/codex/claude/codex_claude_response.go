@@ -197,15 +197,18 @@ func ConvertCodexResponseToClaude(ctx context.Context, modelName string, origina
 		responseData := rootResult.Get("response")
 		output = append(output, finalizeCodexThinkingBlock(params)...)
 		output = append(output, stopCodexTextBlock(params)...)
+		// Without an open tool_use block, recovered messages precede terminal-only
+		// tool calls, matching upstream's done-before-completed synthesis order.
+		messagesFirst := params.ActiveFunctionCall == nil
+		if messagesFirst {
+			output = appendCodexMissingMessages(ctx, output, modelName, originalRequestRawJSON, responseData, param)
+		}
 		output = appendCodexFunctionCallsFromTerminal(output, params, originalRequestRawJSON, responseData)
 		output = appendDeferredCodexStreamEvents(output, originalRequestRawJSON, param)
 		output = append(output, finalizeCodexThinkingBlock(params)...)
 		output = append(output, stopCodexTextBlock(params)...)
-		params.CommentaryMessageOpen = false
-		for _, event := range params.messages.MissingMessageDoneEvents(responseData.Get("output")) {
-			for _, chunk := range ConvertCodexResponseToClaude(ctx, modelName, originalRequestRawJSON, nil, event, param) {
-				output = append(output, chunk...)
-			}
+		if !messagesFirst {
+			output = appendCodexMissingMessages(ctx, output, modelName, originalRequestRawJSON, responseData, param)
 		}
 		template, _ = sjson.SetBytes(template, "delta.stop_reason", mapCodexStopReasonToClaude(codexStopReason(responseData), params.HasEmittedToolUse))
 		template = setClaudeStopSequence(template, "delta.stop_sequence", responseData)
@@ -378,6 +381,19 @@ func shouldDeferCodexStreamEvent(typeStr string, rootResult gjson.Result) bool {
 	default:
 		return true
 	}
+}
+
+// appendCodexMissingMessages translates terminal message parts never seen in
+// the stream; each synthesized done event closes the block it opens.
+func appendCodexMissingMessages(ctx context.Context, output []byte, modelName string, originalRequestRawJSON []byte, responseData gjson.Result, param *any) []byte {
+	params := (*param).(*ConvertCodexResponseToClaudeParams)
+	params.CommentaryMessageOpen = false
+	for _, event := range params.messages.MissingMessageDoneEvents(responseData.Get("output")) {
+		for _, chunk := range ConvertCodexResponseToClaude(ctx, modelName, originalRequestRawJSON, nil, event, param) {
+			output = append(output, chunk...)
+		}
+	}
+	return output
 }
 
 func appendDeferredCodexStreamEvents(output []byte, originalRequestRawJSON []byte, param *any) []byte {

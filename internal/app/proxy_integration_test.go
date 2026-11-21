@@ -1702,6 +1702,61 @@ func TestProxy_AnthropicOAuthAliasesClientToolNames(t *testing.T) {
 }
 
 /**
+ * @brief 验证缺少账号资料的 OAuth 凭证轮换令牌后，advisor 历史仍归属原渠道。
+ * @details 调用方自带 metadata.user_id 时无需账号身份即可出站。
+ * @param t 测试上下文。
+ */
+func TestProxy_AnthropicAdvisorOwnerSurvivesTokenRotationWithoutAccount(t *testing.T) {
+	t.Parallel()
+
+	raw := setJSONValue([]byte(expiredProxyOAuthCredential(t, model.AuthTypeAnthropicOAuth, "at-0")), "account_uuid", "")
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "advisor-rotating", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", authType: model.AuthTypeAnthropicOAuth, oauthCredential: string(raw)},
+	}, map[int]string{0: "https://api.anthropic.com"})
+	var refreshes atomic.Int32
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		n := refreshes.Add(1)
+		// 极短有效期让下一次请求再次刷新，模拟账号资料缺失时的令牌轮换。
+		body := fmt.Sprintf(`{"access_token":"at-%d","refresh_token":"rt-%d","expires_in":1}`, n, n)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}
+	service := anthropicauth.NewService(refreshClient)
+	service.TokenURL = "https://oauth.test/token"
+	env.server.anthropicCredentials.service = service
+	env.server.anthropicCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+	const message = `{"type":"message","id":"msg_1","role":"assistant","model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"content":`
+	const advisor = `{"type":"server_tool_use","name":"advisor","id":"srvtoolu_rotate","input":{}}`
+	var sent []gjson.Result
+	var auth []string
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		sent = append(sent, gjson.GetBytes(body, "messages"))
+		auth = append(auth, r.Header.Get("Authorization"))
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(message + "[" + advisor + "]}"))}, nil
+	})}
+	send := func(history string) {
+		t.Helper()
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": "claude-sonnet-4-6", "max_tokens": 64, "messages": json.RawMessage(history),
+			"metadata": map[string]any{"user_id": "caller-user"},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	const firstTurn = `{"role":"user","content":"start"}`
+	send("[" + firstTurn + "]")
+	send("[" + firstTurn + `,{"role":"assistant","content":[` + advisor + `]},{"role":"user","content":"continue"}]`)
+	if len(sent) != 2 || auth[0] == auth[1] || sent[1].Get("1.content.0.id").String() != "srvtoolu_rotate" {
+		t.Fatalf("advisor history dropped after token rotation: auth=%v messages=%v", auth, sent)
+	}
+}
+
+/**
  * @brief 验证 advisor 历史只在原签发凭证上重放，凭证切换时保留普通工具配对。
  * @param t 测试上下文。
  */

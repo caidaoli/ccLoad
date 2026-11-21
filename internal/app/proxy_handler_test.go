@@ -250,7 +250,7 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 		want   string
 	}{
 		{"/v1/responses", 2097152, "Content-Length 2097152 bytes (2.00 MiB), max_body_bytes=1048576 bytes (1.00 MiB)"},
-		{"/v1/images/edits", -1, "decoded body at least 513 bytes, max_image_body_bytes=512 bytes"},
+		{"/v1/images/edits", -1, "size limit: body at least 513 bytes, max_image_body_bytes=512 bytes"},
 	} {
 		req := newRequest(http.MethodPost, tc.path, bytes.NewReader(make([]byte, 2<<20)))
 		req.ContentLength = tc.length

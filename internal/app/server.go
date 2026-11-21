@@ -1365,25 +1365,38 @@ func anthropicCredentialPoolScope(cfg *model.Config) string {
 }
 
 /**
- * @brief 生成 Anthropic 账号身份摘要，供连接隔离与 advisor 归属判断使用。
+ * @brief 生成 Anthropic 凭证身份摘要，供连接池隔离使用。
  * @param raw 本次实际使用的序列化 OAuth 凭证。
  * @return 优先按账号 UUID、邮箱计算的摘要；缺少账号资料时依据认证材料。
  */
 func anthropicCredentialDigest(raw string) [32]byte {
-	identity := strings.TrimSpace(raw)
-	if credential, err := anthropicauth.ParseCredential([]byte(identity)); err == nil {
-		switch {
-		case credential.AccountUUID != "":
-			identity = "uuid:" + credential.AccountUUID
-		case credential.EmailAddress != "":
-			identity = "email:" + strings.ToLower(credential.EmailAddress)
-		case credential.RefreshToken != "":
-			identity = "refresh:" + credential.RefreshToken
-		case credential.AccessToken != "":
-			identity = "access:" + credential.AccessToken
-		}
-	}
+	identity, _ := anthropicCredentialIdentity(raw)
 	return sha256.Sum256([]byte(identity))
+}
+
+/**
+ * @brief 解析 Anthropic OAuth 凭证的身份标识。
+ * @param raw 本次实际使用的序列化 OAuth 凭证。
+ * @return 账号 UUID、邮箱、refresh/access token 或原始凭证派生的标识。
+ * @return 标识来自账号 UUID 或邮箱、令牌轮换后仍保持不变时为 true。
+ */
+func anthropicCredentialIdentity(raw string) (string, bool) {
+	identity := strings.TrimSpace(raw)
+	credential, err := anthropicauth.ParseCredential([]byte(identity))
+	if err != nil {
+		return identity, false
+	}
+	switch {
+	case credential.AccountUUID != "":
+		return "uuid:" + credential.AccountUUID, true
+	case credential.EmailAddress != "":
+		return "email:" + strings.ToLower(credential.EmailAddress), true
+	case credential.RefreshToken != "":
+		return "refresh:" + credential.RefreshToken, false
+	case credential.AccessToken != "":
+		return "access:" + credential.AccessToken, false
+	}
+	return identity, false
 }
 
 /**

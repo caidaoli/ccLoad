@@ -150,8 +150,10 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits, memory *
 		}
 		all, err = memory.read(c.Request.Context(), body, maxBody, contentLength)
 		if errors.Is(err, errBodyTooLarge) {
-			size := fmt.Sprintf("decoded body at least %d bytes", maxBody+1)
-			if contentLength > maxBody {
+			size := fmt.Sprintf("body at least %d bytes", maxBody+1)
+			if len(encodings) != 0 {
+				size = "decoded " + size
+			} else if contentLength > maxBody {
 				size = fmt.Sprintf("Content-Length %d bytes (%.2f MiB)", contentLength, float64(contentLength)/(1<<20))
 			}
 			err = fmt.Errorf("%w: %s, %s=%d bytes (%.2f MiB)", err, size, requestBodyLimitSetting(requestPath), maxBody, float64(maxBody)/(1<<20))
