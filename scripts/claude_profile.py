@@ -6,6 +6,7 @@ Changed or ambiguous layouts keep the existing complete software baseline.
 """
 
 import argparse
+import contextlib
 import mmap
 import os
 from pathlib import Path
@@ -78,40 +79,47 @@ def native_header(data):
     return False
 
 
-def extract_profile(path):
+@contextlib.contextmanager
+def native_image(path, product):
+    """Map a regular native executable read-only; scripts and special files are rejected."""
     if not stat.S_ISREG(path.stat().st_mode) or not os.access(path, os.X_OK):
-        raise ValueError("Claude source must be a regular executable file")
+        raise ValueError(product + " source must be a regular executable file")
     with path.open("rb") as source:
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or not os.access(path, os.X_OK):
-            raise ValueError("Claude source must be a regular executable file")
+            raise ValueError(product + " source must be a regular executable file")
         if info.st_size < 4 or info.st_size > 512 * 1024 * 1024:
-            raise ValueError("Claude executable size is outside the supported range")
+            raise ValueError(product + " executable size is outside the supported range")
         with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
             if not native_header(data):
-                raise ValueError("Claude source is not a native executable; scripts are unsupported")
-            seen = {}
-            for name, pattern in PATTERNS.items():
-                for match in pattern.finditer(data):
-                    value = match[1]
-                    if name in ("SDK", "node header"):
-                        if name == "node header" and match[2] != b'globalThis.process.version??"unknown"':
-                            raise UnknownProfile("unsupported SDK node runtime expression")
-                        value = sdk_binding(data, match.start(), value)
-                    elif name == "node headers URL" and value != match[2]:
-                        raise UnknownProfile("inconsistent node headers URL versions")
-                    if name in seen and seen[name] != value:
-                        raise UnknownProfile("conflicting " + name + " versions")
-                    seen[name] = value
-                if name not in seen:
-                    raise UnknownProfile("missing recognized " + name + " anchor")
-            if seen["SDK"] != seen["node header"]:
-                raise UnknownProfile("SDK node header differs from package version bindings")
-            if len({seen["node report"], seen["node agent"], seen["node headers URL"]}) != 1:
-                raise UnknownProfile("inconsistent embedded node compatibility versions")
-            return tuple(value.decode("ascii") for value in (
-                seen["CLI"], seen["SDK"], b"v" + seen["node report"]
-            ))
+                raise ValueError(product + " source is not a native executable; scripts are unsupported")
+            yield data
+
+
+def extract_profile(path):
+    with native_image(path, "Claude") as data:
+        seen = {}
+        for name, pattern in PATTERNS.items():
+            for match in pattern.finditer(data):
+                value = match[1]
+                if name in ("SDK", "node header"):
+                    if name == "node header" and match[2] != b'globalThis.process.version??"unknown"':
+                        raise UnknownProfile("unsupported SDK node runtime expression")
+                    value = sdk_binding(data, match.start(), value)
+                elif name == "node headers URL" and value != match[2]:
+                    raise UnknownProfile("inconsistent node headers URL versions")
+                if name in seen and seen[name] != value:
+                    raise UnknownProfile("conflicting " + name + " versions")
+                seen[name] = value
+            if name not in seen:
+                raise UnknownProfile("missing recognized " + name + " anchor")
+        if seen["SDK"] != seen["node header"]:
+            raise UnknownProfile("SDK node header differs from package version bindings")
+        if len({seen["node report"], seen["node agent"], seen["node headers URL"]}) != 1:
+            raise UnknownProfile("inconsistent embedded node compatibility versions")
+        return tuple(value.decode("ascii") for value in (
+            seen["CLI"], seen["SDK"], b"v" + seen["node report"]
+        ))
 
 
 def read_baseline(source):

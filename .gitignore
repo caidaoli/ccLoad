@@ -75,3 +75,4 @@ docs/*
 .omc
 .qoder
 .scratch
+__pycache__/

@@ -73,8 +73,8 @@ jobs:
         id: go
         uses: ./.github/actions/setup-go
 
-      - name: Test local Claude profile updater
-        run: python3 -m unittest discover -s scripts -p 'test_claude_profile.py'
+      - name: Test local client profile updaters
+        run: python3 -m unittest discover -s scripts -p 'test_*_profile.py'
 
       - name: Test backend
         id: backend

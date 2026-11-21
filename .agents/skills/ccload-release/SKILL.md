@@ -33,17 +33,20 @@ Tag 形状固定：
 
 ## 发布流程
 
-0. 先检查本地 Claude Code 软件基线，再检查 diff 和推导提交 subject。仅计算版本或预检时运行只读检查：
+0. 先检查本地 Claude Code 与 Codex 软件基线，再检查 diff 和推导提交 subject。仅计算版本或预检时运行只读检查：
 
    ```bash
    python3 scripts/claude_profile.py --check
+   python3 scripts/codex_profile.py --check
    ```
 
    已授权发布时改用 `python3 scripts/claude_profile.py --apply`。脚本只静态读取 PATH 中 `claude` 指向的本地原生安装，不执行客户端、不联网下载、不安装或升级 Claude。需要指定已核实的本地安装时可传 `--claude /absolute/path/to/claude`。当前识别已验证的 darwin-arm64 原生布局（2.1.312 / 2.1.314）；其他布局或脚本包装器按不支持处理，不执行它们来探测版本。
 
    仅当提取到同一安装中无歧义的 CLI / Stainless SDK / Node 兼容版本，且 CLI 与内置基线同主版本并更高时，才原子更新 `internal/app/anthropic_wire.go` 的三个软件版本常量。相同或更旧版本保持不动；找不到安装、格式不支持或提取有歧义时报告原因并沿用已有基线，禁止猜测缺失值。宿主机 OS/Arch 不进入账号指纹。源码常量异常或写入失败属于错误，修复后再继续。
 
-   若基线已更新，先刷新受影响的 wire golden 并核对 diff 只包含预期版本、billing 指纹等变化：
+   Codex 同理：`codex_profile.py --apply` 只静态读取 PATH 中 `codex` 指向的本地原生安装（可用 `--codex` 指定），要求 `codex-mcp-client/`、`codex-doctor/` 与 `codex-tui` 三处内嵌版本一致且同主版本更高，才更新 `internal/codexauth/service.go` 的 `DefaultClientVersion`；UA 与 `Version` 由它派生，UA 中的宿主机 OS/终端保持内置值。当前识别已验证的 darwin-arm64 Homebrew 原生布局（0.171.0），npm 脚本包装器按不支持处理。
+
+   若 Claude 基线已更新，先刷新受影响的 wire golden 并核对 diff 只包含预期版本、billing 指纹等变化：
 
    ```bash
    UPDATE_ANTHROPIC_GOLDEN=1 go test -tags sonic ./internal/app -run '^TestAnthropicWireGolden$'
@@ -103,8 +106,9 @@ Tag 形状固定：
 修改本地指纹提取器后运行：
 
 ```bash
-python3 -m unittest discover -s scripts -p 'test_claude_profile.py'
+python3 -m unittest discover -s scripts -p 'test_*_profile.py'
 python3 scripts/claude_profile.py --check
+python3 scripts/codex_profile.py --check
 ```
 
 修改发布脚本后运行：
