@@ -15,6 +15,11 @@ import (
 )
 
 /**
+ * @brief 按 ID 读取的渠道不存在。
+ */
+var ErrChannelNotFound = errors.New("not found")
+
+/**
  * @brief 定义渠道认证机制与协议转换模式。
  */
 const (

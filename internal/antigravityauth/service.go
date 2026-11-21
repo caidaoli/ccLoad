@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/util"
+
 	"github.com/goccy/go-yaml"
 )
 
@@ -79,6 +81,7 @@ type MetadataError struct {
 	HTTPStatus int
 	Code       string
 	body       string
+	retryAfter time.Time
 }
 
 func (e *MetadataError) Error() string {
@@ -87,6 +90,12 @@ func (e *MetadataError) Error() string {
 
 // UpstreamResponseBody preserves the original response for internal diagnostics.
 func (e *MetadataError) UpstreamResponseBody() string { return e.body }
+
+/**
+ * @brief 返回项目或订阅元数据端点给出的恢复时间。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ */
+func (e *MetadataError) RetryAfter() time.Time { return e.retryAfter }
 
 // Is identifies access-token rejection without classifying permissions as authentication.
 func (e *MetadataError) Is(target error) bool {
@@ -128,6 +137,7 @@ type updaterManifest struct {
 type tokenEndpointError struct {
 	statusCode   int
 	responseBody string
+	retryAfter   time.Time
 }
 
 func (e *tokenEndpointError) Error() string {
@@ -152,6 +162,12 @@ func (e *tokenEndpointError) StatusCode() int {
 	}
 	return e.statusCode
 }
+
+/**
+ * @brief 返回令牌端点给出的恢复时间。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ */
+func (e *tokenEndpointError) RetryAfter() time.Time { return e.retryAfter }
 
 // NewService returns the production Antigravity OAuth service.
 func NewService(client *http.Client) *Service {
@@ -630,18 +646,40 @@ func (s *Service) onboardUser(ctx context.Context, accessToken, tierID string) (
 	return "", errors.New("onboarding: Antigravity did not complete")
 }
 
+/**
+ * @brief 标记需要协商标准 OAuth 传输协议的 token 请求。
+ */
+type tokenRequestContextKey struct{}
+
+/**
+ * @brief 区分 OAuth token 交换和使用 Cloud Code 传输的其他请求。
+ * @param req 由 HTTP 客户端交给传输层的请求。
+ * @return 由 Antigravity 服务发起的 token 端点请求返回 true。
+ */
+func IsTokenRequest(req *http.Request) bool {
+	return req.Context().Value(tokenRequestContextKey{}) == true
+}
+
+/**
+ * @brief 向 OAuth token 端点提交授权或刷新表单。
+ * @param ctx 调用方的取消和截止时间。
+ * @param values 已构造的 OAuth 表单。
+ * @return 令牌凭证，失败时为 nil。
+ * @return 配置、网络或上游响应无效时返回错误，端点拒绝返回 tokenEndpointError。
+ * @note User-Agent 由标准 HTTP 传输按协商结果生成。
+ */
 func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credential, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
 	requestCtx, cancel := requestContext(ctx)
 	defer cancel()
+	requestCtx = context.WithValue(requestCtx, tokenRequestContextKey{}, true)
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, s.TokenURL, strings.NewReader(values.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("build Antigravity token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Go-http-client/2.0")
 	resp, err := s.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token: Antigravity request failed: %w", err)
@@ -652,7 +690,8 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 		return nil, fmt.Errorf("read Antigravity token response: %w", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
+		retryAfter, _ := util.ParseRetryAfter(resp.Header, time.Now())
+		return nil, &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body), retryAfter: retryAfter}
 	}
 	var token struct {
 		AccessToken  string `json:"access_token"`
@@ -718,7 +757,8 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &payload)
-		return nil, &MetadataError{HTTPStatus: resp.StatusCode, Code: payload.Error.Status, body: string(raw)}
+		retryAfter, _ := util.ParseRetryAfter(resp.Header, time.Now())
+		return nil, &MetadataError{HTTPStatus: resp.StatusCode, Code: payload.Error.Status, body: string(raw), retryAfter: retryAfter}
 	}
 	return raw, nil
 }

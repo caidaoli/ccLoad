@@ -107,7 +107,7 @@ func cliproxyCodexResponseToOpenAIStream(ctx context.Context, model string, orig
 }
 
 func cliproxyCodexResponseToOpenAINonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
-	normalized, err := cliproxyCodexCompletedResponse(raw)
+	normalized, err := cliproxyCodexTerminalResponse(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func cliproxyCodexResponseToGeminiStream(ctx context.Context, model string, orig
 }
 
 func cliproxyCodexResponseToGeminiNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
-	normalized, err := cliproxyCodexCompletedResponse(raw)
+	normalized, err := cliproxyCodexTerminalResponse(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +244,7 @@ func cliproxyCodexResponseToAnthropicStream(ctx context.Context, model string, o
 }
 
 func cliproxyCodexResponseToAnthropicNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
-	normalized, err := cliproxyCodexCompletedResponse(raw)
+	normalized, err := cliproxyCodexTerminalResponse(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -514,15 +514,28 @@ func cliproxyValidateCodexRequest(raw []byte, allowToolSearch, allowCompaction b
 	return nil
 }
 
-func cliproxyCodexCompletedResponse(raw []byte) ([]byte, error) {
-	if !json.Valid(raw) || !gjson.ParseBytes(raw).IsObject() {
+/**
+ * @brief 为非流式 Responses 正文保留转换器需要的终态类型。
+ * @param raw 上游 Responses 正文或带终态类型的事件。
+ * @return 带终态类型的响应 JSON。
+ * @return 输入不是 JSON 对象时返回错误。
+ */
+func cliproxyCodexTerminalResponse(raw []byte) ([]byte, error) {
+	response := gjson.ParseBytes(raw)
+	if !json.Valid(raw) || !response.IsObject() {
 		return nil, fmt.Errorf("decode codex response: invalid JSON object")
 	}
-	if gjson.GetBytes(raw, "response").Exists() {
+	if response.Get("response").Exists() {
 		return raw, nil
 	}
+	eventType := "response.completed"
+	if response.Get("status").String() == "incomplete" {
+		eventType = "response.incomplete"
+	}
 	wrapped := make([]byte, 0, len(raw)+48)
-	wrapped = append(wrapped, `{"type":"response.completed","response":`...)
+	wrapped = append(wrapped, `{"type":"`...)
+	wrapped = append(wrapped, eventType...)
+	wrapped = append(wrapped, `","response":`...)
 	wrapped = append(wrapped, raw...)
 	wrapped = append(wrapped, '}')
 	return wrapped, nil

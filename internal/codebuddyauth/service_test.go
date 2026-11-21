@@ -505,8 +505,14 @@ func TestCredentialImportAndFailureContracts(t *testing.T) {
 			t.Errorf("accepted invalid credential: %s", raw)
 		}
 	}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(401)
+	wantRetryAfter := time.Now().Add(5 * time.Minute).Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Refresh-Token") == "retry-later" {
+			w.Header().Set("Retry-After", wantRetryAfter.UTC().Format(http.TimeFormat))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"secret":"private-refresh-token"}`)
 	}))
 	defer upstream.Close()
@@ -516,6 +522,12 @@ func TestCredentialImportAndFailureContracts(t *testing.T) {
 	var apiError *APIError
 	if !errors.As(err, &apiError) || apiError.StatusCode() != 401 || strings.Contains(err.Error(), "private") {
 		t.Fatalf("unsafe/incorrect error %v", err)
+	}
+	rateLimited := *c
+	rateLimited.RefreshToken = "retry-later"
+	_, err = s.Refresh(context.Background(), &rateLimited)
+	if !errors.As(err, &apiError) || apiError.StatusCode() != http.StatusServiceUnavailable || !apiError.RetryAfter().Equal(wantRetryAfter) {
+		t.Fatalf("refresh Retry-After = %v, want deadline %v", err, wantRetryAfter)
 	}
 	_, err = s.Refresh(context.Background(), &Credential{AccessToken: "a"})
 	if !errors.Is(err, ErrCannotRefresh) {

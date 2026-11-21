@@ -1072,7 +1072,7 @@
       "name": "models/gemini-4-argon",
       "description": "Gemini 4 Argon",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 65535,
@@ -1823,7 +1823,7 @@
       "name": "gemini-4-argon",
       "description": "Gemini 4 Argon",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 65535,
@@ -1856,7 +1856,7 @@
       "name": "gemini-4-carbon",
       "description": "Gemini 4 Carbon",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 65535,
@@ -2815,7 +2815,7 @@
       "version": "3.0",
       "description": "Gemini 4 Argon",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 65535,
@@ -2849,7 +2849,7 @@
       "version": "3.0",
       "description": "Gemini 4 Carbon",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 65535,
@@ -4979,7 +4979,7 @@
       "name": "gemini-4-argon-high",
       "description": "Gemini 4 Argon (High)",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 1,
         "max": 65535,
@@ -5013,7 +5013,7 @@
       "name": "gemini-4-carbon-high",
       "description": "Gemini 4 Carbon (High)",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 1,
         "max": 65535,

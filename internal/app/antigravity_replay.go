@@ -98,6 +98,14 @@ func (c *antigravityReplayCache) begin(cfg *model.Config, modelName, baseURL str
 		return nil
 	}
 	scope := antigravityReplayHash(fmt.Sprint(cfg.ID), antigravityCredentialPoolScope(cfg), modelName, baseURL, caller, session, string(client))
+	if client == protocol.Anthropic {
+		if agentID := strings.TrimSpace(anthropicHeaderValue(headers, "X-Claude-Code-Agent-Id")); agentID != "" && agentID != "main" {
+			scope = antigravityReplayHash(scope, "agent", agentID)
+		}
+		if anthropicIsTitleHelperRequest(body) {
+			scope = antigravityReplayHash(scope, "title")
+		}
+	}
 	c.mu.Lock()
 	if c.scopes == nil {
 		c.scopes = make(map[string]*antigravityReplayScope)

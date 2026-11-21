@@ -111,6 +111,9 @@ func parseContentEncodings(contentEncoding string) ([]string, int64, error) {
 		switch encoding {
 		case "", "identity":
 			continue
+		case "x-gzip":
+			encoding = "gzip"
+			fallthrough
 		case "gzip", "deflate":
 			workspace += 256 << 10
 		case "br":

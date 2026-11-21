@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 const (
@@ -35,6 +37,7 @@ type Token struct {
 type tokenEndpointError struct {
 	statusCode   int
 	responseBody string
+	retryAfter   time.Time
 }
 
 func (e *tokenEndpointError) Error() string {
@@ -46,6 +49,12 @@ func (e *tokenEndpointError) StatusCode() int { return e.statusCode }
 
 // UpstreamResponseBody returns the bounded token endpoint response body.
 func (e *tokenEndpointError) UpstreamResponseBody() string { return e.responseBody }
+
+/**
+ * @brief 返回令牌端点给出的恢复时间。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ */
+func (e *tokenEndpointError) RetryAfter() time.Time { return e.retryAfter }
 
 // MintAccessToken exchanges a self-signed RS256 assertion for a cloud-platform
 // access token (RFC 7523 JWT bearer grant), the same flow
@@ -91,7 +100,8 @@ func (c *Credential) MintAccessToken(ctx context.Context, client *http.Client, n
 		return nil, fmt.Errorf("read vertex token response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, &tokenEndpointError{statusCode: response.StatusCode, responseBody: string(body)}
+		retryAfter, _ := util.ParseRetryAfter(response.Header, time.Now())
+		return nil, &tokenEndpointError{statusCode: response.StatusCode, responseBody: string(body), retryAfter: retryAfter}
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`

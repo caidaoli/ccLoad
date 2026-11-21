@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 // Service performs Qoder requests. BaseURL overrides the control-plane origin
@@ -30,11 +32,20 @@ func NewService(client *http.Client) *Service {
 }
 
 // HTTPError reports upstream HTTP status without exposing response credentials.
-type HTTPError struct{ StatusCode int }
+type HTTPError struct {
+	StatusCode int
+	retryAfter time.Time
+}
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("Qoder request failed (HTTP %d)", e.StatusCode)
 }
+
+/**
+ * @brief 返回真实 HTTP 限流或服务端错误给出的恢复时间。
+ * @return 有效的未来 Retry-After 截止时间，其他错误返回零值。
+ */
+func (e *HTTPError) RetryAfter() time.Time { return e.retryAfter }
 
 func (s *Service) authEndpoint(c *Credential, path string) string {
 	origin := c.OpenAPIURL()
@@ -95,7 +106,13 @@ func (s *Service) authDo(ctx context.Context, method, endpoint string, body any,
 	var data map[string]json.RawMessage
 	decodeErr := json.Unmarshal(raw, &data)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return data, resp.StatusCode, &HTTPError{StatusCode: resp.StatusCode}
+		failure := &HTTPError{StatusCode: resp.StatusCode}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError && resp.StatusCode < 600 {
+			if until, ok := util.ParseRetryAfter(resp.Header, time.Now()); ok {
+				failure.retryAfter = until
+			}
+		}
+		return data, resp.StatusCode, failure
 	}
 	if decodeErr != nil || data == nil {
 		return nil, resp.StatusCode, errors.New("invalid Qoder JSON response")

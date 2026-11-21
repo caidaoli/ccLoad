@@ -1191,6 +1191,7 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.AntigravityAccessToken = credential.AccessToken
 		runtimeCfg.AntigravityProjectID = credential.ProjectID
+		runtimeCfg.OAuthCredential, _ = credential.JSON()
 		if err != nil {
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Antigravity OAuth 凭证失败: %w", err)
 		}

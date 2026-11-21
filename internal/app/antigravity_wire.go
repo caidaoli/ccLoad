@@ -452,7 +452,7 @@ func prepareAntigravityRequestBody(
 	}
 	if requestType != "image_gen" {
 		if !gjson.GetBytes(request, "sessionId").Exists() {
-			request = setJSONValue(request, "sessionId", antigravitySessionID(headers, sourceBody, body))
+			request = setJSONValue(request, "sessionId", antigravitySessionID(cfg, headers, sourceBody, body))
 		}
 	}
 
@@ -1014,7 +1014,15 @@ func normalizeAntigravityClaudeToolResultOrder(request []byte) []byte {
 	return request
 }
 
-func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {
+/**
+ * @brief 生成按 Antigravity 账号隔离的会话 ID，令牌轮换不影响已知账号。
+ * @param cfg 实际用于出站的 Antigravity 凭证配置。
+ * @param headers 客户端会话及线程请求头。
+ * @param sourceBody 客户端原始请求。
+ * @param body 转换后的请求，用于在缺少会话线索时取首条用户文本。
+ * @return Antigravity 接受的负十进制会话 ID。
+ */
+func antigravitySessionID(cfg *model.Config, headers http.Header, sourceBody, body []byte) string {
 	seed := ""
 	for _, name := range []string{"Session-Id", "Session_id", "X-Claude-Code-Session-Id"} {
 		if value := strings.TrimSpace(headers.Get(name)); value != "" {
@@ -1055,17 +1063,13 @@ func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {
 	if threadID := strings.TrimSpace(headers.Get("Thread-Id")); threadID != "" {
 		seed += "\x00thread\x00" + threadID
 	}
-	return antigravityNegativeSessionID(seed)
-}
-
-func antigravityNegativeSessionID(seed string) string {
-	seed = strings.TrimSpace(seed)
-	if after, ok := strings.CutPrefix(seed, "-"); ok {
-		if _, err := strconv.ParseUint(after, 10, 63); err == nil {
-			return seed
-		}
+	account := gjson.Get(cfg.OAuthCredential, "email").String()
+	if account != "" {
+		account = "email:" + strings.ToLower(account)
+	} else {
+		account = antigravityCredentialPoolScope(cfg)
 	}
-	digest := sha256.Sum256([]byte(seed))
+	digest := sha256.Sum256([]byte("antigravity-session\x00" + account + "\x00" + strings.TrimSpace(seed)))
 	value := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
 	return "-" + strconv.FormatInt(value, 10)
 }

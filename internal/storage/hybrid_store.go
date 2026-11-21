@@ -662,6 +662,26 @@ func (h *HybridStore) SetChannelCooldown(ctx context.Context, channelID int64, u
 	return nil
 }
 
+/**
+ * @brief 在权威库按 OAuth 凭证条件写入渠道冷却，成功后安排主库同步。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedAuthType 失败凭证的 OAuth 类型。
+ * @param expectedCredential 与持久化原文匹配的凭证快照。
+ * @param now 冷却起算时间。
+ * @param statusCode 退避策略使用的状态码。
+ * @param duration 固定冷却时长，零值使用指数退避。
+ * @return 写入的冷却时长；渠道或凭证不匹配时为零。
+ * @return 参数无效或权威库写入失败时返回错误。
+ */
+func (h *HybridStore) CooldownChannelIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string, now time.Time, statusCode int, duration time.Duration) (time.Duration, error) {
+	applied, err := h.sqlite.CooldownChannelIfOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, now, statusCode, duration)
+	if err == nil && applied > 0 {
+		h.markChannelDirty(channelID, false)
+	}
+	return applied, err
+}
+
 func (h *HybridStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
 	return h.sqlite.GetAllKeyCooldowns(ctx)
 }

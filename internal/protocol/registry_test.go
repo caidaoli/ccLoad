@@ -588,6 +588,154 @@ func TestRegistry_TranslateResponseStream_CodexToOpenAI(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Responses 的文本与拒绝可以由增量、条目完成或终态交付，且只输出一次。
+ * @param t 测试上下文。
+ */
+func TestRegistry_CodexStreamRecoversUnstreamedMessageParts(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	const item = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro. "},{"type":"refusal","refusal":"Declined."}]}`
+	const nextItem = `{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"","text":" Next."}]}`
+	const textDelta = `{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"Intro. "}`
+	const refusalDelta = `{"type":"response.refusal.delta","item_id":"msg_1","output_index":0,"content_index":1,"delta":"Declined."}`
+	const emptyDelta = `{"type":"response.refusal.delta","item_id":"msg_1","output_index":0,"content_index":1,"delta":""}`
+	const done = `{"type":"response.output_item.done","output_index":0,"item":` + item + `}`
+	const reasoningItem = `{"id":"rs_1","type":"reasoning","summary":[]}`
+	const reasoningDone = `{"type":"response.output_item.done","output_index":0,"item":` + reasoningItem + `}`
+	const shiftedDelta = `{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Same."}`
+	const anonymousItem = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Same."}]}`
+	const anonymousMultipartItem = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Same."},{"type":"refusal","refusal":"Declined."}]}`
+	terminal := func(status, output string) string {
+		details := ""
+		if status == "incomplete" {
+			details = `"incomplete_details":{"reason":"max_output_tokens"},`
+		}
+		return `{"type":"response.` + status + `","response":{"id":"resp_1","status":"` + status + `",` + details + `"output":[` + output + `]}}`
+	}
+	for _, target := range []struct {
+		protocol   protocol.Protocol
+		textPath   string
+		finishPath string
+		completed  string
+		incomplete string
+	}{
+		{protocol.OpenAI, "choices.0.delta.content", "choices.0.finish_reason", "stop", "length"},
+		{protocol.Anthropic, "delta.text", "delta.stop_reason", "end_turn", "max_tokens"},
+		{protocol.Gemini, "candidates.0.content.parts.#.text", "candidates.0.finishReason", "STOP", "MAX_TOKENS"},
+	} {
+		for _, tc := range []struct {
+			name         string
+			events       []string
+			text         string
+			status       string
+			textAfterTwo string
+		}{
+			{"only terminal", []string{terminal("completed", item)}, "Intro. Declined.", "completed", ""},
+			{"only item done", []string{done, terminal("completed", item)}, "Intro. Declined.", "completed", ""},
+			{"empty delta before item done", []string{textDelta, emptyDelta, done, terminal("completed", item)}, "Intro. Declined.", "completed", "Intro. "},
+			{"one part appears only at terminal", []string{textDelta, terminal("incomplete", item)}, "Intro. Declined.", "incomplete", ""},
+			{"streamed item plus unseen item at reused index", []string{textDelta, refusalDelta, done, terminal("completed", nextItem+","+item)}, "Intro. Declined. Next.", "completed", "Intro. Declined."},
+			{"terminal omits reasoning", []string{reasoningDone, shiftedDelta, terminal("completed", anonymousItem)}, "Same.", "completed", "Same."},
+			{"terminal retains reasoning", []string{reasoningDone, shiftedDelta, terminal("completed", reasoningItem+","+anonymousItem)}, "Same.", "completed", "Same."},
+			{"shifted item has a missing part", []string{reasoningDone, shiftedDelta, terminal("completed", anonymousMultipartItem)}, "Same.Declined.", "completed", "Same."},
+			{"shifted terminal contains distinct items with identical text", []string{reasoningDone, shiftedDelta, terminal("completed", anonymousMultipartItem+","+anonymousItem)}, "Same.Declined.Same.", "completed", "Same."},
+		} {
+			t.Run(string(target.protocol)+"/"+tc.name, func(t *testing.T) {
+				var state any
+				var visible strings.Builder
+				var finishReasons []string
+				for frameIndex, payload := range tc.events {
+					frame := []byte("event: " + gjson.Get(payload, "type").String() + "\ndata: " + payload + "\n\n")
+					chunks, err := reg.TranslateResponseStream(t.Context(), protocol.Codex, target.protocol, "test", nil, nil, frame, &state)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, event := range parseSSEEvents(t, string(bytes.Join(chunks, nil))) {
+						text := gjson.Get(event.RawData, target.textPath)
+						if text.IsArray() {
+							for _, part := range text.Array() {
+								visible.WriteString(part.String())
+							}
+						} else {
+							visible.WriteString(text.String())
+						}
+						if reason := gjson.Get(event.RawData, target.finishPath).String(); reason != "" {
+							finishReasons = append(finishReasons, reason)
+						}
+					}
+					if frameIndex == 1 && tc.textAfterTwo != "" && visible.String() != tc.textAfterTwo {
+						t.Fatalf("text after the first two events = %q, want %q", visible.String(), tc.textAfterTwo)
+					}
+				}
+				wantFinish := target.completed
+				if tc.status == "incomplete" {
+					wantFinish = target.incomplete
+				}
+				if visible.String() != tc.text || !slices.Equal(finishReasons, []string{wantFinish}) {
+					t.Fatalf("text = %q, finish = %v, want %q and [%s]", visible.String(), finishReasons, tc.text, wantFinish)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证非流式 Responses 拒绝保留可见文本和终止原因。
+ * @param t 测试上下文。
+ */
+func TestRegistry_CodexNonStreamRefusalPreservesIncompleteReason(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	raw := []byte(`{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro. "},{"type":"refusal","refusal":"Declined.","text":"Ignored."},{"type":"refusal","text":" Legacy."}]}]}`)
+	for _, tc := range []struct {
+		target     protocol.Protocol
+		textPath   string
+		finishPath string
+		wantFinish string
+	}{
+		{protocol.OpenAI, "choices.0.message.content", "choices.0.finish_reason", "length"},
+		{protocol.Anthropic, "content.#.text", "stop_reason", "max_tokens"},
+		{protocol.Gemini, "candidates.0.content.parts.#.text", "candidates.0.finishReason", "MAX_TOKENS"},
+	} {
+		t.Run(string(tc.target), func(t *testing.T) {
+			body, err := reg.TranslateResponseNonStream(t.Context(), protocol.Codex, tc.target, "test", nil, nil, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := gjson.GetBytes(body, tc.textPath)
+			var text strings.Builder
+			if value.IsArray() {
+				for _, part := range value.Array() {
+					text.WriteString(part.String())
+				}
+			} else {
+				text.WriteString(value.String())
+			}
+			if text.String() != "Intro. Declined. Legacy." || gjson.GetBytes(body, tc.finishPath).String() != tc.wantFinish {
+				t.Fatalf("unexpected translation: %s", body)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证同协议 Responses 客户端收到原样的终态事件。
+ * @param t 测试上下文。
+ */
+func TestRegistry_CodexNativeStreamPassesThroughTerminalRefusal(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	frame := []byte("event: response.completed\ndata: " +
+		`{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"refusal","refusal":"Declined."}]}]}}` + "\n\n")
+	var state any
+	chunks, err := reg.TranslateResponseStream(t.Context(), protocol.Codex, protocol.Codex, "test", nil, nil, frame, &state)
+	if err != nil || len(chunks) != 1 || !bytes.Equal(chunks[0], frame) {
+		t.Fatalf("native stream changed: chunks = %q, err = %v", chunks, err)
+	}
+}
+
 func TestRegistry_TranslateResponseStream_OpenAIToCodex(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

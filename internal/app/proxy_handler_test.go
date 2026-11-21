@@ -294,6 +294,7 @@ func TestParseIncomingRequest_DecodesContentEncoding(t *testing.T) {
 		body           []byte
 	}{
 		{name: "gzip", encoding: "gzip", body: gzipBody(plain)},
+		{name: "gzip alias", encoding: "x-gzip", body: gzipBody(plain)},
 		{name: "zstd", encoding: "zstd", body: zstdBody(plain)},
 		{name: "stacked", encoding: "gzip, zstd", body: zstdBody(gzipBody(plain))},
 	} {

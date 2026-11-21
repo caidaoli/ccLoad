@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 // ErrSessionRejected reports that Cursor control-plane rejected the session JWT.
@@ -39,6 +41,28 @@ type TokenPair struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
+/**
+ * @brief 保留 Cursor API Key 兑换错误及上游恢复时间。
+ */
+type apiKeyExchangeHTTPError struct {
+	status     int       ///< 上游 HTTP 状态码。
+	retryAfter time.Time ///< 已验证的恢复时间，缺失时为零。
+}
+
+/**
+ * @brief 返回不含凭证的 API Key 兑换失败描述。
+ * @return 含上游状态码的错误文本。
+ */
+func (e *apiKeyExchangeHTTPError) Error() string {
+	return fmt.Sprintf("cursor API key exchange returned HTTP %d", e.status)
+}
+
+/**
+ * @brief 返回 HTTP 错误响应给出的恢复时间。
+ * @return 有效的未来 Retry-After 截止时间，缺失时为零。
+ */
+func (e *apiKeyExchangeHTTPError) RetryAfter() time.Time { return e.retryAfter }
+
 // ExchangeAPIKey swaps a Cursor user API key for a session token pair, matching
 // `cursor-agent login --api-key`.
 func (s *Service) ExchangeAPIKey(ctx context.Context, apiKey string) (*TokenPair, error) {
@@ -49,7 +73,7 @@ func (s *Service) ExchangeAPIKey(ctx context.Context, apiKey string) (*TokenPair
 	if apiKey == "" {
 		return nil, errors.New("cursor API key is required")
 	}
-	body, status, err := s.do(ctx, http.MethodPost,
+	body, status, headers, err := s.do(ctx, http.MethodPost,
 		strings.TrimRight(s.APIBaseURL, "/")+ExchangeAPIKeyPath, apiKey, []byte("{}"), "API key exchange")
 	if err != nil {
 		return nil, err
@@ -58,7 +82,13 @@ func (s *Service) ExchangeAPIKey(ctx context.Context, apiKey string) (*TokenPair
 		return nil, errors.New("cursor rejected the API key")
 	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("cursor API key exchange returned HTTP %d", status)
+		failure := &apiKeyExchangeHTTPError{status: status}
+		if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError && status < 600 {
+			if until, ok := util.ParseRetryAfter(headers, time.Now()); ok {
+				failure.retryAfter = until
+			}
+		}
+		return nil, failure
 	}
 	var pair TokenPair
 	if err := json.Unmarshal(body, &pair); err != nil {
@@ -106,7 +136,7 @@ func (s *Service) connectJSON(ctx context.Context, rpc, accessToken string, payl
 	if err != nil {
 		return fmt.Errorf("encode cursor %s request: %w", operation, err)
 	}
-	raw, status, err := s.do(ctx, http.MethodPost, strings.TrimRight(s.APIBaseURL, "/")+rpc, accessToken, body, operation)
+	raw, status, _, err := s.do(ctx, http.MethodPost, strings.TrimRight(s.APIBaseURL, "/")+rpc, accessToken, body, operation)
 	if err != nil {
 		return err
 	}
@@ -130,7 +160,7 @@ func (s *Service) do(
 	method, target, bearer string,
 	payload []byte,
 	operation string,
-) ([]byte, int, error) {
+) ([]byte, int, http.Header, error) {
 	requestCtx, cancel := requestContext(ctx)
 	defer cancel()
 	var reader io.Reader
@@ -139,7 +169,7 @@ func (s *Service) do(
 	}
 	request, err := http.NewRequestWithContext(requestCtx, method, target, reader)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build cursor %s request: %w", operation, err)
+		return nil, 0, nil, fmt.Errorf("build cursor %s request: %w", operation, err)
 	}
 	if strings.TrimSpace(bearer) != "" {
 		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearer))
@@ -152,14 +182,14 @@ func (s *Service) do(
 	}
 	response, err := s.Client.Do(request)
 	if err != nil {
-		return nil, 0, fmt.Errorf("cursor %s request: %w", operation, err)
+		return nil, 0, nil, fmt.Errorf("cursor %s request: %w", operation, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
 	if err != nil {
-		return nil, response.StatusCode, fmt.Errorf("read cursor %s response: %w", operation, err)
+		return nil, response.StatusCode, nil, fmt.Errorf("read cursor %s response: %w", operation, err)
 	}
-	return body, response.StatusCode, nil
+	return body, response.StatusCode, response.Header, nil
 }
 
 func (s *Service) validate() error {

@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 const (
@@ -55,6 +57,7 @@ type upstreamResponseError struct {
 	operation    string
 	statusCode   int
 	responseBody string
+	retryAfter   time.Time
 }
 
 func (e *upstreamResponseError) Error() string {
@@ -79,6 +82,12 @@ func (e *upstreamResponseError) StatusCode() int {
 	}
 	return e.statusCode
 }
+
+/**
+ * @brief 返回令牌端点给出的恢复时间。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ */
+func (e *upstreamResponseError) RetryAfter() time.Time { return e.retryAfter }
 
 // NewService returns the production Anthropic OAuth service.
 func NewService(client *http.Client) *Service {
@@ -214,10 +223,12 @@ func (s *Service) requestToken(ctx context.Context, payload map[string]string) (
 		return nil, fmt.Errorf("read Anthropic token response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
+		retryAfter, _ := util.ParseRetryAfter(response.Header, time.Now())
 		return nil, &upstreamResponseError{
 			operation:    "token endpoint",
 			statusCode:   response.StatusCode,
 			responseBody: string(responseBody),
+			retryAfter:   retryAfter,
 		}
 	}
 	var token struct {

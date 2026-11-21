@@ -30,6 +30,7 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -1698,6 +1699,144 @@ func TestProxy_AnthropicOAuthAliasesClientToolNames(t *testing.T) {
 			t.Fatalf("count_tokens response: %s", response.Body.String())
 		}
 	})
+}
+
+/**
+ * @brief 验证 advisor 历史只在原签发凭证上重放，凭证切换时保留普通工具配对。
+ * @param t 测试上下文。
+ */
+func TestProxy_AnthropicAdvisorHistoryFollowsCredential(t *testing.T) {
+	t.Parallel()
+
+	const modelName = "claude-sonnet-4-6"
+	const rejectedModel = "claude-opus-4-6"
+	const countPath = "/v1/messages/count_tokens"
+	fallbackCredential := setJSONValue([]byte(anthropicProxyTestCredential(t, "advisor-fallback")), "account_uuid", "22222222-2222-4222-8222-222222222222")
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "advisor-primary", upstreamProtocol: "anthropic", models: modelName + "," + rejectedModel, authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "advisor-primary")},
+		{name: "advisor-fallback", upstreamProtocol: "anthropic", models: modelName, authType: model.AuthTypeAnthropicOAuth, oauthCredential: string(fallbackCredential)},
+	}, map[int]string{0: "https://api.anthropic.com", 1: "https://api.anthropic.com"})
+
+	const message = `{"type":"message","id":"msg_1","role":"assistant","model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"content":`
+	const advisorJSON = `{"type":"server_tool_use","name":"advisor","id":"srvtoolu_json","input":{}}`
+	const advisorSSE = `{"type":"server_tool_use","name":"advisor","id":"srvtoolu_sse","input":{}}`
+	stream := "data: " + `{"type":"message_start","message":` + message + "[]}}\n\n" +
+		"data: " + `{"type":"content_block_start","index":0,"content_block":` + advisorSSE + "}\n\n" +
+		"data: " + `{"type":"content_block_stop","index":0}` + "\n\n" +
+		"data: " + `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":"ok"}}` + "\n\n" +
+		"data: " + `{"type":"content_block_stop","index":1}` + "\n\n" +
+		"data: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}` + "\n\n" +
+		"data: " + `{"type":"message_stop"}` + "\n\n"
+	const success = message + `[{"type":"text","text":"ok"}]}`
+	type reply struct {
+		status      int
+		contentType string
+		body        string
+	}
+	replies := []reply{
+		{http.StatusOK, "application/json", message + "[" + advisorJSON + "]}"},
+		{http.StatusOK, "text/event-stream", stream},
+		{http.StatusOK, "application/json", success},
+		{http.StatusBadRequest, "application/json", `{"type":"error","error":{"type":"invalid_request_error","message":"request rejected"}}`},
+		{http.StatusTooManyRequests, "application/json", `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`},
+		{http.StatusOK, "application/json", success},
+		{http.StatusOK, "application/json", `{"input_tokens":13}`},
+	}
+	type attempt struct {
+		token    string
+		path     string
+		messages gjson.Result
+	}
+	var sent []attempt
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		if len(sent) >= len(replies) {
+			return nil, errors.New("unexpected advisor test request")
+		}
+		response := replies[len(sent)]
+		sent = append(sent, attempt{headerValueFold(r.Header, "Authorization"), r.URL.Path, gjson.GetBytes(body, "messages")})
+		return &http.Response{StatusCode: response.status, Header: http.Header{"Content-Type": {response.contentType}}, Body: io.NopCloser(strings.NewReader(response.body))}, nil
+	})}
+	send := func(path, requestModel, history string, stream bool, headers map[string]string, wantStatus, wantAttempts int) string {
+		t.Helper()
+		start := len(sent)
+		body := map[string]any{"model": requestModel, "messages": json.RawMessage(history)}
+		if path != countPath {
+			body["max_tokens"] = 64
+			body["stream"] = stream
+		}
+		response := doProxyRequest(t, env.engine, path, body, headers)
+		if response.Code != wantStatus || len(sent)-start != wantAttempts {
+			t.Fatalf("%s: status=%d, attempts=%d, want %d and %d; %s", path, response.Code, len(sent)-start, wantStatus, wantAttempts, response.Body.String())
+		}
+		return response.Body.String()
+	}
+
+	const firstTurn = `{"role":"user","content":"start"}`
+	if body := send("/v1/messages", modelName, "["+firstTurn+"]", false, nil, http.StatusOK, 1); gjson.Get(body, "content.0.id").String() != "srvtoolu_json" {
+		t.Fatalf("advisor JSON block missing: %s", body)
+	}
+	body := send("/v1/messages", modelName, "["+firstTurn+"]", true, nil, http.StatusOK, 1)
+	var streamedID string
+	for frame := range strings.SplitSeq(body, "\n\n") {
+		_, data := parseSSEEventChunk([]byte(frame))
+		if id := gjson.GetBytes(data, "content_block.id").String(); id != "" {
+			streamedID = id
+		}
+	}
+	if streamedID != "srvtoolu_sse" {
+		t.Fatalf("advisor SSE block missing: %s", body)
+	}
+
+	const history = "[" + firstTurn + `,
+		{"role":"assistant","content":[` + advisorJSON + `,{"type":"advisor_tool_result","tool_use_id":"srvtoolu_json","content":{"type":"advisor_redacted_result","encrypted_content":"json"}}]},
+		{"role":"assistant","content":{"type":"advisor_redacted_result","tool_use_id":"srvtoolu_sse","encrypted_content":"sse"}},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_array","name":"lookup","input":{}},{"type":"tool_use","id":"toolu_object","name":"lookup","input":{}}]},
+		{"role":"user","content":[
+			{"type":"tool_result","tool_use_id":"toolu_array","content":[{"type":"advisor_redacted_result","encrypted_content":"array"},{"type":"text","text":"keep this"}]},
+			{"type":"tool_result","tool_use_id":"toolu_object","content":{"type":"advisor_redacted_result","encrypted_content":"object"}}
+		]}`
+	const unknown = `{"role":"assistant","content":[{"type":"server_tool_use","name":"advisor","id":"srvtoolu_unknown","input":{}}]}`
+	const continuation = `{"role":"user","content":"continue"}`
+	send("/v1/messages", modelName, history+","+continuation+"]", false, nil, http.StatusOK, 1)
+	send("/v1/messages", rejectedModel, "["+firstTurn+","+unknown+","+continuation+"]", false, map[string]string{"X-Ccload-Channel": "advisor-primary"}, http.StatusBadRequest, 1)
+	fullHistory := history + "," + unknown + "," + continuation + "]"
+	send("/v1/messages", modelName, fullHistory, false, nil, http.StatusOK, 2)
+	if body := send(countPath, modelName, fullHistory, false, map[string]string{"X-Ccload-Channel": "advisor-fallback"}, http.StatusOK, 1); gjson.Get(body, "input_tokens").Int() != 13 {
+		t.Fatalf("count_tokens response: %s", body)
+	}
+
+	for _, i := range []int{2, 4} {
+		got := sent[i]
+		if got.token != "Bearer advisor-primary" || got.messages.Get("1.content.0.id").String() != "srvtoolu_json" ||
+			got.messages.Get("1.content.1.tool_use_id").String() != "srvtoolu_json" ||
+			got.messages.Get("2.content.tool_use_id").String() != "srvtoolu_sse" ||
+			got.messages.Get("4.content.0.content.0.encrypted_content").String() != "array" ||
+			got.messages.Get("4.content.1.content.encrypted_content").String() != "object" {
+			t.Fatalf("attempt %d lost history on issuing credential: %+v", i, got)
+		}
+	}
+	if rejected := sent[3]; rejected.token != "Bearer advisor-primary" || rejected.messages.Get("1.content.0.id").String() != "srvtoolu_unknown" {
+		t.Fatalf("unknown advisor did not reach the rejecting credential: %+v", rejected)
+	}
+	for _, i := range []int{5, 6} {
+		got := sent[i]
+		messages := got.messages
+		if got.token != "Bearer advisor-fallback" || messages.Get("#").Int() != 5 ||
+			messages.Get("1.content.0.id").String() != "toolu_array" || messages.Get("1.content.1.id").String() != "toolu_object" ||
+			messages.Get("2.content.0.tool_use_id").String() != "toolu_array" || messages.Get("2.content.0.content.#").Int() != 1 ||
+			messages.Get("2.content.0.content.0.text").String() != "keep this" ||
+			messages.Get("2.content.1.tool_use_id").String() != "toolu_object" || messages.Get("2.content.1.content").Raw != `""` ||
+			messages.Get("3.content.0.id").String() != "srvtoolu_unknown" {
+			t.Fatalf("attempt %d lost unrelated history or kept foreign advisor blocks: %+v", i, got)
+		}
+	}
+	if sent[6].path != countPath {
+		t.Fatalf("count_tokens used %s", sent[6].path)
+	}
 }
 
 // 只有邮箱、没有账号 UUID 的凭证：调用方自己的 device/account 不能原样发给该账号，
@@ -6710,6 +6849,74 @@ func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证项目查询和开户限流均冷却凭证，而模型请求尚未发出。
+ * @param t 测试上下文。
+ */
+func TestProxy_AntigravityProjectDiscoveryRetryAfter(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []string{"loadCodeAssist", "onboardUser", "token"} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			const baseURL = "https://antigravity.test"
+			credential := string(setJSONValue([]byte(antigravityProxyTestCredential(t, "project-test")), "project_id", ""))
+			wantUntil := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
+			var attempted atomic.Int32
+			client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, ":"+endpoint) || endpoint == "token" && r.URL.Path == "/token" {
+					attempted.Add(1)
+					return &http.Response{
+						StatusCode: http.StatusTooManyRequests,
+						Header:     http.Header{"Retry-After": {wantUntil.Format(http.TimeFormat)}},
+						Body:       io.NopCloser(strings.NewReader(`{"error":{"status":"RESOURCE_EXHAUSTED"}}`)),
+						Request:    r,
+					}, nil
+				}
+				if endpoint == "onboardUser" && strings.HasSuffix(r.URL.Path, ":loadCodeAssist") {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(`{}`)),
+						Request:    r,
+					}, nil
+				}
+				if endpoint == "token" && strings.HasSuffix(r.URL.Path, ":loadCodeAssist") {
+					return &http.Response{
+						StatusCode: http.StatusUnauthorized,
+						Body:       io.NopCloser(strings.NewReader(`{"error":{"status":"UNAUTHENTICATED"}}`)),
+						Request:    r,
+					}, nil
+				}
+				t.Errorf("unexpected Antigravity request: %s", r.URL.Path)
+				return nil, errors.New("unexpected request")
+			})}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "project-discovery", upstreamProtocol: "gemini", models: "gemini-3-flash",
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential,
+			}}, map[int]string{0: baseURL})
+			service := antigravityauth.NewService(client)
+			service.DailyAPIBaseURL = baseURL
+			service.TokenURL = baseURL + "/token"
+			env.server.antigravityCredentials.service = service
+			env.server.antigravityCredentials.clientFor = func(*model.Config) *http.Client { return client }
+			env.server.antigravityClient = client
+			response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}},
+			}, nil)
+			if response.Code != http.StatusServiceUnavailable || attempted.Load() != 1 {
+				t.Fatalf("status=%d %s calls=%d body=%s", response.Code, endpoint, attempted.Load(), response.Body)
+			}
+			configs, err := env.store.ListConfigs(t.Context())
+			if err != nil || len(configs) != 1 || !configs[0].Enabled {
+				t.Fatalf("ListConfigs = %#v, %v; expected one enabled channel", configs, err)
+			}
+			cooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+			if err != nil || !cooldowns[configs[0].ID].Equal(wantUntil) {
+				t.Fatalf("channel cooldowns=%v err=%v, want %v", cooldowns, err, wantUntil)
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	t.Parallel()
 	var upstreamAttempts atomic.Int32
@@ -7836,15 +8043,17 @@ func TestProxy_XAIResponsesClientToolsRoundTrip(t *testing.T) {
 func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name          string
-		status        int
-		body          string
-		wantRefresh   bool
-		lateRejection bool
+		name            string
+		status          int
+		body            string
+		wantRefresh     bool
+		lateRejection   bool
+		replayRejection bool
 	}{
 		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":{"type":"authentication_error","code":"invalid_token"}}`, wantRefresh: true},
 		{name: "late unauthorized after another refresh", status: http.StatusUnauthorized, body: `{"error":{"type":"authentication_error","code":"invalid_token"}}`, wantRefresh: true, lateRejection: true},
 		{name: "structured bad credential", status: http.StatusForbidden, body: `{"code":"invalid_token"}`, wantRefresh: true},
+		{name: "structured bad credential from replaced replay", status: http.StatusForbidden, body: `{"code":"invalid_token"}`, wantRefresh: true, replayRejection: true},
 		{name: "ordinary forbidden", status: http.StatusForbidden, body: `{"error":{"message":"forbidden"}}`},
 		{name: "entitlement forbidden", status: http.StatusForbidden, body: `{"code":"subscription_required"}`},
 		{name: "quota", status: http.StatusTooManyRequests, body: `{"code":"quota_exceeded"}`},
@@ -7855,6 +8064,7 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 			var upstreamAttempts atomic.Int32
 			var firstExecutionID string
 			var refreshBeforeRejection func(context.Context) error
+			var replaceReplayCredential func(context.Context) error
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				attempt := upstreamAttempts.Add(1)
 				wantToken := "xai-old"
@@ -7877,7 +8087,11 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 				} else if executionID != firstExecutionID {
 					t.Errorf("retry execution identity changed: first=%q retry=%q", firstExecutionID, executionID)
 				}
-				if tt.wantRefresh && attempt == 2 {
+				if tt.replayRejection && attempt == 2 {
+					if err := replaceReplayCredential(r.Context()); err != nil {
+						t.Errorf("replace replay credential: %v", err)
+					}
+				} else if tt.wantRefresh && attempt == 2 {
 					w.Header().Set("Content-Type", "text/event-stream")
 					_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-refreshed","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
 					return
@@ -7928,6 +8142,21 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 				_, err := env.server.xaiCredentials.credentialAfterUnauthorized(ctx, configs[0], "xai-old")
 				return err
 			}
+			replacement := mustXAICredentialJSON(t, &xaiauth.Credential{
+				Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-replacement", RefreshToken: "replacement-grant",
+				Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+			replaceReplayCredential = func(ctx context.Context) error {
+				cfg, err := env.store.GetConfig(ctx, configs[0].ID)
+				if err != nil {
+					return err
+				}
+				updated, err := env.store.CompareAndSwapOAuthCredential(ctx, cfg.ID, cfg.AuthType, cfg.OAuthCredential, replacement)
+				if err == nil && !updated {
+					return errors.New("could not replace the xAI replay credential")
+				}
+				return err
+			}
 
 			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 				"model": "grok-4.5", "stream": false, "input": "hello",
@@ -7937,7 +8166,15 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 			if tt.wantRefresh {
 				wantAttempts = 2
 				wantRefreshes = 1
-				if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-refreshed" {
+				if tt.replayRejection {
+					if response.Code != http.StatusForbidden || gjson.GetBytes(response.Body.Bytes(), "code").String() != "invalid_token" {
+						t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+					}
+					cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+					if err != nil || !cooldowns[configs[0].ID].IsZero() {
+						t.Fatalf("replacement credential was cooled: cooldowns=%v err=%v", cooldowns, err)
+					}
+				} else if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-refreshed" {
 					t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
 				}
 			}
@@ -8001,12 +8238,21 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		for _, rejectAccessToken := range []bool{false, true} {
-			outcome := "existing access token succeeds"
-			if rejectAccessToken {
-				outcome = "existing access token rejected"
-			}
-			t.Run(tt.name+"/"+outcome, func(t *testing.T) {
+		for _, outcome := range []struct {
+			name                string
+			rejectAccessToken   bool
+			refreshStatus       int
+			deleteDuringRefresh bool
+		}{
+			{name: "existing access token succeeds", refreshStatus: http.StatusBadRequest},
+			{name: "existing access token rejected", refreshStatus: http.StatusBadRequest, rejectAccessToken: true},
+			{name: "transient refresh failure", refreshStatus: http.StatusBadGateway},
+			{name: "rate limited with usable access token", refreshStatus: http.StatusTooManyRequests},
+			{name: "rate limited with rejected access token", refreshStatus: http.StatusTooManyRequests, rejectAccessToken: true},
+			{name: "channel deleted during failed refresh", refreshStatus: http.StatusBadGateway, deleteDuringRefresh: true},
+			{name: "channel deleted during successful refresh", refreshStatus: http.StatusOK, deleteDuringRefresh: true},
+		} {
+			t.Run(tt.name+"/"+outcome.name, func(t *testing.T) {
 				const accessToken = "stale-access-token"
 				var upstreamAttempts atomic.Int32
 				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -8015,7 +8261,7 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 						t.Errorf("Authorization = %q", got)
 					}
 					w.Header().Set("Content-Type", tt.successType)
-					if rejectAccessToken {
+					if outcome.rejectAccessToken {
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusUnauthorized)
 						_, _ = io.WriteString(w, tt.rejectedBody)
@@ -8048,14 +8294,35 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 					models: tt.model, priority: 100, authType: tt.authType,
 					oauthCredential: credentialJSON,
 				}}, map[int]string{0: upstreamURL})
+				configs, err := env.store.ListConfigs(t.Context())
+				if err != nil || len(configs) != 1 {
+					t.Fatalf("ListConfigs = %#v, %v", configs, err)
+				}
+				channelID := configs[0].ID
 
 				var refreshAttempts atomic.Int32
 				refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 					refreshAttempts.Add(1)
+					if outcome.deleteDuringRefresh {
+						if deleted, err := env.server.deleteChannelByID(req.Context(), channelID); err != nil || !deleted {
+							t.Errorf("delete refreshing channel = %v, %v", deleted, err)
+						}
+					}
+					body := `{"error":"invalid_grant"}`
+					header := http.Header{"Content-Type": {"application/json"}}
+					switch outcome.refreshStatus {
+					case http.StatusBadGateway:
+						body = `{"error":"temporarily_unavailable"}`
+					case http.StatusTooManyRequests:
+						body = `{"error":"temporarily_unavailable"}`
+						header.Set("Retry-After", "333")
+					case http.StatusOK:
+						body = `{"access_token":"at-new","refresh_token":"rt-new","expires_in":604800}`
+					}
 					return &http.Response{
-						StatusCode: http.StatusBadRequest,
-						Header:     http.Header{"Content-Type": {"application/json"}},
-						Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant"}`)),
+						StatusCode: outcome.refreshStatus,
+						Header:     header,
+						Body:       io.NopCloser(strings.NewReader(body)),
 						Request:    req,
 					}, nil
 				})}
@@ -8086,11 +8353,23 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				if got := refreshAttempts.Load(); got != 1 {
 					t.Fatalf("refresh attempts=%d, want 1", got)
 				}
+				if outcome.deleteDuringRefresh {
+					if got := upstreamAttempts.Load(); got != 0 {
+						t.Fatalf("upstream attempts for deleted channel=%d, want 0", got)
+					}
+					if response.Code != http.StatusServiceUnavailable {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					if _, err := env.store.GetConfig(t.Context(), channelID); !errors.Is(err, model.ErrChannelNotFound) {
+						t.Fatalf("GetConfig after delete = %v, want missing channel", err)
+					}
+					return
+				}
 				if got := upstreamAttempts.Load(); got != 1 {
 					t.Fatalf("upstream attempts=%d, want 1", got)
 				}
 
-				configs, err := env.store.ListConfigs(context.Background())
+				configs, err = env.store.ListConfigs(context.Background())
 				if err != nil || len(configs) != 1 {
 					t.Fatalf("ListConfigs = %#v, %v", configs, err)
 				}
@@ -8099,7 +8378,7 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 					t.Fatalf("GetAllChannelCooldowns: %v", err)
 				}
 				until, cooling := cooldowns[configs[0].ID]
-				if !rejectAccessToken {
+				if !outcome.rejectAccessToken {
 					if response.Code != http.StatusOK {
 						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 					}
@@ -8113,6 +8392,12 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				}
 				if response.Code != http.StatusUnauthorized {
 					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if outcome.refreshStatus == http.StatusTooManyRequests {
+					if !configs[0].Enabled || !cooling || until.Before(startedAt.Add(333*time.Second)) || until.After(time.Now().Add(334*time.Second)) {
+						t.Fatalf("rate-limited refresh left enabled=%v cooldown=%v, want about 333s", configs[0].Enabled, until)
+					}
+					return
 				}
 				if tt.authType == model.AuthTypeCodexOAuth || tt.authType == model.AuthTypeAntigravityOAuth ||
 					tt.authType == model.AuthTypeAnthropicOAuth {
@@ -8139,6 +8424,117 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				}
 				if until.Before(startedAt.Add(24*time.Hour-time.Minute)) || until.After(time.Now().Add(24*time.Hour+time.Minute)) {
 					t.Fatalf("cooldown until=%s, want about 24 hours", until)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 真实令牌接口的限流与服务端错误按有效 Retry-After 冷却，认证拒绝保留原语义。
+ * @param t 测试上下文。
+ */
+func TestProxy_OAuthRefreshRetryAfterAccioQoderCursor(t *testing.T) {
+	t.Parallel()
+	for _, authType := range []string{model.AuthTypeAccioOAuth, model.AuthTypeQoderOAuth, model.AuthTypeCursorOAuth} {
+		for _, tt := range []struct {
+			name       string
+			status     int
+			retryAfter string
+			wait       time.Duration
+		}{
+			{name: "rate limit seconds", status: http.StatusTooManyRequests, retryAfter: "75", wait: 75 * time.Second},
+			{name: "service unavailable date", status: http.StatusServiceUnavailable, wait: 90 * time.Second},
+			{name: "missing hint", status: http.StatusTooManyRequests, wait: 24 * time.Hour},
+			{name: "past hint", status: http.StatusServiceUnavailable, retryAfter: "Thu, 01 Jan 1970 00:00:00 GMT", wait: 24 * time.Hour},
+			{name: "credential rejection", status: http.StatusUnauthorized, retryAfter: "75", wait: 24 * time.Hour},
+			{name: "Accio business rejection", status: http.StatusOK, retryAfter: "75", wait: 24 * time.Hour},
+		} {
+			if tt.status == http.StatusOK && authType != model.AuthTypeAccioOAuth {
+				continue
+			}
+			t.Run(authType+"/"+tt.name, func(t *testing.T) {
+				var credentialJSON, modelName, upstreamURL string
+				var err error
+				switch authType {
+				case model.AuthTypeAccioOAuth:
+					credentialJSON = accioTestCredential(t, "cn", "at-before-refresh")
+					modelName = "accio-test"
+					upstreamURL = "https://phoenix-gw.alibaba.com/v1/chat/completions"
+				case model.AuthTypeQoderOAuth:
+					credentialJSON = qoderIntegrationJSON(t, qoderIntegrationCredential(t, "cn", "at-before-refresh"))
+					modelName = "QwenTest"
+					upstreamURL = "https://gateway.qoder.com.cn/v1/chat/completions"
+				case model.AuthTypeCursorOAuth:
+					credentialJSON, err = (&cursorauth.Credential{APIKey: "test-cursor-key", AccessToken: "at-before-refresh"}).JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					modelName = "grok-4.6"
+					upstreamURL = "https://unused.invalid"
+				}
+				env := setupProxyTestEnv(t, []testChannel{{name: "refresh", authType: authType, oauthCredential: credentialJSON, models: modelName, upstreamProtocol: "openai"}}, map[int]string{0: upstreamURL})
+				var chats, refreshes atomic.Int32
+				expectedUntil := time.Now().Truncate(time.Second).Add(tt.wait)
+				transport := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					switch r.URL.Path {
+					case "/api/llm/config":
+						return accioTestResponse(r, http.StatusOK, accioTestCatalog), nil
+					case "/algo/api/v2/model/list":
+						return qoderIntegrationResponse(r, http.StatusOK, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+					case "/api/auth/refresh_token", "/api/v1/deviceToken/refresh", cursorauth.ExchangeAPIKeyPath:
+						refreshes.Add(1)
+						res := qoderIntegrationResponse(r, tt.status, `{"success":false,"code":"429"}`)
+						if tt.retryAfter != "" {
+							res.Header.Set("Retry-After", tt.retryAfter)
+						} else if tt.status == http.StatusServiceUnavailable {
+							res.Header.Set("Retry-After", expectedUntil.UTC().Format(http.TimeFormat))
+						}
+						return res, nil
+					default:
+						chats.Add(1)
+						if authType == model.AuthTypeAccioOAuth {
+							return accioTestResponse(r, http.StatusOK, "data: {\"error_code\":\"401\",\"error_message\":\"token expired\"}\n\n"), nil
+						}
+						res := qoderIntegrationResponse(r, http.StatusOK, "data: {\"statusCodeValue\":403,\"body\":{\"code\":105,\"message\":\"expired\"}}\n\n")
+						res.Header.Set("Content-Type", "text/event-stream")
+						return res, nil
+					}
+				})
+				runner := &cursorRefreshOnceRunner{}
+				switch authType {
+				case model.AuthTypeAccioOAuth:
+					accioTestClient(env.server, transport)
+				case model.AuthTypeQoderOAuth:
+					qoderIntegrationClient(env.server, transport)
+				case model.AuthTypeCursorOAuth:
+					env.server.client = &http.Client{Transport: transport}
+					env.server.cursorRunner = runner
+				}
+				response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+					"model": modelName, "messages": []any{map[string]string{"role": "user", "content": "hello"}},
+				}, nil)
+				if response.Code != http.StatusUnauthorized || refreshes.Load() != 1 || int(chats.Load())+runner.calls != 1 {
+					t.Fatalf("status=%d chats=%d sdk runs=%d refreshes=%d body=%s", response.Code, chats.Load(), runner.calls, refreshes.Load(), response.Body.String())
+				}
+				configs, err := env.store.ListConfigs(t.Context())
+				if err != nil || len(configs) != 1 {
+					t.Fatalf("ListConfigs = %v, %v", configs, err)
+				}
+				cfg := configs[0]
+				if tt.status == http.StatusUnauthorized && authType != model.AuthTypeCursorOAuth {
+					if cfg.Enabled || cfg.CooldownUntil != 0 {
+						t.Fatalf("terminal refresh enabled=%v cooldown=%d", cfg.Enabled, cfg.CooldownUntil)
+					}
+					return
+				}
+				until := time.Unix(cfg.CooldownUntil, 0)
+				latestUntil := time.Now().Add(tt.wait + time.Second)
+				if tt.status == http.StatusServiceUnavailable && tt.retryAfter == "" {
+					latestUntil = expectedUntil
+				}
+				if !cfg.Enabled || until.Before(expectedUntil) || until.After(latestUntil) {
+					t.Fatalf("enabled=%v cooldown=%v, want between %v and %v", cfg.Enabled, until, expectedUntil, latestUntil)
 				}
 			})
 		}
@@ -8269,6 +8665,181 @@ func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) 
 	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
 	if err != nil || cooldowns[configs[0].ID].IsZero() {
 		t.Fatalf("transient refresh failure did not cool channel: cooldowns=%+v err=%v", cooldowns, err)
+	}
+}
+
+/**
+ * @brief 注入一次更新，使刷新失败前的凭证读取与之后的条件冷却之间发生真实写入。
+ */
+type codexFailureSnapshotStore struct {
+	storage.Store
+	refreshFailed atomic.Bool               ///< 已返回刷新失败，下一次读取返回旧快照后注入更新。
+	replace       func(*model.Config) error ///< 写入测试指定的新凭证。
+}
+
+/**
+ * @brief 返回刷新器读取的凭证快照，并在预定的失败读取后写入替换凭证。
+ * @param ctx 凭证读取上下文。
+ * @param id 目标渠道。
+ * @return 替换前读取的渠道配置。
+ * @return 读取或测试数据写入失败时返回错误。
+ */
+func (s *codexFailureSnapshotStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
+	cfg, err := s.Store.GetConfig(ctx, id)
+	if err == nil && s.refreshFailed.Swap(false) {
+		err = s.replace(cfg)
+	}
+	return cfg, err
+}
+
+/**
+ * @brief 验证失效访问令牌和临时刷新失败只会冷却本次失败的认证材料。
+ * @param t 测试上下文。
+ */
+func TestProxy_CodexOAuthCooldownUsesFailedCredential(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		stream      bool
+		refreshFail bool
+		update      string
+	}{
+		{name: "current replay token"},
+		{name: "metadata update", update: "metadata"},
+		{name: "reauthorized before HTTP 401", update: "reauthorize"},
+		{name: "reauthorized before SSE 401", stream: true, update: "reauthorize"},
+		{name: "reauthorized after refresh failure", refreshFail: true, update: "reauthorize"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts, refreshes atomic.Int32
+			var updateCredential func() error
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := attempts.Add(1)
+				want := "Bearer original-token"
+				if attempt == 2 {
+					want = "Bearer replay-token"
+					if tc.update != "" {
+						if err := updateCredential(); err != nil {
+							t.Error(err)
+						}
+					}
+				}
+				if got := r.Header.Get("Authorization"); got != want {
+					t.Errorf("attempt %d authorization = %q, want %q", attempt, got, want)
+				}
+				if tc.stream && attempt == 2 {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"type\":\"error\",\"status\":401,\"error\":{\"type\":\"authentication_error\",\"message\":\"expired\"}}\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+			}))
+			defer upstream.Close()
+
+			const backupResponse = `{"id":"resp-backup","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"backup"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":"+backupResponse+"}\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, backupResponse)
+			}))
+			defer backup.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "oauth", upstreamProtocol: "codex", models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+					oauthCredential: codexProxyTestCredential(t, "original-token", "original-grant", "original-account")},
+				{name: "backup", upstreamProtocol: "codex", models: "gpt-test", priority: 50},
+			}, map[int]string{0: upstream.URL, 1: backup.URL})
+			ctx := context.Background()
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil || len(configs) != 2 || configs[0].Name != "oauth" {
+				t.Fatalf("primary channel setup: configs=%v err=%v", configs, err)
+			}
+			channelID := configs[0].ID
+			replacement := codexProxyTestCredential(t, "replacement-token", "replacement-grant", "replacement-account")
+			replace := func(cfg *model.Config) error {
+				next := replacement
+				if tc.update == "metadata" {
+					credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+					if err != nil {
+						return err
+					}
+					credential.Email = "metadata@example.test"
+					next, err = credential.JSON()
+					if err != nil {
+						return err
+					}
+				}
+				updated, err := env.store.CompareAndSwapOAuthCredential(ctx, cfg.ID, cfg.AuthType, cfg.OAuthCredential, next)
+				if err == nil && !updated {
+					return errors.New("test credential update lost its compare-and-swap")
+				}
+				return err
+			}
+			updateCredential = func() error {
+				cfg, err := env.store.GetConfig(ctx, channelID)
+				if err != nil {
+					return err
+				}
+				return replace(cfg)
+			}
+			refreshStore := &codexFailureSnapshotStore{Store: env.store, replace: replace}
+			env.server.codexCredentials.store = refreshStore
+			refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				refreshes.Add(1)
+				status, body := http.StatusOK, `{"access_token":"replay-token","refresh_token":"replay-grant","expires_in":604800}`
+				if tc.refreshFail {
+					refreshStore.refreshFailed.Store(true)
+					status, body = http.StatusInternalServerError, `{"error":"temporarily_unavailable"}`
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}},
+					Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})}
+			env.server.codexCredentials.service = codexauth.NewService(refreshClient)
+			env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "gpt-test", "stream": tc.stream, "input": "hello",
+			}, nil)
+			id := gjson.GetBytes(response.Body.Bytes(), "id").String()
+			if tc.stream {
+				for event := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+					payload := gjson.ParseBytes(sseEventData(event))
+					if payload.Get("type").String() == "response.completed" {
+						id = payload.Get("response.id").String()
+					}
+				}
+			}
+			if response.Code != http.StatusOK || id != "resp-backup" {
+				t.Fatalf("failover status=%d body=%s", response.Code, response.Body.String())
+			}
+			wantAttempts := int32(2)
+			if tc.refreshFail {
+				wantAttempts = 1
+			}
+			if attempts.Load() != wantAttempts || refreshes.Load() != 1 {
+				t.Fatalf("business attempts=%d, want %d; refreshes=%d, want 1", attempts.Load(), wantAttempts, refreshes.Load())
+			}
+			cfg, err := env.store.GetConfig(ctx, channelID)
+			if err != nil || !cfg.Enabled {
+				t.Fatalf("read OAuth channel: cfg=%v err=%v", cfg, err)
+			}
+			cooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			until := cooldowns[channelID]
+			if tc.update == "reauthorize" {
+				if cfg.OAuthCredential != replacement || !until.IsZero() {
+					t.Fatalf("replacement credential changed or cooled until %v", until)
+				}
+			} else if until.Before(time.Now().Add(23 * time.Hour)) {
+				t.Fatalf("current rejected token cooldown=%v, want 24 hours", until)
+			}
+		})
 	}
 }
 
@@ -8478,40 +9049,98 @@ func TestProxy_RejectedCodexPersonalAccessTokenDisablesChannel(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证已提交的 xAI 响应不续期或重放，明确的令牌拒绝只冷却同一凭证。
+ * @param t 测试上下文。
+ */
 func TestProxy_XAIOAuthDoesNotReplayAfterCommittedSemanticOutput(t *testing.T) {
-	var upstreamAttempts atomic.Int32
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamAttempts.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		largeDelta := strings.Repeat("x", SSEBufferSize)
-		_, _ = fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", largeDelta)
-		_, _ = io.WriteString(w, "event: error\n"+`data: {"type":"error","error":{"type":"authentication_error","code":"invalid_token","message":"expired"}}`+"\n\n")
-	}))
-	defer upstream.Close()
+	for _, tc := range []struct {
+		name        string
+		forbidden   bool
+		reauthorize bool
+	}{
+		{name: "authentication error without status"},
+		{name: "current credential rejected", forbidden: true},
+		{name: "reauthorized before error frame", forbidden: true, reauthorize: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamAttempts, refreshes atomic.Int32
+			var replaceCredential func(context.Context) error
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamAttempts.Add(1)
+				if r.Header.Get("Authorization") != "Bearer xai-committed-token" {
+					t.Errorf("unexpected credential in committed request")
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "event: response.output_text.delta\n"+`data: {"type":"response.output_text.delta","delta":"partial answer"}`+"\n\n")
+				w.(http.Flusher).Flush()
+				if tc.reauthorize {
+					if err := replaceCredential(r.Context()); err != nil {
+						t.Error(err)
+					}
+				}
+				status := ""
+				if tc.forbidden {
+					status = `"status":403,`
+				}
+				_, _ = io.WriteString(w, "event: error\ndata: {"+status+`"type":"error","error":{"type":"authentication_error","code":"invalid_token","message":"expired"}}`+"\n\n")
+			}))
+			defer upstream.Close()
 
-	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
-		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "committed-access", RefreshToken: "committed-refresh",
-		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-	})
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "xai-committed", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
-		authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
-	}}, map[int]string{0: upstream.URL + "/v1"})
-	var refreshes atomic.Int32
-	env.server.xaiCredentials = newXAICredentialManager(env.store, func(*model.Config) *http.Client {
-		refreshes.Add(1)
-		return http.DefaultClient
-	}, nil)
+			credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+				Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-committed-token", RefreshToken: "xai-committed-grant",
+				Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "xai-committed", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
+				authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+			}}, map[int]string{0: upstream.URL + "/v1"})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configured channels=%d, err=%v", len(configs), err)
+			}
+			channel := configs[0]
+			replacement := mustXAICredentialJSON(t, &xaiauth.Credential{
+				Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-new-token", RefreshToken: "xai-new-grant",
+				Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+			replaceCredential = func(ctx context.Context) error {
+				updated, err := env.store.CompareAndSwapOAuthCredential(ctx, channel.ID, channel.AuthType, channel.OAuthCredential, replacement)
+				if err == nil && !updated {
+					return errors.New("could not replace the xAI credential during streaming")
+				}
+				return err
+			}
+			env.server.xaiCredentials = newXAICredentialManager(env.store, func(*model.Config) *http.Client {
+				refreshes.Add(1)
+				return &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					return nil, errors.New("unexpected refresh")
+				})}
+			}, nil)
 
-	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": "grok-4.5", "stream": true, "input": "hello",
-	}, nil)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"response.output_text.delta"`) {
-		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
-	}
-	if upstreamAttempts.Load() != 1 || refreshes.Load() != 0 {
-		t.Fatalf("upstream attempts=%d refreshes=%d, want 1/0", upstreamAttempts.Load(), refreshes.Load())
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "grok-4.5", "stream": true, "input": "hello",
+			}, nil)
+			var text string
+			for event := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+				payload := gjson.ParseBytes(sseEventData(event))
+				if payload.Get("type").String() == "response.output_text.delta" {
+					text += payload.Get("delta").String()
+				}
+			}
+			if response.Code != http.StatusOK || text != "partial answer" {
+				t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+			}
+			if upstreamAttempts.Load() != 1 || refreshes.Load() != 0 {
+				t.Fatalf("upstream attempts=%d refreshes=%d, want 1/0", upstreamAttempts.Load(), refreshes.Load())
+			}
+			if tc.forbidden {
+				cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+				if err != nil || cooldowns[channel.ID].IsZero() != tc.reauthorize {
+					t.Fatalf("unexpected cooldown=%v after explicit 403 (reauthorized=%t): %v", cooldowns[channel.ID], tc.reauthorize, err)
+				}
+			}
+		})
 	}
 }
 
@@ -12483,6 +13112,7 @@ func TestProxy_TerminalRateLimitPoolRetryAfter(t *testing.T) {
 			wantCalls   int32
 		}{
 			{name: "earliest attempted channel", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 2},
+			{name: "fallback has no usable credential", status: 429, firstDelay: 89, wantSeconds: 89, wantCalls: 1},
 			{name: "already cooled model key and channel", status: 429, firstDelay: 120, wantSeconds: 30, wantCalls: 1},
 			{name: "candidate recovered during request", status: 429, firstDelay: 120, wantSeconds: 777, wantCalls: 1},
 			{name: "requested channel", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
@@ -12533,6 +13163,10 @@ func TestProxy_TerminalRateLimitPoolRetryAfter(t *testing.T) {
 				}
 				if tc.name == "fuzzy candidate available" {
 					channels[1].modelEntries[0].Model = requestModel + "-20250929"
+				}
+				if tc.name == "fallback has no usable credential" {
+					channels[1].authType = model.AuthTypeCodexOAuth
+					channels[1].oauthCredential = "{}"
 				}
 				if tc.name == "fuzzy Antigravity ordinary candidate available" || tc.name == "cooled Credits candidate recovers first" {
 					credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "pool-antigravity")))
@@ -18696,6 +19330,119 @@ func TestProxy_SSEErrorEventBeforeClientOutput_RetriesNextChannel(t *testing.T) 
 	}
 }
 
+/**
+ * @brief 观察客户端已收到的流事件，并在指定事件到达时取消请求。
+ */
+type cancelOnSSEOutput struct {
+	*httptest.ResponseRecorder
+	firstOutput chan struct{}
+	firstOnce   sync.Once
+	cancelOn    []byte
+	cancel      context.CancelFunc
+}
+
+/**
+ * @brief 先记录已送达的字节，再通知上游测试用例或取消客户端。
+ * @param p 本次响应写入的字节。
+ * @return 已写入字节数。
+ * @return 响应写入错误。
+ */
+func (w *cancelOnSSEOutput) Write(p []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(p)
+	if bytes.Contains(p, []byte("partial-answer")) {
+		w.firstOnce.Do(func() { close(w.firstOutput) })
+	}
+	if bytes.Contains(p, w.cancelOn) {
+		w.cancel()
+	}
+	return n, err
+}
+
+/**
+ * @brief 验证客户端取消前已收到的可信限流仍设置冷却，取消本身保持 499 且不重放。
+ * @param t 测试上下文。
+ */
+func TestProxy_CanceledCommittedStreamKeepsRateLimitCooldown(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		rateLimit  bool
+		retryAfter string
+	}{
+		{name: "explicit deadline", rateLimit: true, retryAfter: "45"},
+		{name: "rate limit without deadline", rateLimit: true},
+		{name: "cancel without rate-limit event", retryAfter: "45"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cancelOn := "partial-answer"
+			if tc.rateLimit {
+				cancelOn = "turn_rate_limit_exceeded"
+			}
+			client := &cancelOnSSEOutput{
+				ResponseRecorder: httptest.NewRecorder(), firstOutput: make(chan struct{}),
+				cancelOn: []byte(cancelOn), cancel: cancel,
+			}
+			var upstreamCalls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				upstreamCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				if tc.retryAfter != "" {
+					w.Header().Set("Retry-After", tc.retryAfter)
+				}
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial-answer\"}}]}\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-client.firstOutput:
+				case <-req.Context().Done():
+					return
+				case <-time.After(5 * time.Second):
+					t.Error("stream did not reach the downstream")
+					return
+				}
+				if tc.rateLimit {
+					_, _ = io.WriteString(w, "event: error\ndata: "+
+						`{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"at capacity"}}`+"\n\n")
+					w.(http.Flusher).Flush()
+				}
+				select {
+				case <-req.Context().Done():
+				case <-time.After(5 * time.Second):
+					t.Error("client cancellation did not close the upstream stream")
+				}
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "primary", models: "gpt-4"}, {name: "fallback", models: "gpt-4"},
+			}, map[int]string{0: upstream.URL, 1: upstream.URL})
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+				strings.NewReader(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			env.engine.ServeHTTP(client, req)
+			if client.Code != http.StatusOK || !strings.Contains(client.Body.String(), cancelOn) || upstreamCalls.Load() != 1 {
+				t.Fatalf("status=%d body=%s upstream calls=%d", client.Code, client.Body, upstreamCalls.Load())
+			}
+			if entry := waitForProxyLog(t, env, "gpt-4"); entry.StatusCode != 499 {
+				t.Fatalf("client cancel status=%d, want 499", entry.StatusCode)
+			}
+			cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.rateLimit && tc.retryAfter != "" {
+				if remaining := time.Until(cooldowns[1]["gpt-4"]); len(cooldowns) != 1 || remaining < 42*time.Second || remaining > 45*time.Second {
+					t.Fatalf("model cooldowns=%v, want about 45s on the primary channel", cooldowns)
+				}
+			} else if len(cooldowns) != 0 {
+				t.Fatalf("unconfirmed recovery time caused model cooldown: %v", cooldowns)
+			}
+		})
+	}
+}
+
 func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	t.Parallel()
 
@@ -19738,7 +20485,7 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 			env := setupProxyTestEnv(t, []testChannel{{name: "replay", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-replay")}}, map[int]string{0: upstream.URL})
 			now := time.Now()
 			env.server.antigravityReplay.now = func() time.Time { return now }
-			send := func(session, text, explicit string, history bool) *httptest.ResponseRecorder {
+			sendScoped := func(session, text, explicit string, history bool, agent string, fields map[string]any) *httptest.ResponseRecorder {
 				messages := []any{map[string]any{"role": "user", "content": "question"}}
 				if history {
 					block := map[string]any{"type": "thinking", "thinking": text}
@@ -19747,7 +20494,16 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 					}
 					messages = append(messages, map[string]any{"role": "assistant", "content": []any{block, map[string]any{"type": "text", "text": "answer"}}}, map[string]any{"role": "user", "content": "continue"})
 				}
-				return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{"model": "claude-sonnet-4-6", "max_tokens": 128, "stream": streaming, "messages": messages}, map[string]string{"Session-Id": session})
+				body := map[string]any{"model": "claude-sonnet-4-6", "max_tokens": 128, "stream": streaming, "messages": messages}
+				maps.Copy(body, fields)
+				headers := map[string]string{"X-Claude-Code-Session-Id": session}
+				if agent != "" {
+					headers["X-Claude-Code-Agent-Id"] = agent
+				}
+				return doProxyRequest(t, env.engine, "/v1/messages", body, headers)
+			}
+			send := func(session, text, explicit string, history bool) *httptest.ResponseRecorder {
+				return sendScoped(session, text, explicit, history, "", nil)
 			}
 			hasSignature := func() bool {
 				for _, content := range gjson.GetBytes(bodies[len(bodies)-1], "request.contents").Array() {
@@ -19759,10 +20515,31 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 				}
 				return false
 			}
-			if res := send("session-a", "", "", false); res.Code != 200 {
+			firstSystem := map[string]any{"system": []map[string]any{
+				{"type": "text", "text": "x-anthropic-billing-header: cch=11111; cc_prompt_id=first;"},
+				{"type": "text", "text": "You are Claude Code."},
+			}}
+			nextSystem := map[string]any{"system": []map[string]any{
+				{"type": "text", "text": "x-anthropic-billing-header: cch=22222; cc_prompt_id=next;"},
+				{"type": "text", "text": "You are Claude Code.", "cache_control": map[string]any{"type": "ephemeral"}},
+			}}
+			if res := sendScoped("session-a", "", "", false, "", firstSystem); res.Code != 200 {
 				t.Fatalf("initial response %d %s", res.Code, res.Body.String())
 			}
-			if res := send("session-a", "private reasoning", "", true); res.Code != 200 || !hasSignature() {
+			titleFormat := map[string]any{"output_config": map[string]any{"format": map[string]any{
+				"type": "json_schema", "schema": map[string]any{
+					"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string"}}, "required": []string{"title"},
+				},
+			}}}
+			rejected = true
+			if res := sendScoped("session-a", "private reasoning", "", true, "subagent", nil); res.Code != 400 || hasSignature() {
+				t.Fatalf("subagent accessed main session signature: status=%d upstream=%s", res.Code, bodies[len(bodies)-1])
+			}
+			if res := sendScoped("session-a", "private reasoning", "", true, "main", titleFormat); res.Code != 400 || hasSignature() {
+				t.Fatalf("title helper accessed main session signature: status=%d upstream=%s", res.Code, bodies[len(bodies)-1])
+			}
+			rejected = false
+			if res := sendScoped("session-a", "private reasoning", "", true, "main", nextSystem); res.Code != 200 || !hasSignature() {
 				t.Fatalf("missing recovered signature: status=%d body=%s upstream=%s", res.Code, res.Body.String(), bodies[len(bodies)-1])
 			}
 			send("session-b", "private reasoning", "", true)

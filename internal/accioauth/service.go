@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 const accioAppVersion = "0.34.4"
@@ -35,11 +37,18 @@ func NewService(client *http.Client) *Service {
 type HTTPError struct {
 	StatusCode int
 	Message    string
+	retryAfter time.Time
 }
 
 func (e *HTTPError) Error() string {
 	return "Accio request failed: " + e.Message
 }
+
+/**
+ * @brief 返回真实 HTTP 限流或服务端错误给出的恢复时间。
+ * @return 有效的未来 Retry-After 截止时间，其他错误返回零值。
+ */
+func (e *HTTPError) RetryAfter() time.Time { return e.retryAfter }
 
 func authCopy(c *Credential) (*Credential, error) {
 	if c == nil {
@@ -118,7 +127,13 @@ func (s *Service) authDo(ctx context.Context, c *Credential, method, path string
 		if status == http.StatusForbidden {
 			status = http.StatusUnauthorized
 		}
-		return nil, &HTTPError{status, fmt.Sprintf("%s %s (HTTP %d): upstream rejected request", method, path, resp.StatusCode)}
+		failure := &HTTPError{StatusCode: status, Message: fmt.Sprintf("%s %s (HTTP %d): upstream rejected request", method, path, resp.StatusCode)}
+		if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError && status < 600 {
+			if until, ok := util.ParseRetryAfter(resp.Header, time.Now()); ok {
+				failure.retryAfter = until
+			}
+		}
+		return nil, failure
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
 	if err != nil {
@@ -151,7 +166,7 @@ func (s *Service) authDo(ctx context.Context, c *Credential, method, path string
 		if n, parseErr := strconv.Atoi(code); parseErr == nil && n >= 0 && n <= 999999 {
 			diagnosticCode = strconv.Itoa(n)
 		}
-		return nil, &HTTPError{status, fmt.Sprintf("%s %s (HTTP %d, business code %s): upstream rejected request", method, path, resp.StatusCode, diagnosticCode)}
+		return nil, &HTTPError{StatusCode: status, Message: fmt.Sprintf("%s %s (HTTP %d, business code %s): upstream rejected request", method, path, resp.StatusCode, diagnosticCode)}
 	}
 	return data, nil
 }

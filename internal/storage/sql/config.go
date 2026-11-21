@@ -76,7 +76,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	config, err := scanner.ScanConfig(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("not found")
+			return nil, model.ErrChannelNotFound
 		}
 		return nil, err
 	}

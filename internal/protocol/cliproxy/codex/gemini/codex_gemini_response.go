@@ -24,11 +24,11 @@ var (
 
 // ConvertCodexResponseToGeminiParams holds parameters for response conversion.
 type ConvertCodexResponseToGeminiParams struct {
-	Model              string
-	CreatedAt          int64
-	ResponseID         string
-	HasOutputTextDelta bool
-	LastImageHashByID  map[string][32]byte
+	Model             string
+	CreatedAt         int64
+	ResponseID        string
+	messages          translatorcommon.ResponsesMessageStream
+	LastImageHashByID map[string][32]byte
 	// PendingThoughtSignature holds a completed reasoning item's
 	// encrypted_content until the next visible part can carry it as a
 	// Gemini thoughtSignature, mirroring native Gemini part placement.
@@ -56,14 +56,13 @@ type ConvertCodexResponseToGeminiParams struct {
 //
 // Returns:
 //   - [][]byte: A slice of Gemini-compatible JSON responses
-func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func ConvertCodexResponseToGemini(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &ConvertCodexResponseToGeminiParams{
-			Model:              modelName,
-			CreatedAt:          0,
-			ResponseID:         "",
-			HasOutputTextDelta: false,
-			LastImageHashByID:  make(map[string][32]byte),
+			Model:             modelName,
+			CreatedAt:         0,
+			ResponseID:        "",
+			LastImageHashByID: make(map[string][32]byte),
 		}
 	}
 
@@ -77,6 +76,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 	typeStr := typeResult.String()
 
 	params := (*param).(*ConvertCodexResponseToGeminiParams)
+	params.messages.ObserveOutputItem(typeStr, rootResult)
 
 	attachPendingThoughtSignature := func(part []byte) []byte {
 		if params.PendingThoughtSignature == "" {
@@ -246,7 +246,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		params.SeenReasoningSignatures = nil
 		params.HasReasoningDelta = false
 		params.StreamedReasoningItems = nil
-		params.HasOutputTextDelta = false
+		params.messages = translatorcommon.ResponsesMessageStream{}
 		template, _ = sjson.SetBytes(template, "modelVersion", rootResult.Get("response.model").String())
 		template, _ = sjson.SetBytes(template, "responseId", rootResult.Get("response.id").String())
 		params.ResponseID = rootResult.Get("response.id").String()
@@ -280,56 +280,45 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
 		emittedParts = append(emittedParts, part)
 		template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", emittedParts)
-	case "response.output_text.delta": // Handle regular text content delta
-		params.HasOutputTextDelta = true
+	case "response.output_text.delta", "response.refusal.delta":
+		delta := rootResult.Get("delta").String()
+		params.messages.ObserveDelta(rootResult, delta)
 		part := []byte(`{"text":""}`)
-		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
-		if rootResult.Get("delta").String() != "" {
+		part, _ = sjson.SetBytes(part, "text", delta)
+		if delta != "" {
 			// An empty text part may be discarded by clients; never spend the
 			// only signature copy on one.
 			part = attachPendingThoughtSignature(part)
 		}
 		template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", [][]byte{part})
-	case "response.output_item.done": // Fallback: emit final message text when no delta chunks were received
-		itemResult := rootResult.Get("item")
-		if itemResult.Get("type").String() != "message" || params.HasOutputTextDelta {
-			return [][]byte{}
+	case "response.output_item.done": // Fallback: emit message parts not delivered as deltas.
+		if rootResult.Get("item.type").String() != "message" {
+			return nil
 		}
-		contentResult := itemResult.Get("content")
-		if !contentResult.Exists() || !contentResult.IsArray() {
-			return [][]byte{}
+		missingParts := params.messages.FinishMessage(rootResult)
+		if len(missingParts) == 0 {
+			return nil
 		}
-		wroteText := false
-		contentResult.ForEach(func(_, partResult gjson.Result) bool {
-			if partResult.Get("type").String() != "output_text" {
-				return true
-			}
-			text := partResult.Get("text").String()
-			if text == "" {
-				return true
-			}
+		for _, missing := range missingParts {
 			part := []byte(`{"text":""}`)
-			part, _ = sjson.SetBytes(part, "text", text)
+			part, _ = sjson.SetBytes(part, "text", translatorcommon.ResponsesMessagePartText(missing).String())
 			part = attachPendingThoughtSignature(part)
 			template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
-			wroteText = true
-			return true
-		})
-		if wroteText {
-			params.HasOutputTextDelta = true
-			return [][]byte{template}
 		}
-		return [][]byte{}
 	case "response.completed", "response.incomplete": // Handle response completion with usage metadata
-		if params.PendingThoughtSignature != "" {
-			part := setGeminiThoughtSignature([]byte(`{"thought":true,"text":""}`), params.PendingThoughtSignature)
-			params.PendingThoughtSignature = ""
-			template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", [][]byte{part})
-		}
 		response := rootResult.Get("response")
 		if responseID := response.Get("id").String(); responseID != "" {
 			params.ResponseID = responseID
 			template, _ = sjson.SetBytes(template, "responseId", responseID)
+		}
+		var messages [][]byte
+		for _, event := range params.messages.MissingMessageDoneEvents(response.Get("output")) {
+			messages = append(messages, ConvertCodexResponseToGemini(ctx, modelName, originalRequestRawJSON, requestRawJSON, event, param)...)
+		}
+		if params.PendingThoughtSignature != "" {
+			part := setGeminiThoughtSignature([]byte(`{"thought":true,"text":""}`), params.PendingThoughtSignature)
+			params.PendingThoughtSignature = ""
+			template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", [][]byte{part})
 		}
 		if usage := response.Get("usage"); usage.Exists() {
 			inputTokens := usage.Get("input_tokens").Int()
@@ -345,6 +334,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		} else {
 			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
 		}
+		return append(messages, template)
 	default:
 		return [][]byte{}
 	}
@@ -457,12 +447,10 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 					// Add regular text content
 					if content := value.Get("content"); content.Exists() && content.IsArray() {
 						content.ForEach(func(_, contentItem gjson.Result) bool {
-							if contentItem.Get("type").String() == "output_text" {
-								if text := contentItem.Get("text"); text.Exists() {
-									part := []byte(`{"text":""}`)
-									part, _ = sjson.SetBytes(part, "text", text.String())
-									parts = append(parts, part)
-								}
+							if text := translatorcommon.ResponsesMessagePartText(contentItem); text.Exists() {
+								part := []byte(`{"text":""}`)
+								part, _ = sjson.SetBytes(part, "text", text.String())
+								parts = append(parts, part)
 							}
 							return true
 						})

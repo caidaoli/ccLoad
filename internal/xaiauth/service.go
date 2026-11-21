@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 var (
@@ -30,6 +32,7 @@ type tokenEndpointError struct {
 	statusCode   int
 	code         string
 	responseBody string
+	retryAfter   time.Time
 }
 
 func (e *tokenEndpointError) Error() string {
@@ -54,6 +57,12 @@ func (e *tokenEndpointError) StatusCode() int {
 	}
 	return e.statusCode
 }
+
+/**
+ * @brief 返回令牌端点给出的恢复时间。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ */
+func (e *tokenEndpointError) RetryAfter() time.Time { return e.retryAfter }
 
 // NewService constructs a Service using client or http.DefaultClient when nil.
 func NewService(client *http.Client) *Service {
@@ -228,7 +237,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken, clientID strin
 }
 
 func (s *Service) requestToken(ctx context.Context, endpoint string, form url.Values) (*Credential, string, error) {
-	body, status, err := s.request(ctx, http.MethodPost, endpoint, form, maxOAuthResponseBytes)
+	body, status, retryAfter, err := s.request(ctx, http.MethodPost, endpoint, form, maxOAuthResponseBytes)
 	if err != nil {
 		return nil, "", err
 	}
@@ -250,7 +259,7 @@ func (s *Service) requestToken(ctx context.Context, endpoint string, form url.Va
 		if code == "" {
 			code = "http_error"
 		}
-		return nil, code, &tokenEndpointError{statusCode: status, code: code, responseBody: string(body)}
+		return nil, code, &tokenEndpointError{statusCode: status, code: code, responseBody: string(body), retryAfter: retryAfter}
 	}
 	if decodeErr != nil {
 		return nil, "", errors.New("decode xAI token response")
@@ -276,7 +285,19 @@ func safeOAuthErrorCode(code string) string {
 	}
 }
 
-func (s *Service) request(ctx context.Context, method, endpoint string, form url.Values, limit int64) ([]byte, int, error) {
+/**
+ * @brief 执行 xAI OAuth HTTP 请求，读取有界的响应正文及恢复时间。
+ * @param ctx 请求生命周期。
+ * @param method HTTP 方法。
+ * @param endpoint 受信任的 OAuth 端点。
+ * @param form 表单内容；nil 表示无正文。
+ * @param limit 响应正文大小上限，单位字节。
+ * @return 响应正文；读取失败时为 nil。
+ * @return HTTP 状态；未收到响应时为零。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ * @return 请求构造、发送、读取或响应体超限错误。
+ */
+func (s *Service) request(ctx context.Context, method, endpoint string, form url.Values, limit int64) ([]byte, int, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -288,7 +309,7 @@ func (s *Service) request(ctx context.Context, method, endpoint string, form url
 	}
 	req, err := http.NewRequestWithContext(requestCtx, method, endpoint, body)
 	if err != nil {
-		return nil, 0, errors.New("build xAI request")
+		return nil, 0, time.Time{}, errors.New("build xAI request")
 	}
 	req.Header.Set("Accept", "application/json")
 	if form != nil {
@@ -298,17 +319,18 @@ func (s *Service) request(ctx context.Context, method, endpoint string, form url
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, safeRequestError(ctx, "xAI request failed", err)
+		return nil, 0, time.Time{}, safeRequestError(ctx, "xAI request failed", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, resp.StatusCode, errors.New("read xAI response")
+		return nil, resp.StatusCode, time.Time{}, errors.New("read xAI response")
 	}
 	if int64(len(data)) > limit {
-		return nil, resp.StatusCode, errors.New("xAI response exceeds size limit")
+		return nil, resp.StatusCode, time.Time{}, errors.New("xAI response exceeds size limit")
 	}
-	return data, resp.StatusCode, nil
+	retryAfter, _ := util.ParseRetryAfter(resp.Header, time.Now())
+	return data, resp.StatusCode, retryAfter, nil
 }
 
 // safeRequestError keeps transports from reflecting credentials, request

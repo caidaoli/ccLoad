@@ -118,6 +118,9 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 		refreshed, refreshErr := xaiauth.NewService(client).Refresh(refreshCtx, current)
 		if refreshErr != nil {
 			winnerCfg, winnerErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+			if errors.Is(winnerErr, model.ErrChannelNotFound) {
+				return nil, winnerErr
+			}
 			if winnerErr == nil && winnerCfg.OAuthCredential != currentCfg.OAuthCredential && winnerCfg.UsesXAIOAuth() {
 				winner, parseWinnerErr := xaiauth.ParseCredential([]byte(winnerCfg.OAuthCredential))
 				if parseWinnerErr == nil &&
@@ -126,7 +129,7 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 					return cloneXAICredential(winner), nil
 				}
 			}
-			return nil, fmt.Errorf("refresh xAI credential for channel %d: %w", currentCfg.ID, refreshErr)
+			return nil, newCodexCredentialRefreshError(currentCfg, fmt.Errorf("refresh xAI credential for channel %d: %w", currentCfg.ID, refreshErr))
 		}
 		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})

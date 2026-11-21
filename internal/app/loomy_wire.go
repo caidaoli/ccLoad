@@ -108,22 +108,3 @@ func normalizeLoomyResponse(resp *http.Response) error {
 	resp.Status = http.StatusText(resp.StatusCode)
 	return nil
 }
-
-/**
- * @brief 比较真实认证材料，避免积分与签到元数据变化干扰失效判断。
- * @param authType 渠道认证类型。
- * @param a 待比较的私有凭证文本。
- * @param b 另一份私有凭证文本。
- * @return Loomy 仅在双方凭证有效且用户 ID 与会话均一致时返回 true；其他类型沿用公共 token 比较。
- */
-func sameOAuthCredentialMaterial(authType, a, b string) bool {
-	if authType != model.AuthTypeLoomySession {
-		return sameOAuthTokens(a, b)
-	}
-	left, err := loomyauth.ParseCredential([]byte(a))
-	if err != nil {
-		return false
-	}
-	right, err := loomyauth.ParseCredential([]byte(b))
-	return err == nil && left.UserID == right.UserID && left.Session == right.Session
-}

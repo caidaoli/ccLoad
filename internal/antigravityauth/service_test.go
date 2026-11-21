@@ -129,6 +129,9 @@ func TestServiceAuthorizationExchangeAndRefreshContracts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
+			if r.Proto != "HTTP/1.1" || r.UserAgent() != "Go-http-client/1.1" {
+				t.Errorf("token request protocol=%q User-Agent=%q", r.Proto, r.UserAgent())
+			}
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("ParseForm: %v", err)
 			}

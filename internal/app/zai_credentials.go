@@ -125,7 +125,7 @@ func (m *zaiCredentialManager) credential(
 		}
 		apiKey, identity, resolveErr := zaiauth.NewService(client).ForSite(current.Site, client).ResolveCodingPlanAPIKey(refreshCtx, current.AccessToken)
 		if resolveErr != nil {
-			return nil, fmt.Errorf("re-resolve z.ai Coding Plan key for channel %d: %w", currentCfg.ID, resolveErr)
+			return nil, newCodexCredentialRefreshError(currentCfg, fmt.Errorf("re-resolve z.ai Coding Plan key for channel %d: %w", currentCfg.ID, resolveErr))
 		}
 		resolved := &zaiauth.Credential{
 			Site:   current.Site,

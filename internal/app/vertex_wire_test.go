@@ -417,6 +417,7 @@ func TestProxy_VertexOAuthMintFailureCoolsChannelAndFailsOver(t *testing.T) {
 			status       int
 			body         string
 			tokenError   error
+			retryAfter   string
 			wantCooldown time.Duration
 		}{
 			{name: "network", tokenError: errors.New("token endpoint connection refused"), wantCooldown: 17 * time.Second},
@@ -424,6 +425,7 @@ func TestProxy_VertexOAuthMintFailureCoolsChannelAndFailsOver(t *testing.T) {
 			{name: "unexpected_eof", tokenError: io.ErrUnexpectedEOF, wantCooldown: 17 * time.Second},
 			{name: "server", status: http.StatusServiceUnavailable, body: `{"error":"invalid_grant"}`, wantCooldown: 17 * time.Second},
 			{name: "rate_limit", status: http.StatusTooManyRequests, body: `{"error":"temporarily_unavailable"}`, wantCooldown: 11 * time.Second},
+			{name: "rate_limit_after", status: http.StatusTooManyRequests, body: `{"error":"temporarily_unavailable"}`, retryAfter: "41", wantCooldown: 41 * time.Second},
 			{name: "invalid_grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, wantCooldown: 24 * time.Hour},
 		} {
 			t.Run(fmt.Sprintf("%s/rejected=%v", tc.name, rejected), func(t *testing.T) {
@@ -447,13 +449,16 @@ func TestProxy_VertexOAuthMintFailureCoolsChannelAndFailsOver(t *testing.T) {
 				tokenClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 					call := mintCalls.Add(1)
 					status, body := tc.status, tc.body
+					header := http.Header{"Content-Type": {"application/json"}}
 					if rejected && call == 1 {
 						status, body = http.StatusOK, `{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}`
 					} else if tc.tokenError != nil {
 						return nil, tc.tokenError
+					} else if tc.retryAfter != "" {
+						header.Set("Retry-After", tc.retryAfter)
 					}
 					return &http.Response{
-						StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}},
+						StatusCode: status, Header: header,
 						Body: io.NopCloser(strings.NewReader(body)), Request: req,
 					}, nil
 				})}
@@ -495,7 +500,11 @@ func TestProxy_VertexOAuthMintFailureCoolsChannelAndFailsOver(t *testing.T) {
 				if primaryConfig == nil {
 					t.Fatal("primary channel missing")
 				}
-				if duration := time.Duration(primaryConfig.CooldownDurationMs) * time.Millisecond; duration > tc.wantCooldown || duration < tc.wantCooldown-time.Millisecond {
+				minimumDuration, maximumDuration := tc.wantCooldown-time.Millisecond, tc.wantCooldown
+				if tc.retryAfter != "" {
+					maximumDuration += time.Second
+				}
+				if duration := time.Duration(primaryConfig.CooldownDurationMs) * time.Millisecond; duration > maximumDuration || duration < minimumDuration {
 					t.Fatalf("primary cooldown duration=%v, want %v", duration, tc.wantCooldown)
 				}
 				cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())

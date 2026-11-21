@@ -73,8 +73,8 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(ctx context.Context, can
 		if succeeded || (result != nil && shouldStopTryingChannels(result)) {
 			return result, succeeded
 		}
-		if result != nil && (last == nil || result.zaiLocalPlanKind == "" || last.zaiLocalPlanKind != "") {
-			last = result
+		if result != nil {
+			last = selectProxyFailure(last, result)
 		}
 		if len(logical.pending) == 0 {
 			return last, false
@@ -284,13 +284,19 @@ func (s *Server) tryChannelWithZAIStartRouting(ctx context.Context, cfg *model.C
 }
 
 /**
- * @brief ZAI 本地非终态不能覆盖真实失败或容量拒绝，终态保持公共优先级。
+ * @brief 保留上次实际转发的错误；未发送的候选和本地排队不应覆盖其正文与响应头。
  * @param previous 上一候选结果，允许 nil。
  * @param current 本次候选结果，必须非 nil。
  * @return 应保留的结果；本地等待或备用跳过不覆盖已有真实失败及容量拒绝。
  */
-func selectZAIStartResult(previous, current *proxyResult) *proxyResult {
-	if current.zaiLocalPlanKind != "" && !shouldStopTryingChannels(current) && previous != nil && (previous.zaiLocalPlanKind == "" || previous.zaiLocalPlanKind == "zcode_trial_capacity") {
+func selectProxyFailure(previous, current *proxyResult) *proxyResult {
+	if previous == nil {
+		return current
+	}
+	if current.candidateSkipped {
+		return previous
+	}
+	if current.zaiLocalPlanKind != "" && !shouldStopTryingChannels(current) && (previous.zaiLocalPlanKind == "" || previous.zaiLocalPlanKind == "zcode_trial_capacity") {
 		return previous
 	}
 	return current

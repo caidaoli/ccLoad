@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,8 +30,10 @@ import (
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
@@ -300,6 +303,18 @@ func (s *Server) buildProxyRequest(
 			body = deleteJSONPath(body, "metadata.user_id")
 		}
 	}
+	if (cfg.UsesAnthropicOAuth() || cfg.GetAuthType() == model.AuthTypeAPIKey) &&
+		(isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath)) {
+		owner := sha256.Sum256([]byte(apiKey))
+		if cfg.UsesAnthropicOAuth() {
+			owner = anthropicCredentialDigest(cfg.OAuthCredential)
+		}
+		advisor := &anthropicAdvisorAttempt{store: &s.anthropicAdvisors, caller: channelRestrictionTokenFromContext(reqCtx.ctx), owner: owner}
+		body = advisor.stripForeign(body)
+		if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
+			reqCtx.advisor = advisor
+		}
+	}
 	var thinkingOmitStrategy string
 	body, thinkingOmitStrategy, err = s.prepareTranslatedUpstreamBody(
 		cfg, upstreamProtocol, requestPath, requestModel, body, sourceBody, apiKey, hdr,
@@ -524,6 +539,9 @@ func (s *Server) buildProxyRequest(
 		}
 		reqCtx.translatedBody = body
 		reqCtx.transformPlan.TranslatedBody = body
+		if reqCtx.advisor != nil {
+			reqCtx.advisor.sent(body)
+		}
 	}
 
 	return req, nil
@@ -844,15 +862,23 @@ func (s *Server) handleErrorResponse(
 	}, duration, nil
 }
 
-// streamAndParseResponse 根据Content-Type选择合适的流式传输策略并解析usage
-// 返回: (usageParser, streamErr)
+/**
+ * @brief 按实际响应类型转发正文并解析用量与流事件。
+ * @param reqCtx 当前尝试的取消信号、流式模式和 advisor 归属。
+ * @param body 已解码的上游响应体。
+ * @param w 本次转发的响应写入器。
+ * @param contentType 上游声明的媒体类型。
+ * @param upstreamProtocol 本次尝试的上游协议。
+ * @param beforeWrite 解析数据后、写入前的回调，可中止转发。
+ * @return 本次使用的解析器，含已接收到的用量与结束状态。
+ * @return 读取、解析、回调、取消或写入产生的错误。
+ */
 func streamAndParseResponse(
-	ctx context.Context,
+	reqCtx *requestContext,
 	body io.ReadCloser,
 	w http.ResponseWriter,
 	contentType string,
 	upstreamProtocol string,
-	isStreaming bool,
 	beforeWrite func(usageParser) error,
 ) (usageParser, error) {
 	makeFeed := func(parser usageParser) func([]byte) error {
@@ -867,11 +893,12 @@ func streamAndParseResponse(
 		}
 	}
 	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
+		parser.advisor = reqCtx.advisor
 		feed := makeFeed(parser)
 		if upstreamProtocol != util.ProtocolCodex && upstreamProtocol != util.ProtocolAnthropic {
-			return streamCopySSE(ctx, stream, w, feed)
+			return streamCopySSE(reqCtx.ctx, stream, w, feed)
 		}
-		return streamCopySSE(ctx, stream, w, func(data []byte) error {
+		return streamCopySSE(reqCtx.ctx, stream, w, func(data []byte) error {
 			offset := 0
 			for offset < len(data) {
 				end := len(data)
@@ -898,7 +925,7 @@ func streamAndParseResponse(
 	}
 
 	// 非标准SSE场景：上游以text/plain发送SSE事件
-	if strings.Contains(contentType, "text/plain") && isStreaming {
+	if strings.Contains(contentType, "text/plain") && reqCtx.isStreaming {
 		reader := bufio.NewReader(body)
 		isSSE := peekUntilSSEOrLimit(reader, SSEProbeSize)
 		streamBody := readerWithCloser{Reader: reader, Closer: body}
@@ -909,13 +936,13 @@ func streamAndParseResponse(
 			return parser, sseErr
 		}
 		parser := newJSONUsageParser(upstreamProtocol)
-		copyErr := streamCopy(ctx, streamBody, w, makeFeed(parser))
+		copyErr := streamCopy(reqCtx.ctx, streamBody, w, makeFeed(parser))
 		return parser, copyErr
 	}
 
 	// 非SSE响应：边转发边缓存
 	parser := newJSONUsageParser(upstreamProtocol)
-	copyErr := streamCopy(ctx, body, w, makeFeed(parser))
+	copyErr := streamCopy(reqCtx.ctx, body, w, makeFeed(parser))
 	return parser, copyErr
 }
 
@@ -1568,7 +1595,7 @@ func (s *Server) handleSuccessResponse(
 	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
 	parser, streamErr := streamAndParseResponse(
-		reqCtx.ctx, resp.Body, streamWriter, contentType, upstreamProtocol, reqCtx.isStreaming,
+		reqCtx, resp.Body, streamWriter, contentType, upstreamProtocol,
 		func(parser usageParser) error {
 			if deferredWriter == nil || deferredWriter.Committed() {
 				return nil
@@ -1613,6 +1640,7 @@ func (s *Server) handleSuccessResponse(
 			}
 		}
 	} else if !deferredWriter.Committed() && streamErr == nil {
+		reqCtx.advisor.observeJSON(deferredWriter.buffer.Bytes())
 		// Non-stream responses are atomic: any bytes read successfully are
 		// committed together. Empty-body validation is handled before this path
 		// by probeEmptyOKResponse; preserving the existing passthrough behavior
@@ -1736,6 +1764,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		readStats.readCount = 1
 	}
 	responseBody := rawBody
+	reqCtx.advisor.observeJSON(rawBody)
 	translatedRequestBody := reqCtx.transformPlan.TranslatedBody
 	if reqCtx.antigravityOAuth {
 		responseBody, err = unwrapAntigravityResponse(rawBody)
@@ -1900,6 +1929,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	deferredWriter.WriteHeader(resp.StatusCode)
 
 	parser := newSSEUsageParser(upstreamProtocol)
+	parser.advisor = reqCtx.advisor
 	// Usage belongs to the upstream; continuation IDs and output belong to the
 	// Responses events actually sent to the client after translation.
 	var translatedTurn responsesWebsocketTurnResult
@@ -3927,6 +3957,22 @@ func (s *Server) forwardAttempt(
 			)
 			return result, action, nil
 		}
+		// An upstream rate limit already received on a committed stream still
+		// applies when the client cancels. Keep the request's 499 result.
+		if errors.Is(err, context.Canceled) && res != nil && res.ResponseCommitted && len(res.SSEErrorEvent) > 0 {
+			rateLimit := *res
+			markSSEErrorForwardResult(&rateLimit)
+			if rateLimit.Status == http.StatusTooManyRequests {
+				cooldownModel := actualModel
+				if cfg.UsesZAIOAuth() && res.zaiTrial {
+					cooldownModel = zaiTrialModelKey(actualModel)
+				}
+				input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, &rateLimit), cooldownModel)
+				if s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input)).Until.After(time.Now()) {
+					s.applyCooldownDecision(ctx, cfg, input)
+				}
+			}
+		}
 		result, action := s.handleNetworkError(
 			ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP,
 			duration, err, res, reqCtx, deferChannelCooldown,
@@ -4889,7 +4935,7 @@ func (s *Server) attemptKeyAcrossURLs(
 					succeeded:                 false,
 					nextAction:                cooldown.ActionRetryChannel,
 					protocolCapabilityMissing: true,
-					protocolCandidateSkipped:  true,
+					candidateSkipped:          true,
 				}
 			}
 			if cfg.UsesAntigravityOAuth() {
@@ -5335,6 +5381,12 @@ func (s *Server) tryOAuthChannel(
 			runtimeCfg = cfg
 		}
 		if credentialErr != nil {
+			if errors.Is(credentialErr, model.ErrChannelNotFound) {
+				if rejectedResult != nil {
+					rejectedResult.nextAction = cooldown.ActionRetryChannel
+				}
+				return rejectedResult, nil
+			}
 			if errors.Is(credentialErr, errZAICredentialSiteChanged) {
 				rejectedResult.nextAction = cooldown.ActionRetryChannel
 				return rejectedResult, nil
@@ -5344,6 +5396,7 @@ func (s *Server) tryOAuthChannel(
 			}
 			log.Printf("[WARN] %s OAuth credential refresh failed: channel_id=%d err=%v", provider, cfg.ID, credentialErr)
 			if errors.Is(credentialErr, antigravityauth.ErrProjectUnavailable) {
+				s.cooldownOAuthCredentialFailure(ctx, runtimeCfg, provider, credentialErr)
 				return oauthCredentialUnavailableResult(cfg, provider), nil
 			}
 			if accessToken == "" || (rejectedResult != nil && accessToken == rejectedAccessToken) {
@@ -5354,7 +5407,7 @@ func (s *Server) tryOAuthChannel(
 					}
 					return oauthCredentialUnavailableResult(cfg, provider), nil
 				}
-				s.cooldownOAuthCredentialFailure(ctx, cfg, provider, credentialErr)
+				s.cooldownOAuthCredentialFailure(ctx, runtimeCfg, provider, credentialErr)
 				if rejectedResult != nil {
 					rejectedResult.nextAction = cooldown.ActionRetryChannel
 					return rejectedResult, nil
@@ -5387,7 +5440,7 @@ func (s *Server) tryOAuthChannel(
 					result.nextAction = cooldown.ActionRetryChannel
 					return result, nil
 				}
-				s.cooldownOAuthCredentialFailure(ctx, cfg, provider, credentialErr)
+				s.cooldownOAuthCredentialFailure(ctx, runtimeCfg, provider, credentialErr)
 				result.nextAction = cooldown.ActionRetryChannel
 				return result, nil
 			}
@@ -5483,15 +5536,28 @@ func (s *Server) applyTerminalOAuthRejection(ctx context.Context, cfg *model.Con
 	return true, disabled
 }
 
-func sameOAuthTokens(a, b string) bool {
-	return gjson.Get(a, "access_token").String() == gjson.Get(b, "access_token").String() &&
-		gjson.Get(a, "refresh_token").String() == gjson.Get(b, "refresh_token").String()
+/**
+ * @brief 将已加载的 OAuth token 绑定到请求私有的配置，必要时保存实际凭证快照。
+ * @param cfg 路由选中的配置快照。
+ * @param credential 经过校验的实际凭证，用于编码快照且不做原地归一。
+ * @param accessToken 访问令牌。
+ * @param refreshToken 刷新令牌。
+ * @return 保留当前路由的独立配置，凭证与本次发送的令牌对应。
+ */
+func oauthConfigWithTokenSnapshot(cfg *model.Config, credential any, accessToken, refreshToken string) *model.Config {
+	runtimeCfg := cfg.Clone()
+	if gjson.Get(cfg.OAuthCredential, "access_token").String() != accessToken ||
+		gjson.Get(cfg.OAuthCredential, "refresh_token").String() != refreshToken {
+		payload, _ := json.Marshal(credential)
+		runtimeCfg.OAuthCredential = string(payload)
+	}
+	return runtimeCfg
 }
 
 /**
- * @brief 凭证传输故障、限流、服务端错误与 Codex 不确定结果使用配置短退避，其他失败保留长期冷却
+ * @brief 按凭证实测的恢复时间、指数退避或终态失败规则冷却渠道。
  * @param ctx 已检查取消状态的请求上下文；写库使用独立的有界上下文
- * @param cfg 当前渠道配置
+ * @param cfg 当前尝试使用的渠道及凭证快照
  * @param provider 用于诊断的提供商名称
  * @param credentialErr 凭证加载错误；nil 表示刷新后的访问令牌仍被上游拒绝
  * @note 写入渠道冷却并失效缓存；Codex 不确定结果只允许随后恢复回执，不允许重放 grant。
@@ -5505,52 +5571,148 @@ func (s *Server) cooldownOAuthCredentialFailure(ctx context.Context, cfg *model.
 		statusCode = endpointFailure.StatusCode()
 		retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
 	}
+	if errors.Is(credentialErr, antigravityauth.ErrProjectUnavailable) {
+		if metadataFailure, ok := errors.AsType[*antigravityauth.MetadataError](credentialErr); ok {
+			statusCode = metadataFailure.HTTPStatus
+			retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+		}
+		if !retryable {
+			return
+		}
+	}
 	if cfg.UsesCodexOAuth() && codexauth.IsRefreshOutcomeUnknown(credentialErr) {
 		retryable = true
 		if statusCode != http.StatusTooManyRequests && statusCode < http.StatusInternalServerError {
 			statusCode = http.StatusServiceUnavailable
 		}
 	}
-	if !retryable {
-		s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
-		return
+	duration := rejectedOAuthCredentialCooldown
+	if retryable || cfg.UsesAccioOAuth() || cfg.UsesQoderOAuth() {
+		if suggested := oauthCredentialRetryAfterDuration(credentialErr, time.Now()); suggested > 0 || retryable {
+			duration = suggested
+		}
 	}
+	authType, expected := cfg.GetAuthType(), cfg.OAuthCredential
+	if failedRefresh, ok := errors.AsType[*codexCredentialRefreshError](credentialErr); ok {
+		authType, expected = failedRefresh.authType, failedRefresh.credential
+	}
+	s.applyOAuthCredentialCooldown(ctx, cfg.ID, provider, authType, expected, statusCode, duration)
+}
+
+/**
+ * @brief 将令牌接口提供的未来恢复时间转换为存储冷却时长。
+ * @param err 凭证错误链，其中可能保留上游 Retry-After。
+ * @param now 计算冷却时长的起始时间。
+ * @return 保证不会提前解除的冷却时长；缺失或已过期返回零。
+ */
+func oauthCredentialRetryAfterDuration(err error, now time.Time) time.Duration {
+	var recovery interface{ RetryAfter() time.Time }
+	if errors.As(err, &recovery) {
+		if until := recovery.RetryAfter(); until.After(now) {
+			// Cooldown timestamps are stored in whole seconds. Round up so
+			// a subsecond fraction cannot release the credential early.
+			return until.Add(time.Second - time.Nanosecond).Truncate(time.Second).Sub(now)
+		}
+	}
+	return 0
+}
+
+/**
+ * @brief 仅在失败认证材料仍有效于该渠道时写入冷却。
+ * @param ctx 当前请求上下文，存储写入使用独立的限时上下文。
+ * @param channelID 目标渠道。
+ * @param provider 用于日志的提供商名称。
+ * @param authType 失败凭证的认证类型。
+ * @param expected 失败尝试中的凭证快照。
+ * @param statusCode 指数退避使用的状态码。
+ * @param duration 固定冷却时长，零值使用指数退避。
+ * @note 原子核对凭证原文；纯用量等元数据更新只需重取原文。
+ */
+func (s *Server) applyOAuthCredentialCooldown(ctx context.Context, channelID int64, provider, authType, expected string, statusCode int, duration time.Duration) {
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
 	now := time.Now()
-	duration, err := s.store.BumpChannelCooldown(cooldownCtx, cfg.ID, now, statusCode)
-	if err != nil {
-		log.Printf("[WARN] 设置 OAuth 凭证不可用渠道冷却失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
-	} else {
-		log.Printf("[COOLDOWN] OAuth 凭证不可用渠道冷却: provider=%s channel_id=%d 冷却至 %s (%s)",
-			provider, cfg.ID, now.Add(duration).Format("2006-01-02 15:04:05"), duration)
+	for attempt := range 3 {
+		applied, err := s.store.CooldownChannelIfOAuthCredential(cooldownCtx, channelID, authType, expected, now, statusCode, duration)
+		if err != nil {
+			log.Printf("[WARN] 设置 OAuth 凭证不可用渠道冷却失败: provider=%s channel_id=%d err=%v", provider, channelID, err)
+			return
+		}
+		if applied > 0 {
+			s.invalidateChannelRelatedCache(channelID)
+			log.Printf("[COOLDOWN] OAuth 凭证不可用渠道冷却: provider=%s channel_id=%d 冷却至 %s (%s)",
+				provider, channelID, now.Add(applied).Format("2006-01-02 15:04:05"), applied)
+			return
+		}
+		if attempt == 2 {
+			return
+		}
+		current, getErr := s.store.GetConfig(cooldownCtx, channelID)
+		if getErr != nil || !current.Enabled || current.GetAuthType() != authType || current.OAuthCredential == expected ||
+			!sameOAuthCredentialMaterial(authType, current.OAuthCredential, expected) {
+			return
+		}
+		expected = current.OAuthCredential
 	}
-	s.invalidateChannelRelatedCache(cfg.ID)
 }
 
-func (s *Server) cooldownRejectedOAuthCredential(ctx context.Context, cfg *model.Config, provider string) {
-	cooldownCtx, cancel := cooldownWriteContext(ctx)
-	defer cancel()
-
-	until := time.Now().Add(rejectedOAuthCredentialCooldown)
-	if err := s.store.SetChannelCooldown(cooldownCtx, cfg.ID, until); err != nil {
-		log.Printf("[WARN] 设置 OAuth 凭证失效渠道冷却失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
-	} else {
-		log.Printf("[COOLDOWN] OAuth 凭证失效渠道冷却: provider=%s channel_id=%d 禁用至 %s (24小时)",
-			provider, cfg.ID, until.Format("2006-01-02 15:04:05"))
+/**
+ * @brief 判断两份不相同的凭证原文是否仅有非认证字段不同。
+ * @param authType 已知的 OAuth 认证类型。
+ * @param a 当前持久化凭证。
+ * @param b 失败尝试使用的凭证。
+ * @return 认证材料相同才允许用新原文重试条件写入。
+ */
+func sameOAuthCredentialMaterial(authType, a, b string) bool {
+	switch authType {
+	case model.AuthTypeVertexOAuth:
+		return false // Vertex 的短期 token 不持久化，凭证原文标识签发来源。
+	case model.AuthTypeZAIOAuth:
+		left, err := zaiauth.ParseCredential([]byte(a))
+		if err != nil {
+			return false
+		}
+		right, err := zaiauth.ParseCredential([]byte(b))
+		return err == nil && left.Site == right.Site && left.APIKey == right.APIKey &&
+			left.AccessToken == right.AccessToken && left.JWTToken == right.JWTToken
+	case model.AuthTypeAccioOAuth:
+		left, err := accioauth.ParseCredential([]byte(a))
+		if err != nil {
+			return false
+		}
+		right, err := accioauth.ParseCredential([]byte(b))
+		return err == nil && sameAccioAuthentication(left, right)
+	case model.AuthTypeQoderOAuth:
+		left, err := qoderauth.ParseCredential([]byte(a))
+		if err != nil {
+			return false
+		}
+		right, err := qoderauth.ParseCredential([]byte(b))
+		return err == nil && sameQoderAuthentication(left, right)
+	case model.AuthTypeLoomySession:
+		left, err := loomyauth.ParseCredential([]byte(a))
+		if err != nil {
+			return false
+		}
+		right, err := loomyauth.ParseCredential([]byte(b))
+		return err == nil && left.UserID == right.UserID && left.Session == right.Session
 	}
-	s.invalidateChannelRelatedCache(cfg.ID)
+	left := gjson.GetMany(a, "access_token", "refresh_token", "api_key")
+	right := gjson.GetMany(b, "access_token", "refresh_token", "api_key")
+	return (left[0].String() != "" || left[1].String() != "") &&
+		left[0].String() == right[0].String() && left[1].String() == right[1].String() && left[2].String() == right[2].String()
 }
 
 func oauthCredentialUnavailableResult(cfg *model.Config, provider string) *proxyResult {
 	channelID := cfg.ID
 	return &proxyResult{
-		status:     http.StatusServiceUnavailable,
-		body:       fmt.Appendf(nil, `{"error":{"message":"%s channel credential is unavailable","type":"upstream_auth_error"}}`, provider),
-		channelID:  &channelID,
-		succeeded:  false,
-		nextAction: cooldown.ActionRetryChannel,
+		status:           http.StatusServiceUnavailable,
+		body:             fmt.Appendf(nil, `{"error":{"message":"%s channel credential is unavailable","type":"upstream_auth_error"}}`, provider),
+		channelID:        &channelID,
+		candidateSkipped: true,
+		succeeded:        false,
+		nextAction:       cooldown.ActionRetryChannel,
 	}
 }
 
@@ -5572,7 +5734,7 @@ func (s *Server) tryCodexOAuthChannel(
 		if credential == nil {
 			return cfg, "", err
 		}
-		runtimeCfg := cfg.Clone()
+		runtimeCfg := oauthConfigWithTokenSnapshot(cfg, credential, credential.AccessToken, credential.RefreshToken)
 		runtimeCfg.CodexAccessToken = credential.AccessToken
 		runtimeCfg.CodexAccountID = credential.AccountID
 		runtimeCfg.CodexUserID = credential.ChatGPTUserID
@@ -5602,7 +5764,7 @@ func (s *Server) tryXAIOAuthChannel(
 		if credential == nil {
 			return cfg, "", err
 		}
-		return cfg, credential.AccessToken, err
+		return oauthConfigWithTokenSnapshot(cfg, credential, credential.AccessToken, credential.RefreshToken), credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && !result.succeeded && xaiCredentialRejected(result.status, result.header, result.body)
 	})
@@ -5626,7 +5788,7 @@ func (s *Server) tryAnthropicOAuthChannel(
 		if credential == nil {
 			return cfg, "", err
 		}
-		return cfg, credential.AccessToken, err
+		return oauthConfigWithTokenSnapshot(cfg, credential, credential.AccessToken, credential.RefreshToken), credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized
 	})
@@ -5707,7 +5869,7 @@ func (s *Server) tryAntigravityOAuthChannel(
 		if credential == nil {
 			return cfg, "", err
 		}
-		if cfg.AntigravityCredits {
+		if cfg.AntigravityCredits && credential.ProjectID != "" {
 			if err != nil {
 				if oauthRefreshTokenRejected(err) {
 					return cfg, "", err
@@ -5727,7 +5889,12 @@ func (s *Server) tryAntigravityOAuthChannel(
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.AntigravityAccessToken = credential.AccessToken
 		runtimeCfg.AntigravityProjectID = credential.ProjectID
-		runtimeCfg.OAuthCredential, _ = credential.JSON()
+		payload, _ := json.Marshal(credential)
+		runtimeCfg.OAuthCredential = string(payload)
+		if credential.ProjectID == "" {
+			// A token without its project cannot be used as a fallback.
+			return runtimeCfg, "", err
+		}
 		return runtimeCfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized

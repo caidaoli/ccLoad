@@ -81,7 +81,7 @@ type Server struct {
 	disabledURLSyncMu             sync.Mutex
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client // HTTP客户端（全局默认）
-	antigravityClient             *http.Client // Antigravity 专用标准 HTTP/1.1 客户端
+	antigravityClient             *http.Client // Antigravity Cloud Code 和 OAuth 客户端
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
 	credentialTransports          *credentialHTTPClientCache
 	credentialTransportMu         sync.Mutex
@@ -128,7 +128,8 @@ type Server struct {
 	loomyState                    loomyRuntimeState  ///< 服务实例内的挑战、限流、账号锁及自动尝试保护。
 	codeBuddyCredentials          *codeBuddyCredentialManager
 	codeBuddyOAuth                *codeBuddyOAuthManager
-	codeBuddyCommas               codeBuddyCommaCache ///< 已成功的 CodeBuddy 身份句修复，仅保留有界内存摘要。
+	anthropicAdvisors             anthropicAdvisorOwners ///< 按调用方记录 advisor 历史所属的凭证。
+	codeBuddyCommas               codeBuddyCommaCache    ///< 已成功的 CodeBuddy 身份句修复，仅保留有界内存摘要。
 	cursorService                 *cursorauth.Service
 	cursorCredentials             *cursorCredentialManager
 	vertexCredentials             *vertexCredentialManager
@@ -299,7 +300,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 
 	// 所有上游 Transport 使用同一连接池策略；按启动时渠道数为每个池预留容量。
 	transport := buildHTTPTransport(skipTLSVerify, len(channels))
-	log.Printf("[INFO] HTTP/2已启用（HTTPS自动协商）；Antigravity 固定使用 HTTP/1.1；单 Transport 空闲连接上限=%d", transport.MaxIdleConns)
+	log.Printf("[INFO] HTTP/2已启用（HTTPS自动协商）；Antigravity Cloud Code 固定使用 HTTP/1.1；单 Transport 空闲连接上限=%d", transport.MaxIdleConns)
 	logHostOverrides(getHostOverrides())
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
@@ -1316,10 +1317,13 @@ func (c *credentialHTTPClientCache) closeAll() {
 	}
 }
 
+/**
+ * @brief 按代理、传输契约和凭证作用域隔离上游连接池。
+ */
 type upstreamHTTPClientCacheKey struct {
-	proxyURL              string
-	antigravityHTTP11Only bool
-	credentialScope       string
+	proxyURL        string ///< 请求使用的出站代理，空字符串表示直连配置。
+	antigravity     bool   ///< 使用 Antigravity 专用传输契约。
+	credentialScope string ///< 共享连接池的账号标识，无账号隔离时为空。
 }
 
 func (s *Server) getCredentialHTTPClientCache() *credentialHTTPClientCache {
@@ -1348,15 +1352,25 @@ func antigravityCredentialPoolScope(cfg *model.Config) string {
 	return fmt.Sprintf("antigravity:channel:%d:credential:%x", cfg.ID, digest)
 }
 
-// anthropicCredentialPoolScope follows the account identity used for Claude
-// Code requests. Include the channel ID so separate account records never
-// share a physical connection, even if their credential metadata is incomplete.
-// Access and refresh token rotation must not churn a known account's pool.
+/**
+ * @brief 隔离不同渠道与账号的 Claude Code 连接池，已知账号轮换令牌时保留连接。
+ * @param cfg 当前渠道及其出站凭证。
+ * @return 渠道和账号作用域；非 Anthropic OAuth 或空配置返回空字符串。
+ */
 func anthropicCredentialPoolScope(cfg *model.Config) string {
 	if cfg == nil || !cfg.UsesAnthropicOAuth() {
 		return ""
 	}
-	identity := strings.TrimSpace(cfg.OAuthCredential)
+	return fmt.Sprintf("anthropic:channel:%d:%x", cfg.ID, anthropicCredentialDigest(cfg.OAuthCredential))
+}
+
+/**
+ * @brief 生成 Anthropic 账号身份摘要，供连接隔离与 advisor 归属判断使用。
+ * @param raw 本次实际使用的序列化 OAuth 凭证。
+ * @return 优先按账号 UUID、邮箱计算的摘要；缺少账号资料时依据认证材料。
+ */
+func anthropicCredentialDigest(raw string) [32]byte {
+	identity := strings.TrimSpace(raw)
 	if credential, err := anthropicauth.ParseCredential([]byte(identity)); err == nil {
 		switch {
 		case credential.AccountUUID != "":
@@ -1369,8 +1383,7 @@ func anthropicCredentialPoolScope(cfg *model.Config) string {
 			identity = "access:" + credential.AccessToken
 		}
 	}
-	digest := sha256.Sum256([]byte(identity))
-	return fmt.Sprintf("anthropic:channel:%d:%x", cfg.ID, digest)
+	return sha256.Sum256([]byte(identity))
 }
 
 /**
@@ -1477,9 +1490,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	}
 	defaultClient := s.client
 	clientFactory := newUpstreamHTTPClient
-	antigravityHTTP11Only := cfg.UsesAntigravityOAuth()
+	antigravity := cfg.UsesAntigravityOAuth()
 	credentialScope := ""
-	if antigravityHTTP11Only {
+	if antigravity {
 		defaultClient = s.antigravityClient
 		clientFactory = newAntigravityHTTPClient
 		credentialScope = antigravityCredentialPoolScope(cfg)
@@ -1501,9 +1514,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		}
 		proxyURL := strings.TrimSpace(cfg.ProxyURL)
 		key := upstreamHTTPClientCacheKey{
-			proxyURL:              proxyURL,
-			antigravityHTTP11Only: antigravityHTTP11Only,
-			credentialScope:       credentialScope,
+			proxyURL:        proxyURL,
+			antigravity:     antigravity,
+			credentialScope: credentialScope,
 		}
 		// Codex OAuth 的 Cloudflare Cookie 跟随账号与出口代理：换代理即换出口 IP，
 		// 旧 Cookie 随旧连接池一起淘汰。WebSocket 握手经 codexWebsocketDialer 共用同一 jar。
@@ -1554,7 +1567,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	if cfg.ProxyURL == "" {
 		return defaultClient
 	}
-	client, err := s.proxyHTTPClient(cfg.ProxyURL, antigravityHTTP11Only)
+	client, err := s.proxyHTTPClient(cfg.ProxyURL, antigravity)
 	if err != nil {
 		if errors.Is(err, errCredentialHTTPClientCacheClosed) {
 			return closedCredentialHTTPClient
@@ -1565,11 +1578,17 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	return client
 }
 
-// proxyHTTPClient returns the shared client that egresses through proxyURL.
-func (s *Server) proxyHTTPClient(proxyURL string, antigravityHTTP11Only bool) (*http.Client, error) {
+/**
+ * @brief 获取使用指定出站代理及传输契约的共享客户端。
+ * @param proxyURL 发出请求的代理 URL。
+ * @param antigravity 是否采用 Antigravity 的传输契约。
+ * @return 可用客户端，出错时为 nil。
+ * @return 代理配置无效或客户端池关闭时返回错误。
+ */
+func (s *Server) proxyHTTPClient(proxyURL string, antigravity bool) (*http.Client, error) {
 	cacheKey := upstreamHTTPClientCacheKey{
-		proxyURL:              proxyURL,
-		antigravityHTTP11Only: antigravityHTTP11Only,
+		proxyURL:    proxyURL,
+		antigravity: antigravity,
 	}
 	return s.getCredentialHTTPClientCache().getOrCreate(cacheKey, func() (*http.Client, error) {
 		t, err := buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
@@ -1577,7 +1596,7 @@ func (s *Server) proxyHTTPClient(proxyURL string, antigravityHTTP11Only bool) (*
 			return nil, err
 		}
 		clientFactory := newUpstreamHTTPClient
-		if antigravityHTTP11Only {
+		if antigravity {
 			clientFactory = newAntigravityHTTPClient
 		}
 		log.Printf("[INFO] 使用独立代理: %s", proxyURL)

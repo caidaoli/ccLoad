@@ -2,11 +2,207 @@ package common
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// ResponsesMessagePartText returns the visible value of a Responses message part.
+func ResponsesMessagePartText(part gjson.Result) gjson.Result {
+	switch part.Get("type").String() {
+	case "output_text":
+		return part.Get("text")
+	case "refusal":
+		if refusal := part.Get("refusal"); refusal.String() != "" {
+			return refusal
+		}
+		return part.Get("text")
+	default:
+		return gjson.Result{}
+	}
+}
+
+// ResponsesMessageStream tracks which message parts have already reached the client.
+type ResponsesMessageStream struct {
+	byID            map[string]*responsesStreamedMessage
+	byIndex         map[int64]*responsesStreamedMessage
+	nonMessageTypes map[int64]string
+	current         *responsesStreamedMessage
+	unkeyedOutput   bool
+}
+
+type responsesStreamedMessage struct {
+	id               string
+	indexed          bool
+	parts            map[int64]bool
+	unindexedText    bool
+	unindexedRefusal bool
+}
+
+func (s *ResponsesMessageStream) find(id string, index int64, indexed bool) *responsesStreamedMessage {
+	if message := s.byID[id]; message != nil {
+		return message
+	}
+	// An index matches across events when either side omits the ID. A different
+	// explicit ID can reuse an index in the terminal output array.
+	if message := s.byIndex[index]; indexed && message != nil && (id == "" || message.id == "") {
+		return message
+	}
+	return nil
+}
+
+func (s *ResponsesMessageStream) message(id string, index gjson.Result) *responsesStreamedMessage {
+	indexed := index.Type == gjson.Number
+	outputIndex := index.Int()
+	message := s.find(id, outputIndex, indexed)
+	if message == nil && s.current != nil && ((id == "" && !indexed) || !s.current.indexed && s.current.id == "") {
+		message = s.current
+	}
+	if message == nil {
+		message = &responsesStreamedMessage{}
+	}
+	if id != "" && message.id == "" {
+		if s.byID == nil {
+			s.byID = make(map[string]*responsesStreamedMessage)
+		}
+		message.id = strings.Clone(id)
+		s.byID[message.id] = message
+	}
+	if indexed && s.byIndex[outputIndex] != message {
+		if s.byIndex == nil {
+			s.byIndex = make(map[int64]*responsesStreamedMessage)
+		}
+		message.indexed = true
+		s.byIndex[outputIndex] = message
+	}
+	return message
+}
+
+func (s *ResponsesMessageStream) forgetCurrent() {
+	if message := s.current; message != nil && message.id == "" && !message.indexed {
+		s.unkeyedOutput = s.unkeyedOutput || len(message.parts) > 0 || message.unindexedText || message.unindexedRefusal
+	}
+	s.current = nil
+}
+
+// ObserveOutputItem records positions of non-message items and associates
+// subsequent unkeyed deltas with a newly announced message.
+func (s *ResponsesMessageStream) ObserveOutputItem(eventType string, event gjson.Result) {
+	if eventType != "response.output_item.added" && eventType != "response.output_item.done" {
+		return
+	}
+	item := event.Get("item")
+	index := event.Get("output_index")
+	switch itemType := item.Get("type").String(); itemType {
+	case "message":
+		if eventType == "response.output_item.added" {
+			s.forgetCurrent()
+			s.current = s.message(item.Get("id").String(), index)
+		}
+	case "":
+	default:
+		if index.Type == gjson.Number {
+			if s.nonMessageTypes == nil {
+				s.nonMessageTypes = make(map[int64]string)
+			}
+			s.nonMessageTypes[index.Int()] = strings.Clone(itemType)
+		}
+	}
+}
+
+// ObserveDelta records nonempty text or refusal at the position reported by upstream.
+func (s *ResponsesMessageStream) ObserveDelta(event gjson.Result, text string) {
+	if text == "" {
+		return
+	}
+	message := s.message(event.Get("item_id").String(), event.Get("output_index"))
+	if part := event.Get("content_index"); part.Type == gjson.Number {
+		message.markPart(part.Int())
+	} else if event.Get("type").String() == "response.refusal.delta" {
+		message.unindexedRefusal = true
+	} else {
+		message.unindexedText = true
+	}
+	s.current = message
+}
+
+func (m *responsesStreamedMessage) markPart(index int64) {
+	if m.parts == nil {
+		m.parts = make(map[int64]bool)
+	}
+	m.parts[index] = true
+}
+
+func (m *responsesStreamedMessage) sawPart(index int64, part gjson.Result) bool {
+	if m == nil {
+		return false
+	}
+	if m.parts[index] {
+		return true
+	}
+	if part.Get("type").String() == "refusal" {
+		return m.unindexedRefusal
+	}
+	return m.unindexedText
+}
+
+// FinishMessage returns visible parts that still need to be emitted at item completion.
+func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []gjson.Result {
+	item := event.Get("item")
+	message := s.message(item.Get("id").String(), event.Get("output_index"))
+	var missing []gjson.Result
+	for index, part := range item.Get("content").Array() {
+		if !message.sawPart(int64(index), part) && ResponsesMessagePartText(part).String() != "" {
+			missing = append(missing, part)
+			message.markPart(int64(index))
+		}
+	}
+	if s.current == nil || s.current == message {
+		s.current = message
+		s.forgetCurrent()
+	}
+	return missing
+}
+
+// MissingMessageDoneEvents builds internal completion events for message parts found only
+// in the terminal response. They retain the original part indices for FinishMessage.
+func (s *ResponsesMessageStream) MissingMessageDoneEvents(output gjson.Result) [][]byte {
+	s.forgetCurrent()
+	if s.unkeyedOutput {
+		// With neither an item ID nor output index, the terminal item cannot be
+		// matched to the earlier output without risking replaying it.
+		return nil
+	}
+	var events [][]byte
+	var index int64
+	for _, item := range output.Array() {
+		itemType := item.Get("type").String()
+		// Some providers omit previously streamed reasoning or tools from output.
+		// Keep their slots when mapping terminal positions back to SSE indices.
+		for s.nonMessageTypes[index] != "" && s.nonMessageTypes[index] != itemType {
+			index++
+		}
+		outputIndex := index
+		index++
+		if itemType != "message" {
+			continue
+		}
+		message := s.find(item.Get("id").String(), outputIndex, true)
+		for partIndex, part := range item.Get("content").Array() {
+			if !message.sawPart(int64(partIndex), part) && ResponsesMessagePartText(part).String() != "" {
+				event := []byte(`data: {"type":"response.output_item.done","output_index":`)
+				event = strconv.AppendInt(event, outputIndex, 10)
+				event = append(event, `,"item":`...)
+				event = append(event, item.Raw...)
+				events = append(events, append(event, '}'))
+				break
+			}
+		}
+	}
+	return events
+}
 
 // SetResponsesToolCallIdentity writes a resolved Responses tool name and namespace.
 func SetResponsesToolCallIdentity(item []byte, name, namespace, itemPath string) []byte {

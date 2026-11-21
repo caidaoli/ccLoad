@@ -21,14 +21,13 @@ import (
 )
 
 /**
- * @brief 停用被 Antigravity 明确以 TOS_VIOLATION 拒绝的账号对应渠道。
- * @param ctx 本次请求上下文；已取消时使用既有冷却写入预算持久化停用。
+ * @brief 从 Antigravity 的 HTTP 或 SSE 错误中确认结构化账号拒绝原因。
  * @param cfg 实际发送请求使用的 Antigravity 凭证快照。
  * @param res HTTP 或 SSE 错误结果；调用方保证非 nil。
- * @return 已处理 TOS 拒绝时返回 true，包括账号已替换或渠道已停用；非 TOS 或持久化失败返回 false。
- * @note 同一 refresh token 下的 access token 刷新不影响停用；更换账号后的旧结果不改动新账号。成功停用后失效凭证、渠道与冷却缓存。
+ * @param reason Google RPC ErrorInfo 中预期的精确原因。
+ * @return 只有结构化的 Antigravity 403 PERMISSION_DENIED 匹配时返回 true。
  */
-func (s *Server) disableAntigravityTOSCredential(ctx context.Context, cfg *model.Config, res *fwResult) bool {
+func isAntigravityPermissionDenied(cfg *model.Config, res *fwResult, reason string) bool {
 	if !cfg.UsesAntigravityOAuth() {
 		return false
 	}
@@ -56,14 +55,24 @@ func (s *Server) disableAntigravityTOSCredential(ctx context.Context, cfg *model
 	if json.Unmarshal(body, &payload) != nil || payload.Error.Code != http.StatusForbidden || payload.Error.Status != "PERMISSION_DENIED" {
 		return false
 	}
-	matched := false
 	for _, detail := range payload.Error.Details {
-		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == "TOS_VIOLATION" {
-			matched = true
-			break
+		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == reason {
+			return true
 		}
 	}
-	if !matched {
+	return false
+}
+
+/**
+ * @brief 停用被 Antigravity 明确以 TOS_VIOLATION 拒绝的账号对应渠道。
+ * @param ctx 本次请求上下文；已取消时使用既有冷却写入预算持久化停用。
+ * @param cfg 实际发送请求使用的 Antigravity 凭证快照。
+ * @param res HTTP 或 SSE 错误结果；调用方保证非 nil。
+ * @return 已处理 TOS 拒绝时返回 true，包括账号已替换或渠道已停用；非 TOS 或持久化失败返回 false。
+ * @note 同一 refresh token 下的 access token 刷新不影响停用；更换账号后的旧结果不改动新账号。成功停用后失效凭证、渠道与冷却缓存。
+ */
+func (s *Server) disableAntigravityTOSCredential(ctx context.Context, cfg *model.Config, res *fwResult) bool {
+	if !isAntigravityPermissionDenied(cfg, res, "TOS_VIOLATION") {
 		return false
 	}
 
@@ -223,6 +232,9 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 			refreshed, err := service.Refresh(refreshCtx, current.RefreshToken)
 			if err != nil {
 				winnerCfg, winnerErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+				if errors.Is(winnerErr, model.ErrChannelNotFound) {
+					return nil, winnerErr
+				}
 				if winnerErr == nil && winnerCfg.OAuthCredential != currentCfg.OAuthCredential && winnerCfg.UsesAntigravityOAuth() {
 					winner, parseWinnerErr := antigravityauth.ParseCredential([]byte(winnerCfg.OAuthCredential))
 					if parseWinnerErr == nil &&

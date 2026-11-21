@@ -43,9 +43,21 @@ func (s *Server) tryCursorOAuthChannel(
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
 	}
 	credential, err := s.cursorCredentials.credential(ctx, cfg, false)
+	cooldownCredential := func(refreshErr error) {
+		expected := cfg.OAuthCredential
+		if credential != nil {
+			payload, _ := json.Marshal(credential)
+			expected = string(payload)
+		}
+		duration := oauthCredentialRetryAfterDuration(refreshErr, time.Now())
+		if duration == 0 {
+			duration = rejectedOAuthCredentialCooldown
+		}
+		s.applyOAuthCredentialCooldown(ctx, cfg.ID, "Cursor", cfg.GetAuthType(), expected, http.StatusUnauthorized, duration)
+	}
 	if credential == nil {
 		if err != nil {
-			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
+			cooldownCredential(nil)
 		}
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
 	}
@@ -60,12 +72,12 @@ func (s *Server) tryCursorOAuthChannel(
 			return result, nil
 		}
 		if attempt == 1 {
-			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
+			cooldownCredential(nil)
 			return result, nil
 		}
 		refreshed, refreshErr := s.cursorCredentials.credentialAfterUnauthorized(ctx, cfg, credential.AccessToken)
 		if refreshErr != nil {
-			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
+			cooldownCredential(refreshErr)
 			return result, nil
 		}
 		credential = refreshed

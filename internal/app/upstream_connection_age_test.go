@@ -175,8 +175,16 @@ func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Cloud Code 和 OAuth token 连接都按账号隔离，同账号可复用连接。
+ * @param t 测试上下文。
+ */
 func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_, _ = io.WriteString(w, `{"access_token":"new-access","expires_in":3600}`)
+			return
+		}
 		_, _ = io.WriteString(w, "ok")
 	}))
 	t.Cleanup(upstream.Close)
@@ -196,17 +204,26 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 	firstCredential := &model.Config{ID: 1, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential("refresh-a")}
 	secondCredential := &model.Config{ID: 2, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential("refresh-b")}
 
-	request := func(cfg *model.Config) httptrace.GotConnInfo {
+	request := func(t *testing.T, cfg *model.Config, token bool) httptrace.GotConnInfo {
 		t.Helper()
 		gotConn := make(chan httptrace.GotConnInfo, 1)
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+		ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+		})
+		client := server.getClientForChannel(cfg)
+		if token {
+			service := antigravityauth.NewService(client)
+			service.TokenURL = upstream.URL + "/token"
+			if _, err := service.Refresh(ctx, "refresh"); err != nil {
+				t.Fatal(err)
+			}
+			return <-gotConn
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.URL, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
-		}))
-		resp, err := server.getClientForChannel(cfg).Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,14 +232,24 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 		return <-gotConn
 	}
 
-	first := request(firstCredential)
-	reused := request(firstCredential)
-	other := request(secondCredential)
-	if !reused.Reused || reused.Conn != first.Conn {
-		t.Fatalf("same credential did not reuse its HTTP/1.1 connection: reused=%t same=%t", reused.Reused, reused.Conn == first.Conn)
-	}
-	if other.Conn == first.Conn {
-		t.Fatal("different Antigravity credentials reused the same physical connection")
+	for _, endpoint := range []struct {
+		name  string
+		token bool
+	}{
+		{name: "Cloud Code"},
+		{name: "OAuth token", token: true},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			first := request(t, firstCredential, endpoint.token)
+			reused := request(t, firstCredential, endpoint.token)
+			other := request(t, secondCredential, endpoint.token)
+			if !reused.Reused || reused.Conn != first.Conn {
+				t.Fatalf("same credential did not reuse its HTTP/1.1 connection: reused=%t same=%t", reused.Reused, reused.Conn == first.Conn)
+			}
+			if other.Conn == first.Conn {
+				t.Fatal("different Antigravity credentials reused the same physical connection")
+			}
+		})
 	}
 }
 
@@ -911,6 +938,10 @@ func TestUpstreamHTTPClientRetirementDrainsActiveResponses(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Antigravity 两种连接池都继承上游空闲连接策略。
+ * @param t 测试上下文。
+ */
 func TestAntigravityPoolMatchesSharedTransportPolicy(t *testing.T) {
 	base := &http.Transport{
 		MaxIdleConns:        1000,
@@ -919,16 +950,15 @@ func TestAntigravityPoolMatchesSharedTransportPolicy(t *testing.T) {
 	}
 	client := newAntigravityHTTPClient(base, 0)
 	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
-	transport, ok := client.Transport.(*upstreamConnectionAgeTransport).current.transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
-	}
-	if transport.DisableKeepAlives != base.DisableKeepAlives ||
-		transport.MaxIdleConns != base.MaxIdleConns ||
-		transport.MaxIdleConnsPerHost != base.MaxIdleConnsPerHost ||
-		transport.IdleConnTimeout != base.IdleConnTimeout {
-		t.Fatalf("Antigravity pool policy = keepalive-disabled %t, idle %d, per-host %d, timeout %v",
-			transport.DisableKeepAlives, transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
+	transport := client.Transport.(*upstreamConnectionAgeTransport).current.transport.(*antigravityUpstreamRoundTripper)
+	for _, pool := range []*http.Transport{transport.cloudCode, transport.oauth} {
+		if pool.DisableKeepAlives != base.DisableKeepAlives ||
+			pool.MaxIdleConns != base.MaxIdleConns ||
+			pool.MaxIdleConnsPerHost != base.MaxIdleConnsPerHost ||
+			pool.IdleConnTimeout != base.IdleConnTimeout {
+			t.Fatalf("Antigravity pool policy = keepalive-disabled %t, idle %d, per-host %d, timeout %v",
+				pool.DisableKeepAlives, pool.MaxIdleConns, pool.MaxIdleConnsPerHost, pool.IdleConnTimeout)
+		}
 	}
 	if base.MaxIdleConns != 1000 || base.MaxIdleConnsPerHost != config.HTTPMaxIdleConnsPerHost || base.IdleConnTimeout != 90*time.Second {
 		t.Fatal("Antigravity client mutated the shared base transport")
@@ -961,21 +991,30 @@ func TestBuildHTTPTransportSizesIdlePoolByChannelCount(t *testing.T) {
 }
 
 /**
- * @brief 验证模型发现直连及经 CONNECT 均使用无 ALPN 的 HTTP/1.1，而同一代理仍支持普通渠道的 HTTP/2。
+ * @brief 验证模型发现与 OAuth token 刷新直连及经 CONNECT 时的实际 HTTP 协议和 User-Agent。
  * @param t 测试上下文。
  */
 func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *testing.T) {
 	const probePath = "/v1internal:fetchAvailableModels"
+	const tokenPath = "/token"
 	const probeModel = "gemini-3.8-flash-high"
 	type observedRequest struct {
 		path       string
 		protocol   string
 		negotiated string
+		userAgent  string
 	}
-	observed := make(chan observedRequest, 3)
-	offered := make(chan []string, 3)
+	observed := make(chan observedRequest, 5)
+	offered := make(chan []string, 5)
 	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observed <- observedRequest{path: r.URL.Path, protocol: r.Proto, negotiated: r.TLS.NegotiatedProtocol}
+		observed <- observedRequest{path: r.URL.Path, protocol: r.Proto, negotiated: r.TLS.NegotiatedProtocol, userAgent: r.UserAgent()}
+		if r.URL.Path == tokenPath {
+			if err := r.ParseForm(); err != nil || r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "refresh" {
+				t.Error("token endpoint did not receive the saved refresh grant")
+			}
+			_, _ = io.WriteString(w, `{"access_token":"new-access","expires_in":3600}`)
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{"models":{%q:{}}}`, probeModel)
 	}))
 	upstream.EnableHTTP2 = true
@@ -990,7 +1029,7 @@ func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *te
 	upstream.StartTLS()
 	t.Cleanup(upstream.Close)
 
-	proxyErrors := make(chan error, 2)
+	proxyErrors := make(chan error, 3)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
 			proxyErrors <- fmt.Errorf("proxy method = %s, want CONNECT", r.Method)
@@ -1102,6 +1141,24 @@ func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *te
 			}
 			if got := <-offered; len(got) != 0 {
 				t.Errorf("Antigravity ClientHello protocols = %q, want no ALPN", got)
+			}
+
+			cfg.ID = 0
+			cfg.Name = tt.name
+			stored, err := store.CreateConfig(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server.antigravityService.TokenURL = tt.upstream + tokenPath
+			credential, err := server.antigravityCredentials.credential(t.Context(), stored, true)
+			if err != nil || credential.AccessToken != "new-access" {
+				t.Fatalf("Antigravity channel did not obtain a refreshed token: %v", err)
+			}
+			if got := <-observed; got.path != tokenPath || got.protocol != "HTTP/2.0" || got.negotiated != "h2" || got.userAgent != "Go-http-client/2.0" {
+				t.Fatalf("Antigravity token request = %+v, want %s over HTTP/2 with the default Go HTTP/2 User-Agent", got, tokenPath)
+			}
+			if got := <-offered; !slices.Contains(got, "h2") {
+				t.Errorf("token ClientHello protocols = %q, want h2 offered", got)
 			}
 		})
 	}

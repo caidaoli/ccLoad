@@ -132,6 +132,9 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 		refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken)
 		if refreshErr != nil {
 			winner, getErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+			if errors.Is(getErr, model.ErrChannelNotFound) {
+				return nil, getErr
+			}
 			if getErr == nil && winner.OAuthCredential != currentCfg.OAuthCredential {
 				// Another instance may already have consumed Anthropic's one-time
 				// refresh token. Re-read its CAS winner before surfacing invalid_grant.

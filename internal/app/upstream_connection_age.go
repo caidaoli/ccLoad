@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/util"
 )
 
@@ -115,15 +116,44 @@ func newDefaultUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {
 }
 
 /**
- * @brief 使用原生 Antigravity 的 HTTP/1.1 握手，不发送 TLS ALPN 扩展。
+ * @brief 在同一账号及代理作用域内分配 Antigravity 的 Cloud Code 和 OAuth token 连接池。
  * @param base 要继承代理、TLS 和连接池配置的 Transport。
- * @return 当前连接池代使用的独立 Transport。
+ * @return 当前连接池代使用的传输。Cloud Code 用无 ALPN 的 HTTP/1.1，OAuth token 由标准库协商协议。
  */
 func newAntigravityUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {
 	transport := newStandardHTTP11Transport(base)
 	transport.Protocols = nil
 	transport.TLSClientConfig.NextProtos = nil
-	return transport
+	return &antigravityUpstreamRoundTripper{cloudCode: transport, oauth: base}
+}
+
+/**
+ * @brief 管理同一连接池代中的 Antigravity 两种传输。
+ */
+type antigravityUpstreamRoundTripper struct {
+	cloudCode *http.Transport ///< Cloud Code 与 Antigravity 元数据请求的连接池。
+	oauth     *http.Transport ///< OAuth token 请求的连接池。
+}
+
+/**
+ * @brief 按服务端点的传输要求发送 Antigravity 请求。
+ * @param req 已构造的上游 HTTP 请求。
+ * @return 上游 HTTP 响应，发送失败时为 nil。
+ * @return 传输或协议协商失败时的错误，原样保留底层错误链。
+ */
+func (t *antigravityUpstreamRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if antigravityauth.IsTokenRequest(req) {
+		return t.oauth.RoundTrip(req)
+	}
+	return t.cloudCode.RoundTrip(req)
+}
+
+/**
+ * @brief 关闭当前连接池代的两组空闲连接，活动请求继续完成。
+ */
+func (t *antigravityUpstreamRoundTripper) CloseIdleConnections() {
+	t.cloudCode.CloseIdleConnections()
+	t.oauth.CloseIdleConnections()
 }
 
 func closeUpstreamHTTPClient(client *http.Client) {

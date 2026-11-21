@@ -232,6 +232,9 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 		refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken, m.store)
 		if refreshErr != nil {
 			winnerCfg, winnerErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+			if errors.Is(winnerErr, model.ErrChannelNotFound) {
+				return nil, winnerErr
+			}
 			if winnerErr == nil && winnerCfg.OAuthCredential != currentCfg.OAuthCredential && winnerCfg.UsesCodexOAuth() {
 				winner, parseWinnerErr := codexauth.ParseCredential([]byte(winnerCfg.OAuthCredential))
 				if parseWinnerErr == nil &&

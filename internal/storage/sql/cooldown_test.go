@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
 
@@ -89,6 +90,46 @@ func TestCooldown_ChannelCooldown(t *testing.T) {
 	}
 	if _, exists := cooldowns[channelID]; exists {
 		t.Error("expected cooldown to be cleared after reset")
+	}
+}
+
+/**
+ * @brief 验证仅匹配启用 OAuth 渠道的完整凭证原文才能写入冷却。
+ * @param t 测试上下文。
+ */
+func TestCooldown_ChannelCooldownIfOAuthCredential(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := context.Background()
+	const credential = `{"access_token":"Current","refresh_token":"grant"}`
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "oauth", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.test", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	for _, expected := range []string{`{"access_token":"current","refresh_token":"grant"}`, credential + " "} {
+		if duration, err := store.CooldownChannelIfOAuthCredential(ctx, channel.ID, channel.AuthType, expected, now, 401, time.Hour); err != nil || duration != 0 {
+			t.Fatalf("different credential cooldown=(%v, %v), want (0, nil)", duration, err)
+		}
+	}
+	cooldowns, err := store.GetAllChannelCooldowns(ctx)
+	if err != nil || !cooldowns[channel.ID].IsZero() {
+		t.Fatalf("different credential wrote cooldown: %v, %v", cooldowns, err)
+	}
+	first, err := store.CooldownChannelIfOAuthCredential(ctx, channel.ID, channel.AuthType, credential, now, 500, 0)
+	if err != nil || first <= 0 {
+		t.Fatalf("first conditional backoff=(%v, %v)", first, err)
+	}
+	second, err := store.CooldownChannelIfOAuthCredential(ctx, channel.ID, channel.AuthType, credential, now, 500, 0)
+	if err != nil || second <= first {
+		t.Fatalf("second conditional backoff=(%v, %v), want >%v", second, err, first)
+	}
+	cooldowns, err = store.GetAllChannelCooldowns(ctx)
+	if err != nil || !cooldowns[channel.ID].Equal(now.Add(second)) {
+		t.Fatalf("conditional backoff not stored: %v, %v", cooldowns, err)
 	}
 }
 

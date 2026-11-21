@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 // Production Codex OAuth endpoints and public client configuration.
@@ -54,6 +56,7 @@ type Service struct {
 type tokenEndpointError struct {
 	statusCode   int
 	responseBody string
+	retryAfter   time.Time
 }
 
 type personalAccessTokenEndpointError struct {
@@ -107,6 +110,12 @@ func (e *tokenEndpointError) StatusCode() int {
 	}
 	return e.statusCode
 }
+
+/**
+ * @brief 返回令牌端点给出的恢复时间。
+ * @return 有效的 Retry-After 截止时间；缺失或无效时为零。
+ */
+func (e *tokenEndpointError) RetryAfter() time.Time { return e.retryAfter }
 
 /**
  * @brief 判断上游或持久化回执是否明确拒绝了 Codex 刷新 grant
@@ -505,7 +514,8 @@ func (s *Service) requestToken(ctx context.Context, contentType string, payload 
 		return nil, tokenError("response_read", fmt.Errorf("read Codex token response: %w", err))
 	}
 	if resp.StatusCode != http.StatusOK {
-		endpointErr := &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
+		retryAfter, _ := util.ParseRetryAfter(resp.Header, time.Now())
+		endpointErr := &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body), retryAfter: retryAfter}
 		if refreshing && !IsTerminalRefreshError(endpointErr) {
 			return nil, tokenError("response_status", endpointErr)
 		}

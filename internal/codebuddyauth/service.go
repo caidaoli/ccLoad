@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 // Service implements the wire contract from lovingfish/workbuddy-cliproxy,
@@ -42,9 +44,10 @@ const BillingBaseURL = "https://www.codebuddy.cn"
 
 // APIError retains status and business code without reflecting tokens or upstream bodies.
 type APIError struct {
-	Status  int
-	Code    int
-	Message string
+	Status     int
+	Code       int
+	Message    string
+	retryAfter time.Time
 }
 
 func (e *APIError) Error() string {
@@ -59,6 +62,12 @@ func (e *APIError) StatusCode() int { return e.Status }
 
 // UpstreamResponseBody deliberately excludes sensitive upstream data.
 func (e *APIError) UpstreamResponseBody() string { return "{}" }
+
+/**
+ * @brief 返回 HTTP 错误响应给出的恢复时间。
+ * @return Retry-After 截止时间；缺失或无法解析时为零。
+ */
+func (e *APIError) RetryAfter() time.Time { return e.retryAfter }
 
 // ErrCannotRefresh requires reauthorization because no refresh token is available.
 var ErrCannotRefresh = errors.New("CodeBuddy credential has no refresh token; authorize again")
@@ -265,7 +274,8 @@ func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, m
 		if json.Unmarshal(raw, &envelope) == nil && envelope.Code != nil {
 			code = *envelope.Code
 		}
-		return nil, &APIError{Status: resp.StatusCode, Code: code, Message: envelope.Message}
+		retryAfter, _ := util.ParseRetryAfter(resp.Header, time.Now())
+		return nil, &APIError{Status: resp.StatusCode, Code: code, Message: envelope.Message, retryAfter: retryAfter}
 	}
 	var envelope struct {
 		Code *int            `json:"code"`

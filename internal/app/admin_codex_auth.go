@@ -191,14 +191,19 @@ func (o oauthLoginOptions) clientOr(fallback *http.Client) *http.Client {
 	return fallback
 }
 
-// oauthLoginOptions resolves the session egress. A proxy that cannot be built
-// fails the login instead of silently going direct.
-func (s *Server) oauthLoginOptions(request oauthLoginStartRequest, antigravityHTTP11Only bool) (oauthLoginOptions, error) {
+/**
+ * @brief 解析 OAuth 登录的出站代理，代理无效时中止登录。
+ * @param request 包含登录参数与出站代理 URL 的已验证请求。
+ * @param antigravity 是否采用 Antigravity 的传输契约。
+ * @return 登录选项，未指定代理时沿用服务自身的客户端。
+ * @return 代理配置无效或客户端池关闭时返回错误。
+ */
+func (s *Server) oauthLoginOptions(request oauthLoginStartRequest, antigravity bool) (oauthLoginOptions, error) {
 	options := oauthLoginOptions{proxyURL: request.ProxyURL}
 	if options.proxyURL == "" {
 		return options, nil
 	}
-	client, err := s.proxyHTTPClient(options.proxyURL, antigravityHTTP11Only)
+	client, err := s.proxyHTTPClient(options.proxyURL, antigravity)
 	if err != nil {
 		return oauthLoginOptions{}, fmt.Errorf("oauth login proxy: %w", err)
 	}

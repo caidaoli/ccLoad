@@ -133,6 +133,7 @@ type ConvertCliToOpenAIParams struct {
 	currentToolCall       *toolCallStreamState
 	citationKeys          map[string]struct{}
 	emittedTextRunes      int64
+	messages              translatorcommon.ResponsesMessageStream
 	LastImageHashByItemID map[string][32]byte
 }
 
@@ -150,7 +151,7 @@ type ConvertCliToOpenAIParams struct {
 //
 // Returns:
 //   - [][]byte: A slice of OpenAI-compatible JSON responses
-func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func ConvertCodexResponseToOpenAI(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &ConvertCliToOpenAIParams{
 			Model:                 modelName,
@@ -177,7 +178,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	if p.ToolInputError() != nil || p.Completed {
 		return nil
 	}
-	var patchFinalChunks [][]byte
+	var terminalChunks [][]byte
 	if tier := codexResponseServiceTier(rootResult.Get("response")); tier != "" {
 		p.ServiceTier = tier
 	} else if tier := codexResponseServiceTier(rootResult); tier != "" {
@@ -189,6 +190,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 
 	typeResult := rootResult.Get("type")
 	dataType := typeResult.String()
+	p.messages.ObserveOutputItem(dataType, rootResult)
 	if dataType == "response.created" {
 		(*param).(*ConvertCliToOpenAIParams).ResponseID = rootResult.Get("response.id").String()
 		(*param).(*ConvertCliToOpenAIParams).CreatedAt = rootResult.Get("response.created_at").Int()
@@ -197,6 +199,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			(*param).(*ConvertCliToOpenAIParams).LastImageHashByItemID = make(map[string][32]byte)
 		}
 		return [][]byte{}
+	}
+	if p.ResponseID == "" {
+		p.ResponseID = rootResult.Get("response.id").String()
 	}
 
 	// Extract and set the model version.
@@ -229,9 +234,10 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", "\n\n")
-	case "response.output_text.delta":
+	case "response.output_text.delta", "response.refusal.delta":
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
 			delta := deltaResult.String()
+			p.messages.ObserveDelta(rootResult, delta)
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 			template, _ = sjson.SetBytes(template, "choices.0.delta.content", delta)
 			p.emittedTextRunes += int64(utf8.RuneCountInString(delta))
@@ -295,7 +301,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 				call, _ = sjson.SetBytes(call, "index", state.Index)
 				call, _ = sjson.SetBytes(call, "function.arguments", tail)
 				chunk, _ := sjson.SetRawBytes(template, "choices.0.delta.tool_calls", translatorcommon.JoinRawArray([][]byte{call}))
-				patchFinalChunks = append(patchFinalChunks, chunk)
+				terminalChunks = append(terminalChunks, chunk)
 			}
 		}
 		for _, state := range p.toolCallStates {
@@ -307,6 +313,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		if state := p.currentToolCall; state != nil && state.Patch && !state.InputClosed {
 			p.SetToolInputError(fmt.Errorf("incomplete apply_patch input at protocol completion"))
 			return nil
+		}
+		for _, event := range p.messages.MissingMessageDoneEvents(rootResult.Get("response.output")) {
+			terminalChunks = append(terminalChunks, ConvertCodexResponseToOpenAI(ctx, modelName, originalRequestRawJSON, requestRawJSON, event, param)...)
 		}
 		p.Completed = true
 		finishReason := "stop"
@@ -413,12 +422,26 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			return [][]byte{}
 		}
 		if itemResult.Get("type").String() == "message" {
-			citations := buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), p.emittedTextRunes, p.citationKeys)
-			if len(citations) == 0 {
+			offset := p.emittedTextRunes
+			var text strings.Builder
+			var citations [][]byte
+			for _, part := range p.messages.FinishMessage(rootResult) {
+				content := translatorcommon.ResponsesMessagePartText(part).String()
+				citations = append(citations, buildCodexURLCitations(codexAnnotationResults(part.Get("annotations")), p.emittedTextRunes, p.citationKeys)...)
+				text.WriteString(content)
+				p.emittedTextRunes += int64(utf8.RuneCountInString(content))
+			}
+			citations = append(citations, buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), offset, p.citationKeys)...)
+			if text.Len() == 0 && len(citations) == 0 {
 				return [][]byte{}
 			}
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
-			template, _ = sjson.SetRawBytes(template, "choices.0.delta.annotations", translatorcommon.JoinRawArray(citations))
+			if text.Len() > 0 {
+				template, _ = sjson.SetBytes(template, "choices.0.delta.content", text.String())
+			}
+			if len(citations) > 0 {
+				template, _ = sjson.SetRawBytes(template, "choices.0.delta.annotations", translatorcommon.JoinRawArray(citations))
+			}
 			return [][]byte{template}
 		}
 		itemType := itemResult.Get("type").String()
@@ -536,7 +559,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	}
 
 	if dataType == "response.completed" || dataType == "response.incomplete" {
-		return append(patchFinalChunks, template, []byte("[DONE]"))
+		return append(terminalChunks, template, []byte("[DONE]"))
 	}
 	return [][]byte{template}
 }
@@ -665,10 +688,11 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 				// Extract message content and URL citations.
 				if contentResult := outputItem.Get("content"); contentResult.IsArray() {
 					for _, contentItem := range contentResult.Array() {
-						if contentItem.Get("type").String() != "output_text" {
+						partType := contentItem.Get("type").String()
+						if partType != "output_text" && partType != "refusal" {
 							continue
 						}
-						text := contentItem.Get("text").String()
+						text := translatorcommon.ResponsesMessagePartText(contentItem).String()
 						contentText += text
 						messageAnnotations = append(messageAnnotations, buildCodexURLCitations(
 							codexAnnotationResults(contentItem.Get("annotations")),

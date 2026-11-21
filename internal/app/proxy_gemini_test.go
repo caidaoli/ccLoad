@@ -870,8 +870,12 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro"},
 			{Model: "claude-sonnet-4-6"},
+			{Model: "gemini-4-argon"},
+			{Model: "gemini-4-carbon"},
 			{Model: "gemini-4-hydrogen"},
 			{Model: "gemini-4-neon"},
+			{Model: "gemini-4-argon-high"},
+			{Model: "gemini-4-carbon-high"},
 			{Model: "gemini-4-hydrogen-xhigh"},
 			{Model: "gemini-4-neon-xhigh"},
 			{Model: "gemini-3.8-flash-tiered"},
@@ -919,8 +923,12 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 		name       string
 		inputLimit int
 	}{
+		{"gemini-4-argon", 1048576},
+		{"gemini-4-carbon", 1048576},
 		{"gemini-4-hydrogen", 1048576},
 		{"gemini-4-neon", 1048576},
+		{"gemini-4-argon-high", 1048576},
+		{"gemini-4-carbon-high", 1048576},
 		{"gemini-4-hydrogen-xhigh", 1048576},
 		{"gemini-4-neon-xhigh", 524288},
 		{"gemini-3.8-flash-tiered", 1048576},

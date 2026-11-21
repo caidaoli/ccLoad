@@ -24,6 +24,24 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-21)
+
+These targeted ports use official `v8.0.80` (`f5c5681a8361c9da53e93c60b6507816eee7468b`).
+
+- Adapt the Responses refusal and missing-message cases from `ca459712c`,
+  `e442c32d4` and `2e940ba1e` for Chat Completions, Claude and Gemini clients.
+  The local translators recover previously unseen text and refusal parts from
+  item and terminal snapshots using the item ID, output index and content index.
+  When a terminal array omits a streamed reasoning or tool item, its original
+  slot still counts when matching messages without IDs.
+  With no item ID, index or associated item frame, terminal synthesis skips
+  ambiguous text. Bare non-stream responses preserve their incomplete status
+  when the adapter wraps them for translation. Native Responses forwards the wire
+  directly.
+- Apply the outstanding Argon and Carbon output limits from `c1040cc0d` in
+  the Gemini, Vertex, AI Studio and Antigravity catalogs. They advertise 65,536
+  output tokens per segment.
+
 ## Post-snapshot compatibility fixes (2026-11-19)
 
 The upstream reference for these changes is official `v8.0.78`

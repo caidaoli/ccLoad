@@ -99,13 +99,17 @@ func assertTranslatedCacheUsage(t *testing.T, target protocol.Protocol, body []b
 	}
 }
 
-func TestCliproxyCodexCompletedResponsePreservesInnerObjectOrder(t *testing.T) {
+/**
+ * @brief 验证终态封装保留原始 Responses 正文的 JSON 字段顺序。
+ * @param t 测试上下文。
+ */
+func TestCliproxyCodexTerminalResponsePreservesInnerObjectOrder(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"z":1,"a":{"y":2,"x":3}}`)
-	got, err := cliproxyCodexCompletedResponse(raw)
+	got, err := cliproxyCodexTerminalResponse(raw)
 	if err != nil {
-		t.Fatalf("cliproxyCodexCompletedResponse() error = %v", err)
+		t.Fatalf("cliproxyCodexTerminalResponse() error = %v", err)
 	}
 	want := `{"type":"response.completed","response":{"z":1,"a":{"y":2,"x":3}}}`
 	if string(got) != want {
@@ -167,17 +171,25 @@ func TestRegistryOpenAIThinkingContentParts(t *testing.T) {
 	}
 }
 
-func TestCliproxyCodexCompletedResponseRejectsTruncatedJSON(t *testing.T) {
+/**
+ * @brief 验证终态封装拒绝被截断的上游 JSON。
+ * @param t 测试上下文。
+ */
+func TestCliproxyCodexTerminalResponseRejectsTruncatedJSON(t *testing.T) {
 	t.Parallel()
-	if _, err := cliproxyCodexCompletedResponse([]byte(`{"z":1`)); err == nil {
+	if _, err := cliproxyCodexTerminalResponse([]byte(`{"z":1`)); err == nil {
 		t.Fatal("accepted truncated JSON")
 	}
 }
 
-func TestCliproxyCodexCompletedResponseDoesNotDoubleWrap(t *testing.T) {
+/**
+ * @brief 验证上游终态事件已经带有封装时保留原样。
+ * @param t 测试上下文。
+ */
+func TestCliproxyCodexTerminalResponseDoesNotDoubleWrap(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"type":"response.completed","response":{"id":"resp_1"}}`)
-	got, err := cliproxyCodexCompletedResponse(raw)
+	got, err := cliproxyCodexTerminalResponse(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

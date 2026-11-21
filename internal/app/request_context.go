@@ -42,7 +42,8 @@ type requestContext struct {
 	xaiResponses                  bool
 	xaiTools                      *xaiResponsesToolsPlan
 	anthropicToolAliases          anthropicMCPToolAliases
-	anthropicThinkingOmitStrategy string // 本次发送前删除历史 thinking 的策略，写入日志
+	advisor                       *anthropicAdvisorAttempt ///< 当前 Messages 尝试的 advisor 历史归属。
+	anthropicThinkingOmitStrategy string                   // 本次发送前删除历史 thinking 的策略，写入日志
 	executionIdentity             string
 	firstByteTimer                *time.Timer
 	streamTimer                   *time.Timer

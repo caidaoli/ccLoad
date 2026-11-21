@@ -47,7 +47,7 @@ type ConvertCodexResponseToClaudeParams struct {
 	ResponseID               string
 	HasEmittedToolUse        bool
 	BlockIndex               int
-	HasTextDelta             bool
+	messages                 translatorcommon.ResponsesMessageStream
 	TextBlockOpen            bool
 	// CommentaryMessageOpen is set while the current `message` output item carries
 	// phase "commentary": a preamble GPT-5.x emits before its final_answer item.
@@ -96,7 +96,7 @@ type codexFunctionCallStream struct {
 //
 // Returns:
 //   - [][]byte: A slice of Claude Code-compatible JSON responses
-func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalRequestRawJSON, _ []byte, rawJSON []byte, param *any) [][]byte {
+func ConvertCodexResponseToClaude(ctx context.Context, modelName string, originalRequestRawJSON, _ []byte, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &ConvertCodexResponseToClaudeParams{
 			BlockIndex: 0,
@@ -121,6 +121,7 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		params.DeferredStreamEvents = append(params.DeferredStreamEvents, streamEventRawJSON)
 		return [][]byte{}
 	}
+	params.messages.ObserveOutputItem(typeStr, rootResult)
 	var template []byte
 	if typeStr != "" && typeStr != "error" && typeStr != "response.created" {
 		output = append(output, startCodexMessage(params, rootResult)...)
@@ -156,7 +157,7 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		// Intentionally does not close the thinking block: it stays open until
 		// output_item.done delivers the reasoning item's final encrypted_content.
 	case "response.content_part.added":
-		if rootResult.Get("part.type").String() == "output_text" {
+		if partType := rootResult.Get("part.type").String(); partType == "output_text" || partType == "refusal" {
 			if params.CommentaryMessageOpen {
 				output = append(output, startCodexThinkingBlock(params)...)
 			} else {
@@ -166,22 +167,23 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		} else {
 			output = append(output, finalizeCodexThinkingBlock(params)...)
 		}
-	case "response.output_text.delta":
-		params.HasTextDelta = true
+	case "response.output_text.delta", "response.refusal.delta":
+		delta := rootResult.Get("delta").String()
+		params.messages.ObserveDelta(rootResult, delta)
 		if params.CommentaryMessageOpen {
 			output = append(output, startCodexThinkingBlock(params)...)
-			output = append(output, appendCodexThinkingDelta(params, rootResult.Get("delta").String())...)
+			output = append(output, appendCodexThinkingDelta(params, delta)...)
 			break
 		}
 		output = append(output, finalizeCodexThinkingBlock(params)...)
 		output = append(output, startCodexTextBlock(params)...)
 		template = []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`)
 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
-		template, _ = sjson.SetBytes(template, "delta.text", rootResult.Get("delta").String())
+		template, _ = sjson.SetBytes(template, "delta.text", delta)
 
 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
 	case "response.content_part.done":
-		if rootResult.Get("part.type").String() == "output_text" {
+		if partType := rootResult.Get("part.type").String(); partType == "output_text" || partType == "refusal" {
 			if params.CommentaryMessageOpen {
 				output = append(output, finalizeCodexCommentaryBlock(params)...)
 			} else {
@@ -199,6 +201,12 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		output = appendDeferredCodexStreamEvents(output, originalRequestRawJSON, param)
 		output = append(output, finalizeCodexThinkingBlock(params)...)
 		output = append(output, stopCodexTextBlock(params)...)
+		params.CommentaryMessageOpen = false
+		for _, event := range params.messages.MissingMessageDoneEvents(responseData.Get("output")) {
+			for _, chunk := range ConvertCodexResponseToClaude(ctx, modelName, originalRequestRawJSON, nil, event, param) {
+				output = append(output, chunk...)
+			}
+		}
 		template, _ = sjson.SetBytes(template, "delta.stop_reason", mapCodexStopReasonToClaude(codexStopReason(responseData), params.HasEmittedToolUse))
 		template = setClaudeStopSequence(template, "delta.stop_sequence", responseData)
 		inputTokens, outputTokens, cachedTokens, reasoningTokens, cacheWriteTokens := extractResponsesUsageWithReasoning(responseData.Get("usage"))
@@ -222,11 +230,8 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		itemType := itemResult.Get("type").String()
 		switch itemType {
 		case "message":
-			// Each message item streams its own text; a later item's done fallback
-			// must not be skipped because an earlier item had deltas.
 			output = append(output, finalizeCodexThinkingBlock(params)...)
 			output = append(output, stopCodexTextBlock(params)...)
-			params.HasTextDelta = false
 			params.CommentaryMessageOpen = itemResult.Get("phase").String() == "commentary"
 		case "function_call":
 			output = append(output, finalizeCodexThinkingBlock(params)...)
@@ -258,32 +263,16 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		switch itemType {
 		case "message":
 			commentary := params.CommentaryMessageOpen || itemResult.Get("phase").String() == "commentary"
-			defer func() {
-				params.CommentaryMessageOpen = false
-				params.HasTextDelta = false
-			}()
-			if params.HasTextDelta {
+			defer func() { params.CommentaryMessageOpen = false }()
+			var textBuilder strings.Builder
+			for _, part := range params.messages.FinishMessage(rootResult) {
+				textBuilder.WriteString(translatorcommon.ResponsesMessagePartText(part).String())
+			}
+			text := textBuilder.String()
+			if text == "" {
 				if commentary {
 					output = append(output, finalizeCodexCommentaryBlock(params)...)
 				}
-				return [][]byte{output}
-			}
-			contentResult := itemResult.Get("content")
-			if !contentResult.Exists() || !contentResult.IsArray() {
-				return [][]byte{output}
-			}
-			var textBuilder strings.Builder
-			contentResult.ForEach(func(_, part gjson.Result) bool {
-				if part.Get("type").String() != "output_text" {
-					return true
-				}
-				if txt := part.Get("text").String(); txt != "" {
-					textBuilder.WriteString(txt)
-				}
-				return true
-			})
-			text := textBuilder.String()
-			if text == "" {
 				return [][]byte{output}
 			}
 			if commentary {
@@ -506,11 +495,8 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 				if content := item.Get("content"); content.Exists() {
 					if content.IsArray() {
 						content.ForEach(func(_, part gjson.Result) bool {
-							if part.Get("type").String() == "output_text" {
-								text := part.Get("text").String()
-								if text != "" {
-									contentBlocks = append(contentBlocks, codexMessageTextBlock(blockType, text))
-								}
+							if text := translatorcommon.ResponsesMessagePartText(part).String(); text != "" {
+								contentBlocks = append(contentBlocks, codexMessageTextBlock(blockType, text))
 							}
 							return true
 						})

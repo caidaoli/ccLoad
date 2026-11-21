@@ -804,7 +804,20 @@ func (s *Server) handleStreamingErrorNoRetry(
 	// 原生 WS close 1006/心跳传输错误按“两个新物理连接连续失败”冷却具体目标。
 	// 这里再做模型冷却会把网络抖动错误扩大到同渠道的整个模型。
 	if !tosRejected && !res.UpstreamWebsocketTransportFailure {
-		_ = s.applyCooldownDecision(ctx, cfg, input)
+		if isXAIOAuthCredentialForbidden(cfg, res) {
+			decision := s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input))
+			if decision.Action == cooldown.ActionRetryChannel {
+				var duration time.Duration
+				if !decision.Until.IsZero() {
+					duration = time.Until(decision.Until)
+				}
+				s.applyOAuthCredentialCooldown(ctx, cfg.ID, "xAI", cfg.GetAuthType(), cfg.OAuthCredential, res.Status, duration)
+			} else {
+				_ = s.applyCooldownDecision(ctx, cfg, input)
+			}
+		} else {
+			_ = s.applyCooldownDecision(ctx, cfg, input)
+		}
 	}
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
@@ -957,7 +970,7 @@ func (s *Server) handleProxyErrorResponse(
 		failure.nextAction = cooldown.ActionRetryChannel
 		return failure, cooldown.ActionRetryChannel
 	}
-	if forceReturnClient {
+	if forceReturnClient || isXAIOAuthCredentialForbidden(cfg, res) || isAntigravityPermissionDenied(cfg, res, "VALIDATION_REQUIRED") {
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient
 	}
@@ -988,4 +1001,14 @@ func (s *Server) handleProxyErrorResponse(
 	action := s.applyCooldownDecision(ctx, cfg, input)
 	failure.nextAction = action
 	return failure, action
+}
+
+/**
+ * @brief 识别明确表示 xAI OAuth 令牌被拒绝的 403。
+ * @param cfg 实际发送请求的渠道配置。
+ * @param res 已归一的上游结果。
+ * @return 只有结构化认证拒绝返回 true；普通权限和套餐错误沿用通用分类。
+ */
+func isXAIOAuthCredentialForbidden(cfg *model.Config, res *fwResult) bool {
+	return cfg.UsesXAIOAuth() && res.Status == http.StatusForbidden && xaiCredentialRejected(res.Status, res.Header, res.Body)
 }

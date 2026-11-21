@@ -111,6 +111,19 @@ type Store interface {
 	ResetChannelCooldown(ctx context.Context, channelID int64) error
 	ResetAllCooldowns(ctx context.Context, channelID int64) error
 	SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error
+	/**
+	 * @brief 仅在渠道启用且 OAuth 凭证仍匹配时原子写入渠道冷却。
+	 * @param ctx 存储操作上下文。
+	 * @param channelID 目标渠道 ID。
+	 * @param expectedAuthType 失败凭证的 OAuth 类型。
+	 * @param expectedCredential 预期的完整凭证 JSON，按原文比较。
+	 * @param now 冷却起算时间。
+	 * @param statusCode 指数退避使用的状态码。
+	 * @param duration 固定冷却时长，零值使用指数退避。
+	 * @return 写入的冷却时长；渠道或凭证不匹配时为零。
+	 * @return 参数无效或存储失败时返回错误。
+	 */
+	CooldownChannelIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string, now time.Time, statusCode int, duration time.Duration) (time.Duration, error)
 	// Key-level cooldown
 	GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error)
 	BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error)

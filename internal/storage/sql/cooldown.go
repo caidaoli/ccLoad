@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 )
 
@@ -37,40 +38,91 @@ func (s *SQLStore) cooldownSelectLockClause() string {
 	return ""
 }
 
-// BumpChannelCooldown 渠道级冷却：使用统一 CooldownPolicy 指数退避。
+/**
+ * @brief 使用现有指数退避策略增加渠道冷却。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param now 冷却起算时间。
+ * @param statusCode 退避策略使用的状态码。
+ * @return 写入的冷却时长。
+ * @return 渠道不存在或存储失败时返回错误。
+ */
 func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
-	// 使用事务保护Read-Modify-Write操作,防止并发竞态
-	// 问题场景同BumpKeyCooldown,多个并发请求可能导致指数退避计算错误
+	return s.applyChannelCooldown(ctx, channelID, "", "", now, statusCode, 0)
+}
 
+/**
+ * @brief 仅对仍启用且认证类型与凭证原文都匹配的渠道应用冷却。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedAuthType 失败凭证的 OAuth 类型。
+ * @param expectedCredential 与持久化原文匹配的凭证快照。
+ * @param now 冷却起算时间。
+ * @param statusCode 退避策略使用的状态码。
+ * @param duration 固定冷却时长，零值使用指数退避。
+ * @return 写入的冷却时长；渠道或凭证不匹配时为零。
+ * @return 参数无效或存储失败时返回错误。
+ */
+func (s *SQLStore) CooldownChannelIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string, now time.Time, statusCode int, duration time.Duration) (time.Duration, error) {
+	authType := model.NormalizeAuthType(expectedAuthType)
+	if authType == "" || model.UsesAPIKeyCredentials(authType) {
+		return 0, errors.New("invalid expected OAuth type")
+	}
+	return s.applyChannelCooldown(ctx, channelID, authType, expectedCredential, now, statusCode, duration)
+}
+
+/**
+ * @brief 锁定渠道行后计算并写入冷却，OAuth 写入在同一事务核对凭证。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param authType 已归一的 OAuth 类型，空字符串允许普通渠道退避。
+ * @param expectedCredential 条件写入时必须匹配的凭证原文。
+ * @param now 冷却起算时间。
+ * @param statusCode 退避策略使用的状态码。
+ * @param duration 固定冷却时长，零值使用历史状态计算退避。
+ * @return 写入的冷却时长；OAuth 条件不匹配时为零。
+ * @return 普通渠道不存在或存储失败时返回错误。
+ */
+func (s *SQLStore) applyChannelCooldown(ctx context.Context, channelID int64, authType, expectedCredential string, now time.Time, statusCode int, duration time.Duration) (time.Duration, error) {
+	fields := "cooldown_until, cooldown_duration_ms"
+	if authType != "" {
+		fields += ", enabled, auth_type, COALESCE(oauth_credential, '')"
+	}
+	query := "SELECT " + fields + " FROM channels WHERE id = ?" + s.cooldownSelectLockClause()
 	var nextDuration time.Duration
-
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		// 1. 读取当前冷却状态。MySQL 必须显式 FOR UPDATE 锁行，否则两个事务可读到同一旧值。
+		nextDuration = 0
+		var enabled bool
+		var currentAuthType, currentCredential string
 		var cooldownUntil, cooldownDurationMs int64
-		err := s.queryRowTx(ctx, tx, `
-			SELECT cooldown_until, cooldown_duration_ms
-			FROM channels
-			WHERE id = ?
-		`+s.cooldownSelectLockClause(), channelID).Scan(&cooldownUntil, &cooldownDurationMs)
+		dest := []any{&cooldownUntil, &cooldownDurationMs}
+		if authType != "" {
+			dest = append(dest, &enabled, &currentAuthType, &currentCredential)
+		}
+		err := s.queryRowTx(ctx, tx, query, channelID).Scan(dest...)
 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
+				if authType != "" {
+					return nil
+				}
 				return errors.New("channel not found")
 			}
 			return fmt.Errorf("query channel cooldown: %w", err)
 		}
+		if authType != "" && (!enabled || currentAuthType != authType || currentCredential != expectedCredential) {
+			return nil
+		}
 
-		// 2. 计算新的冷却时间(指数退避)
-		until := unixToTime(cooldownUntil)
-		nextDuration = s.calculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
-		newUntil := now.Add(nextDuration)
-
-		// 3. 更新 channels 表(事务内)
+		nextDuration = duration
+		if nextDuration == 0 {
+			nextDuration = s.calculateBackoffDuration(cooldownDurationMs, unixToTime(cooldownUntil), now, &statusCode)
+		}
 		_, err = s.execTx(ctx, tx, `
 			UPDATE channels
 			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
 			WHERE id = ?
-		`, timeToUnix(newUntil), int64(nextDuration/time.Millisecond), timeToUnix(now), channelID)
+		`, timeToUnix(now.Add(nextDuration)), int64(nextDuration/time.Millisecond), timeToUnix(now), channelID)
 
 		if err != nil {
 			return fmt.Errorf("update channel cooldown: %w", err)
@@ -79,7 +131,10 @@ func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now
 		return nil
 	})
 
-	return nextDuration, err
+	if err != nil {
+		return 0, err
+	}
+	return nextDuration, nil
 }
 
 // ResetChannelCooldown 重置渠道冷却状态

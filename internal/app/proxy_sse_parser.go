@@ -51,6 +51,7 @@ type usageAccumulator struct {
  * @brief 增量解析上游 SSE 的用量、错误和语义终态
  */
 type sseUsageParser struct {
+	advisor *anthropicAdvisorAttempt ///< 当前上游 Messages 尝试的 advisor 归属记录。
 	usageAccumulator
 
 	// 内部状态（增量解析）
@@ -626,6 +627,9 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 		markSSETerminalFromRaw(p, eventType, data)
 		return fmt.Errorf("json unmarshal failed: %w", err)
+	}
+	if p.advisor != nil && (event["type"] == "message_start" || event["type"] == "content_block_start") {
+		p.advisor.observe(gjson.Parse(data))
 	}
 	if event["type"] == codexPassiveUsageSSEEventType || eventType == codexPassiveUsageSSEEventType {
 		// Owning credits does not mean this request consumed them. The active

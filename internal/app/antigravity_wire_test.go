@@ -12,7 +12,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	antigravityclaude "ccLoad/internal/protocol/cliproxy/providers/antigravity/claude"
@@ -314,6 +316,113 @@ func TestProxyAntigravityTOSViolation(t *testing.T) {
 }
 
 /**
+ * @brief 验证结构化验证提示保留原响应并终止普通或付费回退，纯消息文本仍按普通 403 处理。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravityValidationRequired(t *testing.T) {
+	t.Parallel()
+	const modelName = "claude-sonnet-4-6"
+	const rejection = `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Verification required (VALIDATION_REQUIRED)","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED","metadata":{"validation_url":"https://example.com/verify"}}]}}`
+	const success = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"backup"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}`
+	for _, tc := range []struct {
+		name        string
+		stream      bool
+		paid        bool
+		messageOnly bool
+	}{
+		{name: "HTTP before credits"},
+		{name: "first SSE frame before credits", stream: true},
+		{name: "HTTP during credits", paid: true},
+		{name: "first SSE frame during credits", stream: true, paid: true},
+		{name: "message alone allows fallback", messageOnly: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			credential := func(token string, paid bool) string {
+				t.Helper()
+				creds, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, token)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				creds.RefreshToken = "refresh-" + token
+				if paid {
+					balance, minimum := 50.0, 1.0
+					creds.Credits = &antigravityauth.Credits{Balance: &balance, Minimum: &minimum, SampledAt: time.Now()}
+					creds.StandardQuota = map[string]time.Time{modelName: time.Now().Add(time.Hour)}
+				}
+				raw, err := creds.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			}
+			var primaryCalls, backupCalls atomic.Int32
+			primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				primaryCalls.Add(1)
+				var request struct {
+					EnabledCreditTypes []string `json:"enabledCreditTypes"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				if gotPaid := len(request.EnabledCreditTypes) > 0; gotPaid != tc.paid {
+					t.Errorf("primary spent credits=%t, want %t", gotPaid, tc.paid)
+				}
+				w.Header().Set("X-Verification-Request", "trace-id")
+				body := rejection
+				if tc.messageOnly {
+					body = strings.Replace(body, `"reason":"VALIDATION_REQUIRED"`, `"reason":"ACCESS_DENIED"`, 1)
+				}
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+body+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, body)
+			}))
+			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, success)
+			}))
+			env := setupProxyTestEnvWithSettings(t, []testChannel{
+				{name: "verify", models: modelName, upstreamProtocol: "gemini", priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential("verify", tc.paid)},
+				{name: "backup", models: modelName, upstreamProtocol: "gemini", priority: 10, authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential("backup", true)},
+			}, map[int]string{0: primary.URL, 1: backup.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+			method := "generateContent"
+			if tc.stream {
+				method = "streamGenerateContent?alt=sse"
+			}
+			response := doProxyRequest(t, env.engine, "/v1beta/models/"+modelName+":"+method,
+				map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}}, nil)
+			if tc.messageOnly {
+				if response.Code != http.StatusOK || primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
+					t.Fatalf("response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
+				}
+				return
+			}
+			if response.Code != http.StatusForbidden || primaryCalls.Load() != 1 || backupCalls.Load() != 0 {
+				t.Fatalf("response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
+			}
+			if got := gjson.Get(response.Body.String(), "error.details.0.metadata.validation_url").String(); got != "https://example.com/verify" || response.Header().Get("X-Verification-Request") != "trace-id" {
+				t.Fatalf("verification response lost upstream details: headers=%v body=%s", response.Header(), response.Body.String())
+			}
+			configs, err := env.store.ListConfigs(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cfg := range configs {
+				if !cfg.Enabled || cfg.CooldownUntil != 0 {
+					t.Fatalf("verification changed channel availability: %s", cfg.Name)
+				}
+			}
+		})
+	}
+}
+
+/**
  * @brief 验证在途 TOS 结果跨 access token 刷新仍停用原账号，替换为另一账号后不受旧结果影响。
  * @param t 测试上下文。
  */
@@ -477,6 +586,99 @@ func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 			t.Fatalf("responseSchema removed: %s", got)
 		}
 	})
+}
+
+/**
+ * @brief 验证 Antigravity 出站会话随账号变化，在令牌轮换后稳定，并保留显式 ID。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravitySessionFollowsAccount(t *testing.T) {
+	t.Parallel()
+	type attempt struct {
+		authorization string
+		sessionID     string
+	}
+	sent := make(chan attempt, 8)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sent <- attempt{r.Header.Get("Authorization"), gjson.GetBytes(wire, "request.sessionId").String()}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	credential := string(setJSONValue([]byte(antigravityProxyTestCredential(t, "original-at")), "email", "original@example.com"))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-session", upstreamProtocol: "gemini", models: "gemini-3-flash",
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL})
+	ctx := context.Background()
+	channels, err := env.store.ListConfigs(ctx)
+	if err != nil || len(channels) != 1 {
+		t.Fatalf("load channel: count=%d, err=%v", len(channels), err)
+	}
+	channelID := channels[0].ID
+	replaceCredential := func(accessToken, refreshToken, email string) {
+		t.Helper()
+		next := setJSONValue([]byte(credential), "access_token", accessToken)
+		next = setJSONValue(next, "refresh_token", refreshToken)
+		next = setJSONValue(next, "email", email)
+		updated, err := env.store.CompareAndSwapOAuthCredential(ctx, channelID, model.AuthTypeAntigravityOAuth, credential, string(next))
+		if err != nil || !updated {
+			t.Fatalf("replace credential: updated=%v, err=%v", updated, err)
+		}
+		credential = string(next)
+		env.server.antigravityCredentials.invalidate(channelID)
+		env.server.InvalidateChannelListCache()
+	}
+	send := func(headers map[string]string, explicitID, accessToken string) string {
+		t.Helper()
+		body := map[string]any{
+			"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+		}
+		if explicitID != "" {
+			body["sessionId"] = explicitID
+		}
+		response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", body, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		select {
+		case got := <-sent:
+			if got.authorization != "Bearer "+accessToken || got.sessionID == "" {
+				t.Fatalf("upstream authorization=%q, session ID=%q", got.authorization, got.sessionID)
+			}
+			return got.sessionID
+		default:
+			t.Fatal("upstream did not receive a request")
+			return ""
+		}
+	}
+
+	headers := map[string]string{"Session-Id": "-123"}
+	original := send(headers, "", "original-at")
+	fromContent := send(nil, "", "original-at")
+	replaceCredential("rotated-at", "rotated-rt", "ORIGINAL@example.com")
+	if got := send(headers, "", "rotated-at"); got != original {
+		t.Fatalf("same account after rotation: session ID=%q, want %q", got, original)
+	}
+	if got := send(nil, "", "rotated-at"); got != fromContent {
+		t.Fatalf("same account content session ID=%q, want %q", got, fromContent)
+	}
+	replaceCredential("other-at", "other-rt", "other@example.com")
+	if got := send(headers, "", "other-at"); got == original {
+		t.Fatalf("different accounts reused session ID %q", got)
+	}
+	if got := send(nil, "", "other-at"); got == fromContent {
+		t.Fatalf("different accounts reused content session ID %q", got)
+	}
+	const explicitID = "client-session"
+	if got := send(headers, explicitID, "other-at"); got != explicitID {
+		t.Fatalf("explicit session ID=%q, want %q", got, explicitID)
+	}
 }
 
 func TestNormalizeAntigravitySchemasConsolidatesParametersAliases(t *testing.T) {
