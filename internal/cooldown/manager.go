@@ -23,6 +23,7 @@ const (
 	ActionRetryModel                 // ActionRetryModel 表示当前模型在该渠道不可用，切换渠道
 	ActionRetryChannel               // ActionRetryChannel 表示切换到下一个渠道
 	ActionReturnClient               // ActionReturnClient 表示直接返回给客户端
+	ActionSkipChannel                ///< 跳过本次请求的当前渠道，无需冷却其资源。
 )
 
 // NoKeyIndex 表示错误与特定Key无关（网络错误、DNS解析失败等）。
@@ -217,6 +218,8 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		return decision
 	}
 	switch errLevel {
+	case util.ErrorLevelCapability:
+		decision.action = ActionSkipChannel
 	case util.ErrorLevelClient:
 		decision.action = ActionReturnClient
 	case util.ErrorLevelKey:
@@ -353,9 +356,8 @@ func (m *Manager) handleErrorDecision(ctx context.Context, in ErrorInput, decisi
 
 	// 4. 根据错误级别执行冷却
 	switch decision.action {
-	case ActionReturnClient:
-		// 客户端错误:不冷却,直接返回
-		return ActionReturnClient
+	case ActionReturnClient, ActionSkipChannel:
+		return decision.action
 
 	case ActionRetryKey:
 		// Key级错误:冷却当前Key,继续尝试其他Key

@@ -1480,7 +1480,7 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 		result["cooldown_action"] = "model_cooldown_applied"
 	case cooldown.ActionRetryChannel:
 		result["cooldown_action"] = "channel_cooldown_applied"
-	case cooldown.ActionReturnClient:
+	case cooldown.ActionReturnClient, cooldown.ActionSkipChannel:
 		result["cooldown_action"] = "client_error_no_cooldown"
 	default:
 		result["cooldown_action"] = "unknown_action"
@@ -1828,7 +1828,7 @@ func (s *Server) testCursorOAuthChannel(
 	}
 	result["status_code"] = status
 	result["duration_ms"] = time.Since(start).Milliseconds()
-	if proxyRes.nextAction == cooldown.ActionReturnClient && !proxyRes.succeeded {
+	if (proxyRes.nextAction == cooldown.ActionReturnClient || proxyRes.nextAction == cooldown.ActionSkipChannel) && !proxyRes.succeeded {
 		result["cooldown_action"] = "client_error_no_cooldown"
 	}
 

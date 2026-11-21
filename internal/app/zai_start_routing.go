@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -20,6 +23,48 @@ type zaiStartPending struct {
 	cfg      *model.Config         ///< 原请求候选快照。
 	identity [32]byte              ///< 排队时的真实账号，配置换账号后不得复用。
 	selected modelRoutingSelection ///< 排队前已选定的模型行。
+}
+
+/**
+ * @brief 体验验证或明确风控拒绝后，本次请求只能切换到独立提供商。
+ * @param reqCtx 包含当前请求的 Trial 排队状态。
+ * @param result 本次渠道失败。只有尚未提交的真实业务错误可以继续尝试其他提供商。
+ * @param remaining 本轮尚未尝试的候选副本；会就地移除 ZAI 渠道。
+ * @return 剩余候选；没有此类拒绝时保持原顺序。
+ * @note 清除已有 Trial 排队候选，外层唤醒循环不得再次尝试 ZAI。
+ */
+func excludeZAIRoutesAfterTrialRejection(reqCtx *proxyRequestContext, result *proxyResult, remaining []*model.Config) []*model.Config {
+	if !result.zaiTrial || result.nextAction != cooldown.ActionReturnClient || !isZAITrialVerificationError(result.body) {
+		return remaining
+	}
+	reqCtx.zaiStart.pending = nil
+	remaining = slices.DeleteFunc(remaining, isZAIProxyChannel)
+	if len(remaining) > 0 {
+		result.nextAction = cooldown.ActionRetryChannel
+	}
+	return remaining
+}
+
+/**
+ * @brief 识别配置为 ZAI OAuth 或包含 ZAI 官方推理域名的渠道。
+ * @param cfg 待尝试的渠道快照。
+ * @return 渠道可发往 ZAI 时为 true。
+ */
+func isZAIProxyChannel(cfg *model.Config) bool {
+	if cfg.UsesZAIOAuth() {
+		return true
+	}
+	for _, endpoint := range cfg.URLs {
+		target, err := url.Parse(endpoint.URL)
+		if err != nil {
+			continue
+		}
+		host := strings.TrimSuffix(strings.ToLower(target.Hostname()), ".")
+		if host == "z.ai" || strings.HasSuffix(host, ".z.ai") || host == "bigmodel.cn" || strings.HasSuffix(host, ".bigmodel.cn") {
+			return true
+		}
+	}
+	return false
 }
 
 /**

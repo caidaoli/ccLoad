@@ -1524,13 +1524,23 @@ func TestProxy_ZAIStartReserveRouting(t *testing.T) {
 }
 
 /**
- * @brief 真实代理排队只唤醒同一活动账号，取消等待不发送也不登记上游故障。
+ * @brief 真实代理排队只唤醒同一活动账号，取消不发送，验证拒绝不继续唤醒 ZAI 候选。
  * @param t 测试上下文。
  */
 func TestProxy_ZAIStartQueueRouting(t *testing.T) {
 
-	for _, cancelWaiting := range []bool{false, true} {
-		t.Run(fmt.Sprint(cancelWaiting), func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		code     string
+		status   int
+		canceled bool
+	}{
+		{name: "success", status: http.StatusOK},
+		{name: "canceled", canceled: true},
+		{name: "captcha", code: "3007", status: http.StatusBadRequest},
+		{name: "risk", code: "3012", status: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			env, configs := newZAIStartHarness(t)
 			// 即使备用优先级更高，活动账号满载时仍等待它的空槽。
 			configs[2].Priority = 100
@@ -1559,6 +1569,9 @@ func TestProxy_ZAIStartQueueRouting(t *testing.T) {
 					t.Error("other account bypassed full active account")
 				}
 				inference.Add(1)
+				if tc.code != "" {
+					return zaiStartTestResponse(req, tc.status, `{"error":{"code":"`+tc.code+`","message":"trial rejected"}}`), nil
+				}
 				return zaiStartTestResponse(req, 200, `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`), nil
 			})}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1572,23 +1585,21 @@ func TestProxy_ZAIStartQueueRouting(t *testing.T) {
 				env.engine.ServeHTTP(response, req)
 				done <- response
 			}()
-			select {
-			case result := <-done:
-				t.Fatalf("queue returned early: %d %s", result.Code, result.Body.String())
-			case <-time.After(100 * time.Millisecond):
-			}
-			if cancelWaiting {
+			admin := gin.New()
+			admin.GET("/admin/active-requests", env.server.HandleActiveRequests)
+			waitForZAITrialProxyQueue(t, admin, configs[0].ID)
+			if tc.canceled {
 				cancel()
 			} else {
 				_ = held[0].Close()
 			}
 			select {
 			case result := <-done:
-				if cancelWaiting {
+				if tc.canceled {
 					if inference.Load() != 0 {
 						t.Fatal("canceled queue sent")
 					}
-				} else if result.Code != 200 || inference.Load() != 1 {
+				} else if result.Code != tc.status || inference.Load() != 1 || gjson.GetBytes(result.Body.Bytes(), "error.code").String() != tc.code {
 					t.Fatalf("wake=%d sends=%d %s", result.Code, inference.Load(), result.Body.String())
 				}
 			case <-time.After(5 * time.Second):
@@ -1597,6 +1608,33 @@ func TestProxy_ZAIStartQueueRouting(t *testing.T) {
 		})
 	}
 
+}
+
+/**
+ * @brief 经管理接口等待代理为指定 Trial 渠道登记可中断的排队请求。
+ * @param t 测试上下文。
+ * @param admin 注册了活跃请求查询的管理路由。
+ * @param channelID 排队候选渠道。
+ * @return 查询到的活跃请求；三秒内未查询到则终止测试。
+ */
+func waitForZAITrialProxyQueue(t *testing.T, admin http.Handler, channelID int64) *ActiveRequest {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		response := httptest.NewRecorder()
+		admin.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/active-requests", nil))
+		var body activeRequestsResponse
+		if json.Unmarshal(response.Body.Bytes(), &body) != nil || !body.Success {
+			t.Fatal("invalid active request response")
+		}
+		for _, active := range body.Data {
+			if active.ChannelID == channelID && active.Abortable && active.BaseURL == "" {
+				return active
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("active request did not identify the queued channel")
+	return nil
 }
 
 /**
@@ -1822,25 +1860,6 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 			admin := gin.New()
 			admin.GET("/admin/active-requests", env.server.HandleActiveRequests)
 			admin.POST("/admin/active-requests/:request_id/abort", env.server.HandleAbortActiveRequest)
-			waitQueued := func(channelID int64) *ActiveRequest {
-				t.Helper()
-				for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
-					response := httptest.NewRecorder()
-					admin.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/active-requests", nil))
-					var body activeRequestsResponse
-					if json.Unmarshal(response.Body.Bytes(), &body) != nil || !body.Success {
-						t.Fatal("invalid active request response")
-					}
-					for _, active := range body.Data {
-						if active.ChannelID == channelID && active.Abortable && active.BaseURL == "" {
-							return active
-						}
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-				t.Fatal("active request did not identify the queued channel")
-				return nil
-			}
 			controlClient := env.server.client
 			sent := make(chan string, 4)
 			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -1875,7 +1894,7 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 				}
 			}
 			launch()
-			active := waitQueued(configs[0].ID)
+			active := waitForZAITrialProxyQueue(t, admin, configs[0].ID)
 			response := httptest.NewRecorder()
 			admin.ServeHTTP(response, httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/active-requests/%d/abort", active.ID), nil))
 			var body struct {
@@ -1889,7 +1908,7 @@ func TestProxy_ZAIStartQueueOperatorAbort(t *testing.T) {
 			}
 			wantAccount := "Bearer jwt-a"
 			if multiple {
-				if next := waitQueued(configs[1].ID); next.ID != active.ID {
+				if next := waitForZAITrialProxyQueue(t, admin, configs[1].ID); next.ID != active.ID {
 					t.Error("waiting request identity changed")
 				}
 				for _, body := range held {
@@ -3265,7 +3284,7 @@ func TestProxy_ZAITrialReauthorizationCooldown(t *testing.T) {
 }
 
 /**
- * @brief 验证和明确风控拒绝停止套餐及跨渠道重放，只有风控保留账号暂停。
+ * @brief 仅有 ZAI 候选时透传验证与明确风控拒绝，只有风控保留账号暂停。
  * @param t 测试上下文。
  */
 func TestProxy_ZAITrialTerminalBusinessErrors(t *testing.T) {
@@ -3381,6 +3400,111 @@ func TestProxy_ZAITrialTerminalBusinessErrors(t *testing.T) {
 			}
 			if response = request(other); response.Code != 200 {
 				t.Fatalf("unrelated account paused: %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 未提交的验证和风控拒绝可切换独立提供商，其他 ZAI 入口及已开始的流不得重放。
+ * @param t 测试上下文。
+ */
+func TestProxy_ZAITrialVerificationFailover(t *testing.T) {
+	const (
+		modelName       = "GLM-5.3-Flash"
+		independentHost = "api.z.ai.example"
+		prefix          = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"GLM-5.3-Flash\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"
+		fallbackBody = `{"id":"m","type":"message","role":"assistant","model":"GLM-5.3-Flash","content":[{"type":"text","text":"independent"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	)
+	for _, tc := range []struct {
+		name      string
+		code      string
+		status    int
+		stream    bool
+		committed bool
+	}{
+		{name: "captcha-http", code: "3007", status: http.StatusBadRequest},
+		{name: "risk-http", code: "3012", status: http.StatusForbidden},
+		{name: "captcha-soft", code: "3007", status: http.StatusOK},
+		{name: "risk-first-event", code: "3012", status: http.StatusOK, stream: true},
+		{name: "captcha-after-content", code: "3007", status: http.StatusOK, stream: true, committed: true},
+		{name: "risk-after-content", code: "3012", status: http.StatusOK, stream: true, committed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, configs := newZAIStartHarness(t)
+			ctx := context.Background()
+			primary := configs[0]
+			primary.SameChannelRetries = 2
+			primary.URLs = append(primary.URLs, model.ChannelURL{URL: "https://another-zai-config.example", Protocols: []string{"anthropic"}})
+			if _, err := env.store.UpdateConfig(ctx, primary.ID, primary); err != nil {
+				t.Fatal(err)
+			}
+			paid := primary.Clone()
+			paid.ID, paid.Name, paid.Priority = 0, "paid-only", 65
+			paid.OAuthCredential = `{"api_key":"paid.secret","user_id":"paid"}`
+			if _, err := env.store.CreateConfig(ctx, paid); err != nil {
+				t.Fatal(err)
+			}
+			for i, host := range []string{"api.z.ai", "open.bigmodel.cn", independentHost} {
+				cfg := primary.Clone()
+				cfg.ID, cfg.Name, cfg.Priority = 0, host, 60-i
+				cfg.AuthType, cfg.OAuthCredential = model.AuthTypeAPIKey, ""
+				cfg.URLs = model.ChannelURLs{{URL: "https://" + host, Protocols: []string{"anthropic"}}}
+				if _, err := env.store.CreateConfigWithAPIKeys(ctx, cfg, []*model.APIKey{{APIKey: "api-key"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env.server.InvalidateChannelListCache()
+			control := env.server.client
+			var trial, independent, unexpected atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(req.URL.Path, "/messages") {
+					return control.Do(req)
+				}
+				if req.URL.Hostname() == independentHost {
+					independent.Add(1)
+					return zaiStartTestResponse(req, http.StatusOK, fallbackBody), nil
+				}
+				if !strings.Contains(req.URL.Path, "/zcode-plan/") || req.Header.Get("Authorization") != "Bearer jwt-a" {
+					unexpected.Add(1)
+					return zaiStartTestResponse(req, http.StatusInternalServerError, `{"error":{"message":"unexpected ZAI attempt"}}`), nil
+				}
+				trial.Add(1)
+				body := `{"type":"error","error":{"code":"` + tc.code + `","message":"trial rejected"}}`
+				if !tc.stream {
+					return zaiStartTestResponse(req, tc.status, body), nil
+				}
+				body = "event: error\ndata: " + body + "\n\n"
+				if tc.committed {
+					body = prefix + body
+				}
+				resp := zaiStartTestResponse(req, tc.status, body)
+				resp.Header.Set("Content-Type", "text/event-stream")
+				return resp, nil
+			})}
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": modelName, "max_tokens": 16, "stream": tc.stream,
+				"messages": []map[string]string{{"role": "user", "content": "hello"}},
+			}, nil)
+			if response.Code != http.StatusOK || trial.Load() != 1 || unexpected.Load() != 0 {
+				t.Fatalf("status=%d trial=%d unexpected=%d body=%s", response.Code, trial.Load(), unexpected.Load(), response.Body.String())
+			}
+			if tc.committed {
+				var content, code string
+				for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+					kind, data := parseSSEEventChunk([]byte(event + "\n\n"))
+					content += gjson.GetBytes(data, "delta.text").String()
+					if kind == "error" {
+						code = gjson.GetBytes(data, "error.code").String()
+					}
+				}
+				if independent.Load() != 0 || content != "partial" || code != tc.code {
+					t.Fatalf("committed response changed: fallback=%d body=%s", independent.Load(), response.Body.String())
+				}
+			} else if independent.Load() != 1 || gjson.GetBytes(response.Body.Bytes(), "content.0.text").String() != "independent" {
+				t.Fatalf("fallback=%d body=%s", independent.Load(), response.Body.String())
 			}
 		})
 	}

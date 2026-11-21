@@ -21,13 +21,12 @@ import (
 )
 
 /**
- * @brief 从 Antigravity 的 HTTP 或 SSE 错误中确认结构化账号拒绝原因。
+ * @brief 从 Antigravity 的 HTTP 或 SSE 错误中确认账号因 TOS 违规被拒绝。
  * @param cfg 实际发送请求使用的 Antigravity 凭证快照。
  * @param res HTTP 或 SSE 错误结果；调用方保证非 nil。
- * @param reason Google RPC ErrorInfo 中预期的精确原因。
- * @return 只有结构化的 Antigravity 403 PERMISSION_DENIED 匹配时返回 true。
+ * @return 仅当 403 PERMISSION_DENIED 包含 TOS_VIOLATION 的 ErrorInfo 时返回 true。
  */
-func isAntigravityPermissionDenied(cfg *model.Config, res *fwResult, reason string) bool {
+func isAntigravityTOSViolation(cfg *model.Config, res *fwResult) bool {
 	if !cfg.UsesAntigravityOAuth() {
 		return false
 	}
@@ -56,7 +55,7 @@ func isAntigravityPermissionDenied(cfg *model.Config, res *fwResult, reason stri
 		return false
 	}
 	for _, detail := range payload.Error.Details {
-		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == reason {
+		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == "TOS_VIOLATION" {
 			return true
 		}
 	}
@@ -72,7 +71,7 @@ func isAntigravityPermissionDenied(cfg *model.Config, res *fwResult, reason stri
  * @note 同一 refresh token 下的 access token 刷新不影响停用；更换账号后的旧结果不改动新账号。成功停用后失效凭证、渠道与冷却缓存。
  */
 func (s *Server) disableAntigravityTOSCredential(ctx context.Context, cfg *model.Config, res *fwResult) bool {
-	if !isAntigravityPermissionDenied(cfg, res, "TOS_VIOLATION") {
+	if !isAntigravityTOSViolation(cfg, res) {
 		return false
 	}
 

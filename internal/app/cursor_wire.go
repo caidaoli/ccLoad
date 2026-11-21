@@ -189,16 +189,32 @@ func (s *Server) forwardCursorAgent(
 	if s.activeRequests != nil {
 		s.activeRequests.SetDebugCapture(reqCtx.activeReqID, debugCapture)
 	}
+	finishStartFailure := func(status int, err error, action cooldown.Action, skipped bool) *proxyResult {
+		result := cursorErrorResult(cfg, status, err.Error(), action)
+		if status == http.StatusTooManyRequests {
+			result.nextAction = s.cooldownCursorUsageLimit(ctx, cfg, modelID, result.body)
+		}
+		result.candidateSkipped = skipped
+		result.duration = time.Since(started).Seconds()
+		result.isClientCanceled = status == StatusClientClosedRequest
+		result.proxyLogWritten = !reqCtx.skipProxyLog
+		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, err)
+		failed := &fwResult{Status: status, Body: result.body}
+		result.forwarded = failed
+		if !reqCtx.skipProxyLog {
+			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, result.duration, failed, err.Error())
+			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), result.duration, failed, modelID)
+		}
+		return result
+	}
 	runner := s.cursorRunnerSnapshot()
 	if runner == nil {
-		result := cursorErrorResult(
-			cfg,
+		return finishStartFailure(
 			http.StatusServiceUnavailable,
-			"cursor SDK runner is unavailable",
-			cooldown.ActionReturnClient,
-		)
-		finishCursorSDKDebug(reqCtx, debugCapture, result.status, result.body, errors.New("cursor SDK runner is unavailable"))
-		return result, nil
+			errors.New("cursor SDK runner is unavailable"),
+			cooldown.ActionSkipChannel,
+			true,
+		), nil
 	}
 
 	streaming := reqCtx.isStreaming
@@ -234,6 +250,7 @@ func (s *Server) forwardCursorAgent(
 	if err != nil {
 		status := http.StatusBadGateway
 		action := cooldown.ActionRetryChannel
+		skipped := false
 		if timeoutStatus, timeoutErr, timedOut := classifyTimeout(err); timedOut {
 			status = timeoutStatus
 			err = timeoutErr
@@ -242,31 +259,17 @@ func (s *Server) forwardCursorAgent(
 			action = cooldown.ActionReturnClient
 		} else if errors.Is(err, cursorauth.ErrAgentMissing) {
 			status = http.StatusServiceUnavailable
-			action = cooldown.ActionReturnClient
+			action = cooldown.ActionSkipChannel
+			skipped = true
 		} else if errors.Is(err, cursorauth.ErrMissingAPIKey) {
 			status = http.StatusUnauthorized
-			action = cooldown.ActionReturnClient
+			skipped = true
 		} else if cursorauth.IsCredentialRejected(err) {
 			status = http.StatusUnauthorized
 		} else if cursorauth.IsUsageLimitExceeded(err) {
 			status = http.StatusTooManyRequests
 		}
-		result := cursorErrorResult(cfg, status, err.Error(), action)
-		if status == http.StatusTooManyRequests {
-			result.nextAction = s.cooldownCursorUsageLimit(ctx, cfg, modelID, result.body)
-		}
-		result.duration = time.Since(started).Seconds()
-		result.isClientCanceled = status == StatusClientClosedRequest
-		result.proxyLogWritten = !reqCtx.skipProxyLog
-		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, err)
-		failed := &fwResult{Status: status, Body: result.body}
-		result.forwarded = failed
-		if !reqCtx.skipProxyLog {
-			duration := time.Since(started).Seconds()
-			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, err.Error())
-			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), duration, failed, modelID)
-		}
-		return result, nil
+		return finishStartFailure(status, err, action, skipped), nil
 	}
 
 	format := cursorResponseFormat(reqCtx)

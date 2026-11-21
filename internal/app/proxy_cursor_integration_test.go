@@ -1027,6 +1027,75 @@ func TestProxy_CursorOAuthRunnerStartFailureHasNoUsageEstimate(t *testing.T) {
 }
 
 /**
+ * @brief Cursor 缺凭证或 Bridge 暂不可用时切到健康渠道，只冷却缺 Key 的 OAuth 凭证。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthUnavailableCandidateFailsOver(t *testing.T) {
+	t.Parallel()
+	credential := `{"access_token":"test-session","api_key":"test-key"}`
+	for _, test := range []struct {
+		name         string
+		credential   string
+		runner       cursorauth.Runner
+		status       int
+		message      string
+		wantCooldown bool
+	}{
+		{
+			name: "legacy access token", credential: `{"access_token":"test-session"}`,
+			runner: cursorauth.NewSDKRunner(), status: http.StatusUnauthorized,
+			message: cursorauth.ErrMissingAPIKey.Error(), wantCooldown: true,
+		},
+		{
+			name: "runner unavailable", credential: credential, status: http.StatusServiceUnavailable,
+			message: "cursor SDK runner is unavailable",
+		},
+		{
+			name: "bridge unavailable", credential: credential, status: http.StatusServiceUnavailable,
+			runner: &fakeCursorRunner{err: cursorauth.ErrAgentMissing}, message: cursorauth.ErrAgentMissing.Error(),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"backup","choices":[{"message":{"role":"assistant","content":"reply from backup"},"finish_reason":"stop"}]}`))
+			}))
+			defer backup.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "cursor-primary", upstreamProtocol: "openai", models: "grok-4.6",
+					authType: model.AuthTypeCursorOAuth, oauthCredential: test.credential},
+				{name: "backup", upstreamProtocol: "openai", models: "grok-4.6"},
+			}, map[int]string{0: "https://unused.invalid", 1: backup.URL})
+			env.server.cursorRunner = test.runner
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "grok-4.6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, nil)
+			if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String() != "reply from backup" {
+				t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+			}
+			failure := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+				return entry.ChannelName == "cursor-primary" && entry.StatusCode == test.status && strings.Contains(entry.Message, test.message)
+			})
+			if failure == nil {
+				t.Fatal("missing Cursor failure log")
+			}
+			cooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cooled := !cooldowns[failure.ChannelID].IsZero(); cooled != test.wantCooldown {
+				t.Fatalf("Cursor credential cooldown = %t, want %t: %v", cooled, test.wantCooldown, cooldowns)
+			}
+			models, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil || len(models) != 0 {
+				t.Fatalf("unexpected model cooldown: %v, %v", models, err)
+			}
+		})
+	}
+}
+
+/**
  * @brief 工具恢复轮的客户端上下文不包含 SDK 独立 usage 或终态携带的跨轮累计消费。
  * @param t 测试上下文。
  */

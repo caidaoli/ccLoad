@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -122,6 +123,7 @@ const (
 	ErrorLevelChannel
 	// ErrorLevelClient 客户端错误：不应该冷却，直接返回给客户端
 	ErrorLevelClient
+	ErrorLevelCapability ///< 当前渠道无法满足本次请求的能力要求，其他请求仍可使用它。
 )
 
 // StatusCodeMeta 状态码元数据（统一定义错误级别）
@@ -275,8 +277,9 @@ func IsContextLengthExceededError(responseBody []byte) bool {
 	return false
 }
 
-// statusCodeMetaMap 状态码元数据映射表
-// 设计原则：表驱动替代分散的 switch/map，提高可维护性
+/**
+ * @brief 提供上游状态码的默认错误级别。
+ */
 var statusCodeMetaMap = map[int]StatusCodeMeta{
 	// === 客户端取消 ===
 	// 499: 上游返回的客户端关闭请求；基础级别为 Channel，HTTP 分类层收窄到模型作用域
@@ -291,6 +294,7 @@ var statusCodeMetaMap = map[int]StatusCodeMeta{
 	429: {ErrorLevelKey}, // Too Many Requests - rate limited
 
 	// === 渠道级错误：服务器端问题 ===
+	408: {ErrorLevelChannel}, // Request Timeout - 上游等待网关发送请求超时
 	444: {ErrorLevelChannel}, // nginx: No Response (服务器主动关闭连接)
 	500: {ErrorLevelChannel}, // Internal Server Error
 	502: {ErrorLevelChannel}, // Bad Gateway
@@ -307,8 +311,6 @@ var statusCodeMetaMap = map[int]StatusCodeMeta{
 	StatusStreamIncomplete: {ErrorLevelChannel}, // Stream incomplete
 
 	// === 客户端错误：不冷却，直接返回 ===
-	// 408 Request Timeout: RFC 7231 定义为"服务器等待客户端发送完整请求超时"（客户端慢）
-	408: {ErrorLevelClient}, // Request Timeout - client slow
 	// 405 Method Not Allowed: 在代理场景下，这更可能意味着上游 endpoint/路由配置错误（方法不被支持）
 	// 作为渠道级故障处理：触发渠道冷却。
 	405: {ErrorLevelChannel}, // Method Not Allowed
@@ -339,10 +341,13 @@ func GetStatusCodeMeta(status int) StatusCodeMeta {
 	return StatusCodeMeta{ErrorLevelClient}
 }
 
-// IsModelScopedHTTPStatus 判断上游 HTTP 响应是否应先按模型级故障处理。
-// 596-599 是 ccLoad 内部状态码，必须保留各自明确语义。
+/**
+ * @brief 判断上游 HTTP 响应是否默认冷却当前模型。
+ * @param status 上游状态码。
+ * @return 上游 408 及服务端故障返回 true。596–599 由各自的内部状态契约处理。
+ */
 func IsModelScopedHTTPStatus(status int) bool {
-	return status >= 500 && status < StatusQuotaExceeded
+	return status == http.StatusRequestTimeout || status >= 500 && status < StatusQuotaExceeded
 }
 
 // IsModelScopedStreamFailure 判断内部流故障是否只应冷却当前实际模型。
@@ -527,7 +532,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	}
 
 	// Anthropic 429 先区分三类：共享 5h/7d 窗口被拒属于整个凭证；fast 模式缺少
-	// usage credits 属于这次请求（换号也一样，且账号对普通请求仍健康）；其余只冷却模型。
+	// usage credits 只影响当前渠道的 fast 请求；其余只冷却模型。
 	if statusCode == 429 {
 		if anthropicUnifiedWindowRejected(headers) {
 			classification := HTTPResponseClassification{
@@ -543,7 +548,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			return classification
 		}
 		if anthropicFastModeCreditsRequired(responseBody) {
-			return HTTPResponseClassification{Level: ErrorLevelClient}
+			return HTTPResponseClassification{Level: ErrorLevelCapability}
 		}
 	}
 
@@ -1717,21 +1722,13 @@ func ParseResetTimeFrom1308Error(responseBody []byte) (time.Time, bool) {
 	return resetTime, true
 }
 
-// ClassifyError 统一错误分类器（网络错误+HTTP错误）
-// 将proxy_util.go中的classifyError和classifyErrorByString整合到此处
-//
-// 参数:
-//   - err: 错误对象（可能是context错误、网络错误、或其他错误）
-//
-// 返回:
-//   - statusCode: HTTP状态码（或内部错误码）
-//   - errorLevel: 错误级别（Key级/渠道级/客户端级）
-//   - shouldRetry: 是否应该重试
-//
-// 设计原则（DRY+SRP）:
-//   - 统一入口处理所有错误分类
-//   - 消除proxy_util.go中的重复逻辑
-//   - 分层设计：快速路径（context错误）→ 网络错误 → 字符串匹配
+/**
+ * @brief 将传输、取消或请求语义错误归类为代理状态和换渠决策。
+ * @param err 本次转发错误；nil 表示成功。
+ * @return HTTP 状态码或能保留超时阶段的内部状态码。
+ * @return 冷却错误级别；err 为 nil 时返回 ErrorLevelNone。
+ * @return 出站故障允许重试时为 true；本地取消和客户端请求错误为 false。
+ */
 func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetry bool) {
 	if err == nil {
 		return 200, ErrorLevelNone, false
@@ -1775,8 +1772,12 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 		}
 	}
 
-	// 慢速路径：回退到字符串匹配
-	return classifyErrorByString(err.Error())
+	// http.Client.Do 用 *url.Error 包装出站错误，broken pipe 表示上游连接断开。
+	// 下游写入断开时按客户端取消处理。
+	if _, upstream := errors.AsType[*url.Error](err); !upstream && strings.Contains(strings.ToLower(err.Error()), "broken pipe") {
+		return StatusClientClosedRequest, ErrorLevelClient, false
+	}
+	return http.StatusBadGateway, ErrorLevelChannel, true
 }
 
 // IsModelScopedNetworkError 判断网络错误是否只应冷却当前实际模型。
@@ -1811,38 +1812,4 @@ func isModelScopedNetworkErrorText(errLower string) bool {
 		strings.Contains(errLower, "stream error:") ||
 		strings.Contains(errLower, "empty response") ||
 		strings.Contains(errLower, "connection timeout")
-}
-
-// classifyErrorByString 通过字符串匹配分类网络错误
-// 从proxy_util.go迁移，作为ClassifyError的私有辅助函数
-func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
-	errLower := strings.ToLower(errStr)
-
-	// broken pipe - 客户端主动断开连接，完全不重试
-	if strings.Contains(errLower, "broken pipe") {
-		return 499, ErrorLevelClient, false
-	}
-
-	// 模型生成链路故障：状态仍记为 502/504，但冷却作用域由调用方收窄到模型。
-	if isModelScopedNetworkErrorText(errLower) {
-		return 502, ErrorLevelChannel, true
-	}
-
-	// Connection refused - 应该重试其他渠道
-	if strings.Contains(errLower, "connection refused") {
-		return 502, ErrorLevelChannel, true
-	}
-
-	// 其他常见的网络连接错误也应该重试
-	if strings.Contains(errLower, "no such host") ||
-		strings.Contains(errLower, "host unreachable") ||
-		strings.Contains(errLower, "network unreachable") ||
-		strings.Contains(errLower, "no route to host") {
-		return 502, ErrorLevelChannel, true
-	}
-
-	// 使用负值错误码，避免与HTTP状态码混淆
-	// 其他网络错误 - 可以重试
-	// 对外/日志统一使用标准HTTP语义：502 Bad Gateway
-	return 502, ErrorLevelChannel, true
 }

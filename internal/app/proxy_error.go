@@ -970,7 +970,7 @@ func (s *Server) handleProxyErrorResponse(
 		failure.nextAction = cooldown.ActionRetryChannel
 		return failure, cooldown.ActionRetryChannel
 	}
-	if forceReturnClient || isXAIOAuthCredentialForbidden(cfg, res) || isAntigravityPermissionDenied(cfg, res, "VALIDATION_REQUIRED") {
+	if forceReturnClient || isXAIOAuthCredentialForbidden(cfg, res) {
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient
 	}

@@ -981,7 +981,7 @@ func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
 
 func isResponsesWebsocketClientRetryAction(action cooldown.Action) bool {
 	switch action {
-	case cooldown.ActionRetryKey, cooldown.ActionRetryModel, cooldown.ActionRetryChannel:
+	case cooldown.ActionRetryKey, cooldown.ActionRetryModel, cooldown.ActionRetryChannel, cooldown.ActionSkipChannel:
 		return true
 	default:
 		return false

@@ -1063,9 +1063,13 @@ func (rpm statsRPM) fill(stats []model.StatsEntry, startTime, endTime time.Time,
 	}
 }
 
-// GetChannelSuccessRates 获取健康度排序使用的各渠道成功率和样本量。
-// 注意：这不是统计页/健康时间线口径；统计页会把 429 计入 error 并额外暴露 rate_limited。
-// 返回 map[channelID]ChannelHealthStats
+/**
+ * @brief 获取用于健康度排序的各渠道成功率和样本量。
+ * @param ctx 查询上下文；取消时停止查询。
+ * @param since 健康度计算的最早时间，按分钟分桶。
+ * @return 以渠道 ID 为键的健康度统计，跳过没有合格样本的渠道。
+ * @return 查询或读取结果失败时返回错误，成功时为 nil。
+ */
 func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error) {
 	sinceBucket := since.UnixMilli() / minuteMs
 	untilBucket := time.Now().UnixMilli() / minuteMs
@@ -1083,13 +1087,13 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 	//   注：596(1308配额超限)不纳入统计，因为它不反映渠道质量
 	//   598: 上游首字节超时（渠道级，自定义状态码）
 	//   599: 流式响应不完整（渠道级，自定义状态码）
-	//   注：408已改为客户端错误，不计入健康度
+	//   408: 上游请求超时（入站读取超时发生在选渠道前）
 	//   注：429(限流)不纳入统计——多为单Key限流，故障切换层会重试其他Key并成功；
 	//       真正的渠道级429(IP/账户/全局限流)会触发渠道级冷却，冷却过滤优先级高于健康度排序，
 	//       已被冷却机制排除，故无需在健康度统计中重复降权。计入分母只会让个别坏Key拉低好渠道成功率。
 	eligible := `
 				(status_code >= 200 AND status_code < 300)
-				OR status_code IN (401, 402, 403, 405, 500, 502, 503, 504, 520, 521, 524, 597, 598, 599)
+				OR status_code IN (401, 402, 403, 405, 408, 500, 502, 503, 504, 520, 521, 524, 597, 598, 599)
 			`
 
 	// 使用 minute_bucket 索引优化查询

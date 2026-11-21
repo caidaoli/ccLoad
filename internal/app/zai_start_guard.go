@@ -612,7 +612,7 @@ func (g *zaiStartGuard) send(req *http.Request, send func(*http.Request) (*http.
 		}
 		resp, body, err := g.sendOnce(req, send)
 		// 验证与明确风控优先于消息中的 busy 字样，不能进入并发退避循环。
-		if code := zaiErrorCode(body); code == "3007" || code == "3012" {
+		if isZAITrialVerificationError(body) {
 			return resp, body, err
 		}
 		if err != nil && last != nil && (errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded)) {

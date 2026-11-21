@@ -1013,9 +1013,10 @@ func (s *Server) runProxyAttemptPass(
 			ordered = append(ordered, cfg)
 		}
 	}
-	cands = ordered
 	operatorSkipped := make(map[int64]bool)
-	for index, cfg := range cands {
+	for len(ordered) > 0 {
+		cfg := ordered[0]
+		ordered = ordered[1:]
 		if operatorSkipped[cfg.ID] {
 			continue
 		}
@@ -1088,12 +1089,13 @@ func (s *Server) runProxyAttemptPass(
 				break
 			}
 
+			ordered = excludeZAIRoutesAfterTrialRejection(reqCtx, result, ordered)
 			if shouldStopTryingChannels(result) {
 				break
 			}
 
-			if stopAfterFailure != nil && index+1 < len(cands) &&
-				stopAfterFailure(cfg, cands[index+1], result) {
+			if stopAfterFailure != nil && len(ordered) > 0 &&
+				stopAfterFailure(cfg, ordered[0], result) {
 				break
 			}
 		}

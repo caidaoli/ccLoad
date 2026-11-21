@@ -316,25 +316,27 @@ func TestProxyAntigravityTOSViolation(t *testing.T) {
 }
 
 /**
- * @brief 验证结构化验证提示保留原响应并终止普通或付费回退，纯消息文本仍按普通 403 处理。
+ * @brief 验证账号验证错误冷却当前渠道，普通请求和 Credits 尝试均可换渠，候选耗尽时保留验证详情。
  * @param t 测试上下文。
  */
 func TestProxyAntigravityValidationRequired(t *testing.T) {
 	t.Parallel()
 	const modelName = "claude-sonnet-4-6"
-	const rejection = `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Verification required (VALIDATION_REQUIRED)","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED","metadata":{"validation_url":"https://example.com/verify"}}]}}`
+	const rejection = `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Verify your account to continue.","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED","metadata":{"validation_url":"https://example.com/verify"}}]}}`
 	const success = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"backup"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}`
 	for _, tc := range []struct {
 		name        string
 		stream      bool
 		paid        bool
 		messageOnly bool
+		noBackup    bool
 	}{
 		{name: "HTTP before credits"},
 		{name: "first SSE frame before credits", stream: true},
 		{name: "HTTP during credits", paid: true},
 		{name: "first SSE frame during credits", stream: true, paid: true},
 		{name: "message alone allows fallback", messageOnly: true},
+		{name: "no backup preserves verification details", noBackup: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -345,6 +347,7 @@ func TestProxyAntigravityValidationRequired(t *testing.T) {
 					t.Fatal(err)
 				}
 				creds.RefreshToken = "refresh-" + token
+				creds.Email = token + "@example.com"
 				if paid {
 					balance, minimum := 50.0, 1.0
 					creds.Credits = &antigravityauth.Credits{Balance: &balance, Minimum: &minimum, SampledAt: time.Now()}
@@ -384,38 +387,45 @@ func TestProxyAntigravityValidationRequired(t *testing.T) {
 			}))
 			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				backupCalls.Add(1)
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+success+"\n\n")
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, success)
 			}))
-			env := setupProxyTestEnvWithSettings(t, []testChannel{
+			channels := []testChannel{
 				{name: "verify", models: modelName, upstreamProtocol: "gemini", priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential("verify", tc.paid)},
-				{name: "backup", models: modelName, upstreamProtocol: "gemini", priority: 10, authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential("backup", true)},
-			}, map[int]string{0: primary.URL, 1: backup.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+				{name: "backup", models: modelName, upstreamProtocol: "gemini", priority: 10, authType: model.AuthTypeAntigravityOAuth, oauthCredential: credential("backup", tc.paid)},
+			}
+			if tc.noBackup {
+				channels = channels[:1]
+			}
+			env := setupProxyTestEnvWithSettings(t, channels, map[int]string{0: primary.URL, 1: backup.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
 			method := "generateContent"
 			if tc.stream {
 				method = "streamGenerateContent?alt=sse"
 			}
 			response := doProxyRequest(t, env.engine, "/v1beta/models/"+modelName+":"+method,
 				map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}}, nil)
-			if tc.messageOnly {
-				if response.Code != http.StatusOK || primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
-					t.Fatalf("response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
+			wantStatus, wantBackup := http.StatusOK, int32(1)
+			if tc.noBackup {
+				wantStatus, wantBackup = http.StatusForbidden, 0
+				if got := gjson.Get(response.Body.String(), "error.details.0.metadata.validation_url").String(); got != "https://example.com/verify" || response.Header().Get("X-Verification-Request") != "trace-id" {
+					t.Fatalf("verification response lost upstream details: headers=%v body=%s", response.Header(), response.Body.String())
 				}
-				return
 			}
-			if response.Code != http.StatusForbidden || primaryCalls.Load() != 1 || backupCalls.Load() != 0 {
+			if response.Code != wantStatus || primaryCalls.Load() != 1 || backupCalls.Load() != wantBackup {
 				t.Fatalf("response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
-			}
-			if got := gjson.Get(response.Body.String(), "error.details.0.metadata.validation_url").String(); got != "https://example.com/verify" || response.Header().Get("X-Verification-Request") != "trace-id" {
-				t.Fatalf("verification response lost upstream details: headers=%v body=%s", response.Header(), response.Body.String())
 			}
 			configs, err := env.store.ListConfigs(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, cfg := range configs {
-				if !cfg.Enabled || cfg.CooldownUntil != 0 {
-					t.Fatalf("verification changed channel availability: %s", cfg.Name)
+				if !cfg.Enabled || (cfg.CooldownUntil > time.Now().Unix()) != (cfg.Name == "verify") {
+					t.Fatalf("channel %s enabled=%t cooldown_until=%d", cfg.Name, cfg.Enabled, cfg.CooldownUntil)
 				}
 			}
 		})

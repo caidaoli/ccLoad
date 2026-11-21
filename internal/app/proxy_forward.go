@@ -3137,6 +3137,10 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 
 	if err != nil {
+		// 请求取消时，出站传输可能先报连接错误，再观察到取消原因。
+		if cause := context.Cause(reqCtx.ctx); cause != nil {
+			err = cause
+		}
 		errRes, errDur, errErr := s.handleRequestError(reqCtx, cfg, err)
 		dc.captureUpstreamError(errErr)
 		if errRes != nil {
@@ -4217,7 +4221,7 @@ func retryBodyForRejectedRequest(
 	if res != nil && res.zaiTrial {
 		body, _ := forwardResultErrorPayload(res)
 		// 业务终态优先于正文校验文案，避免修复器绕过账号风控或人机验证。
-		if code := zaiErrorCode(body); code == "3007" || code == "3012" {
+		if isZAITrialVerificationError(body) {
 			return nil, "", false
 		}
 	}
@@ -5014,6 +5018,9 @@ func (s *Server) attemptKeyAcrossURLs(
 		if result != nil {
 			urlLastFailure = result
 		}
+		if nextAction == cooldown.ActionSkipChannel {
+			return nil, urlLastFailure, nil
+		}
 		if cfg.AntigravityCredits {
 			return nil, urlLastFailure, nil
 		}
@@ -5088,7 +5095,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		// 渠道级错误 (ActionRetryChannel) 或网络错误：
 		// 在多URL场景下，默认先尝试下一个URL
 		if urlsCount > 1 {
-			// 5xx 先按模型冷却；若恰好耗尽所有模型，动作会升级为渠道级。
+			// 408/5xx 先按模型冷却；若恰好耗尽所有模型，动作会升级为渠道级。
 			// 无论是否升级，这种故障都与 URL 无关，不应改打同渠道的其他 URL。
 			if isModelScopedHTTPFailure(result) {
 				if result.deferredCooldown != nil {

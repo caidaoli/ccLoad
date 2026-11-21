@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"testing"
 	"time"
@@ -624,7 +625,15 @@ func TestClassifyError_ConnectionResetAndBrokenPipe(t *testing.T) {
 			expectedStatus: 499,
 			expectedLevel:  ErrorLevelClient,
 			expectedRetry:  false,
-			reason:         "broken pipe 基本是客户端断开，不应重试",
+			reason:         "下游写入断开不应重试",
+		},
+		{
+			name:           "broken_pipe_upstream_closed",
+			err:            &url.Error{Op: "Post", URL: "https://upstream.example", Err: errors.New("write: broken pipe")},
+			expectedStatus: http.StatusBadGateway,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "出站传输断开应允许切换渠道",
 		},
 		{
 			name:           "connection_reset_by_peer_upstream",
@@ -1592,7 +1601,7 @@ func TestGetStatusCodeMeta(t *testing.T) {
 		{502, ErrorLevelChannel, "502 -> 渠道级"},
 		{503, ErrorLevelChannel, "503 -> 渠道级"},
 		{504, ErrorLevelChannel, "504 -> 渠道级"},
-		{408, ErrorLevelClient, "408 -> 客户端级 (RFC7231: 客户端发送请求慢)"},
+		{http.StatusRequestTimeout, ErrorLevelChannel, "408 -> 上游请求超时"},
 		{405, ErrorLevelChannel, "405 -> 渠道级 (上游endpoint/方法不支持)"},
 
 		// 自定义状态码
@@ -1627,6 +1636,7 @@ func TestIsModelScopedHTTPStatus(t *testing.T) {
 		status int
 		want   bool
 	}{
+		{http.StatusRequestTimeout, true},
 		{500, true},
 		{520, true},
 		{524, true},
@@ -2125,14 +2135,18 @@ func TestClassifyAnthropicRateLimitIgnoresBillingBoundaryResets(t *testing.T) {
 	}
 }
 
-func TestClassifyAnthropicFastModeCreditsIsRequestLevel(t *testing.T) {
+/**
+ * @brief Fast 模式缺少积分时，仅当前渠道无法满足该请求。
+ * @param t 测试上下文。
+ */
+func TestClassifyAnthropicFastModeCreditsIsCapabilityError(t *testing.T) {
 	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."}}`)
 	headers := map[string][]string{"anthropic-ratelimit-unified-reset": {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)}}
 
 	got := ClassifyHTTPResponseWithMeta(http.StatusTooManyRequests, headers, body)
 
-	if got.Level != ErrorLevelClient || got.ModelScoped || got.HasModelCooldownUntil {
-		t.Fatalf("classification=%+v, want request-level client error without cooldown", got)
+	if got.Level != ErrorLevelCapability || got.ModelScoped || got.HasModelCooldownUntil {
+		t.Fatalf("classification=%+v, want capability error without cooldown", got)
 	}
 }
 

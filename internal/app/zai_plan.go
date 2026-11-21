@@ -115,6 +115,16 @@ func zaiErrorCode(body []byte) string {
 }
 
 /**
+ * @brief 识别要求完成验证或明确声明账号风控的 ZAI Trial 拒绝。
+ * @param body ZAI Trial 返回的完整错误 JSON。
+ * @return 确认属于 3007 或 3012 时为 true。
+ */
+func isZAITrialVerificationError(body []byte) bool {
+	code := zaiErrorCode(body)
+	return code == "3007" || code == "3012"
+}
+
+/**
  * @brief 归一体验业务错误，再使用公共无副作用决策；不写库、不修改调度。
  * @param cfg 实际发送时的渠道快照。
  * @param in 真实体验错误，不含本地拒绝。
@@ -172,7 +182,7 @@ func (s *Server) evaluateZAITrialCooldown(cfg *model.Config, in cooldown.ErrorIn
 		d.Action = cooldown.ActionRetryModel
 	}
 	if !in.IsNetworkError && code == "3012" {
-		// 明确风控仍暂停账号，但停止当前请求的付费回退及后续渠道重放。
+		// 明确风控仍暂停账号，且禁止在同一服务上重放请求。
 		d.Action = cooldown.ActionReturnClient
 	}
 	d.Model = zaiTrialModelKey(in.Model)
@@ -190,7 +200,7 @@ func (s *Server) evaluateZAITrialCooldown(cfg *model.Config, in cooldown.ErrorIn
  */
 func (s *Server) applyZAITrialCooldown(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) (cooldown.Action, bool) {
 	d := s.evaluateZAITrialCooldown(cfg, in)
-	if (d.Action == cooldown.ActionReturnClient && d.scope != "account") || ctx.Err() != nil {
+	if d.Action == cooldown.ActionSkipChannel || (d.Action == cooldown.ActionReturnClient && d.scope != "account") || ctx.Err() != nil {
 		return d.Action, false
 	}
 	credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -936,7 +946,7 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 		}
 		input = cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, resp.StatusCode, rawError, resp.Header), zaiTrialModelKey(name))
 	}
-	if action, _ := s.applyZAITrialCooldown(req.Context(), cfg, input); action == cooldown.ActionReturnClient {
+	if action, _ := s.applyZAITrialCooldown(req.Context(), cfg, input); action == cooldown.ActionReturnClient || action == cooldown.ActionSkipChannel {
 		return resp, sendErr
 	}
 	if resp != nil && resp.Body != nil {

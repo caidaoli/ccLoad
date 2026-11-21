@@ -1,6 +1,7 @@
 package util
 
 import (
+	"net/http"
 	"time"
 )
 
@@ -106,7 +107,11 @@ func (p *CooldownPolicy) CalculateBackoffDuration(prevMs int64, until time.Time,
 	return next
 }
 
-// initialCooldown 根据状态码返回初始冷却时间。
+/**
+ * @brief 按上游故障类型选择指数退避的初始时长。
+ * @param statusCode 已分类的状态码，nil 使用限流退避。
+ * @return 第一轮冷却的配置时长。
+ */
 func (p *CooldownPolicy) initialCooldown(statusCode *int) time.Duration {
 	if statusCode == nil {
 		return p.rateLimit
@@ -115,7 +120,7 @@ func (p *CooldownPolicy) initialCooldown(statusCode *int) time.Duration {
 	switch {
 	case code == 401 || code == 402 || code == 403:
 		return p.authInitial
-	case code == StatusFirstByteTimeout || code == StatusSSEError:
+	case code == http.StatusRequestTimeout || code == StatusFirstByteTimeout || code == StatusSSEError:
 		return p.timeout
 	case code >= 500:
 		return p.serverInitial

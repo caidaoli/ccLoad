@@ -22,7 +22,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"ccLoad/internal/anthropicauth"
@@ -17404,6 +17406,135 @@ func TestProxy_MultiURLFallbackOn598_DoesNotChannelCooldownEarly(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证上游 408 冷却实际模型并用备用渠道完成请求。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_Upstream408CoolsModelAndFailsOver(t *testing.T) {
+	t.Parallel()
+
+	var primaryCalls, fallbackCalls atomic.Int32
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		primaryCalls.Add(1)
+		http.Error(w, "upstream request timed out", http.StatusRequestTimeout)
+	}))
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"from-backup","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{
+		{name: "timeout", models: "gpt-4,gpt-other", priority: 100},
+		{name: "backup", models: "gpt-4", priority: 1},
+	}, map[int]string{0: primary.URL, 1: fallback.URL}, map[string]string{"cooldown_timeout_seconds": "17", "cooldown_rate_limit_seconds": "42"})
+
+	started := time.Now()
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-4", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "id").String() != "from-backup" ||
+		primaryCalls.Load() != 1 || fallbackCalls.Load() != 1 {
+		t.Fatalf("status=%d body=%s calls=%d/%d, want 200 from backup after one attempt per channel", response.Code, response.Body, primaryCalls.Load(), fallbackCalls.Load())
+	}
+	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.StatusCode == http.StatusRequestTimeout })
+	if entry == nil || entry.ChannelID == 0 {
+		t.Fatalf("upstream 408 attempt log=%+v", entry)
+	}
+	modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryCooldowns := modelCooldowns[entry.ChannelID]
+	until := primaryCooldowns["gpt-4"]
+	if len(primaryCooldowns) != 1 || until.Before(started.Add(16*time.Second)) || until.After(time.Now().Add(17*time.Second)) {
+		t.Fatalf("cooldowns=%v, want only gpt-4 cooled for 17s", primaryCooldowns)
+	}
+	channelCooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+	if err != nil || len(channelCooldowns) != 0 {
+		t.Fatalf("channel cooldowns=%v err=%v, want no channel cooldown", channelCooldowns, err)
+	}
+}
+
+/**
+ * @brief 验证上游 broken pipe 在取消或下游提交前后的换渠边界。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_UpstreamBrokenPipe(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		op           string
+		cancel       bool
+		committed    bool
+		wantLog      int
+		wantResponse int
+	}{
+		{name: "write", op: "write", wantLog: http.StatusBadGateway, wantResponse: http.StatusOK},
+		{name: "read", op: "read", wantLog: http.StatusBadGateway, wantResponse: http.StatusOK},
+		{name: "canceled", op: "write", cancel: true, wantLog: StatusClientClosedRequest, wantResponse: StatusClientClosedRequest},
+		{name: "committed", op: "read", committed: true, wantLog: util.StatusStreamIncomplete, wantResponse: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "primary", models: "gpt-4", priority: 100},
+				{name: "backup", models: "gpt-4", priority: 1},
+			}, map[int]string{0: "https://primary.example", 1: "https://backup.example"})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var primaryCalls, backupCalls int
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				_ = r.Body.Close()
+				if r.URL.Host == "backup.example" {
+					backupCalls++
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+						Body: io.NopCloser(strings.NewReader(`{"id":"from-backup","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))}, nil
+				}
+				primaryCalls++
+				pipeErr := &net.OpError{Op: tc.op, Net: "tcp", Err: syscall.EPIPE}
+				if tc.cancel {
+					cancel()
+				}
+				if tc.committed {
+					body := io.MultiReader(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"), iotest.ErrReader(pipeErr))
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(body)}, nil
+				}
+				return nil, pipeErr
+			})}
+			body := fmt.Sprintf(`{"model":"gpt-4","stream":%t,"messages":[{"role":"user","content":"hi"}]}`, tc.committed)
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			response := httptest.NewRecorder()
+			env.engine.ServeHTTP(response, req)
+			wantBackup := 1
+			if tc.cancel || tc.committed {
+				wantBackup = 0
+			}
+			if response.Code != tc.wantResponse || primaryCalls != 1 || backupCalls != wantBackup {
+				t.Fatalf("status=%d body=%s calls=%d/%d, want status=%d calls=1/%d", response.Code, response.Body, primaryCalls, backupCalls, tc.wantResponse, wantBackup)
+			}
+			if tc.committed && !strings.Contains(response.Body.String(), `"content":"partial"`) {
+				t.Fatalf("expected committed partial stream, got %s", response.Body)
+			}
+			if wantBackup != 0 && gjson.GetBytes(response.Body.Bytes(), "id").String() != "from-backup" {
+				t.Fatalf("expected backup response, got %s", response.Body)
+			}
+			entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.StatusCode != http.StatusOK })
+			if entry == nil || entry.StatusCode != tc.wantLog {
+				t.Fatalf("primary attempt log=%+v, want status %d", entry, tc.wantLog)
+			}
+			if tc.cancel {
+				cooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+				if err != nil || len(cooldowns) != 0 {
+					t.Fatalf("channel cooldowns=%v err=%v, want no cancellation cooldown", cooldowns, err)
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_StreamTimeoutDoesNotRetryAfterResponseCommit(t *testing.T) {
 	t.Parallel()
 
@@ -18832,6 +18963,55 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 	if time.Until(until) <= 0 {
 		t.Fatalf("expected channel cooldown until in the future, got %v", until)
+	}
+}
+
+/**
+ * @brief 缺少 Fast 积分时跳过该渠道的其余 URL，保留备用请求的速度档及普通请求的可用性。
+ * @param t 测试上下文。
+ */
+func TestProxy_AnthropicFastCreditsFallback(t *testing.T) {
+	t.Parallel()
+	const modelName = "claude-opus-4-6"
+	const success = `{"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`
+	var primaryCalls, backupCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		fast := gjson.GetBytes(body, "speed").String() == "fast"
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/primary/") {
+			primaryCalls.Add(1)
+			if fast {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."}}`)
+				return
+			}
+		} else {
+			backupCalls.Add(1)
+			if !fast {
+				t.Error("unexpected standard-speed request on backup")
+			}
+		}
+		_, _ = io.WriteString(w, success)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "standard", upstreamProtocol: "anthropic", models: modelName, apiKey: "primary"},
+		{name: "fast", upstreamProtocol: "anthropic", models: modelName, apiKey: "backup"},
+	}, map[int]string{0: upstream.URL + "/primary/a\n" + upstream.URL + "/primary/b", 1: upstream.URL})
+	body := map[string]any{"model": modelName, "speed": "fast", "max_tokens": 16, "messages": []map[string]string{{"role": "user", "content": "hello"}}}
+	response := doProxyRequest(t, env.engine, "/v1/messages", body, nil)
+	if response.Code != http.StatusOK || primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
+		t.Fatalf("fast response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
+	}
+	assertNoProxyCooldowns(t, env)
+	delete(body, "speed")
+	response = doProxyRequest(t, env.engine, "/v1/messages", body, nil)
+	if response.Code != http.StatusOK || primaryCalls.Load() != 2 || backupCalls.Load() != 1 {
+		t.Fatalf("standard response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
 	}
 }
 
