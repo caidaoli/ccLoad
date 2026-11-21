@@ -334,6 +334,12 @@ func (s *sdkRunState) finalError(streamErr error) error {
 				Message: message,
 			}
 		}
+		if cursorRunUsageLimited(s.errorCode, message) {
+			return &BridgeError{
+				SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED,
+				Message: message,
+			}
+		}
 		return errors.New("cursor run failed: " + message)
 	default:
 		return fmt.Errorf("cursor run ended with non-terminal status %s", s.status.String())
@@ -353,6 +359,22 @@ func cursorRunCredentialRejected(errorCode, message string) bool {
 	message = strings.ToLower(strings.TrimSpace(message))
 	return strings.HasPrefix(message, "authentication error") &&
 		strings.Contains(message, "try logging out and back in")
+}
+
+/**
+ * @brief 识别 Run 终态中的用量上限错误。
+ * @param errorCode Run 结果携带的错误码，可能为空。
+ * @param message Run 终态说明文本。
+ * @return 错误码为用量上限，或文本为 "You've hit your usage limit ..." 时为 true。
+ * @details Cursor 对模型额度耗尽只给终态文本（例如 "You've hit your usage limit for Opus"），
+ * 不带结构化错误码；匹配不含撇号的片段，避免直/弯引号差异。
+ */
+func cursorRunUsageLimited(errorCode, message string) bool {
+	code := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(errorCode)))
+	if code == "usage_limit_exceeded" || code == "sdk_error_code_usage_limit_exceeded" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(message), "hit your usage limit")
 }
 
 func firstString(values map[string]any, keys ...string) string {

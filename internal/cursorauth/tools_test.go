@@ -1,6 +1,7 @@
 package cursorauth
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,47 @@ func TestParseRequestOnlyResumesTrailingToolResults(t *testing.T) {
 	}`))
 	if len(request.ToolResults) != 1 || request.ToolResults[0].CallID != "call_system" {
 		t.Fatalf("tool result followed by system context = %+v", request.ToolResults)
+	}
+}
+
+func TestParseRequestCollectsImagesAndEffort(t *testing.T) {
+	t.Parallel()
+	request := ParseRequest([]byte(`{
+		"output_config":{"effort":"High"},
+		"messages":[{"role":"user","content":[
+			{"type":"text","text":"compare"},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}},
+			{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}
+		]}]
+	}`))
+	if request.Effort != "high" {
+		t.Fatalf("effort = %q", request.Effort)
+	}
+	if request.Prompt != "user: compare\n[image]\n[image]" {
+		t.Fatalf("prompt = %q", request.Prompt)
+	}
+	want := []Image{{Data: "aGk=", MimeType: "image/png"}, {URL: "https://example.com/a.png"}}
+	if !reflect.DeepEqual(request.Images, want) {
+		t.Fatalf("images = %+v", request.Images)
+	}
+
+	request = ParseRequest([]byte(`{
+		"reasoning_effort":"xhigh",
+		"messages":[{"role":"user","content":[
+			{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/"}},
+			{"type":"image_url","image_url":"https://example.com/b.jpg"}
+		]}]
+	}`))
+	want = []Image{{Data: "/9j/", MimeType: "image/jpeg"}, {URL: "https://example.com/b.jpg"}}
+	if request.Effort != "xhigh" || !reflect.DeepEqual(request.Images, want) {
+		t.Fatalf("effort = %q images = %+v", request.Effort, request.Images)
+	}
+}
+
+func TestParseRequestWritesToolMessageOnce(t *testing.T) {
+	t.Parallel()
+	request := ParseRequest([]byte(`{"messages":[{"role":"tool","tool_call_id":"call_1","content":"result-body"}]}`))
+	if strings.Count(request.Prompt, "result-body") != 1 {
+		t.Fatalf("prompt = %q", request.Prompt)
 	}
 }

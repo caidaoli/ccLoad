@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 	"ccLoad/internal/model"
@@ -648,6 +649,59 @@ func TestForwardCursorAgentRejectsCredentialOnlyForStructuredUnauthorized(t *tes
 	}
 }
 
+func TestForwardCursorAgentCoolsModelOnUsageLimit(t *testing.T) {
+	t.Parallel()
+	const message = "You've hit your usage limit for Opus Switch to a different model or set a Spend Limit to continue with Opus."
+	for _, test := range []struct {
+		name   string
+		runner *fakeCursorRunner
+	}{
+		{name: "run terminal error", runner: &fakeCursorRunner{eventErr: &cursorauth.BridgeError{
+			SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED, Message: message,
+		}}},
+		{name: "send error", runner: &fakeCursorRunner{err: &cursorauth.BridgeError{
+			SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED, Message: message,
+		}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			srv := newInMemoryServer(t)
+			srv.cursorRunner = test.runner
+			credential := &cursorauth.Credential{APIKey: "key", AccessToken: "session"}
+			credentialJSON, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := srv.store.CreateConfig(ctx, &model.Config{
+				Name: "cursor", URLs: model.ChannelURLs{{URL: "https://unused.invalid"}}, AuthType: model.AuthTypeCursorOAuth, Enabled: true, OAuthCredential: credentialJSON,
+				ModelEntries: []model.ModelEntry{{Model: "claude-opus-5"}, {Model: "claude-sonnet-5"}},
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig: %v", err)
+			}
+			reqCtx := &proxyRequestContext{
+				originalModel: "claude-opus-5", clientProtocol: protocol.OpenAI,
+				requestPath: "/v1/chat/completions",
+				body:        []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`),
+			}
+			result, err := srv.forwardCursorAgent(ctx, cfg, credential, reqCtx, httptest.NewRecorder())
+			if err != nil || result.status != http.StatusTooManyRequests || result.nextAction != cooldown.ActionRetryModel {
+				t.Fatalf("result=%+v err=%v, want 429 retry-model", result, err)
+			}
+			cooldowns, err := srv.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatalf("GetAllModelCooldowns: %v", err)
+			}
+			if until := cooldowns[cfg.ID]["claude-opus-5"]; !until.After(time.Now()) {
+				t.Fatalf("opus cooldown = %v, all=%v", until, cooldowns)
+			}
+			if _, ok := cooldowns[cfg.ID]["claude-sonnet-5"]; ok {
+				t.Fatalf("sonnet must stay available: %v", cooldowns)
+			}
+		})
+	}
+}
+
 func TestTryCursorOAuthChannelSkipsUnsupportedFamilies(t *testing.T) {
 	t.Parallel()
 	srv := &Server{}
@@ -905,5 +959,48 @@ func TestForwardCursorAgentRecordsPrivacyCounts(t *testing.T) {
 	entry := buildProxyLogEntry(reqCtx, cfg, "claude-sonnet-5", "", http.StatusOK, 0, nil, "")
 	if entry.PrivacyMasked == nil || *entry.PrivacyMasked != (privacy.Counts{Secret: 1}) {
 		t.Fatalf("privacy counts = %+v, want secret 1", entry.PrivacyMasked)
+	}
+}
+
+/**
+ * @brief 验证模型思考后缀按客户端协议写入后，经协议转换到达 Cursor 请求的思考等级。
+ * @param t 测试上下文。
+ */
+func TestForwardCursorAgentPassesThinkingSuffixEffort(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		protocol protocol.Protocol
+		path     string
+		body     string
+	}{
+		{"openai", protocol.OpenAI, "/v1/chat/completions", `{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}]}`},
+		{"anthropic", protocol.Anthropic, "/v1/messages", `{"model":"composer-2.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`},
+		{"responses", protocol.Codex, "/v1/responses", `{"model":"composer-2.5","input":[{"role":"user","content":"hi"}]}`},
+		{"gemini", protocol.Gemini, "/v1beta/models/composer-2.5:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runner := &fakeCursorRunner{text: "ok"}
+			srv := newInMemoryServer(t)
+			srv.cursorRunner = runner
+			result, err := srv.forwardCursorAgent(
+				context.Background(),
+				&model.Config{ID: 31, AuthType: model.AuthTypeCursorOAuth},
+				&cursorauth.Credential{APIKey: "key"},
+				&proxyRequestContext{
+					originalModel: "composer-2.5", requestedModel: "composer-2.5(high)",
+					clientProtocol: tc.protocol, requestPath: tc.path, body: []byte(tc.body), skipProxyLog: true,
+				},
+				httptest.NewRecorder(),
+			)
+			if err != nil || result == nil || !result.succeeded {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if runner.request.Effort != "high" {
+				t.Fatalf("effort = %q, want high", runner.request.Effort)
+			}
+		})
 	}
 }

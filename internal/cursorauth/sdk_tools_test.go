@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,6 +59,7 @@ type nativeToolAgentHandler struct {
 	turns     int
 	turnDelay time.Duration
 	turnUsage map[string]any
+	sent      []string ///< 按序记录的 Send 消息正文
 }
 
 func (h *nativeToolAgentHandler) CreateAgent(
@@ -85,6 +87,9 @@ func (h *nativeToolAgentHandler) Send(
 ) error {
 	agentID := request.Msg.GetAgentId()
 	runID := "run-" + agentID
+	h.mu.Lock()
+	h.sent = append(h.sent, request.Msg.GetMessage().GetText())
+	h.mu.Unlock()
 	if err := stream.Send(nativeSDKMessage("status", map[string]any{
 		"agent_id": agentID, "run_id": runID,
 	})); err != nil {
@@ -313,25 +318,27 @@ func TestSDKRunnerReplaysCompletedNativeToolTurn(t *testing.T) {
 func TestNormalizeCursorModelID(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		in   string
-		id   string
-		fast bool
+		in     string
+		id     string
+		fast   bool
+		effort string
 	}{
-		{"claude-opus-5", "claude-opus-5", false},
-		{"claude-opus-5-fast", "claude-opus-5", true},
-		{"claude-opus-5-thinking-xhigh", "claude-opus-5", false},
-		{"claude-opus-5-thinking-xhigh-fast", "claude-opus-5", true},
-		{"gpt-5.6-sol-high", "gpt-5.6-sol", false},
-		{"gpt-5.4-mini", "gpt-5.4-mini", false},
-		{"composer-2.5", "composer-2.5", false},
-		{"gpt-5.6-sol-xhigh-fast", "gpt-5.6-sol", true},
+		{"claude-opus-5", "claude-opus-5", false, ""},
+		{"claude-opus-5-fast", "claude-opus-5", true, ""},
+		{"claude-opus-5-thinking-xhigh", "claude-opus-5", false, "xhigh"},
+		{"claude-opus-5-thinking-xhigh-fast", "claude-opus-5", true, "xhigh"},
+		{"gpt-5.6-sol-high", "gpt-5.6-sol", false, "high"},
+		{"gpt-5.4-mini", "gpt-5.4-mini", false, ""},
+		{"composer-2.5", "composer-2.5", false, ""},
+		{"gpt-5.6-sol-xhigh-fast", "gpt-5.6-sol", true, "xhigh"},
+		{"claude-opus-5-extra-high", "claude-opus-5", false, "extra-high"},
 	}
 	for _, tc := range cases {
-		id, fast := normalizeCursorModelID(tc.in)
-		if id != tc.id || fast != tc.fast {
-			t.Fatalf("normalizeCursorModelID(%q)=(%q,%v), want (%q,%v)", tc.in, id, fast, tc.id, tc.fast)
+		id, fast, effort := normalizeCursorModelID(tc.in)
+		if id != tc.id || fast != tc.fast || effort != tc.effort {
+			t.Fatalf("normalizeCursorModelID(%q)=(%q,%v,%q), want (%q,%v,%q)", tc.in, id, fast, effort, tc.id, tc.fast, tc.effort)
 		}
-		selection := cursorModelSelection(tc.in)
+		selection, _ := cursorModelSelection(tc.in)
 		if selection.GetId() != tc.id {
 			t.Fatalf("cursorModelSelection(%q).Id=%q, want %q", tc.in, selection.GetId(), tc.id)
 		}
@@ -359,6 +366,12 @@ func TestSDKRunnerFallsBackToNewTurnWhenToolSessionIsMissing(t *testing.T) {
 	handler.mu.Unlock()
 	if created != 1 {
 		t.Fatalf("CreateAgent count = %d, want 1 (stale tool_result must start a new turn)", created)
+	}
+	handler.mu.Lock()
+	sent := handler.sent[0]
+	handler.mu.Unlock()
+	if !strings.HasPrefix(sent, "user: continue") || !strings.HasSuffix(sent, cursorSessionRecoveryNote) {
+		t.Fatalf("recovery prompt = %q", sent)
 	}
 }
 

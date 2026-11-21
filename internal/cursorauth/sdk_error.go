@@ -71,6 +71,17 @@ func IsCredentialRejected(err error) bool {
 		bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED
 }
 
+/**
+ * @brief 判断 Cursor 是否因账户用量上限拒绝了当前模型。
+ * @param err Run 或 Bridge 调用返回的错误。
+ * @return 错误链中含 USAGE_LIMIT_EXCEEDED 的 BridgeError 时为 true。
+ */
+func IsUsageLimitExceeded(err error) bool {
+	var bridgeErr *BridgeError
+	return errors.As(err, &bridgeErr) &&
+		bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED
+}
+
 func classifyBridgeError(err error) error {
 	if err == nil {
 		return nil

@@ -116,6 +116,20 @@ func (s *Server) forwardCursorAgent(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	selected := reqCtx.attemptModel
+	if selected.logicalModel == "" && reqCtx.originalModel != "" {
+		selected, _ = s.firstModelRow(cfg, reqCtx.originalModel)
+	}
+	modelID := s.resolveFinalUpstreamModel(cfg, selected, string(reqCtx.clientProtocol))
+	requestedModel := reqCtx.requestedModel
+	if requestedModel == "" {
+		requestedModel = reqCtx.originalModel
+	}
+	// Effort is written in the client's own shape; translation then carries it
+	// into the chat body ParseRequest reads.
+	clientBody := applyThinkingSuffixForModel(reqCtx.body, reqCtx.clientProtocol, requestedModel, modelID)
+	clientBody = applyAutomaticReasoning(clientBody, reqCtx, protocol.OpenAI, modelID)
+	body := clientBody
 	// The SDK only reads chat-shaped requests. Always translate from the client
 	// body: proxy setup seeds translatedBody with the untranslated request.
 	translatedClient := cursorTranslatedClientProtocol(reqCtx.requestPath)
@@ -132,17 +146,14 @@ func (s *Server) forwardCursorAgent(
 			translatedClient,
 			protocol.OpenAI,
 			reqCtx.originalModel,
-			reqCtx.body,
+			clientBody,
 			reqCtx.isStreaming,
 		)
 		if err != nil {
 			return cursorClientErrorResult(cfg, http.StatusBadRequest, err.Error()), nil
 		}
 		reqCtx.translatedBody = translatedBody
-	}
-	body := reqCtx.body
-	if len(reqCtx.translatedBody) > 0 {
-		body = reqCtx.translatedBody
+		body = translatedBody
 	}
 	originalResponseBody := reqCtx.body
 	request := cursorauth.ParseRequest(body)
@@ -150,15 +161,6 @@ func (s *Server) forwardCursorAgent(
 	if request.Prompt == "" && len(request.ToolResults) == 0 {
 		return cursorClientErrorResult(cfg, http.StatusBadRequest, "cursor prompt is required"), nil
 	}
-	requested := request.Model
-	if requested == "" {
-		requested = reqCtx.originalModel
-	}
-	selected := reqCtx.attemptModel
-	if selected.logicalModel == "" && requested != "" {
-		selected, _ = s.firstModelRow(cfg, requested)
-	}
-	modelID := s.resolveFinalUpstreamModel(cfg, selected, string(reqCtx.clientProtocol))
 	started := time.Now()
 	reqCtx.attemptStartTime, reqCtx.privacyMasked = started, privacy.Counts{}
 	if s.activeRequests != nil {
@@ -227,6 +229,7 @@ func (s *Server) forwardCursorAgent(
 		sent, _ := json.Marshal(request)
 		reqCtx.privacyMasked = session.CountSent(sent)
 	}
+	reasoningBusinessSending(ctx, body)
 	events, err := runner.Run(runCtx, credential, request)
 	if err != nil {
 		status := http.StatusBadGateway
@@ -245,8 +248,13 @@ func (s *Server) forwardCursorAgent(
 			action = cooldown.ActionReturnClient
 		} else if cursorauth.IsCredentialRejected(err) {
 			status = http.StatusUnauthorized
+		} else if cursorauth.IsUsageLimitExceeded(err) {
+			status = http.StatusTooManyRequests
 		}
 		result := cursorErrorResult(cfg, status, err.Error(), action)
+		if status == http.StatusTooManyRequests {
+			result.nextAction = s.cooldownCursorUsageLimit(ctx, cfg, modelID, result.body)
+		}
 		result.duration = time.Since(started).Seconds()
 		result.isClientCanceled = status == StatusClientClosedRequest
 		result.proxyLogWritten = !reqCtx.skipProxyLog
@@ -441,6 +449,8 @@ func (s *Server) forwardCursorAgent(
 			action = cooldown.ActionReturnClient
 		} else if cursorauth.IsCredentialRejected(runErr) {
 			status = http.StatusUnauthorized
+		} else if cursorauth.IsUsageLimitExceeded(runErr) {
+			status = http.StatusTooManyRequests
 		}
 		if streaming && wroteHeader && !clientDisconnected {
 			if format == "responses" {
@@ -455,6 +465,9 @@ func (s *Server) forwardCursorAgent(
 			flush()
 		}
 		result := cursorErrorResult(cfg, status, runErr.Error(), action)
+		if status == http.StatusTooManyRequests {
+			result.nextAction = s.cooldownCursorUsageLimit(ctx, cfg, modelID, result.body)
+		}
 		result.duration = duration
 		result.firstByteTime = firstByte.Seconds()
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, runErr)
@@ -636,6 +649,22 @@ func cursorResponseFormat(reqCtx *proxyRequestContext) string {
 		return "anthropic"
 	}
 	return "openai"
+}
+
+/**
+ * @brief 对 Cursor 用量上限错误冷却当前实际模型。
+ * @param ctx 当前请求上下文；冷却写入不随请求取消。
+ * @param cfg 当前 Cursor 渠道。
+ * @param modelID 实际发送给 Cursor 的模型名。
+ * @param body 返回给客户端的错误体，供冷却检测规则匹配。
+ * @return 冷却后的路由动作；渠道全部模型都冷却时升级为换渠道。
+ * @details 上游只确认该模型额度耗尽，同渠道其他模型仍可用；按 429 指数退避而不是
+ * 解析报错里的重置日期，Cursor 给出的日期可能已过期，且调整 Spend Limit 后会提前恢复。
+ */
+func (s *Server) cooldownCursorUsageLimit(ctx context.Context, cfg *model.Config, modelID string, body []byte) cooldown.Action {
+	in := cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, http.StatusTooManyRequests, body, nil), modelID)
+	in.ModelScoped = true
+	return s.applyCooldownDecision(ctx, cfg, in)
 }
 
 func cursorClientErrorResult(cfg *model.Config, status int, message string) *proxyResult {

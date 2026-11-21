@@ -33,6 +33,8 @@ type SDKRunner struct {
 	sessions       map[string]*sdkSession
 	calls          map[string]*pendingToolCall
 	completedCalls map[string]*sdkSession
+	catalogs       map[string]cursorModelCatalog ///< API Key → 模型目录；受 mu 保护
+	parked         map[string]*parkedAgent       ///< 停放键 → 已完成普通轮、可续发的 Agent；受 mu 保护
 
 	callbackMu       sync.Mutex
 	callbackServer   *http.Server
@@ -55,9 +57,12 @@ type sdkSession struct {
 	events             chan Event
 	done               chan struct{}
 	tools              map[string]struct{}
+	toolsDigest        string ///< 自定义工具定义摘要，参与停放键。
 	captureRaw         bool
 	eventMu            sync.Mutex
 	inputTokenEstimate int
+	transcriptDigest   string          ///< 最近附着请求的完整消息摘要；受 eventMu 保护。
+	turnText           strings.Builder ///< 最近附着请求收到的正文；受 eventMu 保护。
 	terminated         bool
 	terminal           *Event
 
@@ -137,6 +142,7 @@ func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, er
 		return nil, classifyBridgeOperationError("ListModels", requestCtx, RequestTimeout, started, err)
 	}
 
+	r.storeModelCatalog(apiKey, response.Msg.GetItems())
 	models := make([]string, 0, len(response.Msg.GetItems())*2)
 	seen := make(map[string]struct{}, len(response.Msg.GetItems())*2)
 	add := func(id string) {
@@ -220,6 +226,9 @@ func (r *SDKRunner) Run(
 	if prompt == "" {
 		return nil, errors.New("cursor prompt is required")
 	}
+	if len(request.ToolResults) > 0 {
+		prompt += "\n\n" + cursorSessionRecoveryNote
+	}
 	model := strings.TrimSpace(request.Model)
 	if model == "" {
 		model = "default"
@@ -227,12 +236,7 @@ func (r *SDKRunner) Run(
 	if err := r.begin(); err != nil {
 		return nil, err
 	}
-	finish := true
-	defer func() {
-		if finish {
-			r.active.Done()
-		}
-	}()
+	defer r.active.Done()
 
 	client, err := r.bridge.client(ctx)
 	if err != nil {
@@ -247,18 +251,43 @@ func (r *SDKRunner) Run(
 			return nil, err
 		}
 	}
+	toolsDigest, err := customToolsDigest(customTools)
+	if err != nil {
+		return nil, err
+	}
+	apiKey := strings.TrimSpace(credential.APIKey)
+	selection, err := r.modelSelection(ctx, client, apiKey, model, request.Effort)
+	if err != nil {
+		return nil, err
+	}
+	run := sdkRunStart{
+		client: client, apiKey: apiKey, customTools: customTools, toolsDigest: toolsDigest,
+		transcriptDigest: transcriptDigest(request.transcript), request: request,
+	}
+	if len(request.ToolResults) == 0 {
+		if agentID, tail, ok := r.takeParkedAgent(run, request.transcript); ok {
+			run.agentID = agentID
+			run.message, run.images = renderTranscript(tail)
+			run.sendModel = selection
+			events, err := r.startRun(ctx, run)
+			if err == nil || ctx.Err() != nil {
+				return events, err
+			}
+			log.Printf("[WARN] 续用 Cursor SDK Agent %s 失败，改为新建 Agent: %v", agentID, err)
+		}
+	}
+
 	allowedTools := []string{}
 	if len(customTools) > 0 {
 		// Cursor exposes SDK custom tools through its synthetic MCP server.
 		// An empty allowlist disables that MCP family along with every built-in.
 		allowedTools = []string{"mcp"}
 	}
-	apiKey := strings.TrimSpace(credential.APIKey)
 	createStarted := time.Now()
 	createCtx, createCancel := context.WithTimeout(ctx, RequestTimeout)
 	created, err := client.agent.CreateAgent(createCtx, connect.NewRequest(&sdkv1.CreateAgentRequest{
 		Options: &sdkv1.AgentOptions{
-			Model:  cursorModelSelection(model),
+			Model:  selection,
 			ApiKey: apiKey,
 			Local: &sdkv1.LocalAgentOptions{
 				Cwd: []string{client.workdir}, CustomTools: customTools,
@@ -272,11 +301,49 @@ func (r *SDKRunner) Run(
 		return nil, classifiedErr
 	}
 	createCancel()
-	agentID := strings.TrimSpace(created.Msg.GetAgentId())
-	if agentID == "" {
+	run.agentID = strings.TrimSpace(created.Msg.GetAgentId())
+	if run.agentID == "" {
 		return nil, errors.New("cursor-sdk-bridge CreateAgent returned an empty agent_id")
 	}
+	run.message, run.images = prompt, request.Images
+	return r.startRun(ctx, run)
+}
 
+/**
+ * @brief 在已有 Agent 上发起一次 Run 所需的参数。
+ */
+type sdkRunStart struct {
+	client           *bridgeClient
+	agentID          string                                 ///< 新建或续用的 Agent
+	apiKey           string                                 ///< 已去除首尾空白的 User API Key
+	customTools      map[string]*sdkv1.CustomToolDefinition ///< Agent 创建时注册的客户端工具
+	toolsDigest      string                                 ///< customTools 摘要，参与停放键
+	transcriptDigest string                                 ///< 当前请求完整消息摘要，参与停放键
+	request          Request                                ///< 当前请求，提供用量估算
+	message          string                                 ///< 本次 Send 的提示词
+	images           []Image                                ///< 本次 Send 的图片
+	sendModel        *sdkv1.ModelSelection                  ///< 续用 Agent 时覆盖创建时的模型；新建时为 nil
+}
+
+/**
+ * @brief Run 因工具会话丢失而改为新建 Agent 时附加的提示。
+ * @details 历史中的工具调用已执行，提示模型不要重复其外部副作用。
+ */
+const cursorSessionRecoveryNote = "HOST_SESSION_RECOVERY: The original tool session is no longer attachable. " +
+	"The conversation above already includes every tool call and its exact result. " +
+	"Treat each completed tool call as executed exactly once and do not repeat its external side effects; " +
+	"call only genuinely new tools if the task still requires them."
+
+/**
+ * @brief 向 Agent 发送一轮消息并附着当前请求。
+ * @param ctx 当前请求上下文；Send 期间取消会终止 Agent。
+ * @param run Agent 与本轮消息。
+ * @return 当前请求的事件流；Send 失败时为 nil。
+ * @return 会话注册或 Send 失败时返回已分类错误；失败时 Agent 已转交后台删除。
+ * @note 调用方须持有 active 引用；成功时后台消费 Run，结束后删除或停放 Agent。
+ */
+func (r *SDKRunner) startRun(ctx context.Context, run sdkRunStart) (<-chan Event, error) {
+	client := run.client
 	idleTimeout := r.idleTimeout
 	if idleTimeout <= 0 {
 		idleTimeout = sdkSessionIdleTimeout
@@ -286,28 +353,31 @@ func (r *SDKRunner) Run(
 	runStarted := time.Now()
 	runCtx, stopRun := context.WithCancel(context.Background())
 	session := &sdkSession{
-		agentID: agentID, apiKey: apiKey, workdir: client.workdir,
+		agentID: run.agentID, apiKey: run.apiKey, workdir: client.workdir,
 		client: client.agent, ctx: runCtx, cancel: stopRun,
 		events: make(chan Event, 64), done: make(chan struct{}),
-		tools:              make(map[string]struct{}, len(customTools)),
-		inputTokenEstimate: request.InputTokenEstimate,
+		tools:              make(map[string]struct{}, len(run.customTools)),
+		toolsDigest:        run.toolsDigest,
+		transcriptDigest:   run.transcriptDigest,
+		inputTokenEstimate: run.request.InputTokenEstimate,
 		captureRaw:         rawResponseCaptureEnabled(ctx),
 		idleTimeout:        idleTimeout,
 	}
-	for name := range customTools {
+	for name := range run.customTools {
 		session.tools[name] = struct{}{}
 	}
 	if err := r.registerSession(session); err != nil {
 		stopRun()
-		go r.deleteAgent(client.agent, agentID, client.workdir, apiKey)
+		r.active.Go(func() { r.deleteAgent(client.agent, run.agentID, client.workdir, run.apiKey) })
 		return nil, err
 	}
 	stopCaller := context.AfterFunc(ctx, session.cancelRun)
 	defer stopCaller()
 	stream, err := client.agent.Send(runCtx, connect.NewRequest(&sdkv1.SendRequest{
-		AgentId: agentID,
-		Message: &sdkv1.UserMessage{Text: prompt},
+		AgentId: run.agentID,
+		Message: &sdkv1.UserMessage{Text: run.message, Images: sdkImages(run.images)},
 		Options: &sdkv1.SendOptions{
+			Model:        run.sendModel,
 			EnableDeltas: false,
 			EnableSteps:  false,
 		},
@@ -319,37 +389,66 @@ func (r *SDKRunner) Run(
 		classifiedErr := classifyBridgeOperationError("Send", ctx, 0, runStarted, err)
 		session.abort(classifiedErr)
 		r.unregisterSession(session)
-		// Transfer the active-run reference to cleanup. A failed Send must return
-		// immediately; DeleteAgent/CloseAgent have their own independent deadlines.
-		finish = false
-		go func() {
-			defer r.active.Done()
-			r.deleteAgent(client.agent, agentID, client.workdir, apiKey)
-		}()
+		// A failed Send must return immediately; DeleteAgent/CloseAgent have
+		// their own independent deadlines.
+		r.active.Go(func() { r.deleteAgent(client.agent, run.agentID, client.workdir, run.apiKey) })
 		return nil, classifiedErr
 	}
 
-	finish = false
+	r.active.Add(1)
 	go r.consumeRun(session, stream)
 	return session.nextTurn(ctx, nil)
 }
 
-func cursorModelSelection(model string) *sdkv1.ModelSelection {
-	id, fast := normalizeCursorModelID(model)
+/**
+ * @brief 把客户端图片转换为 SDK 消息图片。
+ * @param images 提示词中按序出现的图片。
+ * @return SDK 图片；无图片时为 nil。
+ */
+func sdkImages(images []Image) []*sdkv1.SdkImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]*sdkv1.SdkImage, 0, len(images))
+	for _, image := range images {
+		if image.Data != "" {
+			out = append(out, &sdkv1.SdkImage{Source: &sdkv1.SdkImage_Data{
+				Data: &sdkv1.SdkImageData{Data: image.Data, MimeType: image.MimeType},
+			}})
+			continue
+		}
+		out = append(out, &sdkv1.SdkImage{Source: &sdkv1.SdkImage_Url{Url: &sdkv1.SdkImageUrl{Url: image.URL}}})
+	}
+	return out
+}
+
+/**
+ * @brief 解析客户端模型名中的 SDK 模型、fast 档与思考等级后缀。
+ * @param model 客户端或渠道映射后的 Cursor 模型名。
+ * @return 不含思考等级的模型选择；仅 fast 写入参数。
+ * @return 模型名后缀声明的小写思考等级；无后缀时为空。
+ */
+func cursorModelSelection(model string) (*sdkv1.ModelSelection, string) {
+	id, fast, effort := normalizeCursorModelID(model)
 	selection := &sdkv1.ModelSelection{Id: id}
 	if fast && id != "" {
 		selection.Params = []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}
 	}
-	return selection
+	return selection, effort
 }
 
-// normalizeCursorModelID maps client/catalog aliases onto SDK ListModels IDs.
-// Cursor stores thinking/effort as request fields, not model suffixes; only
-// -fast is a real ModelSelection param.
-func normalizeCursorModelID(model string) (id string, fast bool) {
+/**
+ * @brief 把客户端/目录别名映射为 SDK ListModels 模型 ID。
+ * @param model 客户端或渠道映射后的模型名。
+ * @return SDK 模型 ID；去除后缀后为空时原样返回。
+ * @return 是否以 -fast 结尾。
+ * @return 去除的思考等级后缀（小写、不含 thinking- 前缀）；无后缀时为空。
+ * @details Cursor 把思考等级作为 ModelSelection 的 effort 参数而不是模型名后缀。
+ */
+func normalizeCursorModelID(model string) (id string, fast bool, effort string) {
 	id = strings.TrimSpace(model)
 	if id == "" {
-		return "", false
+		return "", false, ""
 	}
 	lower := strings.ToLower(id)
 	if strings.HasSuffix(lower, "-fast") {
@@ -360,13 +459,149 @@ func normalizeCursorModelID(model string) (id string, fast bool) {
 	for _, suffix := range cursorEffortSuffixes {
 		if strings.HasSuffix(lower, suffix) {
 			id = strings.TrimSpace(id[:len(id)-len(suffix)])
+			effort = strings.TrimPrefix(strings.TrimPrefix(suffix, "-"), "thinking-")
 			break
 		}
 	}
 	if id == "" {
-		return strings.TrimSpace(model), false
+		return strings.TrimSpace(model), false, ""
 	}
-	return id, fast
+	return id, fast, effort
+}
+
+/**
+ * @brief 生成带思考等级参数的模型选择。
+ * @param ctx 当前请求上下文；用于按需拉取模型目录。
+ * @param client 当前 Bridge 客户端。
+ * @param apiKey User API Key。
+ * @param model 渠道映射后的 Cursor 模型名。
+ * @param requestEffort 请求体声明的思考等级；模型名后缀优先。
+ * @return 模型选择；目录未声明该等级时不写 effort 参数。
+ * @return 需要校验等级但拉取模型目录失败时返回已分类错误。
+ */
+func (r *SDKRunner) modelSelection(
+	ctx context.Context,
+	client *bridgeClient,
+	apiKey, model, requestEffort string,
+) (*sdkv1.ModelSelection, error) {
+	selection, effort := cursorModelSelection(model)
+	if effort == "" {
+		effort = requestEffort
+	}
+	if effort == "" {
+		return selection, nil
+	}
+	catalog, err := r.modelCatalog(ctx, client, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	if value := cursorEffortValue(catalog, selection.GetId(), effort); value != "" {
+		selection.Params = append(selection.Params, &sdkv1.ModelParameterValue{Id: "effort", Value: value})
+	}
+	return selection, nil
+}
+
+/**
+ * @brief 已缓存的 Cursor 模型目录。
+ */
+type cursorModelCatalog struct {
+	models    []*sdkv1.SdkModel ///< ListModels 返回的模型
+	expiresAt time.Time         ///< 过期时刻
+}
+
+/**
+ * @brief 模型目录缓存有效期；目录只用于校验思考等级参数。
+ */
+const sdkModelCatalogTTL = 10 * time.Minute
+
+/**
+ * @brief 读取或拉取 API Key 对应的模型目录。
+ * @param ctx 当前请求上下文；拉取受 RequestTimeout 限制。
+ * @param client 当前 Bridge 客户端。
+ * @param apiKey User API Key。
+ * @return ListModels 返回的模型。
+ * @return 拉取失败时返回已分类错误。
+ * @note 并发安全；并发未命中会各自拉取一次。
+ */
+func (r *SDKRunner) modelCatalog(ctx context.Context, client *bridgeClient, apiKey string) ([]*sdkv1.SdkModel, error) {
+	r.mu.Lock()
+	cached, ok := r.catalogs[apiKey]
+	r.mu.Unlock()
+	if ok && time.Now().Before(cached.expiresAt) {
+		return cached.models, nil
+	}
+	started := time.Now()
+	requestCtx, cancel := context.WithTimeout(ctx, RequestTimeout)
+	defer cancel()
+	response, err := listCursorModels(requestCtx, client, apiKey)
+	if err != nil {
+		return nil, classifyBridgeOperationError("ListModels", requestCtx, RequestTimeout, started, err)
+	}
+	models := response.Msg.GetItems()
+	r.storeModelCatalog(apiKey, models)
+	return models, nil
+}
+
+/**
+ * @brief 缓存 API Key 对应的模型目录。
+ * @param apiKey User API Key。
+ * @param models ListModels 返回的模型。
+ */
+func (r *SDKRunner) storeModelCatalog(apiKey string, models []*sdkv1.SdkModel) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.catalogs == nil {
+		r.catalogs = make(map[string]cursorModelCatalog)
+	}
+	r.catalogs[apiKey] = cursorModelCatalog{models: models, expiresAt: time.Now().Add(sdkModelCatalogTTL)}
+}
+
+/**
+ * @brief 在模型目录中查找与请求等级对应的 effort 参数值。
+ * @param catalog ListModels 返回的模型。
+ * @param modelID SDK 模型 ID。
+ * @param effort 请求的思考等级。
+ * @return 目录中的原样参数值；模型未收录或未声明该等级时为空。
+ * @details 参数定义和变体参数都视为声明；xhigh 与 extra-high 视为同一档。
+ */
+func cursorEffortValue(catalog []*sdkv1.SdkModel, modelID, effort string) string {
+	want := canonicalCursorEffort(effort)
+	for _, model := range catalog {
+		if !strings.EqualFold(strings.TrimSpace(model.GetId()), modelID) {
+			continue
+		}
+		for _, parameter := range model.GetParameters() {
+			if !isCursorEffortParameter(parameter.GetId()) {
+				continue
+			}
+			for _, value := range parameter.GetValues() {
+				if canonicalCursorEffort(value.GetValue()) == want {
+					return strings.TrimSpace(value.GetValue())
+				}
+			}
+		}
+		for _, variant := range model.GetVariants() {
+			for _, parameter := range variant.GetParams() {
+				if isCursorEffortParameter(parameter.GetId()) && canonicalCursorEffort(parameter.GetValue()) == want {
+					return strings.TrimSpace(parameter.GetValue())
+				}
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+func isCursorEffortParameter(id string) bool {
+	return strings.EqualFold(strings.TrimSpace(id), "effort")
+}
+
+func canonicalCursorEffort(effort string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "extra-high" || effort == "extra_high" {
+		return "xhigh"
+	}
+	return effort
 }
 
 // Longer tokens first so -thinking-xhigh wins over -high and extra-high over high.
@@ -415,6 +650,7 @@ func (r *SDKRunner) resumeToolTurn(ctx context.Context, credential *Credential, 
 	case cursorTurnResume:
 		return turn.session.nextTurn(ctx, func() error {
 			turn.session.setInputTokenEstimate(request.InputTokenEstimate)
+			turn.session.setTranscriptDigest(transcriptDigest(request.transcript))
 			return r.resolveToolResults(turn.session, turn.pending)
 		})
 	case cursorTurnReplay:
@@ -588,6 +824,9 @@ func (s *sdkSession) nextTurn(ctx context.Context, before func() error) (<-chan 
 		s.idleTimer = nil
 	}
 	s.turnMu.Unlock()
+	s.eventMu.Lock()
+	s.turnText.Reset()
+	s.eventMu.Unlock()
 	stopCaller := context.AfterFunc(ctx, s.cancelRun)
 	release := func() {
 		stopCaller()
@@ -733,6 +972,7 @@ func (s *sdkSession) emit(event Event) bool {
 	}
 	select {
 	case s.events <- event:
+		s.turnText.WriteString(event.Delta)
 		return true
 	case <-s.ctx.Done():
 		return false
@@ -756,6 +996,16 @@ func (s *sdkSession) setInputTokenEstimate(value int) {
 	}
 	s.eventMu.Lock()
 	s.inputTokenEstimate = value
+	s.eventMu.Unlock()
+}
+
+/**
+ * @brief 记录最近附着请求的完整消息摘要，供 Run 结束后停放 Agent。
+ * @param digest transcriptDigest 结果。
+ */
+func (s *sdkSession) setTranscriptDigest(digest string) {
+	s.eventMu.Lock()
+	s.transcriptDigest = digest
 	s.eventMu.Unlock()
 }
 
@@ -885,7 +1135,7 @@ func (r *SDKRunner) begin() error {
  * @brief 消费 Cursor Agent 的后台流并收尾用量、终态和资源清理。
  * @param session 当前 Agent 会话。
  * @param stream Send 返回的上游事件流。
- * @note 持有一个 active 引用；取消和删除 Agent 使用独立清理预算。
+ * @note 持有一个 active 引用；取消和删除 Agent 使用独立清理预算；正常完成的 Agent 停放供普通续轮复用。
  */
 func (r *SDKRunner) consumeRun(
 	session *sdkSession,
@@ -979,6 +1229,9 @@ func (r *SDKRunner) consumeRun(
 	// Keep them tracked by r.active for orderly shutdown, but never make the
 	// client or request-duration metric wait behind their independent deadlines.
 	canceller.Wait()
+	if consumeErr == nil && r.parkAgent(session) {
+		return
+	}
 	r.deleteAgent(client, agentID, session.workdir, session.apiKey)
 }
 
@@ -1067,9 +1320,8 @@ func (r *SDKRunner) Close(ctx context.Context) error {
 		return nil
 	}
 	r.mu.Lock()
-	if !r.closed {
-		r.closed = true
-	}
+	r.closed = true
+	r.deleteParkedAgentsLocked()
 	r.mu.Unlock()
 	r.failAllSessions(ErrBridgeClosed)
 

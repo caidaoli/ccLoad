@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -25,6 +26,7 @@ type testAgentHandler struct {
 
 	mu            sync.Mutex
 	create        *sdkv1.CreateAgentRequest
+	createCalls   int
 	createErr     error
 	createFn      func(context.Context) error
 	send          *sdkv1.SendRequest
@@ -147,6 +149,7 @@ func (h *testAgentHandler) CreateAgent(
 ) (*connect.Response[sdkv1.CreateAgentResponse], error) {
 	h.mu.Lock()
 	h.create = request.Msg
+	h.createCalls++
 	createErr := h.createErr
 	createFn := h.createFn
 	h.mu.Unlock()
@@ -1590,6 +1593,26 @@ func TestSDKRunStateUsesStatusFailureMessage(t *testing.T) {
 	}
 }
 
+func TestSDKRunStateClassifiesUsageLimitFailure(t *testing.T) {
+	const message = "You've hit your usage limit for Opus Switch to a different model or set a Spend Limit to continue with Opus."
+	state := &sdkRunState{agentID: "agent-1"}
+	if _, err := state.consume(sdkMessage(t, "status", map[string]any{
+		"agent_id": "agent-1", "run_id": "run-1", "message": message,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.consume(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.consume(runDone("agent-1", "run-1")); err != nil {
+		t.Fatal(err)
+	}
+	err := state.finalError(nil)
+	if !IsUsageLimitExceeded(err) || IsCredentialRejected(err) || !strings.Contains(err.Error(), message) {
+		t.Fatalf("final error = %v", err)
+	}
+}
+
 func TestClassifyBridgeErrorPreservesDetailsAndRejectsOnlyUnauthorized(t *testing.T) {
 	requestID, helpURL, provider := "req-full", "https://help.example", "provider-a"
 	limit, remaining, reset := uint64(10), uint64(0), uint64(123)
@@ -1673,4 +1696,197 @@ func runDone(agentID, runID string) *sdkv1.RunStreamMessage {
 	return &sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Done{
 		Done: &sdkv1.RunStreamDone{AgentId: agentID, RunId: runID},
 	}}
+}
+
+/**
+ * @brief 创建同时提供 Agent 与模型目录服务的测试执行器。
+ * @param t 测试上下文。
+ * @param handler Agent 服务。
+ * @param models ListModels 返回的模型目录。
+ * @return 测试执行器与 ListModels 调用计数。
+ */
+func newCatalogTestSDKRunner(t *testing.T, handler *testAgentHandler, models []*sdkv1.SdkModel) (*SDKRunner, *atomic.Int32) {
+	t.Helper()
+	var listCalls atomic.Int32
+	agentPath, agentHTTP := sdkv1connect.NewSdkAgentServiceHandler(handler)
+	cursorPath, cursorHTTP := sdkv1connect.NewSdkCursorServiceHandler(&testCursorHandlerFunc{
+		listModels: func(*sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+			listCalls.Add(1)
+			return &sdkv1.ListModelsResponse{Items: models}, nil
+		},
+	})
+	mux := http.NewServeMux()
+	mux.Handle(agentPath, agentHTTP)
+	mux.Handle(cursorPath, cursorHTTP)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := newBridgeClient(server.URL, "bridge-token")
+	client.workdir = t.TempDir()
+	bridge := newBridge()
+	bridge.state = bridgeRunning
+	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
+	return &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}, &listCalls
+}
+
+/**
+ * @brief 每次 Send 都以固定正文正常完成 Run。
+ * @param t 测试上下文。
+ * @param text 回复正文。
+ * @return 可赋给 testAgentHandler.sendFn 的处理函数。
+ */
+func finishedRunSend(t *testing.T, text string) func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+	t.Helper()
+	return func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		if err := stream.Send(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, text)); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-1"))
+	}
+}
+
+/**
+ * @brief 读完事件流并返回终态。
+ * @param t 测试上下文。
+ * @param events Run 返回的事件流。
+ * @return 终态事件。
+ */
+func drainRun(t *testing.T, events <-chan Event) Event {
+	t.Helper()
+	var final Event
+	for event := range events {
+		if event.Done {
+			final = event
+		}
+	}
+	if final.Err != nil {
+		t.Fatalf("run error = %v", final.Err)
+	}
+	return final
+}
+
+/**
+ * @brief 等待 Run 结束后停放的 Agent 数量达到预期。
+ * @param t 测试上下文。
+ * @param runner 测试执行器。
+ * @param want 预期数量。
+ */
+func waitParkedAgents(t *testing.T, runner *SDKRunner, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		runner.mu.Lock()
+		got := len(runner.parked)
+		runner.mu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("parked agents = %d, want %d", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestSDKRunnerSendsCatalogEffortAndImages(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = finishedRunSend(t, "ok")
+	runner, listCalls := newCatalogTestSDKRunner(t, handler, []*sdkv1.SdkModel{{
+		Id: "claude-opus-5",
+		Parameters: []*sdkv1.ModelParameterDefinition{{Id: "effort", Values: []*sdkv1.ModelParameterDefinitionValue{
+			{Value: "low"}, {Value: "extra-high"},
+		}}},
+	}})
+	credential := &Credential{APIKey: "key"}
+	drainRun(t, mustRun(t, runner, credential, Request{
+		Model: "claude-opus-5-thinking-xhigh-fast", Prompt: "user: compare\n[image]\n[image]", Effort: "low",
+		Images: []Image{{Data: "aGk=", MimeType: "image/png"}, {URL: "https://example.com/a.png"}},
+	}))
+	handler.mu.Lock()
+	params := handler.create.GetOptions().GetModel().GetParams()
+	images := handler.send.GetMessage().GetImages()
+	handler.mu.Unlock()
+	wantParams := []string{"fast=true", "effort=extra-high"}
+	var gotParams []string
+	for _, param := range params {
+		gotParams = append(gotParams, param.GetId()+"="+param.GetValue())
+	}
+	if !reflect.DeepEqual(gotParams, wantParams) {
+		t.Fatalf("model params = %v, want %v", gotParams, wantParams)
+	}
+	if len(images) != 2 || images[0].GetData().GetData() != "aGk=" || images[0].GetData().GetMimeType() != "image/png" ||
+		images[1].GetUrl().GetUrl() != "https://example.com/a.png" {
+		t.Fatalf("send images = %+v", images)
+	}
+
+	drainRun(t, mustRun(t, runner, credential, Request{Model: "claude-opus-5", Prompt: "hi", Effort: "medium"}))
+	handler.mu.Lock()
+	params = handler.create.GetOptions().GetModel().GetParams()
+	handler.mu.Unlock()
+	if len(params) != 0 {
+		t.Fatalf("undeclared effort was sent: %+v", params)
+	}
+	if listCalls.Load() != 1 {
+		t.Fatalf("ListModels calls = %d, want cached single call", listCalls.Load())
+	}
+}
+
+func TestSDKRunnerReusesParkedAgentForOrdinaryTurn(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = finishedRunSend(t, "Hello there")
+	runner := newTestSDKRunner(t, handler)
+	credential := &Credential{APIKey: "key"}
+	drainRun(t, mustRun(t, runner, credential, ParseRequest([]byte(
+		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`,
+	))))
+	waitParkedAgents(t, runner, 1)
+
+	followUp := ParseRequest([]byte(`{"model":"m2","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"Hello\n  there"},
+		{"role":"user","content":[{"type":"text","text":"next"},{"type":"image_url","image_url":{"url":"https://example.com/c.png"}}]}
+	]}`))
+	followUp.Model = "m2"
+	drainRun(t, mustRun(t, runner, credential, followUp))
+	handler.mu.Lock()
+	createCalls, sendCalls, send := handler.createCalls, handler.sendCalls, handler.send
+	deleted := handler.deleted
+	handler.mu.Unlock()
+	if createCalls != 1 || sendCalls != 2 || deleted != nil {
+		t.Fatalf("create=%d send=%d deleted=%+v, want reuse without delete", createCalls, sendCalls, deleted)
+	}
+	if send.GetAgentId() != "agent-1" || send.GetMessage().GetText() != "user: next\n[image]" ||
+		len(send.GetMessage().GetImages()) != 1 || send.GetOptions().GetModel().GetId() != "m2" {
+		t.Fatalf("reused send = %+v", send)
+	}
+	waitParkedAgents(t, runner, 1)
+
+	diverged := ParseRequest([]byte(`{"model":"m","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"edited reply"},
+		{"role":"user","content":"next"}
+	]}`))
+	drainRun(t, mustRun(t, runner, credential, diverged))
+	handler.mu.Lock()
+	createCalls, send = handler.createCalls, handler.send
+	handler.mu.Unlock()
+	if createCalls != 2 || !strings.HasPrefix(send.GetMessage().GetText(), "user: hi") {
+		t.Fatalf("diverged history create=%d send=%q, want new agent with full prompt", createCalls, send.GetMessage().GetText())
+	}
+}
+
+/**
+ * @brief 启动 Run 并在失败时终止测试。
+ * @param t 测试上下文。
+ * @param runner 测试执行器。
+ * @param credential Cursor 凭证。
+ * @param request 当前请求。
+ * @return 事件流。
+ */
+func mustRun(t *testing.T, runner *SDKRunner, credential *Credential, request Request) <-chan Event {
+	t.Helper()
+	events, err := runner.Run(context.Background(), credential, request)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	return events
 }

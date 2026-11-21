@@ -28,16 +28,40 @@ type ToolResult struct {
 	IsError bool
 }
 
+/**
+ * @brief 随提示词转发给 SDK 的一张客户端图片。
+ */
+type Image struct {
+	Data     string ///< base64 图片字节，不含 data URL 前缀；远程图片为空
+	MimeType string ///< 内联图片的 MIME 类型
+	URL      string ///< 远程图片地址；内联图片为空
+}
+
 // Request is one client turn normalized for the Cursor SDK runner.
 type Request struct {
 	Model       string
 	Prompt      string
+	Images      []Image ///< Prompt 中 `[image]` 占位按序对应的图片
+	Effort      string  ///< 客户端请求体声明的思考等级（小写）；模型名后缀优先于该值
 	Tools       []Tool
 	ToolChoice  string
 	ToolResults []ToolResult
 	// InputTokenEstimate is used for client context accounting while a native
 	// Cursor run is suspended at a tool callback. It is never billable usage.
 	InputTokenEstimate int
+
+	transcript []transcriptEntry ///< 组成 Prompt 的逐条消息，用于普通续轮匹配已停放 Agent
+}
+
+/**
+ * @brief 展平提示词中的一条消息。
+ */
+type transcriptEntry struct {
+	role       string  ///< 小写角色；顶层 system 为 system
+	body       string  ///< 不含角色标签的消息文本
+	text       string  ///< 写入 Prompt 的带角色标签文本
+	images     []Image ///< 本条消息中的图片，顺序与 body 中的占位一致
+	toolResult bool    ///< 是否携带工具结果
 }
 
 // AllowsTools reports whether this turn exposes native custom tools.
@@ -58,21 +82,55 @@ func ParseRequest(body []byte) Request {
 		ToolChoice:  parseToolChoice(raw["tool_choice"], raw["function_call"]),
 		ToolResults: parseToolResults(raw),
 	}
-	var parts []string
-	if system := stringifyContent(raw["system"]); system != "" {
-		parts = append(parts, system)
+	request.Effort = requestEffort(raw)
+	var system contentWriter
+	if text := system.content(raw["system"]); text != "" {
+		request.transcript = append(request.transcript, transcriptEntry{
+			role: "system", body: text, text: text, images: system.images,
+		})
 	}
 	for _, rawMessage := range requestMessages(raw) {
 		message, _ := rawMessage.(map[string]any)
 		if message == nil {
 			continue
 		}
-		if text := formatMessage(message); text != "" {
-			parts = append(parts, text)
+		if entry, ok := parseTranscriptEntry(message); ok {
+			request.transcript = append(request.transcript, entry)
 		}
 	}
-	request.Prompt = strings.TrimSpace(strings.Join(parts, "\n\n"))
+	request.Prompt, request.Images = renderTranscript(request.transcript)
 	return request
+}
+
+/**
+ * @brief 读取请求体中显式声明的思考等级。
+ * @param raw 已解码的 Anthropic Messages 或 OpenAI chat 请求体。
+ * @return 小写思考等级；未声明时为空。
+ * @details OpenAI chat 使用 `reasoning_effort`，Anthropic 使用 adaptive thinking 的 `output_config.effort`；预算型思考没有对应等级，不做换算。
+ */
+func requestEffort(raw map[string]any) string {
+	effort := asString(raw["reasoning_effort"])
+	if effort == "" {
+		config, _ := raw["output_config"].(map[string]any)
+		effort = asString(config["effort"])
+	}
+	return strings.ToLower(strings.TrimSpace(effort))
+}
+
+/**
+ * @brief 把逐条消息拼成 SDK 提示词并收集其中的图片。
+ * @param entries 按对话顺序排列的消息。
+ * @return 以空行分隔的提示词。
+ * @return 提示词中 `[image]` 占位按序对应的图片；无图片时为 nil。
+ */
+func renderTranscript(entries []transcriptEntry) (string, []Image) {
+	parts := make([]string, 0, len(entries))
+	var images []Image
+	for _, entry := range entries {
+		parts = append(parts, entry.text)
+		images = append(images, entry.images...)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n")), images
 }
 
 func requestMessages(raw map[string]any) []any {
@@ -196,13 +254,24 @@ func parseToolChoice(choice any, legacy any) string {
 	return "auto"
 }
 
-func formatMessage(message map[string]any) string {
+/**
+ * @brief 把一条客户端消息展平为提示词条目。
+ * @param message Anthropic Messages 或 OpenAI chat 消息对象。
+ * @return 展平后的条目。
+ * @return 消息没有可发送的文本或图片时为 false。
+ * @details tool/function 角色只输出一次工具结果行，内容不再重复作为正文。
+ */
+func parseTranscriptEntry(message map[string]any) (transcriptEntry, bool) {
 	role := strings.ToLower(strings.TrimSpace(asString(message["role"])))
+	var writer contentWriter
 	var chunks []string
-	if text := stringifyContent(message["content"]); text != "" {
+	if role == "tool" || role == "function" {
+		writer.toolResult = true
+		id := firstNonEmpty(asString(message["tool_call_id"]), asString(message["id"]))
+		chunks = append(chunks, formatToolResultLine(id, asString(message["name"]), writer.content(message["content"])))
+	} else if text := writer.content(message["content"]); text != "" {
 		chunks = append(chunks, text)
-	}
-	if text := stringifyContent(message["text"]); text != "" && len(chunks) == 0 {
+	} else if text := writer.content(message["text"]); text != "" {
 		chunks = append(chunks, text)
 	}
 	if calls, _ := message["tool_calls"].([]any); len(calls) > 0 {
@@ -226,19 +295,17 @@ func formatMessage(message map[string]any) string {
 			chunks = append(chunks, formatToolUseLine(id, name, args))
 		}
 	}
-	if role == "tool" || role == "function" {
-		id := firstNonEmpty(asString(message["tool_call_id"]), asString(message["id"]))
-		name := asString(message["name"])
-		chunks = append([]string{formatToolResultLine(id, name, stringifyContent(message["content"]))}, chunks...)
+	body := strings.TrimSpace(strings.Join(chunks, "\n"))
+	if body == "" {
+		return transcriptEntry{}, false
 	}
-	text := strings.TrimSpace(strings.Join(chunks, "\n"))
-	if text == "" {
-		return ""
+	text := body
+	if role != "" {
+		text = role + ": " + body
 	}
-	if role == "" {
-		return text
-	}
-	return role + ": " + text
+	return transcriptEntry{
+		role: role, body: body, text: text, images: writer.images, toolResult: writer.toolResult,
+	}, true
 }
 
 func parseToolResults(raw map[string]any) []ToolResult {
@@ -334,6 +401,19 @@ func stringifyToolOutput(value any) string {
 }
 
 func stringifyContent(value any) string {
+	var writer contentWriter
+	return writer.content(value)
+}
+
+/**
+ * @brief 展平消息内容并按出现顺序收集图片。
+ */
+type contentWriter struct {
+	images     []Image ///< 已替换为 `[image]` 占位的图片
+	toolResult bool    ///< 内容中出现过工具结果块
+}
+
+func (w *contentWriter) content(value any) string {
 	switch typed := value.(type) {
 	case nil:
 		return ""
@@ -348,7 +428,7 @@ func stringifyContent(value any) string {
 					chunks = append(chunks, text)
 				}
 			case map[string]any:
-				if line := formatContentBlock(block); line != "" {
+				if line := w.block(block); line != "" {
 					chunks = append(chunks, line)
 				}
 			}
@@ -359,19 +439,63 @@ func stringifyContent(value any) string {
 	}
 }
 
-func formatContentBlock(block map[string]any) string {
+func (w *contentWriter) block(block map[string]any) string {
 	switch strings.ToLower(asString(block["type"])) {
 	case "", "text":
 		return strings.TrimSpace(asString(block["text"]))
+	case "image":
+		source, _ := block["source"].(map[string]any)
+		return w.image(Image{
+			Data: asString(source["data"]), MimeType: asString(source["media_type"]), URL: asString(source["url"]),
+		})
+	case "image_url":
+		url := asString(block["image_url"])
+		if object, ok := block["image_url"].(map[string]any); ok {
+			url = asString(object["url"])
+		}
+		return w.image(imageFromURL(url))
 	case "tool_use":
 		return formatToolUseLine(asString(block["id"]), asString(block["name"]), rawJSON(block["input"]))
 	case "tool_result":
-		return formatToolResultLine(asString(block["tool_use_id"]), "", stringifyContent(block["content"]))
+		w.toolResult = true
+		return formatToolResultLine(asString(block["tool_use_id"]), "", w.content(block["content"]))
 	case "function_call":
 		return formatToolUseLine(asString(block["id"]), asString(block["name"]), rawJSON(block["arguments"]))
 	default:
 		return strings.TrimSpace(asString(block["text"]))
 	}
+}
+
+/**
+ * @brief 记录一张图片并返回其在提示词中的占位。
+ * @param image 客户端图片；内联数据与地址都为空时忽略。
+ * @return `[image]` 占位；图片无效时为空。
+ */
+func (w *contentWriter) image(image Image) string {
+	if image.Data == "" {
+		image.MimeType = ""
+	} else {
+		image.URL = ""
+	}
+	if image.Data == "" && image.URL == "" {
+		return ""
+	}
+	w.images = append(w.images, image)
+	return "[image]"
+}
+
+/**
+ * @brief 解析 OpenAI `image_url` 地址。
+ * @param url base64 data URL 或远程地址。
+ * @return data URL 拆成内联数据与 MIME 类型，其余地址原样作为远程图片。
+ */
+func imageFromURL(url string) Image {
+	url = strings.TrimSpace(url)
+	header, data, ok := strings.Cut(url, ",")
+	if !ok || !strings.HasPrefix(header, "data:") || !strings.HasSuffix(header, ";base64") {
+		return Image{URL: url}
+	}
+	return Image{Data: data, MimeType: strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")}
 }
 
 func formatToolUseLine(id, name string, args json.RawMessage) string {
