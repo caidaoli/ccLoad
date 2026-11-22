@@ -2,6 +2,8 @@
 
 修改成本、Token/Key 白名单、额度窗口、采样对账或手动重置时读取。
 
+- Antigravity 在额度重置后可能交替返回新旧副本。同一额度桶已经确认新周期且仍有效时，旧周期读数不能覆盖管理页的重置时间、比例或成本窗口；同一响应中的其他额度桶独立更新。
+
 - **OpenAI 缓存写入 TTL**（2026-11-10 核对 [官方缓存文档](https://developers.openai.com/api/docs/guides/prompt-caching)，参照 sub2api `fe093d76`）：从实际响应 `input_tokens_details` 或 Chat 的 `prompt_tokens_details` 读取 `cache_write_tokens_details.ttl_30m_tokens/ttl_12h_tokens`；两项均为非负整数且合计等于写入总量时才采用。不从请求 TTL 推断写入，不与 Anthropic 5m/1h 混用，总量只从普通输入扣减一次。明细缺失或非法时保留原有总量计费。OpenAI 标准短写/长写按输入价1.25×/2.5×，再统一应用已选价目卡的Fast/Flex等倍率；显式自定义统一写入价在未设置独立12h价时继续覆盖两个档位，显式零价有效。日志及成本分项保留TTL明细，历史日志不反推分桶。
 
 - **Fable/Mythos 5.2 定价**（2026-11-13 核对 [官方定价](https://platform.claude.com/docs/en/about-claude/pricing)及 [Fast 模式](https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing)）：每百万 token 输入 $8、输出 $40、缓存读 $0.20、5 分钟缓存写 $10、1 小时缓存写 $16；全上下文统一费率，`fast` 模式所有 token 费用乘 2。标准目录按 `claude-fable-5-2`、`claude-mythos-5-2` 分别登记，版本和思考后缀沿用现有匹配逻辑。
@@ -28,7 +30,7 @@
 
 - **计费口径**(`proxy_error.go:billableResult`):日志成本与令牌费用同源。2xx 按完整响应计费；非 2xx 但响应已提交给客户端且解析到 usage(客户端 Esc 的 499、上游断流/空闲超时的 599、提交后的 SSE error、管理员中断)按已解析的部分 usage 计费——上游已为这些 token 收费，归零会让令牌限额、渠道日限额和 OAuth 窗口一起漏计。未提交的失败会切换渠道重试，客户端没拿到内容，不计费。令牌计数器用 `model.TokenStatsOutcome` 三态：成功/失败各计一次，取消(499)不计次数与耗时(与 logs 聚合排除 499 一致)但仍累加已计费用量；`UpdateTokenStats` 按传入值累加 token 与费用，不计费的调用方传 0。部分 usage 是下界：上游在断开前生成但未回报的输出 token 无从得知
 - **OpenAI 内置价目**（2026-10-08 核对，[官方价格](https://developers.openai.com/api/docs/pricing)）：GPT-5.6/Sol 输入/输出 $4/$20（优惠至少至 2026-11-21），>272K 为 $8/$30；GPT-5.4/5.5/5.6/6 的长上下文按包含缓存的完整输入判断，超过 272K 后整次请求按高档计费。Fast/priority 对 Astra、GPT-5.6 系列为 2×，GPT-5.5 为 2.5×；旧 GPT-5 mini、GPT-4.1/4o 使用各自官方倍率，不能统一按 2×。Codex `auto` 沿用 Fast 约定。以上是 API 价目，适用于 API Key 渠道与中转。Realtime/Image 在普通目录中只登记文本 token 价格，不能拿它代替音频或图像专项费率；官方标为 `-` 的项目不推断为免费。
-- **Codex OAuth 价目**（`util.OpenAIRateCard`，2026-10-12 核对 [Speed](https://developers.openai.com/codex/speed)）：Codex OAuth 渠道不用 API 模型倍率，改用 ChatGPT 价目，白名单内模型统一处理。本次请求按「Codex 购买额度」规则归属 Credit（`codex_has_credits`）时，Fast/priority/auto 为 2×，Ultrafast 为 6×；否则按订阅额度计费，Fast 为 2.5×，Ultrafast 为 8×。价目卡在 `forwardOnceAsyncWithNativeCodexWebsocket` 按渠道认证与 Credit 归属确定，日志明细与管理测试都使用同一判定。渠道删除后，日志明细只能依据 `codex_has_credits` 识别 Credit，其余请求按 API 价目展示。
+- **Codex OAuth 价目**（`util.OpenAIRateCard`，2026-11-22 核对 [Speed multipliers](https://learn.chatgpt.com/docs/pricing#speed-multipliers)）：Codex OAuth 渠道不用 API 模型倍率，改用 ChatGPT 价目。本次请求按「Codex 购买额度」规则归属 Credit（`codex_has_credits`）时，Fast/priority/auto 为 2×，Ultrafast 为 6×；订阅额度下，GPT-6.2 Astra/Sol 及其日期快照的 Fast/priority/auto 为 2×、Ultrafast 为 6×，其他白名单模型沿用 2.5×/8×。价目卡在 `forwardOnceAsyncWithNativeCodexWebsocket` 按渠道认证与 Credit 归属确定，日志明细与管理测试都使用同一判定。渠道删除后，日志明细只能依据 `codex_has_credits` 识别 Credit，其余请求按 API 价目展示。
 - **Ultrafast** (`util.OpenAIServiceTierMultiplier`)：API 价目按项目计费规则，现有 service_tier 白名单内模型的 `service_tier=ultrafast` 统一按基础 token 成本 ×6（2026-10-08 用户指定），包括输入、输出和缓存读写，倍率同样作用于全局及渠道自定义价格。此规则不代表所有模型均有官方 Ultrafast 报价或可用性；账号是否支持该档位由模型目录证据决定，不能由计费倍率反推。例外：GPT-6.2（`gpt-6.2-*`）的 API 价目 Ultrafast 按官方优惠在 2027-03-01 00:00 UTC 之前计 ×3，之后恢复 ×6；判定用计费时刻，实时计费取当前时间，看板明细按日志时间重算。Codex OAuth 价目不受影响。
 - **渠道倍率** `cost_multiplier`(≤0 归 1):× 标准成本 = `effective_cost`,写日志时快照到 `logs.cost_multiplier` 避免历史污染
 - **Auth Token**:`cost_*_microusd`(微美元整数避浮点);`cost_limit` 是总限额,`cost_daily_*`/`cost_monthly_*` 按服务器本地自然日/自然月累计,任一限额启用时必须同时设正数 `max_concurrency`;允许「超额一个请求」;`CCLOAD_API_TOKENS` 启动预置

@@ -69,6 +69,19 @@ func (s *Server) applyCooldownDecision(
 		}
 	}
 
+	return s.applyRouteCooldown(ctx, cooldownCtx, cfg, in)
+}
+
+/**
+ * @brief 按实际路由动作暂缓或应用已分类准备的冷却输入。
+ * @param ctx 当前尝试上下文，用于读取同渠道重试状态。
+ * @param writeCtx 冷却写入的上下文，由调用方决定取消和超时边界。
+ * @param cfg 本次尝试使用的渠道配置。
+ * @param in 已附加渠道检测规则和实际模型范围的错误。
+ * @return 换 Key、模型、渠道或返回客户端的后续动作。
+ * @note 可重试的渠道或模型故障暂缓写入；故障优先换 Key 时仍立即冷却失败的 Key。
+ */
+func (s *Server) applyRouteCooldown(ctx, writeCtx context.Context, cfg *model.Config, in cooldown.ErrorInput) cooldown.Action {
 	// 同渠道重试期间，可重试故障的冷却先登记不落库，由重试循环在放弃该渠道时统一提交；
 	// 换 Key 回退本身就是重试手段，照常冷却当前 Key。
 	if pending := pendingSameChannelCooldownsFrom(ctx); pending != nil &&
@@ -79,11 +92,22 @@ func (s *Server) applyCooldownDecision(
 		}
 	}
 
+	return s.persistChannelCooldown(writeCtx, cfg, in)
+}
+
+/**
+ * @brief 按渠道的换 Key 策略写入冷却，并使相关缓存失效。
+ * @param ctx 调用方分配给冷却写入的上下文。
+ * @param cfg 本次请求的渠道配置。
+ * @param in 已包含渠道检测规则和模型范围的错误。
+ * @return 冷却管理器根据实际资源状态给出的下一步动作。
+ */
+func (s *Server) persistChannelCooldown(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) cooldown.Action {
 	var action cooldown.Action
 	if cfg.RetryOtherKeysOnFailure {
-		action = s.cooldownManager.HandleErrorWithKeyFallback(cooldownCtx, in)
+		action = s.cooldownManager.HandleErrorWithKeyFallback(ctx, in)
 	} else {
-		action = s.cooldownManager.HandleError(cooldownCtx, in)
+		action = s.cooldownManager.HandleError(ctx, in)
 	}
 
 	if action == cooldown.ActionRetryKey || action == cooldown.ActionRetryModel || action == cooldown.ActionRetryChannel {
@@ -97,7 +121,7 @@ func (s *Server) applyCooldownDecision(
  * @brief 无副作用地选择错误后的动作，体验故障使用独立套餐分类。
  * @param ctx 当前请求上下文。
  * @param cfg 当前渠道配置与错误处理规则。
- * @param in 本次错误及实际模型身份。
+ * @param in 已附加渠道检测规则和实际模型范围的错误。
  * @return 换 Key、模型、渠道或返回客户端的后续动作。
  */
 func (s *Server) decideCooldownAction(
@@ -108,8 +132,19 @@ func (s *Server) decideCooldownAction(
 	if cfg.UsesZAIOAuth() && isZAITrialModel(in.Model) {
 		return s.evaluateZAITrialCooldown(cfg, in).Action
 	}
-	in = s.completeCooldownInput(cfg, in)
 	return s.cooldownManager.DecideAction(ctx, in)
+}
+
+/**
+ * @brief 判断已有备用 URL 时是否可以用同一 Key 换 URL，并暂缓写入渠道冷却。
+ * @param ctx 当前请求上下文。
+ * @param cfg 当前渠道配置，包含优先换 Key 策略。
+ * @param in 已附加渠道检测规则和实际模型范围的错误。
+ * @return 渠道级错误且不应优先换 Key 时为 true。
+ */
+func (s *Server) canTryAnotherURL(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) bool {
+	return s.decideCooldownAction(ctx, cfg, in) == cooldown.ActionRetryChannel &&
+		(!cfg.RetryOtherKeysOnFailure || !s.cooldownManager.CanFallbackToOtherKey(in))
 }
 
 func (s *Server) applyAntigravityModelCapacityCooldown(
@@ -498,14 +533,9 @@ func (s *Server) handleNetworkError(
 		failure.zaiTrial = true
 	}
 	input.ModelScoped = util.IsModelScopedNetworkError(err)
-	if deferChannelCooldown {
-		action := s.decideCooldownAction(ctx, cfg, input)
-		keyFallback := cfg.RetryOtherKeysOnFailure &&
-			s.cooldownManager.CanFallbackToOtherKey(s.completeCooldownInput(cfg, input))
-		if action == cooldown.ActionRetryChannel && !keyFallback {
-			failure.nextAction = action
-			return failure, action
-		}
+	if deferChannelCooldown && s.canTryAnotherURL(ctx, cfg, s.completeCooldownInput(cfg, input)) {
+		failure.nextAction = cooldown.ActionRetryChannel
+		return failure, cooldown.ActionRetryChannel
 	}
 
 	action := s.applyCooldownDecision(ctx, cfg, input)
@@ -694,6 +724,41 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 }
 
 /**
+ * @brief 清除成功渠道、实际使用的 Key 和模型各自的冷却及退避历史。
+ * @param ctx 冷却清理的上下文，由调用方决定取消和超时边界。
+ * @param cfg 实际成功渠道。
+ * @param keyIndex 实际成功的 Key 索引；NoKeyIndex 表示只有渠道凭证。
+ * @param actualModel 实际成功的上游模型；为空时没有模型冷却需要清理。
+ * @note 清除失败按各自计数记录，相关缓存始终失效。
+ */
+func (s *Server) clearSuccessfulRouteCooldowns(ctx context.Context, cfg *model.Config, keyIndex int, actualModel string) {
+	if err := s.cooldownManager.ClearChannelCooldown(ctx, cfg.ID); err != nil {
+		count := cooldownClearChannelFailCount.Add(1)
+		if count%100 == 1 {
+			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
+		}
+	}
+	if keyIndex != cooldown.NoKeyIndex {
+		if err := s.cooldownManager.ClearKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
+			count := cooldownClearKeyFailCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
+			}
+		}
+	}
+	if actualModel != "" {
+		if err := s.cooldownManager.ClearModelCooldown(ctx, cfg.ID, actualModel); err != nil {
+			count := cooldownClearModelFailCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
+					count, cfg.ID, actualModel, err)
+			}
+		}
+	}
+	s.invalidateChannelRelatedCache(cfg.ID)
+}
+
+/**
  * @brief 记录代理成功结果、计费用量并清除对应渠道冷却。
  * @param ctx 当前请求上下文。
  * @param cfg 实际成功渠道。
@@ -720,38 +785,11 @@ func (s *Server) handleProxySuccess(
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
-	// 使用 cooldownManager 清除冷却状态
-	// 设计原则: 清除失败不应影响用户请求成功
 	if cfg.UsesZAIOAuth() && res.zaiTrial && !reqCtx.countTokens() {
 		s.recoverZAITrialCooldown(cooldownCtx, cfg, actualModel, res.zaiTrialStarted)
 	}
 	if !cfg.AntigravityCredits && !reqCtx.countTokens() && (!cfg.UsesZAIOAuth() || !res.zaiTrial) {
-		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
-			count := cooldownClearChannelFailCount.Add(1)
-			if count%100 == 1 {
-				log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
-			}
-		}
-		if keyIndex != cooldown.NoKeyIndex {
-			if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
-				count := cooldownClearKeyFailCount.Add(1)
-				if count%100 == 1 {
-					log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
-				}
-			}
-		}
-		if actualModel != "" {
-			if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, actualModel); err != nil {
-				count := cooldownClearModelFailCount.Add(1)
-				if count%100 == 1 {
-					log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
-						count, cfg.ID, actualModel, err)
-				}
-			}
-		}
-
-		// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
-		s.invalidateChannelRelatedCache(cfg.ID)
+		s.clearSuccessfulRouteCooldowns(cooldownCtx, cfg, keyIndex, actualModel)
 	}
 	if cfg.SameChannelRetries > 0 {
 		s.sameChannelFailures.reset(sameChannelFailureKey{channelID: cfg.ID, model: actualModel})
@@ -1002,7 +1040,7 @@ func (s *Server) handleProxyErrorResponse(
 		// The original 503 already installed the model cooldown before URL retry.
 		// Only decide where to continue; applying this converted 429 again would
 		// double the same failure and change the initial two-minute cooldown.
-		action := s.decideCooldownAction(ctx, cfg, input)
+		action := s.decideCooldownAction(ctx, cfg, s.completeCooldownInput(cfg, input))
 		failure.nextAction = action
 		return failure, action
 	}
@@ -1011,18 +1049,17 @@ func (s *Server) handleProxyErrorResponse(
 		return failure, cooldown.ActionRetryChannel
 	}
 	if deferChannelCooldown {
-		action := s.decideCooldownAction(ctx, cfg, input)
+		completed := s.completeCooldownInput(cfg, input)
 		if cfg.UsesAntigravityOAuth() && shouldFallbackAntigravityBaseURL(res.Status, res.Body) {
+			action := s.decideCooldownAction(ctx, cfg, completed)
 			failure.nextAction = action
 			failure.deferredCooldown = &input
 			return failure, action
 		}
-		keyFallback := cfg.RetryOtherKeysOnFailure &&
-			s.cooldownManager.CanFallbackToOtherKey(s.completeCooldownInput(cfg, input))
-		if action == cooldown.ActionRetryChannel && !keyFallback {
-			failure.nextAction = action
+		if s.canTryAnotherURL(ctx, cfg, completed) {
+			failure.nextAction = cooldown.ActionRetryChannel
 			failure.deferredCooldown = &input
-			return failure, action
+			return failure, cooldown.ActionRetryChannel
 		}
 	}
 

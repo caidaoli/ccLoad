@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"log"
 	"math"
 	"net/http"
 	"slices"
 	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
@@ -70,21 +71,46 @@ func reasoningDepthLevels(levels []string) []string {
 
 var reasoningDefaultLevels = []string{"low", "medium", "high", "xhigh"}
 
+/**
+ * @brief 一次原生决策调用的结果，分别保留有效状态与实际收到的 HTTP 状态。
+ */
 type reasoningCallResult struct {
-	effort         string
-	confidence     *float64
-	reason         string
-	status         int
-	duration       time.Duration
-	costUnknown    bool
-	actualModel    string
-	baseURL        string
-	usage          *fwResult
-	usageKnown     bool
-	responseBody   []byte
-	responseHeader http.Header
-	debug          *model.DebugLogEntry
-	privacyMasked  privacy.Counts
+	upstreamStatus      int                           ///< 实际收到的 HTTP 状态，未收到响应头为零。
+	networkFailure      bool                          ///< 请求已发出，传输或响应体读取失败。
+	configuredDetection *cooldown.DetectionEvaluation ///< 成功状态响应已命中的冷却规则。
+	effort              string
+	confidence          *float64
+	reason              string
+	status              int
+	duration            time.Duration
+	costUnknown         bool
+	actualModel         string
+	baseURL             string
+	usage               *fwResult
+	usageKnown          bool
+	responseBody        []byte
+	responseHeader      http.Header
+	debug               *model.DebugLogEntry
+	privacyMasked       privacy.Counts
+}
+
+/**
+ * @brief 报告本次判定是否实际尝试了上游传输，决定是否记录请求及保留失败。
+ * @return 已收到 HTTP 响应或发生传输故障时为 true。
+ */
+func (r reasoningCallResult) attemptedUpstream() bool {
+	return r.upstreamStatus != 0 || r.networkFailure
+}
+
+/**
+ * @brief 将整次判断的取消或超时记录为当前的有效状态，并保留原始上游状态。
+ * @param err 判定上下文已返回的取消或超时错误。
+ */
+func (r *reasoningCallResult) setContextFailure(err error) {
+	r.status, r.reason = StatusClientClosedRequest, "cancelled"
+	if errors.Is(err, context.DeadlineExceeded) {
+		r.status, r.reason = http.StatusGatewayTimeout, "timeout"
+	}
 }
 
 /**
@@ -105,11 +131,7 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 	defer func() {
 		result.duration = time.Since(start)
 		if err != nil && ctx.Err() != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				result.reason = "timeout"
-			} else {
-				result.reason = "cancelled"
-			}
+			result.setContextFailure(ctx.Err())
 		}
 	}()
 	select {
@@ -131,256 +153,234 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		result, err = s.attemptReasoningDecision(ctx, channel, cfg.DecisionModel, transcript, levels, cfg.PromptTemplate, cfg.CustomPrompt)
-		if err == nil {
-			return result, nil
+		current, action, callErr := s.attemptReasoningDecision(ctx, channel, cfg, transcript, levels)
+		if callErr == nil {
+			return current, nil
+		}
+		// A local skip on a later channel must not hide the last upstream failure.
+		if current.attemptedUpstream() || !result.attemptedUpstream() {
+			result, err = current, callErr
+		}
+		if action == cooldown.ActionReturnClient {
+			return current, callErr
 		}
 	}
 	return result, err
 }
 
 /**
- * @brief 对一个已选路的判断渠道执行一次调用并记录该次尝试
- * @param ctx 整次判断共享的超时上下文
- * @param channel 通过模型、成本、时段与冷却筛选的渠道快照
- * @param modelName 判断逻辑模型名
- * @param transcript 已投影的判断上下文
- * @param levels 按强度升序排列的候选等级
- * @param template 本次判断快照中的提示词模板
- * @param custom 本次判断快照中的自定义提示词；非自定义模板时忽略
- * @return 本次尝试的结果与耗时
- * @return 凭据、请求、响应或取消错误；成功时为 nil
- * @note 失败冷却写入使用 ctx，不延长总判断预算
+ * @brief 在固定的模型行上按普通代理的重试预算尝试同渠道、Key 和 URL。
+ * @param ctx 整次判断共享的超时上下文。
+ * @param channel 已通过可用性筛选的决策渠道。
+ * @param cfg 本次请求读取的判断配置。
+ * @param transcript 已投影的判断输入。
+ * @param levels 可选等级。
+ * @return 本渠道最后一次实际调用结果；无调用时仅保留失败原因。
+ * @return 成功或确定不应换渠道时为 ActionReturnClient。
+ * @return 最后一次尝试的错误，成功时为 nil。
  */
-func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Config, modelName, transcript string, levels []string, template string, custom *model.ReasoningPrompt) (result reasoningCallResult, err error) {
-	start := time.Now()
-	result.reason = "decision_unavailable"
+func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Config, cfg *model.ReasoningAutoConfig, transcript string, levels []string) (reasoningCallResult, cooldown.Action, error) {
+	result := reasoningCallResult{reason: "decision_unavailable"}
 	keys, err := s.getAPIKeys(ctx, channel.ID)
 	if err != nil {
-		return result, err
+		return result, cooldown.ActionSkipChannel, err
 	}
-	row, err := s.selectChannelModelRow(ctx, channel, modelName, string(protocol.SystemOne), nil, keys)
+	row, err := s.selectChannelModelRow(ctx, channel, cfg.DecisionModel, string(protocol.SystemOne), nil, keys)
 	if err != nil {
-		return result, err
+		return result, cooldown.ActionSkipChannel, err
 	}
 	keys, _ = s.filterAPIKeysForModelRow(channel, keys, row, string(protocol.SystemOne))
-	keyIndex, apiKey, err := s.selectKeyWithFallback(channel, keys, nil)
-	if err != nil {
-		return result, err
+	limit := s.channelKeyAttemptLimit(channel, len(keys))
+	if limit == 0 {
+		return result, cooldown.ActionSkipChannel, ErrNoAPIKeyForModel
 	}
-	result, err = s.callSystemOne(ctx, channel, apiKey, row, transcript, levels, template, custom)
-	if err == nil && ctx.Err() != nil {
-		err = ctx.Err()
-	}
-	result.duration = time.Since(start)
-	result.costUnknown = s.reasoningCostUnknown(row, result)
-	if err != nil {
-		if ctx.Err() == nil && result.status >= 400 && s.cooldownManager != nil {
-			in := cooldownInputForModel(httpErrorInputFromParts(channel.ID, keyIndex, result.status, result.responseBody, result.responseHeader), result.actualModel)
-			// Cooldown persistence shares the decision budget and cancellation.
-			s.cooldownManager.HandleError(ctx, s.completeCooldownInput(channel, in))
-			s.invalidateChannelRelatedCache(channel.ID)
-		}
-		switch {
-		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			result.reason = "timeout"
-		case errors.Is(ctx.Err(), context.Canceled):
-			result.reason = "cancelled"
-		case result.status == http.StatusTooManyRequests:
-			result.reason = "rate_limited"
-		case result.status == http.StatusUnauthorized || result.status == http.StatusForbidden:
-			result.reason = "authentication_failed"
-		case result.status >= 400:
-			result.reason = "upstream_error"
-		default:
-			result.reason = "invalid_response"
-		}
-	}
-	result.duration = time.Since(start)
-	if result.status > 0 || result.baseURL != "" {
-		params := logEntryParams{RequestModel: modelName, ActualModel: result.actualModel,
-			RequestPath: "/v1/systemone", ChannelID: channel.ID, StatusCode: result.status,
-			Duration: result.duration.Seconds(), APIKeyUsed: apiKey, StartTime: start,
-			UpstreamProtocol: protocol.SystemOne, BaseURL: result.baseURL,
-			CostMultiplier: apiKeyCostMultiplierAt(channel, keys, keyIndex), ModelPrice: util.DecisionModelPrice(util.ResolveBillingModel(result.actualModel, modelName), row.entry.Pricing), Result: result.usage, DebugData: result.debug}
-		if result.usage != nil {
-			params.ResponseModel = result.usage.ResponseModel
-		}
-		if err != nil {
-			// Keep the upstream error body in the message, as proxy failure logs do.
-			params.ErrMsg = "reasoning decision failed: " + result.reason + ": " + err.Error()
-			if len(result.responseBody) > 0 {
-				logResult := fwResult{}
-				if result.usage != nil {
-					logResult = *result.usage
-				}
-				logResult.Body, logResult.UpstreamStatus = result.responseBody, result.status
-				params.Result = &logResult
-			}
-		}
-		entry := buildLogEntry(params)
-		// 决策调用按代理流量统计，请求协议记为 System One 以区分业务请求；
-		// 它是网关运营开销，不归属客户端令牌。
-		entry.ClientProtocol, entry.AuthTokenID = util.ProtocolSystemOne, 0
-		entry.ReasoningDecision = &model.ReasoningDecision{Status: "decided", SuggestedEffort: result.effort, Confidence: result.confidence,
-			DurationMS: result.duration.Milliseconds(), CostUnknown: result.costUnknown}
-		if err != nil {
-			entry.ReasoningDecision.Status = "fallback"
-			entry.ReasoningDecision.Reason = result.reason
-		}
-		if result.costUnknown {
-			entry.Cost = 0
-		}
-		if result.privacyMasked.Total() > 0 {
-			entry.PrivacyMasked = &result.privacyMasked
-		}
-		if entry.StatusCode == 0 {
-			entry.StatusCode = http.StatusBadGateway
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				entry.StatusCode = http.StatusGatewayTimeout
-			}
-			if errors.Is(ctx.Err(), context.Canceled) {
-				entry.StatusCode = StatusClientClosedRequest
-			}
-		}
-		s.AddLogAsync(entry)
-	}
-	return result, err
-}
 
-func (s *Server) decisionURL(cfg *model.Config) (string, error) {
-	urls := cfg.GetURLs()
-	// Same as proxy URL selection: a sole URL (including an administrator's
-	// explicit test URL) is used even while cooled down.
-	if len(urls) == 1 {
-		return urls[0], nil
-	}
-	available := urls[:0]
-	for _, value := range urls {
-		if s.urlSelector == nil || (!s.urlSelector.IsDisabled(cfg.ID, value) && !s.urlSelector.IsCooledDown(cfg.ID, value)) {
-			available = append(available, value)
+	var lastErr error
+	outcome, routeErr := s.runWithSameChannelRetries(ctx, channel, func(attemptCtx context.Context) (*proxyResult, error) {
+		tried := make(map[int]bool)
+		for {
+			keyIndex, apiKey, selectErr := s.selectKeyWithFallback(channel, keys, tried)
+			if selectErr != nil {
+				return nil, selectErr
+			}
+			tried[keyIndex] = true
+			urls := orderChannelAttemptURLs(s.urlSelector, channel, channel.GetURLs())
+			if len(urls) == 0 {
+				return nil, errors.New("reasoning decision URLs unavailable")
+			}
+			for i, url := range urls {
+				if ctxErr := attemptCtx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				start := time.Now()
+				current, callErr := s.callSystemOne(attemptCtx, channel, apiKey, url.url, row, transcript, levels, cfg.PromptTemplate, cfg.CustomPrompt)
+				action, retryURL := s.routeAfterReasoningAttempt(attemptCtx, channel, keyIndex, &current, callErr, len(urls) > 1, i+1 < len(urls))
+				if ctxErr := attemptCtx.Err(); ctxErr != nil {
+					// Cooldown and recovery writes also consume the decision budget.
+					current.setContextFailure(ctxErr)
+					action, retryURL, callErr = cooldown.ActionReturnClient, false, ctxErr
+				}
+				if current.attemptedUpstream() {
+					current.costUnknown = s.reasoningCostUnknown(row, current)
+					current.duration = time.Since(start)
+					multiplier := apiKeyCostMultiplierAt(channel, keys, keyIndex)
+					s.logReasoningDecisionAttempt(channel.ID, cfg.DecisionModel, apiKey, multiplier, row, start, current, callErr)
+				}
+				if current.attemptedUpstream() || !result.attemptedUpstream() || action == cooldown.ActionReturnClient {
+					result, lastErr = current, callErr
+				}
+				if retryURL {
+					continue
+				}
+				if action == cooldown.ActionRetryKey && len(tried) < limit {
+					break
+				}
+				return &proxyResult{status: result.status, nextAction: action, succeeded: callErr == nil}, nil
+			}
 		}
+	}, s.persistChannelCooldown)
+	if routeErr != nil {
+		if ctx.Err() != nil {
+			result.setContextFailure(ctx.Err())
+			return result, cooldown.ActionReturnClient, ctx.Err()
+		}
+		if lastErr != nil {
+			return result, cooldown.ActionSkipChannel, lastErr
+		}
+		return result, cooldown.ActionSkipChannel, routeErr
 	}
-	if len(available) == 0 {
-		return "", errors.New("reasoning decision URLs unavailable")
-	}
-	if s.urlSelector == nil {
-		return available[0], nil
-	}
-	value, _ := s.urlSelector.SelectURL(cfg.ID, available)
-	return value, nil
+	return result, outcome.nextAction, lastErr
 }
 
 /**
- * @brief 按固定模型行的实际提供商发送非流式原生判断请求
- * @param ctx 判断超时或管理测试上下文
- * @param cfg 渠道配置快照
- * @param key 已选中的凭据
- * @param row 本次调用固定的模型行，用于重定向和定价
- * @param transcript 判断文本
- * @param levels 按强度升序排列的候选等级
- * @param template 本次判断快照中的提示词模板
- * @param custom 本次判断快照中的自定义提示词；非自定义模板时忽略
- * @return 上游原始结果、解析等级和用量，失败时保留已获取的数据
- * @return 限流、传输、隐私遮蔽或响应格式错误；成功时为 nil
- * @note 请求遵守渠道请求规则与隐私边界，响应体最多读取 1 MiB
+ * @brief 判定成功时恢复实际路由；失败时按代理策略选择下一步。
+ * @param ctx 判定预算，取消后停止尝试且不处罚上游。
+ * @param cfg 当前渠道。
+ * @param keyIndex 本次使用的 Key。
+ * @param result 记录用于日志的有效状态和失败原因。
+ * @param err 原生调用或上下文的失败原因，成功时为 nil。
+ * @param multiURL 本渠道本次可尝试多个地址。
+ * @param hasNextURL 还有未尝试的地址。
+ * @return 下一步的路由动作。
+ * @return 应用相同 Key 尝试下个地址时为 true。
  */
-func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key string, row modelRoutingSelection, transcript string, levels []string, template string, custom *model.ReasoningPrompt) (result reasoningCallResult, err error) {
-	start := time.Now()
-	defer func() { result.duration = time.Since(start) }()
-	result.actualModel = s.resolveFinalUpstreamModel(cfg, row, string(protocol.SystemOne))
-	provider := reasoningProvider(result.actualModel)
-	prompt := resolveReasoningPrompt(template, custom, result.actualModel)
-	baseURL, err := s.decisionURL(cfg)
-	if err != nil {
-		return result, err
+func (s *Server) routeAfterReasoningAttempt(ctx context.Context, cfg *model.Config, keyIndex int, result *reasoningCallResult, err error, multiURL, hasNextURL bool) (cooldown.Action, bool) {
+	if ctx.Err() != nil {
+		return cooldown.ActionReturnClient, false
 	}
-	result.baseURL = baseURL
-	// The effective level is not sent: it anchors the judge toward the current
-	// level, and downgrade confirmation already provides the hysteresis.
-	session := privacySessionFromContext(ctx)
-	if session != nil {
-		transcript, err = session.MaskText(transcript)
-		if err != nil {
-			s.privacyStats.blocked.Add(1)
-			return result, errors.New("privacy masking failed; decision request was not sent")
-		}
-	}
-	body, err := reasoningDecisionBody(provider, result.actualModel, transcript, levels, prompt)
-	if err != nil {
-		return result, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reasoningDecisionURL(baseURL, provider), bytes.NewReader(body))
-	if err != nil {
-		return result, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if provider == "gemini" {
-		req.Header.Set("x-goog-api-key", key)
-	} else {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	applyHeaderRules(req.Header, cfg.HeaderRules())
-	body = applyBodyRules("application/json", body, cfg.BodyRules())
-	body, err = maskPrivacyBodyFromContext(ctx, body, "application/json")
-	if err != nil {
-		s.privacyStats.blocked.Add(1)
-		return result, err
-	}
-	req = cloneRequestWithBody(req, body)
-	// Same capture as proxy attempts: the request actually sent and the raw
-	// upstream response, so a decision can be inspected like any other call.
-	debug := s.captureDebugRequest(req, body)
-	defer func() { result.debug = debug.buildEntry(nil) }()
-	target := reasoningCompressionTarget{channelID: cfg.ID, host: req.URL.Host, provider: provider}
-	encoding := reasoningDecisionEncoding(provider, req.Header, body)
-	if _, plain := s.reasoningPlainTargets.Load(target); plain {
-		encoding = ""
-	}
-	outbound := req
-	if encoding != "" {
-		outbound = req.Clone(ctx)
-		compressRequestBody(outbound, encoding, body)
-	}
-	// As with proxy attempts, a call rejected by the channel's local limits was never sent.
-	release, err := s.reserveUpstreamRequest(cfg)
 	if err == nil {
-		result.privacyMasked = session.CountSent(body)
+		s.clearSuccessfulRouteCooldowns(ctx, cfg, keyIndex, result.actualModel)
+		if cfg.SameChannelRetries > 0 {
+			s.sameChannelFailures.reset(sameChannelFailureKey{channelID: cfg.ID, model: result.actualModel})
+		}
+		recordSuccessTTFBToSelector(s.urlSelector, cfg.ID, result.baseURL, &proxyResult{status: result.status, duration: result.duration.Seconds()})
+		return cooldown.ActionReturnClient, false
 	}
-	resp, err := s.doReservedUpstreamRequest(cfg, outbound, release, err)
-	// Rejections seen in probes: OpenAI 400 for gzip, Gemini 415 for zstd, Aliyun 400
-	// parsing compressed bytes as JSON. Only a plain success proves compression was the cause.
-	if err == nil && encoding != "" && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnsupportedMediaType) {
-		_ = resp.Body.Close()
-		release, err = s.reserveUpstreamRequest(cfg)
-		resp, err = s.doReservedUpstreamRequest(cfg, req, release, err)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			s.reasoningPlainTargets.Store(target, struct{}{})
+	if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
+		log.Printf("[INFO] 跳过判定渠道 %s (ID=%d): %v", cfg.Name, cfg.ID, err)
+		result.reason = "local_capacity"
+		return cooldown.ActionSkipChannel, false
+	}
+	if result.reason == "invalid_response" || !result.attemptedUpstream() {
+		if result.reason == "" {
+			result.reason = "decision_unavailable"
+		}
+		return cooldown.ActionSkipChannel, false
+	}
+	var in cooldown.ErrorInput
+	if result.networkFailure {
+		var retry bool
+		result.status, _, retry = util.ClassifyError(err)
+		result.reason = "upstream_error"
+		if !retry {
+			return cooldown.ActionReturnClient, false
+		}
+		in = networkErrorInput(cfg.ID, keyIndex, result.status)
+		in.ModelScoped = util.IsModelScopedNetworkError(err)
+	} else {
+		switch result.status {
+		case http.StatusTooManyRequests:
+			result.reason = "rate_limited"
+		case http.StatusUnauthorized, http.StatusForbidden:
+			result.reason = "authentication_failed"
+		default:
+			result.reason = "upstream_error"
+		}
+		in = httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.responseBody, result.responseHeader)
+		in.UpstreamStatusCode = result.upstreamStatus
+		in.ConfiguredDetection = result.configuredDetection
+	}
+	in = s.completeCooldownInput(cfg, cooldownInputForModel(in, result.actualModel))
+	if multiURL && (in.IsNetworkError || !util.IsModelScopedHTTPStatus(in.StatusCode)) && s.canTryAnotherURL(ctx, cfg, in) {
+		if s.urlSelector != nil {
+			s.urlSelector.CooldownURL(cfg.ID, result.baseURL)
+		}
+		if hasNextURL {
+			return cooldown.ActionRetryChannel, true
 		}
 	}
+	return s.applyRouteCooldown(ctx, ctx, cfg, in), false
+}
+
+/**
+ * @brief 独立记录当前判定 Key 的请求、用量与失败原因。
+ * @param channelID 实际渠道。
+ * @param modelName 请求的逻辑模型名。
+ * @param apiKey 本次使用的凭据。
+ * @param multiplier 当前 Key 的成本倍率。
+ * @param row 选中的模型行及其定价。
+ * @param start 本次出站尝试的起始时间。
+ * @param result 上游判定结果和成本信息。
+ * @param err 本次尝试的错误；成功时为 nil。
+ * @note 日志异步写入，不归属业务令牌。
+ */
+func (s *Server) logReasoningDecisionAttempt(channelID int64, modelName, apiKey string, multiplier float64, row modelRoutingSelection, start time.Time, result reasoningCallResult, err error) {
+	billingModel := util.ResolveBillingModel(result.actualModel, modelName)
+	params := logEntryParams{
+		RequestModel: modelName, ActualModel: result.actualModel, RequestPath: "/v1/systemone",
+		ChannelID: channelID, StatusCode: result.status, APIKeyUsed: apiKey,
+		Duration: result.duration.Seconds(), StartTime: start, BaseURL: result.baseURL, UpstreamProtocol: protocol.SystemOne,
+		CostMultiplier: multiplier, ModelPrice: util.DecisionModelPrice(billingModel, row.entry.Pricing),
+		Result: result.usage, DebugData: result.debug,
+	}
+	if result.usage != nil {
+		params.ResponseModel = result.usage.ResponseModel
+	}
 	if err != nil {
-		debug.captureUpstreamError(err)
-		return result, err
+		// Keep the upstream error body in the message, as proxy failure logs do.
+		params.ErrMsg = "reasoning decision failed: " + result.reason + ": " + err.Error()
+		if result.upstreamStatus != 0 && result.upstreamStatus != result.status {
+			params.ErrMsg += fmt.Sprintf(" (upstream HTTP %d)", result.upstreamStatus)
+		}
+		if result.upstreamStatus != 0 {
+			logResult := fwResult{}
+			if result.usage != nil {
+				logResult = *result.usage
+			}
+			logResult.Body, logResult.UpstreamStatus = result.responseBody, result.upstreamStatus
+			params.Result = &logResult
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	debug.wrapResponseBody(resp)
-	result.status = resp.StatusCode
-	result.responseHeader = resp.Header.Clone()
-	response, err := readReasoningResponse(resp.Body)
+	entry := buildLogEntry(params)
+	// 决策调用按代理流量统计，请求协议记为 System One 以区分业务请求；
+	// 它是网关运营开销，不归属客户端令牌。
+	entry.ClientProtocol, entry.AuthTokenID = util.ProtocolSystemOne, 0
+	entry.ReasoningDecision = &model.ReasoningDecision{Status: "decided", SuggestedEffort: result.effort, Confidence: result.confidence,
+		DurationMS: result.duration.Milliseconds(), CostUnknown: result.costUnknown}
 	if err != nil {
-		debug.captureUpstreamError(err)
-		return result, err
+		entry.ReasoningDecision.Status = "fallback"
+		entry.ReasoningDecision.Reason = result.reason
 	}
-	result.responseBody = response
-	if result.status != http.StatusOK {
-		return result, fmt.Errorf("system one status %d", result.status)
+	if result.costUnknown {
+		entry.Cost = 0
+	} else if err != nil {
+		// The judge reports operator-billed usage even if the answer cannot be used.
+		entry.Cost = computeRequestCostWithPrice(billingModel, result.usage.ServiceTier, params.ModelPrice, result.usage)
 	}
-	if !json.Valid(response) {
-		return result, errors.New("system one response is not JSON")
+	if result.privacyMasked.Total() > 0 {
+		entry.PrivacyMasked = &result.privacyMasked
 	}
-	result.usage, result.usageKnown = reasoningDecisionUsage(response, provider)
-	result.effort, result.confidence, err = parseReasoningDecision(response, provider, result.actualModel, prompt, levels)
-	return result, err
+	s.AddLogAsync(entry)
 }
 
 func systemOneChoice(answer gjson.Result, question string, levels []string) (string, *float64, error) {
@@ -442,17 +442,6 @@ func systemOneUsagePresent(body []byte) bool {
 		}
 	}
 	return true
-}
-
-func readReasoningResponse(reader io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(reader, reasoningResponseMaxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > reasoningResponseMaxBytes {
-		return nil, errors.New("reasoning response size exceeded")
-	}
-	return body, nil
 }
 
 /**

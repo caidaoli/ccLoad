@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -313,8 +314,17 @@ func collectCodeBuddyCompletion(ctx context.Context, reader io.Reader, onEvent f
 	return collectChatCompletion(ctx, reader, onEvent, normalizeCodeBuddySSEEvent, "CodeBuddy")
 }
 
-// collectChatCompletion assembles standard Chat Completions SSE. Provider
-// normalization stays with its caller so other upstreams retain their wire.
+/**
+ * @brief 将 Chat Completions SSE 聚合为完整 JSON 响应。
+ * @param ctx 约束上游读取的请求上下文。
+ * @param reader 上游 SSE 响应体。
+ * @param onEvent 上游事件处理完毕后的可选回调。
+ * @param normalize 适配供应商 SSE 格式的可选函数。
+ * @param provider 用于诊断的供应商名称。
+ * @return 聚合后的 JSON 响应，失败时为 nil。
+ * @return 保留用量和终态的上游解析器。
+ * @return 传输、解析或终态错误；无输出时为 util.ErrUpstreamEmptyResponse。
+ */
 func collectChatCompletion(ctx context.Context, reader io.Reader, onEvent func(*sseUsageParser), normalize func([]byte) []byte, provider string) ([]byte, *sseUsageParser, error) {
 	parser := newSSEUsageParser("openai")
 	choices := make(map[int]*codeBuddyChoice)
@@ -416,6 +426,9 @@ func collectChatCompletion(ctx context.Context, reader io.Reader, onEvent func(*
 	}, func() bool { return done })
 	if err != nil {
 		return nil, parser, err
+	}
+	if !parser.HasStreamOutput() {
+		return nil, parser, util.ErrUpstreamEmptyResponse
 	}
 	if len(choices) == 0 || !parser.IsStreamComplete() {
 		return nil, parser, fmt.Errorf("%s stream ended without completion", provider)

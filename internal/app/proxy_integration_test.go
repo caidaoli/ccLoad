@@ -39,6 +39,7 @@ import (
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
@@ -594,8 +595,11 @@ func TestProxy_UnconfiguredModelIsNotServedAfterExplicitModelFailure(t *testing.
 	if response := request("a"); response.Code == http.StatusOK {
 		t.Fatalf("expected model a to fail, body=%s", response.Body.String())
 	}
-	if response := request("b"); response.Code == http.StatusOK {
-		t.Fatalf("unconfigured model b was served, body=%s", response.Body.String())
+	if response := request("a"); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("cooled model: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request("b"); response.Code != http.StatusNotFound {
+		t.Fatalf("unconfigured model: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -684,7 +688,7 @@ func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
 }
 
 func TestProxy_CodeBuddyNonStreamToolCallsAndErrors(t *testing.T) {
-	for _, scenario := range []string{"tools", "length", "missing-done", "truncated", "error", "business-error", "json-error"} {
+	for _, scenario := range []string{"tools", "length", "missing-done", "truncated", "error", "business-error", "json-error", "empty-done", "empty-eof"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -700,6 +704,13 @@ func TestProxy_CodeBuddyNonStreamToolCallsAndErrors(t *testing.T) {
 				}
 				if scenario == "business-error" {
 					_, _ = io.WriteString(w, "data: {\"code\":11101,\"msg\":\"rejected\"}\n\n")
+					return
+				}
+				if scenario == "empty-done" || scenario == "empty-eof" {
+					_, _ = io.WriteString(w, chatMetadataOnlyStream)
+					if scenario == "empty-done" {
+						_, _ = io.WriteString(w, "data: [DONE]\n\n")
+					}
 					return
 				}
 				chunks := []string{
@@ -726,6 +737,12 @@ func TestProxy_CodeBuddyNonStreamToolCallsAndErrors(t *testing.T) {
 			credential, _ := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
 			env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", upstreamProtocol: "openai", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
 			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "hy3", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}, nil)
+			if scenario == "empty-done" || scenario == "empty-eof" {
+				if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), util.ErrUpstreamEmptyResponse.Error()) {
+					t.Fatalf("empty stream status=%d body=%s", response.Code, response.Body.String())
+				}
+				return
+			}
 			if scenario == "error" || scenario == "business-error" || scenario == "json-error" || scenario == "truncated" {
 				if response.Code == 200 {
 					t.Fatalf("failure reported success: %s", response.Body.String())
@@ -10968,11 +10985,14 @@ func TestProxy_NoAvailableUpstreamLogKeepsAuthTokenID(t *testing.T) {
 		"model":    "no-upstream-model",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 
 	entry := waitForProxyLog(t, env, "no-upstream-model")
+	if entry.StatusCode != http.StatusNotFound {
+		t.Fatalf("logged status=%d, want 404", entry.StatusCode)
+	}
 	if entry.AuthTokenID != 77 {
 		t.Fatalf("AuthTokenID=%d, want 77", entry.AuthTokenID)
 	}
@@ -13298,6 +13318,94 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 				t.Fatalf("upstream paths=%s, ordinary error must stop protocol fallback", got)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 验证 Sub2API 分组拒绝时复用当前 Key 回退，并保留另一 Key 的原生 Messages 路径。
+ * @param t 测试上下文。
+ */
+func TestProxy_AutomaticProtocolFallback_Sub2APIMessagesGroupPermission(t *testing.T) {
+	t.Parallel()
+	var restrictedMessages, restrictedChat, nativeMessages atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		key := headerValueFold(r.Header, "x-api-key")
+		switch {
+		case r.URL.Path == "/v1/messages" && key == "sk-restricted":
+			restrictedMessages.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"permission_error","message":"This group does not allow /v1/messages dispatch"}}`)
+		case r.URL.Path == "/v1/chat/completions" && headerValueFold(r.Header, "Authorization") == "Bearer sk-restricted":
+			restrictedChat.Add(1)
+			_, _ = io.WriteString(w, `{"id":"chatcmpl_1","model":"shared-model","choices":[{"message":{"role":"assistant","content":"converted"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+		case r.URL.Path == "/v1/messages" && key == "sk-native":
+			nativeMessages.Add(1)
+			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"shared-model","content":[{"type":"text","text":"native"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			t.Errorf("unexpected upstream attempt: %s (restricted key=%t, native key=%t)", r.URL.Path,
+				key == "sk-restricted", key == "sk-native")
+		}
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "sub2api", upstreamProtocol: util.ProtocolAnthropic,
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "shared-model", apiKey: "sk-restricted",
+	}}, map[int]string{0: upstream.URL})
+	ctx := context.Background()
+	if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: 1, KeyIndex: 1, APIKey: "sk-native",
+	}}); err != nil {
+		t.Fatalf("create native key: %v", err)
+	}
+	if err := env.store.UpdateAPIKeysStrategy(ctx, 1, model.KeyStrategyRoundRobin); err != nil {
+		t.Fatalf("set round robin: %v", err)
+	}
+
+	var converted, native int
+	for range 4 {
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": "shared-model", "max_tokens": 128,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, map[string]string{"anthropic-version": "2023-06-01"})
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		switch got := gjson.Get(response.Body.String(), "content.0.text").String(); got {
+		case "converted":
+			converted++
+		case "native":
+			native++
+		default:
+			t.Fatalf("unexpected assistant text %q", got)
+		}
+	}
+	if converted != 2 || native != 2 {
+		t.Fatalf("converted responses=%d, native responses=%d, want two of each", converted, native)
+	}
+	if restrictedMessages.Load() != 2 || restrictedChat.Load() != 2 || nativeMessages.Load() != 2 {
+		t.Fatalf("upstream attempts restricted Messages=%d, restricted Chat=%d, native Messages=%d",
+			restrictedMessages.Load(), restrictedChat.Load(), nativeMessages.Load())
+	}
+	keys, err := env.store.GetAPIKeys(ctx, 1)
+	if err != nil {
+		t.Fatalf("get relay keys: %v", err)
+	}
+	for _, key := range keys {
+		if key.CooldownUntil > time.Now().Unix() {
+			t.Fatalf("key %d has a cooldown after successful protocol fallback", key.KeyIndex)
+		}
+	}
+
+	cfg, err := env.store.GetConfig(ctx, 1)
+	if err != nil {
+		t.Fatalf("get relay config: %v", err)
+	}
+	result := env.server.testChannelAPI(ctx, cfg, "sk-restricted", &testutil.TestChannelRequest{
+		Model: "shared-model", ClientProtocol: util.ProtocolAnthropic, Content: "hi",
+	})
+	if result["success"] != true || result["upstream_protocol"] != util.ProtocolOpenAI {
+		t.Fatalf("channel test should fall back to Chat, result=%v", result)
 	}
 }
 
@@ -17415,6 +17523,125 @@ func TestProxy_StreamingEmpty200RetriesNextChannel(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 中转 Chat 的空流可能发送 role 与用量，最后给出 [DONE] 或直接关闭。
+ */
+const chatMetadataOnlyStream = "data: {\"id\":\"empty-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"empty-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":0}}\n\n"
+
+/**
+ * @brief 验证没有实际输出的 Chat SSE 在提交前换渠，候选耗尽时返回 502。
+ * @param t 测试上下文。
+ */
+func TestProxy_ChatMetadataOnlyStreamRetriesNextChannel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, path, end string
+		fallback        bool
+	}{
+		{name: "Chat DONE", path: "/v1/chat/completions", end: "data: [DONE]\n\n", fallback: true},
+		{name: "Chat EOF", path: "/v1/chat/completions", fallback: true},
+		{name: "Messages DONE", path: "/v1/messages", end: "data: [DONE]\n\n", fallback: true},
+		{name: "Messages EOF", path: "/v1/messages", fallback: true},
+		{name: "no fallback", path: "/v1/chat/completions", end: "data: [DONE]\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var emptyCalls, backupCalls atomic.Int32
+			var waitedForEOF atomic.Bool
+			empty := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				emptyCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, chatMetadataOnlyStream+tc.end)
+				if tc.end != "" && tc.fallback {
+					w.(http.Flusher).Flush()
+					select {
+					case <-r.Context().Done():
+					case <-time.After(2 * time.Second):
+						waitedForEOF.Store(true)
+					}
+				}
+			}))
+			defer empty.Close()
+			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"id\":\"backup-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"from backup\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}))
+			defer backup.Close()
+			channels := []testChannel{{name: "empty", upstreamProtocol: "openai", models: "gpt-test", apiKey: "sk-empty", priority: 100}}
+			urls := map[int]string{0: empty.URL}
+			if tc.fallback {
+				channels = append(channels, testChannel{name: "backup", upstreamProtocol: "openai", models: "gpt-test", apiKey: "sk-backup", priority: 50})
+				urls[1] = backup.URL
+			}
+			env := setupProxyTestEnvWithSettings(t, channels, urls, map[string]string{"cooldown_fallback_enabled": "false"})
+			response := doProxyRequest(t, env.engine, tc.path, map[string]any{
+				"model": "gpt-test", "stream": true, "max_tokens": 32,
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}, nil)
+			if got := emptyCalls.Load(); got != 1 {
+				t.Fatalf("empty upstream calls=%d, want 1", got)
+			}
+			if waitedForEOF.Load() {
+				t.Fatal("proxy waited for EOF after receiving [DONE]")
+			}
+			if !tc.fallback {
+				if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), util.ErrUpstreamEmptyResponse.Error()) {
+					t.Fatalf("empty stream without fallback status=%d body=%s", response.Code, response.Body.String())
+				}
+				return
+			}
+			if response.Code != http.StatusOK || backupCalls.Load() != 1 {
+				t.Fatalf("status=%d backup calls=%d body=%s", response.Code, backupCalls.Load(), response.Body.String())
+			}
+			var text strings.Builder
+			for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+				_, data := parseSSEEventChunk([]byte(event))
+				payload := gjson.ParseBytes(data)
+				if payload.Get("id").String() == "empty-chat" || payload.Get("message.id").String() == "empty-chat" {
+					t.Fatalf("failed attempt reached client: %s", event)
+				}
+				text.WriteString(payload.Get("choices.0.delta.content").String())
+				text.WriteString(payload.Get("delta.text").String())
+			}
+			if text.String() != "from backup" {
+				t.Fatalf("backup content=%q body=%s", text.String(), response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证思考输出和只有明确 stop 的 Chat SSE 仍可成功透传。
+ * @param t 测试上下文。
+ */
+func TestProxy_ChatStreamKeepsReasoningAndExplicitStop(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, data string }{
+		{name: "reasoning", data: `{"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":"working"}]}}]}`},
+		{name: "stop", data: `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`},
+		{name: "legacy function call", data: `{"choices":[{"index":0,"delta":{"function_call":{"name":"lookup"}}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wire := chatMetadataOnlyStream + "data: " + tc.data + "\n\ndata: [DONE]\n\n"
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, wire)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{name: "chat", upstreamProtocol: "openai", models: "gpt-test", apiKey: "sk-test"}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-test", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusOK || response.Body.String() != wire {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_StreamingPingOnly200RetriesNextChannel(t *testing.T) {
 	t.Parallel()
 
@@ -19073,8 +19300,8 @@ func TestProxy_ChannelRestriction_PreservesNoCandidateResponse(t *testing.T) {
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 	if got := upstreamHits.Load(); got != 0 {
 		t.Fatalf("upstream hits=%d, want 0", got)
@@ -19118,24 +19345,27 @@ func TestProxy_CostLimitExceeded_Returns429(t *testing.T) {
 	}
 }
 
-func TestProxy_NoChannels_Returns503(t *testing.T) {
+/**
+ * @brief 检查未配置模型的 HTTP 状态和各下游协议的错误信封。
+ * @param t Go 测试上下文。
+ */
+func TestProxy_ModelNotFound(t *testing.T) {
 	t.Parallel()
-
-	// 创建没有渠道的环境
-	srv := newInMemoryServer(t)
-	injectAPIToken(srv.authService, "test-api-key", 0, 1)
-
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	srv.SetupRoutes(engine)
-
-	w := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
-		"model":    "gpt-4",
-		"messages": []map[string]string{{"role": "user", "content": "hi"}},
-	}, nil)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	env := setupProxyTestEnv(t, nil, nil)
+	for _, tc := range []struct {
+		path, errorField, want string
+		body                   map[string]any
+	}{
+		{"/v1/chat/completions", "error.code", "model_not_found", map[string]any{"model": "missing", "messages": []any{}}},
+		{"/v1/responses", "error.code", "model_not_found", map[string]any{"model": "missing", "input": "hello"}},
+		{"/v1beta/models/missing:generateContent", "error.status", "NOT_FOUND", map[string]any{"contents": []any{}}},
+	} {
+		w := doProxyRequest(t, env.engine, tc.path, tc.body, nil)
+		body := gjson.Parse(w.Body.String())
+		if w.Code != http.StatusNotFound || body.Get(tc.errorField).String() != tc.want ||
+			!strings.Contains(body.Get("error.message").String(), "missing") {
+			t.Errorf("%s: status=%d body=%s", tc.path, w.Code, w.Body.String())
+		}
 	}
 }
 
@@ -22347,7 +22577,7 @@ func TestProxySystemOneEndpointRoutesOnlySystemOneChannels(t *testing.T) {
 			}
 
 			// 只有聊天渠道支持的模型不会被转换后发给聊天渠道。
-			if w = doProxyRequest(t, env.engine, "/v1/systemone", map[string]any{"model": "gpt-chat", "state": "x"}, nil); w.Code == http.StatusOK {
+			if w = doProxyRequest(t, env.engine, "/v1/systemone", map[string]any{"model": "gpt-chat", "state": "x"}, nil); w.Code != http.StatusNotFound {
 				t.Fatalf("chat-only model served by /v1/systemone: %s", w.Body.String())
 			}
 			if w = doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "jev-latest",

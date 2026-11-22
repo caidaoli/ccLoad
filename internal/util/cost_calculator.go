@@ -621,7 +621,7 @@ type OpenAIRateCard uint8
 const (
 	// OpenAIRateCardAPI 是 API token 价目（含 API Key 渠道与中转）。
 	OpenAIRateCardAPI OpenAIRateCard = iota
-	// OpenAIRateCardCodexAllowance 是 Codex 订阅额度：Fast 2.5x、Ultrafast 8x。
+	// OpenAIRateCardCodexAllowance 是 Codex 订阅内额度，Fast 和 Ultrafast 的倍率随模型变化。
 	OpenAIRateCardCodexAllowance
 	// OpenAIRateCardCodexCredits 是 Codex 购买积分/Enterprise PAYG：Fast 2x、Ultrafast 6x。
 	OpenAIRateCardCodexCredits
@@ -636,6 +636,7 @@ const (
  * @return 倍率；白名单外模型或标准档返回 1
  * @details Codex 的 auto 按 Fast 计费；priority 与 fast 使用相同官方倍率；flex=0.5x。
  * API 价目的 Ultrafast 按项目计费规则统一为 6x，GPT-6.2 在官方优惠期内为 3x。
+ * GPT-6.2 Astra/Sol 的订阅内 Fast 和 Ultrafast 分别为 2x、6x（https://learn.chatgpt.com/docs/pricing#speed-multipliers）。
  * https://developers.openai.com/codex/speed （2026-10-12）、
  * https://developers.openai.com/api/docs/pricing （2026-11-18）
  */
@@ -647,18 +648,22 @@ func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateC
 	if !modelSupportsTier(model) {
 		return 1.0
 	}
+	gpt62 := strings.HasPrefix(strings.ToLower(model), "gpt-6.2-")
 	switch serviceTier {
 	case "ultrafast":
 		switch {
-		case rateCard == OpenAIRateCardCodexAllowance:
+		case rateCard == OpenAIRateCardCodexAllowance && !gpt62:
 			return 8.0
-		case rateCard == OpenAIRateCardAPI && isGPT62UltrafastPromo(model, billedAt):
+		case rateCard == OpenAIRateCardAPI && gpt62 && billedAt.Before(gpt62UltrafastPromoEnd):
 			return 3.0
 		}
 		return 6.0
 	case "auto", "priority", "fast":
 		switch rateCard {
 		case OpenAIRateCardCodexAllowance:
+			if gpt62 {
+				return 2.0
+			}
 			return 2.5
 		case OpenAIRateCardCodexCredits:
 			return 2.0
@@ -675,16 +680,6 @@ func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateC
  * @brief GPT-6.2 API Ultrafast 优惠截止时刻（不含），官方 "through February 28, 2027"，按 UTC 日界
  */
 var gpt62UltrafastPromoEnd = time.Date(2027, time.March, 1, 0, 0, 0, 0, time.UTC)
-
-/**
- * @brief 判断 GPT-6.2 模型在计费时刻是否处于 API Ultrafast 3x 优惠期
- * @param model 已通过 service_tier 白名单的计费模型名
- * @param billedAt 计费时刻
- * @return 属于 gpt-6.2 系列且早于优惠截止时刻时返回 true
- */
-func isGPT62UltrafastPromo(model string, billedAt time.Time) bool {
-	return strings.HasPrefix(strings.ToLower(model), "gpt-6.2-") && billedAt.Before(gpt62UltrafastPromoEnd)
-}
 
 // IsOpenAIAstraModel identifies Astra and its dated snapshots, excluding other variants.
 func IsOpenAIAstraModel(model string) bool {

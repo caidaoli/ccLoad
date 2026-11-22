@@ -1641,6 +1641,27 @@ func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
 	}
 }
 
+/**
+ * @brief 识别 Sub2API 拒绝当前 Key 所属分组使用 Messages 的错误。
+ * @param statusCode 上游 HTTP 状态码。
+ * @param responseBody 上游错误响应体。
+ * @return 仅当状态、错误类型和消息匹配分组拒绝时返回 true。
+ */
+func IsMessagesDispatchForbidden(statusCode int, responseBody []byte) bool {
+	if statusCode != http.StatusForbidden {
+		return false
+	}
+	var payload struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(responseBody, &payload) == nil &&
+		payload.Error.Type == "permission_error" &&
+		payload.Error.Message == "This group does not allow /v1/messages dispatch"
+}
+
 func isUnsupportedProtocolRequest(responseBody []byte) bool {
 	var payload struct {
 		Error struct {

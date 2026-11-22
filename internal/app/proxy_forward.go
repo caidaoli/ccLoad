@@ -906,6 +906,17 @@ func streamAndParseResponse(
 	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
 		parser.advisor = reqCtx.advisor
 		feed := makeFeed(parser)
+		if upstreamProtocol == util.ProtocolOpenAI && reqCtx.isStreaming {
+			return streamCopySSE(reqCtx.ctx, stream, w, func(data []byte) error {
+				if err := feed(data); err != nil {
+					return err
+				}
+				if parser.isEmptyOpenAIStreamEnd() {
+					return errStopStreamAfterWrite
+				}
+				return nil
+			})
+		}
 		if upstreamProtocol != util.ProtocolCodex && upstreamProtocol != util.ProtocolAnthropic {
 			return streamCopySSE(reqCtx.ctx, stream, w, feed)
 		}
@@ -2101,7 +2112,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		},
 		translateEvent,
 		func() bool {
-			if parser.geminiErrorUsage {
+			if parser.geminiErrorUsage || parser.isEmptyOpenAIStreamEnd() {
 				return true
 			}
 			if reqCtx.codeBuddyOAuth {
@@ -2421,9 +2432,14 @@ func positiveDuration(d time.Duration) time.Duration {
 	return d
 }
 
+/**
+ * @brief 判断是否已收到有效上游响应以结束首字节等待。
+ * @param parser 当前尝试的响应解析器。
+ * @return 有错误、输出、终态或流元数据时为 true；单独心跳返回 false。
+ */
 func shouldMarkUpstreamFirstByte(parser usageParser) bool {
 	return parser.GetLastError() != nil || parser.HasStreamOutput() ||
-		parser.IsStreamComplete() || parser.HasResponsesMetadata()
+		parser.IsStreamComplete() || parser.HasStreamMetadata()
 }
 
 func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamProtocol string) bool {
@@ -4034,10 +4050,12 @@ func (s *Server) forwardAttempt(
 
 	openCodeProtocolUnsupported := !res.ResponseCommitted &&
 		isOpenCodeModelProtocolUnsupported(cfg, baseURL, res.Status, res.Body)
+	messagesDispatchForbidden := !res.ResponseCommitted && upstreamProtocol == protocol.Anthropic &&
+		util.IsMessagesDispatchForbidden(res.Status, res.Body)
 	if openCodeProtocolUnsupported || (cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
 		!res.zaiTrial && // 固定体验端点的拒绝不能用于推断配置 URL 的协议能力。
 		!isAntigravityModelNotFound(cfg, res.Status) &&
-		isProtocolEndpointMissing(res)) {
+		(messagesDispatchForbidden || isProtocolEndpointMissing(res))) {
 		logged := s.logProtocolCapabilityFallback(
 			reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res,
 			fmt.Sprintf("upstream protocol %s rejected request", upstreamProtocol),
@@ -4052,6 +4070,7 @@ func (s *Server) forwardAttempt(
 			nextAction:                cooldown.ActionRetryChannel,
 			proxyLogWritten:           logged,
 			protocolCapabilityMissing: true,
+			requestScopedProtocolMiss: messagesDispatchForbidden,
 		}, cooldown.ActionRetryChannel, nil
 	}
 
@@ -4746,6 +4765,19 @@ func buildCtxDoneResult(cfg *model.Config, ctxErr error) *proxyResult {
 	}
 }
 
+/**
+ * @brief 计算一次请求在当前渠道可尝试的 Key 数量。
+ * @param cfg 渠道配置；启用故障优先换 Key 时可尝试全部候选。
+ * @param count 当前模型允许的候选 Key 数量。
+ * @return 受候选数和全局 Key 尝试上限约束的次数。
+ */
+func (s *Server) channelKeyAttemptLimit(cfg *model.Config, count int) int {
+	if cfg.RetryOtherKeysOnFailure {
+		return count
+	}
+	return min(s.maxKeyRetries, count)
+}
+
 // selectKeyWithFallback 在 triedKeys 之外选 Key：先 SelectAvailableKey，
 // 启用 cooldown fallback 时再 SelectCooldownFallbackKey；全部失败包装 ErrAllKeysUnavailable。
 func (s *Server) selectKeyWithFallback(cfg *model.Config, apiKeys []*model.APIKey, triedKeys map[int]bool) (int, string, error) {
@@ -4996,8 +5028,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				return result, nil, nil
 			}
 			if cfg.AntigravityCredits || result == nil || !result.protocolCapabilityMissing {
-				// 前一协议只是不适配本次请求时，回退结果不能代表端点能力：
-				// 写入会把同一渠道/模型的其他会话也钉到回退协议上。
+				// 仅影响本次请求形态或 Key 的拒绝不能代表端点能力。
 				if learnCapability && !requestScopedMiss {
 					s.protocolCapabilities.set(capabilityKey, upstreamProtocol)
 				}
@@ -5272,10 +5303,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// 计算实际重试次数
 	actualKeyCount := len(apiKeys)
-	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)
-	if cfg.RetryOtherKeysOnFailure {
-		maxKeyRetries = actualKeyCount
-	}
+	maxKeyRetries := s.channelKeyAttemptLimit(cfg, actualKeyCount)
 
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 

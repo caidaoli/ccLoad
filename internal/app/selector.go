@@ -210,11 +210,20 @@ func (s *Server) fuzzyModelCandidates(ctx context.Context, model string) ([]*mod
 	return candidates, nil
 }
 
-// modelConfigured 报告是否有启用渠道（精确或模糊）支持 model；查询失败按已配置处理，
-// 避免把存储故障伪装成“模型不存在”。
-func (s *Server) modelConfigured(ctx context.Context, model string) bool {
-	if model == "" {
+/**
+ * @brief 判断启用渠道是否配置了路由模型，忽略临时冷却、额度和时段限制。
+ * @param ctx 请求上下文
+ * @param model 路由使用的模型名
+ * @param clientProtocol System One 使用独立模型池；普通协议沿用精确和模糊匹配
+ * @return 有匹配配置时为 true；无具体模型或查询失败时也返回 true，避免误报 404
+ */
+func (s *Server) modelConfigured(ctx context.Context, model string, clientProtocol protocol.Protocol) bool {
+	if model == "" || model == "*" {
 		return true
+	}
+	if clientProtocol == protocol.SystemOne {
+		channels, err := s.systemOneCandidatePool(ctx, model)
+		return err != nil || len(channels) > 0
 	}
 	if channels, err := s.getEnabledChannelsSnapshotByModel(ctx, model); err != nil || len(channels) > 0 {
 		return true

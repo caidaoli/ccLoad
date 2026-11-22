@@ -9126,6 +9126,140 @@ func TestHandleChannelTestSystemOneChallengeKeepsClassification(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证原生判定管理测试区分有效失败状态、上游 HTTP 状态及实际冷却。
+ * @param t 测试上下文。
+ */
+func TestHandleChannelTestSystemOneEffectiveFailureStatus(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body, contentType, action string
+		upstreamStatus, status          int
+		wantChannelCooldown             bool
+		wantKeyCooldown                 bool
+		wantModelCooldown               bool
+	}{
+		{
+			name: "invalid answer", body: `{"answers":{"effort":{"type":"choice","choice":"unknown"}},"usage":{"input_tokens":10,"output_tokens":2}}`,
+			upstreamStatus: http.StatusOK, status: http.StatusBadGateway, action: "invalid_response_no_cooldown",
+		},
+		{
+			name: "recognised rate limit", body: `{"error":{"type":"rate_limit_error","message":"Too many requests"}}`,
+			upstreamStatus: http.StatusOK, status: http.StatusTooManyRequests, action: "model_cooldown_applied", wantModelCooldown: true,
+		},
+		{
+			name: "configured JSON response", body: `{"message":"Service temporarily unavailable"}`,
+			upstreamStatus: http.StatusOK, status: util.StatusSSEError, action: "channel_cooldown_applied", wantChannelCooldown: true,
+		},
+		{
+			name: "configured plaintext response", body: "Service temporarily unavailable", contentType: "text/plain",
+			upstreamStatus: http.StatusOK, status: util.StatusSSEError, action: "channel_cooldown_applied", wantChannelCooldown: true,
+		},
+		{
+			name: "raw payment failure", body: `{"error":"Unrecognised payment failure"}`,
+			upstreamStatus: http.StatusPaymentRequired, status: http.StatusPaymentRequired, action: "key_cooldown_applied", wantKeyCooldown: true,
+		},
+		{
+			name: "raw authentication failure", body: `{"error":"Unrecognised authentication failure"}`,
+			upstreamStatus: http.StatusUnauthorized, status: http.StatusUnauthorized, action: "key_cooldown_applied", wantKeyCooldown: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				contentType := tc.contentType
+				if contentType == "" {
+					contentType = "application/json"
+				}
+				w.Header().Set("Content-Type", contentType)
+				w.WriteHeader(tc.upstreamStatus)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			server := newInMemoryServer(t)
+			ctx := context.Background()
+			cfg, err := server.store.CreateConfig(ctx, &model.Config{
+				Name: "judge", Enabled: true, AuthType: model.AuthTypeSystemOne,
+				URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "judge"}, {Model: "other-judge"}},
+				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Unavailable", StatusCodes: []int{http.StatusOK}, MessagePattern: "Service temporarily unavailable",
+					Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-first"}, {ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-second"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			result := server.executeChannelTestWithCooldown(ctx, cfg, 0, "sk-first", &testutil.TestChannelRequest{Model: "judge", Content: "task"}, true)
+			if result["status_code"] != tc.status || result["success"] != false || result["cooldown_action"] != tc.action ||
+				result["raw_response"] != tc.body {
+				t.Fatalf("native failure: %+v", result)
+			}
+			if tc.status != tc.upstreamStatus && result["upstream_status_code"] != tc.upstreamStatus {
+				t.Fatalf("native upstream status lost: %+v", result)
+			}
+			stored, err := server.store.GetConfig(ctx, cfg.ID)
+			if err != nil || stored.IsCoolingDown(time.Now()) != tc.wantChannelCooldown {
+				t.Fatalf("channel cooldown differs: config=%+v err=%v", stored, err)
+			}
+			keys, err := server.store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil || len(keys) != 2 || keys[0].IsCoolingDown(time.Now()) != tc.wantKeyCooldown || keys[1].IsCoolingDown(time.Now()) {
+				t.Fatalf("key cooldown differs: keys=%+v err=%v", keys, err)
+			}
+			cooldowns, err := server.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, cooled := cooldowns[cfg.ID]["judge"]
+			if cooled != tc.wantModelCooldown || len(cooldowns[cfg.ID]) > 1 {
+				t.Fatalf("model cooldown differs: %+v", cooldowns[cfg.ID])
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证明文补发被本地限制时仍可诊断前一次已发出的压缩请求。
+ * @param t 测试上下文。
+ */
+func TestSystemOneChannelTestCompressionFallbackLocalLimitPreservesResponse(t *testing.T) {
+	t.Parallel()
+	const rejection = `{"error":"unsupported content encoding"}`
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if got := r.Header.Get("Content-Encoding"); got != "zstd" {
+			t.Errorf("Content-Encoding=%q, want zstd", got)
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-ID", "compression-rejected")
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		_, _ = io.WriteString(w, rejection)
+	}))
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+	cfg, err := server.store.CreateConfig(ctx, &model.Config{
+		Name: "judge", Enabled: true, AuthType: model.AuthTypeSystemOne, RPMLimit: 1,
+		URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "judge"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := server.executeChannelTestWithCooldown(ctx, cfg, 0, "sk-first", &testutil.TestChannelRequest{
+		Model: "judge", Content: strings.Repeat("task data ", 1000),
+	}, true)
+	headers, _ := result["response_headers"].(map[string]string)
+	if calls.Load() != 1 || result["status_code"] != http.StatusTooManyRequests ||
+		result["cooldown_action"] != "rpm_limited_no_cooldown" || result["upstream_status_code"] != http.StatusUnsupportedMediaType ||
+		result["raw_response"] != rejection || headers["X-Request-Id"] != "compression-rejected" {
+		t.Fatalf("native local limit lost upstream response: calls=%d result=%+v", calls.Load(), result)
+	}
+}
+
 func TestSystemOneChannelTestLocalLimitsDoNotCooldown(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"rpm", "concurrency"} {

@@ -1200,6 +1200,10 @@ func TestOpenCodeFreeNonStreamStopsFirstByteDeadlineAfterEvent(t *testing.T) {
 			const completionDelay = 3 * firstByteTimeout
 			env.server.firstByteTimeout = firstByteTimeout
 			prefix, suffix := openCodeFreeToolStreamFixture(upstream)
+			if upstream == protocol.OpenAI {
+				suffix = prefix + suffix
+				prefix = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"
+			}
 			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 				reader, writer := io.Pipe()
 				go func() {

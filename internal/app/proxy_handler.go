@@ -710,14 +710,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			writeEmptyAlphaSearchResponse(c.Writer)
 			return
 		}
-		if channelRestrictionDeniedFromContext(ctx) {
-			writeLocalProxyError(c, http.StatusForbidden, "no allowed upstream channel for this token")
+		status, detail := s.noRouteError(ctx, originalModel, clientProtocol)
+		if status == http.StatusForbidden {
+			writeLocalProxyError(c, status, detail.Message)
 			return
-		}
-		status, message := http.StatusServiceUnavailable, "no available upstream (all cooled or none)"
-		// 模型根本没配置时返回 404：Claude Code 对 5xx 会退避重试多次才报错。
-		if clientProtocol == protocol.Anthropic && !s.modelConfigured(ctx, originalModel) {
-			status, message = http.StatusNotFound, fmt.Sprintf("model: %s", originalModel)
 		}
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: time.Now()},
@@ -726,12 +722,19 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			AuthTokenID:    tokenIDInt64,
 			ClientProtocol: string(clientProtocol),
 			StatusCode:     status,
-			Message:        message,
+			Message:        detail.Message,
 			IsStreaming:    isStreaming,
 			ClientIP:       c.ClientIP(),
 			ThinkingEffort: thinkingEffort,
 		})
-		writeLocalProxyError(c, status, message)
+		switch {
+		case status == http.StatusNotFound && (clientProtocol == protocol.OpenAI || clientProtocol == protocol.Codex):
+			c.JSON(status, gin.H{"error": detail})
+		case status == http.StatusNotFound && clientProtocol == protocol.Gemini:
+			c.JSON(status, gin.H{"error": gin.H{"code": status, "status": "NOT_FOUND", "message": detail.Message}})
+		default:
+			writeLocalProxyError(c, status, detail.Message)
+		}
 		return
 	}
 
@@ -1163,22 +1166,54 @@ func (c *sameChannelFailureCounter) reset(key sameChannelFailureKey) {
 	delete(c.failures, key)
 }
 
-// tryChannelWithSameChannelRetries 在渠道配置了 same_channel_retries 时，对未提交响应的
-// 可重试故障原地重试同一渠道。中间失败的冷却不落库，避免偶发故障把指数退避连翻几轮；
-// 放弃该渠道时按跨请求连续失败次数决定：超过 same_channel_retries 才提交最后一次尝试的冷却，成功则丢弃。
+/**
+ * @brief 按渠道的原地重试策略执行普通代理请求。
+ * @param ctx 当前请求上下文。
+ * @param cfg 本次候选渠道。
+ * @param reqCtx 当前代理请求状态。
+ * @param w 下游响应写入器。
+ * @return 最后一次尝试的结果；未获得结果时可为 nil。
+ * @return 选路或发送失败；上游结果已归入结果时可为 nil。
+ * @note 最终冷却写入沿用普通代理独立于请求取消的时限。
+ */
 func (s *Server) tryChannelWithSameChannelRetries(
 	ctx context.Context,
 	cfg *model.Config,
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	return s.runWithSameChannelRetries(ctx, cfg, func(attemptCtx context.Context) (*proxyResult, error) {
+		return s.tryChannelWithKeys(attemptCtx, cfg, reqCtx, w)
+	}, func(ctx context.Context, cfg *model.Config, in cooldown.ErrorInput) cooldown.Action {
+		writeCtx, cancel := cooldownWriteContext(ctx)
+		defer cancel()
+		return s.persistChannelCooldown(writeCtx, cfg, in)
+	})
+}
+
+/**
+ * @brief 在同一渠道重试可恢复故障，成功时丢弃暂存的冷却。
+ * @param ctx 当前请求或判断的总时限及取消上下文。
+ * @param cfg 当前渠道，决定同渠道重试次数。
+ * @param runAttempt 执行一次渠道尝试，并通过传入的上下文登记暂缓写入的冷却。
+ * @param persist 写入最后一次尝试已补全的冷却输入，由调用方决定取消和时限。
+ * @return 最后一次尝试的结果；未获得结果时可为 nil。
+ * @return 最后一次尝试返回的错误；成功或失败已归入结果时可为 nil。
+ * @note 放弃同渠道后，只在跨请求连续失败次数超过阈值时写入暂存的冷却。
+ */
+func (s *Server) runWithSameChannelRetries(
+	ctx context.Context,
+	cfg *model.Config,
+	runAttempt func(context.Context) (*proxyResult, error),
+	persist func(context.Context, *model.Config, cooldown.ErrorInput) cooldown.Action,
+) (*proxyResult, error) {
 	if cfg.SameChannelRetries <= 0 {
-		return s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+		return runAttempt(ctx)
 	}
 	var zaiFailure zaiRetryFailure
 	for attempt := 0; ; attempt++ {
 		pending := &pendingSameChannelCooldowns{}
-		result, err := s.tryChannelWithKeys(context.WithValue(ctx, pendingSameChannelCooldownsKey{}, pending), cfg, reqCtx, w)
+		result, err := runAttempt(context.WithValue(ctx, pendingSameChannelCooldownsKey{}, pending))
 		localAfterFailure := zaiFailure.reconcile(cfg, &result, pending, &attempt)
 		if !localAfterFailure && attempt < cfg.SameChannelRetries && err == nil && len(pending.inputs) > 0 && ctx.Err() == nil &&
 			result != nil && !result.succeeded && !result.isClientCanceled && !result.operatorAborted {
@@ -1197,7 +1232,7 @@ func (s *Server) tryChannelWithSameChannelRetries(
 			return result, err
 		}
 		for _, in := range pending.inputs {
-			s.applyCooldownDecision(ctx, cfg, in)
+			persist(ctx, cfg, in)
 		}
 		return result, err
 	}

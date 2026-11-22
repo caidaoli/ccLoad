@@ -113,7 +113,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				setting,
 			)
 		}
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": responsesWebsocketErrorBody{
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": openAIProxyErrorBody{
 			Message:      message,
 			Type:         "rate_limit_error",
 			Code:         "responses_websocket_connection_limit_exceeded",
@@ -212,7 +212,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				if errSlots != nil {
 					var errWrite error
 					if rpmErr, ok := errors.AsType[*tokenRPMExceededError](errSlots); ok {
-						errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, responsesWebsocketErrorBody{
+						errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, openAIProxyErrorBody{
 							Type: "rate_limit_error", Code: "token_rpm_exceeded", Message: rpmErr.Error(),
 							RetryAfter: rpmErr.retryAfterSeconds(),
 						})
@@ -532,11 +532,11 @@ func (r responsesWebsocketTurnResult) writeError(conn *websocket.Conn, turnErr e
 		payload = terminalErr.payload
 	} else {
 		status := http.StatusBadRequest
-		body := responsesWebsocketErrorBody{Type: "invalid_request_error", Code: "upstream_error", Message: turnErr.Error()}
+		body := openAIProxyErrorBody{Type: "invalid_request_error", Code: "upstream_error", Message: turnErr.Error()}
 		var retryAfter string
 		if retryErr, ok := errors.AsType[*responsesWebsocketClientRetryError](turnErr); ok {
 			status = retryErr.responseStatus()
-			body = responsesWebsocketErrorBody{Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error()}
+			body = openAIProxyErrorBody{Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error()}
 			retryAfter = retryErr.retryAfter
 		}
 		event := gin.H{"type": "error", "status": status, "error": body}
@@ -702,15 +702,19 @@ func (s *Server) executeResponsesWebsocketTurn(
 			candidates = filtered
 		}
 	}
+	if len(candidates) == 0 {
+		status, body := s.noRouteError(ctx, modelName, protocol.Codex)
+		if err := writeResponsesWebsocketErrorPayload(conn, status, body); err != nil {
+			return responsesWebsocketTurnResult{}, err
+		}
+		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
+	}
 	reqChannelFilter := extractRequestedChannelFilter(c.Request)
 	if reqChannelFilter.hasFilter {
 		candidates, _ = filterByRequestedChannel(candidates, reqChannelFilter)
 		if len(candidates) == 0 {
 			return responsesWebsocketTurnResult{}, errors.New(requestedChannelUnavailableMessage)
 		}
-	}
-	if len(candidates) == 0 {
-		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
 	sessionAffinityKey, sessionAffinity, hasSessionAffinity := s.lookupCodexSessionAffinity(tokenHashString, c.Request.Header, time.Now())
 	if hasSessionAffinity {
@@ -956,7 +960,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}
 	}
 	if errorBody == nil {
-		errorBody = responsesWebsocketErrorBody{Type: errorType, Code: "upstream_error", Message: message}
+		errorBody = openAIProxyErrorBody{Type: errorType, Code: "upstream_error", Message: message}
 	}
 	event := gin.H{"type": "error", "status": status, "error": errorBody}
 	if len(headers) > 0 {
@@ -1408,13 +1412,13 @@ func sseEventData(rawEvent []byte) []byte {
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, code string, message string) error {
-	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadRequest, responsesWebsocketErrorBody{
+	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadRequest, openAIProxyErrorBody{
 		Type: "invalid_request_error", Code: code, Message: message,
 	})
 }
 
 func writeResponsesWebsocketRateLimit(conn *websocket.Conn, limitErr error) error {
-	body := responsesWebsocketErrorBody{
+	body := openAIProxyErrorBody{
 		Type: "rate_limit_error", Code: "rate_limit", Message: limitErr.Error(),
 	}
 	if executionLimitErr, ok := errors.AsType[*responsesExecutionLimitError](limitErr); ok {
@@ -1426,22 +1430,10 @@ func writeResponsesWebsocketRateLimit(conn *websocket.Conn, limitErr error) erro
 	return writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, body)
 }
 
-type responsesWebsocketErrorBody struct {
-	RetryAfter   int    `json:"retry_after,omitempty"`
-	Message      string `json:"message"`
-	Type         string `json:"type"`
-	Code         string `json:"code"`
-	Param        string `json:"param,omitempty"`
-	Setting      string `json:"setting,omitempty"`
-	SettingValue int64  `json:"setting_value,omitempty"`
-	Current      int64  `json:"current,omitempty"`
-	Unit         string `json:"unit,omitempty"`
-}
-
 func writeResponsesWebsocketErrorPayload(
 	conn *websocket.Conn,
 	status int,
-	errorBody responsesWebsocketErrorBody,
+	errorBody openAIProxyErrorBody,
 ) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
 		return err
@@ -1459,7 +1451,7 @@ func writeResponsesWebsocketPreviousResponseNotFound(conn *websocket.Conn, sessi
 	if minutes == 1 {
 		minuteLabel = "minute"
 	}
-	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadRequest, responsesWebsocketErrorBody{
+	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadRequest, openAIProxyErrorBody{
 		Type:  "invalid_request_error",
 		Code:  "previous_response_not_found",
 		Param: "previous_response_id",

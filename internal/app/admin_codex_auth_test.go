@@ -8822,6 +8822,114 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 }
 
 /**
+ * @brief 验证 Antigravity 重置后读到旧副本时，额度快照和成本账本都沿用已确认的新窗口。
+ * @param t Go 测试上下文。
+ */
+func TestPersistOAuthUsageKeepsAntigravityWindowAfterStaleReplica(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "test-access", RefreshToken: "test-refresh",
+		Expired: "2026-12-31T00:00:00Z", ProjectID: "quota-project",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(ctx, newAntigravityOAuthChannel("Antigravity replica quota", payload, antigravityCatalogModels()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parseTime := func(raw string) time.Time {
+		t.Helper()
+		value, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	const name, kind = "Gemini Models", "gemini-weekly"
+	key := oauthcost.Key(name, kind)
+	oldReset := parseTime("2026-11-21T00:00:17Z")
+	newReset := parseTime("2026-11-24T23:28:31Z")
+	seedQuotaLedger(t, store, channel.ID, parseTime("2026-11-17T09:00:00Z"), "gemini-3.8-flash", 5_000_000)
+
+	// 前三次刷新使用 Google 旧副本重现的读取顺序，第二个额度桶独立刷新。
+	for _, step := range []struct {
+		name        string
+		at          string
+		resetAt     time.Time
+		left        float64
+		wantReset   time.Time
+		wantLeft    float64
+		wantSibling float64
+		wantCost    int64
+	}{
+		{"before reset", "2026-11-17T09:44:06Z", oldReset, 7.32, oldReset, 7.32, 80, 5_000_000},
+		{"new window", "2026-11-17T23:28:31Z", newReset, 100, newReset, 100, 78, 0},
+		{"old replica", "2026-11-17T23:30:55Z", oldReset, 5.05, newReset, 100, 76, 7_000_000},
+		{"small reset correction", "2026-11-17T23:34:31Z", newReset.Add(-time.Minute), 95, newReset.Add(-time.Minute), 95, 74, 7_000_000},
+		{"expired old replica", "2026-11-21T00:01:00Z", oldReset, 5.05, newReset.Add(-time.Minute), 95, 73, 7_000_000},
+		{"following period", "2026-11-25T00:00:00Z", newReset.AddDate(0, 0, 7), 99, newReset.AddDate(0, 0, 7), 99, 72, 0},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			if step.name == "old replica" {
+				seedQuotaLedger(t, store, channel.ID, parseTime("2026-11-17T23:29:00Z"), "gemini-3.8-flash", 7_000_000)
+			}
+			at := parseTime(step.at)
+			incoming := &oauthUsageSummary{
+				Provider: antigravityauth.ChannelType,
+				Windows: []oauthUsageWindow{
+					{LimitName: name, Kind: kind, LimitWindowSeconds: weeklyUsageWindowSeconds,
+						ResetAt: step.resetAt.Unix(), UsedPercent: 100 - step.left, RemainingPercent: step.left, SampledAt: at},
+					{LimitName: "Claude and GPT models", Kind: kind, LimitWindowSeconds: weeklyUsageWindowSeconds,
+						ResetAt: at.Add(7 * 24 * time.Hour).Unix(), UsedPercent: 100 - step.wantSibling, RemainingPercent: step.wantSibling, SampledAt: at},
+				},
+			}
+			cfg, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := server.persistOAuthUsage(ctx, cfg, incoming, at.Add(-time.Second), at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertWindows := func(windows []oauthUsageWindow) {
+				t.Helper()
+				if len(windows) != 2 || windows[0].ResetAt != step.wantReset.Unix() ||
+					windows[0].RemainingPercent != step.wantLeft || windows[0].UsedPercent != 100-step.wantLeft ||
+					windows[1].RemainingPercent != step.wantSibling {
+					t.Fatalf("windows = %+v, want Gemini reset %s, Gemini remaining %g, and sibling remaining %g", windows, step.wantReset, step.wantLeft, step.wantSibling)
+				}
+			}
+			assertWindows(got.Windows)
+			if got.Windows[0].StandardCostMicroUSD == nil || *got.Windows[0].StandardCostMicroUSD != step.wantCost {
+				t.Fatalf("returned Gemini cost = %+v, want %d", got.QuotaCostUsage.FindWindow(key), step.wantCost)
+			}
+			cfg, err = store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := parseOAuthUsageCredentialState(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, _, _ := persistedOAuthUsage(state.oauthUsage, antigravityauth.ChannelType)
+			if persisted == nil {
+				t.Fatal("no persisted quota snapshot")
+			}
+			assertWindows(persisted.Windows)
+			if window := quotaCostViewAt(t, store, channel.ID, at).FindWindow(key); window == nil ||
+				window.ResetAt != step.wantReset.Unix() || window.StandardCostMicroUSD != step.wantCost {
+				t.Fatalf("persisted Gemini cost window = %+v, want reset %s and cost %d", window, step.wantReset, step.wantCost)
+			}
+		})
+	}
+}
+
+/**
  * @brief 验证 Antigravity 元数据明确返回 TOS 拒绝时仅停用实际被拒账号，并中止额度查询。
  * @param t 测试上下文。
  */

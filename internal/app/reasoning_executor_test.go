@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -56,6 +58,31 @@ func editReasoningAuto(s *Server, edit func(*model.ReasoningAutoConfig)) {
 	edit(&cfg)
 	s.reasoningAuto.Store(&cfg)
 }
+
+/**
+ * @brief 更新判定渠道并使测试入口重新读取配置。
+ * @param t 测试上下文。
+ * @param env 测试代理与存储。
+ * @param channelID 待更新的渠道。
+ * @param edit 应用于配置副本的变更。
+ */
+func updateReasoningTestChannel(t *testing.T, env *proxyTestEnv, channelID int64, edit func(*model.Config)) {
+	t.Helper()
+	cfg, err := env.store.GetConfig(t.Context(), channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit(cfg)
+	if _, err := env.store.UpdateConfig(t.Context(), channelID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+}
+
+/**
+ * @brief 测试上游接受的最小有效判定响应。
+ */
+const reasoningRetryAnswer = `{"answers":{"effort":{"type":"choice","choice":"xhigh"}},"usage":{"input_tokens":12,"output_tokens":2}}`
 
 func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 	t.Parallel()
@@ -306,6 +333,124 @@ func TestReasoningDecisionMissingUsageWithCustomPrice(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 对照自动判定和公开 System One API 的 Key 轮换与冷却范围。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionGeminiKeyFailover(t *testing.T) {
+	const actualModel = "gemini-decision-1"
+	for _, tc := range []struct {
+		name              string
+		preferOtherKeys   bool
+		exhaustPrimary    bool
+		firstStatus       int
+		maxKeyRetries     int
+		wantAttempts      []string
+		wantModelCooldown bool
+		embeddedLimit     bool
+	}{
+		{"prefer other key", true, false, 429, 1, []string{"first", "second"}, false, false},
+		{"exhaust both keys", true, true, 429, 1, []string{"first", "second", "backup"}, false, false},
+		{"default model cooldown", false, false, 429, 2, []string{"first", "backup"}, true, false},
+		{"credential rejected", false, false, 401, 2, []string{"first", "second"}, false, false},
+		{"credential retry limit", false, false, 401, 1, []string{"first", "backup"}, false, false},
+		{"HTTP 200 wraps rate limit", true, false, 200, 1, []string{"first", "second"}, false, true},
+	} {
+		for _, entry := range []string{"automatic", "public API"} {
+			automatic := entry == "automatic"
+			// Public System One forwards HTTP 200 bodies as received.
+			if tc.embeddedLimit && !automatic {
+				continue
+			}
+			t.Run(tc.name+"/"+entry, func(t *testing.T) {
+				var mu sync.Mutex
+				var attempts []string
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					key := r.Header.Get("x-goog-api-key")
+					if !automatic {
+						key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					}
+					mu.Lock()
+					attempts = append(attempts, key)
+					mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					if key == "first" || (key == "second" && tc.exhaustPrimary) {
+						w.WriteHeader(tc.firstStatus)
+						if tc.embeddedLimit {
+							_, _ = io.WriteString(w, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"decision quota exceeded"}}`)
+						} else if tc.firstStatus == http.StatusTooManyRequests {
+							_, _ = io.WriteString(w, `{"error":{"message":"The query-per-second (QPS) limit for identical or near-identical request payloads has been exceeded."}}`)
+						}
+						return
+					}
+					_, _ = io.WriteString(w, `{"answers":{"effort":{"type":"score","probabilities":{"0":0,"1":1,"2":0,"3":0}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`)
+				}))
+				t.Cleanup(upstream.Close)
+				models := []model.ModelEntry{{Model: "decision-auto", RedirectModel: actualModel}}
+				env := setupProxyTestEnvWithSettings(t, []testChannel{
+					{name: "primary", authType: model.AuthTypeSystemOne, modelEntries: models, apiKey: "first", priority: 100, retryOtherKeysOnFailure: tc.preferOtherKeys},
+					{name: "backup", authType: model.AuthTypeSystemOne, modelEntries: models, apiKey: "backup", priority: 50},
+				}, map[int]string{0: upstream.URL, 1: upstream.URL}, map[string]string{"debug_log_enabled": "true"})
+				env.server.maxKeyRetries = tc.maxKeyRetries
+				if err := env.store.CreateAPIKeysBatch(t.Context(), []*model.APIKey{{ChannelID: 1, KeyIndex: 1, APIKey: "second", Priority: -1}}); err != nil {
+					t.Fatal(err)
+				}
+				if automatic {
+					env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionModel: "decision-auto", TimeoutMS: 2000})
+					result, err := env.server.executeReasoningDecision(t.Context(), "test task", reasoningDefaultLevels)
+					if err != nil || result.effort != "medium" {
+						t.Fatalf("effort=%q err=%v, want medium", result.effort, err)
+					}
+				} else {
+					response := doProxyRequest(t, env.engine, "/v1/systemone", map[string]any{"model": "decision-auto", "state": "test task"}, nil)
+					if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "answers.effort.probabilities.1").Float() != 1 {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+				}
+				mu.Lock()
+				gotAttempts := slices.Clone(attempts)
+				mu.Unlock()
+				if !slices.Equal(gotAttempts, tc.wantAttempts) {
+					t.Fatalf("attempts=%v, want %v", gotAttempts, tc.wantAttempts)
+				}
+				keys, err := env.store.GetAPIKeys(t.Context(), 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(keys) != 2 || keys[0].IsCoolingDown(time.Now()) == tc.wantModelCooldown || keys[1].IsCoolingDown(time.Now()) != tc.exhaustPrimary {
+					t.Fatalf("unexpected Key cooldowns: %+v", keys)
+				}
+				windows, err := env.store.GetAllModelCooldowns(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, cooled := windows[1][actualModel]; cooled != tc.wantModelCooldown {
+					t.Fatalf("model cooldown=%v, want %v", cooled, tc.wantModelCooldown)
+				}
+				channels, err := env.store.GetAllChannelCooldowns(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, cooled := channels[1]; cooled != (tc.exhaustPrimary || tc.wantModelCooldown) {
+					t.Fatalf("channel cooldown=%v after attempts %v", cooled, gotAttempts)
+				}
+				if tc.embeddedLimit {
+					entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+						return entry.ClientProtocol == "system_one" && entry.StatusCode == http.StatusTooManyRequests
+					})
+					if entry == nil || entry.ReasoningDecision == nil || entry.ReasoningDecision.Reason != "rate_limited" {
+						t.Fatalf("embedded limit was not logged as 429: %+v", entry)
+					}
+					debug, err := env.store.GetDebugLogByLogID(t.Context(), entry.ID)
+					if err != nil || debug == nil || debug.RespStatus != http.StatusOK || gjson.GetBytes(debug.RespBody, "error.code").Int() != http.StatusTooManyRequests {
+						t.Fatalf("raw upstream response=%+v err=%v", debug, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestReasoningDecisionRejectsChatChannel(t *testing.T) {
 	t.Parallel()
 	env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "gpt-5.6", apiKey: "judge-key", upstreamProtocol: "openai"}, func(w http.ResponseWriter, _ *http.Request) {
@@ -326,14 +471,17 @@ func TestReasoningDecisionModelFailover(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		status        int
+		logStatus     int
 		response      string
 		reason        string
+		terminal      bool
 		input, output int
 	}{
 		{name: "unavailable", status: http.StatusServiceUnavailable, response: `{"error":{"message":"unavailable"}}`, reason: "upstream_error"},
 		{name: "rate limited", status: http.StatusTooManyRequests, response: `{"error":{"message":"limited"}}`, reason: "rate_limited"},
 		{name: "unauthorized", status: http.StatusUnauthorized, response: `{"error":{"message":"unauthorized"}}`, reason: "authentication_failed"},
-		{name: "invalid answer", status: http.StatusOK, response: `{"answers":{},"usage":{"input_tokens":7,"output_tokens":2}}`, reason: "invalid_response", input: 7, output: 2},
+		{name: "invalid answer", status: http.StatusOK, logStatus: http.StatusBadGateway, response: `{"answers":{},"usage":{"input_tokens":7,"output_tokens":2}}`, reason: "invalid_response", input: 7, output: 2},
+		{name: "context too long", status: http.StatusBadRequest, response: `{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"maximum context length exceeded"}}`, terminal: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -349,34 +497,261 @@ func TestReasoningDecisionModelFailover(t *testing.T) {
 				{name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol"},
 				{name: "second-judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge", priority: -10},
 			}, []string{business.server.URL, second.server.URL})
-			reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Analyze concurrent migration failures."), nil)
-			assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
-			if len(first.snapshot()) != 1 || len(second.snapshot()) != 1 {
+			if tc.input > 0 {
+				updateReasoningTestChannel(t, env, 1, func(cfg *model.Config) {
+					price := 1.0
+					cfg.ModelEntries[0].Pricing = &util.CustomModelPrice{InputPrice: &price, OutputPrice: &price}
+				})
+			}
+			body := reasoningAutoChatBody("Analyze concurrent migration failures.")
+			body["reasoning_effort"] = "high"
+			reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+			wantEffort, wantBackup := "xhigh", 1
+			if tc.terminal {
+				wantEffort, wantBackup = "high", 0
+			}
+			assertReasoningAutoEfforts(t, business.snapshot(), wantEffort)
+			if len(first.snapshot()) != 1 || len(second.snapshot()) != wantBackup {
 				t.Fatalf("decision attempts: first=%d second=%d", len(first.snapshot()), len(second.snapshot()))
 			}
-			for _, want := range []struct {
-				channelID     int64
-				status        int
-				input, output int
-				decision      string
-				reason        string
-			}{
-				{channelID: 1, status: tc.status, input: tc.input, output: tc.output, decision: "fallback", reason: tc.reason},
-				{channelID: 3, status: http.StatusOK, input: 1000, output: 100, decision: "decided"},
-			} {
-				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
-					return entry.ClientProtocol == "system_one" && entry.ChannelID == want.channelID
+			entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+				return entry.ClientProtocol == "system_one" && entry.ChannelID == 1
+			})
+			wantStatus := tc.logStatus
+			if wantStatus == 0 {
+				wantStatus = tc.status
+			}
+			if entry == nil || entry.StatusCode != wantStatus || entry.Model != "judge" || entry.InputTokens != tc.input || entry.OutputTokens != tc.output || entry.AuthTokenID != 0 || (tc.input > 0 && entry.Cost <= 0) {
+				t.Fatalf("primary attempt log=%+v", entry)
+			}
+			if entry.ReasoningDecision == nil || entry.ReasoningDecision.Status != "fallback" || (tc.reason != "" && entry.ReasoningDecision.Reason != tc.reason) {
+				t.Fatalf("primary decision metadata=%+v", entry.ReasoningDecision)
+			}
+			if !tc.terminal {
+				backup := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+					return entry.ClientProtocol == "system_one" && entry.ChannelID == 3
 				})
-				if entry == nil || entry.StatusCode != want.status || entry.Model != "judge" || entry.InputTokens != want.input || entry.OutputTokens != want.output || entry.AuthTokenID != 0 {
-					t.Fatalf("channel %d attempt log=%+v", want.channelID, entry)
-				}
-				if entry.ReasoningDecision == nil || entry.ReasoningDecision.Status != want.decision || entry.ReasoningDecision.Reason != want.reason {
-					t.Fatalf("channel %d decision metadata=%+v", want.channelID, entry.ReasoningDecision)
+				if backup == nil || backup.StatusCode != http.StatusOK || backup.InputTokens != 1000 || backup.OutputTokens != 100 || backup.AuthTokenID != 0 || backup.ReasoningDecision == nil || backup.ReasoningDecision.Status != "decided" {
+					t.Fatalf("backup attempt log=%+v", backup)
 				}
 			}
-			entry := waitForProxyLog(t, env, "gpt-5.6-sol")
-			if entry.ReasoningDecision == nil || entry.ReasoningDecision.Status != "decided" || entry.ReasoningDecision.SuggestedEffort != "xhigh" {
+			entry = waitForProxyLog(t, env, "gpt-5.6-sol")
+			if entry.ReasoningDecision == nil || (!tc.terminal && (entry.ReasoningDecision.Status != "decided" || entry.ReasoningDecision.SuggestedEffort != "xhigh")) || (tc.terminal && entry.ReasoningDecision.Status != "fallback") {
 				t.Fatalf("business decision metadata=%+v", entry.ReasoningDecision)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证瞬态 503 在原渠道重试成功，且失败不留下渠道、模型或 Key 冷却。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionSameChannelRetry(t *testing.T) {
+	judge := newReasoningAutoJudge(t, "xhigh", "xhigh")
+	answer := judge.respond
+	judge.respond = func(w http.ResponseWriter, r *http.Request, attempt int) {
+		if attempt == 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		answer(w, r, attempt)
+	}
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{name: "business", models: "gpt-5.6-sol"}}, []string{business.server.URL})
+	updateReasoningTestChannel(t, env, 1, func(cfg *model.Config) { cfg.SameChannelRetries = 1 })
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Review the retry behavior."), nil)
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+	if calls := len(judge.snapshot()); calls != 2 {
+		t.Fatalf("decision calls=%d, want 2", calls)
+	}
+	failed := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+		return entry.ClientProtocol == "system_one" && entry.StatusCode == http.StatusServiceUnavailable
+	})
+	if failed == nil || failed.ChannelID != 1 {
+		t.Fatalf("failed attempt=%+v", failed)
+	}
+	channels, channelErr := env.store.GetAllChannelCooldowns(t.Context())
+	models, modelErr := env.store.GetAllModelCooldowns(t.Context())
+	keys, keyErr := env.store.GetAllKeyCooldowns(t.Context())
+	if err := errors.Join(channelErr, modelErr, keyErr); err != nil || len(channels)+len(models)+len(keys) != 0 {
+		t.Fatalf("cooldowns channels=%v models=%v keys=%v err=%v", channels, models, keys, err)
+	}
+}
+
+/**
+ * @brief 验证全冷却兜底成功时只恢复成功的 Key，并恢复对应渠道和模型。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionCooldownFallbackClearsSuccessfulResources(t *testing.T) {
+	judge := newReasoningAutoJudge(t, "xhigh")
+	business := newReasoningAutoBusiness(t)
+	env := setupProxyTestEnvWithSettings(t, []testChannel{
+		{name: "judge", models: "judge", apiKey: "sk-judge", authType: model.AuthTypeSystemOne},
+		{name: "business", models: "gpt-5.6-sol"},
+	}, map[int]string{0: judge.server.URL, 1: business.server.URL}, map[string]string{"cooldown_fallback_enabled": "true"})
+	env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionModel: "judge", BusinessModels: []string{"gpt-5.6-sol"}, TimeoutMS: 2000})
+	ctx := t.Context()
+	now := time.Now()
+	if err := errors.Join(
+		env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: 1, KeyIndex: 1, APIKey: "still-failed"}}),
+		env.store.SetKeyCooldown(ctx, 1, 0, now.Add(time.Minute)),
+		env.store.SetChannelCooldown(ctx, 1, now.Add(time.Minute)),
+		env.store.SetModelCooldown(ctx, 1, "judge", now.Add(time.Minute)),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.SetKeyCooldown(ctx, 1, 1, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateAPIKeysCache(1)
+	env.server.InvalidateChannelListCache()
+	env.server.invalidateCooldownCache()
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Review the recovered judge."), nil)
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+	keys, keyErr := env.store.GetAPIKeys(ctx, 1)
+	channels, channelErr := env.store.GetAllChannelCooldowns(ctx)
+	models, modelErr := env.store.GetAllModelCooldowns(ctx)
+	if err := errors.Join(keyErr, channelErr, modelErr); err != nil {
+		t.Fatal(err)
+	}
+	_, channelCooled := channels[1]
+	_, modelCooled := models[1]["judge"]
+	if channelCooled || modelCooled || len(keys) != 2 || keyByIndex(keys, 0).IsCoolingDown(time.Now()) || !keyByIndex(keys, 1).IsCoolingDown(time.Now()) {
+		t.Fatalf("after success channel=%v model=%v keys=%+v", channels, models, keys)
+	}
+}
+
+/**
+ * @brief 验证连接拒绝时用同一 Key 切换 URL，且冷却只隔离故障 URL。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionNetworkFailureUsesBackupURL(t *testing.T) {
+	const failedURL = "https://failed.judge.test"
+	const healthyURL = "https://healthy.judge.test"
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, failedURL+"\n"+healthyURL, []testChannel{{name: "business", models: "gpt-5.6-sol"}}, []string{business.server.URL})
+	env.server.urlSelector.RecordLatency(1, healthyURL, time.Millisecond)
+	var attempts []string
+	businessTransport := env.server.client.Transport
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "failed.judge.test":
+			attempts = append(attempts, req.URL.Host)
+			return nil, syscall.ECONNREFUSED
+		case "healthy.judge.test":
+			attempts = append(attempts, req.URL.Host)
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(reasoningRetryAnswer))}, nil
+		default:
+			return businessTransport.RoundTrip(req)
+		}
+	})}
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Review the healthy backup."), nil)
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+	if !slices.Equal(attempts, []string{"failed.judge.test", "healthy.judge.test"}) || !env.server.urlSelector.IsCooledDown(1, failedURL) || env.server.urlSelector.IsCooledDown(1, healthyURL) {
+		t.Fatalf("URL attempts=%v, want isolated failure then success", attempts)
+	}
+}
+
+/**
+ * @brief 验证本地 RPM 或并发已满时直接换判定渠道，没有伪造的上游失败日志。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionSkipsLocalCapacityRejection(t *testing.T) {
+	for _, limit := range []string{"RPM", "concurrency"} {
+		t.Run(limit, func(t *testing.T) {
+			first := newReasoningAutoJudge(t)
+			backup := newReasoningAutoJudge(t, "xhigh")
+			business := newReasoningAutoBusiness(t)
+			env := setupReasoningAutoTestEnv(t, first.server.URL, []testChannel{
+				{name: "business", models: "gpt-5.6-sol"},
+				{name: "backup", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge", priority: -1},
+			}, []string{business.server.URL, backup.server.URL})
+			updateReasoningTestChannel(t, env, 1, func(cfg *model.Config) {
+				if limit == "RPM" {
+					cfg.RPMLimit = 1
+				} else {
+					cfg.MaxConcurrency = 1
+				}
+			})
+			cfg, err := env.store.GetConfig(t.Context(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			release, err := env.server.reserveUpstreamRequest(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Review the fallback for saturated capacity."), nil)
+			assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+			if len(first.snapshot()) != 0 || len(backup.snapshot()) != 1 {
+				t.Fatalf("wire attempts primary=%d backup=%d", len(first.snapshot()), len(backup.snapshot()))
+			}
+			waitForProxyLog(t, env, "gpt-5.6-sol")
+			entries, err := env.store.ListLogs(t.Context(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if entry.ChannelID == 1 && entry.ClientProtocol == "system_one" && entry.StatusCode == http.StatusBadGateway {
+					t.Fatalf("local %s reported as upstream 502: %+v", limit, entry)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证显式匹配 HTTP 200 正文的 Key 规则仅冷却当前 Key，备用 Key 可完成判断。
+ * @param t 测试上下文。
+ */
+func TestReasoningDecisionSuccessBodyRuleCooldownScope(t *testing.T) {
+	for _, scenario := range []struct {
+		name     string
+		statuses []int
+		wantKeys []string
+	}{
+		{name: "explicit 200", statuses: []int{http.StatusOK}, wantKeys: []string{"Bearer first", "Bearer second"}},
+		{name: "unspecified status", wantKeys: []string{"Bearer first"}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var attempts []string
+			judge := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				key := r.Header.Get("Authorization")
+				attempts = append(attempts, key)
+				w.Header().Set("Content-Type", "application/json")
+				if key == "Bearer first" {
+					_, _ = io.WriteString(w, `{"message":"decision account is on hold",`+reasoningRetryAnswer[1:])
+					return
+				}
+				_, _ = io.WriteString(w, reasoningRetryAnswer)
+			}))
+			t.Cleanup(judge.Close)
+			business := newReasoningAutoBusiness(t)
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "first", cooldownDetectionRules: &model.CooldownDetectionRules{
+					Rules: []model.CooldownDetectionRule{{Enabled: true, Name: "Decision hold", StatusCodes: scenario.statuses,
+						MessagePattern: "^decision account is on hold$", Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90}},
+				}},
+				{name: "business", models: "gpt-5.6-sol"},
+			}, map[int]string{0: judge.URL, 1: business.server.URL})
+			if err := env.store.CreateAPIKeysBatch(t.Context(), []*model.APIKey{{ChannelID: 1, KeyIndex: 1, APIKey: "second", Priority: -10}}); err != nil {
+				t.Fatal(err)
+			}
+			env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionModel: "judge", BusinessModels: []string{"gpt-5.6-sol"}, TimeoutMS: 2000})
+			reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Review the configured cooldown rule."), nil)
+			assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
+			keys, keyErr := env.store.GetAllKeyCooldowns(t.Context())
+			channels, channelErr := env.store.GetAllChannelCooldowns(t.Context())
+			models, modelErr := env.store.GetAllModelCooldowns(t.Context())
+			if err := errors.Join(keyErr, channelErr, modelErr); err != nil {
+				t.Fatal(err)
+			}
+			_, firstCooled := keys[1][0]
+			_, secondCooled := keys[1][1]
+			if !slices.Equal(attempts, scenario.wantKeys) || firstCooled != (len(scenario.wantKeys) == 2) || secondCooled || len(channels)+len(models) != 0 {
+				t.Fatalf("attempts=%v, want %v, cooldowns keys=%v channel=%v model=%v", attempts, scenario.wantKeys, keys, channels, models)
 			}
 		})
 	}
@@ -756,10 +1131,13 @@ func TestReasoningDecisionCompressionFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		plainStatus int
+		plainBody   string
+		valid       bool
 		want        []string
 	}{
-		{name: "plain success remembered", plainStatus: http.StatusOK, want: []string{"zstd", "", ""}},
-		{name: "plain failure keeps compression", plainStatus: http.StatusBadRequest, want: []string{"zstd", "", "zstd", ""}},
+		{name: "plain success remembered", plainStatus: http.StatusOK, plainBody: response, valid: true, want: []string{"zstd", "", ""}},
+		{name: "plain failure keeps compression", plainStatus: http.StatusBadRequest, plainBody: response, want: []string{"zstd", "", "zstd", ""}},
+		{name: "invalid plain answer keeps compression", plainStatus: http.StatusOK, plainBody: `{"answers":{}}`, want: []string{"zstd", "", "zstd", ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -778,12 +1156,12 @@ func TestReasoningDecisionCompressionFallback(t *testing.T) {
 					return
 				}
 				w.WriteHeader(tc.plainStatus)
-				_, _ = io.WriteString(w, response)
+				_, _ = io.WriteString(w, tc.plainBody)
 			})
 			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.PromptTemplate = "gemini" })
 			for range 2 {
 				result, err := env.server.executeReasoningDecision(context.Background(), transcript, []string{"low", "medium", "high", "xhigh", "max"})
-				if tc.plainStatus == http.StatusOK && (err != nil || result.effort != "high") {
+				if (err == nil) != tc.valid || (tc.valid && result.effort != "high") {
 					t.Fatalf("decision=%+v error=%v", result, err)
 				}
 			}

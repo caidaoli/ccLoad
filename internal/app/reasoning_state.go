@@ -422,29 +422,49 @@ func reasoningDecisionContext(ctx context.Context) context.Context {
  * @param state 判断文本
  * @return 测试结果；失败原因包含在结果字段中
  */
-func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, apiKey, modelName, state string) map[string]any {
+func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, apiKey, modelName, state string) (out map[string]any) {
 	start := time.Now()
+	urls := orderChannelAttemptURLs(s.urlSelector, cfg, cfg.GetURLs())
+	if len(urls) == 0 {
+		return map[string]any{"success": false, "error": "reasoning decision URLs unavailable"}
+	}
 	row, _ := s.firstModelRow(cfg, modelName)
 	decision := s.reasoningAuto.Load()
-	result, err := s.callSystemOne(ctx, cfg, apiKey, row, state, reasoningDefaultLevels, decision.PromptTemplate, decision.CustomPrompt)
+	result, err := s.callSystemOne(ctx, cfg, apiKey, urls[0].url, row, state, reasoningDefaultLevels, decision.PromptTemplate, decision.CustomPrompt)
+	defer func() {
+		if result.upstreamStatus != 0 && result.upstreamStatus != out["status_code"] {
+			out["upstream_status_code"] = result.upstreamStatus
+		}
+		if result.responseBody != nil {
+			out["raw_response"] = string(result.responseBody)
+		}
+		if result.responseHeader != nil {
+			out["response_headers"] = flattenHeader(result.responseHeader)
+		}
+		if result.debug != nil {
+			out["debug_data"] = result.debug
+		}
+	}()
 	if errors.Is(err, ErrChannelRPMExceeded) {
 		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
 	}
 	if errors.Is(err, ErrChannelConcurrencyExceeded) {
 		return channelConcurrencyExceededTestResult(start, err)
 	}
+	if result.networkFailure {
+		result.status, _, _ = util.ClassifyError(err)
+	}
 	result.costUnknown = s.reasoningCostUnknown(row, result)
-	out := map[string]any{"success": err == nil, "status_code": result.status, "duration_ms": result.duration.Milliseconds(),
+	out = map[string]any{"success": err == nil, "status_code": result.status, "duration_ms": result.duration.Milliseconds(),
 		"effort": result.effort, "cost_unknown": result.costUnknown, "client_protocol": util.ProtocolSystemOne, "upstream_protocol": util.ProtocolSystemOne,
 		"base_url": result.baseURL, "actual_model": result.actualModel}
-	if result.responseBody != nil {
-		out["raw_response"] = string(result.responseBody)
+	if result.configuredDetection != nil {
+		out["api_error"] = map[string]any{"message": result.configuredDetection.Message}
 	}
-	if result.responseHeader != nil {
-		out["response_headers"] = flattenHeader(result.responseHeader)
-	}
-	if result.debug != nil {
-		out["debug_data"] = result.debug
+	if result.reason == "invalid_response" {
+		out["cooldown_action"] = "invalid_response_no_cooldown"
+	} else if result.networkFailure {
+		out["cooldown_action"] = "network_error_no_cooldown"
 	}
 	if result.usage != nil {
 		out["usage"] = map[string]any{

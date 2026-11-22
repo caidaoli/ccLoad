@@ -2130,9 +2130,9 @@ func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T)
 				t.Errorf("HasStreamOutput() = %v after %q, want %v",
 					parser.HasStreamOutput(), tt.payloadType, tt.wantStreamOut)
 			}
-			if parser.HasResponsesMetadata() != tt.wantMetadata {
-				t.Errorf("HasResponsesMetadata() = %v after %q, want %v",
-					parser.HasResponsesMetadata(), tt.payloadType, tt.wantMetadata)
+			if parser.HasStreamMetadata() != tt.wantMetadata {
+				t.Errorf("HasStreamMetadata() = %v after %q, want %v",
+					parser.HasStreamMetadata(), tt.payloadType, tt.wantMetadata)
 			}
 		})
 	}
@@ -2151,8 +2151,8 @@ func TestSSEUsageParser_ErrorAfterMetadataAllowsRetry(t *testing.T) {
 	if parser.HasStreamOutput() {
 		t.Fatal("HasStreamOutput() should be false after response.created")
 	}
-	if !parser.HasResponsesMetadata() {
-		t.Fatal("HasResponsesMetadata() should be true after response.created")
+	if !parser.HasStreamMetadata() {
+		t.Fatal("HasStreamMetadata() should be true after response.created")
 	}
 
 	errEvent := `data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"overloaded"}}` + "\n\n"
@@ -2177,8 +2177,8 @@ func TestSSEUsageParser_ResponsesMetadataEventLineWithoutPayloadType(t *testing.
 	if parser.HasStreamOutput() {
 		t.Fatal("HasStreamOutput() should be false when only the SSE event line names response.created")
 	}
-	if !parser.HasResponsesMetadata() {
-		t.Fatal("HasResponsesMetadata() should be true when only the SSE event line names response.created")
+	if !parser.HasStreamMetadata() {
+		t.Fatal("HasStreamMetadata() should be true when only the SSE event line names response.created")
 	}
 
 	delta := `data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\n"

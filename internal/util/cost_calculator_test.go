@@ -881,7 +881,7 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		}
 	}
 
-	// Codex 订阅额度与购买积分使用各自统一倍率，不沿用模型 API 倍率。
+	// Codex 订阅额度与购买积分按各自价目计费。
 	codexCases := []struct {
 		model      string
 		tier       string
@@ -889,6 +889,9 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		multiplier float64
 	}{
 		{"gpt-6-astra", "fast", OpenAIRateCardCodexAllowance, 2.5},
+		{"gpt-6.2-astra", "fast", OpenAIRateCardCodexAllowance, 2.0},
+		{"gpt-6.2-sol", "auto", OpenAIRateCardCodexAllowance, 2.0},
+		{"GPT-6.2-ASTRA-2026-11-18", "priority", OpenAIRateCardCodexAllowance, 2.0},
 		{"gpt-5.6-sol", "auto", OpenAIRateCardCodexAllowance, 2.5},
 		{"gpt-6-astra", "priority", OpenAIRateCardCodexCredits, 2.0},
 		{"gpt-5.5", "priority", OpenAIRateCardCodexCredits, 2.0},
@@ -917,7 +920,8 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"gpt-6.2-astra", OpenAIRateCardAPI, promoEnd, 6.0},
 		{"gpt-6.1-sol", OpenAIRateCardAPI, promoEnd.Add(-time.Nanosecond), 6.0},
 		{"gpt-6.2-sol", OpenAIRateCardCodexCredits, promoEnd.Add(-time.Nanosecond), 6.0},
-		{"gpt-6.2-sol", OpenAIRateCardCodexAllowance, promoEnd.Add(-time.Nanosecond), 8.0},
+		{"gpt-6.2-sol", OpenAIRateCardCodexAllowance, promoEnd.Add(-time.Nanosecond), 6.0},
+		{"gpt-6.2-astra", OpenAIRateCardCodexAllowance, promoEnd, 6.0},
 	}
 	for _, tc := range promoCases {
 		if m := OpenAIServiceTierMultiplier(tc.model, "ultrafast", tc.rateCard, tc.billedAt); m != tc.multiplier {

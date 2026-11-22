@@ -126,6 +126,40 @@ func readWebsocketUntilType(t testing.TB, conn *websocket.Conn, wanted string) m
 	}
 }
 
+/**
+ * @brief 验证同一 WebSocket 连接能区分不存在的模型和暂时冷却的模型。
+ * @param t Go 测试上下文。
+ */
+func TestResponsesWebsocketUnavailableModel(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "cooled", models: "known", apiKey: "sk-test"}},
+		map[int]string{0: "https://unused.invalid"}, map[string]string{"cooldown_fallback_enabled": "false"})
+	if err := env.store.SetModelCooldown(context.Background(), 1, "known", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	conn := dialResponsesWebsocket(t, env.engine)
+	for _, tc := range []struct {
+		model  string
+		status int64
+		code   string
+	}{
+		{"missing", http.StatusNotFound, "model_not_found"},
+		{"known", http.StatusServiceUnavailable, "upstream_unavailable"},
+	} {
+		if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": tc.model, "input": []any{map[string]string{"role": "user", "content": "hi"}}}); err != nil {
+			t.Fatal(err)
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := gjson.ParseBytes(raw)
+		if event.Get("type").String() != "error" || event.Get("status").Int() != tc.status || event.Get("error.code").String() != tc.code {
+			t.Fatalf("%s: unexpected event %s", tc.model, raw)
+		}
+	}
+}
+
 func readResponsesWebsocketRetryAndClose(t testing.TB, conn *websocket.Conn) {
 	t.Helper()
 	seenRetry := false

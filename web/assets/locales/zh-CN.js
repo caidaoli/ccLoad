@@ -2496,6 +2496,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.reasoningValue.decision_unavailable': '判断服务不可用',
   'logs.reasoningValue.timeout': '超时',
   'logs.reasoningValue.cancelled': '已取消',
+  'logs.reasoningValue.local_capacity': '判定渠道达到本地限额',
   'logs.reasoningValue.queue_full': '判断队列已满',
   'logs.reasoningValue.rate_limited': '被限流',
   'logs.reasoningValue.authentication_failed': '认证失败',

@@ -716,6 +716,38 @@ func normalizeAntigravityUsage(payload *antigravityUsagePayload) (*oauthUsageSum
 	return summary, nil
 }
 
+/**
+ * @brief 保留 Antigravity 同一额度桶中已确认、仍在生效的新周期。
+ * @param incoming 本次配额读取的窗口。
+ * @param persisted 上次采用的额度快照中的窗口。
+ * @param sampledAt 本次配额采样时刻。
+ * @return 用已确认窗口替换旧副本读数后的窗口；保留其余窗口和上游顺序。
+ * @details Google 重置后可能交替返回新旧周期。相同时长下用重置时间判断先后；五分钟容差沿用 Magpie 对这些窗口的边界判断。
+ * https://github.com/yetone/magpie/blob/c834a6e0f3/internal/provider/quota_history.go#L48-L50
+ */
+func keepAntigravityQuotaWindows(incoming, persisted []oauthUsageWindow, sampledAt time.Time) []oauthUsageWindow {
+	const resetDriftSeconds = int64(5 * time.Minute / time.Second)
+	currentByKey := make(map[string]oauthUsageWindow, len(persisted))
+	for _, window := range persisted {
+		key := oauthcost.Key(window.LimitName, window.Kind)
+		if _, exists := currentByKey[key]; !exists {
+			currentByKey[key] = window
+		}
+	}
+	at := sampledAt.Unix()
+	windows := slices.Clone(incoming)
+	for i, window := range incoming {
+		current := currentByKey[oauthcost.Key(window.LimitName, window.Kind)]
+		if window.LimitWindowSeconds > 0 && window.LimitWindowSeconds == current.LimitWindowSeconds &&
+			window.ResetAt > 0 && current.ResetAt-current.LimitWindowSeconds <= at && at < current.ResetAt &&
+			current.ResetAt-window.ResetAt > resetDriftSeconds {
+			// 已持久化的窗口没有 SampledAt，成本对账只沿用边界，不把旧用量当成本次采样。
+			windows[i] = current
+		}
+	}
+	return windows
+}
+
 func antigravityUsageBucketKind(bucket antigravityUsageBucket) string {
 	if kind := strings.TrimSpace(bucket.BucketID); kind != "" {
 		return kind
@@ -1786,12 +1818,15 @@ func (s *Server) persistOAuthUsage(
 			}
 			baseCostUsage = state.restartQuotaEpoch(changedAt)
 		}
-		var nextQuotaCostUsage *oauthcost.Usage
-		if state.tracksQuotaCost() {
-			nextQuotaCostUsage = reconcileOAuthQuotaCostUsage(baseCostUsage, summary, sampledAt)
-		}
 		storedSummary := *summary
 		storedSummary.QuotaCostUsage = nil
+		if state.provider == antigravityauth.ChannelType && persisted != nil {
+			storedSummary.Windows = keepAntigravityQuotaWindows(summary.Windows, persisted.Windows, sampledAt)
+		}
+		var nextQuotaCostUsage *oauthcost.Usage
+		if state.tracksQuotaCost() {
+			nextQuotaCostUsage = reconcileOAuthQuotaCostUsage(baseCostUsage, &storedSummary, sampledAt)
+		}
 		snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
 			RequestedAt: requestedAt.UTC().Format(time.RFC3339Nano),
 			SampledAt:   sampledAt.UTC().Format(time.RFC3339Nano),
@@ -1827,7 +1862,7 @@ func (s *Server) persistOAuthUsage(
 		if nextQuotaCostUsage != nil {
 			costs = s.loadOAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{currentCfg.ID: nextQuotaCostUsage}, sampledAt)[currentCfg.ID]
 		}
-		return attachOAuthQuotaCostUsage(summary, costs), nil
+		return attachOAuthQuotaCostUsage(&storedSummary, costs), nil
 	}
 }
 

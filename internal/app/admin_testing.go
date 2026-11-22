@@ -1941,7 +1941,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		result["client_protocol"] = clientProtocol
 		result["upstream_protocol"] = upstreamProtocol
 		result["actual_model"] = attemptReq.Model
-		markOpenCodeProtocolCapabilityMissing(cfg, selectedURL, result)
+		markChannelTestProtocolCapabilityMissing(cfg, selectedURL, result)
 	}()
 
 	start := time.Now()
@@ -3547,12 +3547,17 @@ func (s *Server) applyChannelTestCapacityCooldown(
 	result["antigravity_capacity_cooldown_applied"] = true
 }
 
-// markOpenCodeProtocolCapabilityMissing turns a per-model OpenCode protocol
-// rejection into capability evidence, so /test and /chat both move on to the
-// next protocol without cooling the channel, like the proxy.
-func markOpenCodeProtocolCapabilityMissing(cfg *model.Config, target string, result map[string]any) {
+/**
+ * @brief 标记渠道测试的 OpenCode 协议拒绝或 Sub2API 分组 Messages 拒绝，以便按配置回退且不记录冷却。
+ * @param cfg 待测试的渠道配置。
+ * @param target 当次请求使用的上游地址。
+ * @param result 当次测试结果，命中后写入协议能力和冷却动作字段。
+ */
+func markChannelTestProtocolCapabilityMissing(cfg *model.Config, target string, result map[string]any) {
 	status, body, _ := buildTestFailureClassificationInput(result)
-	if isOpenCodeModelProtocolUnsupported(cfg, target, status, body) {
+	messagesDispatchForbidden := cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
+		result["upstream_protocol"] == util.ProtocolAnthropic && util.IsMessagesDispatchForbidden(status, body)
+	if messagesDispatchForbidden || isOpenCodeModelProtocolUnsupported(cfg, target, status, body) {
 		result["protocol_capability_missing"] = true
 		result["cooldown_action"] = "protocol_capability_missing_no_cooldown"
 	}

@@ -62,6 +62,39 @@ func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header
 	}
 }
 
+/**
+ * @brief OpenAI 兼容的代理错误详情，同时用于 Responses WebSocket 错误帧。
+ */
+type openAIProxyErrorBody struct {
+	RetryAfter   int    `json:"retry_after,omitempty"`
+	Message      string `json:"message"`
+	Type         string `json:"type"`
+	Code         string `json:"code"`
+	Param        string `json:"param,omitempty"`
+	Setting      string `json:"setting,omitempty"`
+	SettingValue int64  `json:"setting_value,omitempty"`
+	Current      int64  `json:"current,omitempty"`
+	Unit         string `json:"unit,omitempty"`
+}
+
+/**
+ * @brief 在候选耗尽时区分访问限制、未配置模型和已配置模型暂不可用。
+ * @param ctx 路由请求上下文，含渠道授权筛选结果。
+ * @param modelName 筛选候选时使用的路由模型。
+ * @param clientProtocol 客户端协议，决定查询哪个模型池。
+ * @return 客户端应收到的状态码。
+ * @return 可直接用于 OpenAI 兼容响应的错误详情。
+ */
+func (s *Server) noRouteError(ctx context.Context, modelName string, clientProtocol protocol.Protocol) (int, openAIProxyErrorBody) {
+	if channelRestrictionDeniedFromContext(ctx) {
+		return http.StatusForbidden, openAIProxyErrorBody{Type: "invalid_request_error", Code: "permission_denied", Message: "no allowed upstream channel for this token"}
+	}
+	if !s.modelConfigured(ctx, modelName, clientProtocol) {
+		return http.StatusNotFound, openAIProxyErrorBody{Type: "invalid_request_error", Code: "model_not_found", Param: "model", Message: fmt.Sprintf("model not found: %s", modelName)}
+	}
+	return http.StatusServiceUnavailable, openAIProxyErrorBody{Type: "server_error", Code: "upstream_unavailable", Message: "no available upstream (all cooled or none)"}
+}
+
 // writeLocalProxyError 写网关自身产生的错误：Anthropic 客户端按官方错误体
 // 返回，便于 SDK 按 error.type 分支；其他协议保持既有 {"error": "..."} 形状。
 func writeLocalProxyError(c *gin.Context, status int, message string) {

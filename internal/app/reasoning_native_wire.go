@@ -1,17 +1,24 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
 )
@@ -430,4 +437,168 @@ func reasoningDecisionUsage(response []byte, provider string) (*fwResult, bool) 
 		*counter.value = int(value.Int())
 	}
 	return result, known
+}
+
+/**
+ * @brief 按固定模型行的实际提供商发送非流式原生判断请求
+ * @param ctx 判断超时或管理测试上下文
+ * @param cfg 渠道配置快照
+ * @param key 已选中的凭据
+ * @param baseURL 已选中的上游地址
+ * @param row 本次调用固定的模型行，用于重定向和定价
+ * @param transcript 判断文本
+ * @param levels 按强度升序排列的候选等级
+ * @param template 本次判断快照中的提示词模板
+ * @param custom 本次判断快照中的自定义提示词；非自定义模板时忽略
+ * @return 上游原始结果、解析等级和用量，失败时保留已获取的数据
+ * @return 限流、传输、隐私遮蔽或响应格式错误；成功时为 nil
+ * @note 请求遵守渠道请求规则与隐私边界，响应体最多读取 1 MiB
+ */
+func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, baseURL string, row modelRoutingSelection, transcript string, levels []string, template string, custom *model.ReasoningPrompt) (result reasoningCallResult, err error) {
+	start := time.Now()
+	defer func() { result.duration = time.Since(start) }()
+	result.actualModel = s.resolveFinalUpstreamModel(cfg, row, string(protocol.SystemOne))
+	provider := reasoningProvider(result.actualModel)
+	prompt := resolveReasoningPrompt(template, custom, result.actualModel)
+	result.baseURL = baseURL
+	// The effective level is not sent: it anchors the judge toward the current
+	// level, and downgrade confirmation already provides the hysteresis.
+	session := privacySessionFromContext(ctx)
+	if session != nil {
+		transcript, err = session.MaskText(transcript)
+		if err != nil {
+			s.privacyStats.blocked.Add(1)
+			return result, errors.New("privacy masking failed; decision request was not sent")
+		}
+	}
+	body, err := reasoningDecisionBody(provider, result.actualModel, transcript, levels, prompt)
+	if err != nil {
+		return result, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reasoningDecisionURL(baseURL, provider), bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if provider == "gemini" {
+		req.Header.Set("x-goog-api-key", key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	applyHeaderRules(req.Header, cfg.HeaderRules())
+	body = applyBodyRules("application/json", body, cfg.BodyRules())
+	body, err = maskPrivacyBodyFromContext(ctx, body, "application/json")
+	if err != nil {
+		s.privacyStats.blocked.Add(1)
+		return result, err
+	}
+	req = cloneRequestWithBody(req, body)
+	// Same capture as proxy attempts: the request actually sent and the raw
+	// upstream response, so a decision can be inspected like any other call.
+	debug := s.captureDebugRequest(req, body)
+	defer func() { result.debug = debug.buildEntry(nil) }()
+	target := reasoningCompressionTarget{channelID: cfg.ID, host: req.URL.Host, provider: provider}
+	encoding := reasoningDecisionEncoding(provider, req.Header, body)
+	if _, plain := s.reasoningPlainTargets.Load(target); plain {
+		encoding = ""
+	}
+	outbound := req
+	if encoding != "" {
+		outbound = req.Clone(ctx)
+		compressRequestBody(outbound, encoding, body)
+	}
+	// As with proxy attempts, a call rejected by the channel's local limits was never sent.
+	release, err := s.reserveUpstreamRequest(cfg)
+	if err != nil {
+		debug.captureUpstreamError(err)
+		return result, err
+	}
+	result.privacyMasked = session.CountSent(body)
+	resp, err := s.doReservedUpstreamRequest(cfg, outbound, release, nil)
+	// Rejections seen in probes: OpenAI 400 for gzip, Gemini 415 for zstd, Aliyun 400
+	// parsing compressed bytes as JSON. Only a plain success proves compression was the cause.
+	retriedPlain := err == nil && encoding != "" &&
+		(resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnsupportedMediaType)
+	if retriedPlain {
+		rejection, _ := io.ReadAll(io.LimitReader(resp.Body, reasoningResponseMaxBytes))
+		_ = resp.Body.Close()
+		release, err = s.reserveUpstreamRequest(cfg)
+		if err != nil {
+			result.status, result.upstreamStatus = resp.StatusCode, resp.StatusCode
+			result.responseHeader, result.responseBody = resp.Header.Clone(), rejection
+			debug.captureResponseMeta(resp)
+			if debug != nil {
+				_, _ = debug.respBuf.Write(rejection)
+			}
+			debug.captureUpstreamError(err)
+			return result, err
+		}
+		resp, err = s.doReservedUpstreamRequest(cfg, req, release, nil)
+	}
+	if err != nil {
+		result.networkFailure = true
+		debug.captureUpstreamError(err)
+		return result, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	debug.wrapResponseBody(resp)
+	result.upstreamStatus = resp.StatusCode
+	result.responseHeader = resp.Header.Clone()
+	response, err := io.ReadAll(io.LimitReader(resp.Body, reasoningResponseMaxBytes+1))
+	result.responseBody = response[:min(len(response), reasoningResponseMaxBytes)]
+	if err != nil {
+		result.networkFailure = true
+		debug.captureUpstreamError(err)
+		return result, err
+	}
+	result.status = resp.StatusCode
+	if result.status < 200 || result.status >= 300 {
+		return result, fmt.Errorf("system one status %d", result.status)
+	}
+	if len(response) > reasoningResponseMaxBytes {
+		result.status, result.reason = http.StatusBadGateway, "invalid_response"
+		return result, errors.New("reasoning response size exceeded")
+	}
+
+	validJSON := json.Valid(response)
+	if validJSON {
+		result.usage, result.usageKnown = reasoningDecisionUsage(response, provider)
+	}
+	if checkSoftError(response, resp.Header.Get("Content-Type")) {
+		result.status = classifySSEErrorStatus(response)
+		return result, fmt.Errorf("system one status %d", result.status)
+	}
+	rules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
+	if rules = cooldown.SuccessResponseDetectionRules(rules, resp.StatusCode); rules != nil {
+		ruleBody := response
+		if !validJSON && len(response) <= successProbeBytes && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/plain") {
+			if message, _, _ := successResponseProbeText(response, false, true); message != "" {
+				ruleBody, _ = json.Marshal(map[string]string{"message": message})
+			}
+		}
+		evaluation := cooldown.EvaluateCooldownDetectionRules(rules, cooldown.DetectionInput{
+			StatusCode: resp.StatusCode, ErrorBody: ruleBody,
+		}, time.Now())
+		if evaluation.Actionable {
+			result.configuredDetection = &evaluation
+			result.status = util.StatusSSEError
+			return result, fmt.Errorf("system one response matched cooldown rule %d", evaluation.Priority)
+		}
+	}
+	switch {
+	case resp.StatusCode != http.StatusOK:
+		err = fmt.Errorf("system one status %d", resp.StatusCode)
+	case !validJSON:
+		err = errors.New("system one response is not JSON")
+	default:
+		result.effort, result.confidence, err = parseReasoningDecision(response, provider, result.actualModel, prompt, levels)
+	}
+	if err != nil {
+		result.status, result.reason = http.StatusBadGateway, "invalid_response"
+		return result, err
+	}
+	if retriedPlain {
+		s.reasoningPlainTargets.Store(target, struct{}{})
+	}
+	return result, nil
 }

@@ -290,8 +290,10 @@ func TestPrivacyAutomaticReasoningRequestIsMasked(t *testing.T) {
 	}
 }
 
-// A decision call rejected by the channel's local limit never leaves the
-// gateway, so its log must not claim redacted content was sent.
+/**
+ * @brief 判定被本地限流时，不把判定渠道规则注入的敏感内容计入已发送指标。
+ * @param t 测试上下文。
+ */
 func TestPrivacyLocallyLimitedReasoningDecisionCountsNothing(t *testing.T) {
 	t.Parallel()
 	judge := newReasoningAutoJudge(t)
@@ -306,6 +308,9 @@ func TestPrivacyLocallyLimitedReasoningDecisionCountsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.MaxConcurrency = 1
+	cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+		Action: model.RuleActionOverride, Path: "diagnostic", Value: json.RawMessage(`"sk-proj-judge1234567890abcdefghijkl"`),
+	}}}
 	if cfg, err = env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -315,15 +320,15 @@ func TestPrivacyLocallyLimitedReasoningDecisionCountsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	response := privacyRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Investigate the production incident using sk-proj-judge1234567890abcdefghijkl"))
+	response := privacyRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Investigate the production incident."))
 	if response.Code != 200 {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	if requests := judge.snapshot(); len(requests) != 0 {
 		t.Fatalf("judge received %d requests, want 0", len(requests))
 	}
-	if decision := waitForDecisionLog(t, env); decision.PrivacyMasked != nil {
-		t.Fatalf("locally limited decision log privacy counts=%+v, want none", decision.PrivacyMasked)
+	if metrics := readPrivacyRuntime(t, env.server); metrics.MaskedRequests != 0 || metrics.MaskedSecret != 0 {
+		t.Fatalf("locally limited decision counted sent content: %+v", metrics)
 	}
 }
 

@@ -84,10 +84,8 @@ type sseUsageParser struct {
 
 	// hasStreamOutput 表示已经看到应转发给客户端的非心跳流事件。
 	// ping 只是上游保活，不能让 200 空流被误判为成功。
-	hasStreamOutput bool
-	// hasResponsesMetadata 表示已经看到 Responses 元数据事件。
-	// 这算上游已返回数据（首字），但不构成语义输出，不阻断故障切换。
-	hasResponsesMetadata bool
+	hasStreamOutput   bool
+	hasStreamMetadata bool ///< Chat 或 Responses 元数据已到达，可结束上游首字节等待，仍允许故障切换。
 
 	responsesTurnResult responsesWebsocketTurnResult
 	hasResponsesTurn    bool
@@ -148,10 +146,10 @@ type usageParser interface {
 	GetReasoningTokens() int
 	GetResponseModel() string
 	GetCodexHasCredits() bool
-	GetLastError() []byte       // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
-	IsStreamComplete() bool     // 返回上游是否已给出语义终态（见 sseUsageParser.streamComplete）
-	HasStreamOutput() bool      // 语义输出，提交给客户端后不可再内部切渠道
-	HasResponsesMetadata() bool // Responses 元数据（created 等），算上游已返回数据，但不提交
+	GetLastError() []byte    // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	IsStreamComplete() bool  // 返回上游是否已给出语义终态（见 sseUsageParser.streamComplete）
+	HasStreamOutput() bool   // 语义输出，提交给客户端后不可再内部切渠道
+	HasStreamMetadata() bool ///< 已收到足以结束上游首字节等待的元数据，下游仍可延迟提交。
 	GetResponsesTurnResult() (responsesWebsocketTurnResult, bool)
 }
 
@@ -685,6 +683,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// Responses 元数据与空骨架事件不构成语义输出：客户端可以在这些事件后重新开始回合。
 	// event: 行与 JSON type 都要认，和 isSuccessfulResponsesTerminal 一样。只有真正的
 	// 内容事件才标记为有流输出，以便 deferredWriter 在 error 到来前不会过早 commit。
+	openAIComplete := openAIStreamPayloadComplete(event)
 	if p.upstreamProtocol == util.ProtocolGemini {
 		visible, thought := geminiPayloadOutput(event)
 		p.geminiVisibleOutput = p.geminiVisibleOutput || visible
@@ -698,7 +697,9 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 		p.hasStreamOutput = p.hasStreamOutput || visible || thought || geminiStreamPayloadComplete(event)
 	} else if isResponsesPreOutputEvent(payloadType, data) || isResponsesPreOutputEvent(eventType, data) {
-		p.hasResponsesMetadata = true
+		p.hasStreamMetadata = true
+	} else if p.upstreamProtocol == util.ProtocolOpenAI && !openAIComplete && isOpenAIStreamMetadata(event) {
+		p.hasStreamMetadata = true
 	} else {
 		p.hasStreamOutput = true
 	}
@@ -722,7 +723,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// OpenAI Chat Completions 与 Gemini 在 finish_reason 处、Anthropic 在 message_delta.stop_reason
 	// 处就已给出语义终态，之后的 usage 分片、[DONE]、message_stop 都是可选尾巴。客户端常在读到
 	// 终态时立刻断开，此处不认终态会把完整响应误判成 499（客户端取消）或 599（流不完整）。
-	if openAIStreamPayloadComplete(event) || geminiStreamPayloadComplete(event) || anthropicStreamPayloadComplete(event) {
+	if openAIComplete || geminiStreamPayloadComplete(event) || anthropicStreamPayloadComplete(event) {
 		p.streamComplete = true
 	}
 	if isSuccessfulResponsesTerminal(payloadType) {
@@ -891,8 +892,20 @@ func (p *sseUsageParser) HasStreamOutput() bool {
 	return p.hasStreamOutput
 }
 
-func (p *sseUsageParser) HasResponsesMetadata() bool {
-	return p.hasResponsesMetadata
+/**
+ * @brief 判断是否收到可结束上游首字节等待的流元数据。
+ * @return 收到元数据时为 true，即使流随后已有实际输出；尚未收到时为 false。
+ */
+func (p *sseUsageParser) HasStreamMetadata() bool {
+	return p.hasStreamMetadata
+}
+
+/**
+ * @brief 判断 OpenAI 流是否只有无有效输出的结束标记，支持在上游关闭连接前换渠。
+ * @return OpenAI 流已收到结束标记且没有输出时为 true。
+ */
+func (p *sseUsageParser) isEmptyOpenAIStreamEnd() bool {
+	return p.upstreamProtocol == util.ProtocolOpenAI && p.streamEnded && !p.hasStreamOutput && p.lastError == nil
 }
 
 func (p *sseUsageParser) GetResponsesTurnResult() (responsesWebsocketTurnResult, bool) {
@@ -903,7 +916,7 @@ func (p *sseUsageParser) GetResponsesTurnResult() (responsesWebsocketTurnResult,
 // response.created/queued/in_progress 不算语义输出，出现 error 时仍可切换渠道重试。
 // response.metadata 只携带提示审核标记，上游会把它插在 in_progress 与
 // server_is_overloaded 之间（CLIProxyAPI #6856、sub2api e068c3d02）。
-// 空字符串不是元数据：Chat Completions 没有 type，必须算有流输出。
+// 无 type 的负载由实际协议按各自的内容格式处理。
 func isResponsesMetadataEvent(payloadType string) bool {
 	switch payloadType {
 	case "response.created", "response.queued", "response.in_progress",
@@ -1070,7 +1083,11 @@ func markSSETerminalFromRaw(p *sseUsageParser, eventType, data string) {
 	if isImagesStreamTerminal(payloadType) || (payloadType == "" && isImagesStreamTerminal(eventType)) {
 		p.streamComplete, p.streamEnded = true, true
 	}
-	if gjsonOpenAIStreamComplete(payload) || gjsonGeminiStreamComplete(payload) || gjsonAnthropicStreamComplete(payload) {
+	openAIComplete := gjsonOpenAIStreamComplete(payload)
+	if openAIComplete && p.upstreamProtocol == util.ProtocolOpenAI {
+		p.hasStreamOutput = true
+	}
+	if openAIComplete || gjsonGeminiStreamComplete(payload) || gjsonAnthropicStreamComplete(payload) {
 		p.streamComplete = true
 	}
 }
@@ -1136,6 +1153,54 @@ func observedServiceTierFromEvent(eventType, payloadType string, event map[strin
 		}
 	}
 	return ""
+}
+
+/**
+ * @brief 识别未给出结束原因的 OpenAI 分片中仅携带角色或用量等元数据的帧。
+ * @param payload 已解码的 SSE JSON 对象。
+ * @return 已识别为 OpenAI completion 分片且没有实际输出时为 true。
+ * @note 保留旧 Completions 的 text、非标准 message 以及非空的扩展 delta 字段。
+ */
+func isOpenAIStreamMetadata(payload map[string]any) bool {
+	choices, ok := payload["choices"].([]any)
+	if !ok {
+		return payload["object"] == "chat.completion.chunk"
+	}
+	for _, item := range choices {
+		choice, _ := item.(map[string]any)
+		if text, _ := choice["text"].(string); text != "" {
+			return false
+		}
+		for _, name := range []string{"delta", "message"} {
+			message, _ := choice[name].(map[string]any)
+			for field, value := range message {
+				if field != "role" && hasOpenAIStreamFieldValue(value) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+/**
+ * @brief 判断 OpenAI 增量字段是否包含实际值。
+ * @param value 已解码的字段值，可为 null。
+ * @return null、空字符串、空数组和空对象返回 false；其他值返回 true。
+ */
+func hasOpenAIStreamFieldValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return false
+	case string:
+		return v != ""
+	case []any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	default:
+		return true
+	}
 }
 
 // openAIStreamPayloadComplete 判断 Chat Completions 分片是否给出终态。
@@ -1691,7 +1756,11 @@ func (p *jsonUsageParser) HasStreamOutput() bool {
 	return p.hasBody
 }
 
-func (p *jsonUsageParser) HasResponsesMetadata() bool {
+/**
+ * @brief JSON 整体响应不存在单独的流元数据事件。
+ * @return 始终为 false。
+ */
+func (p *jsonUsageParser) HasStreamMetadata() bool {
 	return false
 }
 

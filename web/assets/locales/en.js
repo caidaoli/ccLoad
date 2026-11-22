@@ -2496,6 +2496,7 @@ window.I18N_LOCALES['en'] = {
   'logs.reasoningValue.decision_unavailable': 'Decision service unavailable',
   'logs.reasoningValue.timeout': 'Timed out',
   'logs.reasoningValue.cancelled': 'Cancelled',
+  'logs.reasoningValue.local_capacity': 'Decision channel at local capacity',
   'logs.reasoningValue.queue_full': 'Decision queue full',
   'logs.reasoningValue.rate_limited': 'Rate limited',
   'logs.reasoningValue.authentication_failed': 'Authentication failed',
