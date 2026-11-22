@@ -38,11 +38,11 @@ func privacyRequest(t *testing.T, env *proxyTestEnv, path string, body any) *htt
 func TestPrivacyProxyHTTPHotReloadAndProtocolConversion(t *testing.T) {
 	t.Parallel()
 	const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
-	received := make(chan string, 8)
+	received := make(chan []byte, 8)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		content := gjson.GetBytes(body, "messages.0.content").String()
-		received <- content
+		received <- body
 		if r.Header.Get("Authorization") != "Bearer sk-test-0" {
 			t.Error("upstream authentication changed")
 		}
@@ -60,14 +60,20 @@ func TestPrivacyProxyHTTPHotReloadAndProtocolConversion(t *testing.T) {
 			if client == "anthropic" {
 				path = "/v1/messages"
 				body["max_tokens"] = 64
+			} else {
+				body["metadata"] = map[string]string{"type": "reasoning.encrypted", "note": secret}
 			}
 			response := privacyRequest(t, env, path, body)
 			if response.Code != 200 {
 				t.Fatalf("response %s: %d %s", client, response.Code, response.Body.String())
 			}
-			sent := <-received
+			upstreamBody := <-received
+			sent := gjson.GetBytes(upstreamBody, "messages.0.content").String()
 			if (sent == secret) == enabled {
 				t.Fatalf("enabled=%t sent=%q", enabled, sent)
+			}
+			if client == "openai" && gjson.GetBytes(upstreamBody, "metadata.note").String() != sent {
+				t.Fatalf("enabled=%t metadata did not follow the active masking policy", enabled)
 			}
 			textPath := "choices.0.message.content"
 			if client == "anthropic" {
@@ -77,6 +83,158 @@ func TestPrivacyProxyHTTPHotReloadAndProtocolConversion(t *testing.T) {
 				t.Fatalf("response content=%q want=%q: %s", got, secret, response.Body.String())
 			}
 		}
+	}
+}
+
+/**
+ * @brief 验证 HTTP 客户端重放已还原的思考时，新进程禁用脱敏也能恢复上游原文。
+ * @param t 测试上下文。
+ */
+func TestPrivacyProxyReplaysSignedThinkingAfterRestartAndDisable(t *testing.T) {
+	t.Parallel()
+	const modelName, secret, signature = "claude-sonnet-4-6", "private-build-id", "cHJvdmlkZXItc2lnbmF0dXJl"
+	received := make(chan []byte, 2)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		received <- body
+		w.Header().Set("Content-Type", "application/json")
+		content := []any{map[string]any{"type": "text", "text": "ok"}}
+		if !gjson.GetBytes(body, "messages.1").Exists() {
+			masked := gjson.GetBytes(body, "messages.0.content").String()
+			content = append([]any{map[string]any{"type": "thinking", "thinking": secret + " / " + masked, "signature": signature}}, content...)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"type": "message", "id": "msg-private", "role": "assistant", "model": modelName, "content": content, "stop_reason": "end_turn", "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
+	}))
+	channels := []testChannel{{name: "privacy-thinking", upstreamProtocol: "anthropic", models: modelName}}
+	urls := map[int]string{0: upstream.URL}
+	first := setupProxyTestEnvWithSettings(t, channels, urls, map[string]string{privacySettingKey: `{"enabled":true,"words":["private-build-id"]}`})
+	request := map[string]any{
+		"model": modelName, "max_tokens": 64,
+		"messages": []any{map[string]any{"role": "user", "content": secret}},
+		"metadata": map[string]any{"user_id": `{"device_id":"device","session_id":"session"}`},
+		"system":   []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;"}},
+	}
+	response := privacyRequest(t, first, "/v1/messages", request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	upstreamFirst := <-received
+	token := gjson.GetBytes(upstreamFirst, "messages.0.content").String()
+	if !strings.HasPrefix(token, "{{CCLOAD_") {
+		t.Fatalf("first request was not masked: %s", upstreamFirst)
+	}
+	visible := gjson.GetBytes(response.Body.Bytes(), "content.0")
+	if got := visible.Get("thinking").String(); got != secret+" / "+secret {
+		t.Fatalf("client thinking=%q body=%s", got, response.Body.String())
+	}
+
+	restarted := setupProxyTestEnv(t, channels, urls)
+	request["messages"] = []any{
+		map[string]any{"role": "user", "content": "prior question"},
+		map[string]any{"role": "assistant", "content": []json.RawMessage{json.RawMessage(visible.Raw)}},
+		map[string]any{"role": "user", "content": secret},
+	}
+	request["system"] = []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"}}
+	replayBody, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayBody, err = finalizeAnthropicCCH(replayBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = privacyRequest(t, restarted, "/v1/messages", json.RawMessage(replayBody))
+	if response.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	upstreamReplay := <-received
+	thinking := gjson.GetBytes(upstreamReplay, "messages.1.content.0")
+	if thinking.Get("thinking").String() != secret+" / "+token || thinking.Get("signature").String() != signature {
+		t.Fatalf("upstream thinking changed during replay: %s", thinking.Raw)
+	}
+	if got := gjson.GetBytes(upstreamReplay, "messages.2.content").String(); got != secret {
+		t.Fatalf("new text was masked with privacy disabled: %q", got)
+	}
+	resigned, err := finalizeAnthropicCCH(upstreamReplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(upstreamReplay, resigned) {
+		t.Fatal("upstream CCH does not cover the restored replay")
+	}
+}
+
+/**
+ * @brief 验证非流式 Gemini 思考跨两个签名 part 时展示完整、回放边界精确
+ * @param t 测试上下文
+ */
+func TestPrivacyProxyGeminiSignedParts(t *testing.T) {
+	t.Parallel()
+	const secret = "private-build-id"
+	const modelName = "gemini-3-flash"
+	received := make(chan []byte, 2)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		received <- body
+		w.Header().Set("Content-Type", "application/json")
+		parts := []map[string]any{{"text": "ok"}}
+		if !gjson.GetBytes(body, "contents.1").Exists() {
+			token := gjson.GetBytes(body, "contents.0.parts.0.text").String()
+			if len(token) < 8 {
+				t.Errorf("missing input token: %q", token)
+				return
+			}
+			parts = []map[string]any{
+				{"text": token[:7], "thought": true, "thoughtSignature": "YQ=="},
+				{"text": token[7:], "thought": true, "thoughtSignature": "Yg=="},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{
+			"content": map[string]any{"role": "model", "parts": parts}, "finishReason": "STOP",
+		}}})
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "thoughts", upstreamProtocol: "gemini", models: modelName}},
+		map[int]string{0: upstream.URL}, map[string]string{privacySettingKey: `{"enabled":true,"words":["private-build-id"]}`})
+	path := "/v1beta/models/" + modelName + ":generateContent"
+	user := map[string]any{"role": "user", "parts": []any{map[string]string{"text": secret}}}
+	response := privacyRequest(t, env, path, map[string]any{"contents": []any{user}})
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	token := gjson.GetBytes(<-received, "contents.0.parts.0.text").String()
+	if !strings.HasPrefix(token, "{{CCLOAD_") {
+		t.Fatalf("request was not masked: %q", token)
+	}
+	var modelReply struct {
+		Role  string `json:"role"`
+		Parts []struct {
+			Text      string `json:"text,omitempty"`
+			Thought   bool   `json:"thought"`
+			Signature []byte `json:"thoughtSignature"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal([]byte(gjson.GetBytes(response.Body.Bytes(), "candidates.0.content").Raw), &modelReply); err != nil {
+		t.Fatal(err)
+	}
+	if len(modelReply.Parts) != 2 || modelReply.Parts[0].Text+modelReply.Parts[1].Text != secret {
+		t.Fatalf("displayed thought = %+v", modelReply)
+	}
+	response = privacyRequest(t, env, path, map[string]any{"contents": []any{user, modelReply, user}})
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	parts := gjson.GetBytes(<-received, "contents.1.parts").Array()
+	if len(parts) != 2 || parts[0].Get("text").String() != token[:7] || parts[1].Get("text").String() != token[7:] ||
+		parts[0].Get("thoughtSignature").String() != "YQ==" || parts[1].Get("thoughtSignature").String() != "Yg==" {
+		t.Fatalf("replayed signed parts = %v", parts)
 	}
 }
 

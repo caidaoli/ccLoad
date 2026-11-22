@@ -36,6 +36,11 @@ const (
 var errCapacity = errors.New("privacy mapping capacity exceeded")
 var placeholderPattern = regexp.MustCompile(`\{\{CCLOAD_[A-Z][A-Z0-9_]{0,23}_[a-f0-9]{16}\}\}`)
 
+/**
+ * @brief 单块签名推理允许回放的最大可见文本字节数
+ */
+const MaxReasoningTextBytes = maxTextBytes
+
 // entry fields other than used are immutable once published.
 type entry struct {
 	value, placeholder, kind, category string
@@ -571,6 +576,93 @@ func (s *Session) RestoreText(text string) string {
 	return s.restore(text, false)
 }
 
+/**
+ * @brief 记录一次按原文输出的占位符
+ * @note 仅更新当前输出观测会话的计数。
+ */
+func (s *Session) ObserveUnrestoredPlaceholder() {
+	if s.observe {
+		s.unrestored.Add(1)
+	}
+}
+
+/**
+ * @brief 查询已识别的完整占位符，复用不可变字典原值
+ * @param token 当前文本通道已识别的占位符
+ * @return 原值；字典缺失或过期时返回 token
+ * @return 是否命中
+ * @note 刷新命中项的空闲时间，在输出观测会话中计数。
+ */
+func (s *Session) RestorePlaceholder(token string) (string, bool) {
+	e := s.engine
+	e.mu.Lock()
+	var item *entry
+	if held := e.scopes[s.scope]; held != nil {
+		item = held.resolvePlaceholder(token, e.now(), false)
+	}
+	e.mu.Unlock()
+	if item == nil {
+		s.ObserveUnrestoredPlaceholder()
+		return token, false
+	}
+	if s.observe {
+		s.restored.Add(1)
+	}
+	return item.value, true
+}
+
+/**
+ * @brief 在签名块的剩余预算内规划还原，校验完成后一次拼出明文
+ * @param text 当前字段的上游原文
+ * @param edits 接收相对此字段的逆向编辑
+ * @param maxBytes 剩余可见文本字节数
+ * @param maxEdits 允许本次新增的编辑数
+ * @return 还原后的字段，未发生替换时复用原文
+ * @return 超出字节数或编辑数预算时返回 ErrInvalidReasoningSignature
+ * @note 命中值来自调用方字典；编辑记录只包含占位符与坐标。
+ */
+func (s *Session) restoreReasoning(text string, edits *[]ReasoningEdit, maxBytes, maxEdits int) (string, error) {
+	var parts []string
+	last, visibleBytes, scan := 0, 0, 0
+	for scan < len(text) {
+		span := placeholderPattern.FindStringIndex(text[scan:])
+		if span == nil {
+			break
+		}
+		start, end := scan+span[0], scan+span[1]
+		if s.observe {
+			s.unrestored.Add(uint64(strings.Count(text[scan:start], "{{CCLOAD_")))
+		}
+		scan = end
+		token := text[start:end]
+		value, ok := s.RestorePlaceholder(token)
+		if !ok {
+			continue
+		}
+		prefix := text[last:start]
+		visibleBytes += len(prefix)
+		if maxEdits == 0 || visibleBytes+len(value) > maxBytes {
+			return "", ErrInvalidReasoningSignature
+		}
+		*edits = append(*edits, ReasoningEdit{Offset: visibleBytes, Length: len(value), Placeholder: token})
+		maxEdits--
+		parts = append(parts, prefix, value)
+		visibleBytes += len(value)
+		last = end
+	}
+	if s.observe {
+		s.unrestored.Add(uint64(strings.Count(text[scan:], "{{CCLOAD_")))
+	}
+	tail := text[last:]
+	if visibleBytes+len(tail) > maxBytes {
+		return "", ErrInvalidReasoningSignature
+	}
+	if len(parts) == 0 {
+		return text, nil
+	}
+	return strings.Join(append(parts, tail), ""), nil
+}
+
 func (s *Session) restore(text string, escaped bool) string {
 	return s.restoreMode(text, escaped, false)
 }
@@ -633,15 +725,28 @@ func (e *Engine) resolve(scope [32]byte, text string, spans [][]int, syntaxOnly 
 	out := make(map[string]string)
 	for _, span := range spans {
 		placeholder := text[span[0]:span[1]]
-		if item := held.placeholders[placeholder]; item != nil && (!syntaxOnly || item.syntax) && now.Sub(item.used) < mappingTTL {
-			item.used = now
+		if item := held.resolvePlaceholder(placeholder, now, syntaxOnly); item != nil {
 			out[placeholder] = item.value
 		}
 	}
-	if len(out) > 0 {
-		held.used = now
-	}
 	return out
+}
+
+/**
+ * @brief 在已锁定的调用方字典中读取有效条目并刷新空闲时间
+ * @param token 完整占位符
+ * @param now 本次查询的时刻
+ * @param syntaxOnly 是否限定为 JSON 语法片段
+ * @return 命中的条目；类型不符、过期或缺失时为 nil
+ * @note 调用方持有 Engine.mu；返回条目的原值不可变。
+ */
+func (held *scopeValues) resolvePlaceholder(token string, now time.Time, syntaxOnly bool) *entry {
+	item := held.placeholders[token]
+	if item == nil || syntaxOnly && !item.syntax || now.Sub(item.used) >= mappingTTL {
+		return nil
+	}
+	item.used, held.used = now, now
+	return item
 }
 
 // categories maps this scope's live placeholders in body to their category

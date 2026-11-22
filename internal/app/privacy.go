@@ -54,23 +54,33 @@ func (s *Server) privacySession(c *gin.Context) *privacy.Session {
 	return s.privacyEngine.Session(scope, policy)
 }
 
+/**
+ * @brief 处理请求 JSON 中的签名思考重放，并按会话策略遮蔽请求正文。
+ * @param session 当前脱敏会话，nil 时仅处理签名思考重放。
+ * @param body 请求正文。
+ * @param contentType 请求的 Content-Type，省略时按 JSON 处理。
+ * @return 处理后的请求正文。
+ * @return 重放、格式或遮蔽失败时的错误，成功为 nil。
+ */
 func maskPrivacyBody(session *privacy.Session, body []byte, contentType string) ([]byte, error) {
-	if session == nil || len(body) == 0 {
+	if len(body) == 0 {
 		return body, nil
 	}
-	if !session.Enabled() {
-		// Disabled sessions only restore replies; requests pass through as sent.
-		return body, nil
-	}
+	enabled := session != nil && session.Enabled()
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil && contentType != "" {
+		if !enabled {
+			return body, nil
+		}
 		return nil, errors.New("privacy masking requires a valid Content-Type")
 	}
+	if mediaType == "" || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
+		return session.MaskJSON(body)
+	}
+	if !enabled {
+		return body, nil
+	}
 	if mediaType != "multipart/form-data" {
-		// Generation endpoints carry JSON. Binary media is not decoded or scanned.
-		if mediaType == "" || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
-			return session.MaskJSON(body)
-		}
 		if strings.HasPrefix(mediaType, "text/") {
 			masked, maskErr := session.MaskText(string(body))
 			return []byte(masked), maskErr
@@ -135,8 +145,20 @@ func privacySessionFromContext(ctx context.Context) *privacy.Session {
 	return session
 }
 
+/**
+ * @brief 在最终外发正文上遮蔽渠道规则与协议改写引入的文本。
+ * @param ctx 携带入口脱敏会话的请求上下文。
+ * @param body 准备外发的正文。
+ * @param contentType 正文的 Content-Type，省略时按 JSON 处理。
+ * @return 处理后的正文；禁用脱敏时直接返回正文。
+ * @return 处理失败时返回 errPrivacyMasking，成功为 nil。
+ */
 func maskPrivacyBodyFromContext(ctx context.Context, body []byte, contentType string) ([]byte, error) {
-	masked, err := maskPrivacyBody(privacySessionFromContext(ctx), body, contentType)
+	session := privacySessionFromContext(ctx)
+	if session == nil || !session.Enabled() {
+		return body, nil
+	}
+	masked, err := maskPrivacyBody(session, body, contentType)
 	if err != nil {
 		return nil, errPrivacyMasking
 	}

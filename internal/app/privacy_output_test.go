@@ -133,6 +133,19 @@ func TestPrivacyResponseWriterJSON(t *testing.T) {
 	if _, err := writer.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("Write after Finish = %v", err)
 	}
+
+	t.Run("array", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		writer := newPrivacyResponseWriter(recorder, session)
+		writer.Header().Set("Content-Type", "application/json")
+		privacyOutputTestWrite(t, writer, `[{"message":{"content":`+privacyOutputTestJSON(t, token)+`}}]`, 3)
+		if err := writer.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		if got := gjson.Get(recorder.Body.String(), "0.message.content").String(); got != secret {
+			t.Fatalf("JSON array content = %q, want %q", got, secret)
+		}
+	})
 }
 
 func TestPrivacyResponseWriterChatSplitEveryPosition(t *testing.T) {
@@ -321,65 +334,487 @@ func TestPrivacyResponseWriterPreservesUnchangedSSE(t *testing.T) {
 	}
 }
 
-func TestPrivacyResponseWriterReasoningKeepsPlaceholders(t *testing.T) {
+/**
+ * @brief 验证 Gemini 思考与回答按不同通道拼接并还原，签名按所属 part 安全回放。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterGeminiThoughts(t *testing.T) {
 	session := privacyOutputTestSession(t)
 	secret := "owner@example.com"
 	token := privacyOutputTestToken(t, session, secret)
+	signature := "opaque-thought-signature"
 	gemini := func(parts ...map[string]any) string {
 		return "data: " + privacyOutputTestJSON(t, map[string]any{
 			"candidates": []any{map[string]any{"index": 0, "content": map[string]any{"parts": parts}}},
 		}) + "\n\n"
 	}
-	anthropic := func(index int, delta map[string]any) string {
-		return "data: " + privacyOutputTestJSON(t, map[string]any{"type": "content_block_delta", "index": index, "delta": delta}) + "\n\n"
+	signedPart := gemini(map[string]any{"text": "签名 " + token, "thought": true, "thought_signature": signature})
+	signedPart = strings.Replace(signedPart, "{{CCLOAD_", "\\u007b\\u007bCCLOAD_", 1)
+	wire := gemini(map[string]any{"text": "思考 " + token[:12], "thought": true}) +
+		gemini(map[string]any{"text": "答复 " + token[:15]}) +
+		gemini(map[string]any{"text": token[12:], "thought": true, "thoughtSignature": signature}, map[string]any{"text": token[15:]}) +
+		signedPart +
+		gemini(map[string]any{"text": "前段 " + token[:7], "thought": true, "thoughtSignature": signature}) +
+		gemini(map[string]any{"text": "", "thought": true, "thoughtSignature": token}) +
+		gemini(map[string]any{"text": token[7:] + " and " + token, "thought": true, "thought_signature": signature}) +
+		"data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}]}\n\n"
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	privacyOutputTestWrite(t, writer, wire, 7)
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
 	}
-	tests := []struct {
-		name, reasoning, answer string
-		answerText              func(events []gjson.Result) string
+	events := privacyOutputTestEvents(t, recorder.Body.String())
+	if len(events) != 8 {
+		t.Fatalf("events = %d, want 8", len(events))
+	}
+	if got := events[0].Get("candidates.0.content.parts.0.text").String() + events[2].Get("candidates.0.content.parts.0.text").String(); got != "思考 "+token {
+		t.Fatalf("thought = %q", got)
+	}
+	if got := events[1].Get("candidates.0.content.parts.0.text").String() + events[2].Get("candidates.0.content.parts.1.text").String(); got != "答复 "+secret {
+		t.Fatalf("answer = %q", got)
+	}
+	if got := events[5].Get("candidates.0.content.parts.0"); got.Get("text").String() != "" || got.Get("thoughtSignature").String() != token {
+		t.Fatalf("signature-only part changed: %s", got.Raw)
+	}
+	if got := events[2].Get("candidates.0.content.parts.0"); got.Get("text").String() != token[12:] || got.Get("thoughtSignature").String() != signature {
+		t.Fatalf("mixed-signature continuation changed: %s", got.Raw)
+	}
+	for _, signed := range []struct {
+		event                      int
+		key, visible, upstreamText string
 	}{
-		{
-			// The answer restarts at part zero after the thought, and a
-			// placeholder may continue in the candidate's next part.
-			name:      "gemini",
-			reasoning: gemini(map[string]any{"text": "thinking " + token, "thought": true}) + gemini(map[string]any{"text": token[:15], "thought": true}),
-			answer: gemini(map[string]any{"text": "mail "}, map[string]any{"text": token[:12]}) + gemini(map[string]any{"text": token[12:]}) +
-				"data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}]}\n\n",
-			answerText: func(events []gjson.Result) string {
-				var text strings.Builder
-				for _, event := range events[2:] {
-					for _, part := range event.Get("candidates.0.content.parts").Array() {
-						text.WriteString(part.Get("text").String())
-					}
-				}
-				return text.String()
-			},
-		},
-		{
-			name: "anthropic",
-			reasoning: anthropic(0, map[string]any{"type": "thinking_delta", "thinking": "thinking " + token}) +
-				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-			answer: anthropic(1, map[string]any{"type": "text_delta", "text": "mail " + token[:12]}) + anthropic(1, map[string]any{"type": "text_delta", "text": token[12:]}) +
-				"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
-			answerText: func(events []gjson.Result) string {
-				return events[2].Get("delta.text").String() + events[3].Get("delta.text").String()
-			},
-		},
+		{3, "thought_signature", "签名 " + secret, "签名 " + token},
+		{4, "thoughtSignature", "前段 " + secret, "前段 " + token[:7]},
+		{6, "thought_signature", " and " + secret, token[7:] + " and " + token},
+	} {
+		part := events[signed.event].Get("candidates.0.content.parts.0")
+		if got := part.Get("text").String(); got != signed.visible {
+			t.Fatalf("event %d signed thought = %q, want %q", signed.event, got, signed.visible)
+		}
+		originalSignature, originalText, err := privacy.UnwrapReasoningSignature(part.Get(signed.key).String(), part.Get("text").String())
+		if err != nil || originalSignature != signature || originalText != signed.upstreamText {
+			t.Fatalf("event %d signed thought replay = (%q, %q, %v)", signed.event, originalSignature, originalText, err)
+		}
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	if restored, unrestored := writer.observer.RestoredTokens(), writer.observer.UnrestoredTokens(); restored != 4 || unrestored != 1 {
+		t.Fatalf("token observations = (%d, %d), want (4, 1)", restored, unrestored)
+	}
+}
+
+/**
+ * @brief 验证 Gemini 混合签名占位符精确保留各片段，同一 part 的独立值仍可还原。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterGeminiMixedSignatureReplay(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	const mixedSecret = "mixed fragment secret"
+	const independentSecret = "independent unsigned secret"
+	token := privacyOutputTestToken(t, session, mixedSecret)
+	independentToken := privacyOutputTestToken(t, session, independentSecret)
+	prefix, suffix := token[:13], token[13:]
+	const signature = "YQ=="
+	unsigned := map[string]any{"thought": true, "text": independentToken + " " + prefix}
+	signed := map[string]any{"thought": true, "text": suffix + " " + token, "thoughtSignature": signature}
+	gemini := func(parts ...map[string]any) string {
+		return privacyOutputTestJSON(t, map[string]any{
+			"candidates": []any{map[string]any{"content": map[string]any{"parts": parts}}},
+		})
+	}
+	for _, format := range []string{"object", "sse", "vertex_array"} {
+		t.Run(format, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			writer := newPrivacyResponseWriter(recorder, session)
-			writer.Header().Set("Content-Type", "text/event-stream")
-			privacyOutputTestWrite(t, writer, test.reasoning+test.answer, 7)
+			wire := gemini(unsigned, signed)
+			contentType := "application/json"
+			switch format {
+			case "sse":
+				contentType = "text/event-stream"
+				wire = "data: " + gemini(unsigned) + "\n\ndata: " + gemini(signed) + "\n\n"
+			case "vertex_array":
+				wire = "[" + gemini(unsigned) + "," + gemini(signed) + "]"
+			}
+			writer.Header().Set("Content-Type", contentType)
+			privacyOutputTestWrite(t, writer, wire, 11)
 			if err := writer.Finish(); err != nil {
 				t.Fatal(err)
 			}
-			// Clients replay reasoning to the vendor that signed it.
-			if !strings.HasPrefix(recorder.Body.String(), test.reasoning) {
-				t.Fatalf("reasoning changed: %q", recorder.Body.String())
+			var events []gjson.Result
+			switch format {
+			case "sse":
+				events = privacyOutputTestEvents(t, recorder.Body.String())
+			case "vertex_array":
+				events = gjson.Parse(recorder.Body.String()).Array()
+			default:
+				events = []gjson.Result{gjson.Parse(recorder.Body.String())}
 			}
-			if got := test.answerText(privacyOutputTestEvents(t, recorder.Body.String())); got != "mail "+secret {
-				t.Fatalf("answer = %q", got)
+			var output []gjson.Result
+			for _, event := range events {
+				output = append(output, event.Get("candidates.0.content.parts").Array()...)
+			}
+			if len(output) != 2 || output[0].Get("text").String() != independentSecret+" "+prefix || output[1].Get("text").String() != suffix+" "+mixedSecret {
+				t.Fatalf("unexpected visible parts: %v", output)
+			}
+			if restored, unrestored := writer.observer.RestoredTokens(), writer.observer.UnrestoredTokens(); restored != 2 || unrestored != 1 {
+				t.Fatalf("token observations = (%d, %d), want (2, 1)", restored, unrestored)
+			}
+			replay := []byte(`{"contents":[{"role":"model","parts":[` + output[0].Raw + "," + output[1].Raw + `]}]}`)
+			for _, check := range []struct {
+				name        string
+				session     *privacy.Session
+				independent string
+			}{
+				{"enabled", session, independentToken},
+				{"disabled", nil, independentSecret},
+			} {
+				got, err := maskPrivacyBody(check.session, replay, "application/json")
+				if err != nil {
+					t.Fatalf("%s replay: %v", check.name, err)
+				}
+				parts := gjson.GetBytes(got, "contents.0.parts").Array()
+				if len(parts) != 2 || parts[0].Get("text").String() != check.independent+" "+prefix ||
+					parts[1].Get("text").String() != suffix+" "+token || parts[1].Get("thoughtSignature").String() != signature {
+					t.Fatalf("%s replay parts = %v", check.name, parts)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Vertex JSON 分块数组跨块还原签名思考和回答，并保留候选索引、用量和终态。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterVertexJSONChunks(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	const secret = "signed Vertex thought"
+	token := privacyOutputTestToken(t, session, secret)
+	chunk := func(finishReason string, part ...map[string]any) string {
+		return privacyOutputTestJSON(t, map[string]any{
+			"candidates": []any{map[string]any{"index": 3, "finishReason": finishReason, "content": map[string]any{"parts": part}}},
+		})
+	}
+	wire := " \n[\n" + chunk("",
+		map[string]any{"thought": true, "text": "思考 " + token[:11], "thoughtSignature": "YQ=="},
+		map[string]any{"text": "回答 " + token[:17]},
+	) + ",\n" + `{"usageMetadata":{"promptTokenCount":123}}` + ",\n" + chunk("STOP",
+		map[string]any{"thought": true, "text": token[11:], "thoughtSignature": "Yg=="},
+		map[string]any{"text": token[17:] + " " + token[:12]},
+	) + "\n]\n"
+
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	writer.Header().Set("Content-Type", "application/json")
+	privacyOutputTestWrite(t, writer, wire, 11)
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	out := gjson.Parse(recorder.Body.String())
+	if !out.IsArray() || len(out.Array()) != 3 || out.Get("0.candidates.0.index").Int() != 3 || out.Get("1.usageMetadata.promptTokenCount").Int() != 123 ||
+		out.Get("2.candidates.0.index").Int() != 3 || out.Get("2.candidates.0.finishReason").String() != "STOP" {
+		t.Fatalf("Vertex response metadata changed: %s", out.Raw)
+	}
+	first := out.Get("0.candidates.0.content.parts.0")
+	last := out.Get("2.candidates.0.content.parts.0")
+	if first.Get("text").String() != "思考 "+secret || last.Get("text").String() != "" {
+		t.Fatalf("visible signed parts = (%s, %s)", first.Raw, last.Raw)
+	}
+	answer := out.Get("0.candidates.0.content.parts.1.text").String() + out.Get("2.candidates.0.content.parts.1.text").String()
+	if answer != "回答 "+secret+" "+token[:12] {
+		t.Fatalf("answer = %q", answer)
+	}
+	if restored, unrestored := writer.observer.RestoredTokens(), writer.observer.UnrestoredTokens(); restored != 2 || unrestored != 1 {
+		t.Fatalf("token observations = (%d, %d), want (2, 1)", restored, unrestored)
+	}
+	replay := []byte(`{"contents":[{"role":"model","parts":[` + first.Raw + "," + last.Raw + `]}]}`)
+	got, err := maskPrivacyBody(nil, replay, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := gjson.GetBytes(got, "contents.0.parts").Array()
+	if len(parts) != 2 || parts[0].Get("text").String() != "思考 "+token[:11] || parts[0].Get("thoughtSignature").String() != "YQ==" ||
+		parts[1].Get("text").String() != token[11:] || parts[1].Get("thoughtSignature").String() != "Yg==" {
+		t.Fatalf("replayed signed parts = %v", parts)
+	}
+}
+
+/**
+ * @brief 验证 Chat content 中 thinking part 的占位符能跨事件还原。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterChatThinkingParts(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	secret := "chat private thought"
+	token := privacyOutputTestToken(t, session, secret)
+	chat := func(part map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{
+			"index": 0, "delta": map[string]any{"content": []map[string]any{part}},
+		}}}) + "\n\n"
+	}
+	wire := chat(map[string]any{"type": "thinking", "thinking": "思考 " + token[:7]}) +
+		chat(map[string]any{"type": "text", "text": "答复 " + token[:15]}) +
+		chat(map[string]any{"type": "thinking", "thinking": token[7:], "signature": token}) +
+		chat(map[string]any{"type": "text", "text": token[15:]}) + "data: [DONE]\n\n"
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	privacyOutputTestWrite(t, writer, wire, 7)
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	events := privacyOutputTestEvents(t, recorder.Body.String())
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4", len(events))
+	}
+	const part = "choices.0.delta.content.0."
+	if got := events[0].Get(part+"thinking").String() + events[2].Get(part+"thinking").String(); got != "思考 "+secret {
+		t.Fatalf("thinking = %q", got)
+	}
+	if got := events[1].Get(part+"text").String() + events[3].Get(part+"text").String(); got != "答复 "+secret {
+		t.Fatalf("answer = %q", got)
+	}
+	signature, raw, err := privacy.UnwrapReasoningSignature(events[2].Get(part+"signature").String(), events[2].Get(part+"thinking").String())
+	if err != nil || signature != token || raw != token[7:] {
+		t.Fatalf("signed thinking replay = (%q, %q, %v)", signature, raw, err)
+	}
+}
+
+/**
+ * @brief 验证 Claude 思考开头和 delta 跨帧还原，并能通过尾签名回放原文。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterAnthropicThinking(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	secret := "多字节原值"
+	token := privacyOutputTestToken(t, session, secret)
+	anthropic := func(event, field string, index int, value map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"type": event, "index": index, field: value}) + "\n\n"
+	}
+	wire := anthropic("content_block_start", "content_block", 0, map[string]any{"type": "thinking", "thinking": "思考 " + token[:12], "signature": ""}) +
+		anthropic("content_block_delta", "delta", 1, map[string]any{"type": "text_delta", "text": "答复 " + token[:15]}) +
+		anthropic("content_block_delta", "delta", 0, map[string]any{"type": "thinking_delta", "thinking": token[12:] + " and " + token}) +
+		anthropic("content_block_delta", "delta", 1, map[string]any{"type": "text_delta", "text": token[15:]}) +
+		anthropic("content_block_delta", "delta", 0, map[string]any{"type": "signature_delta", "signature": token}) +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		anthropic("content_block_start", "content_block", 2, map[string]any{"type": "redacted_thinking", "data": token})
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	privacyOutputTestWrite(t, writer, wire, 7)
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	events := privacyOutputTestEvents(t, recorder.Body.String())
+	if len(events) != 7 {
+		t.Fatalf("events = %d, want 7", len(events))
+	}
+	thinking := events[0].Get("content_block.thinking").String() + events[2].Get("delta.thinking").String()
+	if thinking != "思考 "+secret+" and "+secret {
+		t.Fatalf("thinking = %q", thinking)
+	}
+	if got := events[1].Get("delta.text").String() + events[3].Get("delta.text").String(); got != "答复 "+secret {
+		t.Fatalf("answer = %q", got)
+	}
+	originalSignature, originalText, err := privacy.UnwrapReasoningSignature(events[4].Get("delta.signature").String(), thinking)
+	if err != nil || originalSignature != token || originalText != "思考 "+token+" and "+token {
+		t.Fatalf("thinking replay = (%q, %q, %v)", originalSignature, originalText, err)
+	}
+	if got := events[6].Get("content_block.data").String(); got != token {
+		t.Fatalf("redacted thinking = %q", got)
+	}
+}
+
+/**
+ * @brief 验证 OpenRouter 按 reasoning detail index 恢复思考正文和摘要，保留加密数据。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterOpenRouterReasoningDetails(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	secret := "private reasoning value"
+	token := privacyOutputTestToken(t, session, secret)
+	chat := func(details ...map[string]any) string {
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{
+			"index": 0, "delta": map[string]any{"reasoning_details": details},
+		}}}) + "\n\n"
+	}
+	wire := chat(
+		map[string]any{"type": "reasoning.text", "index": 0, "text": "thought " + token[:12]},
+		map[string]any{"type": "reasoning.summary", "index": 1, "summary": "summary " + token[:16]},
+	) + chat(
+		map[string]any{"type": "reasoning.summary", "index": 1, "summary": token[16:]},
+		map[string]any{"type": "reasoning.text", "index": 0, "text": token[12:]},
+	) + chat(
+		map[string]any{"index": 0, "signature": token},
+		map[string]any{"type": "reasoning.encrypted", "index": 2, "data": token},
+		map[string]any{"type": "reasoning.summary", "index": 1, "signature": token},
+	) + "data: [DONE]\n\n"
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	privacyOutputTestWrite(t, writer, wire, 7)
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	events := privacyOutputTestEvents(t, recorder.Body.String())
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3", len(events))
+	}
+	const detail = "choices.0.delta.reasoning_details."
+	thinking := events[0].Get(detail+"0.text").String() + events[1].Get(detail+"1.text").String()
+	if thinking != "thought "+secret {
+		t.Fatalf("text = %q", thinking)
+	}
+	summary := events[0].Get(detail+"1.summary").String() + events[1].Get(detail+"0.summary").String()
+	if summary != "summary "+secret {
+		t.Fatalf("summary = %q", summary)
+	}
+	originalSignature, originalText, err := privacy.UnwrapReasoningSignature(events[2].Get(detail+"0.signature").String(), thinking)
+	if err != nil || originalSignature != token || originalText != "thought "+token {
+		t.Fatalf("reasoning replay = (%q, %q, %v)", originalSignature, originalText, err)
+	}
+	if got := events[2].Get(detail + "1.data").String(); got != token {
+		t.Fatalf("encrypted reasoning = %q", got)
+	}
+	originalSignature, originalText, err = privacy.UnwrapReasoningSignature(events[2].Get(detail+"2.signature").String(), summary)
+	if err != nil || originalSignature != token || originalText != "summary "+token {
+		t.Fatalf("summary replay = (%q, %q, %v)", originalSignature, originalText, err)
+	}
+}
+
+/**
+ * @brief 验证 OpenRouter 无索引的交错 detail 依 ID 拼接，且不与索引或位置通道冲突。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterOpenRouterReasoningDetailIDs(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	const secret = "private reasoning value"
+	token := privacyOutputTestToken(t, session, secret)
+	chat := func(detail map[string]any, content string, final bool) string {
+		detail["type"], detail["text"] = "reasoning.text", content
+		if final {
+			detail["signature"] = "signature"
+		}
+		return "data: " + privacyOutputTestJSON(t, map[string]any{"choices": []any{map[string]any{
+			"index": 0, "delta": map[string]any{"reasoning_details": []any{detail}},
+		}}}) + "\n\n"
+	}
+	channels := []struct {
+		first, final map[string]any
+		label        string
+		split        int
+	}{
+		{map[string]any{"id": "0"}, map[string]any{"id": "0"}, "id ", 7},
+		{map[string]any{"index": 0, "id": "indexed"}, map[string]any{}, "position ", 12},
+		{map[string]any{"index": 1, "id": "linked"}, map[string]any{"id": "linked"}, "linked ", 13},
+		{map[string]any{"id": "other"}, map[string]any{"index": 2}, "other ", 15},
+	}
+	recorder := httptest.NewRecorder()
+	writer := newPrivacyResponseWriter(recorder, session)
+	writer.Header().Set("Content-Type", "text/event-stream")
+	for _, channel := range channels {
+		privacyOutputTestWrite(t, writer, chat(channel.first, channel.label+token[:channel.split], false), 11)
+	}
+	privacyOutputTestWrite(t, writer, chat(map[string]any{"index": 2, "id": "other"}, "", false), 11)
+	for _, channel := range channels {
+		privacyOutputTestWrite(t, writer, chat(channel.final, token[channel.split:], true), 11)
+	}
+	privacyOutputTestWrite(t, writer, "data: [DONE]\n\n", 11)
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	events := privacyOutputTestEvents(t, recorder.Body.String())
+	if len(events) != 2*len(channels)+1 {
+		t.Fatalf("events = %d, want %d", len(events), 2*len(channels)+1)
+	}
+	const path = "choices.0.delta.reasoning_details.0."
+	for index, channel := range channels {
+		final := events[index+len(channels)+1]
+		visible := events[index].Get(path+"text").String() + final.Get(path+"text").String()
+		if visible != channel.label+secret {
+			t.Fatalf("%s visible = %q", channel.label, visible)
+		}
+		signature, text, err := privacy.UnwrapReasoningSignature(final.Get(path+"signature").String(), visible)
+		if err != nil || signature != "signature" || text != channel.label+token {
+			t.Fatalf("%s replay = (%q, %q, %v)", channel.label, signature, text, err)
+		}
+	}
+}
+
+/**
+ * @brief 验证签名流在回放编辑数或还原字节数超限的帧上拒绝输出。
+ * @param t 测试句柄。
+ */
+func TestPrivacyResponseWriterSignedReasoningBudget(t *testing.T) {
+	session := privacyOutputTestSession(t)
+	large := "private:" + strings.Repeat("x", 1<<20)
+	largeToken := privacyOutputTestToken(t, session, large)
+	smallToken := privacyOutputTestToken(t, session, "small private value")
+	for _, test := range []struct {
+		budget string
+		text   string
+	}{
+		{"bytes", strings.Repeat(largeToken, privacy.MaxReasoningTextBytes/len(large)+1)},
+		{"edits", strings.Repeat(smallToken, privacy.MaxReasoningEdits+1)},
+	} {
+		for _, protocol := range []struct {
+			name string
+			body string
+		}{
+			{"claude", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":%s}}`},
+			{"gemini", `{"candidates":[{"content":{"parts":[{"thought":true,"text":%s,"thoughtSignature":"YQ=="}]}}]}`},
+		} {
+			t.Run(test.budget+"/"+protocol.name, func(t *testing.T) {
+				recorder := httptest.NewRecorder()
+				writer := newPrivacyResponseWriter(recorder, session)
+				writer.Header().Set("Content-Type", "text/event-stream")
+				body := strings.Replace(protocol.body, "%s", privacyOutputTestJSON(t, test.text), 1)
+				_, err := writer.Write([]byte("data: " + body + "\n\n"))
+				if !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+					t.Fatalf("Write error = %v, want %v", err, privacy.ErrInvalidReasoningSignature)
+				}
+				if recorder.Body.Len() != 0 {
+					t.Fatalf("wrote %d bytes from over-limit frame", recorder.Body.Len())
+				}
+			})
+		}
+	}
+
+	half := privacyOutputTestJSON(t, strings.Repeat(largeToken, privacy.MaxReasoningTextBytes/(2*len(large))+1))
+	part := `{"thought":true,"text":` + half + `,"thoughtSignature":"YQ=="}`
+	gemini := `{"candidates":[{"content":{"parts":[` + part + "," + part + `]}}]}`
+	chunk := `{"candidates":[{"content":{"parts":[` + part + `]}}]}`
+	openRouter := `{"choices":[{"delta":{"reasoning_details":[` +
+		`{"type":"reasoning.text","index":0,"text":` + half + `},` +
+		`{"type":"reasoning.text","index":1,"text":` + half + `}]}}]}`
+	for _, test := range []struct {
+		name, body string
+		streaming  bool
+	}{
+		{"aggregate/gemini_stream", gemini, true},
+		{"aggregate/gemini_json", gemini, false},
+		{"aggregate/vertex_array", "[" + chunk + "," + chunk + "]", false},
+		{"aggregate/openrouter", openRouter, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writer := newPrivacyResponseWriter(recorder, session)
+			body := test.body
+			if test.streaming {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				body = "data: " + body + "\n\n"
+			} else {
+				writer.Header().Set("Content-Type", "application/json")
+			}
+			_, err := writer.Write([]byte(body))
+			if !test.streaming && err == nil {
+				err = writer.Finish()
+			}
+			if !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+				t.Fatalf("output error = %v, want %v", err, privacy.ErrInvalidReasoningSignature)
+			}
+			if recorder.Body.Len() != 0 {
+				t.Fatalf("wrote %d bytes from over-limit frame", recorder.Body.Len())
 			}
 		})
 	}
@@ -565,6 +1000,10 @@ func TestPrivacyResponseWriterExplicitHeaderFlush(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证响应统计包含可见思考里的未还原占位符，跳过协议标识。
+ * @param t 测试句柄。
+ */
 func TestPrivacyResponseWriterUnrestoredJSON(t *testing.T) {
 	session := privacyOutputTestSession(t)
 	known := privacyOutputTestToken(t, session, "owner@example.com")
@@ -592,8 +1031,8 @@ func TestPrivacyResponseWriterUnrestoredJSON(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := writer.observer.UnrestoredTokens(); got != 5 {
-		t.Fatalf("UnrestoredTokens = %d, want 5", got)
+	if got := writer.observer.UnrestoredTokens(); got != 6 {
+		t.Fatalf("UnrestoredTokens = %d, want 6", got)
 	}
 	result := gjson.ParseBytes(recorder.Body.Bytes())
 	if got := result.Get("content.0.text").String(); got != "owner@example.com "+unknown+" "+unknown+" "+damaged+" "+truncated {

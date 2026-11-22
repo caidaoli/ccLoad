@@ -654,18 +654,22 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	var reqCtx *proxyRequestContext
 	privacySession := s.privacySession(c)
+	beforePrivacy := all
+	all, err = maskPrivacyBody(privacySession, beforePrivacy, c.Request.Header.Get("Content-Type"))
+	if err == nil && clientProtocol == protocol.Anthropic && !bytes.Equal(all, beforePrivacy) {
+		all, err = refreshAnthropicCallerCCH(all, beforePrivacy, classifyAnthropicCallerWire(beforePrivacy, c.Request.Header))
+	}
+	if err == nil && len(nativeRequestBody) > 0 {
+		nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
+	}
+	// originalReasoningBody only feeds local turn classification and never
+	// leaves the process, so it is not masked.
+	if err != nil {
+		s.privacyStats.blocked.Add(1)
+		writeLocalProxyError(c, http.StatusBadRequest, errPrivacyMasking.Error())
+		return
+	}
 	if privacySession != nil {
-		all, err = maskPrivacyBody(privacySession, all, c.Request.Header.Get("Content-Type"))
-		if err == nil && len(nativeRequestBody) > 0 {
-			nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
-		}
-		// originalReasoningBody only feeds local turn classification and never
-		// leaves the process, so it is not masked.
-		if err != nil {
-			s.privacyStats.blocked.Add(1)
-			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
-			return
-		}
 		output := newPrivacyResponseWriter(c.Writer, privacySession)
 		c.Writer = &privacyGinWriter{ResponseWriter: c.Writer, output: output}
 		defer func() {
@@ -804,11 +808,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		reqCtx.routingSession = routingSession
 	}
 	reqCtx.responsesReplayBody = executionSessionRequestBody
-	if privacySession != nil && len(reqCtx.responsesReplayBody) > 0 {
+	if len(reqCtx.responsesReplayBody) > 0 {
 		reqCtx.responsesReplayBody, err = privacySession.MaskJSON(reqCtx.responsesReplayBody)
 		if err != nil {
 			s.privacyStats.blocked.Add(1)
-			writeLocalProxyError(c, http.StatusBadRequest, "privacy masking failed; request was not sent")
+			writeLocalProxyError(c, http.StatusBadRequest, errPrivacyMasking.Error())
 			return
 		}
 	}

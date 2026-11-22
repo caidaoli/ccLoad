@@ -3,6 +3,7 @@ package privacy_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -1031,63 +1032,254 @@ func TestCustomRulesIndependentAndRemovedRulesDoNotRemask(t *testing.T) {
 	}
 }
 
-func TestSignedReasoningPassesThroughUnchanged(t *testing.T) {
-	for _, protocol := range []string{"anthropic", "gemini", "gemini-snake"} {
-		t.Run(protocol, func(t *testing.T) {
-			e := privacy.NewEngine()
-			s := newSession(t, e, "owner", enabled())
-			secret := "S3cr3tSignedValue123"
-			masked, err := s.MaskText("password=" + secret)
-			if err != nil {
-				t.Fatal(err)
-			}
-			token := strings.TrimPrefix(masked, "password=")
-			reasoning := "remember " + token + " and 我的密码是 FreshSecret987"
-			var wire []byte
-			if protocol == "anthropic" {
-				wire, err = json.Marshal(map[string]any{"content": []any{
-					map[string]any{"type": "thinking", "thinking": reasoning, "signature": "vendor-signature"},
-					map[string]any{"type": "text", "text": token},
-				}})
+/**
+ * @brief 客户端可读签名思考，重放仅撤销展示过的替换且不依赖字典
+ * @param t 测试上下文
+ */
+func TestSignedReasoningRoundTrip(t *testing.T) {
+	cfg := enabled()
+	cfg.Words = []string{"sample-value"}
+	s := newSession(t, privacy.NewEngine(), "owner", cfg)
+	token, err := s.MaskText("sample-value")
+	if err != nil || token == "sample-value" {
+		t.Fatalf("MaskText = %q, %v", token, err)
+	}
+	rawText := "前缀 sample-value / " + token + " / " + token
+	visible := strings.ReplaceAll(rawText, token, "sample-value")
+	for _, tc := range []struct{ kind, text, sig string }{
+		{"thinking", "thinking", "signature"},
+		{"reasoning.text", "text", "signature"},
+		{"reasoning.summary", "summary", "signature"},
+		{"", "text", "thoughtSignature"},
+		{"", "text", "thought_signature"},
+	} {
+		t.Run(tc.kind+tc.sig, func(t *testing.T) {
+			const vendorSig = "dmVuZG9y"
+			block := map[string]any{tc.text: rawText, tc.sig: vendorSig}
+			if tc.kind == "" {
+				block["thought"] = true
 			} else {
-				key := "thoughtSignature"
-				if protocol == "gemini-snake" {
-					key = "thought_signature"
+				block["type"] = tc.kind
+			}
+			wire, err := json.Marshal(block)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// JSON escapes are valid even inside a placeholder or signature.
+			escaped := strings.ReplaceAll(string(wire), "{{", `\u007b{`)
+			local, err := s.RestoreJSON([]byte(escaped))
+			if err != nil || gjson.GetBytes(local, tc.text).String() != visible {
+				t.Fatalf("visible reasoning = %s, %v", local, err)
+			}
+			sig := gjson.GetBytes(local, tc.sig).String()
+			if sig == vendorSig {
+				t.Fatal("missing replay information")
+			}
+			if tc.kind == "" {
+				// Vertex can return an array of complete Gemini response envelopes.
+				response := fmt.Appendf(nil, `[{"candidates":[{"content":{"role":"model","parts":[%s]}}]}]`, escaped)
+				restored, err := s.RestoreJSON(response)
+				part := gjson.GetBytes(restored, "0.candidates.0.content.parts.0")
+				if err != nil || part.Raw != string(local) {
+					t.Fatalf("Gemini array did not preserve signed replay: %s, %v", restored, err)
 				}
-				wire, err = json.Marshal(map[string]any{"contents": []any{map[string]any{"role": "model", "parts": []any{
-					map[string]any{"text": reasoning, "thought": true, key: "vendor-signature"},
-					map[string]any{"text": token},
-				}}}})
+				var disabled *privacy.Session
+				replayed, err := disabled.MaskJSON(fmt.Appendf(nil, `{"contents":[{"role":"model","parts":[%s]}]}`, part.Raw))
+				part = gjson.GetBytes(replayed, "contents.0.parts.0")
+				if err != nil || part.Get(tc.text).Str != rawText || part.Get(tc.sig).Str != vendorSig {
+					t.Fatalf("Gemini array reasoning did not replay: %s, %v", replayed, err)
+				}
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			// The vendor signed reasoning it produced from masked input. The
-			// client must replay exactly that, so the reasoning keeps its
-			// placeholders while the answer next to it is restored.
-			local, err := s.RestoreJSON(wire)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := strings.Replace(string(wire), `"text":"`+token+`"`, `"text":"`+secret+`"`, 1)
-			if string(local) != want {
-				t.Fatalf("restore = %s, want %s", local, want)
-			}
-			// Replays reach the vendor byte-for-byte, even after a restart lost
-			// the dictionary or masking was switched off.
-			cfg := enabled()
-			cfg.Enabled = false
+			local = []byte(strings.Replace(string(local), sig, fmt.Sprintf(`\u%04x%s`, sig[0], sig[1:]), 1))
+			off := cfg
+			off.Enabled = false
 			for name, replayer := range map[string]*privacy.Session{
-				"same":      s,
-				"restarted": newSession(t, privacy.NewEngine(), "owner", enabled()),
-				"disabled":  newSession(t, e, "owner", cfg),
+				"same": s, "restarted": newSession(t, privacy.NewEngine(), "owner", cfg),
+				"disabled": newSession(t, privacy.NewEngine(), "owner", off), "absent": nil,
 			} {
-				out, err := replayer.MaskJSON(wire)
+				out, err := replayer.MaskJSON(local)
+				if err != nil || gjson.GetBytes(out, tc.text).String() != rawText || gjson.GetBytes(out, tc.sig).String() != vendorSig {
+					t.Fatalf("%s replay = %s, %v", name, out, err)
+				}
+				out, err = replayer.MaskJSON(wire)
 				if err != nil || string(out) != string(wire) {
-					t.Fatalf("%s replay changed signed reasoning: %s %v", name, out, err)
+					t.Fatalf("%s changed original signed block: %s, %v", name, out, err)
 				}
 			}
 		})
+	}
+}
+
+/**
+ * @brief 验证 Claude 转 Chat 后从 text 展示和回放签名思考
+ * @param t 测试上下文
+ */
+func TestSignedChatThinkingTextRoundTrip(t *testing.T) {
+	cfg := enabled()
+	cfg.Words = []string{"private thought sample"}
+	session := newSession(t, privacy.NewEngine(), "chat", cfg)
+	const text = "想 private thought sample"
+	masked, err := session.MaskText(text)
+	if err != nil || masked == text {
+		t.Fatalf("MaskText did not replace the value: %v", err)
+	}
+	wire := fmt.Appendf(nil, `{"choices":[{"message":{"reasoning":[{"type":"thinking","text":%q,"signature":"cHJvdmlkZXI="}]}}]}`, masked)
+	visible, err := session.RestoreJSON(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thinking := gjson.GetBytes(visible, "choices.0.message.reasoning.0")
+	if thinking.Get("text").Str != text || thinking.Get("signature").Str == "cHJvdmlkZXI=" {
+		t.Fatalf("visible Chat reasoning = %s", thinking.Raw)
+	}
+	request := []byte(`{"messages":[{"role":"assistant","reasoning":[` + thinking.Raw + `]}]}`)
+	var disabled *privacy.Session
+	replay, err := disabled.MaskJSON(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thinking = gjson.GetBytes(replay, "messages.0.reasoning.0")
+	if thinking.Get("text").Str != masked || thinking.Get("signature").Str != "cHJvdmlkZXI=" {
+		t.Fatalf("upstream Chat reasoning = %s", thinking.Raw)
+	}
+}
+
+/**
+ * @brief 在同一签名下还原多段 Responses 正文，回放不依赖对象键顺序或字典
+ * @param t 测试上下文
+ */
+func TestSignedResponsesReasoningRoundTrip(t *testing.T) {
+	const secret, vendor = "private thought sample", "cHJvdmlkZXI="
+	cfg := enabled()
+	cfg.Words = []string{secret}
+	session := newSession(t, privacy.NewEngine(), "responses", cfg)
+	token, err := session.MaskText(secret)
+	if err != nil || token == secret {
+		t.Fatalf("MaskText did not replace the value: %v", err)
+	}
+	first, second, summary := "想 "+secret+" / "+token, token+" 继续 "+token, "摘要 "+token
+	wire := fmt.Appendf(nil, `{"output":[{"id":"r1","type":"reasoning","content":[{"type":"reasoning_text","text":%q},{"type":"reasoning_text","text":%q}],"signature":%q,"encrypted_content":%q,"summary":[{"type":"summary_text","text":%q},{"type":"summary_text","text":"unchanged"}],"note":%q}]}`, first, second, vendor, token, summary, token)
+	visible, err := session.RestoreJSON(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := gjson.GetBytes(visible, "output.0")
+	fields := map[string]string{"content.0.text": "想 " + secret + " / " + secret,
+		"content.1.text": secret + " 继续 " + secret, "summary.0.text": "摘要 " + secret,
+		"summary.1.text": "unchanged", "encrypted_content": token, "note": secret}
+	for path, want := range fields {
+		if got := item.Get(path).Str; got != want {
+			t.Fatalf("display %s = %q, want %q", path, got, want)
+		}
+	}
+	sig := item.Get("signature").Str
+	if sig == vendor {
+		t.Fatal("signature did not carry replay information")
+	}
+	request := fmt.Appendf(nil, `{"input":[{"summary":[{"text":%q,"type":"summary_text"},{"text":"unchanged","type":"summary_text"}],"type":"reasoning","note":%q,"signature":%q,"content":[{"text":%q,"type":"reasoning_text"},{"text":%q,"type":"reasoning_text"}],"encrypted_content":%q,"id":"r1"}]}`,
+		fields["summary.0.text"], secret, sig, fields["content.0.text"], fields["content.1.text"], token)
+	restarted := newSession(t, privacy.NewEngine(), "responses", cfg)
+	cfg.Enabled = false
+	for name, replayer := range map[string]*privacy.Session{
+		"restarted": restarted, "disabled": newSession(t, privacy.NewEngine(), "responses", cfg), "absent": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			replay, err := replayer.MaskJSON(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := gjson.GetBytes(replay, "input.0")
+			fields := map[string]string{"content.0.text": first, "content.1.text": second,
+				"summary.0.text": summary, "summary.1.text": "unchanged", "signature": vendor, "encrypted_content": token}
+			for path, want := range fields {
+				if got := item.Get(path).Str; got != want {
+					t.Fatalf("replay %s = %q, want %q", path, got, want)
+				}
+			}
+			if note := item.Get("note").Str; (note != secret) != (name == "restarted") {
+				t.Fatalf("ordinary sibling did not follow privacy policy: %q", note)
+			}
+		})
+	}
+	missing := fmt.Appendf(nil, `{"input":[{"type":"reasoning","signature":%q,"content":[{"text":%q},{"text":%q}]}]}`, sig, fields["content.0.text"], fields["content.1.text"])
+	if _, err := restarted.MaskJSON(missing); !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+		t.Fatalf("replay without a required field = %v", err)
+	}
+
+	// The HTTP execution session stores the Responses output array by itself.
+	history, err := session.RestoreJSON([]byte(gjson.GetBytes(wire, "output").Raw))
+	if err != nil || gjson.GetBytes(history, "0").Raw != item.Raw {
+		t.Fatalf("restored history array changed the reasoning item: %s, %v", history, err)
+	}
+	var disabled *privacy.Session
+	replayed, err := disabled.MaskJSON(fmt.Appendf(nil, `{"input":%s}`, history))
+	if got := gjson.GetBytes(replayed, "input.0"); err != nil || got.Get("signature").Str != vendor ||
+		got.Get("content.0.text").Str != first || got.Get("content.1.text").Str != second || got.Get("summary.0.text").Str != summary {
+		t.Fatalf("replayed history array changed signed reasoning: %s, %v", replayed, err)
+	}
+}
+
+/**
+ * @brief 加密推理的载体保持不透明，同对象的普通文字仍参与脱敏和还原
+ * @param t 测试上下文
+ */
+func TestEncryptedReasoningPreservesCarrierAndScansSiblings(t *testing.T) {
+	const secret = "private thought sample"
+	cfg := enabled()
+	cfg.Words = []string{secret}
+	session := newSession(t, privacy.NewEngine(), "encrypted", cfg)
+	token, err := session.MaskText(secret)
+	if err != nil || token == secret {
+		t.Fatalf("MaskText did not replace the value: %v", err)
+	}
+	request := fmt.Appendf(nil, `{"metadata":{"type":"reasoning.encrypted","text":%q,"signature":%q,"nested":{"value":%q},"content":[{"type":"thinking","text":%q,"signature":%q}]},"messages":[{"reasoning_details":[{"type":"reasoning.encrypted","data":%q,"encrypted_content":%q,"text":%q}]}]}`,
+		secret, token, secret, secret, token, token, token, secret)
+	masked, err := session.MaskJSON(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"metadata.text", "metadata.nested.value", "metadata.signature", "metadata.content.0.text", "metadata.content.0.signature",
+		"messages.0.reasoning_details.0.data", "messages.0.reasoning_details.0.encrypted_content", "messages.0.reasoning_details.0.text"} {
+		if got := gjson.GetBytes(masked, path).Str; got != token {
+			t.Fatalf("masked %s = %q, want %q", path, got, token)
+		}
+	}
+	restored, err := session.RestoreJSON(masked)
+	if err != nil || string(restored) != string(request) {
+		t.Fatalf("restored encrypted reasoning = %s, %v", restored, err)
+	}
+}
+
+/**
+ * @brief 限制同一签名覆盖的替换数量及明文扩展，超限时拒绝生成封套
+ * @param t 测试上下文
+ */
+func TestSignedReasoningRestoreRejectsCapacityOverflow(t *testing.T) {
+	session := newSession(t, privacy.NewEngine(), "capacity", enabled())
+	masked, err := session.MaskText("password=private-reasoning-sample")
+	token := strings.TrimPrefix(masked, "password=")
+	if err != nil || !strings.HasPrefix(token, "{{CCLOAD_") {
+		t.Fatalf("MaskText did not produce a placeholder: %v", err)
+	}
+	first, second := strings.Repeat(token, privacy.MaxReasoningEdits/2), strings.Repeat(token, privacy.MaxReasoningEdits/2+1)
+	tooMany := fmt.Appendf(nil, `{"type":"reasoning","signature":"abcd","content":[{"text":%q}],"summary":[{"text":%q}]}`, first, second)
+	if _, err := session.RestoreJSON(tooMany); !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+		t.Fatalf("restoring too many edits = %v", err)
+	}
+	const secretBytes = 64 << 10
+	longSecret, err := session.MaskJSON(fmt.Appendf(nil, `{"arguments":{"password":%q}}`, strings.Repeat("q", secretBytes)))
+	token = gjson.GetBytes(longSecret, "arguments.password").Str
+	if err != nil || !strings.HasPrefix(token, "{{CCLOAD_") {
+		t.Fatalf("MaskJSON did not produce a placeholder: %v", err)
+	}
+	tooLong := fmt.Appendf(nil, `{"type":"thinking","signature":"abcd","thinking":%q}`, strings.Repeat(token, (64<<20)/secretBytes+1))
+	if _, err := session.RestoreJSON(tooLong); !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+		t.Fatalf("restoring too much visible text = %v", err)
+	}
+	block := strings.Repeat(token, (32<<20)/secretBytes+1)
+	tooLong = fmt.Appendf(nil, `{"content":[{"type":"thinking","signature":"abcd","thinking":%q},{"type":"thinking","signature":"abcd","thinking":%q}]}`, block, block)
+	if _, err := session.RestoreJSON(tooLong); !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+		t.Fatalf("restoring too much visible text across blocks = %v", err)
 	}
 }
 
@@ -1411,5 +1603,127 @@ func TestEngineStatsReportsLiveDictionary(t *testing.T) {
 	privacy.SetClock(e, func() time.Time { return now.Add(25 * time.Hour) })
 	if scopes, entries, size := e.Stats(); scopes != 0 || entries != 0 || size != 0 {
 		t.Fatalf("expired Stats = %d %d %d", scopes, entries, size)
+	}
+}
+
+/**
+ * @brief 按字节还原签名文本，并保留厂商分片拼接与标准 base64 往返
+ * @param t 测试上下文
+ */
+func TestReasoningSignatureReplay(t *testing.T) {
+	const (
+		vendor  = "Y2xhdWRlIHNpZ25hdHVyZQ=="
+		first   = "{{CCLOAD_WORD_0123456789abcdef}}"
+		second  = "{{CCLOAD_PASSWORD_fedcba9876543210}}"
+		secret  = "凭据-abc"
+		visible = "想了 " + secret + " 再看 z。"
+	)
+	edits := []privacy.ReasoningEdit{
+		{Offset: len("想了 "), Length: len(secret), Placeholder: first},
+		{Offset: len("想了 " + secret + " 再看 "), Length: 1, Placeholder: second},
+	}
+	wrapped, err := privacy.WrapReasoningSignature(vendor[:7], edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped += vendor[7:]
+	decoded, err := base64.StdEncoding.DecodeString(wrapped)
+	if err != nil || strings.Contains(string(decoded), secret) {
+		t.Fatalf("invalid base64 or visible secret in capsule: %v", err)
+	}
+	gotSignature, gotText, err := privacy.UnwrapReasoningSignature(base64.StdEncoding.EncodeToString(decoded), visible)
+	if want := "想了 " + first + " 再看 " + second + "。"; err != nil || gotSignature != vendor || gotText != want {
+		t.Fatalf("unexpected replay: signature=%q, text=%q, err=%v", gotSignature, gotText, err)
+	}
+	unchanged, err := privacy.WrapReasoningSignature(vendor, nil)
+	if err != nil || unchanged != vendor {
+		t.Fatalf("signature without edits changed: %q, %v", unchanged, err)
+	}
+	gotSignature, gotText, err = privacy.UnwrapReasoningSignature(vendor, visible)
+	if err != nil || gotSignature != vendor || gotText != visible {
+		t.Fatalf("native signed block changed: signature=%q, text=%q, err=%v", gotSignature, gotText, err)
+	}
+}
+
+/**
+ * @brief 跨签名块的占位符按原始分片重放，包括可见正文为空的续片
+ * @param t 测试上下文
+ */
+func TestReasoningSignatureReplaysPartialPlaceholders(t *testing.T) {
+	const token = "{{CCLOAD_WORD_0123456789abcdef}}"
+	for _, part := range []struct {
+		signature string
+		visible   string
+		text      string
+		edit      privacy.ReasoningEdit
+	}{
+		{"first", "想凭据", "想" + token[:9], privacy.ReasoningEdit{Offset: len("想"), Length: len("凭据"), Placeholder: token, TokenEnd: 9}},
+		{"middle", "", token[9:21], privacy.ReasoningEdit{Placeholder: token, TokenStart: 9, TokenEnd: 21}},
+		{"last", "结束", token[21:] + "结束", privacy.ReasoningEdit{Placeholder: token, TokenStart: 21, TokenEnd: len(token)}},
+		{"suffix", "先", "先" + token[21:], privacy.ReasoningEdit{Offset: len("先"), Placeholder: token, TokenStart: 21, TokenEnd: len(token)}},
+	} {
+		wrapped, err := privacy.WrapReasoningSignature(part.signature, []privacy.ReasoningEdit{part.edit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signature, text, err := privacy.UnwrapReasoningSignature(wrapped, part.visible)
+		if err != nil || signature != part.signature || text != part.text {
+			t.Fatalf("unexpected partial replay: signature=%q, text=%q, err=%v", signature, text, err)
+		}
+	}
+}
+
+/**
+ * @brief 封套损坏、包含越界编辑或试图替换进普通字符串时拒绝重放
+ * @param t 测试上下文
+ */
+func TestReasoningSignatureRejectsInvalidReplay(t *testing.T) {
+	const (
+		placeholder = "{{CCLOAD_WORD_0123456789abcdef}}"
+		token       = `"` + placeholder + `"`
+	)
+	wrapPayload := func(payload, signature string) string {
+		for len(payload)%3 != 0 {
+			payload += " "
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(payload))
+		return fmt.Sprintf("%s%08x%s%s", privacy.ReasoningSignaturePrefix, len(encoded), encoded, signature)
+	}
+	for name, signature := range map[string]string{
+		"truncated length":       privacy.ReasoningSignaturePrefix + "001",
+		"overlong patch":         privacy.ReasoningSignaturePrefix + "fffffffcAAAAabcd",
+		"invalid base64":         privacy.ReasoningSignaturePrefix + "00000004....abcd",
+		"missing vendor":         wrapPayload(`[{"offset":0,"length":3,"placeholder":`+token+`}]`, ""),
+		"trailing data":          wrapPayload(`[{"offset":0,"length":3,"placeholder":`+token+`}][]`, "abcd"),
+		"unknown field":          wrapPayload(`[{"offset":0,"length":3,"placeholder":`+token+`,"text":"extra"}]`, "abcd"),
+		"no edits":               wrapPayload(`[]`, "abcd"),
+		"out of range":           wrapPayload(`[{"offset":0,"length":5,"placeholder":`+token+`}]`, "abcd"),
+		"negative":               wrapPayload(`[{"offset":-1,"length":1,"placeholder":`+token+`}]`, "abcd"),
+		"token prefix":           wrapPayload(`[{"offset":0,"length":3,"placeholder":"x{{CCLOAD_WORD_0123456789abcdef}}"}]`, "abcd"),
+		"overlap":                wrapPayload(`[{"offset":0,"length":4,"placeholder":`+token+`},{"offset":3,"length":1,"placeholder":`+token+`}]`, "abcd"),
+		"split rune":             wrapPayload(`[{"offset":1,"length":3,"placeholder":`+token+`}]`, "abcd"),
+		"insert within rune":     wrapPayload(`[{"offset":1,"length":0,"placeholder":`+token+`,"token_end":2}]`, "abcd"),
+		"insert full token":      wrapPayload(`[{"offset":4,"length":0,"placeholder":`+token+`}]`, "abcd"),
+		"explicit full token":    wrapPayload(fmt.Sprintf(`[{"offset":4,"length":0,"placeholder":%s,"token_end":%d}]`, token, len(placeholder)), "abcd"),
+		"negative token start":   wrapPayload(`[{"offset":0,"length":3,"placeholder":`+token+`,"token_start":-1,"token_end":2}]`, "abcd"),
+		"empty token segment":    wrapPayload(`[{"offset":0,"length":3,"placeholder":`+token+`,"token_start":5,"token_end":5}]`, "abcd"),
+		"token end out of range": wrapPayload(fmt.Sprintf(`[{"offset":0,"length":3,"placeholder":%s,"token_end":%d}]`, token, len(placeholder)+1), "abcd"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			gotSignature, gotText, err := privacy.UnwrapReasoningSignature(signature, "想a")
+			if !errors.Is(err, privacy.ErrInvalidReasoningSignature) || gotSignature != "" || gotText != "" {
+				t.Fatalf("malformed replay accepted: signature=%q, text=%q, err=%v", gotSignature, gotText, err)
+			}
+		})
+	}
+	if _, err := privacy.WrapReasoningSignature("abcd", []privacy.ReasoningEdit{{
+		Offset: (64 << 20) - 1, Length: 1, Placeholder: "{{CCLOAD_WORD_0123456789abcdef}}",
+	}}); !errors.Is(err, privacy.ErrInvalidReasoningSignature) {
+		t.Fatalf("oversized reconstructed text accepted: %v", err)
+	}
+	if _, err := privacy.WrapReasoningSignature("abcd", []privacy.ReasoningEdit{{
+		Offset: (64 << 20) - 1, Placeholder: "{{CCLOAD_WORD_0123456789abcdef}}", TokenEnd: 1,
+	}}); err != nil {
+		t.Fatalf("partial replay within text limit rejected: %v", err)
 	}
 }

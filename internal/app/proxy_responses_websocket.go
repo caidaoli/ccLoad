@@ -729,18 +729,16 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 
 	privacySession := s.privacySession(c)
-	if privacySession != nil {
-		requestBody, err = privacySession.MaskJSON(requestBody)
-		if err == nil {
-			nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
-		}
-		if err == nil {
-			clientPayload, err = privacySession.MaskJSON(clientPayload)
-		}
-		if err != nil {
-			s.privacyStats.blocked.Add(1)
-			return responsesWebsocketTurnResult{}, errors.New("privacy masking failed; request was not sent")
-		}
+	requestBody, err = privacySession.MaskJSON(requestBody)
+	if err == nil {
+		nativeRequestBody, err = privacySession.MaskJSON(nativeRequestBody)
+	}
+	if err == nil {
+		clientPayload, err = privacySession.MaskJSON(clientPayload)
+	}
+	if err != nil {
+		s.privacyStats.blocked.Add(1)
+		return responsesWebsocketTurnResult{}, errPrivacyMasking
 	}
 	ctx = withPrivacySession(ctx, privacySession)
 	startTime := time.Now()
