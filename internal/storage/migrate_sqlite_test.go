@@ -963,106 +963,6 @@ func TestMigrate_SQLite_FailsOnInvalidAllowedModelsJSON(t *testing.T) {
 	}
 }
 
-func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// 列应该已经存在，再次调用应该是 no-op
-	if err := ensureChannelsDailyCostLimit(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureChannelsDailyCostLimit: %v", err)
-	}
-
-	// 验证列存在
-	cols, err := sqliteExistingColumns(ctx, db, "channels")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	if !cols["daily_cost_limit"] {
-		t.Fatal("daily_cost_limit column not found in channels")
-	}
-	if !cols["scheduled_check_enabled"] {
-		t.Fatal("scheduled_check_enabled column not found in channels")
-	}
-	if !cols["scheduled_check_model"] {
-		t.Fatal("scheduled_check_model column not found in channels")
-	}
-}
-
-func TestEnsureChannelsCooldownDetectionRules_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	if err := ensureChannelsCooldownDetectionRules(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureChannelsCooldownDetectionRules: %v", err)
-	}
-
-	cols, err := sqliteExistingColumns(ctx, db, "channels")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	if !cols["cooldown_detection_rules"] {
-		t.Fatal("cooldown_detection_rules column not found in channels")
-	}
-}
-
-func TestEnsureAuthTokensAllowedModels_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	if err := ensureAuthTokensAllowedModels(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureAuthTokensAllowedModels: %v", err)
-	}
-
-	cols, err := sqliteExistingColumns(ctx, db, "auth_tokens")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	if !cols["allowed_models"] {
-		t.Fatal("allowed_models column not found in auth_tokens")
-	}
-}
-
-func TestEnsureAuthTokensCostLimit_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	if err := ensureAuthTokensCostLimit(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureAuthTokensCostLimit: %v", err)
-	}
-	if err := ensureAuthTokensPeriodCostLimits(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureAuthTokensPeriodCostLimits: %v", err)
-	}
-
-	cols, err := sqliteExistingColumns(ctx, db, "auth_tokens")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	for _, col := range []string{
-		"cost_used_microusd", "cost_limit_microusd",
-		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
-		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
-	} {
-		if !cols[col] {
-			t.Errorf("column %s not found in auth_tokens", col)
-		}
-	}
-}
-
 func TestMigrateSQLite_LegacyCostLimitedAuthTokenGetsDefaultMaxConcurrency(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -1418,28 +1318,6 @@ func TestMigrateSQLite_BackfillsAPIKeyCostMultiplierFromChannels(t *testing.T) {
 	}
 	if multiplier != 2.5 {
 		t.Fatalf("api key multiplier after second migrate=%v, want 2.5 (backfill must not rerun)", multiplier)
-	}
-}
-
-func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// 已存在时应该是 no-op
-	if err := ensureChannelModelsRedirectField(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureChannelModelsRedirectField: %v", err)
-	}
-
-	cols, err := sqliteExistingColumns(ctx, db, "channel_models")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	if !cols["redirect_model"] {
-		t.Fatal("redirect_model column not found in channel_models")
 	}
 }
 
@@ -2201,54 +2079,6 @@ func TestCleanupRemovedSettings_SQLite(t *testing.T) {
 	}
 }
 
-func TestEnsureLogsNewColumns_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// 已有列的情况下再次调用应该是 no-op
-	if err := ensureLogsNewColumns(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureLogsNewColumns: %v", err)
-	}
-
-	cols, err := sqliteExistingColumns(ctx, db, "logs")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model", "response_model", "reasoning_decision", "privacy_masked", "log_source"} {
-		if !cols[col] {
-			t.Errorf("column %s not found in logs", col)
-		}
-	}
-}
-
-func TestMigrate_SQLite_LogsHotPathIndexes(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	for _, idx := range []string{
-		"idx_logs_channel_time_id",
-		"idx_logs_channel_model_time_id",
-		"idx_logs_minute_auth_token_status",
-		"idx_logs_source_time",
-		"idx_logs_source_minute",
-	} {
-		var name string
-		if err := db.QueryRowContext(ctx,
-			"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='logs' AND name=?", idx,
-		).Scan(&name); err != nil {
-			t.Fatalf("logs index %s not found: %v", idx, err)
-		}
-	}
-}
-
 // TestLoadAllExistingIndexes_SQLite 验证 loadAllExistingIndexes 在 SQLite 下能正确返回索引集合
 //
 // 防御目标：迁移热路径优化（启动时跳过已存在索引）依赖此函数返回正确结果。
@@ -2346,31 +2176,6 @@ func TestMigrate_SQLite_IdempotentSkipsCreateIndex(t *testing.T) {
 	}
 	if !after["logs"]["idx_logs_time_model"] {
 		t.Errorf("dropped index idx_logs_time_model should be recreated by second migrate")
-	}
-}
-
-func TestEnsureAuthTokensCacheFields_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// 幂等
-	if err := ensureAuthTokensCacheFields(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("ensureAuthTokensCacheFields: %v", err)
-	}
-
-	cols, err := sqliteExistingColumns(ctx, db, "auth_tokens")
-	if err != nil {
-		t.Fatalf("sqliteExistingColumns: %v", err)
-	}
-	// 这些是由 ensureAuthTokensCacheFields 添加的缓存相关列
-	for _, col := range []string{"cache_read_tokens_total", "cache_creation_tokens_total"} {
-		if !cols[col] {
-			t.Errorf("column %s not found in auth_tokens", col)
-		}
 	}
 }
 

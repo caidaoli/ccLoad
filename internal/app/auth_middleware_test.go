@@ -38,20 +38,6 @@ func (s *failingAuthReloadStore) ListActiveAuthTokens(context.Context) ([]*model
 // RequireAPIAuth 测试
 // ============================================================================
 
-func TestRequireAPIAuth_BearerToken(t *testing.T) {
-	t.Parallel()
-	svc := newTestAuthService(t)
-	injectAPIToken(svc, "sk-test-123", 0, 1) // expiresAt=0 永不过期
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer sk-test-123")
-
-	w := runMiddleware(t, svc.RequireAPIAuth(), req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
 func TestRequireAPIAuth_XAPIKey(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)

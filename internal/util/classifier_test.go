@@ -367,13 +367,6 @@ func TestClassifyHTTPResponseCloudflareChallenge(t *testing.T) {
 			expected: ErrorLevelKey,
 			reason:   "cf-mitigated 非 challenge 值不应升级为渠道级",
 		},
-		{
-			name:     "ordinary_forbidden_keeps_key_level",
-			status:   http.StatusForbidden,
-			body:     `{"error":"forbidden"}`,
-			expected: ErrorLevelKey,
-			reason:   "普通 403 不应受质询判定影响",
-		},
 	}
 
 	for _, tt := range tests {

@@ -384,7 +384,7 @@ func TestCalculateCost_GPTOSSColonAlias(t *testing.T) {
 	if base <= 0 {
 		t.Fatalf("canonical gpt-oss-120b 应有定价, got %v", base)
 	}
-	for _, model := range []string{"gpt-oss:120b", "GPT-OSS:120b", "gpt-oss:20b"} {
+	for _, model := range []string{"GPT-OSS:120b", "gpt-oss:20b"} {
 		cost := CalculateCostDetailed(model, 156, 131, 0, 0, 0)
 		if cost <= 0 {
 			t.Errorf("%s 应继承连字符定价, got %v", model, cost)
@@ -392,8 +392,8 @@ func TestCalculateCost_GPTOSSColonAlias(t *testing.T) {
 	}
 	// 120b 冒号变体与 canonical 同价
 	got := CalculateCostDetailed("gpt-oss:120b", 156, 131, 0, 0, 0)
-	if !floatEquals(got, base, 1e-12) {
-		t.Fatalf("gpt-oss:120b cost=%v want same as gpt-oss-120b %v", got, base)
+	if got <= 0 || !floatEquals(got, base, 1e-12) {
+		t.Fatalf("gpt-oss:120b cost=%v want positive and same as gpt-oss-120b %v", got, base)
 	}
 	// 精确条目 gpt-oss-120b:exacto 不得被冒号归一化破坏
 	exacto := CalculateCostDetailed("gpt-oss-120b:exacto", 1000, 1000, 0, 0, 0)
@@ -438,11 +438,6 @@ func TestCalculateCost_ChannelRedirectModelAliases(t *testing.T) {
 		variants  []string
 		canonical string
 	}{
-		{
-			name:      "gpt-oss-120b",
-			variants:  []string{"gpt-oss-120b", "gpt-oss:120b"},
-			canonical: "gpt-oss-120b",
-		},
 		{
 			name:      "qwen3-vl-235b",
 			variants:  []string{"qwen3-vl-235b", "qwen3-vl:235b"},

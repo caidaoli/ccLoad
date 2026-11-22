@@ -7,7 +7,6 @@ const {
   collectCustomRulesForSubmit,
   resetCustomRulesState,
   cloneRules,
-  getState,
   MAX_RULES
 } = mod;
 
@@ -22,13 +21,6 @@ test('cloneRules 深拷贝并规范化字段', () => {
   // 修改副本不影响源
   copy.headers[0].name = 'Y-Bar';
   assert.equal(rules.headers[0].name, 'X-Foo');
-});
-
-test('resetCustomRulesState 接受 null 重置为空', () => {
-  resetCustomRulesState({ headers: [{ action: 'override', name: 'X', value: 'v' }], body: [] });
-  assert.equal(getState().headers.length, 1);
-  resetCustomRulesState(null);
-  assert.deepEqual(getState(), { headers: [], body: [] });
 });
 
 test('validateRulesLocally 接受合法规则', () => {
@@ -103,7 +95,11 @@ test('validateRulesLocally 空输入不报错', () => {
   assert.deepEqual(validateRulesLocally({}), []);
 });
 
-test('collectCustomRulesForSubmit 返回 null 当规则全为空', () => {
+test('从有规则的渠道切到无规则渠道时，提交规则恢复为 null', () => {
+  const rules = { headers: [{ action: 'override', name: 'X-Foo', value: 'v' }] };
+  resetCustomRulesState(rules);
+  assert.deepEqual(collectCustomRulesForSubmit(), rules);
+
   resetCustomRulesState(null);
   assert.equal(collectCustomRulesForSubmit(), null);
 });

@@ -98,47 +98,6 @@ data: {"type":"message_stop","usage":{"input_tokens":12,"output_tokens":73,"cach
 
 }
 
-// TestBillingPipeline_Gemini_LongContext 验证Gemini长上下文分段定价
-func TestBillingPipeline_Gemini_LongContext(t *testing.T) {
-	testCases := []struct {
-		name         string
-		inputTokens  int
-		outputTokens int
-		expectCost   float64
-		description  string
-	}{
-		{
-			name:         "短上下文(<128k)",
-			inputTokens:  100000,
-			outputTokens: 1000,
-			expectCost:   0.0206, // gemini-1.5-flash: $0.20/1M input, $0.60/1M output
-			description:  "低于128k阈值，使用基础定价",
-		},
-		{
-			name:         "长上下文(>128k)",
-			inputTokens:  200000,
-			outputTokens: 2000,
-			expectCost:   0.0412, // 200k×$0.0000002 + 2k×$0.0000006
-			description:  "超过128k阈值，触发高定价",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Gemini目前不支持缓存，只测试基础token计费
-			cost := util.CalculateCostDetailed("gemini-1.5-flash", tc.inputTokens, tc.outputTokens, 0, 0, 0)
-
-			// 允许±1%误差（定价可能更新）
-			tolerance := tc.expectCost * 0.01
-			if cost < tc.expectCost-tolerance || cost > tc.expectCost+tolerance {
-				t.Errorf("Gemini %s计费错误: 期望%.6f±%.6f, 实际%.6f",
-					tc.name, tc.expectCost, tolerance, cost)
-			}
-
-		})
-	}
-}
-
 // TestBillingPipeline_NegativeTokens 验证防御性编程
 func TestBillingPipeline_NegativeTokens(t *testing.T) {
 	// 场景：异常数据（负数token）

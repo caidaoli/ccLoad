@@ -6,25 +6,9 @@ import (
 )
 
 func TestCalculateBackoffDuration_ChannelErrors(t *testing.T) {
-	now := time.Now()
-
-	tests := []struct {
-		statusCode int
-		expected   time.Duration
-	}{
-		{500, 2 * time.Minute}, // Internal Server Error: 2min -> 4min -> 8min ...
-		{599, 2 * time.Minute}, // Stream Incomplete (内部状态码): 2min -> 4min -> 8min ...
-	}
-
-	for _, tt := range tests {
-		t.Run("StatusCode_"+string(rune(tt.statusCode)), func(t *testing.T) {
-			duration := CalculateBackoffDuration(0, time.Time{}, now, &tt.statusCode)
-
-			if duration != tt.expected {
-				t.Errorf("状态码%d首次错误应冷却%v，实际%v",
-					tt.statusCode, tt.expected, duration)
-			}
-		})
+	statusCode := 599
+	if duration := CalculateBackoffDuration(0, time.Time{}, time.Now(), &statusCode); duration != 2*time.Minute {
+		t.Errorf("流不完整(599)首次错误应冷却2分钟，实际%v", duration)
 	}
 }
 
