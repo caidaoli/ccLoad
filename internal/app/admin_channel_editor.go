@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 
@@ -66,12 +65,12 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		return
 	}
 
-	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	cfg, apiKeys, version, err := s.store.GetChannelEditSnapshot(c.Request.Context(), id)
 	if err != nil {
-		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		respondChannelEditError(c, err)
 		return
 	}
-	detail, apiKeys, err := s.buildChannelDetail(c.Request.Context(), id, cfg)
+	detail, err := s.buildChannelDetail(c.Request.Context(), cfg, apiKeys)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -152,13 +151,10 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}
-	if cfg.UsesOAuth() {
-		// 编辑器与普通 Key 端点共用同一份 OAuth 合成行：凭证掩码、备注和当前倍率必须一致。
-		apiKeys, err = channelKeysForAdmin(cfg, nil)
-		if err != nil {
-			RespondError(c, http.StatusInternalServerError, err)
-			return
-		}
+	apiKeys, err = channelKeysForAdmin(cfg, apiKeys)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}
@@ -196,6 +192,8 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		}
 	}
 
+	c.Header("Cache-Control", "no-store")
+	c.Header("ETag", `"`+version+`"`)
 	RespondJSON(c, http.StatusOK, channelEditorData{
 		Channel:             detail,
 		Keys:                apiKeys,

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +31,154 @@ import (
 type closeIdleTrackingRoundTripper struct {
 	mu     sync.Mutex
 	closes int
+}
+
+/**
+ * @brief 验证 Antigravity 订阅元数据超时会回收卡住的 SOCKS5 握手。
+ * @param t 测试上下文。
+ */
+func TestAntigravityMetadataTimeoutClosesSOCKS5Handshake(t *testing.T) {
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = proxy.Close() }()
+	if err := proxy.(*net.TCPListener).SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	store := newCodexAuthTestStore(t)
+	ctx := t.Context()
+	const upstream = "http://antigravity.test"
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "fixture-at", RefreshToken: "fixture-rt",
+		Expired: time.Now().Add(time.Hour).Format(time.RFC3339), ProjectID: "fixture-project",
+	}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := newAntigravityOAuthChannel("SOCKS5 metadata", raw, antigravityCatalogModels())
+	cfg.ProxyURL = "socks5://" + proxy.Addr().String()
+	cfg, err = store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(store)
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	})
+	server.antigravityService.DailyAPIBaseURL = upstream
+	waiterCtx, cancelWaiter := context.WithCancel(ctx)
+	defer cancelWaiter()
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := server.antigravityCredentials.credentialWithMetadata(waiterCtx, cfg)
+		waiterDone <- err
+	}()
+	taskConn, err := proxy.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = taskConn.Close() }()
+	if err := taskConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var greeting [3]byte
+	if _, err := io.ReadFull(taskConn, greeting[:]); err != nil || greeting != [3]byte{5, 1, 0} {
+		t.Fatalf("SOCKS5 greeting = %x, err=%v", greeting, err)
+	}
+
+	taskDone := make(chan error, 1)
+	go func() {
+		_, err := server.antigravityCredentials.credentialWithMetadata(ctx, cfg)
+		taskDone <- err
+	}()
+	cancelWaiter()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiter err=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled waiter did not return")
+	}
+	if err := taskConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskConn.Read(greeting[:]); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("connection closed while metadata task was still active: %v", err)
+	}
+
+	// Start a second request through the same client while both dials are active.
+	otherService := *server.antigravityService
+	otherService.Client = server.getClientForChannel(cfg)
+	otherDone := make(chan error, 1)
+	otherCtx, cancelOther := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelOther()
+	go func() {
+		models, err := otherService.FetchAvailableModels(otherCtx, upstream, credential)
+		if err == nil && !slices.Equal(models, []string{"fixture-model"}) {
+			err = fmt.Errorf("models=%v", models)
+		}
+		otherDone <- err
+	}()
+	otherConn, err := proxy.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = otherConn.Close() }()
+	if err := otherConn.SetDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(otherConn, greeting[:]); err != nil || greeting != [3]byte{5, 1, 0} {
+		t.Fatalf("second SOCKS5 greeting = %x, err=%v", greeting, err)
+	}
+
+	select {
+	case err := <-taskDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("metadata err=%v, want context deadline", err)
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("metadata task did not finish")
+	}
+	if err := taskConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskConn.Read(greeting[:]); !errors.Is(err, io.EOF) {
+		t.Fatalf("SOCKS5 connection remained open after metadata deadline: %v", err)
+	}
+
+	if _, err := otherConn.Write([]byte{5, 0}); err != nil {
+		t.Fatal(err)
+	}
+	connect := make([]byte, 5+len("antigravity.test")+2)
+	if _, err := io.ReadFull(otherConn, connect); err != nil {
+		t.Fatalf("second SOCKS5 handshake did not survive metadata cancellation: %v", err)
+	}
+	if _, err := otherConn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.ReadRequest(bufio.NewReader(otherConn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.Copy(io.Discard, req.Body)
+	_ = req.Body.Close()
+	if err != nil || req.URL.Path != "/v1internal:fetchAvailableModels" {
+		t.Fatalf("second request path=%q body read err=%v", req.URL.Path, err)
+	}
+	body := `{"models":{"fixture-model":{}}}`
+	if _, err := fmt.Fprintf(otherConn, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(body), body); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-otherDone; err != nil {
+		t.Fatalf("second request failed: %v", err)
+	}
 }
 
 func (t *closeIdleTrackingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {

@@ -13,6 +13,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+
+	"github.com/tidwall/gjson"
 )
 
 // ============================================================================
@@ -58,6 +60,14 @@ func (s *Server) applyCooldownDecision(
 	defer cancel()
 
 	in = s.completeCooldownInput(cfg, in)
+	if cfg.UsesAntigravityOAuth() && in.StatusCode == http.StatusTooManyRequests &&
+		!in.ModelCooldownUntil.IsZero() && !in.ModelCooldownUntil.After(time.Now()) {
+		decision := s.cooldownManager.Evaluate(in)
+		if decision.Action == cooldown.ActionRetryModel && decision.Until.Equal(in.ModelCooldownUntil) {
+			// 零秒提示无需写库，避免覆盖同模型已存的较晚截止时间。
+			return decision.Action
+		}
+	}
 
 	// 同渠道重试期间，可重试故障的冷却先登记不落库，由重试循环在放弃该渠道时统一提交；
 	// 换 Key 回退本身就是重试手段，照常冷却当前 Key。
@@ -123,6 +133,12 @@ func (s *Server) applyAntigravityModelCapacityCooldown(
 }
 
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
+	if cfg.UsesAntigravityOAuth() && in.StatusCode == http.StatusTooManyRequests && in.ModelCooldownUntil.IsZero() {
+		if in.SSEError {
+			in.Headers = nil
+		}
+		in.ModelCooldownUntil = antigravityRetryAt(in.ErrorBody, in.Headers, time.Now())
+	}
 	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
 	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {
 		in.ChannelModels = s.channelModelCooldownKeys(cfg)
@@ -176,6 +192,7 @@ func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.Error
 		return httpErrorInputFromParts(channelID, keyIndex, 0, nil, nil)
 	}
 	in := httpErrorInputFromParts(channelID, keyIndex, res.Status, res.Body, res.Header)
+	in.SSEError = len(res.SSEErrorEvent) > 0
 	in.ConfiguredDetection = res.ConfiguredDetection
 	if res.UpstreamStatus != 0 {
 		in.UpstreamStatusCode = res.UpstreamStatus
@@ -804,18 +821,20 @@ func (s *Server) handleStreamingErrorNoRetry(
 	// 原生 WS close 1006/心跳传输错误按“两个新物理连接连续失败”冷却具体目标。
 	// 这里再做模型冷却会把网络抖动错误扩大到同渠道的整个模型。
 	if !tosRejected && !res.UpstreamWebsocketTransportFailure {
-		if isXAIOAuthCredentialForbidden(cfg, res) {
+		if cfg.UsesAntigravityOAuth() && isAntigravityPermissionReason(res.Status, res.Body, "VALIDATION_REQUIRED") {
+			s.applyAntigravityValidationCooldown(ctx, cfg, input)
+		} else if isXAIOAuthCredentialForbidden(cfg, res) {
 			decision := s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input))
 			if decision.Action == cooldown.ActionRetryChannel {
 				var duration time.Duration
 				if !decision.Until.IsZero() {
 					duration = time.Until(decision.Until)
 				}
-				s.applyOAuthCredentialCooldown(ctx, cfg.ID, "xAI", cfg.GetAuthType(), cfg.OAuthCredential, res.Status, duration)
+				s.applyOAuthCredentialCooldown(ctx, cfg.ID, "xAI", cfg.GetAuthType(), cfg.OAuthCredential, res.Status, duration, oauthCooldownCredential)
 			} else {
 				_ = s.applyCooldownDecision(ctx, cfg, input)
 			}
-		} else {
+		} else if !s.recordAntigravity429State(ctx, cfg, actualModel, res) {
 			_ = s.applyCooldownDecision(ctx, cfg, input)
 		}
 	}
@@ -970,6 +989,11 @@ func (s *Server) handleProxyErrorResponse(
 		failure.nextAction = cooldown.ActionRetryChannel
 		return failure, cooldown.ActionRetryChannel
 	}
+	if cfg.UsesAntigravityOAuth() && isAntigravityPermissionReason(res.Status, res.Body, "VALIDATION_REQUIRED") {
+		s.applyAntigravityValidationCooldown(ctx, cfg, input)
+		failure.nextAction = cooldown.ActionRetryChannel
+		return failure, cooldown.ActionRetryChannel
+	}
 	if forceReturnClient || isXAIOAuthCredentialForbidden(cfg, res) {
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient
@@ -981,6 +1005,10 @@ func (s *Server) handleProxyErrorResponse(
 		action := s.decideCooldownAction(ctx, cfg, input)
 		failure.nextAction = action
 		return failure, action
+	}
+	if s.recordAntigravity429State(ctx, cfg, actualModel, res) {
+		failure.nextAction = cooldown.ActionRetryChannel
+		return failure, cooldown.ActionRetryChannel
 	}
 	if deferChannelCooldown {
 		action := s.decideCooldownAction(ctx, cfg, input)
@@ -1001,6 +1029,34 @@ func (s *Server) handleProxyErrorResponse(
 	action := s.applyCooldownDecision(ctx, cfg, input)
 	failure.nextAction = action
 	return failure, action
+}
+
+/**
+ * @brief 按实际被要求验证的 Antigravity 账号写入渠道冷却。
+ * @param ctx 当前请求上下文。
+ * @param cfg 实际出站凭证的渠道快照。
+ * @param input 归一后的上游失败及原始状态。
+ * @return 本次成功写入账号冷却时为 true。
+ * @note 账号验证不因更换模型或 access token 恢复，显式渠道级冷却规则仍决定期限。
+ */
+func (s *Server) applyAntigravityValidationCooldown(ctx context.Context, cfg *model.Config, input cooldown.ErrorInput) bool {
+	decision := s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input))
+	var duration time.Duration
+	if decision.Action == cooldown.ActionRetryChannel && !decision.Until.IsZero() {
+		duration = time.Until(decision.Until)
+	}
+	return s.applyOAuthCredentialCooldown(ctx, cfg.ID, "Antigravity", cfg.GetAuthType(), cfg.OAuthCredential, input.StatusCode, duration, oauthCooldownAntigravityValidation)
+}
+
+/**
+ * @brief 判断两个 Antigravity 快照是否仍具有同一非空刷新令牌。
+ * @param current 当前持久化凭证。
+ * @param expected 请求实际发送的凭证。
+ * @return 刷新令牌相同时为 true。
+ */
+func sameAntigravityRefreshToken(current, expected string) bool {
+	token := gjson.Get(expected, "refresh_token").String()
+	return token != "" && gjson.Get(current, "refresh_token").String() == token
 }
 
 /**

@@ -1,6 +1,7 @@
 package cursorauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"hash"
@@ -40,10 +41,13 @@ type parkedAgent struct {
 /**
  * @brief Run 正常结束后停放 Agent，供客户端带完整历史的下一轮直接续发。
  * @param session 已完成的会话。
- * @return 已停放时为 true；无可匹配的回复或执行器已关闭时为 false，调用方负责删除 Agent。
+ * @return 已停放时为 true；缺少可信身份或可匹配的回复，或执行器已关闭时为 false，由调用方删除 Agent。
  * @note 持 r.mu；超出上限时删除最早停放的 Agent。
  */
 func (r *SDKRunner) parkAgent(session *sdkSession) bool {
+	if !session.scope.reusable() {
+		return false
+	}
 	session.eventMu.Lock()
 	reply := session.turnText.String()
 	prefix := session.transcriptDigest
@@ -52,7 +56,7 @@ func (r *SDKRunner) parkAgent(session *sdkSession) bool {
 	if anchor == "" || prefix == "" {
 		return false
 	}
-	key := parkedAgentKey(session.apiKey, session.toolsDigest, prefix, anchor)
+	key := parkedAgentKey(session.scope, session.apiKey, session.toolsDigest, prefix, anchor)
 	entry := &parkedAgent{
 		agentID: session.agentID, apiKey: session.apiKey, workdir: session.workdir,
 		client: session.client, parkedAt: time.Now(),
@@ -90,47 +94,79 @@ func (r *SDKRunner) parkAgent(session *sdkSession) bool {
 }
 
 /**
- * @brief 取出与当前请求历史匹配的停放 Agent。
- * @param run 当前请求的 Bridge、凭证与工具摘要。
- * @param entries 当前请求的完整消息。
- * @return 续用的 Agent ID。
- * @return 最后一条 assistant 之后、需要发送的新消息。
- * @return 无匹配 Agent 或新消息不是普通用户输入时为 false。
- * @details 历史在最后一条 assistant 处切分：之前的消息须与上一请求完全一致，assistant 正文去除空白后须与 Agent 上一轮回复一致。
- * @note 持 r.mu；取出即移除，Bridge 已替换的 Agent 随旧进程失效，直接丢弃。
+ * @brief 计算续发普通轮的停放键与可发送增量。
+ * @param apiKey 当前请求的 User API Key。
+ * @param toolsDigest 当前请求的工具摘要。
+ * @param request 当前请求的完整消息与工具结果。
+ * @return 停放键；不是普通续轮或增量不兼容时为空。
+ * @return 最后一条 assistant 之后的新消息；无停放键时为 nil。
+ * @details 历史在最后一条 assistant 处切分：之前的消息须与上一请求完全一致，assistant 纯文本须与 Agent 上一轮回复逐字节一致。
  */
-func (r *SDKRunner) takeParkedAgent(run sdkRunStart, entries []transcriptEntry) (string, []transcriptEntry, bool) {
+func parkedAgentContinuation(apiKey, toolsDigest string, request Request) (string, []transcriptEntry) {
+	if !request.SessionScope.reusable() || len(request.ToolResults) > 0 {
+		return "", nil
+	}
+	entries := request.transcript
 	last := -1
 	for index, entry := range entries {
 		if entry.role == "assistant" {
 			last = index
 		}
 	}
-	if last < 0 || last == len(entries)-1 {
-		return "", nil, false
+	if last < 0 || last == len(entries)-1 || !entries[last].plainAssistant {
+		return "", nil
 	}
 	tail := entries[last+1:]
 	for _, entry := range tail {
-		if entry.toolResult || (entry.role != "user" && entry.role != "system" && entry.role != "developer") {
-			return "", nil, false
+		if entry.toolResult || hasURLImage(entry.images) ||
+			(entry.role != "user" && entry.role != "system" && entry.role != "developer") {
+			return "", nil
 		}
 	}
 	anchor := replyAnchor(entries[last].body)
 	if anchor == "" {
-		return "", nil, false
+		return "", nil
 	}
-	key := parkedAgentKey(run.apiKey, run.toolsDigest, transcriptDigest(entries[:last]), anchor)
+	return parkedAgentKey(request.SessionScope, apiKey, toolsDigest, transcriptDigest(entries[:last]), anchor), tail
+}
+
+/**
+ * @brief 在完整历史不可发送时判断是否值得准备续用停放 Agent。
+ * @param key 由当前消息历史计算的停放键；为空表示无法续用。
+ * @return 目前仍有匹配项时为 true；发送前还须重新核对。
+ * @note 持 r.mu，仅检查，不占用停放项。
+ */
+func (r *SDKRunner) hasParkedAgent(key string) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.parked[key] != nil
+}
+
+/**
+ * @brief 领取匹配的停放 Agent，转交后续 Send。
+ * @param ctx 当前请求上下文；取消后不领取。
+ * @param key 由当前消息历史计算的停放键。
+ * @param client 当前 Bridge Agent 客户端。
+ * @return 可用的 Agent ID；无匹配或旧 Bridge 已失效时为空。
+ * @return 请求已结束时为取消原因，其他情况为 nil。
+ * @note 持 r.mu；取出即移除，Bridge 已替换的 Agent 随旧进程失效。
+ */
+func (r *SDKRunner) takeParkedAgent(ctx context.Context, key string, client sdkv1connect.SdkAgentServiceClient) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ctx.Err() != nil {
+		return "", context.Cause(ctx)
+	}
 	entry := r.parked[key]
-	if entry != nil {
-		delete(r.parked, key)
-		entry.timer.Stop()
+	if entry == nil {
+		return "", nil
 	}
-	r.mu.Unlock()
-	if entry == nil || entry.client != run.client.agent {
-		return "", nil, false
+	delete(r.parked, key)
+	entry.timer.Stop()
+	if entry.client != client {
+		return "", nil
 	}
-	return entry.agentID, tail, true
+	return entry.agentID, nil
 }
 
 /**
@@ -157,30 +193,29 @@ func (r *SDKRunner) deleteParkedAgentsLocked() {
 
 /**
  * @brief 计算停放键。
+ * @param scope 已认证的调用方与当前渠道。
  * @param apiKey User API Key。
  * @param toolsDigest 自定义工具摘要。
  * @param prefix 上一请求完整消息摘要。
  * @param anchor 上一轮回复摘要。
  * @return 不可逆的复合键。
  */
-func parkedAgentKey(apiKey, toolsDigest, prefix, anchor string) string {
+func parkedAgentKey(scope SessionScope, apiKey, toolsDigest, prefix, anchor string) string {
 	h := sha256.New()
-	writeDigestFields(h, apiKey, toolsDigest, prefix, anchor)
+	writeDigestFields(h, strconv.FormatInt(scope.ChannelID, 10), strconv.FormatInt(scope.TokenID, 10), apiKey, toolsDigest, prefix, anchor)
 	return string(h.Sum(nil))
 }
 
 /**
- * @brief 计算回复正文去除全部空白后的摘要。
+ * @brief 计算回复原文摘要，保留所有空白。
  * @param text 回复正文。
  * @return 摘要；正文只有空白时为空。
- * @details 客户端回传 assistant 消息时可能调整换行与缩进，空白不参与匹配。
  */
 func replyAnchor(text string) string {
-	compact := strings.Join(strings.Fields(text), "")
-	if compact == "" {
+	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(compact))
+	sum := sha256.Sum256([]byte(text))
 	return string(sum[:])
 }
 

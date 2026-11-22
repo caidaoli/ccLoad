@@ -33,7 +33,7 @@ func (u *Usage) Add(other *Usage) {
 
 /**
  * @brief Cursor 推理事件；Text 是当前正文，Delta 是新增正文，ThinkingDelta 是独立思考增量。
- * @details 工具边界可携带上下文估算；真实逐轮用量立即发出，终态只补齐累计用量的差额。
+ * @details 真实逐轮用量立即发出，终态只补齐累计用量的差额。
  * RawResponse 在启用捕获时携带单个 RunStreamMessage 的标准 protobuf JSON。
  */
 type Event struct {
@@ -41,19 +41,17 @@ type Event struct {
 	ThinkingDelta string ///< 上游思考文本增量，不并入正文或生成签名。
 	Text          string
 	ToolCall      *ToolCall
-	Usage         *Usage
-	// UsageEstimated marks a local context estimate. Estimated usage is exposed
-	// to the client for context management and logged separately from real usage.
-	// It must not be billed or included in actual token totals.
-	UsageEstimated bool
+	Usage         *Usage  ///< 上游报告的账单增量；上游未报告时为 nil。
+	SentEffort    *string ///< 新 Send 首次确认模型执行时的档位；空字符串表示未指定档位。
 	// Replayed marks a completed native run returned for a duplicate tool-result
 	// request. The wire layer must not charge or log that run a second time.
 	Replayed bool
 	// Ping marks a live run heartbeat (SDK status RUNNING). It is not assistant text.
-	Ping        bool
-	Done        bool
-	Err         error
-	RawResponse []byte
+	Ping         bool
+	Done         bool
+	Err          error
+	RawResponse  []byte
+	terminalText bool ///< 终态补发的正文，须等成功 Done 才能确认模型执行。
 }
 
 type rawResponseCaptureContextKey struct{}
@@ -90,3 +88,13 @@ var (
 	// longer owned by this ccLoad process.
 	ErrToolSessionNotFound = errors.New("cursor tool session was not found")
 )
+
+/**
+ * @brief Local Agent 的待发消息含 URL 图片，需要客户端改用内联图片或切换渠道。
+ */
+var ErrURLImageUnsupported = errors.New("use inline base64 images with Cursor Local Agent")
+
+/**
+ * @brief 同一工具调用的混合续轮仍在执行，不能再次向上游发送。
+ */
+var ErrToolTurnInProgress = errors.New("cursor tool continuation is still running")

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
+
+	"ccLoad/internal/util"
 
 	"connectrpc.com/connect"
 
@@ -23,17 +26,27 @@ type RateLimit struct {
 // BridgeError preserves Cursor's structured error contract without exposing
 // generated protobuf types to the application layer.
 type BridgeError struct {
-	ConnectCode connect.Code
-	SDKCode     sdkv1.SdkErrorCode
-	Message     string
-	RequestID   string
-	HelpURL     string
-	Provider    string
-	RetryAfter  time.Duration
-	RateLimit   *RateLimit
-	cause       error
+	ConnectCode           connect.Code
+	SDKCode               sdkv1.SdkErrorCode
+	Message               string
+	RequestID             string
+	HelpURL               string
+	Provider              string
+	RetryAfter            time.Duration
+	RateLimit             *RateLimit
+	contextLengthExceeded bool ///< Run 终态信封或结果含明确的上下文超限码。
+	cause                 error
 }
 
+/**
+ * @brief 表示网关已确认问题出在客户端请求参数。
+ */
+var ErrInvalidRequest = errors.New("invalid Cursor request")
+
+/**
+ * @brief 格式化 SDK 拒绝，保留业务分类与错误说明。
+ * @return 可显示的错误说明，nil 接收者返回空字符串。
+ */
 func (e *BridgeError) Error() string {
 	if e == nil {
 		return ""
@@ -51,6 +64,9 @@ func (e *BridgeError) Error() string {
 	if e.SDKCode != sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED {
 		return fmt.Sprintf("cursor %s: %s", e.SDKCode.String(), message)
 	}
+	if e.ConnectCode == 0 {
+		return "cursor run failed: " + message
+	}
 	if e.ConnectCode != connect.CodeUnknown {
 		return fmt.Sprintf("cursor-sdk-bridge %s: %s", e.ConnectCode.String(), message)
 	}
@@ -64,11 +80,55 @@ func (e *BridgeError) Unwrap() error {
 	return e.cause
 }
 
-// IsCredentialRejected reports whether Cursor rejected the channel's User API Key.
+/**
+ * @brief 判断 Cursor 是否拒绝了渠道的会话或 User API Key。
+ * @param err Run 或 Bridge 调用返回的错误。
+ * @return SDK 确认凭证无效或找不到对应 API Key 时返回 true。
+ */
 func IsCredentialRejected(err error) bool {
-	var bridgeErr *BridgeError
-	return errors.As(err, &bridgeErr) &&
-		bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	return ok && (bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED ||
+		bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_API_KEY_NOT_FOUND)
+}
+
+/**
+ * @brief 判断当前 Cursor 账户是否明确缺少套餐、角色或功能权限。
+ * @param err Run 或 Bridge 调用返回的错误。
+ * @return SDK 确认账户无法使用该能力时返回 true。
+ */
+func IsAccountCapabilityUnavailable(err error) bool {
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	if !ok {
+		return false
+	}
+	switch bridgeErr.SDKCode {
+	case sdkv1.SdkErrorCode_SDK_ERROR_CODE_PLAN_REQUIRED,
+		sdkv1.SdkErrorCode_SDK_ERROR_CODE_ROLE_FORBIDDEN,
+		sdkv1.SdkErrorCode_SDK_ERROR_CODE_FEATURE_UNAVAILABLE:
+		return true
+	default:
+		return false
+	}
+}
+
+/**
+ * @brief 判断 Cursor 是否明确报告本次请求超过模型上下文窗口。
+ * @param err Run 或 Bridge 调用返回的错误。
+ * @return 已知上下文超限码或明确的超限说明返回 true。
+ */
+func IsContextLengthExceeded(err error) bool {
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	if !ok {
+		return false
+	}
+	switch bridgeErr.SDKCode {
+	case sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED,
+		sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR,
+		sdkv1.SdkErrorCode_SDK_ERROR_CODE_UPSTREAM_ERROR:
+		return bridgeErr.contextLengthExceeded || util.IsExplicitContextLengthExceeded("", bridgeErr.Message)
+	default:
+		return false
+	}
 }
 
 /**
@@ -82,6 +142,57 @@ func IsUsageLimitExceeded(err error) bool {
 		bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED
 }
 
+/**
+ * @brief 识别 Cursor SDK 的临时限流并取出可用的恢复时间。
+ * @param err Run 或 Bridge 调用返回的错误。
+ * @param now 识别本次限流的时间。
+ * @return 可信的恢复时间，优先 RetryAfter，其次限流窗口重置时间；缺失时为零。
+ * @return 错误链包含 SDK 的 RATE_LIMIT_EXCEEDED 时为 true。
+ */
+func RateLimitRetryTime(err error, now time.Time) (time.Time, bool) {
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	if !ok || bridgeErr.SDKCode != sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED {
+		return time.Time{}, false
+	}
+	if bridgeErr.RetryAfter > 0 {
+		return now.Add(bridgeErr.RetryAfter), true
+	}
+	if limit := bridgeErr.RateLimit; limit != nil && limit.ResetEpochSeconds != nil {
+		reset := *limit.ResetEpochSeconds
+		if reset <= uint64(now.Add(math.MaxInt64).Unix()) {
+			if until := time.Unix(int64(reset), 0); until.After(now) {
+				return until, true
+			}
+		}
+	}
+	return time.Time{}, true
+}
+
+/**
+ * @brief 判断 Cursor 是否明确拒绝当前模型。
+ * @param err Run 或 Bridge 调用返回的错误。
+ * @return 错误链包含 SDK 的 INVALID_MODEL 时为 true。
+ */
+func IsInvalidModel(err error) bool {
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	return ok && bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_INVALID_MODEL
+}
+
+/**
+ * @brief 判断 SDK 是否明确报告请求中的 Agent 不存在。
+ * @param err 已分类的 Send 启动错误。
+ * @return SDK 确认 Agent 已不存在时为 true。
+ */
+func isBridgeAgentNotFound(err error) bool {
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	return ok && bridgeErr.SDKCode == sdkv1.SdkErrorCode_SDK_ERROR_CODE_AGENT_NOT_FOUND
+}
+
+/**
+ * @brief 把 Connect 错误转换为应用可据以分流的 SDK 错误。
+ * @param err RPC 或流返回的错误。
+ * @return 带原始错误链的 BridgeError；非 Connect 错误原样返回，nil 仍为 nil。
+ */
 func classifyBridgeError(err error) error {
 	if err == nil {
 		return nil
@@ -115,7 +226,11 @@ func classifyBridgeError(err error) error {
 		bridgeErr.HelpURL = sdkDetail.GetHelpUrl()
 		bridgeErr.Provider = sdkDetail.GetProvider()
 		if retryAfter := sdkDetail.GetRetryAfter(); retryAfter != nil && retryAfter.IsValid() {
-			bridgeErr.RetryAfter = retryAfter.AsDuration()
+			delay := retryAfter.AsDuration()
+			// AsDuration clamps protobuf durations beyond Go's representable range.
+			if retryAfter.GetSeconds() == int64(delay/time.Second) && retryAfter.GetNanos() == int32(delay%time.Second) {
+				bridgeErr.RetryAfter = delay
+			}
 		}
 		if limit := sdkDetail.GetRateLimit(); limit != nil {
 			bridgeErr.RateLimit = &RateLimit{
@@ -129,19 +244,31 @@ func classifyBridgeError(err error) error {
 	return bridgeErr
 }
 
+/**
+ * @brief 转换 Bridge RPC 错误，并保留超时来源及可安全输出的诊断。
+ * @param operation Bridge RPC 名称。
+ * @param operationCtx 本次 RPC 的上下文。
+ * @param timeout 本地 RPC 时间预算；未单独限制时为零。
+ * @param started RPC 开始时间。
+ * @param err 上游返回的错误。
+ * @param apiKey 当前请求的 User API Key。
+ * @return 可安全输出的已分类错误，保留 SDK 详情和错误链。
+ */
 func classifyBridgeOperationError(
 	operation string,
 	operationCtx context.Context,
 	timeout time.Duration,
 	started time.Time,
 	err error,
+	apiKey string,
 ) error {
 	classified := classifyBridgeError(err)
+	safe := redactBridgeError(classified, apiKey)
 	var connectErr *connect.Error
 	deadlineExceeded := errors.Is(err, context.DeadlineExceeded) ||
 		(errors.As(err, &connectErr) && connectErr.Code() == connect.CodeDeadlineExceeded)
 	if !deadlineExceeded {
-		return classified
+		return safe
 	}
 
 	elapsed := max(time.Since(started), 0)
@@ -153,14 +280,14 @@ func classifyBridgeOperationError(
 		}
 	}
 	if bridgeDeadlineHasDiagnostic(classified) {
-		return fmt.Errorf("%s: %w", summary, classified)
+		return fmt.Errorf("%s: %w", summary, safe)
 	}
 
 	diagnostic := "cursor-sdk-bridge returned no detail beyond deadline_exceeded"
 	if bridgeProxyEnvironmentConfigured() {
 		diagnostic = "cursor-sdk-bridge inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY and returned no detail beyond deadline_exceeded"
 	}
-	return fmt.Errorf("%s; %s: %w", summary, diagnostic, classified)
+	return fmt.Errorf("%s; %s: %w", summary, diagnostic, safe)
 }
 
 func bridgeDeadlineHasDiagnostic(err error) bool {

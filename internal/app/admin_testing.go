@@ -836,7 +836,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	)
 	statusCode, _ := getResultInt(testResult["status_code"])
 	trial := cfg.UsesZAIOAuth() && (testReq.ZAI.Trial || isZAITrialModel(testReq.Model))
-	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized && canRemintOAuthChannelTest(cfg) && !trial {
+	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized && canRemintOAuthChannelTest(cfg) && !trial && testResult["response_committed"] != true {
 		refreshedCfg, refreshedSelection, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(
 			c.Request.Context(), cfg, oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection),
 		)
@@ -1459,13 +1459,31 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 		}
 		return result
 	}
-	if cfg.UsesAccioOAuth() && statusCode == util.StatusSSEError {
+	if (cfg.UsesAccioOAuth() || cfg.UsesAntigravityOAuth()) && statusCode == util.StatusSSEError {
 		statusCode = classifySSEErrorStatus(errorBody)
 	}
 	input := httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers)
 	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
 		input.UpstreamStatusCode = upstreamStatusCode
 		input.ModelScoped = isAntigravityModelNotFound(cfg, upstreamStatusCode)
+		if cfg.UsesCursorOAuth() && upstreamStatusCode == http.StatusTooManyRequests {
+			input.ModelScoped = true
+			input.ModelCooldownUntil, _ = util.ParseRetryAfter(headers, time.Now())
+		}
+	}
+	if upstreamStatusCode, ok := getResultInt(result["upstream_status_code"]); ok {
+		input.UpstreamStatusCode = upstreamStatusCode
+	}
+	input.SSEError = input.UpstreamStatusCode >= 200 && input.UpstreamStatusCode < 300
+	if cfg.UsesAntigravityOAuth() && isAntigravityPermissionReason(statusCode, errorBody, "VALIDATION_REQUIRED") {
+		result["cooldown_action"] = "unknown_action"
+		if s.applyAntigravityValidationCooldown(ctx, cfg, input) {
+			result["cooldown_action"] = "channel_cooldown_applied"
+		} else if current, err := s.store.GetConfig(ctx, cfg.ID); errors.Is(err, model.ErrChannelNotFound) ||
+			err == nil && (!current.UsesAntigravityOAuth() || !sameAntigravityRefreshToken(current.OAuthCredential, cfg.OAuthCredential)) {
+			result["cooldown_action"] = "credential_changed_no_cooldown"
+		}
+		return result
 	}
 	action := s.applyCooldownDecision(
 		ctx,
@@ -1798,12 +1816,13 @@ func (s *Server) testCursorOAuthChannel(
 
 	rec := httptest.NewRecorder()
 	proxyReq := &proxyRequestContext{
-		originalModel:  attemptReq.Model,
-		clientProtocol: protocol.Protocol(clientProtocol),
-		requestPath:    requestPath,
-		body:           body,
-		isStreaming:    testReq.Stream,
-		skipProxyLog:   true,
+		originalModel:       attemptReq.Model,
+		clientProtocol:      protocol.Protocol(clientProtocol),
+		requestPath:         requestPath,
+		body:                body,
+		isStreaming:         testReq.Stream,
+		skipProxyLog:        true,
+		deferCursorCooldown: true,
 	}
 	proxyRes, err := s.forwardCursorAgent(reqCtx, cfg, credential, proxyReq, rec)
 	if proxyReq.debugData != nil {
@@ -1822,14 +1841,17 @@ func (s *Server) testCursorOAuthChannel(
 	bodyBytes := proxyRes.body
 	if rec.Body.Len() > 0 {
 		bodyBytes = rec.Body.Bytes()
-		if rec.Code > 0 {
-			status = rec.Code
-		}
 	}
 	result["status_code"] = status
 	result["duration_ms"] = time.Since(start).Milliseconds()
-	if (proxyRes.nextAction == cooldown.ActionReturnClient || proxyRes.nextAction == cooldown.ActionSkipChannel) && !proxyRes.succeeded {
+	if proxyRes.protocolCapabilityMissing {
+		result["cooldown_action"] = "protocol_capability_missing_no_cooldown"
+	} else if status != http.StatusTooManyRequests && (proxyRes.nextAction == cooldown.ActionSkipChannel ||
+		(proxyRes.nextAction == cooldown.ActionReturnClient && (!proxyRes.succeeded || status == http.StatusBadRequest))) {
 		result["cooldown_action"] = "client_error_no_cooldown"
+	}
+	if hint := proxyRes.header.Get("Retry-After"); hint != "" {
+		result["response_headers"] = flattenHeader(proxyRes.header)
 	}
 
 	if proxyRes.succeeded && status >= 200 && status < 300 {
@@ -1861,8 +1883,12 @@ func (s *Server) testCursorOAuthChannel(
 
 	result["success"] = false
 	result["upstream_response_body"] = string(bodyBytes)
+	if rec.Body.Len() > 0 && testReq.Stream {
+		result["response_committed"] = true
+		result["raw_response"] = rec.Body.String()
+	}
 	var apiError map[string]any
-	if unmarshalErr := sonic.Unmarshal(bodyBytes, &apiError); unmarshalErr == nil {
+	if unmarshalErr := sonic.Unmarshal(proxyRes.body, &apiError); unmarshalErr == nil {
 		if errorMsg := extractTestAPIErrorMessage(apiError); errorMsg != "" {
 			result["error"] = errorMsg
 			result["api_error"] = apiError
@@ -2930,6 +2956,19 @@ func (s *Server) parseTestTranslatedSSEResponse(
 
 	result["duration_ms"] = time.Since(start).Milliseconds()
 	result["upstream_response_body"] = rawUpstreamBuf.String()
+	if payload := upstreamParser.GetLastError(); requestPlan.antigravityOAuth && len(payload) != 0 {
+		status := classifySSEErrorStatus(payload)
+		if status == http.StatusTooManyRequests || isAntigravityPermissionReason(status, payload, "VALIDATION_REQUIRED") {
+			var apiError map[string]any
+			_ = sonic.Unmarshal(payload, &apiError)
+			result["success"] = false
+			result["status_code"] = status
+			result["upstream_status_code"] = resp.StatusCode
+			result["api_error"] = apiError
+			result["error"] = extractTestAPIErrorMessage(apiError)
+			return result
+		}
+	}
 	return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq, requestPlan.requestedServiceTier())
 }
 

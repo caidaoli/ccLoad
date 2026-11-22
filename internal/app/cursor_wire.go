@@ -6,26 +6,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/util"
 
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 )
 
 const cursorSDKBridgeRequestURL = "http://cursor-sdk-bridge/sdk.v1.SdkAgentService/CreateAgent+Send"
 
-// tryCursorOAuthChannel runs inference through the managed Cursor SDK bridge.
-// Built-in tools stay disabled. Client tools are registered as native Cursor
-// custom tools; their callbacks suspend inside ccLoad until the client returns
-// tool_result / role=tool on the next turn.
+/**
+ * @brief 表示客户端可通过缩短输入解决的模型上下文超限。
+ */
+const cursorContextLengthExceeded = "context_length_exceeded"
+
+/**
+ * @brief 转发至 Cursor SDK，并在实时请求被拒绝时恢复渠道凭证。
+ * @param ctx 当前代理请求上下文。
+ * @param cfg 当前 Cursor 渠道配置。
+ * @param reqCtx 请求协议、模型、日志与路由状态。
+ * @param w 客户端响应写入器。
+ * @return 当前渠道的响应或后续路由动作。
+ * @return 转发失败且无法形成代理结果时的错误，否则为 nil。
+ * @note 当前请求已提交 SSE 或收到旧工具轮结果时，禁止在此重新推理。
+ */
 func (s *Server) tryCursorOAuthChannel(
 	ctx context.Context,
 	cfg *model.Config,
@@ -53,7 +69,7 @@ func (s *Server) tryCursorOAuthChannel(
 		if duration == 0 {
 			duration = rejectedOAuthCredentialCooldown
 		}
-		s.applyOAuthCredentialCooldown(ctx, cfg.ID, "Cursor", cfg.GetAuthType(), expected, http.StatusUnauthorized, duration)
+		s.applyOAuthCredentialCooldown(ctx, cfg.ID, "Cursor", cfg.GetAuthType(), expected, http.StatusUnauthorized, duration, oauthCooldownCredential)
 	}
 	// 请求取消本身不施加凭证冷却；后台 re-mint 仍会继续并落库新凭证。
 	if credential == nil {
@@ -67,7 +83,7 @@ func (s *Server) tryCursorOAuthChannel(
 		if forwardErr != nil || result == nil {
 			return result, forwardErr
 		}
-		credentialRejected := result.status == http.StatusUnauthorized &&
+		credentialRejected := !result.cursorRunReplayed && result.status == http.StatusUnauthorized &&
 			(result.nextAction == cooldown.ActionRetryChannel || result.succeeded)
 		if !credentialRejected {
 			return result, nil
@@ -105,9 +121,11 @@ func (s *Server) tryCursorOAuthChannel(
  * @param w 客户端响应写入器。
  * @return 当前轮代理结果，包含成功响应或可分类的上游失败。
  * @return 已分类失败通过代理结果返回，此处始终为 nil。
- * @details SDK 独立 usage 和终态补差都可能包含历史工具轮；恢复轮的客户端用量始终按本次请求估算，累计量仅用于计费。
+ * @details 普通轮优先展示独立 usage；没有独立报告时使用非零终态补差。全零补差不代表当前轮已有报告。
+ * SDK 独立 usage 和终态补差都可能包含历史工具轮；恢复轮的客户端用量始终按本次请求估算。
+ * 没有可归账的真实用量时，日志与客户端共用当前轮估算。
  * @details 首内容耗时至少记为 1ns，避免时钟精度使已收到内容与尚未收到内容共用零值；心跳不计入首内容。
- * @note 写入客户端响应、代理日志和令牌统计；重放结果不重复记账。
+ * @note 写入客户端响应、代理日志和令牌统计；旧工具轮重放不重复记账、冷却或切换渠道。
  */
 func (s *Server) forwardCursorAgent(
 	ctx context.Context,
@@ -116,6 +134,7 @@ func (s *Server) forwardCursorAgent(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	format := cursorResponseFormat(reqCtx)
 	selected := reqCtx.attemptModel
 	if selected.logicalModel == "" && reqCtx.originalModel != "" {
 		selected, _ = s.firstModelRow(cfg, reqCtx.originalModel)
@@ -140,6 +159,7 @@ func (s *Server) forwardCursorAgent(
 				http.StatusServiceUnavailable,
 				"protocol registry is unavailable for Cursor "+string(translatedClient)+" requests",
 				cooldown.ActionReturnClient,
+				format, "",
 			), nil
 		}
 		translatedBody, err := s.protocolRegistry.TranslateRequest(
@@ -150,16 +170,24 @@ func (s *Server) forwardCursorAgent(
 			reqCtx.isStreaming,
 		)
 		if err != nil {
-			return cursorClientErrorResult(cfg, http.StatusBadRequest, err.Error()), nil
+			return cursorErrorResult(cfg, http.StatusBadRequest, err.Error(), cooldown.ActionReturnClient, format, ""), nil
 		}
 		reqCtx.translatedBody = translatedBody
 		body = translatedBody
 	}
 	originalResponseBody := reqCtx.body
 	request := cursorauth.ParseRequest(body)
-	request.InputTokenEstimate = estimateCursorInputTokens(request)
+	// 部分客户端协议以删除等级字段表达 (none)，SDK 需要显式关闭。
+	if _, suffix, ok := model.ParseThinkingSuffix(requestedModel); ok && suffix.Mode == thinking.ModeNone {
+		request.Effort = "none"
+	}
+	if translatedClient == protocol.Codex && gjson.GetBytes(clientBody, "tool_choice").String() == "none" {
+		// Responses 与 chat 的转换在没有工具声明时会省略 tool_choice，续接仍需保留显式禁用。
+		request.ToolChoice = "none"
+	}
+	request.SessionScope = cursorauth.SessionScope{ChannelID: cfg.ID, TokenID: reqCtx.tokenID}
 	if request.Prompt == "" && len(request.ToolResults) == 0 {
-		return cursorClientErrorResult(cfg, http.StatusBadRequest, "cursor prompt is required"), nil
+		return cursorErrorResult(cfg, http.StatusBadRequest, "cursor prompt is required", cooldown.ActionReturnClient, format, ""), nil
 	}
 	started := time.Now()
 	reqCtx.attemptStartTime, reqCtx.privacyMasked = started, privacy.Counts{}
@@ -189,17 +217,13 @@ func (s *Server) forwardCursorAgent(
 	if s.activeRequests != nil {
 		s.activeRequests.SetDebugCapture(reqCtx.activeReqID, debugCapture)
 	}
-	finishStartFailure := func(status int, err error, action cooldown.Action, skipped bool) *proxyResult {
-		result := cursorErrorResult(cfg, status, err.Error(), action)
-		if status == http.StatusTooManyRequests {
-			result.nextAction = s.cooldownCursorUsageLimit(ctx, cfg, modelID, result.body)
-		}
-		result.candidateSkipped = skipped
+	finishStartFailure := func(result *proxyResult, err error) *proxyResult {
+		status := result.status
 		result.duration = time.Since(started).Seconds()
 		result.isClientCanceled = status == StatusClientClosedRequest
 		result.proxyLogWritten = !reqCtx.skipProxyLog
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, err)
-		failed := &fwResult{Status: status, Body: result.body}
+		failed := &fwResult{Status: status, Header: result.header, Body: result.body}
 		result.forwarded = failed
 		if !reqCtx.skipProxyLog {
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, result.duration, failed, err.Error())
@@ -209,12 +233,10 @@ func (s *Server) forwardCursorAgent(
 	}
 	runner := s.cursorRunnerSnapshot()
 	if runner == nil {
-		return finishStartFailure(
-			http.StatusServiceUnavailable,
-			errors.New("cursor SDK runner is unavailable"),
-			cooldown.ActionSkipChannel,
-			true,
-		), nil
+		err := errors.New("cursor SDK runner is unavailable")
+		result := cursorErrorResult(cfg, http.StatusServiceUnavailable, err.Error(), cooldown.ActionSkipChannel, format, "")
+		result.candidateSkipped = true
+		return finishStartFailure(result, err), nil
 	}
 
 	streaming := reqCtx.isStreaming
@@ -224,15 +246,15 @@ func (s *Server) forwardCursorAgent(
 		NonStreamTimeout: s.nonStreamTimeout,
 	})
 	defer timeoutCtx.cleanup()
-	classifyTimeout := func(runErr error) (int, error, bool) {
+	classifyFailure := func(runErr error, replayed bool) (*proxyResult, error) {
 		timedOut := timeoutCtx.firstByteTimeoutTriggered() || timeoutCtx.streamTimeoutTriggered() ||
 			(!streaming && timeoutCtx.ctx.Err() != nil &&
 				errors.Is(context.Cause(timeoutCtx.ctx), context.DeadlineExceeded))
-		if !timedOut {
-			return 0, runErr, false
+		if timedOut {
+			failed, _, timeoutErr := s.handleRequestError(timeoutCtx, cfg, runErr)
+			return cursorErrorResult(cfg, failed.Status, timeoutErr.Error(), cooldown.ActionRetryChannel, format, ""), timeoutErr
 		}
-		failed, _, timeoutErr := s.handleRequestError(timeoutCtx, cfg, runErr)
-		return failed.Status, timeoutErr, true
+		return s.cursorFailureResult(ctx, cfg, modelID, runErr, replayed, reqCtx.deferCursorCooldown, format), runErr
 	}
 	runBaseCtx := timeoutCtx.ctx
 	if debugCapture != nil {
@@ -241,41 +263,36 @@ func (s *Server) forwardCursorAgent(
 	runCtx, cancelRun := context.WithCancel(runBaseCtx)
 	defer cancelRun()
 	request.Model = modelID
+	request.OnDetachedUsage = s.cursorDetachedUsage(logEntryParams{
+		RequestModel:     reqCtx.requestLogModel(),
+		ActualModel:      modelID,
+		ChannelID:        cfg.ID,
+		AuthTokenID:      reqCtx.tokenID,
+		ClientProtocol:   reqCtx.clientProtocol,
+		UpstreamProtocol: reqCtx.upstreamProtocol,
+		CostMultiplier:   reqCtx.attemptCostMultiplier,
+		StartTime:        started,
+	})
+	events, err := runner.Run(runCtx, credential, request)
+	if errors.Is(err, cursorauth.ErrURLImageUnsupported) {
+		result := cursorErrorResult(cfg, http.StatusBadRequest, err.Error(), cooldown.ActionSkipChannel, format, "")
+		result.candidateSkipped = true
+		result.header = nil
+		return result, nil
+	}
 	if session := privacySessionFromContext(ctx); session != nil && session.Enabled() {
 		sent, _ := json.Marshal(request)
 		reqCtx.privacyMasked = session.CountSent(sent)
 	}
-	reasoningBusinessSending(ctx, body)
-	events, err := runner.Run(runCtx, credential, request)
 	if err != nil {
-		status := http.StatusBadGateway
-		action := cooldown.ActionRetryChannel
-		skipped := false
-		if timeoutStatus, timeoutErr, timedOut := classifyTimeout(err); timedOut {
-			status = timeoutStatus
-			err = timeoutErr
-		} else if isClientDisconnectError(err) {
-			status = StatusClientClosedRequest
-			action = cooldown.ActionReturnClient
-		} else if errors.Is(err, cursorauth.ErrAgentMissing) {
-			status = http.StatusServiceUnavailable
-			action = cooldown.ActionSkipChannel
-			skipped = true
-		} else if errors.Is(err, cursorauth.ErrMissingAPIKey) {
-			status = http.StatusUnauthorized
-			skipped = true
-		} else if cursorauth.IsCredentialRejected(err) {
-			status = http.StatusUnauthorized
-		} else if cursorauth.IsUsageLimitExceeded(err) {
-			status = http.StatusTooManyRequests
-		}
-		return finishStartFailure(status, err, action, skipped), nil
+		result, failureErr := classifyFailure(err, false)
+		return finishStartFailure(result, failureErr), nil
 	}
 
-	format := cursorResponseFormat(reqCtx)
 	msgID := "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	var responseTransformState any
 	var responseTransformErr error
+	var responsesCursor responsesStreamCursor
 	if streaming && translatedClient != "" && s.protocolRegistry != nil {
 		_, responseTransformErr = s.protocolRegistry.TranslateResponseStream(ctx, protocol.OpenAI, translatedClient,
 			modelID, originalResponseBody, body, nil, &responseTransformState)
@@ -325,6 +342,7 @@ func (s *Server) forwardCursorAgent(
 		if translatedClient != "" {
 			responseTransformErr = writeCursorTranslatedStream(
 				ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body, payload, &responseTransformState,
+				&responsesCursor,
 			)
 			if responseTransformErr != nil {
 				cancelRun()
@@ -358,10 +376,12 @@ func (s *Server) forwardCursorAgent(
 
 	var runErr error
 	var usage *cursorauth.Usage
-	var turnUsage *cursorauth.Usage
-	var billableUsage *cursorauth.Usage
+	var turnUsage, billableUsage cursorauth.Usage
 	replayed := false
 	for event := range events {
+		if event.SentEffort != nil && reqCtx.reasoning != nil && ctx.Err() == nil {
+			reqCtx.commitSentReasoning(*event.SentEffort, "unsupported_model_effort")
+		}
 		if debugCapture != nil && debugCapture.respBuf != nil && len(event.RawResponse) > 0 {
 			_, _ = debugCapture.respBuf.Write(event.RawResponse)
 			_, _ = debugCapture.respBuf.Write([]byte("\n"))
@@ -380,9 +400,7 @@ func (s *Server) forwardCursorAgent(
 			out.WriteString(event.Delta)
 			full = out.String()
 		}
-		if !streaming {
-			thinking.WriteString(event.ThinkingDelta)
-		}
+		thinking.WriteString(event.ThinkingDelta)
 		appendContent(event.ThinkingDelta, "thinking")
 		textDelta := event.Delta
 		if textDelta == "" && strings.HasPrefix(full, previousFull) {
@@ -395,27 +413,15 @@ func (s *Server) forwardCursorAgent(
 		if event.Err != nil {
 			runErr = event.Err
 		}
-		if event.Usage != nil {
-			if event.UsageEstimated {
-				if turnUsage == nil {
-					usage = event.Usage
-				}
-			} else {
-				if !event.Replayed {
-					if billableUsage == nil {
-						billableUsage = &cursorauth.Usage{}
-					}
-					billableUsage.Add(event.Usage)
-				}
-				if !event.Done {
-					if turnUsage == nil {
-						turnUsage = &cursorauth.Usage{}
-					}
-					turnUsage.Add(event.Usage)
-					usage = turnUsage
-				} else if turnUsage == nil {
-					usage = event.Usage
-				}
+		if event.Usage != nil && *event.Usage != (cursorauth.Usage{}) {
+			if !event.Replayed {
+				billableUsage.Add(event.Usage)
+			}
+			if !event.Done {
+				turnUsage.Add(event.Usage)
+				usage = &turnUsage
+			} else if usage == nil {
+				usage = event.Usage
 			}
 		}
 		replayed = replayed || event.Replayed
@@ -438,47 +444,43 @@ func (s *Server) forwardCursorAgent(
 		}
 	}
 	duration := time.Since(started).Seconds()
+	var estimatedUsage *cursorauth.Usage
+	if usage == nil || len(request.ToolResults) > 0 {
+		estimatedUsage = estimatedCursorResponseUsage(estimateCursorInputTokens(request), full, thinking.String(), calls)
+		usage = estimatedUsage
+	}
 	finishRunFailure := func(runErr error) (*proxyResult, error) {
-		status := http.StatusBadGateway
-		action := cooldown.ActionRetryChannel
-		timeoutStatus, timeoutErr, timedOut := classifyTimeout(runErr)
-		if timedOut {
-			status = timeoutStatus
-			runErr = timeoutErr
+		result, runErr := classifyFailure(runErr, replayed)
+		if replayed {
+			result.cursorRunReplayed = true
+			result.nextAction = cooldown.ActionReturnClient
 		}
-		clientDisconnected := !timedOut && isClientDisconnectError(runErr)
-		if clientDisconnected {
-			status = StatusClientClosedRequest
-			action = cooldown.ActionReturnClient
-		} else if cursorauth.IsCredentialRejected(runErr) {
-			status = http.StatusUnauthorized
-		} else if cursorauth.IsUsageLimitExceeded(runErr) {
-			status = http.StatusTooManyRequests
-		}
+		status := result.status
+		clientDisconnected := status == StatusClientClosedRequest
 		if streaming && wroteHeader && !clientDisconnected {
-			if format == "responses" {
+			switch format {
+			case "responses":
 				// Preserve the run failure; EOF validation would replace it with a
 				// missing-terminator error. Conversion failures were already emitted.
 				if protocol.ResponseToolInputError(responseTransformState) == nil {
-					_, _ = w.Write(cursorResponsesStreamError(runErr))
+					code := gjson.GetBytes(result.body, "error.code").String()
+					_, _ = w.Write(cursorResponsesStreamError(runErr.Error(), code, responsesCursor.nextSequence))
 				}
-			} else {
-				_, _ = w.Write([]byte("data: {\"error\":{\"message\":" + jsonString(runErr.Error()) + "}}\n\n"))
+			case "anthropic":
+				_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", result.body)
+			default:
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", result.body)
 			}
 			flush()
-		}
-		result := cursorErrorResult(cfg, status, runErr.Error(), action)
-		if status == http.StatusTooManyRequests {
-			result.nextAction = s.cooldownCursorUsageLimit(ctx, cfg, modelID, result.body)
 		}
 		result.duration = duration
 		result.firstByteTime = firstByte.Seconds()
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, runErr)
 		failed := &fwResult{
-			Status: status, Body: result.body, FirstByteTime: firstByte.Seconds(),
+			Status: status, Header: result.header, Body: result.body, FirstByteTime: firstByte.Seconds(),
 			ResponseCommitted: wroteHeader,
 		}
-		applyCursorUsage(failed, billableUsage, request, full, calls)
+		applyCursorUsage(failed, billableUsage, estimatedUsage)
 		result.forwarded = failed
 		if !reqCtx.skipProxyLog && !replayed {
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, runErr.Error())
@@ -505,9 +507,6 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	plain := full
-	if len(request.ToolResults) > 0 {
-		usage = estimatedCursorResponseUsage(request.InputTokenEstimate, plain, calls)
-	}
 
 	var responseBody []byte
 	var header http.Header
@@ -528,11 +527,12 @@ func (s *Server) forwardCursorAgent(
 			if translatedClient != "" {
 				responseTransformErr = writeCursorTranslatedStream(
 					ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body, finish, &responseTransformState,
+					&responsesCursor,
 				)
 				if responseTransformErr == nil {
 					responseTransformErr = writeCursorTranslatedStream(
 						ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body,
-						[]byte("data: [DONE]\n\n"), &responseTransformState,
+						[]byte("data: [DONE]\n\n"), &responseTransformState, &responsesCursor,
 					)
 				}
 			} else {
@@ -570,7 +570,7 @@ func (s *Server) forwardCursorAgent(
 	forwarded := &fwResult{
 		Status: http.StatusOK, Header: header, Body: responseBody, FirstByteTime: firstByte.Seconds(),
 	}
-	applyCursorUsage(forwarded, billableUsage, request, plain, calls)
+	applyCursorUsage(forwarded, billableUsage, estimatedUsage)
 	if !reqCtx.skipProxyLog && !replayed {
 		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, forwarded, "")
 		s.updateTokenStatsForProxy(reqCtx, model.TokenStatsSuccess, duration, forwarded, modelID)
@@ -581,6 +581,31 @@ func (s *Server) forwardCursorAgent(
 		duration:  duration, firstByteTime: firstByte.Seconds(), succeeded: true,
 		nextAction: cooldown.ActionReturnClient, proxyLogWritten: !reqCtx.skipProxyLog && !replayed,
 	}, nil
+}
+
+/**
+ * @brief 按最后一次附着的请求身份保存 SDK 尚未交付的实际消费。
+ * @param origin 渠道、模型和令牌快照，不持有 HTTP 请求或响应。
+ * @return 会话收尾时调用的记账函数。
+ */
+func (s *Server) cursorDetachedUsage(origin logEntryParams) func(cursorauth.Usage) {
+	return func(usage cursorauth.Usage) {
+		result := &fwResult{}
+		applyCursorUsage(result, usage, nil)
+		params := origin
+		params.Result = result
+		params.ErrMsg = "Cursor SDK usage for request started " + origin.StartTime.UTC().Format(time.RFC3339Nano)
+		params.StartTime = time.Now()
+		entry := buildLogEntry(params)
+		entry.LogSource = model.LogSourceCursorDetachedUsage
+		// Runner 关闭时异步请求日志队列可能已停，但 store 会等 Runner 退出才关闭。
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
+		defer cancel()
+		if err := s.store.AddLog(ctx, entry); err != nil {
+			log.Printf("[ERROR] Cursor detached usage write failed (channel=%d, token=%d, model=%q, usage=%+v): %v",
+				entry.ChannelID, entry.AuthTokenID, origin.ActualModel, usage, err)
+		}
+	}
 }
 
 func (s *Server) captureCursorSDKRequest(
@@ -640,12 +665,20 @@ func finishCursorSDKDebug(
 	reqCtx.debugData = capture.buildEntry(response)
 }
 
+/**
+ * @brief 确定 Cursor 返回成功或失败时使用的下游协议。
+ * @param reqCtx 代理请求，缺省使用 OpenAI Chat。
+ * @return 下游协议名称。
+ */
 func cursorResponseFormat(reqCtx *proxyRequestContext) string {
 	if reqCtx == nil {
 		return "openai"
 	}
-	if protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyResponses {
+	switch protocol.DetectRequestFamily(reqCtx.requestPath) {
+	case protocol.RequestFamilyResponses:
 		return "responses"
+	case protocol.RequestFamilyGenerateContent:
+		return "gemini"
 	}
 	if util.NormalizeProtocol(string(reqCtx.clientProtocol)) == util.ProtocolAnthropic ||
 		strings.Contains(reqCtx.requestPath, "/messages") {
@@ -655,30 +688,108 @@ func cursorResponseFormat(reqCtx *proxyRequestContext) string {
 }
 
 /**
- * @brief 对 Cursor 用量上限错误冷却当前实际模型。
- * @param ctx 当前请求上下文；冷却写入不随请求取消。
+ * @brief 分类 Cursor 启动或流中的失败，保留上游业务拒绝的作用域。
+ * @param ctx 当前请求上下文；公共冷却管道负责断开写入的取消链。
  * @param cfg 当前 Cursor 渠道。
  * @param modelID 实际发送给 Cursor 的模型名。
- * @param body 返回给客户端的错误体，供冷却检测规则匹配。
- * @return 冷却后的路由动作；渠道全部模型都冷却时升级为换渠道。
- * @details 上游只确认该模型额度耗尽，同渠道其他模型仍可用；按 429 指数退避而不是
- * 解析报错里的重置日期，Cursor 给出的日期可能已过期，且调整 Spend Limit 后会提前恢复。
+ * @param err Cursor Runner 返回的失败。
+ * @param replayed 是否为已处理的旧工具轮；重放不续期冷却。
+ * @param deferCooldown 是否由管理测试在外层统一处理持久化。
+ * @param format 下游协议名称。
+ * @return 含代理状态、响应正文和后续路由动作的失败结果。
+ * @details 仅临时限流使用 SDK 结构化恢复时间；用量上限按现有指数退避，忽略报错里的日期。
  */
-func (s *Server) cooldownCursorUsageLimit(ctx context.Context, cfg *model.Config, modelID string, body []byte) cooldown.Action {
-	in := cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, http.StatusTooManyRequests, body, nil), modelID)
+func (s *Server) cursorFailureResult(ctx context.Context, cfg *model.Config, modelID string, err error, replayed, deferCooldown bool, format string) *proxyResult {
+	now := time.Now()
+	retryAt, rateLimited := cursorauth.RateLimitRetryTime(err, now)
+	status, action, skipped := http.StatusBadGateway, cooldown.ActionRetryChannel, false
+	accountCapabilityMissing := false
+	code := ""
+	switch {
+	case isClientDisconnectError(err):
+		status, action = StatusClientClosedRequest, cooldown.ActionReturnClient
+	case errors.Is(err, cursorauth.ErrAgentMissing):
+		status, action, skipped = http.StatusServiceUnavailable, cooldown.ActionSkipChannel, true
+	case errors.Is(err, cursorauth.ErrMissingAPIKey):
+		status, skipped = http.StatusUnauthorized, true
+	case cursorauth.IsCredentialRejected(err):
+		status = http.StatusUnauthorized
+	case cursorauth.IsAccountCapabilityUnavailable(err):
+		status, action, accountCapabilityMissing = http.StatusForbidden, cooldown.ActionSkipChannel, true
+	case cursorauth.IsInvalidModel(err):
+		status, action = http.StatusBadRequest, cooldown.ActionSkipChannel
+	case rateLimited, cursorauth.IsUsageLimitExceeded(err):
+		status = http.StatusTooManyRequests
+	case cursorauth.IsContextLengthExceeded(err):
+		status, action, code = http.StatusBadRequest, cooldown.ActionReturnClient, cursorContextLengthExceeded
+	case errors.Is(err, cursorauth.ErrToolTurnInProgress):
+		status, action, code = http.StatusConflict, cooldown.ActionReturnClient, "tool_turn_in_progress"
+	case errors.Is(err, cursorauth.ErrInvalidRequest):
+		status, action = http.StatusBadRequest, cooldown.ActionReturnClient
+	}
+	result := cursorErrorResult(cfg, status, err.Error(), action, format, code)
+	result.candidateSkipped = skipped
+	result.protocolCapabilityMissing = accountCapabilityMissing
+	if replayed || status != http.StatusTooManyRequests {
+		return result
+	}
+	in := cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, status, result.body, nil), modelID)
 	in.ModelScoped = true
-	return s.applyCooldownDecision(ctx, cfg, in)
+	if !retryAt.IsZero() {
+		// 持久化以 Unix 秒记录截止时间，向上取整以免提前重试。
+		in.ModelCooldownUntil = retryAt
+		if nanos := retryAt.Nanosecond(); nanos != 0 {
+			in.ModelCooldownUntil = retryAt.Add(time.Second - time.Duration(nanos))
+		}
+		if deferCooldown {
+			result.header.Set("Retry-After", in.ModelCooldownUntil.UTC().Format(http.TimeFormat))
+		} else {
+			result.header.Set("Retry-After", strconv.FormatInt(int64((retryAt.Sub(now)-1)/time.Second)+1, 10))
+		}
+	}
+	if !deferCooldown {
+		result.nextAction = s.applyCooldownDecision(ctx, cfg, in)
+	}
+	return result
 }
 
-func cursorClientErrorResult(cfg *model.Config, status int, message string) *proxyResult {
-	return cursorErrorResult(cfg, status, message, cooldown.ActionReturnClient)
-}
-
-func cursorErrorResult(cfg *model.Config, status int, message string, action cooldown.Action) *proxyResult {
+/**
+ * @brief 构造下游协议可解析的 Cursor JSON 错误，可复用于对应的 SSE 错误帧。
+ * @param cfg 当前渠道。
+ * @param status 代理判定的 HTTP 或内部状态。
+ * @param message 可公开的错误说明。
+ * @param action 后续路由动作。
+ * @param format 下游协议名称。
+ * @param code 客户端可识别的错误原因，空值省略。
+ * @return 含协议错误正文和路由动作的失败结果。
+ */
+func cursorErrorResult(cfg *model.Config, status int, message string, action cooldown.Action, format, code string) *proxyResult {
 	channelID := cfg.ID
-	body, _ := json.Marshal(map[string]any{
-		"error": map[string]any{"message": message, "type": "api_error"},
-	})
+	var body []byte
+	switch format {
+	case "anthropic":
+		if code != "" && !strings.Contains(message, code) {
+			message = code + ": " + message
+		}
+		body, _ = json.Marshal(anthropicErrorBody(status, message))
+	case "gemini":
+		body = cursorGeminiErrorBody(status, message, code)
+	default:
+		kind := "api_error"
+		switch status {
+		case http.StatusBadRequest, http.StatusConflict:
+			kind = "invalid_request_error"
+		case http.StatusForbidden:
+			kind = "permission_error"
+		case http.StatusTooManyRequests:
+			kind = "rate_limit_error"
+		}
+		detail := map[string]any{"message": message, "type": kind}
+		if code != "" {
+			detail["code"] = code
+		}
+		body, _ = json.Marshal(map[string]any{"error": detail})
+	}
 	header := make(http.Header)
 	header.Set("Content-Type", "application/json")
 	return &proxyResult{
@@ -1010,17 +1121,14 @@ func cursorOpenAIUsage(usage *cursorauth.Usage) map[string]any {
 
 /**
  * @brief 应用 Cursor 真实消费，缺少上游报告时单独记录展示估算。
- * @param result 已启动 Cursor run 的转发结果，必须非 nil。
- * @param usage 本次请求已收到的真实增量合计；nil 表示没有真实报告。
- * @param request 已发送的请求及其输入估算。
- * @param text 当前轮已生成的文本。
- * @param calls 当前轮已生成的工具调用。
+ * @param result 已启动 Cursor run 的转发或会话结算结果，必须非 nil。
+ * @param usage 本次请求已收到的真实增量合计；零值表示没有真实消耗。
+ * @param estimate 与协议响应共用的当前轮展示估算；有真实报告时可为空。
  * @note 估算不写入真实 Token 字段，调用方不得在认证或发送前失败时调用。
  */
-func applyCursorUsage(result *fwResult, usage *cursorauth.Usage, request cursorauth.Request, text string, calls []cursorauth.ToolCall) {
-	if usage == nil {
-		estimated := estimatedCursorResponseUsage(request.InputTokenEstimate, text, calls)
-		result.UsageEstimate = &model.TokenUsageEstimate{InputTokens: estimated.InputTokens, OutputTokens: estimated.OutputTokens}
+func applyCursorUsage(result *fwResult, usage cursorauth.Usage, estimate *cursorauth.Usage) {
+	if usage == (cursorauth.Usage{}) && estimate != nil {
+		result.UsageEstimate = &model.TokenUsageEstimate{InputTokens: estimate.InputTokens, OutputTokens: estimate.OutputTokens}
 		return
 	}
 	result.InputTokens = usage.InputTokens
@@ -1058,12 +1166,19 @@ func estimateCursorInputTokens(request cursorauth.Request) int {
 	return max(1, estimateTokens(&count))
 }
 
-func estimatedCursorResponseUsage(inputTokens int, text string, calls []cursorauth.ToolCall) *cursorauth.Usage {
-	outputTokens := estimateTextTokens(text)
+/**
+ * @brief 以当前轮输入和已生成的内容估算供展示的 Token 用量。
+ * @param inputTokens 已归一化请求的输入 Token 估算。
+ * @param text 当前轮正文。
+ * @param thinking 当前轮思考内容。
+ * @param calls 当前轮生成的工具调用。
+ * @return 估算输入、输出及总用量；没有输出时输出用量为零。
+ */
+func estimatedCursorResponseUsage(inputTokens int, text, thinking string, calls []cursorauth.ToolCall) *cursorauth.Usage {
+	outputTokens := estimateTextTokens(text) + estimateTextTokens(thinking)
 	for _, call := range calls {
 		outputTokens += estimateToolName(call.Name) + max(1, len(call.Arguments)/4) + 8
 	}
-	inputTokens = max(1, inputTokens)
 	return &cursorauth.Usage{
 		InputTokens: inputTokens, OutputTokens: outputTokens,
 		TotalTokens: inputTokens + outputTokens,
@@ -1080,14 +1195,20 @@ func openaiToolCallID(id string) string {
 	return "call_" + id
 }
 
-func jsonString(value string) string {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return `""`
-	}
-	return string(raw)
-}
-
+/**
+ * @brief 将完整 Cursor Chat SSE 帧转换后写入下游，并记录 Responses 序列位置。
+ * @param ctx 当前请求上下文。
+ * @param registry 协议转换注册表。
+ * @param w 客户端响应写入器。
+ * @param client 下游协议。
+ * @param modelID Cursor 实际模型。
+ * @param originalRequest 原始客户端请求。
+ * @param translatedRequest 转换后的 Chat 请求。
+ * @param raw 待转换的上游 Chat SSE 帧。
+ * @param state 转换器的跨帧状态。
+ * @param responsesCursor 已写入的 Responses 帧位置。
+ * @return 转换或写入失败时返回错误；全部成功时为 nil。
+ */
 func writeCursorTranslatedStream(
 	ctx context.Context,
 	registry *protocol.Registry,
@@ -1096,6 +1217,7 @@ func writeCursorTranslatedStream(
 	modelID string,
 	originalRequest, translatedRequest, raw []byte,
 	state *any,
+	responsesCursor *responsesStreamCursor,
 ) error {
 	if registry == nil {
 		return errors.New("protocol registry is unavailable for Cursor " + string(client) + " responses")
@@ -1128,6 +1250,10 @@ func writeCursorTranslatedStream(
 			if _, err := w.Write(chunk); err != nil {
 				return fmt.Errorf("client disconnected: %w", err)
 			}
+			if client == protocol.Codex {
+				_, data := parseSSEEventChunk(chunk)
+				responsesCursor.observe(data)
+			}
 		}
 		if err != nil {
 			return err
@@ -1136,11 +1262,23 @@ func writeCursorTranslatedStream(
 	return nil
 }
 
-func cursorResponsesStreamError(err error) []byte {
+/**
+ * @brief 构造 Responses 的终结错误事件并接续已发出的事件序号。
+ * @param message 可公开的错误说明。
+ * @param code 客户端可识别的错误码；空值表示上游失败。
+ * @param sequence 当前流的下一个事件序号。
+ * @return 完整的 error SSE 帧。
+ */
+func cursorResponsesStreamError(message, code string, sequence int64) []byte {
+	if code == "" {
+		code = "server_error"
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"type":    "error",
-		"code":    "server_error",
-		"message": err.Error(),
+		"type":            "error",
+		"code":            code,
+		"message":         message,
+		"param":           nil,
+		"sequence_number": sequence,
 	})
 	return []byte("event: error\ndata: " + string(payload) + "\n\n")
 }
@@ -1165,4 +1303,44 @@ func cursorTranslatedClientProtocol(path string) protocol.Protocol {
 		}
 	}
 	return ""
+}
+
+/**
+ * @brief 把 Cursor 失败映射为 Gemini JSON 或 SSE data 使用的 Google API 错误。
+ * @param status 网关代理状态，内部状态码按客户端可见的 HTTP 状态转换。
+ * @param message 可公开的错误说明。
+ * @param code 可供客户端处理的错误原因，空值省略 ErrorInfo。
+ * @return 包含 HTTP 数字码、规范状态名及可选结构化原因的 JSON。
+ */
+func cursorGeminiErrorBody(status int, message, code string) []byte {
+	status = util.ClientStatusFor(status)
+	canonical := "INTERNAL"
+	switch status {
+	case http.StatusBadRequest:
+		canonical = "INVALID_ARGUMENT"
+	case http.StatusUnauthorized:
+		canonical = "UNAUTHENTICATED"
+	case http.StatusForbidden:
+		canonical = "PERMISSION_DENIED"
+	case http.StatusConflict:
+		canonical = "ABORTED"
+	case http.StatusTooManyRequests:
+		canonical = "RESOURCE_EXHAUSTED"
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		canonical = "UNAVAILABLE"
+	case http.StatusGatewayTimeout:
+		canonical = "DEADLINE_EXCEEDED"
+	case StatusClientClosedRequest:
+		canonical = "CANCELLED"
+	}
+	failure := map[string]any{"code": status, "status": canonical, "message": message}
+	if code != "" {
+		failure["details"] = []map[string]string{{
+			"@type":  "type.googleapis.com/google.rpc.ErrorInfo",
+			"domain": "ccload",
+			"reason": strings.ToUpper(code),
+		}}
+	}
+	body, _ := json.Marshal(map[string]any{"error": failure})
+	return body
 }

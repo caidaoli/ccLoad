@@ -22,6 +22,7 @@ type anthropicCredentialManager struct {
 	entries          map[int64]*anthropicauth.Credential
 	refreshes        singleflight.Group
 	refreshTracker   *oauthCredentialRefreshTracker
+	advisorOwners    *anthropicAdvisorOwners ///< 只记录刷新端点证实的 advisor 凭证连续性。
 	service          *anthropicauth.Service
 	store            storage.Store
 	clientFor        func(*model.Config) *http.Client
@@ -195,6 +196,11 @@ func (m *anthropicCredentialManager) persistRefreshResult(
 		payload, err := merged.JSON()
 		if err != nil {
 			return nil, err
+		}
+		if m.advisorOwners != nil {
+			// The token response already proves continuity of this grant. A
+			// competing store update never supplies either identity in the link.
+			m.advisorOwners.linkRefresh(current, merged)
 		}
 		updated, err := m.store.CompareAndSwapOAuthCredential(
 			ctx, currentCfg.ID, model.AuthTypeAnthropicOAuth, currentCfg.OAuthCredential, payload,

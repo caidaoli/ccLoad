@@ -3,6 +3,11 @@
  */
 let copyingChannelId = null;
 
+/**
+ * @brief 当前编辑表单读取时的 ETag，用于保护同一份渠道草稿。
+ */
+let channelEditorETag = null;
+
 function setChannelModalTitle(i18nKey) {
   const titleEl = document.getElementById('modalTitle');
   if (!titleEl) return;
@@ -579,9 +584,11 @@ async function continueOpenCodeChannel(event) {
  * @return 表单初始化完成的 Promise。
  */
 async function showAddModal(authType = 'api_key', channelPreset = '') {
+  channelEditorLoadVersion++;
   const preset = openCodeChannelPresets[channelPreset];
   copyingChannelId = null;
   editingChannelId = null;
+  channelEditorETag = null;
   editingChannelAuthType = authType === 'system_one' ? 'system_one' : 'api_key';
   currentChannelKeyCooldowns = [];
   resetModalKeyStatusFilter();
@@ -644,19 +651,26 @@ async function showAddModal(authType = 'api_key', channelPreset = '') {
  * @note 打开并更新编辑弹窗；凭证模式使用公共能力判断。
  */
 async function editChannel(id, { copy = false } = {}) {
+  const loadVersion = ++channelEditorLoadVersion;
   let editorData;
+  let etag;
   try {
-    editorData = await fetchDataWithAuth(`/admin/channels/${id}/editor`);
+    const { res, payload } = await fetchAPIWithAuthRaw(`/admin/channels/${id}/editor`);
+    if (!payload.success) throw new Error(payload.error || window.t('channels.loadChannelsFailed'));
+    editorData = payload.data;
+    etag = res.headers.get('ETag');
   } catch (error) {
+    if (loadVersion !== channelEditorLoadVersion) return;
     console.error('Failed to fetch channel editor data', error);
     if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));
     return;
   }
+  if (loadVersion !== channelEditorLoadVersion) return;
 
   const channel = editorData && editorData.channel;
   const apiKeys = editorData && Array.isArray(editorData.keys) ? editorData.keys : null;
-  if (!channel || apiKeys === null) {
-    console.error('Invalid channel editor data', editorData);
+  if (!channel || apiKeys === null || (!copy && !etag)) {
+    console.error('Incomplete channel editor snapshot');
     if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));
     return;
   }
@@ -665,11 +679,12 @@ async function editChannel(id, { copy = false } = {}) {
     ? editorData.url_stats.items
     : [];
 
+  await ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
+  if (loadVersion !== channelEditorLoadVersion) return;
+
   resetModalKeyStatusFilter();
-
-  const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
-
   editingChannelId = copy ? null : id;
+  channelEditorETag = copy ? null : etag;
   copyingChannelId = copy ? id : null;
   editingChannelAuthType = channel.auth_type === 'system_one' || isCredentialChannelAuthType(channel.auth_type)
     ? channel.auth_type
@@ -681,10 +696,6 @@ async function editChannel(id, { copy = false } = {}) {
   document.getElementById('channelName').value = copy ? generateCopyName(channel.name) : channel.name;
   setInlineURLTableData(channel.urls);
   applyURLStats(urlStats);
-
-  await Promise.all([
-    protocolModeRenderPromise
-  ]);
 
   const now = Date.now();
   currentChannelKeyCooldowns = apiKeys.map((apiKey, index) => {
@@ -781,10 +792,13 @@ async function editChannel(id, { copy = false } = {}) {
 
 // 抽屉每次打开或关闭都递增；异步结果据此丢弃已离开的编辑会话。
 let channelEditorSession = 0;
+// 加载阶段独立计数，读取失败不会使当前显示的表单会话失效。
+let channelEditorLoadVersion = 0;
 
 // 抽屉打开时高级分区进入草稿态，导航回到第一个分区。
 function showChannelEditorDrawer() {
   channelEditorSession++;
+  setChannelSavePending(false);
   invokeChannelEditorAction('beginAdvancedSettingsDraft');
   document.getElementById('channelModal').classList.add('show');
   const main = document.getElementById('channelEditorMain');
@@ -852,10 +866,12 @@ async function closeModal() {
     return;
   }
   channelEditorSession++;
+  channelEditorLoadVersion++;
   document.getElementById('channelModal').classList.remove('show');
   clearChannelRequiredFieldMarks();
   invokeChannelEditorAction('discardAdvancedSettingsDraft');
   editingChannelId = null;
+  channelEditorETag = null;
   copyingChannelId = null;
   clearChannelDuplicateHint();
   resetChannelFormDirty();
@@ -1103,6 +1119,12 @@ function validateChannelRequiredFields(missingByField) {
  */
 async function saveChannel(event) {
   event.preventDefault();
+  const channelId = editingChannelId;
+  const etag = channelEditorETag;
+  if (channelId && !etag) {
+    if (window.showError) window.showError(window.t('channels.editorSaveConflict'));
+    return;
+  }
   if (!validateChannelScheduledCheckSchedule()) return;
   if (invokeChannelEditorAction('commitAdvancedSettingsDraft') === false) return;
 
@@ -1185,40 +1207,52 @@ async function saveChannel(event) {
     models: formData.models.length === 0 && editingChannelAuthType !== 'zai_oauth'
   })) return;
 
+  const session = channelEditorSession;
+  const copySourceID = copyingChannelId;
   setChannelSavePending(true);
   try {
-    if (!editingChannelId && !copyingChannelId) {
+    if (!channelId && !copySourceID) {
       const dupes = await checkChannelDuplicate(validURLConfigs);
       if (dupes.length > 0 && !await confirmDuplicateChannel(dupes)) return;
+      if (session !== channelEditorSession) return;
     }
 
-    const resp = editingChannelId
-      ? await fetchAPIWithAuth(`/admin/channels/${editingChannelId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        })
-      : await fetchAPIWithAuth(copyingChannelId ? `/admin/channels/${copyingChannelId}/loomy-copy` : '/admin/channels', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        });
+    const headers = { 'Content-Type': 'application/json' };
+    const body = JSON.stringify(formData);
+    let resp;
+    if (channelId) {
+      const { res, payload } = await fetchAPIWithAuthRaw(`/admin/channels/${channelId}`, {
+        method: 'PUT', headers: { ...headers, 'If-Match': etag }, body
+      });
+      if (session !== channelEditorSession) return;
+      if (res.status === 412) {
+        channelEditorETag = null;
+        markChannelFormDirty();
+        if (window.showError) window.showError(window.t('channels.editorSaveConflict'));
+        return;
+      }
+      resp = payload;
+    } else {
+      const url = copySourceID ? `/admin/channels/${copySourceID}/loomy-copy` : '/admin/channels';
+      resp = await fetchAPIWithAuth(url, { method: 'POST', headers, body });
+      if (session !== channelEditorSession) return;
+    }
 
     if (!resp.success) throw new Error(resp.error || window.t('channels.msg.saveFailed'));
 
-    const isNewChannel = !editingChannelId;
-    const savedChannelId = editingChannelId;
+    const isNewChannel = !channelId;
 
     invokeChannelEditorAction('completeManagementAccountSave');
     resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
+    setChannelSavePending(false);
     closeModal();
-    await handleChannelUpdateSuccess({ isNewChannel, savedChannelId, response: resp });
+    await handleChannelUpdateSuccess({ isNewChannel, savedChannelId: channelId, response: resp });
     if (window.showSuccess) window.showSuccess(isNewChannel ? window.t('channels.channelAdded') : window.t('channels.channelUpdated'));
   } catch (e) {
     console.error('Save channel failed', e);
     if (window.showError) window.showError(window.t('channels.saveFailed', { error: e.message }));
   } finally {
-    setChannelSavePending(false);
+    if (session === channelEditorSession) setChannelSavePending(false);
   }
 }
 
@@ -2206,10 +2240,12 @@ async function copyChannel(id, name) {
   if (!channel) return;
   if (channel.auth_type === 'loomy_session') return editChannel(channel.id, { copy: true });
 
+  channelEditorLoadVersion++;
   const copiedName = generateCopyName(name);
 
   copyingChannelId = null;
   editingChannelId = null;
+  channelEditorETag = null;
   editingChannelAuthType = channel.auth_type === 'system_one' ? 'system_one' : 'api_key';
   clearChannelDuplicateHint();
   currentChannelKeyCooldowns = [];

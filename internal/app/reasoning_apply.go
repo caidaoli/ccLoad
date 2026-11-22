@@ -49,8 +49,8 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
  * @brief 读取实际上游模型允许的思考等级
  * @param model 实际路由后的模型名，可带供应商前缀，大小写无关
  * @param upstream 本次使用的上游协议，决定优先查询的目录
- * @return 模型允许的思考等级；目录未收录或收录但无档位时返回 nil
- * @return 任一目录是否收录该模型；收录但无档位（只有预算或不支持思考）时为 true
+ * @return 模型允许的思考等级；未知或无档位时返回 nil
+ * @return 是否已知目标模型的思考能力，包括只有预算或不支持思考
  */
 func reasoningModelLevels(model string, upstream protocol.Protocol) ([]string, bool) {
 	provider := "openai"
@@ -70,7 +70,7 @@ func reasoningModelLevels(model string, upstream protocol.Protocol) ([]string, b
  * @brief 按模型名查询已知思考等级，不区分上游协议
  * @param model 模型名，可带供应商前缀（如 `Qwen/Qwen3.8-Max`），大小写无关
  * @return 依次取 CLIProxy 内置目录、models.dev 目录、尚未进入快照的 Anthropic 5.2 官方等级；都无档位时返回 nil
- * @return 任一目录是否收录该模型，收录但无档位时为 true
+ * @return 是否有明确的模型思考能力信息
  */
 func reasoningCatalogLevels(model string) ([]string, bool) {
 	name := anthropicCanonicalModelName(model)

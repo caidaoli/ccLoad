@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
@@ -183,70 +182,116 @@ func (s *Server) prepareAntigravityCredits(ctx context.Context, cfg *model.Confi
 	return credential, nil
 }
 
-// Only typed Google details authorize paid fallback. RetryInfo is not evidence
-// of exhausted quota, regardless of how long its delay is.
-func antigravityLimitDetails(body []byte) (reason string, delay time.Duration) {
+/**
+ * @brief 仅从 Google ErrorInfo 识别可触发独立额度状态的失败原因。
+ * @param body 上游 HTTP 429 正文或 SSE 错误。
+ * @return 已知限流原因；仅有延迟提示时为空。
+ */
+func antigravityLimitReason(body []byte) (reason string) {
 	if gjson.GetBytes(body, "error.status").String() != "RESOURCE_EXHAUSTED" {
-		return "", 0
+		return ""
 	}
 	for _, detail := range gjson.GetBytes(body, "error.details").Array() {
-		switch detail.Get("@type").String() {
-		case "type.googleapis.com/google.rpc.ErrorInfo":
+		if detail.Get("@type").String() == "type.googleapis.com/google.rpc.ErrorInfo" {
 			value := detail.Get("reason").String()
 			order := []string{"RATE_LIMIT_EXCEEDED", "QUOTA_EXHAUSTED", "INSUFFICIENT_G1_CREDITS_BALANCE"}
 			if slices.Index(order, value) > slices.Index(order, reason) {
 				reason = value
 			}
-		case "type.googleapis.com/google.rpc.RetryInfo":
-			parsed, err := time.ParseDuration(detail.Get("retryDelay").String())
-			if err == nil && parsed > 0 {
-				delay = parsed
+		}
+	}
+	return reason
+}
+
+/**
+ * @brief 从正文读取 Antigravity 恢复时间；没有有效提示时看真正 HTTP 429 的响应头。
+ * @param body 上游 HTTP 429 正文或 SSE 错误。
+ * @param headers HTTP 429 的响应头；SSE 错误传 nil。
+ * @param now 相对恢复时间的起算时间。
+ * @return 明确的恢复时间；无提示时为零值，显式零秒返回 now。
+ */
+func antigravityRetryAt(body []byte, headers http.Header, now time.Time) time.Time {
+	details := gjson.GetBytes(body, "error.details").Array()
+	for _, detail := range details {
+		if detail.Get("@type").String() == "type.googleapis.com/google.rpc.RetryInfo" {
+			delay, err := time.ParseDuration(strings.ToLower(strings.TrimSpace(detail.Get("retryDelay").String())))
+			if err == nil && delay >= 0 {
+				return now.Add(delay)
 			}
 		}
 	}
-	return reason, delay
+	if until, ok := util.GoogleRateLimitRetryAt(body, now); ok {
+		return until
+	}
+	if until, ok := util.ParseRetryAfterHint(headers, now); ok {
+		return until
+	}
+	return time.Time{}
 }
 
-func antigravityQuotaReset(res *fwResult, delay time.Duration) time.Time {
-	if delay > 0 {
-		return time.Now().Add(delay)
+/**
+ * @brief 读取 Antigravity 最终尝试的恢复时间，SSE 错误只接受帧内提示。
+ * @param res 上游 429 或已归类的 SSE 失败结果。
+ * @param now 相对恢复时间的起算时间。
+ * @return 明确恢复时间；未收到提示时为零值。
+ */
+func antigravityAttemptRetryAt(res *fwResult, now time.Time) time.Time {
+	if len(res.SSEErrorEvent) > 0 {
+		return antigravityRetryAt(res.SSEErrorEvent, nil, now)
 	}
-	classification := util.ClassifyHTTPResponseWithMeta(res.Status, res.Header, res.Body)
-	for _, until := range []time.Time{classification.ModelCooldownUntil, classification.KeyCooldownUntil, classification.ChannelCooldownUntil} {
-		if until.After(time.Now()) {
-			return until
-		}
-	}
-	return time.Now().Add(time.Minute)
+	return antigravityRetryAt(res.Body, res.Header, now)
 }
 
-// Claude standard quota and credits balance errors stay separate from generic
-// cooldowns so paid fallback remains possible. Other models use normal cooldowns.
-func (s *Server) handleAntigravityQuotaFailure(ctx context.Context, cfg *model.Config, modelName, selectedKey string, res *fwResult, duration float64, reqCtx *proxyRequestContext) (*proxyResult, bool) {
+/**
+ * @brief 按 Antigravity 的明确限流原因写模型恢复时间、Claude 标准额度或积分状态。
+ * @param ctx 当前请求上下文。
+ * @param cfg 本次出站凭证。
+ * @param modelName 实际上游模型。
+ * @param res 已归类的上游失败。
+ * @return 该额度状态由提供商接管时返回 true。
+ */
+func (s *Server) recordAntigravity429State(ctx context.Context, cfg *model.Config, modelName string, res *fwResult) bool {
 	if !cfg.UsesAntigravityOAuth() || res.Status != http.StatusTooManyRequests {
-		return nil, false
+		return false
 	}
-	reason, delay := antigravityLimitDetails(res.Body)
-	if reason == "RATE_LIMIT_EXCEEDED" && delay > 0 {
-		writeCtx, cancel := cooldownWriteContext(ctx)
-		defer cancel()
-		// The existing cooldown store has second precision. Round up, never release early.
-		until := time.Now().Add(delay).Truncate(time.Second).Add(time.Second)
-		if err := s.store.SetModelCooldown(writeCtx, cfg.ID, modelName, until); err != nil {
-			log.Printf("[WARN] Antigravity rate cooldown persistence failed: channel_id=%d err=%v", cfg.ID, err)
+	body, _ := forwardResultErrorPayload(res)
+	reason := antigravityLimitReason(body)
+	now := time.Now()
+	if reason == "RATE_LIMIT_EXCEEDED" {
+		until := antigravityAttemptRetryAt(res, now)
+		if until.IsZero() {
+			return false
 		}
-		s.invalidateChannelRelatedCache(cfg.ID)
-	} else {
-		if reason != "QUOTA_EXHAUSTED" && (!cfg.AntigravityCredits || reason != "INSUFFICIENT_G1_CREDITS_BALANCE") {
-			return nil, false
+		if until.After(now) {
+			writeCtx, cancel := cooldownWriteContext(ctx)
+			defer cancel()
+			// The cooldown store has second precision. Round up to preserve the wait.
+			if second := until.Truncate(time.Second); !until.Equal(second) {
+				until = second.Add(time.Second)
+			}
+			if err := s.store.SetModelCooldown(writeCtx, cfg.ID, modelName, until); err != nil {
+				log.Printf("[WARN] Antigravity rate cooldown persistence failed: channel_id=%d err=%v", cfg.ID, err)
+			}
+			s.invalidateChannelRelatedCache(cfg.ID)
 		}
-		if reason == "QUOTA_EXHAUSTED" && (cfg.AntigravityCredits || !antigravityClaudeModel(modelName)) {
-			return nil, false
-		}
-		s.antigravityCredentials.updateQuotaState(ctx, cfg, modelName, antigravityQuotaReset(res, delay), cfg.AntigravityCredits)
+		return true
 	}
-	entry := buildProxyLogEntry(reqCtx, cfg, modelName, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, "")
-	s.AddLogAsync(entry)
-	s.updateTokenStatsForProxy(reqCtx, model.TokenStatsFailure, duration, res, modelName)
-	return &proxyResult{status: res.Status, body: res.Body, header: res.Header, channelID: &cfg.ID, duration: duration, nextAction: cooldown.ActionRetryChannel, proxyLogWritten: true}, true
+	if cfg.AntigravityCredits {
+		if reason != "INSUFFICIENT_G1_CREDITS_BALANCE" {
+			return false
+		}
+		s.antigravityCredentials.updateQuotaState(ctx, cfg, modelName, time.Time{}, true)
+		return true
+	}
+	if reason != "QUOTA_EXHAUSTED" || !antigravityClaudeModel(modelName) {
+		return false
+	}
+	until := antigravityAttemptRetryAt(res, now)
+	if until.IsZero() {
+		until = now.Add(time.Minute)
+	}
+	if until.After(now) {
+		s.antigravityCredentials.updateQuotaState(ctx, cfg, modelName, until, false)
+	}
+	return true
 }

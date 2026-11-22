@@ -11,14 +11,21 @@ import (
 	"time"
 )
 
-// ModelCatalogSchemaVersion 是持久化归一化目录的版本。
-const ModelCatalogSchemaVersion = 2
+/**
+ * @brief 已分别保存思考能力是否明确及各候选等级的目录缓存版本。
+ */
+const ModelCatalogSchemaVersion = 3
 
 /**
  * @brief 不含思考等级字段的旧版缓存格式
  * @details 仍可安装价格；安装时丢弃 ETag，使下一次同步全量拉取等级数据。
  */
 const modelCatalogSchemaVersionWithoutReasoning = 1
+
+/**
+ * @brief 只保留已声明等级、无法区分预算型和缺少能力信息的旧版缓存格式。
+ */
+const modelCatalogSchemaVersionWithEfforts = 2
 
 // ModelsDevOfficialProviders 是允许覆盖内置官方价格的 models.dev provider。
 var ModelsDevOfficialProviders = []string{
@@ -34,7 +41,9 @@ var modelsDevProviderPriority = func() map[string]int {
 	return priority
 }()
 
-// ModelCatalogEntry 是一个可计费模型的归一化官方元数据和价格。
+/**
+ * @brief 可计费模型的归一化价格和已声明能力。
+ */
 type ModelCatalogEntry struct {
 	ID               string       `json:"id"`
 	Provider         string       `json:"provider"`
@@ -43,7 +52,8 @@ type ModelCatalogEntry struct {
 	LastUpdated      string       `json:"last_updated,omitempty"`
 	Status           string       `json:"status,omitempty"`
 	OutputModalities []string     `json:"output_modalities,omitempty"`
-	ReasoningEfforts []string     `json:"reasoning_efforts,omitempty"` ///< models.dev 声明的思考等级，保持上游顺序；空表示未声明
+	ReasoningEfforts []string     `json:"reasoning_efforts,omitempty"` ///< models.dev 声明的思考等级，保持上游顺序
+	ReasoningKnown   bool         `json:"reasoning_known,omitempty"`   ///< 上游显式声明思考选项或明确不支持思考
 	Pricing          ModelPricing `json:"pricing"`
 }
 
@@ -62,6 +72,9 @@ type modelsDevProvider struct {
 	Models map[string]modelsDevModel `json:"models"`
 }
 
+/**
+ * @brief models.dev 模型的计费与能力输入字段。
+ */
 type modelsDevModel struct {
 	ID          string              `json:"id"`
 	Family      string              `json:"family"`
@@ -70,7 +83,8 @@ type modelsDevModel struct {
 	Status      string              `json:"status"`
 	Modalities  modelsDevModalities `json:"modalities"`
 	Cost        *modelsDevCost      `json:"cost"`
-	Reasoning   []modelsDevOption   `json:"reasoning_options"`
+	Reasoning   *bool               `json:"reasoning"`         ///< nil 表示未声明是否支持思考。
+	Options     []modelsDevOption   `json:"reasoning_options"` ///< nil 表示上游未提供选项列表。
 }
 
 /**
@@ -183,6 +197,13 @@ func modelsDevOfficialProvidersInPriorityOrder() []string {
 	return providers
 }
 
+/**
+ * @brief 归一化官方模型价格及可独立核实的思考能力。
+ * @param provider 已通过白名单验证的提供商 ID。
+ * @param raw 上游模型的价格及元数据。
+ * @return 模型目录条目；模型 ID 或价格无效时为零值。
+ * @return 有可安装的模型条目时为 true。
+ */
 func normalizeModelsDevModel(provider string, raw modelsDevModel) (ModelCatalogEntry, bool) {
 	id := strings.TrimSpace(raw.ID)
 	prefix := provider + "/"
@@ -223,7 +244,8 @@ func normalizeModelsDevModel(provider string, raw modelsDevModel) (ModelCatalogE
 		LastUpdated:      raw.LastUpdated,
 		Status:           raw.Status,
 		OutputModalities: append([]string(nil), raw.Modalities.Output...),
-		ReasoningEfforts: modelsDevReasoningEfforts(raw.Reasoning),
+		ReasoningEfforts: modelsDevReasoningEfforts(raw.Options),
+		ReasoningKnown:   raw.Options != nil || raw.Reasoning != nil && !*raw.Reasoning,
 		Pricing:          pricing,
 	}, true
 }
@@ -344,16 +366,16 @@ func ModelOutputModalities(id string) ([]string, bool) {
  * @brief 查询 models.dev 声明的模型思考等级
  * @param id 模型 ID，大小写无关
  * @return 等级副本；目录未安装、未收录或未声明等级时返回 nil
- * @return 目录是否收录该模型；收录但未声明等级时为 true
+ * @return 是否有明确的思考能力信息；仅有价格或其他元数据时为 false
  */
 func ModelReasoningEfforts(id string) ([]string, bool) {
 	snapshot := activeModelPricing.Load()
 	if snapshot == nil {
 		return nil, false
 	}
-	entry, ok := snapshot.metadata[strings.ToLower(strings.TrimSpace(id))]
+	entry := snapshot.metadata[strings.ToLower(strings.TrimSpace(id))]
 	if len(entry.ReasoningEfforts) == 0 {
-		return nil, ok
+		return nil, entry.ReasoningKnown
 	}
 	return slices.Clone(entry.ReasoningEfforts), true
 }
@@ -374,7 +396,13 @@ func cloneModelCatalogEntry(entry ModelCatalogEntry) ModelCatalogEntry {
 	return entry
 }
 
-// InstallModelCatalog 验证并原子安装一份归一化模型目录。
+/**
+ * @brief 验证并原子安装一份模型目录；未声明能力的旧快照仍可提供价格。
+ * @param snapshot 来自同步或本地缓存的目录快照。
+ * @param source 表示缓存或远程来源的非空标识。
+ * @return 快照或来源无效时返回错误；成功时为 nil。
+ * @note 并发安全；旧格式的 ETag 不会用于下一次同步。
+ */
 func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 	if snapshot == nil {
 		return fmt.Errorf("model catalog is nil")
@@ -382,7 +410,8 @@ func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 	etag := snapshot.ETag
 	switch snapshot.Version {
 	case ModelCatalogSchemaVersion:
-	case modelCatalogSchemaVersionWithoutReasoning:
+	case modelCatalogSchemaVersionWithoutReasoning, modelCatalogSchemaVersionWithEfforts:
+		// 旧格式仍可提供价格及已有等级，下次同步须补齐能力信息。
 		etag = ""
 	default:
 		return fmt.Errorf("unsupported model catalog version %d", snapshot.Version)

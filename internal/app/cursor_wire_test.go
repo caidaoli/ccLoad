@@ -19,22 +19,23 @@ import (
 	"ccLoad/internal/util"
 )
 
+/**
+ * @brief 提供可配置的 Cursor 输出和错误，并记录最近一次请求。
+ */
 type fakeCursorRunner struct {
-	model              string
-	prompt             string
-	text               string
-	toolCalls          []cursorauth.ToolCall
-	err                error
-	eventErr           error
-	models             []string
-	apiKey             string
-	usage              *cursorauth.Usage
-	toolUsage          *cursorauth.Usage
-	toolUsageEstimated bool
-	replayed           bool
-	raw                [][]byte
-	pings              int
-	request            cursorauth.Request
+	model     string
+	prompt    string
+	text      string
+	toolCalls []cursorauth.ToolCall
+	err       error
+	eventErr  error
+	models    []string
+	apiKey    string
+	usage     *cursorauth.Usage
+	replayed  bool
+	raw       [][]byte
+	pings     int
+	request   cursorauth.Request
 }
 
 type failingCursorResponseWriter struct {
@@ -94,6 +95,14 @@ func (*failingCursorResponseWriter) Write([]byte) (int, error) {
 	return 0, errors.New("broken pipe")
 }
 
+/**
+ * @brief 记录请求并返回预设的 Cursor 事件序列。
+ * @param _ 请求上下文；测试替身无需等待上游。
+ * @param _ 渠道凭证；测试替身无需认证。
+ * @param request 已解析的当前请求。
+ * @return 预设事件通道；模拟启动错误时为 nil。
+ * @return 预设的启动错误；正常启动时为 nil。
+ */
 func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
 	r.request = request
 	r.model = request.Model
@@ -127,7 +136,7 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, requ
 	}
 	for i := range r.toolCalls {
 		call := r.toolCalls[i]
-		events <- cursorauth.Event{Text: r.text, ToolCall: &call, Usage: r.toolUsage, UsageEstimated: r.toolUsageEstimated}
+		events <- cursorauth.Event{Text: r.text, ToolCall: &call}
 	}
 	events <- cursorauth.Event{Text: r.text, Done: true, Usage: r.usage, Replayed: r.replayed}
 	close(events)
@@ -966,18 +975,22 @@ func TestForwardCursorAgentRecordsPrivacyCounts(t *testing.T) {
  * @brief 验证模型思考后缀按客户端协议写入后，经协议转换到达 Cursor 请求的思考等级。
  * @param t 测试上下文。
  */
-func TestForwardCursorAgentPassesThinkingSuffixEffort(t *testing.T) {
+func TestForwardCursorAgentPassesThinkingEffort(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name     string
 		protocol protocol.Protocol
 		path     string
 		body     string
+		suffix   string
+		want     string
 	}{
-		{"openai", protocol.OpenAI, "/v1/chat/completions", `{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}]}`},
-		{"anthropic", protocol.Anthropic, "/v1/messages", `{"model":"composer-2.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`},
-		{"responses", protocol.Codex, "/v1/responses", `{"model":"composer-2.5","input":[{"role":"user","content":"hi"}]}`},
-		{"gemini", protocol.Gemini, "/v1beta/models/composer-2.5:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+		{"openai", protocol.OpenAI, "/v1/chat/completions", `{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}]}`, "(high)", "high"},
+		{"anthropic", protocol.Anthropic, "/v1/messages", `{"model":"composer-2.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, "(high)", "high"},
+		{"responses", protocol.Codex, "/v1/responses", `{"model":"composer-2.5","input":[{"role":"user","content":"hi"}]}`, "(high)", "high"},
+		{"gemini", protocol.Gemini, "/v1beta/models/composer-2.5:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, "(high)", "high"},
+		{"anthropic disabled", protocol.Anthropic, "/v1/messages", `{"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`, "", "none"},
+		{"anthropic none suffix", protocol.Anthropic, "/v1/messages", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`, "(none)", "none"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -990,7 +1003,7 @@ func TestForwardCursorAgentPassesThinkingSuffixEffort(t *testing.T) {
 				&model.Config{ID: 31, AuthType: model.AuthTypeCursorOAuth},
 				&cursorauth.Credential{APIKey: "key"},
 				&proxyRequestContext{
-					originalModel: "composer-2.5", requestedModel: "composer-2.5(high)",
+					originalModel: "composer-2.5", requestedModel: "composer-2.5" + tc.suffix,
 					clientProtocol: tc.protocol, requestPath: tc.path, body: []byte(tc.body), skipProxyLog: true,
 				},
 				httptest.NewRecorder(),
@@ -998,8 +1011,8 @@ func TestForwardCursorAgentPassesThinkingSuffixEffort(t *testing.T) {
 			if err != nil || result == nil || !result.succeeded {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
-			if runner.request.Effort != "high" {
-				t.Fatalf("effort = %q, want high", runner.request.Effort)
+			if runner.request.Effort != tc.want {
+				t.Fatalf("effort = %q, want %q", runner.request.Effort, tc.want)
 			}
 		})
 	}

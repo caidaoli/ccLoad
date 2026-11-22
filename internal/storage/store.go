@@ -10,12 +10,40 @@ import (
 )
 
 /**
+ * @brief 版本化编辑的前置条件未满足。
+ */
+var ErrChannelEditConflict = model.ErrChannelEditConflict
+
+/**
  * @brief 网关配置、鉴权与运行数据的持久化接口
  */
 type Store interface {
 	// === Channel Management ===
 	ListConfigs(ctx context.Context) ([]*model.Config, error)
 	GetConfig(ctx context.Context, id int64) (*model.Config, error)
+	/**
+	 * @brief 读取同一数据库快照中的渠道、Key 和编辑版本。
+	 * @param ctx 数据库操作上下文。
+	 * @param id 渠道 ID。
+	 * @return 渠道快照。
+	 * @return 按索引排序的 Key 快照。
+	 * @return 不带引号的版本摘要，不包含冷却等运行状态。
+	 * @return 渠道不存在或读取失败时的错误。
+	 */
+	GetChannelEditSnapshot(ctx context.Context, id int64) (*model.Config, []*model.APIKey, string, error)
+	/**
+	 * @brief 在同一事务内比较编辑版本并保存表单内容。
+	 * @param ctx 数据库操作上下文。
+	 * @param id 渠道 ID。
+	 * @param upd 渠道表单配置。
+	 * @param keys 要原位更新或完整替换的 Key，原位更新时 nil 表示不写 Key。
+	 * @param replaceKeys 为 true 时完整替换 Key 集合。
+	 * @param expectedVersion 编辑器读到的版本，空字符串允许无条件保存。
+	 * @param mergeManagement 根据锁定的当前封套纯计算新管理配置，nil 时保留；可能在事务重试时再次调用。
+	 * @return 保存后的渠道配置。
+	 * @return 版本不符返回 ErrChannelEditConflict；不存在或写入失败时返回相应错误。
+	 */
+	UpdateChannelIfEditVersion(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool, expectedVersion string, mergeManagement func(string) (string, error)) (*model.Config, error)
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	CreateConfigWithAPIKeys(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error)
 	UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error)

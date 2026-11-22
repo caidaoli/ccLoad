@@ -4,27 +4,30 @@ import (
 	"bytes"
 	"container/list"
 	"crypto/sha256"
+	"strings"
 	"sync"
 	"time"
+
+	"ccLoad/internal/anthropicauth"
 
 	"github.com/tidwall/gjson"
 )
 
 /**
- * @brief 保存上游已签发或接受的 advisor 调用 ID 及对应凭证的摘要；每个服务实例最多保留 4096 项。
+ * @brief 保存 advisor 调用归属及已证实的凭证轮换关系，每个服务实例共用 4096 项上限。
  * @note 零值可用，锁保护归属检查、首次登记及淘汰。
  */
 type anthropicAdvisorOwners struct {
 	mu      sync.Mutex                 ///< 保护下述索引与使用顺序。
-	entries map[[32]byte]*list.Element ///< 调用方与工具 ID 的摘要索引。
+	entries map[[32]byte]*list.Element ///< 工具调用或凭证轮换的摘要索引。
 	recent  list.List                  ///< 最近使用的归属排在队首。
 }
 
 /**
- * @brief 同一条已确认归属的有效期随使用续期。
+ * @brief 同一条已确认归属或轮换关系的有效期随使用续期。
  */
 type advisorOwnerEntry struct {
-	key     [32]byte  ///< 调用方与工具 ID 的摘要。
+	key     [32]byte  ///< 调用 ID 或轮换来源凭证的摘要索引。
 	owner   [32]byte  ///< 实际上游凭证的稳定身份摘要。
 	expires time.Time ///< 过期后允许重新识别归属。
 }
@@ -40,6 +43,115 @@ type anthropicAdvisorAttempt struct {
 }
 
 /**
+ * @brief 从 Anthropic OAuth 凭证派生 advisor 身份。
+ * @param credential 当前尝试使用的凭证。
+ * @return 已知时取账号身份，否则取实际访问及刷新令牌的摘要。
+ */
+func anthropicAdvisorOAuthOwner(credential *anthropicauth.Credential) [32]byte {
+	identity := anthropicAccountIdentity(credential)
+	if identity == "" {
+		identity = "token:" + credential.AccessToken + "\x00" + credential.RefreshToken
+	}
+	return sha256.Sum256([]byte("anthropic-oauth\x00" + identity))
+}
+
+/**
+ * @brief 在 OAuth 刷新证实同一凭证时关联历史归属与新身份。
+ * @param previous 合并前的账号资料。
+ * @param refreshed 合并后实际应用的账号资料。
+ * @note 同一 refresh grant 能证明缺少账号资料时的连续性。已知账号发生冲突时保持隔离。
+ */
+func (s *anthropicAdvisorOwners) linkRefresh(previous, refreshed *anthropicauth.Credential) {
+	if previous.AccountUUID != "" || previous.EmailAddress != "" && !strings.EqualFold(previous.EmailAddress, refreshed.EmailAddress) {
+		return
+	}
+	prior := anthropicAdvisorOAuthOwner(previous)
+	next := anthropicAdvisorOAuthOwner(refreshed)
+	if prior == next {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	resolved := s.resolveOwner(prior, now)
+	if previous.EmailAddress != "" && resolved != prior {
+		return // 已证实的 UUID 归属不随另一份邮箱凭证迁移。
+	}
+	next = s.resolveOwner(next, now)
+	if resolved != next {
+		s.remember(advisorRefreshKey(resolved), next, now)
+	}
+}
+
+/**
+ * @brief 为刷新映射生成与工具调用索引隔离的查找键。
+ * @param owner 刷新前的凭证身份。
+ * @return 轮换来源索引。
+ */
+func advisorRefreshKey(owner [32]byte) [32]byte {
+	return sha256.Sum256(append([]byte("refresh\x00"), owner[:]...))
+}
+
+/**
+ * @brief 沿已确认的 OAuth 刷新找到当前归属。
+ * @param owner 请求或历史原来使用的身份。
+ * @param now 本次检查时间。
+ * @return 最近一次仍有效的凭证身份。
+ * @note 调用者持有归属表的锁。
+ */
+func (s *anthropicAdvisorOwners) resolveOwner(owner [32]byte, now time.Time) [32]byte {
+	for {
+		entry := s.lookup(advisorRefreshKey(owner), now)
+		if entry == nil {
+			return owner
+		}
+		owner = entry.owner
+	}
+}
+
+/**
+ * @brief 查找有效记录并续期，删除已过期记录。
+ * @param key 工具调用或凭证轮换的索引。
+ * @param now 本次访问时间。
+ * @return 有效记录，未命中返回 nil。
+ * @note 调用者持有归属表的锁。
+ */
+func (s *anthropicAdvisorOwners) lookup(key [32]byte, now time.Time) *advisorOwnerEntry {
+	elem := s.entries[key]
+	if elem == nil {
+		return nil
+	}
+	entry := elem.Value.(*advisorOwnerEntry)
+	if now.Before(entry.expires) {
+		entry.expires = now.Add(24 * time.Hour)
+		s.recent.MoveToFront(elem)
+		return entry
+	}
+	delete(s.entries, key)
+	s.recent.Remove(elem)
+	return nil
+}
+
+/**
+ * @brief 登记归属或轮换关系，达到上限时淘汰最久未使用记录。
+ * @param key 要登记的索引，调用者已确认不存在有效记录。
+ * @param owner 工具归属或刷新后的凭证身份。
+ * @param now 本次登记时间。
+ * @note 调用者持有归属表的锁。
+ */
+func (s *anthropicAdvisorOwners) remember(key, owner [32]byte, now time.Time) {
+	if s.entries == nil {
+		s.entries = make(map[[32]byte]*list.Element)
+	}
+	if len(s.entries) == 4096 {
+		oldest := s.recent.Back()
+		delete(s.entries, oldest.Value.(*advisorOwnerEntry).key)
+		s.recent.Remove(oldest)
+	}
+	s.entries[key] = s.recent.PushFront(&advisorOwnerEntry{key: key, owner: owner, expires: now.Add(24 * time.Hour)})
+}
+
+/**
  * @brief 查询指定调用的凭证归属，可在收到上游成功响应后登记未知调用。
  * @param id 非空 advisor 工具调用 ID。
  * @param accepted 是否已从本次上游得到归属证据。
@@ -47,32 +159,18 @@ type anthropicAdvisorAttempt struct {
  * @note 并发首次登记以先到者为准，不保存凭证或工具 ID 原文。
  */
 func (a *anthropicAdvisorAttempt) foreign(id string, accepted bool) bool {
-	key := sha256.Sum256([]byte(a.caller + "\x00" + id))
+	key := sha256.Sum256([]byte("tool\x00" + a.caller + "\x00" + id))
 	s := a.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	expires := now.Add(24 * time.Hour)
-	if elem := s.entries[key]; elem != nil {
-		entry := elem.Value.(*advisorOwnerEntry)
-		if now.Before(entry.expires) {
-			entry.expires = expires
-			s.recent.MoveToFront(elem)
-			return entry.owner != a.owner
-		}
-		delete(s.entries, key)
-		s.recent.Remove(elem)
+	owner := s.resolveOwner(a.owner, now)
+	if entry := s.lookup(key, now); entry != nil {
+		entry.owner = s.resolveOwner(entry.owner, now)
+		return entry.owner != owner
 	}
 	if accepted {
-		if s.entries == nil {
-			s.entries = make(map[[32]byte]*list.Element)
-		}
-		if len(s.entries) == 4096 {
-			oldest := s.recent.Back()
-			delete(s.entries, oldest.Value.(*advisorOwnerEntry).key)
-			s.recent.Remove(oldest)
-		}
-		s.entries[key] = s.recent.PushFront(&advisorOwnerEntry{key: key, owner: a.owner, expires: expires})
+		s.remember(key, owner, now)
 	}
 	return false
 }

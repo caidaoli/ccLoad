@@ -53,7 +53,7 @@ func mustBuildTestTransformPlan(t testing.TB, _ *model.Config, body []byte) prot
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	return s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "", nil,
-		false, upstreamWireAliases{},
+		false, upstreamWireAliases{}, false,
 	)
 }
 

@@ -602,6 +602,9 @@ func TestRegistry_CodexStreamRecoversUnstreamedMessageParts(t *testing.T) {
 	const refusalDelta = `{"type":"response.refusal.delta","item_id":"msg_1","output_index":0,"content_index":1,"delta":"Declined."}`
 	const emptyDelta = `{"type":"response.refusal.delta","item_id":"msg_1","output_index":0,"content_index":1,"delta":""}`
 	const done = `{"type":"response.output_item.done","output_index":0,"item":` + item + `}`
+	const emptyFirstPart = `{"type":"response.content_part.done","item_id":"msg_1","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}`
+	const withoutFirstPart = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":""},{"type":"refusal","refusal":"Declined."}]}`
+	const withoutLastPart = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro. "}]}`
 	const reasoningItem = `{"id":"rs_1","type":"reasoning","summary":[]}`
 	const reasoningDone = `{"type":"response.output_item.done","output_index":0,"item":` + reasoningItem + `}`
 	const shiftedDelta = `{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Same."}`
@@ -635,6 +638,13 @@ func TestRegistry_CodexStreamRecoversUnstreamedMessageParts(t *testing.T) {
 			{"only terminal", []string{terminal("completed", item)}, "Intro. Declined.", "completed", ""},
 			{"only item done", []string{done, terminal("completed", item)}, "Intro. Declined.", "completed", ""},
 			{"empty delta before item done", []string{textDelta, emptyDelta, done, terminal("completed", item)}, "Intro. Declined.", "completed", "Intro. "},
+			{"contiguous deltas stay immediate", []string{textDelta, refusalDelta, terminal("completed", item)}, "Intro. Declined.", "completed", "Intro. Declined."},
+			{"earlier part appears at item done", []string{refusalDelta, done, terminal("completed", item)}, "Intro. Declined.", "completed", "Intro. Declined."},
+			{"earlier part appears at terminal", []string{refusalDelta, terminal("completed", item)}, "Intro. Declined.", "completed", ""},
+			{"earlier delta arrives late", []string{refusalDelta, textDelta, terminal("completed", item)}, "Intro. Declined.", "completed", "Intro. "},
+			{"empty earlier part does not hold later delta", []string{emptyFirstPart, refusalDelta, terminal("completed", withoutFirstPart)}, "Declined.", "completed", "Declined."},
+			{"terminal snapshot omits buffered part", []string{refusalDelta, terminal("incomplete", withoutLastPart)}, "Intro. Declined.", "incomplete", ""},
+			{"terminal snapshot omits buffered message", []string{refusalDelta, terminal("completed", "")}, "Declined.", "completed", ""},
 			{"one part appears only at terminal", []string{textDelta, terminal("incomplete", item)}, "Intro. Declined.", "incomplete", ""},
 			{"streamed item plus unseen item at reused index", []string{textDelta, refusalDelta, done, terminal("completed", nextItem+","+item)}, "Intro. Declined. Next.", "completed", "Intro. Declined."},
 			{"terminal omits reasoning", []string{reasoningDone, shiftedDelta, terminal("completed", anonymousItem)}, "Same.", "completed", "Same."},

@@ -46,6 +46,7 @@ var hubReleases = [...]struct {
 	version    string ///< Version published in the Hub manifest.
 	changelist string ///< Changelist reported by this release's build metadata.
 }{
+	{"2.34.0", "1026637980"},
 	{"2.33.0", "1023160026"},
 	{"2.32.2", "1022991777"},
 	{"2.32.1", "1021296516"},

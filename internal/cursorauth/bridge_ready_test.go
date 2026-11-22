@@ -2,6 +2,7 @@ package cursorauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,6 +11,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 )
 
 func TestParseBridgeReadyLineValidatesLoopbackAndAllowsFutureFields(t *testing.T) {
@@ -44,6 +50,97 @@ func TestBridgeLivePinnedBinary(t *testing.T) {
 	if err := bridge.close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
+}
+
+/**
+ * @brief 用指定测试账号验证锁定版 Bridge 的工具暂停、原会话恢复和真实用量。
+ * @param t 测试上下文。设置 CURSOR_SDK_SMOKE_MODEL 时才会产生推理消费。
+ */
+func TestBridgeLiveToolContinuation(t *testing.T) {
+	modelID := strings.TrimSpace(os.Getenv("CURSOR_SDK_SMOKE_MODEL"))
+	if modelID == "" {
+		t.Skip("set CURSOR_SDK_SMOKE_MODEL and CURSOR_API_KEY to run paid inference")
+	}
+	credential := &Credential{APIKey: strings.TrimSpace(os.Getenv("CURSOR_API_KEY"))}
+	if credential.APIKey == "" {
+		t.Fatal("CURSOR_SDK_SMOKE_MODEL requires CURSOR_API_KEY for a test account")
+	}
+	t.Setenv("CURSOR_SDK_BRIDGE_BIN", "")
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	path, err := EnsureBridge(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := NewSDKRunner(path)
+	t.Cleanup(func() {
+		closeCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		if err := runner.Close(closeCtx); err != nil {
+			t.Errorf("close bridge: %v", err)
+		}
+	})
+	scope := SessionScope{ChannelID: 1, TokenID: 1}
+	const tool = "lookup"
+	request := Request{
+		SessionScope: scope, Model: modelID,
+		Prompt: "Call lookup exactly once. Then reply with the marker returned by the tool.",
+		Tools: []Tool{{Name: tool, Description: "Returns the marker requested by the user.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{}}`)}},
+	}
+	marker := uuid.NewString()
+	var total Usage
+	var reportedTotal int64
+	for turn := range 2 {
+		events, err := runner.Run(WithRawResponseCapture(ctx), credential, request)
+		if err != nil {
+			t.Fatalf("turn %d startup: %s", turn+1, strings.ReplaceAll(err.Error(), credential.APIKey, "[redacted]"))
+		}
+		var callID string
+		var final Event
+		for event := range events {
+			if event.Err != nil {
+				t.Fatalf("turn %d: %s", turn+1, strings.ReplaceAll(event.Err.Error(), credential.APIKey, "[redacted]"))
+			}
+			if event.Usage != nil {
+				total.Add(event.Usage)
+			}
+			if len(event.RawResponse) != 0 {
+				var envelope sdkv1.RunStreamMessage
+				if err := protojson.Unmarshal(event.RawResponse, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				if result := envelope.GetResult(); result != nil {
+					reportedTotal = result.GetResult().GetUsage().GetTotalTokens()
+				}
+			}
+			if call := event.ToolCall; call != nil {
+				if turn != 0 || callID != "" || call.Name != tool || call.ID == "" {
+					t.Fatal("expected exactly one lookup call on the first turn")
+				}
+				callID = call.ID
+			}
+			if event.Done {
+				final = event
+			}
+		}
+		if turn == 0 {
+			if callID == "" || final.Done {
+				t.Fatal("first turn did not pause for the tool result")
+			}
+			// With no prompt, a lost session cannot pass by starting a fresh inference.
+			request = Request{SessionScope: scope, ToolResults: []ToolResult{{CallID: callID, Output: marker}}}
+		} else if !final.Done || final.Replayed || !strings.Contains(final.Text, marker) {
+			t.Fatal("resumed run did not return the tool marker")
+		}
+	}
+	sum := total.InputTokens + total.CacheReadTokens + total.CacheWriteTokens + total.OutputTokens
+	if total.OutputTokens <= 0 || sum <= total.OutputTokens ||
+		(total.TotalTokens > 0 && total.TotalTokens != sum) || (reportedTotal > 0 && reportedTotal != int64(sum)) {
+		t.Fatalf("inconsistent SDK usage: accumulated=%+v, terminal total=%d", total, reportedTotal)
+	}
+	t.Logf("model=%s input=%d output=%d cacheRead=%d cacheWrite=%d", modelID, total.InputTokens,
+		total.OutputTokens, total.CacheReadTokens, total.CacheWriteTokens)
 }
 
 func TestBridgeEnvironmentScrubsAllCursorOverrides(t *testing.T) {

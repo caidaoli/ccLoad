@@ -6,7 +6,8 @@
 
 - **Fable/Mythos 5.2 定价**（2026-11-13 核对 [官方定价](https://platform.claude.com/docs/en/about-claude/pricing)及 [Fast 模式](https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing)）：每百万 token 输入 $8、输出 $40、缓存读 $0.20、5 分钟缓存写 $10、1 小时缓存写 $16；全上下文统一费率，`fast` 模式所有 token 费用乘 2。标准目录按 `claude-fable-5-2`、`claude-mythos-5-2` 分别登记，版本和思考后缀沿用现有匹配逻辑。
 
-- **Cursor 用量**：计费累计 SDK 实际发出的每轮增量，终态只补未报告差额，已完成工具结果重放不重复记账；异常结束保留已知真实消费。本地 SDK 的 `totalTokens=inputTokens+outputTokens` 口径表示 input 已含缓存，归一化时先扣缓存再按各价目计费。SDK 用量边界不等于客户端 HTTP 工具轮：独立 `usage` 事件与终态补差都可能累计此前工具轮的消费，工具恢复轮发给客户端的上下文用量始终按本次请求与输出估算，不使用累计输入、缓存或输出。工具轮没有真实报告时，日志独立保存 `usage_estimate`（输入、输出），前端以 `≈` 标明，不进入真实 token、费用及额度汇总。管理测试和聊天也从 Cursor 转发结果取真实计费量，不能解析含估算的客户端响应来计费。
+- **Cursor 用量**：计费累计 SDK 实际发出的每轮增量，终态只补未报告差额，已完成工具结果重放不重复记账；异常结束保留已知真实消费。本地 SDK 的 `totalTokens=inputTokens+outputTokens` 口径表示 input 已含缓存，归一化时先扣缓存再按各价目计费。在已确认输入含缓存的报告中，缓存读写之和超过输入表示整份报告矛盾，丢弃该报告。合法增量继续累计；无效终态允许通过 `GetRun` 补齐，始终缺少有效实报时使用原有展示估算。SDK 用量边界不等于客户端 HTTP 工具轮：独立 `usage` 事件与终态补差都可能累计此前工具轮的消费，工具恢复轮发给客户端的上下文用量始终按本次请求与输出估算，不使用累计输入、缓存或输出。缺少真实用量的普通或工具轮，由 HTTP 层按本次输入、正文、思考和工具调用统一估算，各协议 JSON/SSE 与日志 `usage_estimate` 共用该结果。全零终态补差不会覆盖先前的真实报告或遮掉本轮估算。日志以 `≈` 标明估算，估算 token 不计入按量费用和额度。管理测试和聊天也从 Cursor 转发结果取真实计费量，不能解析含估算的客户端响应来计费。
+- **Cursor 工具暂停后补记**：恢复请求接收排队的实际用量；会话在无人附着时结束，则按最后一次成功附着的令牌、渠道和模型，仅保存尚未交付的真实增量与终态补差。管理员可在日志来源「Cursor 用量补记」（`cursor_detached_usage`）查看；该记录没有 HTTP 状态，不增加请求数、健康度、客户费用或额度。
 
 - **Anthropic iterations 缓存分档**（`proxy_sse_parser.go`）：顶层缺少 `cache_creation` 时，可从 `usage.iterations` 的 message 轮次恢复 5m/1h 缓存写入明细，但各轮明细必须完整有效、只含支持的 TTL，且合计等于顶层 `cache_creation_input_tokens`。不能把各轮 token 再叠加到顶层累计量；不完整、未知 TTL、负数、溢出或总量不一致时沿用原回退。顶层明细及占位 0 的既有快照规则保持不变。
 

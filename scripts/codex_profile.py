@@ -28,10 +28,14 @@ def extract_version(path):
     with native_image(path, "Codex") as data:
         found = set()
         for name, pattern in PATTERNS.items():
-            values = {match[1] for match in pattern.finditer(data)}
-            if not values:
+            matched = False
+            for match in pattern.finditer(data):
+                if data[match.end():match.end() + 1] in (b"-", b"+"):
+                    raise UnknownProfile("unsupported Codex version suffix in " + name + " anchor")
+                found.add(match[1])
+                matched = True
+            if not matched:
                 raise UnknownProfile("missing recognized " + name + " anchor")
-            found |= values
         if len(found) != 1:
             raise UnknownProfile("conflicting embedded Codex versions")
         return found.pop().decode("ascii")

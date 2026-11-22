@@ -16,21 +16,34 @@ import (
 // ==================== API Keys CRUD 实现 ====================
 // [INFO] Linus风格：删除轮询指针数据库代码，已改用内存atomic计数器
 
-// GetAPIKeys 获取指定渠道的所有 API Key（按 key_index 升序）
-func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
-	query := `
+/**
+ * @brief 读取完整 Key 配置，按渠道内索引排序。
+ */
+const apiKeysByChannelQuery = `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
 		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
 	`
-	rows, err := s.QueryContext(ctx, query, channelID)
+
+// GetAPIKeys 获取指定渠道的所有 API Key（按 key_index 升序）
+func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
+	rows, err := s.QueryContext(ctx, apiKeysByChannelQuery, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("query api keys: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return scanAPIKeys(rows)
+}
 
+/**
+ * @brief 读取 Key 查询的所有行，保留配置与运行态字段。
+ * @param rows 调用方负责关闭的完整 Key 查询结果。
+ * @return Key 切片，查询无行时为空切片。
+ * @return 数据库扫描或字段解码失败时返回错误。
+ */
+func scanAPIKeys(rows *sql.Rows) ([]*model.APIKey, error) {
 	var keys []*model.APIKey
 	for rows.Next() {
 		key := &model.APIKey{}

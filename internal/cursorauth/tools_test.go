@@ -143,8 +143,8 @@ func TestParseRequestCollectsImagesAndEffort(t *testing.T) {
 
 func TestParseRequestWritesToolMessageOnce(t *testing.T) {
 	t.Parallel()
-	request := ParseRequest([]byte(`{"messages":[{"role":"tool","tool_call_id":"call_1","content":"result-body"}]}`))
-	if strings.Count(request.Prompt, "result-body") != 1 {
+	request := ParseRequest([]byte(`{"messages":[{"role":"tool","tool_call_id":"call_1","name":"lookup","content":"result-body","is_error":true}]}`))
+	if request.Prompt != "tool: [tool_result tool_use_id=call_1 name=lookup is_error=true] result-body" {
 		t.Fatalf("prompt = %q", request.Prompt)
 	}
 }

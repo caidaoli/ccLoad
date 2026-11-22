@@ -6,6 +6,8 @@
 
 ## 系统设置与连接生命周期
 
+- Antigravity 通过 SOCKS5 查询项目 ID 或订阅时，握手受共享查询的截止时间约束。单个等待者取消后，其他等待者仍可取得结果。查询超时会关闭仍在握手的套接字，同一连接池的其他请求可继续使用。
+
 - **日志展示估算**：`logs.usage_estimate` 为可空 JSON 文本，字段为 `input_tokens`、`output_tokens`；SQLite、PostgreSQL、MySQL 的建表、迁移、单条/批量写入及混合复制必须保留。旧日志为空，不回填推测值；实际 token 与费用列、聚合查询不使用此字段。
 
 - **系统设置与热更新**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读取配置；唯一写入口 `POST /admin/settings/batch` 由 `settingsUpdateMu` 串行化保存。`model_multimodal_fallback`、`model_custom_pricing`、`reasoning_auto` 和 `privacy_redaction` 由 `commitSettingUpdates` 在持久化成功后发布运行态快照，避免数据库终值与运行态错序；一次提交只含这些键时免重启，同时包含其他键则调用 `go s.triggerRestart()`，2 秒后重启生效。后端 `hotReloadedSettingKeys` 与前端 `hotReloadSettingKeys` 必须同步。其余设置继续使用启动缓存，不能在保存时顺手刷新。重启回调属于 `Server` 实例并由锁保护，禁止恢复为包级可变全局。
@@ -54,6 +56,8 @@
 - 渠道显示只作用于 API Token 网页身份，管理员与未登录公开摘要保持原行为。隐藏时后端清空渠道筛选，裁剪渠道名称/ID、渠道选项及趋势中的渠道序列，前端隐藏相应列、筛选和图表。统计保留原有行和计算口径，不合并不同渠道的同名模型；投影不能修改缓存中的原始统计。开启显示也仅返回 Token 自身调用中的渠道身份，不返回渠道 URL、Key 或管理配置。
 
 ## 渠道管理与定时检测
+
+- 渠道编辑器从 `GET /admin/channels/:id/editor` 读取同一数据库快照的配置、模型和 Key，并保存响应的 `ETag`。完整表单通过 `If-Match` 提交，版本不符返回 412，保留当前草稿以便核对；重新打开后加载最新配置。配置、Key 与管理账号设置在同一事务写入。运行时冷却与 OAuth 令牌刷新不使草稿过期。
 
 - **渠道与 Key 写入原子性**：管理端创建渠道及其 Key、编辑渠道时替换完整 Key 集合，均在同一存储事务提交配置/模型与 Key；失败不遗留新渠道，也不删除旧 Key。模型刷新在同一事务校验渠道模型快照及完整 Key 行身份、凭据、禁用和范围策略后提交模型与 Key 范围，冲突重新读取；不得用旧探测结果覆盖提交窗口内的手工禁用、范围编辑或 Key 重排。
 

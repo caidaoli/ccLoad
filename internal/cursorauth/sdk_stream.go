@@ -1,9 +1,14 @@
 package cursorauth
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"ccLoad/internal/util"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -14,18 +19,20 @@ import (
  * @brief 单条 Send 流的状态及已发出用量，仅由流读取协程访问。
  */
 type sdkRunState struct {
-	agentID       string
-	runID         string
-	text          string
-	resultSeen    bool
-	doneSeen      bool
-	status        sdkv1.RunLifecycleStatus
-	errorCode     string
-	statusMessage string
-	usage         *Usage
-	reportedUsage Usage ///< 已通过逐轮事件发出的真实用量，用于扣除终态重复累计。
-	onRunID       func(string)
-	onTerminal    func(string)
+	agentID               string
+	apiKey                string ///< 当前凭证，用于遮蔽 ERROR 终态额外正文。
+	runID                 string
+	text                  string
+	resultSeen            bool
+	doneSeen              bool
+	status                sdkv1.RunLifecycleStatus
+	errorCode             string
+	errorMessage          string ///< 来自状态事件的诊断，终态提供具体原因时替换。
+	contextLengthExceeded bool   ///< 终态错误字段明确报告单次请求超过上下文窗口。
+	usage                 *Usage
+	reportedUsage         Usage ///< 已通过逐轮事件发出的真实用量，用于扣除终态重复累计。
+	onRunID               func(string)
+	onTerminal            func(string)
 }
 
 func (s *sdkRunState) consume(message *sdkv1.RunStreamMessage) ([]Event, error) {
@@ -91,15 +98,18 @@ func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, err
 			return nil, fmt.Errorf("decode cursor usage message: %w", err)
 		}
 		usage := usageFromSDK(&tokens)
+		if usage == nil {
+			return nil, nil
+		}
 		s.reportedUsage.Add(usage)
 		return []Event{{Usage: usage}}, nil
 	}
 	if message.GetType() == "status" {
-		if text := firstString(payload, "message"); text != "" {
-			s.statusMessage = text
-		}
 		if strings.EqualFold(firstString(payload, "status"), "RUNNING") {
 			return []Event{{Ping: true}}, nil
+		}
+		if text := strings.TrimSpace(firstString(payload, "message")); text != "" {
+			s.errorMessage = text
 		}
 		return nil, nil
 	}
@@ -149,6 +159,50 @@ func (s *sdkRunState) unreportedUsage() *Usage {
 	}
 }
 
+/**
+ * @brief 识别 SDK 没有提供具体原因的错误文案。
+ * @param message 已去除首尾空白的诊断文本。
+ * @return 空文案或通用失败说明返回 true。
+ */
+func genericCursorRunError(message string) bool {
+	switch strings.TrimSuffix(strings.ToLower(message), ".") {
+	case "", "error", "unknown error", "run failed", "cursor sdk run failed":
+		return true
+	}
+	return false
+}
+
+/**
+ * @brief 判定终态正文是否为已流出的末段，保留原始输出字节。
+ * @param streamed 已发出的完整正文。
+ * @param final SDK 终态携带的正文。
+ * @return 原样后缀或仅首尾空白不同的完整末段返回 true。
+ */
+func cursorFinalTextAlreadyEmitted(streamed, final string) bool {
+	if strings.HasSuffix(streamed, final) {
+		return true
+	}
+	tail := strings.TrimSpace(final)
+	if tail == "" {
+		return false
+	}
+	prefix, matched := strings.CutSuffix(strings.TrimSpace(streamed), tail)
+	if !matched || prefix == "" {
+		return matched
+	}
+	before, _ := utf8.DecodeLastRuneInString(prefix)
+	after, _ := utf8.DecodeRuneInString(tail)
+	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_' }
+	return !isWord(before) || !isWord(after)
+}
+
+/**
+ * @brief 记录终态及用量，保留已收到的正文，并补齐终态携带的后续文本。
+ * @param result 上游终态信封。
+ * @details ERROR 在尚无正文且缺少具体错误说明时以 result 文本作为诊断。
+ * @return 需要补发的正文增量；没有可交付增量时为 nil。
+ * @return 终态结构、会话身份或成功正文不一致时返回错误。
+ */
 func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, error) {
 	if result == nil {
 		return nil, errors.New("cursor run returned an empty result envelope")
@@ -164,10 +218,19 @@ func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, err
 	}
 	s.resultSeen = true
 	s.status = result.GetStatus()
-	s.errorCode = result.GetErrorCode()
 	final := result.GetResult()
 	if final == nil {
 		return nil, errors.New("cursor run terminal result is missing RunResult")
+	}
+	outerCode, innerCode := strings.TrimSpace(result.GetErrorCode()), strings.TrimSpace(final.GetErrorCode())
+	s.errorCode = cmp.Or(outerCode, innerCode)
+	s.contextLengthExceeded = util.IsExplicitContextLengthExceeded(normalizeCursorRunErrorCode(outerCode), "") ||
+		util.IsExplicitContextLengthExceeded(normalizeCursorRunErrorCode(innerCode), "")
+	finalMessage := strings.TrimSpace(final.GetErrorMessage())
+	if genericCursorRunError(finalMessage) {
+		s.errorMessage = cmp.Or(s.errorMessage, finalMessage)
+	} else {
+		s.errorMessage = finalMessage
 	}
 	if _, err := s.recordRunID(final.GetRunId()); err != nil {
 		return nil, err
@@ -195,16 +258,27 @@ func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, err
 	}
 	finalText := final.GetResult()
 	switch {
-	case finalText == s.text:
+	case s.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR && s.text == "" && genericCursorRunError(s.errorMessage):
+		if detail := strings.TrimSpace(finalText); !genericCursorRunError(detail) {
+			s.errorMessage = detail
+		}
+		return nil, nil
+	case cursorFinalTextAlreadyEmitted(s.text, finalText):
 		return nil, nil
 	case strings.HasPrefix(finalText, s.text):
+		if s.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR {
+			finalText = redactSDKDiagnostic(finalText, s.apiKey)
+			if !strings.HasPrefix(finalText, s.text) {
+				// A credential spans the already-emitted prefix and this result.
+				return nil, nil
+			}
+		}
 		delta := finalText[len(s.text):]
 		s.text = finalText
-		return []Event{{Delta: delta, Text: s.text}}, nil
-	case finalText != "" && strings.HasSuffix(s.text, finalText):
-		// One run may emit an interim assistant message before its final
-		// assistant message. RunResult.result contains only the latter, while
-		// Text is the complete append-only stream already delivered downstream.
+		return []Event{{Delta: delta, Text: s.text, terminalText: true}}, nil
+	case s.status != sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED:
+		// A failed result may omit the final assistant text. Keep the partial
+		// stream and report the actual Run error instead of a divergence.
 		return nil, nil
 	default:
 		return nil, errors.New("cursor run final text diverged from its assistant stream")
@@ -214,7 +288,7 @@ func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, err
 /**
  * @brief 将 SDK 用量转换为计费所需的互斥输入与缓存计数。
  * @param usage 上游用量；nil 表示未报告。
- * @return 归一化用量；上游未报告时返回 nil。
+ * @return 归一化用量；未报告或含缓存的总输入小于缓存读写合计时返回 nil。
  * @details v1.2.0 本地运行时的 total=input+output，input 已包含缓存；
  * 仅在上游总量明确采用该口径时扣除缓存，保留采用分项总和口径的上游数据。
  */
@@ -230,8 +304,12 @@ func usageFromSDK(usage *sdkv1.TokenUsage) *Usage {
 		TotalTokens:      safeSDKTokenCount(usage.GetTotalTokens()),
 		ReasoningTokens:  safeSDKTokenCount(usage.GetReasoningTokens()),
 	}
-	if result.TotalTokens > 0 && result.TotalTokens == result.InputTokens+result.OutputTokens {
-		result.InputTokens = max(0, result.InputTokens-result.CacheReadTokens-result.CacheWriteTokens)
+	if result.TotalTokens > 0 && result.TotalTokens-result.InputTokens == result.OutputTokens {
+		afterCacheRead := result.InputTokens - result.CacheReadTokens
+		if result.CacheWriteTokens > afterCacheRead {
+			return nil
+		}
+		result.InputTokens = afterCacheRead - result.CacheWriteTokens
 	}
 	return result
 }
@@ -305,6 +383,11 @@ func (s *sdkRunState) setAgentID(agentID string) error {
 	return nil
 }
 
+/**
+ * @brief 在 SDK 流结束时识别传输错误和结构化业务拒绝。
+ * @param streamErr Connect 流错误；正常读完流时为 nil。
+ * @return 成功终态返回 nil，已识别的 SDK 拒绝返回 BridgeError，其余失败返回原始或协议错误。
+ */
 func (s *sdkRunState) finalError(streamErr error) error {
 	if streamErr != nil {
 		return classifyBridgeError(streamErr)
@@ -321,24 +404,13 @@ func (s *sdkRunState) finalError(streamErr error) error {
 	case sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR,
 		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED,
 		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_EXPIRED:
-		message := strings.TrimSpace(s.statusMessage)
-		if message == "" {
-			message = strings.TrimSpace(s.errorCode)
+		message := cmp.Or(s.errorMessage, s.errorCode, s.status.String())
+		bridgeErr := &BridgeError{
+			SDKCode: cursorRunErrorCode(s.errorCode, message), Message: message,
+			contextLengthExceeded: s.contextLengthExceeded,
 		}
-		if message == "" {
-			message = s.status.String()
-		}
-		if cursorRunCredentialRejected(s.errorCode, message) {
-			return &BridgeError{
-				SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED,
-				Message: message,
-			}
-		}
-		if cursorRunUsageLimited(s.errorCode, message) {
-			return &BridgeError{
-				SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED,
-				Message: message,
-			}
+		if bridgeErr.SDKCode != sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED || IsContextLengthExceeded(bridgeErr) {
+			return bridgeErr
 		}
 		return errors.New("cursor run failed: " + message)
 	default:
@@ -346,35 +418,45 @@ func (s *sdkRunState) finalError(streamErr error) error {
 	}
 }
 
-func cursorRunCredentialRejected(errorCode, message string) bool {
-	code := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(errorCode)))
-	switch code {
-	case "unauthorized", "unauthenticated", "authentication_error", "auth_error", "sdk_error_code_unauthorized":
-		return true
+/**
+ * @brief 规范化 Run 终态错误码以匹配 SDK 和上游模型提供商使用的稳定名称。
+ * @param code 已去掉首尾空白的 Run 终态错误码。
+ * @return 小写名称，去除可选的 SDK_ERROR_CODE_ 前缀。
+ */
+func normalizeCursorRunErrorCode(code string) string {
+	code = strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(code))
+	return strings.TrimPrefix(code, "sdk_error_code_")
+}
+
+/**
+ * @brief 将 Run 终态的稳定错误码和已有认证、用量文案映射为 SDK 分类。
+ * @param errorCode 已去掉首尾空白的 Run 终态错误码，可能为空。
+ * @param message 已去掉首尾空白的 Run 终态说明。
+ * @return 已识别的 SDK 错误码；无法分类时返回 UNSPECIFIED。
+ */
+func cursorRunErrorCode(errorCode, message string) sdkv1.SdkErrorCode {
+	codeName := normalizeCursorRunErrorCode(errorCode)
+	if code := sdkv1.SdkErrorCode_value["SDK_ERROR_CODE_"+strings.ToUpper(codeName)]; code != 0 {
+		return sdkv1.SdkErrorCode(code)
+	}
+	switch codeName {
+	case "unauthenticated", "authentication_error", "auth_error":
+		return sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED
 	}
 	// Bridge v1.0.28 sometimes exposes a rejected Cursor session only through
 	// the terminal Run status text. Keep this exact remediation phrase scoped
 	// to Run results; bare Connect authentication errors may belong to the
 	// loopback bridge itself and must not rotate a channel credential.
-	message = strings.ToLower(strings.TrimSpace(message))
-	return strings.HasPrefix(message, "authentication error") &&
-		strings.Contains(message, "try logging out and back in")
-}
-
-/**
- * @brief 识别 Run 终态中的用量上限错误。
- * @param errorCode Run 结果携带的错误码，可能为空。
- * @param message Run 终态说明文本。
- * @return 错误码为用量上限，或文本为 "You've hit your usage limit ..." 时为 true。
- * @details Cursor 对模型额度耗尽只给终态文本（例如 "You've hit your usage limit for Opus"），
- * 不带结构化错误码；匹配不含撇号的片段，避免直/弯引号差异。
- */
-func cursorRunUsageLimited(errorCode, message string) bool {
-	code := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(errorCode)))
-	if code == "usage_limit_exceeded" || code == "sdk_error_code_usage_limit_exceeded" {
-		return true
+	message = strings.ToLower(message)
+	if strings.HasPrefix(message, "authentication error") && strings.Contains(message, "try logging out and back in") {
+		return sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED
 	}
-	return strings.Contains(strings.ToLower(message), "hit your usage limit")
+	// Cursor sometimes reports only "You've hit your usage limit ..."; the
+	// phrase after the apostrophe supports both straight and curly quotes.
+	if strings.Contains(message, "hit your usage limit") {
+		return sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED
+	}
+	return sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED
 }
 
 func firstString(values map[string]any, keys ...string) string {

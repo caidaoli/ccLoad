@@ -190,7 +190,7 @@ func ConvertCodexResponseToOpenAI(ctx context.Context, modelName string, origina
 
 	typeResult := rootResult.Get("type")
 	dataType := typeResult.String()
-	p.messages.ObserveOutputItem(dataType, rootResult)
+	p.messages.ObserveEvent(dataType, rootResult)
 	if dataType == "response.created" {
 		(*param).(*ConvertCliToOpenAIParams).ResponseID = rootResult.Get("response.id").String()
 		(*param).(*ConvertCliToOpenAIParams).CreatedAt = rootResult.Get("response.created_at").Int()
@@ -237,7 +237,9 @@ func ConvertCodexResponseToOpenAI(ctx context.Context, modelName string, origina
 	case "response.output_text.delta", "response.refusal.delta":
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
 			delta := deltaResult.String()
-			p.messages.ObserveDelta(rootResult, delta)
+			if !p.messages.ObserveDelta(rootResult, delta) {
+				return nil
+			}
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 			template, _ = sjson.SetBytes(template, "choices.0.delta.content", delta)
 			p.emittedTextRunes += int64(utf8.RuneCountInString(delta))
@@ -426,10 +428,9 @@ func ConvertCodexResponseToOpenAI(ctx context.Context, modelName string, origina
 			var text strings.Builder
 			var citations [][]byte
 			for _, part := range p.messages.FinishMessage(rootResult) {
-				content := translatorcommon.ResponsesMessagePartText(part).String()
-				citations = append(citations, buildCodexURLCitations(codexAnnotationResults(part.Get("annotations")), p.emittedTextRunes, p.citationKeys)...)
-				text.WriteString(content)
-				p.emittedTextRunes += int64(utf8.RuneCountInString(content))
+				citations = append(citations, buildCodexURLCitations(codexAnnotationResults(part.Annotations), p.emittedTextRunes, p.citationKeys)...)
+				text.WriteString(part.Text)
+				p.emittedTextRunes += int64(utf8.RuneCountInString(part.Text))
 			}
 			citations = append(citations, buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), offset, p.citationKeys)...)
 			if text.Len() == 0 && len(citations) == 0 {

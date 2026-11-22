@@ -18,6 +18,17 @@ const (
 	logsMinuteRangeIndex = "idx_logs_source_minute"
 )
 
+/**
+ * @brief 统计 HTTP 请求时排除独立的 Cursor SDK 用量补记。
+ * @param filter 请求日志查询条件。
+ */
+func (qb *QueryBuilder) applyRequestMetricsFilter(filter *model.LogFilter) {
+	qb.ApplyFilter(filter)
+	if filter != nil && (filter.LogSource == model.LogSourceAll || filter.LogSource == model.LogSourceCursorDetachedUsage) {
+		qb.Where("log_source <> ?", model.LogSourceCursorDetachedUsage)
+	}
+}
+
 // logsRangeIndexHint 返回紧跟在 "FROM logs [alias]" 后的 MySQL 索引提示。
 // log_source 几乎全是 proxy，MySQL 会把它当作 ref 等值前缀（估算半张表）并常选错索引，
 // 逐行回表后才过滤时间，耗时随总表行数线性增长。FORCE INDEX 把候选限定为
@@ -107,7 +118,7 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		return []model.StatsEntry{}, map[int64]bool{}, nil
 	}
 
-	qb.ApplyFilter(filter)
+	qb.applyRequestMetricsFilter(filter)
 
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
@@ -567,7 +578,7 @@ func buildLatestLogQuery(scopeSQL string, scopeArgs []any, filter *model.LogFilt
 	}
 	subQB.Where("channel_id > 0")
 	applyStatePredicate(subQB)
-	subQB.ApplyFilter(filter)
+	subQB.applyRequestMetricsFilter(filter)
 	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
 
 	query := fmt.Sprintf(`
@@ -593,7 +604,7 @@ func buildLatestScalarProjections(selectColumns []string, filter *model.LogFilte
 			qb.Where("COALESCE(model, '') = scope.model")
 		}
 		applyStatePredicate(qb)
-		qb.ApplyFilter(filter)
+		qb.applyRequestMetricsFilter(filter)
 		query, queryArgs := qb.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
 		projections = append(projections, "("+query+")")
 		args = append(args, queryArgs...)
@@ -728,7 +739,7 @@ func (s *SQLStore) GetUsageBreakdown(ctx context.Context, startTime, endTime tim
 	if isEmpty {
 		return []model.UsageBreakdownRow{}, nil
 	}
-	qb.ApplyFilter(filter)
+	qb.applyRequestMetricsFilter(filter)
 
 	aggregate, args := qb.BuildWithSuffix("GROUP BY client_protocol, channel_id, model")
 	query := `
@@ -808,7 +819,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	}
 
 	// 应用其余过滤器（模型/状态码等）
-	combinedQB.ApplyFilter(filter)
+	combinedQB.applyRequestMetricsFilter(filter)
 
 	combinedQuery, combinedArgs := combinedQB.BuildWithSuffix("GROUP BY minute_bucket) t")
 
@@ -848,7 +859,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		}
 		if !isEmpty {
 			// 应用其余过滤器
-			recentQB.ApplyFilter(filter)
+			recentQB.applyRequestMetricsFilter(filter)
 
 			recentQuery, recentArgs := recentQB.Build()
 			var recentCount int64
@@ -944,7 +955,7 @@ func (s *SQLStore) queryStatsRPM(ctx context.Context, startTime, endTime time.Ti
 
 		// 仅当渠道过滤非空时才执行查询
 		if !isEmpty {
-			recentQB.ApplyFilter(filter)
+			recentQB.applyRequestMetricsFilter(filter)
 			recentQuery, recentArgs := recentQB.BuildWithSuffix("GROUP BY channel_id, model")
 			recentRows, err := s.QueryContext(ctx, recentQuery, recentArgs...)
 			if err != nil {
@@ -994,7 +1005,7 @@ func (s *SQLStore) queryStatsPeakRPM(ctx context.Context, startBucket, endBucket
 		return nil
 	}
 
-	qb.ApplyFilter(filter)
+	qb.applyRequestMetricsFilter(filter)
 	query, args := qb.BuildWithSuffix("GROUP BY " + groupCols + ", minute_bucket) t GROUP BY " + groupCols)
 
 	rows, err := s.QueryContext(ctx, query, args...)

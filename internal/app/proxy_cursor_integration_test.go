@@ -9,17 +9,25 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"ccLoad/internal/cursorauth"
 	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
+	"ccLoad/internal/cursorauth/sdkgen/sdk/v1/sdkv1connect"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
+	"connectrpc.com/connect"
 	"github.com/tidwall/gjson"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 /**
@@ -66,7 +74,52 @@ func (r cursorUsageEventsRunner) Run(
 }
 
 /**
- * @brief Cursor 思考增量经四种 HTTP 协议返回时保留空白与 Unicode，并与正文分离。
+ * @brief 核对协议展示用量与日志估算一致，并且真实用量字段保持为零。
+ * @param t 测试上下文。
+ * @param body HTTP JSON 响应或 SSE 事件流。
+ * @param clientProtocol 客户端协议。
+ * @param streaming 是否以 SSE 返回。
+ * @param entry 当前请求的日志。
+ * @param wantOutput 预期估算输出量。
+ */
+func assertCursorDisplayEstimate(t *testing.T, body []byte, clientProtocol string, streaming bool, entry *model.LogEntry, wantOutput int) {
+	t.Helper()
+	path, inputKey, outputKey := "usage", "input_tokens", "output_tokens"
+	switch clientProtocol {
+	case "openai":
+		inputKey, outputKey = "prompt_tokens", "completion_tokens"
+	case "responses":
+		if streaming {
+			path = "response.usage"
+		}
+	case "gemini":
+		path, inputKey, outputKey = "usageMetadata", "promptTokenCount", "candidatesTokenCount"
+	}
+	var usage gjson.Result
+	if streaming {
+		for block := range bytes.SplitSeq(body, []byte("\n\n")) {
+			_, data := parseSSEEventChunk(block)
+			if value := gjson.GetBytes(data, path); value.IsObject() {
+				usage = value
+			}
+		}
+	} else {
+		usage = gjson.GetBytes(body, path)
+	}
+	input, output := usage.Get(inputKey), usage.Get(outputKey)
+	estimate := entry.UsageEstimate
+	if estimate == nil || input.Type != gjson.Number || output.Type != gjson.Number || input.Int() <= 0 ||
+		int(input.Int()) != estimate.InputTokens || int(output.Int()) != estimate.OutputTokens || estimate.OutputTokens != wantOutput {
+		t.Fatalf("client usage=%s logged estimate=%+v want output=%d body=%s", usage.Raw, estimate, wantOutput, body)
+	}
+	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.ReasoningTokens != 0 ||
+		entry.CacheReadInputTokens != 0 || entry.CacheCreationInputTokens != 0 || entry.Cost != 0 {
+		t.Fatalf("display estimate was billed: %+v", entry)
+	}
+}
+
+/**
+ * @brief Cursor 思考增量经四种 HTTP 协议返回时保留空白与 Unicode，并独立于正文计入展示估算。
  * @param t 测试上下文。
  */
 func TestProxy_CursorOAuthThinkingAcrossProtocols(t *testing.T) {
@@ -85,7 +138,7 @@ func TestProxy_CursorOAuthThinkingAcrossProtocols(t *testing.T) {
 				}}, map[int]string{0: "https://unused.invalid"})
 				env.server.cursorRunner = cursorUsageEventsRunner{
 					{Ping: true}, {ThinkingDelta: "先"}, {ThinkingDelta: "\n  "}, {ThinkingDelta: "想🧠"},
-					{Delta: "答", Text: "答"}, {Delta: "案", Text: "答案"}, {Done: true, Text: "答案"},
+					{Delta: "答", Text: "答"}, {Delta: "案", Text: "答案"}, {Done: true, Text: "答案", Usage: &cursorauth.Usage{}},
 				}
 				path := "/v1/chat/completions"
 				body := map[string]any{
@@ -191,6 +244,7 @@ func TestProxy_CursorOAuthThinkingAcrossProtocols(t *testing.T) {
 				if thinking.String() != "先\n  想🧠" || text.String() != "答案" {
 					t.Fatalf("thinking=%q text=%q body=%s", thinking.String(), text.String(), response.Body.String())
 				}
+				assertCursorDisplayEstimate(t, response.Body.Bytes(), clientProtocol, streaming, waitForProxyLog(t, env, "composer-2.5"), 2)
 			})
 		}
 	}
@@ -217,7 +271,6 @@ func TestProxy_CursorOAuthAnthropicThinkingBlockOrder(t *testing.T) {
 				{Ping: true}, {ThinkingDelta: "想1"}, {Delta: "答1", Text: "答1"},
 				{ThinkingDelta: "想2"}, {Delta: "答2", Text: "答1答2"},
 				{ToolCall: &cursorauth.ToolCall{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{"q":"中文"}`)}},
-				{Done: true, Text: "答1答2"},
 			}
 			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 				"model": "composer-2.5", "stream": streaming, "max_tokens": 256,
@@ -227,6 +280,7 @@ func TestProxy_CursorOAuthAnthropicThinkingBlockOrder(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
 			}
+			assertCursorDisplayEstimate(t, response.Body.Bytes(), "anthropic", streaming, waitForProxyLog(t, env, "composer-2.5"), 16)
 			wantTypes := []string{"thinking", "text", "thinking", "text", "tool_use"}
 			wantText := []string{"想1", "答1", "想2", "答2"}
 			if !streaming {
@@ -428,6 +482,46 @@ func (r *cursorRefreshOnceRunner) Run(
 	return events, nil
 }
 
+/**
+ * @brief 通过实际请求日志核对 Cursor 启动失败与 SDK 已收到业务请求时的思考等级。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorReasoningCommitsOnlySentEffort(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "high", "high", "high", "high")
+	credential, err := (&cursorauth.Credential{APIKey: "key", AccessToken: "session"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "cursor-reasoning", upstreamProtocol: "openai", models: "gpt-5.6-sol",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credential,
+	}}, []string{"https://unused.invalid"})
+	headers := map[string]string{"Session-Id": "cursor-reasoning"}
+	modelLog := func(applied string, status int) *model.LogEntry {
+		return waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+			return entry.Model == "gpt-5.6-sol" && entry.StatusCode == status &&
+				entry.ReasoningDecision != nil && entry.ReasoningDecision.AppliedEffort == applied
+		})
+	}
+
+	env.server.cursorRunner = &fakeCursorRunner{err: cursorauth.ErrAgentMissing}
+	failed := doProxyRequest(t, env.engine, "/v1/chat/completions", reasoningAutoChatBody("First task"), headers)
+	if failed.Code != http.StatusServiceUnavailable || modelLog("", http.StatusServiceUnavailable) == nil {
+		t.Fatalf("unsent request recorded an applied effort or returned HTTP %d", failed.Code)
+	}
+	for _, actual := range []string{"", "low", "high"} {
+		env.server.cursorRunner = cursorUsageEventsRunner{
+			{SentEffort: &actual}, {Text: "answer", Done: true},
+		}
+		reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Next task "+actual), headers)
+		entry := modelLog(actual, http.StatusOK)
+		if entry == nil || entry.ReasoningDecision.SuggestedEffort != "high" || entry.ReasoningDecision.PreviousEffort != "" {
+			t.Fatalf("SDK effort %q produced log %+v", actual, entry)
+		}
+	}
+}
+
 func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 	t.Parallel()
 
@@ -479,6 +573,10 @@ func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 		t.Fatalf("model = %q", runner.model)
 	}
 	entry := waitForProxyLog(t, env, "claude-sonnet-5")
+	wantScope := cursorauth.SessionScope{ChannelID: entry.ChannelID, TokenID: 1}
+	if runner.request.SessionScope != wantScope {
+		t.Fatal("Cursor runner did not receive the selected channel and authenticated token identity")
+	}
 	if entry.InputTokens != 11 || entry.OutputTokens != 7 || entry.CacheReadInputTokens != 5 ||
 		entry.CacheCreationInputTokens != 3 || entry.Cache5mInputTokens != 3 || entry.ReasoningTokens != 2 {
 		t.Fatalf("logged usage = in:%d out:%d cache_read:%d cache_write:%d cache_5m:%d reasoning:%d",
@@ -636,6 +734,413 @@ func TestProxy_CursorOAuthDoesNotReplayStreamAfterOutput(t *testing.T) {
 }
 
 /**
+ * @brief 验证 SDK 限流和无效模型按响应提交状态切换渠道，只影响当前模型。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorSDKModelRejection(t *testing.T) {
+	t.Parallel()
+	const limit = sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED
+	const invalid = sdkv1.SdkErrorCode_SDK_ERROR_CODE_INVALID_MODEL
+	const wait = 23 * time.Second
+	for _, tt := range []struct {
+		name          string
+		code          sdkv1.SdkErrorCode
+		backup        bool
+		committed     bool
+		wantHTTP      int
+		wantBackupRun int
+	}{
+		{"start rate limit fails over", limit, true, false, http.StatusOK, 1},
+		{"committed rate limit does not fail over", limit, true, true, http.StatusOK, 0},
+		{"rate limit returned with retry hint", limit, false, false, http.StatusTooManyRequests, 0},
+		{"invalid model fails over", invalid, true, false, http.StatusOK, 1},
+		{"committed invalid model does not fail over", invalid, true, true, http.StatusOK, 0},
+		{"invalid model returned", invalid, false, false, http.StatusBadRequest, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			channels := []testChannel{{
+				name: "cursor-primary", upstreamProtocol: "openai", models: "grok-4.6,composer-2.5",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"primary-key"}`,
+			}}
+			urls := map[int]string{0: "https://unused.invalid"}
+			if tt.backup {
+				channels = append(channels, testChannel{
+					name: "cursor-backup", upstreamProtocol: "openai", models: "grok-4.6",
+					authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"backup-key"}`,
+				})
+				urls[1] = "https://unused.invalid"
+			}
+			env := setupProxyTestEnv(t, channels, urls)
+			primaryCalls, backupCalls := 0, 0
+			const failureMessage = "SDK explicitly rejected the requested model"
+			failure := &cursorauth.BridgeError{SDKCode: tt.code, Message: failureMessage, RetryAfter: wait}
+			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
+				if credential.APIKey == "backup-key" {
+					backupCalls++
+					return cursorUsageEventsRunner{{Done: true, Text: "backup"}}.Run(ctx, credential, request)
+				}
+				primaryCalls++
+				if request.Model == "composer-2.5" {
+					return cursorUsageEventsRunner{{Done: true, Text: "another model"}}.Run(ctx, credential, request)
+				}
+				if tt.committed {
+					return cursorUsageEventsRunner{{Ping: true}, {Done: true, Err: failure}}.Run(ctx, credential, request)
+				}
+				return nil, failure
+			})
+			messages := []any{map[string]any{"role": "user", "content": "hello"}}
+			before := time.Now()
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "grok-4.6", "stream": tt.committed, "messages": messages,
+			}, nil)
+			if response.Code != tt.wantHTTP || primaryCalls != 1 || backupCalls != tt.wantBackupRun {
+				t.Fatalf("HTTP=%d primary=%d backup=%d body=%s", response.Code, primaryCalls, backupCalls, response.Body.String())
+			}
+			switch {
+			case tt.committed:
+				var errorMessage string
+				for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+					_, data := parseSSEEventChunk(block)
+					if field := gjson.GetBytes(data, "error.message"); field.Exists() {
+						errorMessage = field.String()
+					}
+				}
+				if !strings.Contains(errorMessage, failureMessage) || strings.Contains(response.Body.String(), "[DONE]") {
+					t.Fatalf("committed stream body=%s", response.Body.String())
+				}
+			case tt.backup:
+				if got := gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String(); got != "backup" {
+					t.Fatalf("fallback response=%s", response.Body.String())
+				}
+			default:
+				if !strings.Contains(gjson.GetBytes(response.Body.Bytes(), "error.message").String(), failureMessage) {
+					t.Fatalf("failure response=%s", response.Body.String())
+				}
+				hint := response.Header().Get("Retry-After")
+				if tt.code == limit {
+					seconds, err := strconv.Atoi(hint)
+					if err != nil || seconds < 22 || seconds > 24 {
+						t.Fatalf("Retry-After=%q, want about %s", hint, wait)
+					}
+				} else if hint != "" {
+					t.Fatalf("invalid model returned Retry-After=%q", hint)
+				}
+			}
+			modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.code == limit {
+				if len(modelCooldowns) != 1 {
+					t.Fatalf("model cooldowns=%v", modelCooldowns)
+				}
+				for _, models := range modelCooldowns {
+					until := models["grok-4.6"]
+					if len(models) != 1 || until.Before(before.Add(wait)) || until.After(time.Now().Add(wait+time.Second)) {
+						t.Fatalf("model cooldowns=%v, want current model held until Retry-After", modelCooldowns)
+					}
+				}
+			} else if len(modelCooldowns) != 0 {
+				t.Fatalf("invalid model persisted cooldowns=%v", modelCooldowns)
+			}
+			channelCooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+			if err != nil || len(channelCooldowns) != 0 {
+				t.Fatalf("unexpected channel cooldowns=%v err=%v", channelCooldowns, err)
+			}
+			other := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "composer-2.5", "messages": messages,
+			}, nil)
+			if other.Code != http.StatusOK || gjson.GetBytes(other.Body.Bytes(), "choices.0.message.content").String() != "another model" {
+				t.Fatalf("other model HTTP=%d body=%s", other.Code, other.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证账户拒绝可以在提交响应前换渠，已确认的请求错误直接返回。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorSDKAccountAndRequestFailures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		err        error
+		terminal   bool
+		committed  bool
+		failsOver  bool
+		wantStatus int
+		wantType   string
+	}{
+		{"plan", &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_PLAN_REQUIRED, Message: "plan required"}, false, false, true, 200, ""},
+		{"role", &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_ROLE_FORBIDDEN, Message: "role forbidden"}, true, false, true, 200, ""},
+		{"feature after commit", &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_FEATURE_UNAVAILABLE, Message: "feature unavailable"}, true, true, false, 200, "permission_error"},
+		{"ambiguous validation", &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, Message: "invalid bridge option"}, false, false, true, 200, ""},
+		{"token throttle", &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UPSTREAM_ERROR, Message: "Too many tokens per minute; rate limit exceeded for this context window"}, true, false, true, 200, ""},
+		{"local request validation", fmt.Errorf("%w: tool_choice references an undeclared tool", cursorauth.ErrInvalidRequest), false, false, false, 400, "invalid_request_error"},
+		{"tool turn already running", cursorauth.ErrToolTurnInProgress, false, false, false, http.StatusConflict, "invalid_request_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "cursor-primary", upstreamProtocol: "openai", models: "composer-2.5", authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"primary-key"}`},
+				{name: "cursor-backup", upstreamProtocol: "openai", models: "composer-2.5", authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"backup-key"}`},
+			}, map[int]string{0: "https://unused.invalid", 1: "https://unused.invalid"})
+			primary, backup := 0, 0
+			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
+				if credential.APIKey == "backup-key" {
+					backup++
+					return cursorUsageEventsRunner{{Done: true, Text: "backup"}}.Run(ctx, credential, req)
+				}
+				primary++
+				if !tc.terminal {
+					return nil, tc.err
+				}
+				events := cursorUsageEventsRunner{}
+				if tc.committed {
+					events = append(events, cursorauth.Event{Ping: true})
+				}
+				events = append(events, cursorauth.Event{Done: true, Err: tc.err})
+				return events.Run(ctx, credential, req)
+			})
+			resp := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "composer-2.5", "stream": tc.committed,
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, nil)
+			if resp.Code != tc.wantStatus || primary != 1 || backup > 1 || (backup == 1) != tc.failsOver {
+				t.Fatalf("HTTP=%d primary=%d backup=%d body=%s", resp.Code, primary, backup, resp.Body)
+			}
+			if tc.failsOver {
+				if got := gjson.GetBytes(resp.Body.Bytes(), "choices.0.message.content").String(); got != "backup" {
+					t.Fatalf("response=%s", resp.Body)
+				}
+			} else {
+				payload := resp.Body.Bytes()
+				if tc.committed {
+					for block := range bytes.SplitSeq(payload, []byte("\n\n")) {
+						if _, data := parseSSEEventChunk(block); gjson.GetBytes(data, "error").Exists() {
+							payload = data
+						}
+					}
+				}
+				if got := gjson.GetBytes(payload, "error.type").String(); got != tc.wantType {
+					t.Fatalf("error.type=%q, response=%s", got, resp.Body)
+				}
+			}
+			channelCooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+			if err != nil || len(channelCooldowns) != 0 {
+				t.Fatalf("channel cooldowns=%v err=%v", channelCooldowns, err)
+			}
+			modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil || len(modelCooldowns) != 0 {
+				t.Fatalf("model cooldowns=%v err=%v", modelCooldowns, err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 上下文超限在已提交的协议流中保留错误码，其余请求以 400 停止换渠。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorContextOverflowAcrossProtocols(t *testing.T) {
+	t.Parallel()
+	for _, wire := range []struct{ path, request string }{
+		{"/v1/chat/completions", `{"model":"composer-2.5","messages":[{"role":"user","content":"hello"}]}`},
+		{"/v1/responses", `{"model":"composer-2.5","input":"hello"}`},
+		{"/v1/messages", `{"model":"composer-2.5","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`},
+	} {
+		for _, stage := range []string{"start", "terminal", "committed"} {
+			t.Run(wire.path+"/"+stage, func(t *testing.T) {
+				t.Parallel()
+				env := setupProxyTestEnv(t, []testChannel{
+					{name: "cursor-primary", upstreamProtocol: "openai", models: "composer-2.5", authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"primary-key"}`},
+					{name: "cursor-backup", upstreamProtocol: "openai", models: "composer-2.5", authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"backup-key"}`},
+				}, map[int]string{0: "https://unused.invalid", 1: "https://unused.invalid"})
+				message := "Input exceeds the context window"
+				if wire.path == "/v1/messages" && stage == "terminal" {
+					message = "context_too_large: request rejected"
+				}
+				failure := &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, Message: message}
+				calls := 0
+				env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
+					calls++
+					if credential.APIKey == "backup-key" {
+						return cursorUsageEventsRunner{{Done: true, Text: "unexpected fallback"}}.Run(ctx, credential, req)
+					}
+					switch stage {
+					case "start":
+						return nil, failure
+					case "terminal":
+						return cursorUsageEventsRunner{{Done: true, Err: failure}}.Run(ctx, credential, req)
+					default:
+						return cursorUsageEventsRunner{{Delta: "partial"}, {Done: true, Err: failure}}.Run(ctx, credential, req)
+					}
+				})
+				var req map[string]any
+				if err := json.Unmarshal([]byte(wire.request), &req); err != nil {
+					t.Fatal(err)
+				}
+				req["stream"] = stage != "start"
+				resp := doProxyRequest(t, env.engine, wire.path, req, nil)
+				wantHTTP := http.StatusBadRequest
+				payload := resp.Body.Bytes()
+				if stage == "committed" {
+					wantHTTP = http.StatusOK
+					var lastSequence int64 = -1
+					for block := range bytes.SplitSeq(payload, []byte("\n\n")) {
+						event, data := parseSSEEventChunk(block)
+						message := gjson.ParseBytes(data)
+						if event == "error" || message.Get("error").Exists() {
+							if wire.path == "/v1/responses" && (lastSequence < 0 || message.Get("sequence_number").Int() != lastSequence+1) {
+								t.Fatalf("error sequence=%s follows %d", data, lastSequence)
+							}
+							payload = data
+						}
+						if seq := message.Get("sequence_number"); seq.Exists() {
+							lastSequence = seq.Int()
+						}
+						if event == "response.completed" || event == "message_stop" || bytes.Equal(data, []byte("[DONE]")) {
+							t.Fatalf("unexpected successful terminator: %s", data)
+						}
+					}
+				}
+				if resp.Code != wantHTTP || calls != 1 {
+					t.Fatalf("HTTP=%d calls=%d body=%s", resp.Code, calls, resp.Body)
+				}
+				detail := gjson.GetBytes(payload, "error")
+				switch {
+				case wire.path == "/v1/messages":
+					if gjson.GetBytes(payload, "type").String() != "error" || detail.Get("type").String() != "invalid_request_error" ||
+						!strings.Contains(detail.Get("message").String(), "context_length_exceeded") {
+						t.Fatalf("Anthropic error=%s", payload)
+					}
+				case wire.path == "/v1/responses" && stage == "committed":
+					if gjson.GetBytes(payload, "type").String() != "error" || gjson.GetBytes(payload, "code").String() != "context_length_exceeded" {
+						t.Fatalf("Responses SSE error=%s", payload)
+					}
+				default:
+					if detail.Get("type").String() != "invalid_request_error" || detail.Get("code").String() != "context_length_exceeded" {
+						t.Fatalf("OpenAI error=%s", payload)
+					}
+				}
+				channelCooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+				if err != nil || len(channelCooldowns) != 0 {
+					t.Fatalf("channel cooldowns=%v err=%v", channelCooldowns, err)
+				}
+				modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+				if err != nil || len(modelCooldowns) != 0 {
+					t.Fatalf("model cooldowns=%v err=%v", modelCooldowns, err)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 重放一次已处理的 SDK 限流时保留原有退避截止时间。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorReplayKeepsOriginalCooldown(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor", upstreamProtocol: "openai", models: "grok-4.6,composer-2.5",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"test-key"}`,
+	}}, map[int]string{0: "https://unused.invalid"})
+	const modelID = "grok-4.6"
+	failure := &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, Message: "SDK rejected the model"}
+	calls := 0
+	env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
+		calls++
+		return cursorUsageEventsRunner{{Done: true, Err: failure, Replayed: calls > 1}}.Run(ctx, credential, request)
+	})
+	var firstUntil time.Time
+	for attempt := range 2 {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": modelID, "stream": true,
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusTooManyRequests || calls != attempt+1 ||
+			!strings.Contains(gjson.GetBytes(response.Body.Bytes(), "error.message").String(), failure.Message) {
+			t.Fatalf("attempt=%d calls=%d HTTP=%d body=%s", attempt, calls, response.Code, response.Body.String())
+		}
+		cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+		if err != nil || len(cooldowns) != 1 {
+			t.Fatalf("model cooldowns=%v err=%v", cooldowns, err)
+		}
+		for _, models := range cooldowns {
+			until := models[modelID]
+			if attempt == 0 {
+				firstUntil = until
+				if !firstUntil.After(time.Now()) {
+					t.Fatalf("initial rate limit did not cool %s: %v", modelID, firstUntil)
+				}
+			} else if !until.Equal(firstUntil) {
+				t.Fatalf("replay moved cooldown from %v to %v", firstUntil, until)
+			}
+		}
+	}
+}
+
+/**
+ * @brief 重放凭证拒绝时保留客户端错误，避免凭证重铸或备用渠道推理。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorReplayDoesNotRefreshOrFailOver(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "cursor-primary", upstreamProtocol: "openai", models: "grok-4.6",
+			authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"primary-key"}`},
+		{name: "cursor-backup", upstreamProtocol: "openai", models: "grok-4.6",
+			authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"backup-key"}`},
+	}, map[int]string{0: "https://unused.invalid", 1: "https://unused.invalid"})
+	primaryCalls, backupCalls, refreshCalls := 0, 0, 0
+	env.server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		refreshCalls++
+		return cursorTestHTTPResponse(request, http.StatusOK, `{"accessToken":"new-session","refreshToken":"new-refresh"}`), nil
+	})}
+	env.server.cursorCredentials = newCursorCredentialManager(env.store, env.server.getClientForChannel, env.server.invalidateChannelRelatedCache)
+	const message = "the original run used a rejected credential"
+	failure := &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED, Message: message}
+	env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
+		if credential.APIKey == "backup-key" {
+			backupCalls++
+			return cursorUsageEventsRunner{{Done: true, Text: "backup"}}.Run(ctx, credential, request)
+		}
+		primaryCalls++
+		events := cursorUsageEventsRunner{}
+		if primaryCalls != 2 {
+			events = append(events, cursorauth.Event{Ping: true})
+		}
+		return append(events, cursorauth.Event{Done: true, Err: failure, Replayed: primaryCalls > 1}).Run(ctx, credential, request)
+	})
+	for attempt, want := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusOK} {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "grok-4.6", "stream": true,
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != want || primaryCalls != attempt+1 || backupCalls != 0 || refreshCalls != 1 {
+			t.Fatalf("attempt=%d HTTP=%d primary=%d backup=%d refresh=%d body=%s", attempt, response.Code, primaryCalls, backupCalls, refreshCalls, response.Body.String())
+		}
+		var got string
+		if want == http.StatusUnauthorized {
+			got = gjson.GetBytes(response.Body.Bytes(), "error.message").String()
+		} else {
+			for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+				_, data := parseSSEEventChunk(block)
+				if field := gjson.GetBytes(data, "error.message"); field.Exists() {
+					got = field.String()
+				}
+			}
+		}
+		if !strings.Contains(got, message) {
+			t.Fatalf("attempt=%d original failure missing from %s", attempt, response.Body.String())
+		}
+	}
+}
+
+/**
  * @brief 重放的实时和终态用量均不重复写入日志、令牌统计或成本。
  * @param t 测试上下文。
  */
@@ -722,11 +1227,10 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 		wantClient   cursorauth.Usage
 	}{
 		{
-			name: "tool turn preserves real usage over callback estimate",
+			name: "tool pause preserves reported usage",
 			events: cursorUsageEventsRunner{
 				{Usage: first},
-				{ToolCall: &cursorauth.ToolCall{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{}`)},
-					Usage: &cursorauth.Usage{InputTokens: 900_000}, UsageEstimated: true},
+				{ToolCall: &cursorauth.ToolCall{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{}`)}},
 			},
 			wantBillable: *first, wantClient: *first,
 		},
@@ -737,6 +1241,20 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 			},
 			wantBillable: cursorauth.Usage{InputTokens: 1600, OutputTokens: 320, CacheReadTokens: 480, CacheWriteTokens: 640, ReasoningTokens: 80},
 			wantClient:   cursorauth.Usage{InputTokens: 1500, OutputTokens: 300, CacheReadTokens: 450, CacheWriteTokens: 600, ReasoningTokens: 75},
+		},
+		{
+			name: "zero usage does not hide real terminal usage",
+			events: cursorUsageEventsRunner{
+				{Usage: &cursorauth.Usage{}}, {Text: "final", Done: true, Usage: residual},
+			},
+			wantBillable: *residual, wantClient: *residual,
+		},
+		{
+			name: "zero terminal residual preserves real usage",
+			events: cursorUsageEventsRunner{
+				{Usage: first}, {Text: "final", Done: true, Usage: &cursorauth.Usage{}},
+			},
+			wantBillable: *first, wantClient: *first,
 		},
 		{
 			name: "resumed turn estimates context while billing real usage",
@@ -933,9 +1451,8 @@ func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing
 		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
 	}}, map[int]string{0: "https://unused.invalid"})
 	runner := &fakeCursorRunner{
-		toolCalls:          []cursorauth.ToolCall{{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{}`)}},
-		toolUsage:          &cursorauth.Usage{InputTokens: 100, TotalTokens: 100},
-		toolUsageEstimated: true,
+		text:      "looking around",
+		toolCalls: []cursorauth.ToolCall{{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{}`)}},
 	}
 	env.server.cursorRunner = runner
 	ctx := context.Background()
@@ -970,19 +1487,36 @@ func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v body=%s", err, response.Body.String())
 	}
-	if payload.Usage.PromptTokens <= 0 || payload.Usage.CompletionTokens != 0 || payload.Usage.TotalTokens != payload.Usage.PromptTokens {
+	if payload.Usage.TotalTokens != payload.Usage.PromptTokens+payload.Usage.CompletionTokens {
 		t.Fatalf("tool response usage = %+v", payload.Usage)
 	}
-	if runner.request.InputTokenEstimate <= 0 {
-		t.Fatalf("runner request is missing the input-token estimate: %+v", runner.request)
-	}
 
-	entry := waitForProxyLog(t, env, "grok-4.6")
-	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.CacheReadInputTokens != 0 || entry.Cost != 0 {
-		t.Fatalf("estimated intermediate usage must not be billed: %+v", entry)
+	requestLog := waitForProxyLog(t, env, "grok-4.6")
+	assertCursorDisplayEstimate(t, response.Body.Bytes(), "openai", false, requestLog, 15)
+	if runner.request.OnDetachedUsage == nil {
+		t.Fatal("missing usage receiver for detached tool session")
 	}
-	if entry.UsageEstimate == nil || entry.UsageEstimate.InputTokens <= 0 || entry.UsageEstimate.OutputTokens <= 0 {
-		t.Fatalf("tool turn is missing its separate usage estimate: %+v", entry.UsageEstimate)
+	runner.request.OnDetachedUsage(cursorauth.Usage{
+		InputTokens: 17, OutputTokens: 8, ReasoningTokens: 3, CacheReadTokens: 5, CacheWriteTokens: 4,
+	})
+	since := requestLog.Time.Add(-time.Second)
+	query, responseLog := newTestContext(t, newRequest(http.MethodGet, "/admin/logs?log_source=cursor_detached_usage", nil))
+	env.server.HandleErrors(query)
+	logs := mustParseAPIResponse[[]model.LogEntry](t, responseLog.Body.Bytes()).Data
+	if responseLog.Code != http.StatusOK || len(logs) != 1 {
+		t.Fatalf("detached usage log query = %d, %s", responseLog.Code, responseLog.Body.String())
+	}
+	record := logs[0]
+	if record.AuthTokenID != token.ID || record.ChannelID != requestLog.ChannelID || record.Model != requestLog.Model ||
+		record.LogSource != model.LogSourceCursorDetachedUsage || record.StatusCode != 0 || record.Cost != 0 || record.UsageEstimate != nil ||
+		record.InputTokens != 17 || record.OutputTokens != 8 || record.ReasoningTokens != 3 ||
+		record.CacheReadInputTokens != 5 || record.CacheCreationInputTokens != 4 || record.Cache5mInputTokens != 4 {
+		t.Fatalf("detached usage attribution or amounts = %+v", record)
+	}
+	stats, err := env.store.GetStats(ctx, since, time.Now(), &model.LogFilter{LogSource: model.LogSourceAll}, true)
+	if err != nil || len(stats) != 1 || stats[0].Total != 1 || stats[0].Success != 1 || stats[0].Error != 0 ||
+		stats[0].LastRequestID == nil || *stats[0].LastRequestID != requestLog.ID {
+		t.Fatalf("detached usage changed request statistics: %+v, err=%v", stats, err)
 	}
 	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		token, err = env.store.GetAuthTokenByValue(ctx, tokenHash)
@@ -1096,6 +1630,80 @@ func TestProxy_CursorOAuthUnavailableCandidateFailsOver(t *testing.T) {
 }
 
 /**
+ * @brief URL 图片跳过 Cursor；仅有 Cursor 候选时提示改用内联图片。两种结果均不写冷却。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthURLImageCapabilityFallback(t *testing.T) {
+	t.Parallel()
+	const imageURL = "https://example.com/image.png"
+	for _, test := range []struct {
+		name      string
+		backup    bool
+		anthropic bool
+	}{
+		{name: "compatible backup", backup: true},
+		{name: "only Cursor candidates"},
+		{name: "Anthropic Messages", anthropic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			primary := testChannel{
+				name: "cursor-primary", upstreamProtocol: "openai", models: "grok-4.6",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"test-session","api_key":"test-key"}`,
+			}
+			secondary := primary
+			secondary.name = "cursor-secondary"
+			upstreams := map[int]string{0: "https://unused.invalid", 1: "https://unused.invalid"}
+			if test.backup {
+				secondary = testChannel{name: "backup", upstreamProtocol: "openai", models: primary.models}
+				backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var body json.RawMessage
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode backup request: %v", err)
+					} else if got := gjson.GetBytes(body, "messages.0.content.0.image_url.url").String(); got != imageURL {
+						t.Errorf("backup image URL = %q, want %q", got, imageURL)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"id":"backup","choices":[{"message":{"role":"assistant","content":"reply from backup"},"finish_reason":"stop"}]}`))
+				}))
+				defer backup.Close()
+				upstreams[1] = backup.URL
+			}
+			env := setupProxyTestEnv(t, []testChannel{primary, secondary}, upstreams)
+			env.server.cursorRunner = cursorauth.NewSDKRunner("/unusable-cursor-bridge-path")
+			path := "/v1/chat/completions"
+			image := map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}}
+			if test.anthropic {
+				path = "/v1/messages"
+				image = map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": imageURL}}
+			}
+			response := doProxyRequest(t, env.engine, path, map[string]any{
+				"model": primary.models, "messages": []any{map[string]any{
+					"role": "user", "content": []any{image},
+				}},
+			}, nil)
+			payload := gjson.ParseBytes(response.Body.Bytes())
+			if test.backup {
+				if response.Code != http.StatusOK || payload.Get("choices.0.message.content").String() != "reply from backup" {
+					t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+				}
+			} else if response.Code != http.StatusBadRequest || !strings.Contains(payload.Get("error.message").String(), "inline base64 images") {
+				t.Fatalf("proxy status=%d body=%s, want inline-image guidance", response.Code, response.Body.String())
+			}
+			if test.anthropic && (payload.Get("type").String() != "error" || payload.Get("error.type").String() != "invalid_request_error") {
+				t.Fatalf("proxy body=%s, want Anthropic invalid_request_error", response.Body.String())
+			}
+			if cooled, err := env.store.GetAllChannelCooldowns(t.Context()); err != nil || len(cooled) != 0 {
+				t.Fatalf("unexpected channel cooldown: %v, %v", cooled, err)
+			}
+			if cooled, err := env.store.GetAllModelCooldowns(t.Context()); err != nil || len(cooled) != 0 {
+				t.Fatalf("unexpected model cooldown: %v, %v", cooled, err)
+			}
+		})
+	}
+}
+
+/**
  * @brief 工具恢复轮的客户端上下文不包含 SDK 独立 usage 或终态携带的跨轮累计消费。
  * @param t 测试上下文。
  */
@@ -1106,8 +1714,17 @@ func TestProxy_CursorOAuthResumedTurnDoesNotExposeCumulativeRunUsage(t *testing.
 	}
 	for _, clientProtocol := range []string{"anthropic", "openai"} {
 		for _, streaming := range []bool{false, true} {
-			for _, usageEvent := range []bool{false, true} {
-				name := fmt.Sprintf("%s/stream=%t/usage_event=%t", clientProtocol, streaming, usageEvent)
+			for _, scenario := range []struct {
+				name        string
+				incremental *cursorauth.Usage
+				terminal    *cursorauth.Usage
+			}{
+				{name: "no usage"},
+				{name: "zero residual only", terminal: &cursorauth.Usage{}},
+				{name: "terminal usage", terminal: cumulative},
+				{name: "incremental usage", incremental: cumulative, terminal: &cursorauth.Usage{}},
+			} {
+				name := fmt.Sprintf("%s/stream=%t/%s", clientProtocol, streaming, scenario.name)
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					credentialJSON, err := (&cursorauth.Credential{APIKey: "test-key", AccessToken: "test-session"}).JSON()
@@ -1118,13 +1735,11 @@ func TestProxy_CursorOAuthResumedTurnDoesNotExposeCumulativeRunUsage(t *testing.
 						name: "cursor-resume-usage", upstreamProtocol: clientProtocol, models: "claude-opus-5-5",
 						authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
 					}}, map[int]string{0: "https://unused.invalid"})
-					events := cursorUsageEventsRunner{{Text: "final answer", Done: true, Usage: cumulative}}
-					if usageEvent {
-						events = cursorUsageEventsRunner{
-							{Usage: cumulative}, {Text: "final answer", Done: true, Usage: &cursorauth.Usage{}},
-						}
+					events := cursorUsageEventsRunner{{ThinkingDelta: "checking"}}
+					if scenario.incremental != nil {
+						events = append(events, cursorauth.Event{Usage: scenario.incremental})
 					}
-					env.server.cursorRunner = events
+					env.server.cursorRunner = append(events, cursorauth.Event{Text: "final answer", Done: true, Usage: scenario.terminal})
 					path := "/v1/chat/completions"
 					messages := []any{
 						map[string]any{"role": "user", "content": "find it"},
@@ -1193,7 +1808,9 @@ func TestProxy_CursorOAuthResumedTurnDoesNotExposeCumulativeRunUsage(t *testing.
 						}
 					}
 					entry := waitForProxyLog(t, env, "claude-opus-5-5")
-					if entry.InputTokens != cumulative.InputTokens || entry.OutputTokens != cumulative.OutputTokens ||
+					if scenario.incremental == nil && scenario.terminal != cumulative {
+						assertCursorDisplayEstimate(t, response.Body.Bytes(), clientProtocol, streaming, entry, 5)
+					} else if entry.InputTokens != cumulative.InputTokens || entry.OutputTokens != cumulative.OutputTokens ||
 						entry.CacheReadInputTokens != cumulative.CacheReadTokens || entry.CacheCreationInputTokens != cumulative.CacheWriteTokens || entry.UsageEstimate != nil {
 						t.Fatalf("cumulative consumption was not preserved for billing: %+v", entry)
 					}
@@ -1548,6 +2165,10 @@ func TestProxy_CursorOAuthResponsesTranslationFailureRetainsUsageAfterCancel(t *
 	}
 }
 
+/**
+ * @brief Responses SSE 保留原生工具和正文，并显示包含两次工具调用的用量估算。
+ * @param t 测试上下文。
+ */
 func TestProxy_CursorOAuthResponsesEmitsNativeToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1584,6 +2205,7 @@ func TestProxy_CursorOAuthResponsesEmitsNativeToolCalls(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
 	}
+	assertCursorDisplayEstimate(t, response.Body.Bytes(), "responses", true, waitForProxyLog(t, env, "composer-2.5"), 32)
 
 	var outputText strings.Builder
 	var functionNames, functionArguments []string
@@ -1619,5 +2241,469 @@ func TestProxy_CursorOAuthResponsesEmitsNativeToolCalls(t *testing.T) {
 			arguments["path"] != wantPath {
 			t.Fatalf("function call %d = %q %q", i, functionNames[i], functionArguments[i])
 		}
+	}
+}
+
+/**
+ * @brief 验证 Cursor 的上下文超限通过 Gemini JSON 及已开始的 SSE 返回相同的原因。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorGeminiContextOverflow(t *testing.T) {
+	t.Parallel()
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%v", streaming), func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "cursor-gemini", upstreamProtocol: "openai", models: "composer-2.5",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"test-key","access_token":"test-session"}`,
+			}}, map[int]string{0: "https://unused.invalid"})
+			failure := &cursorauth.BridgeError{SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, Message: "prompt is too long: 72000 tokens > 64000 maximum"}
+			events := cursorUsageEventsRunner{}
+			path := "/v1beta/models/composer-2.5:generateContent"
+			wantHTTP := http.StatusBadRequest
+			if streaming {
+				events = append(events, cursorauth.Event{Ping: true})
+				path = "/v1beta/models/composer-2.5:streamGenerateContent?alt=sse"
+				wantHTTP = http.StatusOK
+			}
+			env.server.cursorRunner = append(events, cursorauth.Event{Done: true, Err: failure})
+			rec := doProxyRequest(t, env.engine, path, map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": "hello"}}}},
+			}, nil)
+			if rec.Code != wantHTTP {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			body := rec.Body.Bytes()
+			if streaming {
+				var terminal []byte
+				for block := range bytes.SplitSeq(body, []byte("\n\n")) {
+					_, data := parseSSEEventChunk(block)
+					if len(data) != 0 {
+						terminal = data
+					}
+				}
+				body = terminal
+			}
+			failureJSON := gjson.GetBytes(body, "error")
+			detail := failureJSON.Get("details.0")
+			if failureJSON.Get("code").Int() != http.StatusBadRequest || failureJSON.Get("status").String() != "INVALID_ARGUMENT" ||
+				!strings.Contains(failureJSON.Get("message").String(), "prompt is too long") ||
+				detail.Get("@type").String() != "type.googleapis.com/google.rpc.ErrorInfo" || detail.Get("reason").String() != "CONTEXT_LENGTH_EXCEEDED" {
+				t.Fatalf("Gemini error = %s", body)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 模拟 Bridge 在结构化 RPC 错误、状态说明和 Run 终态中回显当前凭证。
+ */
+type cursorRedactionBridge struct {
+	sdkv1connect.UnimplementedSdkAgentServiceHandler
+	sdkv1connect.UnimplementedSdkBridgeControlServiceHandler
+	apiKey   string ///< 当前账户的合成 User API Key。
+	stopPath string ///< Bridge 子进程用于接收关闭信号的文件。
+}
+
+/**
+ * @brief 响应 SDKRunner 探活。
+ * @param ctx RPC 上下文。
+ * @param request 探活请求。
+ * @return 成功探活响应。
+ * @return 始终为 nil。
+ */
+func (b *cursorRedactionBridge) Ping(_ context.Context, _ *connect.Request[sdkv1.PingRequest]) (*connect.Response[sdkv1.PingResponse], error) {
+	return connect.NewResponse(&sdkv1.PingResponse{}), nil
+}
+
+/**
+ * @brief 声明测试 Bridge 支持 SDKRunner 需要的线协议和能力。
+ * @param ctx RPC 上下文。
+ * @param request 版本探测请求。
+ * @return SDKRunner 可接受的版本信息。
+ * @return 始终为 nil。
+ */
+func (b *cursorRedactionBridge) GetVersion(_ context.Context, _ *connect.Request[sdkv1.GetVersionRequest]) (*connect.Response[sdkv1.GetVersionResponse], error) {
+	return connect.NewResponse(&sdkv1.GetVersionResponse{
+		ProtocolVersion: cursorauth.BridgeProtocol,
+		Capabilities:    []string{"agent.create", "agent.send", "run.cancel", "agent.management"},
+	}), nil
+}
+
+/**
+ * @brief 允许测试 Bridge 子进程应 SDKRunner 请求正常退出。
+ * @param ctx RPC 上下文。
+ * @param request Shutdown 请求。
+ * @return 成功关闭响应；通知失败时为 nil。
+ * @return 写入退出信号文件失败时返回错误。
+ */
+func (b *cursorRedactionBridge) Shutdown(_ context.Context, _ *connect.Request[sdkv1.ShutdownRequest]) (*connect.Response[sdkv1.ShutdownResponse], error) {
+	if err := os.WriteFile(b.stopPath, nil, 0o600); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&sdkv1.ShutdownResponse{}), nil
+}
+
+/**
+ * @brief 为 RPC 限流场景返回带恢复时间的拒绝，为 Run 终态错误场景建立 Agent。
+ * @param ctx RPC 上下文。
+ * @param request 含当前 User API Key 和模型的请求。
+ * @return 成功建立的 Agent；请求被拒绝时为 nil。
+ * @return 模拟 Bridge 结构化 RPC 错误。
+ */
+func (b *cursorRedactionBridge) CreateAgent(_ context.Context, request *connect.Request[sdkv1.CreateAgentRequest]) (*connect.Response[sdkv1.CreateAgentResponse], error) {
+	if request.Msg.GetOptions().GetApiKey() != b.apiKey {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unexpected test credential"))
+	}
+	if modelID := request.Msg.GetOptions().GetModel().GetId(); modelID != "cursor-json" {
+		return connect.NewResponse(&sdkv1.CreateAgentResponse{AgentId: modelID}), nil
+	}
+	message := "RPC rejected " + b.apiKey + " for cursor-other-account"
+	detail, err := connect.NewErrorDetail(&sdkv1.SdkErrorDetails{
+		SdkErrorCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED,
+		Message:      message,
+		RetryAfter:   durationpb.New(19 * time.Second),
+	})
+	if err != nil {
+		return nil, err
+	}
+	rpcErr := connect.NewError(connect.CodeResourceExhausted, errors.New(message))
+	rpcErr.AddDetail(detail)
+	return nil, rpcErr
+}
+
+/**
+ * @brief 模拟带凭证回显的运行诊断；首帧额度错误只在终态正文中给出原因。
+ * @param ctx RPC 上下文。
+ * @param request 已建立的 Agent 所对应的消息请求。
+ * @param stream 当前 Bridge 输出流。
+ * @return 构造或者发出模拟帧失败时返回错误。
+ */
+func (b *cursorRedactionBridge) Send(_ context.Context, request *connect.Request[sdkv1.SendRequest], stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+	agentID := request.Msg.GetAgentId()
+	if agentID != "cursor-quota-result" {
+		status, err := structpb.NewStruct(map[string]any{
+			"status": "RUNNING", "run_id": "run-redaction",
+			"message": "status rejected " + b.apiKey + " for cursor-other-account",
+		})
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_SdkMessage{
+			SdkMessage: &sdkv1.SdkMessage{Type: "status", Message: status},
+		}}); err != nil {
+			return err
+		}
+	}
+	const statusError = sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR
+	result := &sdkv1.RunResult{
+		RunId: "run-redaction", AgentId: agentID, Status: statusError,
+		Usage: &sdkv1.TokenUsage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3},
+	}
+	switch agentID {
+	case "cursor-quota":
+		result.ErrorMessage = new("You've hit your usage limit for cursor-quota")
+	case "cursor-quota-result":
+		result.Result = "You've hit your usage limit for " + b.apiKey
+		result.ErrorMessage = new("Run failed")
+	default:
+		result.Result = "ordinary assistant output with " + b.apiKey
+		result.ErrorCode = new("RATE_LIMIT_EXCEEDED")
+		result.ErrorMessage = new("result rejected " + b.apiKey + " for cursor-other-account")
+	}
+	if err := stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Result{Result: &sdkv1.RunStreamResult{
+		RunId: "run-redaction", AgentId: agentID, Status: statusError, Result: result,
+	}}}); err != nil {
+		return err
+	}
+	return stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Done{
+		Done: &sdkv1.RunStreamDone{RunId: "run-redaction", AgentId: agentID},
+	}})
+}
+
+/**
+ * @brief 允许 SDKRunner 通过正常 Bridge 删除流程清理测试 Agent。
+ * @param ctx RPC 上下文。
+ * @param request 当前 Agent 删除请求。
+ * @return 成功删除响应。
+ * @return 始终为 nil。
+ */
+func (b *cursorRedactionBridge) DeleteAgent(_ context.Context, _ *connect.Request[sdkv1.DeleteAgentRequest]) (*connect.Response[sdkv1.DeleteAgentResponse], error) {
+	return connect.NewResponse(&sdkv1.DeleteAgentResponse{}), nil
+}
+
+/**
+ * @brief 启动 SDKRunner，通过真实 Connect 边界调用模拟 Bridge。
+ * @param t 测试上下文；注册 Companion 和 Connect 监听器清理。
+ * @param apiKey 模拟账户的合成 User API Key。
+ * @return 尚未连接的 SDKRunner，首次请求时完成 Bridge 探活。
+ */
+func newCursorRedactionTestRunner(t *testing.T, apiKey string) *cursorauth.SDKRunner {
+	t.Helper()
+	dir := t.TempDir()
+	bridgePath := filepath.Join(dir, "cursor-sdk-bridge")
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte("test-bridge-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bridge := &cursorRedactionBridge{apiKey: apiKey, stopPath: filepath.Join(dir, "stop")}
+	mux := http.NewServeMux()
+	agentPath, agentHandler := sdkv1connect.NewSdkAgentServiceHandler(bridge)
+	controlPath, controlHandler := sdkv1connect.NewSdkBridgeControlServiceHandler(bridge)
+	mux.Handle(agentPath, agentHandler)
+	mux.Handle(controlPath, controlHandler)
+	bridgeServer := httptest.NewServer(mux)
+	t.Cleanup(bridgeServer.Close)
+	ready, err := json.Marshal(map[string]any{
+		"schemaVersion": 1, "transport": "tcp", "protocol": "connect", "url": bridgeServer.URL, "authTokenFile": tokenPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCLOAD_TEST_BRIDGE_READY_PREFIX", string(ready[:len(ready)-1]))
+	t.Setenv("CCLOAD_TEST_BRIDGE_STOP", bridge.stopPath)
+	t.Setenv("SQLITE_PATH", filepath.Join(dir, "test.db"))
+	const script = `#!/bin/sh
+printf 'cursor-sdk-bridge ready %s,"pid":%s}\n' "$CCLOAD_TEST_BRIDGE_READY_PREFIX" "$$" >&2
+while [ ! -f "$CCLOAD_TEST_BRIDGE_STOP" ]; do sleep 0.02; done
+`
+	if err := os.WriteFile(bridgePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return cursorauth.NewSDKRunner(bridgePath)
+}
+
+/**
+ * @brief 验证代理脱敏 SDK 终态诊断，并在输出前遇到额度耗尽时冷却当前模型、切换渠道。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorSDKRedactsEchoedUserAPIKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Cursor Bridge discovery fixture uses a shell executable")
+	}
+	const apiKey = `synthetic-cursor-"token\42`
+	runner := newCursorRedactionTestRunner(t, apiKey)
+	credential, err := (&cursorauth.Credential{APIKey: apiKey, AccessToken: "session-token"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode backup request: %v", err)
+			http.Error(w, "invalid backup request", http.StatusBadRequest)
+			return
+		}
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"id":"backup","object":"chat.completion.chunk","model":"cursor-quota-result","choices":[{"index":0,"delta":{"content":"backup answer"},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"backup","object":"chat.completion","model":"cursor-quota","choices":[{"index":0,"message":{"role":"assistant","content":"backup answer"},"finish_reason":"stop"}]}`))
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{
+		{
+			name: "cursor-redaction", upstreamProtocol: "openai", models: "cursor-json,cursor-sse,cursor-quota,cursor-quota-result",
+			authType: model.AuthTypeCursorOAuth, oauthCredential: credential,
+		},
+		{name: "cursor-backup", upstreamProtocol: "openai", models: "cursor-quota,cursor-quota-result", apiKey: "backup-key"},
+	}, map[int]string{0: "https://unused.invalid", 1: backup.URL}, map[string]string{"debug_log_enabled": "true"})
+	env.server.cursorRunner = runner
+
+	t.Run("terminal quota fails over", func(t *testing.T) {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model":    "cursor-quota",
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String() != "backup answer" {
+			t.Fatalf("HTTP=%d body=%s", response.Code, response.Body)
+		}
+		modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+		if err != nil || len(modelCooldowns) != 1 {
+			t.Fatalf("model cooldowns=%v err=%v", modelCooldowns, err)
+		}
+		for _, models := range modelCooldowns {
+			if len(models) != 1 || !models["cursor-quota"].After(time.Now()) {
+				t.Fatalf("model cooldowns=%v, want only cursor-quota cooled", modelCooldowns)
+			}
+		}
+		channelCooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+		if err != nil || len(channelCooldowns) != 0 {
+			t.Fatalf("channel cooldowns=%v err=%v", channelCooldowns, err)
+		}
+	})
+
+	t.Run("terminal result quota fails over before SSE", func(t *testing.T) {
+		const modelID = "cursor-quota-result"
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": modelID, "stream": true,
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "text/event-stream") {
+			t.Fatalf("HTTP=%d headers=%v body=%s", response.Code, response.Header(), response.Body)
+		}
+		var content strings.Builder
+		var done bool
+		for frame := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+			_, data := parseSSEEventChunk(frame)
+			switch string(data) {
+			case "":
+				continue
+			case "[DONE]":
+				done = true
+			default:
+				payload := gjson.ParseBytes(data)
+				if payload.Get("id").String() != "backup" || payload.Get("error").Exists() {
+					t.Fatalf("unexpected SSE frame: %s", data)
+				}
+				content.WriteString(payload.Get("choices.0.delta.content").String())
+			}
+		}
+		if content.String() != "backup answer" || !done {
+			t.Fatalf("want only a complete backup response, got %s", response.Body)
+		}
+		failure := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+			return entry.Model == modelID && entry.ChannelName == "cursor-redaction"
+		})
+		const wantReason = "You've hit your usage limit for [redacted]"
+		const wantError = "cursor SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED: " + wantReason
+		if failure == nil || failure.StatusCode != http.StatusTooManyRequests || !strings.Contains(failure.Message, wantError) {
+			t.Fatalf("primary failure=%+v, want 429 with %q", failure, wantError)
+		}
+		modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+		if err != nil || !modelCooldowns[failure.ChannelID][modelID].After(time.Now()) {
+			t.Fatalf("primary model cooldowns=%v err=%v", modelCooldowns, err)
+		}
+		debug, err := env.store.GetDebugLogByLogID(t.Context(), failure.ID)
+		if err != nil || debug == nil {
+			t.Fatalf("primary debug log=%+v err=%v", debug, err)
+		}
+		var resultText string
+		for frame := range bytes.SplitSeq(debug.RespBody, []byte("\n")) {
+			if field := gjson.GetBytes(frame, "result.result.result"); field.Exists() {
+				resultText = field.String()
+			}
+		}
+		if resultText != wantReason || debug.UpstreamError != wantError {
+			t.Fatalf("raw Bridge debug body=%s upstream error=%q", debug.RespBody, debug.UpstreamError)
+		}
+	})
+
+	for _, streaming := range []bool{false, true} {
+		modelID, wantHTTP, diagnostic := "cursor-json", http.StatusTooManyRequests, "RPC"
+		if streaming {
+			modelID, wantHTTP, diagnostic = "cursor-sse", http.StatusOK, "result"
+		}
+		t.Run(modelID, func(t *testing.T) {
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": modelID, "stream": streaming,
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, nil)
+			if response.Code != wantHTTP {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, wantHTTP, response.Body.String())
+			}
+			var message string
+			if streaming {
+				var content string
+				for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+					_, data := parseSSEEventChunk(block)
+					payload := gjson.ParseBytes(data)
+					if field := payload.Get("error.message"); field.Exists() {
+						message = field.String()
+					}
+					content += payload.Get("choices.0.delta.content").String()
+				}
+				if content != "ordinary assistant output with [redacted]" {
+					t.Fatalf("assistant output=%q", content)
+				}
+			} else {
+				message = gjson.GetBytes(response.Body.Bytes(), "error.message").String()
+				hint := response.Header().Get("Retry-After")
+				if seconds, err := strconv.Atoi(hint); err != nil || seconds < 17 || seconds > 20 {
+					t.Fatalf("Retry-After=%q, want about 19 seconds", hint)
+				}
+			}
+			wantMessage := "cursor SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED: " + diagnostic + " rejected [redacted] for cursor-other-account"
+			if message != wantMessage {
+				t.Fatalf("client error=%q want=%q", message, wantMessage)
+			}
+			entry := waitForProxyLog(t, env, modelID)
+			debug, err := env.store.GetDebugLogByLogID(t.Context(), entry.ID)
+			if err != nil || debug == nil {
+				t.Fatalf("debug log=%+v err=%v", debug, err)
+			}
+			if entry.StatusCode != http.StatusTooManyRequests || !strings.Contains(entry.Message, wantMessage) || debug.UpstreamError != wantMessage {
+				t.Fatalf("status=%d log=%q debug=%q want=%q", entry.StatusCode, entry.Message, debug.UpstreamError, wantMessage)
+			}
+			if streaming {
+				var statusReason, finalReason, finalCode string
+				for frame := range bytes.SplitSeq(debug.RespBody, []byte("\n")) {
+					payload := gjson.ParseBytes(frame)
+					if field := payload.Get("sdk_message.message.message"); field.Exists() {
+						statusReason = field.String()
+					}
+					if final := payload.Get("result.result"); final.Exists() {
+						finalReason = final.Get("error_message").String()
+						finalCode = final.Get("error_code").String()
+					}
+				}
+				if statusReason != "status rejected [redacted] for cursor-other-account" ||
+					finalReason != "result rejected [redacted] for cursor-other-account" || finalCode != "RATE_LIMIT_EXCEEDED" {
+					t.Fatalf("raw Bridge debug body=%s", debug.RespBody)
+				}
+			}
+			for _, output := range []string{response.Body.String(), entry.Message, string(debug.RespBody), string(debug.TranslatedRespBody)} {
+				if strings.Contains(output, "synthetic-cursor-") {
+					t.Fatalf("credential leaked: %s", output)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证四种客户端协议的工具续接同时保留调用 ID、新指令与显式禁用策略。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorToolResultWithUserInput(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, path, payload, choice string }{
+		{"messages", "/v1/messages", `{"model":"composer-2.5","max_tokens":128,"tool_choice":{"type":"none"},"messages":[
+			{"role":"assistant","content":[{"type":"tool_use","id":"call_mix","name":"lookup","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_mix","content":"known_value"},{"type":"text","text":"请用中文概括"}]}]}`, "none"},
+		{"chat", "/v1/chat/completions", `{"model":"composer-2.5","messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_mix","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_mix","content":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "auto"},
+		{"responses", "/v1/responses", `{"model":"composer-2.5","tool_choice":"none","input":[
+			{"type":"function_call","call_id":"call_mix","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_mix","output":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "none"},
+		{"gemini", "/v1beta/models/composer-2.5:generateContent", `{"toolConfig":{"functionCallingConfig":{"mode":"NONE"}},"contents":[
+			{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_mix","args":{}}}]},
+			{"role":"user","parts":[{"functionResponse":{"id":"call_mix","name":"lookup","response":{"value":"known_value"}}},{"text":"请用中文概括"}]}]}`, "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "cursor", upstreamProtocol: "openai", models: "composer-2.5",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"test-key","access_token":"test-session"}`,
+			}}, map[int]string{0: "https://unused.invalid"})
+			var requests int
+			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
+				requests++
+				if req.ToolChoice != tc.choice || len(req.ToolResults) != 1 || req.ToolResults[0].CallID != "call_mix" ||
+					!strings.Contains(req.ToolResults[0].Output, "known_value") || strings.Contains(req.ToolResults[0].Output, "请用中文概括") ||
+					strings.Count(req.Prompt, "请用中文概括") != 1 {
+					t.Errorf("tool_choice=%q results=%+v prompt=%q", req.ToolChoice, req.ToolResults, req.Prompt)
+				}
+				return cursorUsageEventsRunner{{Text: "完成", Done: true}}.Run(ctx, credential, req)
+			})
+			res := doProxyRequest(t, env.engine, tc.path, json.RawMessage(tc.payload), nil)
+			if res.Code != http.StatusOK || requests != 1 {
+				t.Fatalf("HTTP=%d SDK runs=%d body=%s", res.Code, requests, res.Body)
+			}
+		})
 	}
 }

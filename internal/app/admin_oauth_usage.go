@@ -2105,7 +2105,8 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		credential, err := s.antigravityCredentials.credentialWithMetadata(ctx, cfg)
 		var refreshErr *codexCredentialRefreshError
-		if err != nil && (credential == nil || credential.ProjectID == "" || credential.AccessToken == "" || errors.As(err, &refreshErr)) {
+		if err != nil && (credential == nil || credential.ProjectID == "" || credential.AccessToken == "" ||
+			errors.As(err, &refreshErr) || isAntigravityMetadataTOSViolation(err)) {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Antigravity credential refresh failed")
 		}
 		baseURL := antigravityDailyBaseURL

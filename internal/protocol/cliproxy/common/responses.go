@@ -2,6 +2,8 @@ package common
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -31,14 +33,25 @@ type ResponsesMessageStream struct {
 	nonMessageTypes map[int64]string
 	current         *responsesStreamedMessage
 	unkeyedOutput   bool
+	deferred        []*responsesStreamedMessage
 }
 
 type responsesStreamedMessage struct {
 	id               string
+	phase            string
 	indexed          bool
+	outputIndex      int64
 	parts            map[int64]bool
+	nextContentIndex int64
+	pending          map[int64]*strings.Builder
 	unindexedText    bool
 	unindexedRefusal bool
+}
+
+// ResponsesFinishedPart carries visible text recovered at item completion.
+type ResponsesFinishedPart struct {
+	Text        string
+	Annotations gjson.Result
 }
 
 func (s *ResponsesMessageStream) find(id string, index int64, indexed bool) *responsesStreamedMessage {
@@ -75,6 +88,7 @@ func (s *ResponsesMessageStream) message(id string, index gjson.Result) *respons
 			s.byIndex = make(map[int64]*responsesStreamedMessage)
 		}
 		message.indexed = true
+		message.outputIndex = outputIndex
 		s.byIndex[outputIndex] = message
 	}
 	return message
@@ -82,15 +96,34 @@ func (s *ResponsesMessageStream) message(id string, index gjson.Result) *respons
 
 func (s *ResponsesMessageStream) forgetCurrent() {
 	if message := s.current; message != nil && message.id == "" && !message.indexed {
-		s.unkeyedOutput = s.unkeyedOutput || len(message.parts) > 0 || message.unindexedText || message.unindexedRefusal
+		s.unkeyedOutput = s.unkeyedOutput || message.nextContentIndex > 0 || len(message.parts) > 0 || message.unindexedText || message.unindexedRefusal
 	}
 	s.current = nil
 }
 
-// ObserveOutputItem records positions of non-message items and associates
-// subsequent unkeyed deltas with a newly announced message.
-func (s *ResponsesMessageStream) ObserveOutputItem(eventType string, event gjson.Result) {
-	if eventType != "response.output_item.added" && eventType != "response.output_item.done" {
+// ObserveEvent tracks message identity and the content positions that can be
+// passed over without waiting for visible output.
+func (s *ResponsesMessageStream) ObserveEvent(eventType string, event gjson.Result) {
+	switch eventType {
+	case "response.content_part.added", "response.content_part.done":
+		part := event.Get("part")
+		switch part.Get("type").String() {
+		case "output_text", "refusal":
+			if eventType == "response.content_part.added" || ResponsesMessagePartText(part).String() != "" {
+				return
+			}
+		case "":
+			return
+		}
+		if index := event.Get("content_index"); index.Type == gjson.Number {
+			message := s.message(event.Get("item_id").String(), event.Get("output_index"))
+			if (message.indexed || message.id != "") && message.pending[index.Int()] == nil {
+				message.markPart(index.Int())
+			}
+		}
+		return
+	case "response.output_item.added", "response.output_item.done":
+	default:
 		return
 	}
 	item := event.Get("item")
@@ -100,6 +133,7 @@ func (s *ResponsesMessageStream) ObserveOutputItem(eventType string, event gjson
 		if eventType == "response.output_item.added" {
 			s.forgetCurrent()
 			s.current = s.message(item.Get("id").String(), index)
+			s.current.phase = strings.Clone(item.Get("phase").String())
 		}
 	case "":
 	default:
@@ -112,23 +146,50 @@ func (s *ResponsesMessageStream) ObserveOutputItem(eventType string, event gjson
 	}
 }
 
-// ObserveDelta records nonempty text or refusal at the position reported by upstream.
-func (s *ResponsesMessageStream) ObserveDelta(event gjson.Result, text string) {
+// ObserveDelta returns whether to emit this delta immediately. Deltas after an
+// unresolved content index wait for the message snapshot to fill the gap.
+func (s *ResponsesMessageStream) ObserveDelta(event gjson.Result, text string) bool {
 	if text == "" {
-		return
+		return true
 	}
 	message := s.message(event.Get("item_id").String(), event.Get("output_index"))
+	s.current = message
 	if part := event.Get("content_index"); part.Type == gjson.Number {
-		message.markPart(part.Int())
+		index := part.Int()
+		if (index > message.nextContentIndex && (message.indexed || message.id != "")) || message.pending[index] != nil {
+			if message.pending == nil {
+				message.pending = make(map[int64]*strings.Builder)
+				s.deferred = append(s.deferred, message)
+			}
+			buffer := message.pending[index]
+			if buffer == nil {
+				buffer = &strings.Builder{}
+				message.pending[index] = buffer
+			}
+			buffer.WriteString(text)
+			return false
+		}
+		message.markPart(index)
 	} else if event.Get("type").String() == "response.refusal.delta" {
 		message.unindexedRefusal = true
 	} else {
 		message.unindexedText = true
 	}
-	s.current = message
+	return true
 }
 
 func (m *responsesStreamedMessage) markPart(index int64) {
+	if index < m.nextContentIndex {
+		return
+	}
+	if index == m.nextContentIndex {
+		m.nextContentIndex++
+		for m.parts[m.nextContentIndex] {
+			delete(m.parts, m.nextContentIndex)
+			m.nextContentIndex++
+		}
+		return
+	}
 	if m.parts == nil {
 		m.parts = make(map[int64]bool)
 	}
@@ -139,7 +200,7 @@ func (m *responsesStreamedMessage) sawPart(index int64, part gjson.Result) bool 
 	if m == nil {
 		return false
 	}
-	if m.parts[index] {
+	if index < m.nextContentIndex || m.parts[index] {
 		return true
 	}
 	if part.Get("type").String() == "refusal" {
@@ -149,15 +210,36 @@ func (m *responsesStreamedMessage) sawPart(index int64, part gjson.Result) bool 
 }
 
 // FinishMessage returns visible parts that still need to be emitted at item completion.
-func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []gjson.Result {
+func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []ResponsesFinishedPart {
 	item := event.Get("item")
 	message := s.message(item.Get("id").String(), event.Get("output_index"))
-	var missing []gjson.Result
+	var missing []ResponsesFinishedPart
 	for index, part := range item.Get("content").Array() {
-		if !message.sawPart(int64(index), part) && ResponsesMessagePartText(part).String() != "" {
-			missing = append(missing, part)
-			message.markPart(int64(index))
+		contentIndex := int64(index)
+		buffer := message.pending[contentIndex]
+		if buffer == nil && message.sawPart(contentIndex, part) {
+			continue
 		}
+		text := ResponsesMessagePartText(part).String()
+		if buffer != nil {
+			if text == "" {
+				text = buffer.String()
+			}
+			delete(message.pending, contentIndex)
+		}
+		if text != "" {
+			missing = append(missing, ResponsesFinishedPart{Text: text, Annotations: part.Get("annotations")})
+			message.markPart(contentIndex)
+		}
+	}
+	// Some terminal snapshots omit content (or the whole message). Preserve
+	// the received deltas for positions that the snapshot did not describe.
+	if len(message.pending) > 0 {
+		for _, index := range slices.Sorted(maps.Keys(message.pending)) {
+			missing = append(missing, ResponsesFinishedPart{Text: message.pending[index].String()})
+			message.markPart(index)
+		}
+		clear(message.pending)
 	}
 	if s.current == nil || s.current == message {
 		s.current = message
@@ -166,16 +248,15 @@ func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []gjson.Resul
 	return missing
 }
 
-// MissingMessageDoneEvents builds internal completion events for message parts found only
-// in the terminal response. They retain the original part indices for FinishMessage.
+// MissingMessageDoneEvents builds completion events for message parts found in
+// the terminal response or deferred after a missing content index.
 func (s *ResponsesMessageStream) MissingMessageDoneEvents(output gjson.Result) [][]byte {
 	s.forgetCurrent()
-	if s.unkeyedOutput {
-		// With neither an item ID nor output index, the terminal item cannot be
-		// matched to the earlier output without risking replaying it.
+	if s.unkeyedOutput && len(s.deferred) == 0 {
 		return nil
 	}
 	var events [][]byte
+	var matched map[*responsesStreamedMessage]bool
 	var index int64
 	for _, item := range output.Array() {
 		itemType := item.Get("type").String()
@@ -190,18 +271,51 @@ func (s *ResponsesMessageStream) MissingMessageDoneEvents(output gjson.Result) [
 			continue
 		}
 		message := s.find(item.Get("id").String(), outputIndex, true)
+		if message != nil && len(message.pending) > 0 {
+			if matched == nil {
+				matched = make(map[*responsesStreamedMessage]bool)
+			}
+			matched[message] = true
+			events = append(events, responsesMessageDoneEvent(item.Raw, outputIndex, true))
+			continue
+		}
+		if s.unkeyedOutput {
+			// Unknown earlier output cannot safely be matched to a snapshot.
+			continue
+		}
 		for partIndex, part := range item.Get("content").Array() {
 			if !message.sawPart(int64(partIndex), part) && ResponsesMessagePartText(part).String() != "" {
-				event := []byte(`data: {"type":"response.output_item.done","output_index":`)
-				event = strconv.AppendInt(event, outputIndex, 10)
-				event = append(event, `,"item":`...)
-				event = append(event, item.Raw...)
-				events = append(events, append(event, '}'))
+				events = append(events, responsesMessageDoneEvent(item.Raw, outputIndex, true))
 				break
 			}
 		}
 	}
+	for _, message := range s.deferred {
+		if len(message.pending) == 0 || matched[message] {
+			continue
+		}
+		item := `{"type":"message"}`
+		if message.id != "" {
+			item, _ = sjson.Set(item, "id", message.id)
+		}
+		if message.phase != "" {
+			item, _ = sjson.Set(item, "phase", message.phase)
+		}
+		events = append(events, responsesMessageDoneEvent(item, message.outputIndex, message.indexed))
+	}
 	return events
+}
+
+func responsesMessageDoneEvent(item string, index int64, indexed bool) []byte {
+	event := []byte(`data: {"type":"response.output_item.done",`)
+	if indexed {
+		event = append(event, `"output_index":`...)
+		event = strconv.AppendInt(event, index, 10)
+		event = append(event, ',')
+	}
+	event = append(event, `"item":`...)
+	event = append(event, item...)
+	return append(event, '}')
 }
 
 // SetResponsesToolCallIdentity writes a resolved Responses tool name and namespace.

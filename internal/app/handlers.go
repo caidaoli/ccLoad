@@ -384,6 +384,8 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		lf.LogSource = model.LogSourceCheckin
 	case model.LogSourceCountTokens:
 		lf.LogSource = model.LogSourceCountTokens
+	case model.LogSourceCursorDetachedUsage:
+		lf.LogSource = model.LogSourceCursorDetachedUsage
 	case model.LogSourceDetection:
 		lf.LogSource = model.LogSourceDetection
 	case model.LogSourceAll:

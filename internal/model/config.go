@@ -20,6 +20,11 @@ import (
 var ErrChannelNotFound = errors.New("not found")
 
 /**
+ * @brief 渠道或 Key 编辑状态已变化，拒绝按旧快照保存。
+ */
+var ErrChannelEditConflict = errors.New("channel edit conflict")
+
+/**
  * @brief 定义渠道认证机制与协议转换模式。
  */
 const (

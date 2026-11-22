@@ -1712,6 +1712,29 @@ func TestReasoningAutoFailoverReusesSuggestionAndCommitsSupportedTarget(t *testi
 	})
 }
 
+/**
+ * @brief 验证只有价格信息的重定向目标仍沿用逻辑模型的思考等级。
+ * @param t 测试上下文。
+ */
+func TestReasoningAutoRedirectKeepsEffortForPriceOnlyTarget(t *testing.T) {
+	const target = "private-priced-model"
+	judge := newReasoningAutoJudge(t, "xhigh")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "priced", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{{Model: "gpt-5.6-sol", RedirectModel: target}},
+	}}, []string{business.server.URL})
+	if err := util.InstallCustomModelPricing(map[string]util.ModelPricing{target: {InputPrice: 1, OutputPrice: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Complex migration."), nil)
+	requests := business.snapshot()
+	assertReasoningAutoEfforts(t, requests, "xhigh")
+	if modelName := gjson.GetBytes(requests[0], "model").String(); modelName != target {
+		t.Fatalf("upstream model = %q, want %q", modelName, target)
+	}
+}
+
 func TestReasoningAutoOverriddenRetryKeepsCommittedState(t *testing.T) {
 	t.Parallel()
 	judge := newReasoningAutoJudge(t, "xhigh", "low")

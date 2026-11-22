@@ -192,6 +192,43 @@ func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, e
 	return h.sqlite.GetConfig(ctx, id)
 }
 
+/**
+ * @brief 从权威 SQLite 库读取渠道编辑快照。
+ * @param ctx 数据库操作上下文。
+ * @param id 渠道 ID。
+ * @return 与 Key 同一快照的渠道。
+ * @return 与渠道同一快照的 Key。
+ * @return 编辑版本。
+ * @return 渠道不存在或快照无法读取时的错误。
+ */
+func (h *HybridStore) GetChannelEditSnapshot(ctx context.Context, id int64) (*model.Config, []*model.APIKey, string, error) {
+	h.oauthCredentialMu.RLock()
+	defer h.oauthCredentialMu.RUnlock()
+	return h.sqlite.GetChannelEditSnapshot(ctx, id)
+}
+
+/**
+ * @brief 在权威 SQLite 库执行版本化渠道保存，成功后安排副本同步。
+ * @param ctx 数据库操作上下文。
+ * @param id 渠道 ID。
+ * @param upd 渠道表单配置。
+ * @param keys 要编辑的 Key。
+ * @param replaceKeys 为 true 时替换完整 Key 集合。
+ * @param expectedVersion 编辑版本，空值表示无条件写入。
+ * @param mergeManagement 锁内纯计算管理配置的回调，nil 时不修改。
+ * @return 保存后的渠道。
+ * @return 版本冲突或存储错误。
+ */
+func (h *HybridStore) UpdateChannelIfEditVersion(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool, expectedVersion string, mergeManagement func(string) (string, error)) (*model.Config, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+	updated, err := h.sqlite.UpdateChannelIfEditVersion(ctx, id, upd, keys, replaceKeys, expectedVersion, mergeManagement)
+	if err == nil {
+		h.markChannelDirty(id, false)
+	}
+	return updated, err
+}
+
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
 	if c != nil && c.UsesOAuth() {
 		h.oauthCredentialMu.Lock()

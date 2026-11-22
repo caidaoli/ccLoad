@@ -76,7 +76,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 	typeStr := typeResult.String()
 
 	params := (*param).(*ConvertCodexResponseToGeminiParams)
-	params.messages.ObserveOutputItem(typeStr, rootResult)
+	params.messages.ObserveEvent(typeStr, rootResult)
 
 	attachPendingThoughtSignature := func(part []byte) []byte {
 		if params.PendingThoughtSignature == "" {
@@ -282,7 +282,9 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 		template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", emittedParts)
 	case "response.output_text.delta", "response.refusal.delta":
 		delta := rootResult.Get("delta").String()
-		params.messages.ObserveDelta(rootResult, delta)
+		if !params.messages.ObserveDelta(rootResult, delta) {
+			return nil
+		}
 		part := []byte(`{"text":""}`)
 		part, _ = sjson.SetBytes(part, "text", delta)
 		if delta != "" {
@@ -301,7 +303,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 		}
 		for _, missing := range missingParts {
 			part := []byte(`{"text":""}`)
-			part, _ = sjson.SetBytes(part, "text", translatorcommon.ResponsesMessagePartText(missing).String())
+			part, _ = sjson.SetBytes(part, "text", missing.Text)
 			part = attachPendingThoughtSignature(part)
 			template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
 		}

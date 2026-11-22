@@ -118,6 +118,7 @@
                 <option value="proxy" data-i18n="logs.sourceProxy">请求日志</option>
                 <option value="detection" data-i18n="logs.sourceDetection">检测日志</option>
                 <option value="checkin" data-i18n="logs.sourceCheckin">签到</option>
+                <option value="cursor_detached_usage" data-i18n="logs.sourceCursorDetachedUsage">Cursor 用量补记</option>
                 <option value="count_tokens" data-i18n="logs.sourceCountTokens">Token 计数</option>
                 <option value="all" data-i18n="logs.sourceAll">全部日志</option>
               `, 'filter-control--compact')}`,

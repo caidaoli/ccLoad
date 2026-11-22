@@ -101,9 +101,14 @@ func anthropicErrorType(status int) string {
 	return "invalid_request_error"
 }
 
-// writeAnthropicStreamErrorEvent 在已提交的 Anthropic SSE 流末尾追加 error 事件。
-func writeAnthropicStreamErrorEvent(w http.ResponseWriter, message string) {
-	encoded, err := json.Marshal(anthropicErrorBody(http.StatusInternalServerError, message))
+/**
+ * @brief 在已提交的 Anthropic SSE 流末尾写入与真实状态对应的 error 事件。
+ * @param w 正在发送响应的客户端连接。
+ * @param status 网关判定的上游错误状态。
+ * @param message 错误说明。
+ */
+func writeAnthropicStreamErrorEvent(w http.ResponseWriter, status int, message string) {
+	encoded, err := json.Marshal(anthropicErrorBody(status, message))
 	if err != nil {
 		return
 	}
@@ -349,6 +354,8 @@ type proxyRequestContext struct {
 	debugData               *model.DebugLogEntry   // Debug日志数据（debug开启时填充）
 	privacyMasked           privacy.Counts         // 当前尝试实际外发的脱敏占位符计数
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
+	deferCursorCooldown     bool                   ///< 渠道测试由外层统一决定是否持久化 SDK 限流。
+	requireFastFallback     bool                   ///< 当前请求经历过 Fast 积分拒绝，备用请求必须保留 Fast。
 	thinkingEffort          string
 	reasoning               *reasoningTurn
 	reasoningExpected       string
@@ -413,6 +420,7 @@ type proxyResult struct {
 	antigravityCapacity429    bool
 	protocolCapabilityMissing bool
 	candidateSkipped          bool ///< 凭证或协议不可用，未向模型发出请求，保留此前的失败响应。
+	cursorRunReplayed         bool ///< Cursor 返回已完成的工具轮，禁止对重放错误再次恢复或切换。
 	// 本地转换无法表示本次请求，不代表端点能力；回退成功后也不写能力缓存。
 	requestScopedProtocolMiss bool
 	websocketTargetCooling    bool

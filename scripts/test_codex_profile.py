@@ -82,6 +82,9 @@ class CodexProfileCLITest(unittest.TestCase):
             "missing anchor": complete.replace(b"codex-doctor/", b"codex-other/"),
             "renamed originator": complete.replace(b"clicodex-tui", b"clicodex-cli"),
             "conflict": complete + native_fixture("0.172.0"),
+            "prerelease": native_fixture("0.172.0-alpha.1"),
+            "mixed stable and prerelease anchors": complete + native_fixture("0.171.0-rc.1"),
+            "build metadata": native_fixture("0.172.0+local.1"),
             "trailing digit": complete.replace(b"codex-tui0.171.0f", b"codex-tui0.171.01"),
             "script": b"#!/bin/sh\nexec node codex.js\n",
         }

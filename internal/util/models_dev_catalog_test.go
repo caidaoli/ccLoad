@@ -249,6 +249,10 @@ func TestModelCatalogInstallIsImmutable(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 v1 缓存保留原价格，思考能力保持未知并触发下次完整同步。
+ * @param t 测试上下文。
+ */
 func TestModelCatalogLegacyCachePricingStillDecodes(t *testing.T) {
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
 	util.RestoreEmbeddedModelCatalog()
@@ -278,9 +282,88 @@ func TestModelCatalogLegacyCachePricingStillDecodes(t *testing.T) {
 	if got := util.CalculateCostDetailed("legacy-cached-model", 1_000_000, 1_000_000, 0, 0, 0); got != 18 {
 		t.Fatalf("legacy cached model cost = %v, want 18", got)
 	}
+	if efforts, known := util.ModelReasoningEfforts("legacy-cached-model"); efforts != nil || known {
+		t.Fatalf("v1 cache reasoning = %v, %v, want unknown", efforts, known)
+	}
 	// v1 缓存没有思考等级；丢弃 ETag 才能让下一次同步全量拉取，而不是得到 304。
 	if etag := util.CurrentModelCatalogETag(); etag != "" {
 		t.Fatalf("legacy cache ETag = %q, want empty", etag)
+	}
+}
+
+/**
+ * @brief 验证只有明确的思考能力信息会否定未声明的等级，旧 v2 缓存可以补齐能力。
+ * @param t 测试上下文。
+ */
+func TestModelCatalogReasoningCapabilityUsesExplicitMetadata(t *testing.T) {
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	providers := validModelsDevProviders()
+	budget := validModelsDevModel("openai/budget-reasoning", 1, 2)
+	budget["reasoning_options"] = []map[string]any{{"type": "budget_tokens", "min": 0, "max": 32_768}}
+	noReasoning := validModelsDevModel("openai/no-reasoning", 1, 2)
+	noReasoning["reasoning"] = false
+	undisclosed := validModelsDevModel("openai/reasoning-unspecified", 1, 2)
+	undisclosed["reasoning"] = true
+	providers["openai"] = modelsDevProvider("openai", map[string]any{
+		"budget-reasoning":      budget,
+		"no-reasoning":          noReasoning,
+		"reasoning-unspecified": undisclosed,
+	})
+	snapshot, err := util.ParseModelsDevCatalog(bytes.NewReader(marshalModelsDevDocument(t, providers)), `"etag-v3"`, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Round trip through the persisted form before installation.
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cache util.ModelCatalogSnapshot
+	if err := json.Unmarshal(data, &cache); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.InstallModelCatalog(&cache, "cache"); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.InstallCustomModelPricing(map[string]util.ModelPricing{
+		"private-price-only-model": {InputPrice: 1, OutputPrice: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for id, wantKnown := range map[string]bool{
+		"budget-reasoning":         true,
+		"no-reasoning":             true,
+		"reasoning-unspecified":    false,
+		"private-price-only-model": false,
+	} {
+		if efforts, known := util.ModelReasoningEfforts(id); efforts != nil || known != wantKnown {
+			t.Errorf("%s reasoning = %v, %v, want nil, %v", id, efforts, known, wantKnown)
+		}
+	}
+	if etag := util.CurrentModelCatalogETag(); etag != `"etag-v3"` {
+		t.Fatalf("v3 cache ETag = %q, want original", etag)
+	}
+
+	const previousCache = `{"version":2,"source":"models.dev","etag":"legacy-etag","models":[
+		{"id":"cached-effort-model","provider":"openai","reasoning_efforts":["low","high"],"pricing":{"InputPrice":7,"OutputPrice":11}},
+		{"id":"cached-price-only-model","provider":"openai","pricing":{"InputPrice":7,"OutputPrice":11}}
+	]}`
+	var previous util.ModelCatalogSnapshot
+	if err := json.Unmarshal([]byte(previousCache), &previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.InstallModelCatalog(&previous, "cache"); err != nil {
+		t.Fatal(err)
+	}
+	if efforts, known := util.ModelReasoningEfforts("cached-effort-model"); !known || !reflect.DeepEqual(efforts, []string{"low", "high"}) {
+		t.Errorf("v2 cached efforts = %v, %v", efforts, known)
+	}
+	if efforts, known := util.ModelReasoningEfforts("cached-price-only-model"); efforts != nil || known {
+		t.Errorf("v2 cache without reasoning = %v, %v, want unknown", efforts, known)
+	}
+	if etag := util.CurrentModelCatalogETag(); etag != "" {
+		t.Errorf("v2 cache ETag = %q, want empty", etag)
 	}
 }
 

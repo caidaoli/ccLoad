@@ -307,12 +307,10 @@ func (s *Server) buildProxyRequest(
 		(isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath)) {
 		owner := sha256.Sum256([]byte(apiKey))
 		if cfg.UsesAnthropicOAuth() {
-			// 缺少账号资料时令牌会随刷新轮换，改用渠道身份保持 advisor 归属。
-			identity, stable := anthropicCredentialIdentity(cfg.OAuthCredential)
-			if !stable {
-				identity = fmt.Sprintf("channel:%d", cfg.ID)
+			credential, err := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err == nil {
+				owner = anthropicAdvisorOAuthOwner(credential)
 			}
-			owner = sha256.Sum256([]byte(identity))
 		}
 		advisor := &anthropicAdvisorAttempt{store: &s.anthropicAdvisors, caller: channelRestrictionTokenFromContext(reqCtx.ctx), owner: owner}
 		body = advisor.stripForeign(body)
@@ -539,6 +537,14 @@ func (s *Server) buildProxyRequest(
 	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx))
 
 	if reqCtx != nil {
+		if reqCtx.requireFastFallback {
+			tier := requestBodyServiceTier(upstreamProtocol, body)
+			preservesFast := upstreamProtocol == protocol.Anthropic && tier == "fast" ||
+				(upstreamProtocol == protocol.OpenAI || upstreamProtocol == protocol.Codex) && tier == "priority"
+			if !preservesFast {
+				return nil, errFastFallbackUnsupported
+			}
+		}
 		if anthropicClaudeCodeWire {
 			reqCtx.anthropicClaudeCodeWire = true
 		}
@@ -2793,6 +2799,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	translatedRequestOverride []byte,
 	replayBodyRulesApplied bool,
 	wireAliases upstreamWireAliases,
+	requireFastFallback bool,
 ) (*fwResult, float64, error) {
 	clientBody := plan.OriginalBody
 	var compaction *responsesCompactionRequest
@@ -2884,6 +2891,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.anthropicClaudeCodeWire = translatedRequestOverride != nil &&
 		isAnthropicClaudeCodeMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
 	reqCtx.replayBodyRulesApplied = replayBodyRulesApplied
+	reqCtx.requireFastFallback = requireFastFallback
 	reqCtx.openCodeResponses = wireAliases.openCode
 	reqCtx.xaiTools = wireAliases.xaiTools
 	reqCtx.anthropicToolAliases = wireAliases.anthropicTools
@@ -3198,7 +3206,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
 		return s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, executionIdentity, nil,
-			false, upstreamWireAliases{},
+			false, upstreamWireAliases{}, requireFastFallback,
 		)
 	}
 	if res != nil {
@@ -3401,6 +3409,11 @@ func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
 // 单次转发尝试
 // ============================================================================
 
+/**
+ * @brief 备用上游的实际出站正文无法携带 Fast 档位。
+ */
+var errFastFallbackUnsupported = errors.New("upstream cannot serve the requested fast tier")
+
 func markSSEErrorForwardResult(res *fwResult) {
 	res.Body = res.SSEErrorEvent
 	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
@@ -3485,7 +3498,7 @@ func (s *Server) handleCommittedAwareProxyError(
 		switch {
 		case reqCtx.clientProtocol == protocol.Anthropic:
 			if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() || geminiZeroOutput {
-				writeAnthropicStreamErrorEvent(w, message)
+				writeAnthropicStreamErrorEvent(w, http.StatusInternalServerError, message)
 			}
 		case reqCtx.clientProtocol == protocol.Gemini && geminiZeroOutput:
 			_ = writeSSEChunks(w, [][]byte{fmt.Appendf(nil, "data: {\"error\":{\"code\":502,\"status\":\"INTERNAL\",\"message\":%q}}\n\n", message)})
@@ -3706,7 +3719,7 @@ func (s *Server) forwardAttempt(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
 		plan, forwardHeaders, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 		translatedRequestOverride,
-		false, upstreamWireAliases{},
+		false, upstreamWireAliases{}, reqCtx.requireFastFallback,
 	)
 	if errors.Is(err, errPrivacyMasking) {
 		s.privacyStats.blocked.Add(1)
@@ -3721,23 +3734,27 @@ func (s *Server) forwardAttempt(
 		}
 	}
 
-	if err == nil && cfg.UsesAntigravityOAuth() && !cfg.AntigravityCredits && res != nil && !res.ResponseCommitted && res.Status == http.StatusTooManyRequests {
-		reason, delay := antigravityLimitDetails(res.Body)
-		if reason == "RATE_LIMIT_EXCEEDED" && delay > 0 && delay < 3*time.Second {
-			credential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
-			if parseErr == nil && !antigravityCredentialAttempted(&reqCtx.antigravityRateRetried, cfg, credential) {
-				if waitErr := waitForChannelURLRetry(ctx, delay); waitErr != nil {
-					if errors.Is(context.Cause(ctx), errOperatorAbort) {
-						result := s.handleOperatorAbort(cfg, actualModel, selectedKey, res, duration, reqCtx)
-						return result, result.nextAction, nil
+	if err == nil && cfg.UsesAntigravityOAuth() && !cfg.AntigravityCredits && res != nil && !res.ResponseCommitted {
+		errorBody, status := forwardResultErrorPayload(res)
+		now := time.Now()
+		if status == http.StatusTooManyRequests && antigravityLimitReason(errorBody) == "RATE_LIMIT_EXCEEDED" {
+			delay := antigravityAttemptRetryAt(res, now).Sub(now)
+			if delay >= 0 && delay < 3*time.Second {
+				credential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if parseErr == nil && !antigravityCredentialAttempted(&reqCtx.antigravityRateRetried, cfg, credential) {
+					if waitErr := waitForChannelURLRetry(ctx, delay); waitErr != nil {
+						if errors.Is(context.Cause(ctx), errOperatorAbort) {
+							result := s.handleOperatorAbort(cfg, actualModel, selectedKey, res, duration, reqCtx)
+							return result, result.nextAction, nil
+						}
+						return buildCtxDoneResult(cfg, waitErr), cooldown.ActionReturnClient, nil
 					}
-					return buildCtxDoneResult(cfg, waitErr), cooldown.ActionReturnClient, nil
+					s.activeRequests.Retry(reqCtx.activeReqID)
+					res, _, err = s.forwardOnceAsyncWithNativeCodexWebsocket(ctx, cfg, selectedKey, reqCtx.requestMethod,
+						plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, translatedRequestOverride,
+						false, upstreamWireAliases{}, reqCtx.requireFastFallback)
+					duration = time.Since(reqCtx.attemptStartTime).Seconds()
 				}
-				s.activeRequests.Retry(reqCtx.activeReqID)
-				res, _, err = s.forwardOnceAsyncWithNativeCodexWebsocket(ctx, cfg, selectedKey, reqCtx.requestMethod,
-					plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, translatedRequestOverride,
-					false, upstreamWireAliases{})
-				duration = time.Since(reqCtx.attemptStartTime).Seconds()
 			}
 		}
 	}
@@ -3825,6 +3842,7 @@ func (s *Server) forwardAttempt(
 			retryBody,
 			retryBodyRulesApplied,
 			res.wireAliases,
+			reqCtx.requireFastFallback,
 		)
 		if errors.Is(err, errPrivacyMasking) {
 			s.privacyStats.blocked.Add(1)
@@ -3915,6 +3933,12 @@ func (s *Server) forwardAttempt(
 		if errors.Is(err, errAntigravityCreditsUnavailable) {
 			return nil, cooldown.ActionRetryChannel, nil
 		}
+		if errors.Is(err, errFastFallbackUnsupported) {
+			return &proxyResult{
+				status: http.StatusBadRequest, nextAction: cooldown.ActionRetryChannel,
+				protocolCapabilityMissing: true, requestScopedProtocolMiss: true, candidateSkipped: true,
+			}, cooldown.ActionRetryChannel, nil
+		}
 		if validationErr, ok := errors.AsType[*requestValidationError](err); ok {
 			return &proxyResult{
 				status:     http.StatusBadRequest,
@@ -3971,7 +3995,7 @@ func (s *Server) forwardAttempt(
 		if errors.Is(err, context.Canceled) && res != nil && res.ResponseCommitted && len(res.SSEErrorEvent) > 0 {
 			rateLimit := *res
 			markSSEErrorForwardResult(&rateLimit)
-			if rateLimit.Status == http.StatusTooManyRequests {
+			if rateLimit.Status == http.StatusTooManyRequests && !s.recordAntigravity429State(ctx, cfg, actualModel, &rateLimit) {
 				cooldownModel := actualModel
 				if cfg.UsesZAIOAuth() && res.zaiTrial {
 					cooldownModel = zaiTrialModelKey(actualModel)
@@ -4032,11 +4056,6 @@ func (s *Server) forwardAttempt(
 	}
 
 	// 处理错误响应
-	if !res.ResponseCommitted {
-		if result, handled := s.handleAntigravityQuotaFailure(ctx, cfg, actualModel, selectedKey, res, duration, reqCtx); handled {
-			return result, result.nextAction, nil
-		}
-	}
 	result, action := s.handleProxyErrorResponse(
 		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx,
 		deferChannelCooldown, forceReturnClient, modelCapacityRateLimited,
@@ -5019,13 +5038,15 @@ func (s *Server) attemptKeyAcrossURLs(
 			urlLastFailure = result
 		}
 		if nextAction == cooldown.ActionSkipChannel {
+			// HTTP 分类器的能力失败来自 Anthropic Fast 积分拒绝。
+			reqCtx.requireFastFallback = true
 			return nil, urlLastFailure, nil
 		}
 		if cfg.AntigravityCredits {
 			return nil, urlLastFailure, nil
 		}
 		if cfg.UsesAntigravityOAuth() && result != nil && result.status == http.StatusTooManyRequests {
-			reason, _ := antigravityLimitDetails(result.body)
+			reason := antigravityLimitReason(result.body)
 			if reason != "" {
 				// Typed quota failures skip URL fallback, so persist any cooldown
 				// deferred by the first URL before moving to another account.
@@ -5590,7 +5611,8 @@ func (s *Server) cooldownOAuthCredentialFailure(ctx context.Context, cfg *model.
 		statusCode = endpointFailure.StatusCode()
 		retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
 	}
-	if errors.Is(credentialErr, antigravityauth.ErrProjectUnavailable) {
+	projectDiscoveryFailed := errors.Is(credentialErr, antigravityauth.ErrProjectUnavailable)
+	if projectDiscoveryFailed {
 		if metadataFailure, ok := errors.AsType[*antigravityauth.MetadataError](credentialErr); ok {
 			statusCode = metadataFailure.HTTPStatus
 			retryable = statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
@@ -5615,7 +5637,11 @@ func (s *Server) cooldownOAuthCredentialFailure(ctx context.Context, cfg *model.
 	if failedRefresh, ok := errors.AsType[*codexCredentialRefreshError](credentialErr); ok {
 		authType, expected = failedRefresh.authType, failedRefresh.credential
 	}
-	s.applyOAuthCredentialCooldown(ctx, cfg.ID, provider, authType, expected, statusCode, duration)
+	scope := oauthCooldownCredential
+	if projectDiscoveryFailed {
+		scope = oauthCooldownAntigravityProjectDiscovery
+	}
+	s.applyOAuthCredentialCooldown(ctx, cfg.ID, provider, authType, expected, statusCode, duration, scope)
 }
 
 /**
@@ -5637,6 +5663,20 @@ func oauthCredentialRetryAfterDuration(err error, now time.Time) time.Duration {
 }
 
 /**
+ * @brief 限定 OAuth 冷却写入所依赖的凭证状态。
+ */
+type oauthCredentialCooldownScope uint8
+
+/**
+ * @brief 区分令牌、项目缺失和账号验证三种失败作用域。
+ */
+const (
+	oauthCooldownCredential                  oauthCredentialCooldownScope = iota ///< 认证材料不变时冷却。
+	oauthCooldownAntigravityProjectDiscovery                                     ///< 认证材料不变且仍缺少项目时冷却。
+	oauthCooldownAntigravityValidation                                           ///< 仍是同一 refresh token 的账号时冷却。
+)
+
+/**
  * @brief 仅在失败认证材料仍有效于该渠道时写入冷却。
  * @param ctx 当前请求上下文，存储写入使用独立的限时上下文。
  * @param channelID 目标渠道。
@@ -5645,35 +5685,47 @@ func oauthCredentialRetryAfterDuration(err error, now time.Time) time.Duration {
  * @param expected 失败尝试中的凭证快照。
  * @param statusCode 指数退避使用的状态码。
  * @param duration 固定冷却时长，零值使用指数退避。
+ * @param scope 决定哪些凭证变化使失败失效。
+ * @return 本次成功写入渠道冷却时为 true。
  * @note 原子核对凭证原文；纯用量等元数据更新只需重取原文。
  */
-func (s *Server) applyOAuthCredentialCooldown(ctx context.Context, channelID int64, provider, authType, expected string, statusCode int, duration time.Duration) {
+func (s *Server) applyOAuthCredentialCooldown(ctx context.Context, channelID int64, provider, authType, expected string, statusCode int, duration time.Duration, scope oauthCredentialCooldownScope) bool {
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
 	now := time.Now()
 	for attempt := range 3 {
+		if scope == oauthCooldownAntigravityProjectDiscovery && strings.TrimSpace(gjson.Get(expected, "project_id").String()) != "" {
+			return false
+		}
 		applied, err := s.store.CooldownChannelIfOAuthCredential(cooldownCtx, channelID, authType, expected, now, statusCode, duration)
 		if err != nil {
 			log.Printf("[WARN] 设置 OAuth 凭证不可用渠道冷却失败: provider=%s channel_id=%d err=%v", provider, channelID, err)
-			return
+			return false
 		}
 		if applied > 0 {
 			s.invalidateChannelRelatedCache(channelID)
 			log.Printf("[COOLDOWN] OAuth 凭证不可用渠道冷却: provider=%s channel_id=%d 冷却至 %s (%s)",
 				provider, channelID, now.Add(applied).Format("2006-01-02 15:04:05"), applied)
-			return
+			return true
 		}
 		if attempt == 2 {
-			return
+			break
 		}
 		current, getErr := s.store.GetConfig(cooldownCtx, channelID)
-		if getErr != nil || !current.Enabled || current.GetAuthType() != authType || current.OAuthCredential == expected ||
-			!sameOAuthCredentialMaterial(authType, current.OAuthCredential, expected) {
-			return
+		if getErr != nil || !current.Enabled || current.GetAuthType() != authType || current.OAuthCredential == expected {
+			return false
+		}
+		if scope == oauthCooldownAntigravityValidation {
+			if !sameAntigravityRefreshToken(current.OAuthCredential, expected) {
+				return false
+			}
+		} else if !sameOAuthCredentialMaterial(authType, current.OAuthCredential, expected) {
+			return false
 		}
 		expected = current.OAuthCredential
 	}
+	return false
 }
 
 /**
@@ -5807,7 +5859,10 @@ func (s *Server) tryAnthropicOAuthChannel(
 		if credential == nil {
 			return cfg, "", err
 		}
-		return oauthConfigWithTokenSnapshot(cfg, credential, credential.AccessToken, credential.RefreshToken), credential.AccessToken, err
+		runtimeCfg := cfg.Clone()
+		payload, _ := json.Marshal(credential)
+		runtimeCfg.OAuthCredential = string(payload)
+		return runtimeCfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized
 	})

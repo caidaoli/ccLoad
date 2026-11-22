@@ -605,6 +605,8 @@ function renderLogSourceBadge(logSource) {
       return `<span class="log-source-badge log-source-badge--manual">${escapeHtml(t('logs.sourceManualChatBadge'))}</span>`;
     case 'checkin':
       return `<span class="log-source-badge log-source-badge--checkin">${escapeHtml(t('logs.sourceCheckinBadge'))}</span>`;
+    case 'cursor_detached_usage':
+      return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceCursorDetachedUsage'))}</span>`;
     case 'count_tokens':
       return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceCountTokensBadge'))}</span>`;
     default:
@@ -635,7 +637,7 @@ function canInspectDebugLog(entry) {
   const isTokenSession = typeof window.isAPITokenRole === 'function' && window.isAPITokenRole();
   // count_tokens 本地估算没有渠道，但同样可能带 debug 记录。
   const isChannelless = entry?.log_source === 'count_tokens';
-  return !isTokenSession && (Number(entry?.channel_id) > 0 || (isChannelless && Number(entry?.id) > 0));
+  return !isTokenSession && entry?.log_source !== 'cursor_detached_usage' && (Number(entry?.channel_id) > 0 || (isChannelless && Number(entry?.id) > 0));
 }
 
 function reasoningValueText(value) {
@@ -1241,8 +1243,9 @@ function renderLogs(data) {
     const configDisplay = buildLogChannelDisplay(entry);
 
     // 2. 状态码样式
-    const statusClass = getLogStatusClass(entry.status_code);
-    const statusCode = entry.status_code;
+    const detachedUsage = entry.log_source === 'cursor_detached_usage';
+    const statusClass = detachedUsage ? '' : getLogStatusClass(entry.status_code);
+    const statusCode = detachedUsage ? '—' : entry.status_code;
 
     // 3. 模型显示（支持重定向与思考等级角标）
     const modelDisplay = buildLogModelDisplay(entry.model, entry.actual_model, entry.response_model, entry.thinking_effort, entry.reasoning_tokens, reasoningClientEffort(entry));
@@ -1256,7 +1259,9 @@ function renderLogs(data) {
     const streamFlag = getStreamFlagHtml(entry.is_streaming);
 
     let responseTimingDisplay;
-    if (entry.is_streaming) {
+    if (detachedUsage) {
+      responseTimingDisplay = '—';
+    } else if (entry.is_streaming) {
       const hasFirstByte = entry.first_byte_time !== undefined && entry.first_byte_time !== null;
       const firstByteDisplay = hasFirstByte ?
         buildFirstByteTimingHtml(entry.first_byte_time, entry.first_byte_time.toFixed(2)) :

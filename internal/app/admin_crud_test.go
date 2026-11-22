@@ -27,8 +27,8 @@ type failAPIKeyAllowedModelsStore struct {
 	storage.Store
 }
 
-func (s *failAPIKeyAllowedModelsStore) UpdateAPIKeyModelScopes(context.Context, int64, map[int]model.APIKeyModelScope) error {
-	return errors.New("forced API key model scope update failure")
+func (s *failAPIKeyAllowedModelsStore) UpdateChannelIfEditVersion(context.Context, int64, *model.Config, []*model.APIKey, bool, string, func(string) (string, error)) (*model.Config, error) {
+	return nil, errors.New("forced API key model scope update failure")
 }
 
 // setupAdminTestServer 创建测试服务器
@@ -1216,6 +1216,57 @@ func TestHandleChannelEditorAggregatesInitialState(t *testing.T) {
 	if !resp.Data.URLStats.Available || len(resp.Data.URLStats.Items) != 1 || resp.Data.URLStats.Items[0].Requests != 1 {
 		t.Fatalf("url_stats=%+v, want available runtime stats", resp.Data.URLStats)
 	}
+}
+
+/**
+ * @brief 两个编辑器读取同一配置时，旧表单不能覆盖已保存的模型和 Key。
+ * @param t 测试上下文。
+ */
+func TestChannelEditorRejectsStaleSave(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	cfg, err := store.CreateConfig(t.Context(), &model.Config{
+		Name: "original", URLs: model.ChannelURLs{{URL: "https://example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "first"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strconv.FormatInt(cfg.ID, 10)
+	params := gin.Params{{Key: "id", Value: id}}
+	readTag := func() string {
+		t.Helper()
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodGet, "/admin/channels/"+id+"/editor", nil))
+		c.Params = params
+		server.HandleChannelEditor(c)
+		tag := w.Header().Get("ETag")
+		if w.Code != http.StatusOK || tag == "" {
+			t.Fatalf("GET editor status=%d ETag=%q body=%s", w.Code, tag, w.Body.String())
+		}
+		return tag
+	}
+	save := func(tag, name, modelName, key string, status int) {
+		t.Helper()
+		body := map[string]any{"name": name, "enabled": true, "urls": cfg.URLs,
+			"models": []model.ModelEntry{{Model: modelName}}, "api_keys": []map[string]string{{"api_key": key}}}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+id, body))
+		c.Params = params
+		c.Request.Header.Set("If-Match", tag)
+		server.HandleChannelByID(c)
+		if w.Code != status {
+			t.Fatalf("PUT status=%d, want %d: %s", w.Code, status, w.Body.String())
+		}
+	}
+	first := readTag()
+	save(first, "saved", "second", "key-a", http.StatusOK)
+	save(first, "stale", "first", "key-b", http.StatusPreconditionFailed)
+	current, keys, _, err := store.GetChannelEditSnapshot(t.Context(), cfg.ID)
+	if err != nil || current.Name != "saved" || current.ModelEntries[0].Model != "second" || len(keys) != 1 || keys[0].APIKey != "key-a" {
+		t.Fatalf("stale save changed config or keys: config=%+v keys=%+v err=%v", current, keys, err)
+	}
+	second := readTag()
+	save("W/"+second, "weak", "second", "key-a", http.StatusPreconditionFailed)
+	save(second, "reloaded", "second", "key-a", http.StatusOK)
 }
 
 // TestHandleUpdateChannel 测试更新渠道

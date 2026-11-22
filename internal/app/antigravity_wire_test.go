@@ -433,6 +433,99 @@ func TestProxyAntigravityValidationRequired(t *testing.T) {
 }
 
 /**
+ * @brief 验证在途验证结果仅冷却仍使用同一 refresh token 的账号，已提交流不重放。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravityValidationRequiredCredentialReplacement(t *testing.T) {
+	t.Parallel()
+	const rejection = `{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED"}]}}`
+	const textFrame = `data: {"response":{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+	for _, tc := range []struct {
+		name           string
+		stream         bool
+		committed      bool
+		replaceAccount bool
+	}{
+		{name: "HTTP same account refresh"},
+		{name: "HTTP different account", replaceAccount: true},
+		{name: "first SSE error same account refresh", stream: true},
+		{name: "first SSE error different account", stream: true, replaceAccount: true},
+		{name: "committed SSE same account refresh", stream: true, committed: true},
+		{name: "committed SSE different account", stream: true, committed: true, replaceAccount: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			original := antigravityProxyTestCredential(t, "old-at")
+			renewed := string(setJSONValue([]byte(original), "access_token", "new-at"))
+			if tc.replaceAccount {
+				renewed = string(setJSONValue([]byte(renewed), "refresh_token", "new-account-rt"))
+			}
+			var env *proxyTestEnv
+			var channelID int64
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) != 1 || r.Header.Get("Authorization") != "Bearer old-at" {
+					t.Error("verification request was sent again or used the replacement token")
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				updated, err := env.store.CompareAndSwapOAuthCredential(r.Context(), channelID, model.AuthTypeAntigravityOAuth, original, renewed)
+				if err != nil || !updated {
+					t.Errorf("concurrent credential update=%v err=%v", updated, err)
+				}
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					if tc.committed {
+						_, _ = io.WriteString(w, textFrame)
+					}
+					_, _ = io.WriteString(w, "data: "+rejection+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, rejection)
+			}))
+			channel := testChannel{
+				name: "validation-race", upstreamProtocol: "gemini", models: "gemini-3-flash",
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: original,
+				cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "verification cooldown", StatusCodes: []int{http.StatusForbidden},
+					Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 240,
+				}}},
+			}
+			env = setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
+			configs, err := env.store.ListConfigs(t.Context())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+			channelID = configs[0].ID
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gemini-3-flash", "stream": tc.stream, "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, nil)
+			wantStatus := http.StatusForbidden
+			if tc.committed {
+				wantStatus = http.StatusOK
+			}
+			if response.Code != wantStatus || calls.Load() != 1 {
+				t.Fatalf("response=%d upstream calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+			}
+			current, err := env.store.GetConfig(t.Context(), channelID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !current.Enabled || current.OAuthCredential != renewed || (current.CooldownUntil > time.Now().Unix()) == tc.replaceAccount {
+				t.Fatalf("enabled=%t credential changed=%t cooldown=%d", current.Enabled, current.OAuthCredential != renewed, current.CooldownUntil)
+			}
+			if !tc.stream && !tc.replaceAccount {
+				if remaining := time.Until(time.Unix(current.CooldownUntil, 0)); remaining < 237*time.Second || remaining > 240*time.Second {
+					t.Fatalf("cooldown=%s, want about 240s from configured rule", remaining)
+				}
+			}
+		})
+	}
+}
+
+/**
  * @brief 验证在途 TOS 结果跨 access token 刷新仍停用原账号，替换为另一账号后不受旧结果影响。
  * @param t 测试上下文。
  */

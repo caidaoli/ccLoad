@@ -29,6 +29,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
+	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
@@ -3588,6 +3589,78 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	}
 	if got, _ := resp.Data["total_keys"].(float64); got != 0 {
 		t.Fatalf("total_keys=%v, want 0", resp.Data["total_keys"])
+	}
+}
+
+/**
+ * @brief 验证管理检测用实际出站凭证处理 Antigravity 账号验证错误。
+ * @param t 测试上下文。
+ */
+func TestHandleChannelTest_AntigravityValidationCredentialReplacement(t *testing.T) {
+	t.Parallel()
+	const rejection = `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Verify your account to continue.","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED"}]}}`
+	for _, tc := range []struct {
+		name           string
+		stream         bool
+		replaceAccount bool
+	}{
+		{name: "HTTP access token rotation"},
+		{name: "HTTP account replacement", replaceAccount: true},
+		{name: "SSE access token rotation", stream: true},
+		{name: "SSE account replacement", stream: true, replaceAccount: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newInMemoryServer(t)
+			var channel *model.Config
+			var renewed string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer at-gravity-admin" {
+					t.Error("channel test did not use the original access token")
+				}
+				updated, err := srv.store.CompareAndSwapOAuthCredential(r.Context(), channel.ID, channel.GetAuthType(), channel.OAuthCredential, renewed)
+				if err != nil || !updated {
+					t.Errorf("concurrent credential update=%t err=%v", updated, err)
+				}
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+rejection+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, rejection)
+			}))
+			t.Cleanup(upstream.Close)
+			srv.antigravityClient = upstream.Client()
+			channel = createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+			renewed = string(setJSONValue([]byte(channel.OAuthCredential), "access_token", "renewed-at"))
+			wantAction := "channel_cooldown_applied"
+			if tc.replaceAccount {
+				renewed = string(setJSONValue([]byte(renewed), "refresh_token", "another-rt"))
+				wantAction = "credential_changed_no_cooldown"
+			}
+			channelID := fmt.Sprintf("%d", channel.ID)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+				"model": "gemini-3-flash", "client_protocol": "gemini", "stream": tc.stream, "content": "hello",
+			}))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			srv.HandleChannelTest(c)
+
+			resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+			status, _ := getResultInt(resp.Data["status_code"])
+			if !resp.Success || resp.Data["success"] != false || status != http.StatusForbidden ||
+				resp.Data["cooldown_action"] != wantAction || resp.Data["error"] != "Verify your account to continue." {
+				t.Fatalf("channel test result=%+v, want failed validation and %q", resp.Data, wantAction)
+			}
+			current, err := srv.store.GetConfig(t.Context(), channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !current.Enabled || current.OAuthCredential != renewed || (current.CooldownUntil > time.Now().Unix()) == tc.replaceAccount {
+				t.Fatalf("enabled=%t credential changed=%t cooldown=%d", current.Enabled, current.OAuthCredential != renewed, current.CooldownUntil)
+			}
+		})
 	}
 }
 
@@ -8517,6 +8590,9 @@ func TestAdminTestCursorOAuthUsesSDKBridgeInsteadOfHTTP(t *testing.T) {
 	if runner.model != "grok-4.6" {
 		t.Fatalf("SDK model=%q, want exact catalog ID", runner.model)
 	}
+	if runner.request.SessionScope != (cursorauth.SessionScope{ChannelID: cfg.ID}) {
+		t.Fatal("Cursor admin test must run without a caller token identity")
+	}
 	if !strings.Contains(runner.prompt, "2025 年 1 月 20 日发生了什么大事？") {
 		t.Fatalf("prompt=%q", runner.prompt)
 	}
@@ -8581,6 +8657,69 @@ func TestAdminTestCursorOAuthBillsChannelModelPricing(t *testing.T) {
 }
 
 /**
+ * @brief 管理测试保留 Cursor 流的终态错误，只在允许持久化时按 SDK 指定期限冷却。
+ * @param t 测试上下文。
+ */
+func TestCursorAdminStreamFailure(t *testing.T) {
+	t.Parallel()
+	const wait = 30 * time.Second
+	for _, tc := range []struct {
+		name           string
+		code           sdkv1.SdkErrorCode
+		message        string
+		status         int
+		kind           string
+		persist        bool
+		cooldownAction string
+	}{
+		{"rate limited", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, "SDK rejected request", 429, "rate_limit_error", true, "model_cooldown_applied"},
+		{"transient test", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, "SDK rejected request", 429, "rate_limit_error", false, "request_key_no_cooldown"},
+		{"invalid model", sdkv1.SdkErrorCode_SDK_ERROR_CODE_INVALID_MODEL, "SDK rejected request", 400, "invalid_request_error", true, "client_error_no_cooldown"},
+		{"account plan", sdkv1.SdkErrorCode_SDK_ERROR_CODE_PLAN_REQUIRED, "plan required", 403, "permission_error", true, "protocol_capability_missing_no_cooldown"},
+		{"context overflow", sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, "Maximum context length exceeded", 400, "invalid_request_error", true, "client_error_no_cooldown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
+			srv.cursorRunner = cursorUsageEventsRunner{{Ping: true}, {Done: true, Err: &cursorauth.BridgeError{SDKCode: tc.code, RetryAfter: wait, Message: tc.message}}}
+			start := time.Now()
+			result := srv.executeChannelTestWithCooldown(t.Context(), cfg, cooldown.NoKeyIndex, "", &testutil.TestChannelRequest{Model: "grok-4.6", ClientProtocol: util.ProtocolAnthropic, Content: "hello", Stream: true}, tc.persist)
+			if result["success"] != false || result["status_code"] != tc.status || result["response_committed"] != true ||
+				result["cooldown_action"] != tc.cooldownAction {
+				t.Fatalf("result=%v", result)
+			}
+			raw, _ := result["raw_response"].(string)
+			var got string
+			for block := range strings.SplitSeq(raw, "\n\n") {
+				event, data := parseSSEEventChunk([]byte(block))
+				if event == "error" && gjson.GetBytes(data, "type").String() == "error" {
+					got = gjson.GetBytes(data, "error.type").String()
+				}
+			}
+			if got != tc.kind {
+				t.Fatalf("error type=%q, stream=%q", got, raw)
+			}
+			stored, err := srv.store.GetAllModelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			until := stored[cfg.ID]["grok-4.6"]
+			if tc.persist && tc.status == 429 {
+				if until.Before(start.Add(wait)) || until.After(time.Now().Add(wait+time.Second)) {
+					t.Fatalf("unexpected cooldown %v, result=%v", until, result)
+				}
+			} else if !until.IsZero() {
+				t.Fatalf("unexpected cooldown %v", until)
+			}
+			channels, err := srv.store.GetAllChannelCooldowns(t.Context())
+			if err != nil || len(channels) != 0 {
+				t.Fatalf("unexpected channel cooldowns=%v err=%v", channels, err)
+			}
+		})
+	}
+}
+
+/**
  * @brief Cursor 管理 HTTP 入口只按真实消费计费，响应上下文和估算独立展示。
  * @param t 测试上下文。
  */
@@ -8607,8 +8746,7 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 		}{
 			{
 				name: "estimate is display only", wantEstimated: true,
-				events: cursorUsageEventsRunner{{Text: "estimated answer", Done: true,
-					Usage: &cursorauth.Usage{InputTokens: 999, OutputTokens: 100}, UsageEstimated: true}},
+				events: cursorUsageEventsRunner{{Text: "estimated answer", Done: true}},
 			},
 			{
 				name: "terminal residual is billed without replacing context", wantInput: 1100, wantOutput: 220, wantContext: true,

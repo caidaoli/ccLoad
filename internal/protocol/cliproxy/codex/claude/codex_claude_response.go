@@ -121,7 +121,7 @@ func ConvertCodexResponseToClaude(ctx context.Context, modelName string, origina
 		params.DeferredStreamEvents = append(params.DeferredStreamEvents, streamEventRawJSON)
 		return [][]byte{}
 	}
-	params.messages.ObserveOutputItem(typeStr, rootResult)
+	params.messages.ObserveEvent(typeStr, rootResult)
 	var template []byte
 	if typeStr != "" && typeStr != "error" && typeStr != "response.created" {
 		output = append(output, startCodexMessage(params, rootResult)...)
@@ -169,7 +169,9 @@ func ConvertCodexResponseToClaude(ctx context.Context, modelName string, origina
 		}
 	case "response.output_text.delta", "response.refusal.delta":
 		delta := rootResult.Get("delta").String()
-		params.messages.ObserveDelta(rootResult, delta)
+		if !params.messages.ObserveDelta(rootResult, delta) {
+			break
+		}
 		if params.CommentaryMessageOpen {
 			output = append(output, startCodexThinkingBlock(params)...)
 			output = append(output, appendCodexThinkingDelta(params, delta)...)
@@ -269,7 +271,7 @@ func ConvertCodexResponseToClaude(ctx context.Context, modelName string, origina
 			defer func() { params.CommentaryMessageOpen = false }()
 			var textBuilder strings.Builder
 			for _, part := range params.messages.FinishMessage(rootResult) {
-				textBuilder.WriteString(translatorcommon.ResponsesMessagePartText(part).String())
+				textBuilder.WriteString(part.Text)
 			}
 			text := textBuilder.String()
 			if text == "" {

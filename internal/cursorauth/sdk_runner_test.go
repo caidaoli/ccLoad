@@ -551,6 +551,55 @@ func TestSDKRunnerListModelsAddsFastSuffix(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证目录原生 ID 与 fast 别名在首次创建和续轮发送时一致。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerRoutesCatalogFastModels(t *testing.T) {
+	handler := &testAgentHandler{sendFn: finishedRunSend(t, "ok")}
+	fast := &sdkv1.ModelParameterDefinition{Id: "fast", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "true"}}}
+	effort := &sdkv1.ModelParameterDefinition{Id: "reasoning_effort", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "low"}}}
+	runner, calls := newCatalogTestSDKRunner(t, handler, []*sdkv1.SdkModel{
+		{Id: "native", Parameters: []*sdkv1.ModelParameterDefinition{fast}},
+		{Id: "native-fast"},
+		{Id: "native-high", Parameters: []*sdkv1.ModelParameterDefinition{fast, effort}},
+		{Id: "variant", Variants: []*sdkv1.ModelVariant{{Params: []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}}}},
+		{Id: "slow", Parameters: []*sdkv1.ModelParameterDefinition{{Id: "fast", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "false"}}}}},
+	})
+	credential := &Credential{APIKey: "key"}
+	start := ParseRequest([]byte(`{"model":"native-fast","messages":[{"role":"user","content":"hi"}]}`))
+	start.SessionScope = testCursorSessionScope
+	drainRun(t, mustRun(t, runner, credential, start))
+	waitParkedAgents(t, runner, 1)
+	handler.mu.Lock()
+	created := handler.create.GetOptions().GetModel()
+	handler.mu.Unlock()
+	if created.GetId() != "native-fast" || len(created.GetParams()) != 0 || calls.Load() != 1 {
+		t.Fatalf("cold CreateAgent model = %v, ListModels calls = %d", created, calls.Load())
+	}
+
+	next := ParseRequest([]byte(`{"model":"native-high-fast","reasoning_effort":"low","messages":[
+		{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"next"}
+	]}`))
+	next.SessionScope = testCursorSessionScope
+	drainRun(t, mustRun(t, runner, credential, next))
+	waitParkedAgents(t, runner, 1)
+	handler.mu.Lock()
+	sent, creates := handler.send.GetOptions().GetModel(), handler.createCalls
+	handler.mu.Unlock()
+	params := sent.GetParams()
+	if creates != 1 || calls.Load() != 1 || sent.GetId() != "native-high" || len(params) != 2 ||
+		params[0].GetId() != "fast" || params[0].GetValue() != "true" ||
+		params[1].GetId() != "reasoning_effort" || params[1].GetValue() != "low" {
+		t.Fatalf("reused Send model = %v, CreateAgent calls = %d, ListModels calls = %d", sent, creates, calls.Load())
+	}
+	models, err := runner.ListModels(t.Context(), credential.APIKey)
+	want := []string{"native", "native-fast", "native-high", "native-high-fast", "variant", "variant-fast", "slow"}
+	if err != nil || !reflect.DeepEqual(models, want) {
+		t.Fatalf("ListModels() = %v, %v, want %v", models, err, want)
+	}
+}
+
 func TestSDKRunnerListModelsRemoteDeadlineDoesNotClaimLocalLimit(t *testing.T) {
 	for _, key := range []string{
 		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
@@ -580,9 +629,14 @@ func TestSDKRunnerListModelsRemoteDeadlineDoesNotClaimLocalLimit(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证模型列表 RPC 保留远端超时原因，并遮蔽回显的当前账户凭证。
+ * @param t 测试上下文。
+ */
 func TestSDKRunnerListModelsPreservesRemoteDeadlineDiagnostic(t *testing.T) {
-	handler := &testCursorHandlerFunc{listModels: func(*sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
-		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("proxy CONNECT failed"))
+	const apiKey = "synthetic-cursor-list-models-token"
+	handler := &testCursorHandlerFunc{listModels: func(request *sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("proxy CONNECT failed for "+request.GetOptions().GetApiKey()))
 	}}
 	_, httpHandler := sdkv1connect.NewSdkCursorServiceHandler(handler)
 	server := httptest.NewServer(httpHandler)
@@ -593,8 +647,10 @@ func TestSDKRunnerListModelsPreservesRemoteDeadlineDiagnostic(t *testing.T) {
 	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
 	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
-	_, err := runner.ListModels(context.Background(), "user-api-key")
-	if err == nil || !strings.Contains(err.Error(), "proxy CONNECT failed") ||
+	_, err := runner.ListModels(context.Background(), apiKey)
+	bridgeErr, ok := errors.AsType[*BridgeError](err)
+	if !ok || bridgeErr.ConnectCode != connect.CodeDeadlineExceeded || bridgeErr.Message != "proxy CONNECT failed for [redacted]" ||
+		!strings.Contains(err.Error(), bridgeErr.Message) || strings.Contains(err.Error(), apiKey) ||
 		strings.Contains(err.Error(), "returned no detail beyond deadline_exceeded") {
 		t.Fatalf("ListModels() error = %v", err)
 	}
@@ -746,7 +802,7 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 		}
 		return stream.Send(runDone("agent-1", "run-1"))
 	}
-	runner := newTestSDKRunner(t, handler)
+	runner, _ := newCatalogTestSDKRunner(t, handler, []*sdkv1.SdkModel{{Id: "model-1"}})
 	events, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1-fast", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -1213,7 +1269,7 @@ func TestSDKRunnerReclaimsIdleToolSession(t *testing.T) {
 	client.agent = &deleteObservingAgentClient{SdkAgentServiceClient: agentClient, deleted: deleted}
 	credential := &Credential{APIKey: "test-key"}
 	request := Request{
-		Prompt: "lookup", ToolChoice: "auto",
+		Prompt: "lookup", ToolChoice: "auto", SessionScope: testCursorSessionScope,
 		Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1389,7 +1445,7 @@ func TestSDKRunnerPreservesIncrementalUsageOnTermination(t *testing.T) {
 			var total Usage
 			var final Event
 			for event := range events {
-				if event.Usage != nil && !event.UsageEstimated {
+				if event.Usage != nil {
 					total.Add(event.Usage)
 				}
 				if event.Done {
@@ -1438,12 +1494,97 @@ func TestSDKRunnerNormalizesLocalUsageWithoutDoubleCountingCache(t *testing.T) {
 		if event.Err != nil {
 			t.Fatal(event.Err)
 		}
-		if event.Usage != nil && !event.UsageEstimated {
+		if event.Usage != nil {
 			total.Add(event.Usage)
 		}
 	}
 	if total != (Usage{InputTokens: 10, OutputTokens: 403, CacheReadTokens: 16447, CacheWriteTokens: 5828, TotalTokens: 22688}) {
 		t.Fatalf("normalized local usage = %+v", total)
+	}
+}
+
+/**
+ * @brief 缓存分项矛盾的 SDK 用量不结算，合法报告仍能补齐实际消费。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerSkipsContradictoryUsage(t *testing.T) {
+	invalidDelta := map[string]any{"inputTokens": 10, "outputTokens": 2, "cacheReadTokens": 7, "cacheWriteTokens": 4, "totalTokens": 12}
+	validDelta := map[string]any{"inputTokens": 10, "outputTokens": 2, "cacheReadTokens": 6, "cacheWriteTokens": 4, "totalTokens": 12}
+	invalidTotal := &sdkv1.TokenUsage{InputTokens: 10, OutputTokens: 2, CacheReadTokens: 7, CacheWriteTokens: 4, TotalTokens: 12}
+	validTotal := &sdkv1.TokenUsage{InputTokens: 20, OutputTokens: 6, CacheReadTokens: 10, CacheWriteTokens: 6, TotalTokens: 26}
+	wantDelta := Usage{OutputTokens: 2, CacheReadTokens: 6, CacheWriteTokens: 4, TotalTokens: 12}
+	wantRemainder := Usage{InputTokens: 4, OutputTokens: 4, CacheReadTokens: 4, CacheWriteTokens: 2, TotalTokens: 14}
+	for _, tt := range []struct {
+		name      string
+		deltas    []map[string]any
+		terminal  *sdkv1.TokenUsage
+		snapshot  *sdkv1.TokenUsage
+		wantDelta []Usage
+		wantFinal *Usage
+	}{
+		{
+			name: "none usable", deltas: []map[string]any{invalidDelta},
+			terminal: invalidTotal, snapshot: invalidTotal,
+		},
+		{
+			name: "valid reports after contradiction", deltas: []map[string]any{invalidDelta, validDelta},
+			terminal: validTotal, wantDelta: []Usage{wantDelta}, wantFinal: &wantRemainder,
+		},
+		{
+			name: "valid snapshot replaces contradictory terminal", deltas: []map[string]any{validDelta},
+			terminal: invalidTotal, snapshot: validTotal, wantDelta: []Usage{wantDelta}, wantFinal: &wantRemainder,
+		},
+		{
+			name: "other conventions", deltas: []map[string]any{
+				{"inputTokens": 3, "outputTokens": 2, "cacheReadTokens": 7, "cacheWriteTokens": 4, "totalTokens": 16},
+				{"inputTokens": 3, "outputTokens": 2, "cacheReadTokens": 7, "cacheWriteTokens": 4},
+			},
+			wantDelta: []Usage{
+				{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 7, CacheWriteTokens: 4, TotalTokens: 16},
+				{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 7, CacheWriteTokens: 4},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &testAgentHandler{runSnapshot: &sdkv1.RunSnapshot{AgentId: "agent-1", RunId: "run-1", Usage: tt.snapshot}}
+			handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				for _, delta := range tt.deltas {
+					message := sdkMessage(t, "usage", map[string]any{"agent_id": "agent-1", "run_id": "run-1", "usage": delta})
+					if err := stream.Send(message); err != nil {
+						return err
+					}
+				}
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "answer")
+				result.GetResult().GetResult().Usage = tt.terminal
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}
+			runner := newTestSDKRunner(t, handler)
+			events, err := runner.Run(t.Context(), &Credential{APIKey: "key"}, Request{Prompt: "hello"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var deltas []Usage
+			var final Event
+			for event := range events {
+				if event.Done {
+					final = event
+				} else if event.Usage != nil {
+					deltas = append(deltas, *event.Usage)
+				}
+			}
+			if !reflect.DeepEqual(deltas, tt.wantDelta) {
+				t.Fatalf("incremental usage = %+v, want %+v", deltas, tt.wantDelta)
+			}
+			if !final.Done || final.Err != nil || final.Text != "answer" {
+				t.Fatalf("unexpected final event: %+v", final)
+			}
+			if !reflect.DeepEqual(final.Usage, tt.wantFinal) {
+				t.Fatalf("terminal usage = %+v, want %+v", final.Usage, tt.wantFinal)
+			}
+		})
 	}
 }
 
@@ -1485,7 +1626,7 @@ func TestSDKRunnerCancellationPreservesBufferedUsage(t *testing.T) {
 	var total Usage
 	var final Event
 	for event := range events {
-		if event.Usage != nil && !event.UsageEstimated {
+		if event.Usage != nil {
 			total.Add(event.Usage)
 		}
 		if event.Done {
@@ -1500,37 +1641,282 @@ func TestSDKRunnerCancellationPreservesBufferedUsage(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 终态只有通用失败文案时，状态诊断保留旧版凭证恢复行为。
+ * @param t 测试上下文。
+ */
 func TestSDKRunnerClassifiesTerminalAuthenticationFailure(t *testing.T) {
-	handler := &testAgentHandler{}
-	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
-		if err := stream.Send(sdkMessage(t, "status", map[string]any{
-			"agent_id": "agent-1", "run_id": "run-1",
-			"message": "Authentication error If you are logged in, try logging out and back in.",
-		})); err != nil {
-			return err
-		}
-		if err := stream.Send(runResult(
-			"agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "",
-		)); err != nil {
+	const diagnosis = "Authentication error If you are logged in, try logging out and back in."
+	for _, message := range []string{"", "run failed", "Unknown error", "Cursor SDK run failed."} {
+		t.Run(message, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				if err := stream.Send(sdkMessage(t, "status", map[string]any{
+					"run_id": "run-1", "message": diagnosis,
+				})); err != nil {
+					return err
+				}
+				if err := stream.Send(sdkMessage(t, "status", map[string]any{
+					"run_id": "run-1", "status": "RUNNING", "message": "Waiting for response",
+				})); err != nil {
+					return err
+				}
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "")
+				if message != "" {
+					result.GetResult().GetResult().ErrorMessage = &message
+				}
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}}
+			runner := newTestSDKRunner(t, handler)
+			events, err := runner.Run(t.Context(), &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			var runErr error
+			for event := range events {
+				if event.Done {
+					runErr = event.Err
+				}
+			}
+			if !IsCredentialRejected(runErr) || !strings.Contains(runErr.Error(), diagnosis) {
+				t.Fatalf("terminal error = %v, want rejected credential with %q", runErr, diagnosis)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 SDK RPC 与 Run 终态使用同样的权限、凭证和上下文超限分类。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerClassifiesAccountAndContextFailures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		sdkCode  sdkv1.SdkErrorCode
+		runCode  string
+		message  string
+		classify func(error) bool
+		want     bool
+	}{
+		{"missing key", sdkv1.SdkErrorCode_SDK_ERROR_CODE_API_KEY_NOT_FOUND, "api-key-not-found", "key does not exist", IsCredentialRejected, true},
+		{"plan", sdkv1.SdkErrorCode_SDK_ERROR_CODE_PLAN_REQUIRED, "SDK_ERROR_CODE_PLAN_REQUIRED", "plan required", IsAccountCapabilityUnavailable, true},
+		{"role", sdkv1.SdkErrorCode_SDK_ERROR_CODE_ROLE_FORBIDDEN, "role_forbidden", "role forbidden", IsAccountCapabilityUnavailable, true},
+		{"feature", sdkv1.SdkErrorCode_SDK_ERROR_CODE_FEATURE_UNAVAILABLE, "feature_unavailable", "feature unavailable", IsAccountCapabilityUnavailable, true},
+		{"context message", sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, "validation_error", "Maximum context length exceeded", IsContextLengthExceeded, true},
+		{"context code in message", sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, "validation_error", "context_length_exceeded: requested inputs too long", IsContextLengthExceeded, true},
+		{"too many tokens", sdkv1.SdkErrorCode_SDK_ERROR_CODE_VALIDATION_ERROR, "validation_error", "Too many tokens", IsContextLengthExceeded, false},
+		{"throttle message", sdkv1.SdkErrorCode_SDK_ERROR_CODE_UPSTREAM_ERROR, "upstream_error", "Token rate limit exceeded for this context window", IsContextLengthExceeded, false},
+		{"structured throttle", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, "rate_limit_exceeded", "Maximum context length exceeded", IsContextLengthExceeded, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, stage := range []string{"create", "terminal"} {
+				t.Run(stage, func(t *testing.T) {
+					handler := &testAgentHandler{}
+					if stage == "create" {
+						detail, err := connect.NewErrorDetail(&sdkv1.SdkErrorDetails{SdkErrorCode: tc.sdkCode, Message: tc.message})
+						if err != nil {
+							t.Fatal(err)
+						}
+						createErr := connect.NewError(connect.CodeFailedPrecondition, errors.New(tc.message))
+						createErr.AddDetail(detail)
+						handler.createErr = createErr
+					} else {
+						handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+							result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "")
+							result.GetResult().GetResult().ErrorCode = &tc.runCode
+							result.GetResult().GetResult().ErrorMessage = &tc.message
+							if err := stream.Send(result); err != nil {
+								return err
+							}
+							return stream.Send(runDone("agent-1", "run-1"))
+						}
+					}
+					runner := newTestSDKRunner(t, handler)
+					events, err := runner.Run(t.Context(), &Credential{APIKey: "fake-user-credential"}, Request{Model: "m", Prompt: "hello"})
+					if stage == "terminal" {
+						if err != nil {
+							t.Fatalf("Run() failed before terminal event: %v", err)
+						}
+						for event := range events {
+							if event.Done {
+								err = event.Err
+							}
+						}
+					}
+					if err == nil || tc.classify(err) != tc.want || !strings.Contains(err.Error(), tc.message) {
+						t.Fatalf("Run failure=%v want classification=%t and message=%q", err, tc.want, tc.message)
+					}
+				})
+			}
+		})
+	}
+}
+
+/**
+ * @brief 测试错误终态补发的正文及诊断均遮蔽 SDK 回显的凭证。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerRedactsFailedResultText(t *testing.T) {
+	const key = "fixture-credential-for-redaction"
+	const diagnosis = "Model rejected credential " + key
+	handler := &testAgentHandler{sendFn: func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, diagnosis)
+		result.GetResult().GetResult().ErrorCode = new("RATE_LIMIT_EXCEEDED")
+		result.GetResult().GetResult().ErrorMessage = new(diagnosis)
+		if err := stream.Send(result); err != nil {
 			return err
 		}
 		return stream.Send(runDone("agent-1", "run-1"))
-	}
+	}}
 	runner := newTestSDKRunner(t, handler)
-	events, err := runner.Run(
-		context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"},
-	)
+	ctx := WithRawResponseCapture(t.Context())
+	events, err := runner.Run(ctx, &Credential{APIKey: key}, Request{Model: "m", Prompt: "hello"})
 	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+		t.Fatal(err)
 	}
-	var runErr error
+	var streamed strings.Builder
+	var final Event
 	for event := range events {
+		if event.SentEffort != nil {
+			t.Fatalf("immediately rejected run reported effort: %+v", event)
+		}
+		if strings.Contains(string(event.RawResponse), key) {
+			t.Fatal("debug frame retained the credential")
+		}
+		streamed.WriteString(event.Delta)
 		if event.Done {
-			runErr = event.Err
+			final = event
 		}
 	}
-	if !IsCredentialRejected(runErr) {
-		t.Fatalf("terminal error = %v, want rejected credential", runErr)
+	const want = "Model rejected credential [redacted]"
+	if streamed.String() != want || final.Text != want {
+		t.Fatalf("streamed=%q final=%q, want %q", streamed.String(), final.Text, want)
+	}
+	if _, limited := RateLimitRetryTime(final.Err, time.Now()); !limited || !strings.Contains(final.Err.Error(), want) {
+		t.Fatalf("terminal error=%v, want a redacted rate limit diagnosis", final.Err)
+	}
+}
+
+/**
+ * @brief 验证 Run 信封的通用错误码可与内层的明确上下文超限诊断并存。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerClassifiesTerminalContextCode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, outerCode, innerCode, message string }{
+		{"inner context code", "validation_error", "CONTEXT_LENGTH_EXCEEDED", "upstream rejected request"},
+		{"context message", "upstream_error", "", "Maximum context length exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "")
+				result.GetResult().ErrorCode = &tc.outerCode
+				result.GetResult().GetResult().ErrorCode = &tc.innerCode
+				result.GetResult().GetResult().ErrorMessage = &tc.message
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}}
+			runner := newTestSDKRunner(t, handler)
+			events, err := runner.Run(t.Context(), &Credential{APIKey: "key"}, Request{Model: "m", Prompt: "hello"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for event := range events {
+				if event.Done {
+					if !IsContextLengthExceeded(event.Err) || !strings.Contains(event.Err.Error(), tc.message) {
+						t.Fatalf("terminal failure=%v", event.Err)
+					}
+					return
+				}
+			}
+			t.Fatal("missing terminal error")
+		})
+	}
+}
+
+/**
+ * @brief 验证无效客户端工具 schema 在创建 Agent 前得到确定的请求错误。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerRejectsInvalidClientToolSchema(t *testing.T) {
+	t.Parallel()
+	handler := &testAgentHandler{}
+	runner := newTestSDKRunner(t, handler)
+	request := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":[]}}]}`))
+	events, err := runner.Run(t.Context(), &Credential{APIKey: "key"}, request)
+	if events != nil || !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Run() events=%v err=%v", events, err)
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.createCalls != 0 {
+		t.Fatalf("unexpected Agent creation attempts=%d", handler.createCalls)
+	}
+}
+
+/**
+ * @brief 成功快照省略正文或末段空白不同时保留流式正文，缺少 done 或内容冲突时报告失败。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerPreservesStreamedTextAtCompletion(t *testing.T) {
+	const answer = "Checking.\nFinal answer.\n"
+	for _, tc := range []struct {
+		name, snapshot, wantError string
+		done                      bool
+	}{
+		{name: "empty snapshot", done: true},
+		{name: "last message without newline", snapshot: "Final answer.", done: true},
+		{name: "extra surrounding whitespace", snapshot: " Final answer.\t", done: true},
+		{name: "additional newline", snapshot: answer + "\n", done: true},
+		{name: "partial word", snapshot: "swer.", done: true, wantError: "diverged"},
+		{name: "missing done", wantError: "before done"},
+		{name: "conflicting snapshot", snapshot: "different answer", done: true, wantError: "diverged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testAgentHandler{}
+			handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				message := sdkMessage(t, "assistant", map[string]any{
+					"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": answer}}},
+				})
+				if err := stream.Send(message); err != nil {
+					return err
+				}
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, tc.snapshot)
+				result.GetResult().GetResult().Usage = &sdkv1.TokenUsage{OutputTokens: 2}
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				if tc.done {
+					return stream.Send(runDone("agent-1", "run-1"))
+				}
+				return nil
+			}
+			runner := newTestSDKRunner(t, handler)
+			events := mustRun(t, runner, &Credential{APIKey: "test-account"}, Request{Prompt: "hello"})
+			var streamed strings.Builder
+			var terminal Event
+			for event := range events {
+				streamed.WriteString(event.Delta)
+				if event.Done {
+					terminal = event
+				}
+			}
+			if !terminal.Done || terminal.Text != answer || streamed.String() != answer || terminal.Usage == nil || terminal.Usage.OutputTokens != 2 {
+				t.Fatalf("streamed=%q terminal=%+v", streamed.String(), terminal)
+			}
+			if tc.wantError == "" {
+				if terminal.Err != nil {
+					t.Fatal(terminal.Err)
+				}
+			} else if terminal.Err == nil || !strings.Contains(terminal.Err.Error(), tc.wantError) {
+				t.Fatalf("error=%v, want %q", terminal.Err, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -1645,6 +2031,141 @@ func TestClassifyBridgeErrorPreservesDetailsAndRejectsOnlyUnauthorized(t *testin
 	bare := classifyBridgeError(connect.NewError(connect.CodeUnauthenticated, errors.New("Unauthorized")))
 	if IsCredentialRejected(bare) {
 		t.Fatal("bare bridge bearer error must not reject the channel credential")
+	}
+}
+
+/**
+ * @brief 验证只有结构化 SDK 限流可提供恢复提示，拒绝无效时间。
+ * @param t 测试上下文。
+ */
+func TestSDKRateLimitRetryTime(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(2_000_000_000, 0)
+	future, stale, overflow := uint64(now.Unix()+15), uint64(now.Unix()-1), ^uint64(0)
+	for _, tt := range []struct {
+		name    string
+		code    sdkv1.SdkErrorCode
+		retry   *durationpb.Duration
+		reset   *uint64
+		want    time.Time
+		limited bool
+	}{
+		{"relative first", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, durationpb.New(1500 * time.Millisecond), &future, now.Add(1500 * time.Millisecond), true},
+		{"negative falls back to reset", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, durationpb.New(-time.Second), &future, time.Unix(int64(future), 0), true},
+		{"unrepresentable falls back to reset", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, &durationpb.Duration{Seconds: 31_536_000_000}, &future, time.Unix(int64(future), 0), true},
+		{"stale reset", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, nil, &stale, time.Time{}, true},
+		{"overflow reset", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED, nil, &overflow, time.Time{}, true},
+		{"bare resource exhausted", sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED, nil, nil, time.Time{}, false},
+		{"usage cap is separate", sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED, durationpb.New(time.Minute), &future, time.Time{}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rpcErr := connect.NewError(connect.CodeResourceExhausted, errors.New("rate limit exceeded"))
+			if tt.code != sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED {
+				detail, err := connect.NewErrorDetail(&sdkv1.SdkErrorDetails{
+					SdkErrorCode: tt.code, RetryAfter: tt.retry, RateLimit: &sdkv1.RateLimitInfo{ResetEpochSeconds: tt.reset},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rpcErr.AddDetail(detail)
+			}
+			got, limited := RateLimitRetryTime(classifyBridgeError(rpcErr), now)
+			if !got.Equal(tt.want) || limited != tt.limited {
+				t.Fatalf("RateLimitRetryTime() = %v, %t; want %v, %t", got, limited, tt.want, tt.limited)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 只有 result 提供具体诊断时，已知或未知错误码均不能把诊断发成正文。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerReportsResultOnlyDiagnostic(t *testing.T) {
+	for _, tc := range []struct{ name, code, message, detail string }{
+		{"missing error fields", "", "", "MCP tool call timed out after 60s"},
+		{"generic error message", "RATE_LIMIT_EXCEEDED", "Unknown error.", "try again later"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, tc.detail)
+				inner := result.GetResult().GetResult()
+				inner.ErrorCode, inner.ErrorMessage = &tc.code, &tc.message
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}}
+			runner := newTestSDKRunner(t, handler)
+			var terminal Event
+			for event := range mustRun(t, runner, &Credential{APIKey: "test-account"}, Request{Prompt: "hello"}) {
+				if event.Text != "" || event.Delta != "" {
+					t.Fatalf("diagnostic delivered as text: %+v", event)
+				}
+				if event.Done {
+					terminal = event
+				}
+			}
+			if terminal.Err == nil || !strings.Contains(terminal.Err.Error(), tc.detail) {
+				t.Fatalf("terminal=%+v, want diagnostic %q", terminal, tc.detail)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 保留已经流出的正文，并从 Run 终态内外层提取明确拒绝。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerClassifiesTerminalModelFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		code      string
+		finalText string
+		wantText  string
+		want      sdkv1.SdkErrorCode
+	}{
+		{"rate limit without final text", "RATE_LIMIT_EXCEEDED", "", "partial", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED},
+		{"rate limit with final suffix", "RATE_LIMIT_EXCEEDED", "partial answer", "partial answer", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED},
+		{"invalid model", "SDK_ERROR_CODE_INVALID_MODEL", "not the partial text", "partial", sdkv1.SdkErrorCode_SDK_ERROR_CODE_INVALID_MODEL},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &testAgentHandler{}
+			handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				if err := stream.Send(sdkMessage(t, "assistant", map[string]any{
+					"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "partial"}}},
+				})); err != nil {
+					return err
+				}
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, tt.finalText)
+				inner := result.GetResult().GetResult()
+				message := "model rejected the request"
+				inner.ErrorMessage = &message
+				if tt.want == sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED {
+					inner.ErrorCode = &tt.code
+				} else {
+					result.GetResult().ErrorCode = &tt.code
+				}
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}
+			runner := newTestSDKRunner(t, handler)
+			events := mustRun(t, runner, &Credential{APIKey: "key"}, Request{Prompt: "hello"})
+			var final Event
+			var text strings.Builder
+			for event := range events {
+				text.WriteString(event.Delta)
+				if event.Done {
+					final = event
+				}
+			}
+			bridgeErr, ok := errors.AsType[*BridgeError](final.Err)
+			if !ok || bridgeErr.SDKCode != tt.want || bridgeErr.Message != "model rejected the request" || final.Text != tt.wantText || text.String() != tt.wantText {
+				t.Fatalf("body=%q terminal=%+v error=%v", text.String(), final, final.Err)
+			}
+		})
 	}
 }
 
@@ -1797,10 +2318,28 @@ func TestSDKRunnerSendsCatalogEffortAndImages(t *testing.T) {
 		}}},
 	}})
 	credential := &Credential{APIKey: "key"}
-	drainRun(t, mustRun(t, runner, credential, Request{
+	events, err := runner.Run(t.Context(), credential, Request{
+		Model: "claude-opus-5-thinking-xhigh-fast", Prompt: "user: compare\n[image]", Effort: "low",
+		Images: []Image{{URL: "https://example.com/a.png"}},
+		Tools:  []Tool{{Name: "lookup", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if !errors.Is(err, ErrURLImageUnsupported) || events != nil {
+		t.Fatalf("Run() events=%v err=%v, want URL image capability error", events, err)
+	}
+	handler.mu.Lock()
+	createCalls, sendCalls := handler.createCalls, handler.sendCalls
+	handler.mu.Unlock()
+	if createCalls != 0 || sendCalls != 0 || listCalls.Load() != 0 {
+		t.Fatalf("unsupported image called CreateAgent=%d Send=%d ListModels=%d", createCalls, sendCalls, listCalls.Load())
+	}
+
+	finished := drainRun(t, mustRun(t, runner, credential, Request{
 		Model: "claude-opus-5-thinking-xhigh-fast", Prompt: "user: compare\n[image]\n[image]", Effort: "low",
-		Images: []Image{{Data: "aGk=", MimeType: "image/png"}, {URL: "https://example.com/a.png"}},
+		Images: []Image{{Data: "aGk=", MimeType: "image/png"}, {Data: "b2s=", MimeType: "image/jpeg"}},
 	}))
+	if finished.SentEffort == nil || *finished.SentEffort != "xhigh" {
+		t.Fatalf("terminal=%+v, want confirmation of xhigh", finished)
+	}
 	handler.mu.Lock()
 	params := handler.create.GetOptions().GetModel().GetParams()
 	images := handler.send.GetMessage().GetImages()
@@ -1814,11 +2353,14 @@ func TestSDKRunnerSendsCatalogEffortAndImages(t *testing.T) {
 		t.Fatalf("model params = %v, want %v", gotParams, wantParams)
 	}
 	if len(images) != 2 || images[0].GetData().GetData() != "aGk=" || images[0].GetData().GetMimeType() != "image/png" ||
-		images[1].GetUrl().GetUrl() != "https://example.com/a.png" {
+		images[1].GetData().GetData() != "b2s=" || images[1].GetData().GetMimeType() != "image/jpeg" {
 		t.Fatalf("send images = %+v", images)
 	}
 
-	drainRun(t, mustRun(t, runner, credential, Request{Model: "claude-opus-5", Prompt: "hi", Effort: "medium"}))
+	finished = drainRun(t, mustRun(t, runner, credential, Request{Model: "claude-opus-5", Prompt: "hi", Effort: "medium"}))
+	if finished.SentEffort == nil || *finished.SentEffort != "" {
+		t.Fatalf("terminal=%+v, want confirmation without an explicit effort", finished)
+	}
 	handler.mu.Lock()
 	params = handler.create.GetOptions().GetModel().GetParams()
 	handler.mu.Unlock()
@@ -1830,23 +2372,184 @@ func TestSDKRunnerSendsCatalogEffortAndImages(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 CreateAgent 使用各模型声明的思考参数与开关取值。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerMapsCatalogReasoningParameters(t *testing.T) {
+	catalog := []*sdkv1.SdkModel{
+		{
+			Id: "gemini-4-argon",
+			Parameters: []*sdkv1.ModelParameterDefinition{
+				{Id: "reasoning_effort", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "high"}}},
+			},
+		},
+		{
+			Id: "claude-opus-5",
+			Parameters: []*sdkv1.ModelParameterDefinition{
+				{Id: "effort", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "medium"}, {Value: "high"}}},
+				{Id: "thinking", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "false"}, {Value: "true"}}},
+			},
+		},
+		{
+			Id: "claude-variant",
+			Variants: []*sdkv1.ModelVariant{
+				{Params: []*sdkv1.ModelParameterValue{{Id: "reasoning_effort", Value: "extra-high"}, {Id: "thinking", Value: "true"}}},
+				{Params: []*sdkv1.ModelParameterValue{{Id: "reasoning_effort", Value: "off"}}},
+			},
+		},
+		{
+			Id: "claude-fixed",
+			Parameters: []*sdkv1.ModelParameterDefinition{
+				{Id: "effort", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "high"}}},
+				{Id: "thinking", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "false"}}},
+			},
+		},
+		{Id: "gpt-5.4-mini", Parameters: []*sdkv1.ModelParameterDefinition{
+			{Id: "reasoning", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "high"}, {Value: "none"}}},
+		}},
+		{Id: "claude-haiku-4-5", Parameters: []*sdkv1.ModelParameterDefinition{
+			{Id: "thinking", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "false"}, {Value: "true"}}},
+		}},
+		{Id: "limited-variant", Variants: []*sdkv1.ModelVariant{
+			{Params: []*sdkv1.ModelParameterValue{{Id: "reasoning", Value: "low"}, {Id: "thinking", Value: "true"}}},
+			{Params: []*sdkv1.ModelParameterValue{{Id: "thinking", Value: "false"}}},
+		}},
+	}
+	credential := &Credential{APIKey: "key"}
+	for _, tc := range []struct {
+		name, model, effort string
+		want                map[string]string
+	}{
+		{"reasoning high", "gpt-5.4-mini", "high", map[string]string{"reasoning": "high"}},
+		{"reasoning off", "gpt-5.4-mini", "none", map[string]string{"reasoning": "none"}},
+		{"boolean on", "claude-haiku-4-5", "high", map[string]string{"thinking": "true"}},
+		{"boolean off", "claude-haiku-4-5", "none", map[string]string{"thinking": "false"}},
+		{"boolean intermediate", "claude-haiku-4-5", "medium", map[string]string{}},
+		{"variant reasoning", "limited-variant", "low", map[string]string{"reasoning": "low"}},
+		{"variant omits high", "limited-variant", "high", map[string]string{}},
+		{"reasoning effort", "gemini-4-argon", "high", map[string]string{"reasoning_effort": "high"}},
+		{"coupled effort", "claude-opus-5", "medium", map[string]string{"effort": "medium", "thinking": "true"}},
+		{"thinking off", "claude-opus-5", "none", map[string]string{"thinking": "false"}},
+		{"unsupported level", "claude-opus-5", "low", map[string]string{}},
+		{"variant effort", "claude-variant", "xhigh", map[string]string{"reasoning_effort": "extra-high", "thinking": "true"}},
+		{"off as effort", "claude-variant", "none", map[string]string{"reasoning_effort": "off"}},
+		{"no on toggle", "claude-fixed", "high", map[string]string{"effort": "high"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: finishedRunSend(t, "ok")}
+			runner, _ := newCatalogTestSDKRunner(t, handler, catalog)
+			for _, body := range []string{
+				`{"messages":[{"role":"user","content":"hi"}]}`,
+				`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"next"}]}`,
+			} {
+				request := ParseRequest([]byte(body))
+				request.Model, request.Effort, request.SessionScope = tc.model, tc.effort, testCursorSessionScope
+				drainRun(t, mustRun(t, runner, credential, request))
+				waitParkedAgents(t, runner, 1)
+			}
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if handler.createCalls != 1 || handler.sendCalls != 2 {
+				t.Fatalf("CreateAgent calls = %d, Send calls = %d", handler.createCalls, handler.sendCalls)
+			}
+			for op, model := range map[string]*sdkv1.ModelSelection{
+				"CreateAgent": handler.create.GetOptions().GetModel(), "Send": handler.send.GetOptions().GetModel(),
+			} {
+				got := make(map[string]string, len(model.GetParams()))
+				for _, param := range model.GetParams() {
+					got[param.GetId()] = param.GetValue()
+				}
+				if model.GetId() != tc.model || len(model.GetParams()) != len(tc.want) || !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("%s model = %v, want %s %v", op, model, tc.model, tc.want)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证模型目录按凭证隔离，并在写入时清理过期目录。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerModelCatalogPrunesExpiredEntriesOnWrite(t *testing.T) {
+	handler := &testAgentHandler{sendFn: finishedRunSend(t, "ok")}
+	runner, listCalls := newCatalogTestSDKRunner(t, handler, []*sdkv1.SdkModel{{Id: "model-a"}})
+	if _, err := runner.ListModels(t.Context(), " old-key "); err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	run := func(key string) {
+		t.Helper()
+		drainRun(t, mustRun(t, runner, &Credential{APIKey: key}, Request{Model: "model-a", Prompt: "hi", Effort: "high"}))
+	}
+	run("old-key")
+	if got := listCalls.Load(); got != 1 {
+		t.Fatalf("ListModels calls after using the fresh catalog = %d, want 1", got)
+	}
+
+	runner.mu.Lock()
+	for key, catalog := range runner.catalogs {
+		catalog.expiresAt = time.Time{}
+		runner.catalogs[key] = catalog
+	}
+	runner.mu.Unlock()
+
+	run("new-key")
+	runner.mu.Lock()
+	retained := len(runner.catalogs)
+	runner.mu.Unlock()
+	if retained != 1 {
+		t.Fatalf("catalogs retained after refresh = %d, want 1", retained)
+	}
+	run("old-key")
+	run("new-key")
+	if got := listCalls.Load(); got != 3 {
+		t.Fatalf("ListModels calls after refreshing both keys = %d, want 3", got)
+	}
+}
+
+/**
+ * @brief 普通续轮只发送新增消息，准备续用失败时保留停放 Agent。
+ * @param t 测试上下文。
+ */
 func TestSDKRunnerReusesParkedAgentForOrdinaryTurn(t *testing.T) {
 	handler := &testAgentHandler{}
 	handler.sendFn = finishedRunSend(t, "Hello there")
 	runner := newTestSDKRunner(t, handler)
 	credential := &Credential{APIKey: "key"}
-	drainRun(t, mustRun(t, runner, credential, ParseRequest([]byte(
+	start := ParseRequest([]byte(
 		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`,
-	))))
+	))
+	start.SessionScope = testCursorSessionScope
+	drainRun(t, mustRun(t, runner, credential, start))
 	waitParkedAgents(t, runner, 1)
 
-	followUp := ParseRequest([]byte(`{"model":"m2","messages":[
+	const followUp = `{"model":"m2","messages":[
 		{"role":"user","content":"hi"},
-		{"role":"assistant","content":"Hello\n  there"},
+		{"role":"assistant","content":"Hello there"},
 		{"role":"user","content":[{"type":"text","text":"next"},{"type":"image_url","image_url":{"url":"https://example.com/c.png"}}]}
-	]}`))
-	followUp.Model = "m2"
-	drainRun(t, mustRun(t, runner, credential, followUp))
+	]}`
+	remoteFollowUp := ParseRequest([]byte(followUp))
+	remoteFollowUp.SessionScope = testCursorSessionScope
+	events, err := runner.Run(t.Context(), credential, remoteFollowUp)
+	if !errors.Is(err, ErrURLImageUnsupported) || events != nil {
+		t.Fatalf("Run() events=%v err=%v, want URL image capability error for the new message", events, err)
+	}
+	inlineFollowUp := ParseRequest([]byte(strings.Replace(followUp, "https://example.com/c.png", "data:image/png;base64,aGk=", 1)))
+	inlineFollowUp.SessionScope = testCursorSessionScope
+	needsCatalog := inlineFollowUp
+	needsCatalog.Effort = "high"
+	events, err = runner.Run(t.Context(), credential, needsCatalog)
+	if bridgeErr, ok := errors.AsType[*BridgeError](err); !ok || bridgeErr.ConnectCode != connect.CodeUnimplemented || events != nil {
+		t.Fatalf("Run() events=%v err=%v, want ListModels failure from the agent-only bridge", events, err)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	events, err = runner.Run(canceled, credential, inlineFollowUp)
+	if !errors.Is(err, context.Canceled) || events != nil {
+		t.Fatalf("Run() events=%v err=%v, want canceled before taking the parked Agent", events, err)
+	}
+	drainRun(t, mustRun(t, runner, credential, inlineFollowUp))
 	handler.mu.Lock()
 	createCalls, sendCalls, send := handler.createCalls, handler.sendCalls, handler.send
 	deleted := handler.deleted
@@ -1855,7 +2558,7 @@ func TestSDKRunnerReusesParkedAgentForOrdinaryTurn(t *testing.T) {
 		t.Fatalf("create=%d send=%d deleted=%+v, want reuse without delete", createCalls, sendCalls, deleted)
 	}
 	if send.GetAgentId() != "agent-1" || send.GetMessage().GetText() != "user: next\n[image]" ||
-		len(send.GetMessage().GetImages()) != 1 || send.GetOptions().GetModel().GetId() != "m2" {
+		len(send.GetMessage().GetImages()) != 1 || send.GetMessage().GetImages()[0].GetData().GetData() != "aGk=" || send.GetOptions().GetModel().GetId() != "m2" {
 		t.Fatalf("reused send = %+v", send)
 	}
 	waitParkedAgents(t, runner, 1)
@@ -1865,12 +2568,238 @@ func TestSDKRunnerReusesParkedAgentForOrdinaryTurn(t *testing.T) {
 		{"role":"assistant","content":"edited reply"},
 		{"role":"user","content":"next"}
 	]}`))
+	diverged.SessionScope = testCursorSessionScope
 	drainRun(t, mustRun(t, runner, credential, diverged))
 	handler.mu.Lock()
 	createCalls, send = handler.createCalls, handler.send
 	handler.mu.Unlock()
 	if createCalls != 2 || !strings.HasPrefix(send.GetMessage().GetText(), "user: hi") {
 		t.Fatalf("diverged history create=%d send=%q, want new agent with full prompt", createCalls, send.GetMessage().GetText())
+	}
+}
+
+/**
+ * @brief 回传原文时续用停放 Agent，编辑历史时向新 Agent 发送修改后的完整内容。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerMatchesExactParkedReply(t *testing.T) {
+	const reply = "  SELECT 'a b'\n\tFROM kv  \n"
+	const toolLine = "[tool_use id=toolu_1 name=lookup] {}"
+	for _, tt := range []struct {
+		name     string
+		reply    string
+		content  string
+		wantBody string
+		reuse    bool
+	}{
+		{
+			name: "same string", reply: reply, reuse: true,
+			content: `"  SELECT 'a b'\n\tFROM kv  \n"`,
+		},
+		{
+			name: "same text blocks around thinking", reply: reply, reuse: true,
+			content: `[{"type":"text","text":"  SELECT 'a b'"},{"type":"thinking","thinking":"reasoning"},{"type":"text","text":"\n\tFROM kv  \n"}]`,
+		},
+		{
+			name: "edited SQL literal", reply: reply,
+			content:  `"  SELECT 'ab'\n\tFROM kv  \n"`,
+			wantBody: "  SELECT 'ab'\n\tFROM kv  \n",
+		},
+		{
+			name: "edited initial indent", reply: reply,
+			content:  `"SELECT 'a b'\n\tFROM kv  \n"`,
+			wantBody: "SELECT 'a b'\n\tFROM kv  \n",
+		},
+		{
+			name: "edited trailing whitespace in text block", reply: reply,
+			content:  `[{"type":"text","text":"  SELECT 'a b'\n"},{"type":"text","text":"\tFROM kv"}]`,
+			wantBody: "  SELECT 'a b'\n\tFROM kv",
+		},
+		{
+			name: "literal tool marker replaced with tool call", reply: "note\n" + toolLine,
+			content:  `[{"type":"text","text":"note"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}]`,
+			wantBody: "note\n" + toolLine,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: finishedRunSend(t, tt.reply)}
+			runner := newTestSDKRunner(t, handler)
+			credential := &Credential{APIKey: "key"}
+			start := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+			start.SessionScope = testCursorSessionScope
+			drainRun(t, mustRun(t, runner, credential, start))
+			waitParkedAgents(t, runner, 1)
+
+			followUp := ParseRequest([]byte(`{"model":"m","messages":[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":` + tt.content + `},
+				{"role":"user","content":"next"}
+			]}`))
+			followUp.SessionScope = testCursorSessionScope
+			drainRun(t, mustRun(t, runner, credential, followUp))
+			wantCreates, wantPrompt := 1, "user: next"
+			if !tt.reuse {
+				wantCreates, wantPrompt = 2, "user: hi\n\nassistant: "+tt.wantBody+"\n\nuser: next"
+			}
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if got := handler.send.GetMessage().GetText(); handler.createCalls != wantCreates || handler.sendCalls != 2 || got != wantPrompt {
+				t.Fatalf("CreateAgent calls=%d, Send calls=%d, prompt=%q; want %d, 2, %q", handler.createCalls, handler.sendCalls, got, wantCreates, wantPrompt)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 从完整历史新建 Agent 时保留末尾 assistant 预填文本的空白。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerPreservesAssistantPrefill(t *testing.T) {
+	handler := &testAgentHandler{sendFn: finishedRunSend(t, "ok")}
+	runner := newTestSDKRunner(t, handler)
+	request := ParseRequest([]byte(`{"model":"m","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"\t  partial  \n"}
+	]}`))
+	drainRun(t, mustRun(t, runner, &Credential{APIKey: "key"}, request))
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	const want = "user: hi\n\nassistant: \t  partial  \n"
+	if got := handler.send.GetMessage().GetText(); got != want {
+		t.Fatalf("Send prompt=%q, want %q", got, want)
+	}
+}
+
+/**
+ * @brief 验证真实 Connect 流只在首次输出前明确报告 Agent 失效时允许新建。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerParkedSendRejection(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		code       sdkv1.SdkErrorCode
+		canReplace bool
+		started    bool
+	}{
+		{name: "credential", code: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED},
+		{name: "invalid model", code: sdkv1.SdkErrorCode_SDK_ERROR_CODE_INVALID_MODEL},
+		{name: "usage limit", code: sdkv1.SdkErrorCode_SDK_ERROR_CODE_USAGE_LIMIT_EXCEEDED},
+		{name: "rate limit", code: sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED},
+		{name: "transport"},
+		{name: "missing agent", code: sdkv1.SdkErrorCode_SDK_ERROR_CODE_AGENT_NOT_FOUND, canReplace: true},
+		{name: "already started", code: sdkv1.SdkErrorCode_SDK_ERROR_CODE_AGENT_NOT_FOUND, started: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sendErr := connect.NewError(connect.CodeUnavailable, errors.New("parked send rejected"))
+			if tt.code != sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED {
+				detail, err := connect.NewErrorDetail(&sdkv1.SdkErrorDetails{SdkErrorCode: tt.code, Message: "parked send rejected"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sendErr = connect.NewError(connect.CodeFailedPrecondition, errors.New("parked send rejected"))
+				sendErr.AddDetail(detail)
+			}
+			handler := &testAgentHandler{}
+			finish := finishedRunSend(t, "hello")
+			handler.sendFn = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				handler.mu.Lock()
+				resumed := handler.send.GetOptions().GetModel() != nil
+				handler.mu.Unlock()
+				if !resumed {
+					return finish(ctx, stream)
+				}
+				if tt.started {
+					if err := stream.Send(sdkMessage(t, "status", map[string]any{"status": "RUNNING"})); err != nil {
+						return err
+					}
+				}
+				return sendErr
+			}
+			runner := newTestSDKRunner(t, handler)
+			credential := &Credential{APIKey: "key"}
+			initial := ParseRequest([]byte(
+				`{"model":"m","messages":[{"role":"user","content":"hi"}]}`,
+			))
+			initial.SessionScope = testCursorSessionScope
+			drainRun(t, mustRun(t, runner, credential, initial))
+			waitParkedAgents(t, runner, 1)
+			followUp := ParseRequest([]byte(`{"model":"m","messages":[
+				{"role":"user","content":"hi"}, {"role":"assistant","content":"hello"}, {"role":"user","content":"next"}
+			]}`))
+			followUp.SessionScope = testCursorSessionScope
+			events, err := runner.Run(t.Context(), credential, followUp)
+			wantCreates, wantSends := 1, 2
+			if tt.canReplace {
+				if err != nil || events == nil {
+					t.Fatalf("replacement Run() events=%v err=%v", events, err)
+				}
+				drainRun(t, events)
+				wantCreates, wantSends = 2, 3
+			} else {
+				if tt.started {
+					if err != nil || events == nil {
+						t.Fatalf("started Run() events=%v err=%v", events, err)
+					}
+					for event := range events {
+						if event.SentEffort != nil {
+							t.Fatalf("started but rejected run reported an effort: %+v", event)
+						}
+						if event.Done {
+							err = event.Err
+						}
+					}
+				} else if events != nil {
+					t.Fatalf("rejected Run() returned events=%v", events)
+				}
+				if bridgeErr, ok := errors.AsType[*BridgeError](err); !ok || bridgeErr.SDKCode != tt.code {
+					t.Fatalf("rejected Run() err=%v, want %s", err, tt.code)
+				}
+			}
+			handler.mu.Lock()
+			createCalls, sendCalls := handler.createCalls, handler.sendCalls
+			handler.mu.Unlock()
+			if createCalls != wantCreates || sendCalls != wantSends {
+				t.Fatalf("created agents=%d sends=%d; want %d, %d", createCalls, sendCalls, wantCreates, wantSends)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 相同历史与上游凭证不能跨渠道或调用方续用普通 Agent。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerScopesParkedAgents(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		scope SessionScope
+	}{
+		{"other token", SessionScope{ChannelID: 1, TokenID: 2}},
+		{"other channel", SessionScope{ChannelID: 2, TokenID: 1}},
+		{"no token", SessionScope{ChannelID: 1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: finishedRunSend(t, "Hello")}
+			runner := newTestSDKRunner(t, handler)
+			credential := &Credential{APIKey: "key"}
+			start := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+			start.SessionScope = testCursorSessionScope
+			drainRun(t, mustRun(t, runner, credential, start))
+			waitParkedAgents(t, runner, 1)
+
+			followUp := ParseRequest([]byte(`{"model":"m","messages":[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":"Hello"},
+				{"role":"user","content":"next"}
+			]}`))
+			followUp.SessionScope = tt.scope
+			drainRun(t, mustRun(t, runner, credential, followUp))
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if got := handler.send.GetMessage().GetText(); handler.createCalls != 2 || got != followUp.Prompt {
+				t.Fatalf("CreateAgent calls=%d, Send=%q; want 2 calls and full history %q", handler.createCalls, got, followUp.Prompt)
+			}
+		})
 	}
 }
 

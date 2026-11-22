@@ -16,7 +16,8 @@ const (
 	LogSourceManualChat     = "manual_chat"
 	LogSourceCheckin        = "checkin"
 	// LogSourceCountTokens 记录 count_tokens 辅助请求：不计费，不进入渠道健康度与统计。
-	LogSourceCountTokens = "count_tokens"
+	LogSourceCountTokens         = "count_tokens"
+	LogSourceCursorDetachedUsage = "cursor_detached_usage" ///< 工具会话收尾时补记的 SDK 消费。
 
 	LogSourceDetection = "detection"
 	LogSourceAll       = "all"
@@ -37,6 +38,8 @@ func NormalizeStoredLogSource(raw string) string {
 		return LogSourceCheckin
 	case LogSourceCountTokens:
 		return LogSourceCountTokens
+	case LogSourceCursorDetachedUsage:
+		return LogSourceCursorDetachedUsage
 	default:
 		return LogSourceProxy
 	}

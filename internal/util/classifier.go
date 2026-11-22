@@ -253,7 +253,7 @@ func IsContextLengthExceededError(responseBody []byte) bool {
 	}
 	for _, detail := range details {
 		code := strings.ToLower(strings.TrimSpace(detail.Code))
-		if code == "context_length_exceeded" || code == "context_too_large" {
+		if isContextLengthErrorCode(code) {
 			return true
 		}
 		if code != "" && code != "invalid_request_error" && code != "bad_request_error" {
@@ -275,6 +275,46 @@ func IsContextLengthExceededError(responseBody []byte) bool {
 		}
 	}
 	return false
+}
+
+/**
+ * @brief 判断上游明确报告的是单次请求的模型上下文超限。
+ * @param code 上游错误码；没有结构化错误码时传空字符串。
+ * @param message 上游错误说明。
+ * @return 明确的上下文错误码或超限文案返回 true，模糊的 token 数和吞吐限流返回 false。
+ */
+func IsExplicitContextLengthExceeded(code, message string) bool {
+	if isContextLengthErrorCode(strings.ToLower(strings.TrimSpace(code))) {
+		return true
+	}
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, throttle := range [...]string{"rate limit", "rate-limit", "throttl", "quota", "usage limit", "per minute", "per second", "tokens/minute", "tokens/second", "too many requests"} {
+		if strings.Contains(message, throttle) {
+			return false
+		}
+	}
+	marker, _, _ := strings.Cut(message, ":")
+	if isContextLengthErrorCode(strings.TrimSpace(marker)) ||
+		strings.HasPrefix(message, "prompt is too long") || strings.HasPrefix(message, "prompt too long") ||
+		strings.HasPrefix(message, "your prompt is too long") {
+		return true
+	}
+	if strings.Contains(message, "context window") || strings.Contains(message, "context length") {
+		return strings.Contains(message, "exceed") || strings.Contains(message, "too long") ||
+			strings.Contains(message, "too large") || strings.Contains(message, "over the") ||
+			(strings.Contains(message, "maximum context length is ") &&
+				(strings.Contains(message, "you requested") || strings.Contains(message, "your messages resulted in")))
+	}
+	return false
+}
+
+/**
+ * @brief 识别上游协议使用的上下文超限错误码。
+ * @param code 已规范为小写且无首尾空白的上游错误码。
+ * @return 出现已知错误码时为 true。
+ */
+func isContextLengthErrorCode(code string) bool {
+	return code == "context_length_exceeded" || code == "context_too_large"
 }
 
 /**
@@ -733,9 +773,32 @@ func IsTransientCapacityError(body []byte) bool {
  * @return 恢复时间严格晚于 now 时为 true，否则为 false。
  */
 func ParseRetryAfter(headers map[string][]string, now time.Time) (time.Time, bool) {
+	return parseRetryAfter(headers, now, false)
+}
+
+/**
+ * @brief 读取 Retry-After 秒数或 HTTP 日期，保留明确要求立即重试的 0。
+ * @param headers 上游响应头，名称不区分大小写。
+ * @param now 相对秒数的起算时间。
+ * @return 恢复时间；字段缺失、秒数无效或溢出时为空。
+ * @return 合法的非负秒数或未来日期返回 true。
+ */
+func ParseRetryAfterHint(headers map[string][]string, now time.Time) (time.Time, bool) {
+	return parseRetryAfter(headers, now, true)
+}
+
+/**
+ * @brief 在保留原有未来时间判断的同时支持允许显式零秒的提供商。
+ * @param headers 上游响应头。
+ * @param now 起算时间。
+ * @param allowZero 是否接受明确的零秒数。
+ * @return 恢复时间；无效时为空。
+ * @return 是否可采用该提示。
+ */
+func parseRetryAfter(headers map[string][]string, now time.Time, allowZero bool) (time.Time, bool) {
 	value := strings.TrimSpace(firstHeaderValueFold(headers, "Retry-After"))
 	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds > 0 && seconds <= int64((1<<63-1)/time.Second) {
+		if (seconds > 0 || allowZero && seconds == 0) && seconds <= int64((1<<63-1)/time.Second) {
 			return now.Add(time.Duration(seconds) * time.Second), true
 		}
 		return time.Time{}, false
@@ -1094,7 +1157,7 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
 			return until, "RESOURCE_EXHAUSTED", ErrorLevelKey, true
 		}
-		if until, ok := parseRetryInCooldownUntil(message, now); ok {
+		if until, ok := parseGoogleMessageRetryAt(message, now, false); ok {
 			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
 		}
 		return time.Time{}, "", ErrorLevelNone, false
@@ -1347,14 +1410,40 @@ func parseCodexUsageFrequencyLimitCooldown(message string, now time.Time) (time.
 	return until, true
 }
 
-func parseRetryInCooldownUntil(message string, now time.Time) (time.Time, bool) {
+/**
+ * @brief 读取 Google 错误正文给出的配额恢复日期或延迟。
+ * @param body 上游错误 JSON。
+ * @param now 相对延迟的起算时间。
+ * @return 恢复时间；无有效提示时为空。
+ * @return 有明确计时提示时为 true，含显式零秒。
+ */
+func GoogleRateLimitRetryAt(body []byte, now time.Time) (time.Time, bool) {
+	quota, _ := parseStructuredQuotaError(body)
+	if until, ok := parseStructuredCooldownUntil(quota, now); ok {
+		return until, true
+	}
+	if delay, err := time.ParseDuration(strings.ToLower(quota.quotaResetDelay)); err == nil && delay >= 0 {
+		return now.Add(delay), true
+	}
+	return parseGoogleMessageRetryAt(quota.message, now, true)
+}
+
+/**
+ * @brief 解析 Google 错误中明确给出的 retry in 时长。
+ * @param message 上游错误文案。
+ * @param now 相对延迟的起算时间。
+ * @param allowZero 是否允许显式零秒。
+ * @return 恢复时间；无有效提示时为空。
+ * @return 有可采用的时长时为 true。
+ */
+func parseGoogleMessageRetryAt(message string, now time.Time, allowZero bool) (time.Time, bool) {
 	matches := retryInDurationRegex.FindStringSubmatch(message)
 	if matches == nil {
 		return time.Time{}, false
 	}
 
 	duration, err := time.ParseDuration(matches[1])
-	if err != nil || duration <= 0 {
+	if err != nil || duration < 0 || (!allowZero && duration == 0) {
 		return time.Time{}, false
 	}
 	return now.Add(duration), true

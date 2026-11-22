@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -1747,6 +1748,225 @@ func TestConfig_ChannelManagementCompareAndSwap(t *testing.T) {
 
 	if _, err := store.CompareAndSwapChannelManagement(ctx, created.ID, "", `{"kind":"channel_management"}`); err == nil {
 		t.Fatal("CAS accepted invalid next envelope")
+	}
+}
+
+/**
+ * @brief 两次从同一版本开始的渠道保存只允许一个事务提交配置、模型和 Key。
+ * @param t 测试上下文。
+ */
+func TestConfig_ChannelEditVersionConcurrentSave(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "channel-edit.db")
+	store, err := storage.CreateSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	secondStore, err := storage.CreateSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+	const keyValue = "edit-key"
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "edit-source", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://example.test"}},
+		ModelEntries: []model.ModelEntry{{Model: "original-model"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, APIKey: keyValue, CostMultiplier: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, keys, version, err := store.GetChannelEditSnapshot(ctx, cfg.ID)
+	if err != nil || len(keys) != 1 || cfg.KeyCount != 1 || len(version) != 64 {
+		t.Fatalf("read edit snapshot: key_count=%d keys=%d version=%q err=%v", cfg.KeyCount, len(keys), version, err)
+	}
+	until := time.Now().Add(time.Hour).Truncate(time.Second)
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 0, until); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAPIKeyDisabled(ctx, cfg.ID, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	type saveResult struct {
+		name string
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan saveResult, 2)
+	for index, writer := range []storage.Store{store, secondStore} {
+		go func() {
+			name := fmt.Sprintf("edit-%d", index)
+			next := cfg.Clone()
+			next.Name = name
+			next.ModelEntries = []model.ModelEntry{{Model: name}}
+			editedKey := *keys[0]
+			editedKey.Note = name
+			editedKey.AllowedModels = []string{name}
+			<-start
+			_, err := writer.UpdateChannelIfEditVersion(ctx, cfg.ID, next, []*model.APIKey{&editedKey}, false, version, nil)
+			results <- saveResult{name, err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	if first.err != nil {
+		first, second = second, first
+	}
+	if first.err != nil || !errors.Is(second.err, storage.ErrChannelEditConflict) {
+		t.Fatalf("concurrent saves=%v, %v; want success and edit conflict", first, second)
+	}
+	current, currentKeys, currentVersion, err := store.GetChannelEditSnapshot(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Name != first.name || !slices.Equal(current.GetModels(), []string{first.name}) || currentVersion == version ||
+		len(currentKeys) != 1 || currentKeys[0].ID != keys[0].ID || currentKeys[0].Note != first.name ||
+		!slices.Equal(currentKeys[0].AllowedModels, []string{first.name}) || currentKeys[0].CooldownUntil != until.Unix() || !currentKeys[0].Disabled {
+		t.Fatalf("unexpected committed edit: channel=%s models=%v keys=%+v version_changed=%t", current.Name, current.GetModels(), currentKeys, currentVersion != version)
+	}
+	next := []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "new-key", CostMultiplier: 1},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: keyValue, CostMultiplier: 1},
+		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: keyValue, CostMultiplier: 1},
+	}
+	if _, err := store.UpdateChannelIfEditVersion(ctx, cfg.ID, current, next, true, currentVersion, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, replaced, _, err := store.GetChannelEditSnapshot(ctx, cfg.ID)
+	if err != nil || len(replaced) != 3 || replaced[0].Disabled || !replaced[1].Disabled || replaced[2].Disabled {
+		t.Fatalf("replacement did not preserve disabled state by occurrence: keys=%+v err=%v", replaced, err)
+	}
+}
+
+/**
+ * @brief 表单保存使用旧版本时保留并发更新的 OAuth 凭证。
+ * @param t 测试上下文。
+ */
+func TestConfig_ChannelEditVersionOAuthRefresh(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := newTestStore(t)
+	const oldCredential = `{"type":"codex","access_token":"original"}`
+	const nextCredential = `{"type":"codex","access_token":"rotated"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "oauth-original", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: oldCredential,
+		URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	form, _, version, err := store.GetChannelEditSnapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, oldCredential, nextCredential); err != nil || !ok {
+		t.Fatalf("rotate OAuth credential=(%t, %v)", ok, err)
+	}
+	form.Name = "oauth-edited"
+	if _, err := store.UpdateChannelIfEditVersion(ctx, created.ID, form, nil, false, version, nil); err != nil {
+		t.Fatal(err)
+	}
+	current, _, _, err := store.GetChannelEditSnapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Name != form.Name || current.OAuthCredential != nextCredential {
+		t.Fatal("save did not apply form edits while preserving the rotated OAuth credential")
+	}
+}
+
+/**
+ * @brief 管理会话和冷却不改变编辑版本，过时编辑与事务失败均不覆盖当前数据。
+ * @param t 测试上下文。
+ */
+func TestConfig_ChannelEditVersionManagement(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := newTestStore(t)
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "edit-management", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://example.test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := &model.ChannelManagementEnvelope{
+		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion, Profile: model.ChannelManagementProfileSub2APIPro,
+		Settings: model.ChannelManagementSettings{BaseURL: "https://panel.example.test", AccessToken: "first-session"},
+	}
+	raw, err := envelope.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.CompareAndSwapChannelManagement(ctx, created.ID, "", raw); err != nil || !ok {
+		t.Fatalf("initial management CAS=(%t, %v)", ok, err)
+	}
+	cfg, _, version, err := store.GetChannelEditSnapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.Settings.AccessToken = "refreshed-session"
+	envelope.State.LastScheduledDay = "2026-11-22"
+	refreshed, err := envelope.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.CompareAndSwapChannelManagement(ctx, created.ID, raw, refreshed); err != nil || !ok {
+		t.Fatalf("management session CAS=(%t, %v)", ok, err)
+	}
+	if err := store.SetChannelCooldown(ctx, created.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, retainedVersion, err := store.GetChannelEditSnapshot(ctx, created.ID); err != nil || retainedVersion != version {
+		t.Fatalf("runtime updates changed version: %v", err)
+	}
+	cfg.Name = "edited-management"
+	merge := func(current string) (string, error) {
+		latest, err := model.ParseChannelManagementEnvelope(current)
+		if err != nil {
+			return "", err
+		}
+		latest.Settings.DailyCheckinEnabled = true
+		latest.Settings.DailyCheckinTime = "09:15"
+		return latest.Marshal()
+	}
+	_, err = store.UpdateChannelIfEditVersion(ctx, cfg.ID, cfg, nil, false, version, merge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _, nextVersion, err := store.GetChannelEditSnapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := model.ParseChannelManagementEnvelope(after.OAuthCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Name != cfg.Name || nextVersion == version || after.CooldownUntil <= time.Now().Unix() ||
+		latest.Settings.DailyCheckinTime != "09:15" || latest.Settings.AccessToken != "refreshed-session" ||
+		latest.State.LastScheduledDay != envelope.State.LastScheduledDay {
+		t.Fatal("failed to merge the management edit with the latest runtime state")
+	}
+	staleMerge := func(string) (string, error) {
+		t.Error("stale edit evaluated the merge")
+		return "", nil
+	}
+	if _, err := store.UpdateChannelIfEditVersion(ctx, cfg.ID, cfg, nil, false, version, staleMerge); !errors.Is(err, storage.ErrChannelEditConflict) {
+		t.Fatalf("stale save error=%v, want edit conflict", err)
+	}
+	cfg.Name = "invalid-write"
+	badKey := &model.APIKey{ChannelID: cfg.ID, KeyIndex: 9, APIKey: "absent"}
+	if _, err := store.UpdateChannelIfEditVersion(ctx, cfg.ID, cfg, []*model.APIKey{badKey}, false, nextVersion, func(string) (string, error) { return "", nil }); !errors.Is(err, storage.ErrChannelEditConflict) {
+		t.Fatalf("unexpected key update error=%v", err)
+	}
+	current, _, finalVersion, err := store.GetChannelEditSnapshot(ctx, created.ID)
+	if err != nil || current.Name != after.Name || current.OAuthCredential != after.OAuthCredential || finalVersion != nextVersion {
+		t.Fatalf("failed key write did not roll back config and management, err=%v", err)
 	}
 }
 

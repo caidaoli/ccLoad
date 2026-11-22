@@ -8821,6 +8821,109 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	}
 }
 
+/**
+ * @brief 验证 Antigravity 元数据明确返回 TOS 拒绝时仅停用实际被拒账号，并中止额度查询。
+ * @param t 测试上下文。
+ */
+func TestHandleOAuthUsageAntigravityMetadataTOS(t *testing.T) {
+	t.Parallel()
+	const tosBody = `{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"TOS_VIOLATION"}]}}`
+	const ordinaryForbidden = `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"TOS_VIOLATION"}}`
+	for _, tc := range []struct {
+		name         string
+		project      string
+		response     string
+		renewAccount bool
+		replacement  bool
+		wantDisabled bool
+		wantQuota    bool
+	}{
+		{name: "project discovery", response: tosBody, wantDisabled: true},
+		{name: "subscription", project: "project", response: tosBody, wantDisabled: true},
+		{name: "access token renewed", project: "project", response: tosBody, renewAccount: true, wantDisabled: true},
+		{name: "account replaced", project: "project", response: tosBody, renewAccount: true, replacement: true},
+		{name: "ordinary forbidden", project: "project", response: ordinaryForbidden, wantQuota: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			store := newCodexAuthTestStore(t)
+			server := NewServer(store)
+			t.Cleanup(func() {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := server.Shutdown(shutdownCtx); err != nil {
+					t.Errorf("shutdown: %v", err)
+				}
+			})
+			credential := &antigravityauth.Credential{
+				Type: antigravityauth.ChannelType, AccessToken: "original-at", RefreshToken: "original-rt",
+				Expired: time.Now().Add(time.Hour).Format(time.RFC3339), ProjectID: tc.project,
+			}
+			original, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, newAntigravityOAuthChannel("Antigravity metadata", original, antigravityCatalogModels()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := original
+			if tc.renewAccount {
+				credential.AccessToken = "new-at"
+				if tc.replacement {
+					credential.RefreshToken = "new-rt"
+				}
+				expected, err = credential.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var metadataCalls, quotaCalls atomic.Int32
+			server.antigravityClient = &http.Client{Transport: oauthUsageRoundTripper(func(req *http.Request) (*http.Response, error) {
+				status, body := http.StatusForbidden, tc.response
+				switch req.URL.Path {
+				case "/v1internal:loadCodeAssist":
+					metadataCalls.Add(1)
+					if auth := req.Header.Get("Authorization"); auth != "Bearer original-at" {
+						return nil, fmt.Errorf("unexpected metadata authorization %q", auth)
+					}
+					if tc.renewAccount {
+						ok, err := store.CompareAndSwapOAuthCredential(req.Context(), channel.ID, model.AuthTypeAntigravityOAuth, original, expected)
+						if err != nil || !ok {
+							return nil, fmt.Errorf("replacing credential: swapped=%v err=%w", ok, err)
+						}
+					}
+				case antigravityUsagePath:
+					quotaCalls.Add(1)
+					status, body = http.StatusOK, `{"groups":[{"buckets":[{"remainingFraction":0.5}]}]}`
+				default:
+					return nil, fmt.Errorf("unexpected Antigravity path %s", req.URL.Path)
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})}
+
+			summary, err := server.refreshOAuthUsage(ctx, channel.ID)
+			if tc.wantQuota {
+				if err != nil || summary == nil || quotaCalls.Load() != 1 {
+					t.Fatalf("ordinary 403: summary=%+v err=%v quota calls=%d", summary, err, quotaCalls.Load())
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "TOS_VIOLATION") || quotaCalls.Load() != 0 {
+				t.Fatalf("TOS denial: err=%v quota calls=%d", err, quotaCalls.Load())
+			}
+			if metadataCalls.Load() != 1 {
+				t.Fatalf("metadata calls=%d, want 1", metadataCalls.Load())
+			}
+			persisted, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted.Enabled == tc.wantDisabled || (tc.renewAccount && persisted.OAuthCredential != expected) {
+				t.Fatalf("channel enabled=%v, want %v, credential matches latest=%v", persisted.Enabled, !tc.wantDisabled, persisted.OAuthCredential == expected)
+			}
+		})
+	}
+}
+
 func TestHandleOAuthUsageAntigravityQuotaFollowsChannelEndpoint(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -10076,7 +10179,7 @@ func TestCodexTerminalRefreshRetainsAccessUntilRejectedOrExpired(t *testing.T) {
 					t.Fatalf("retained token after %v: credential=%v err=%v refreshes=%d", elapsed, got, err, refreshes.Load())
 				}
 			}
-			detail, _, err := server.buildChannelDetail(context.Background(), channel.ID, channel.Clone())
+			detail, err := server.buildChannelDetail(context.Background(), channel.Clone(), nil)
 			if err != nil || !detail.CodexRequiresReauthorization {
 				t.Fatalf("admin recovery state=%v err=%v", detail.CodexRequiresReauthorization, err)
 			}

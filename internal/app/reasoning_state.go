@@ -176,23 +176,41 @@ func withReasoningRequest(ctx context.Context, r *proxyRequestContext) context.C
 	return context.WithValue(ctx, reasoningRequestContextKey{}, r)
 }
 
+/**
+ * @brief 在 HTTP 或 WebSocket 业务请求发送时按实际正文提交思考等级。
+ * @param ctx 携带本次代理请求的上下文，已取消时跳过。
+ * @param body 上游请求正文；无需比对自动等级时可为空。
+ */
 func reasoningBusinessSending(ctx context.Context, body []byte) {
 	r, _ := ctx.Value(reasoningRequestContextKey{}).(*proxyRequestContext)
 	if r == nil || r.reasoning == nil || ctx.Err() != nil {
 		return
 	}
+	actual := ""
+	if r.reasoningExpected != "" {
+		actual = extractThinkingEffortFromJSON(body)
+	}
+	r.commitSentReasoning(actual, "channel_rules_override")
+}
+
+/**
+ * @brief 依据本次业务请求实际发送的等级更新日志和后续轮次的判断状态。
+ * @param actual 实际发送的等级；空字符串表示未发送显式等级。
+ * @param mismatchReason 实际等级与预期不一致时记录的原因。
+ * @note 仅在已有判断且业务请求已发送时调用。
+ */
+func (r *proxyRequestContext) commitSentReasoning(actual, mismatchReason string) {
 	t := r.reasoning
 	applied := false
 	r.reasoningApplied = ""
 	if r.reasoningExpected != "" {
-		actual := extractThinkingEffortFromJSON(body)
 		r.thinkingEffort, r.reasoningApplied = actual, actual
 		applied = actual == r.reasoningExpected
 		if r.observer != nil && r.observer.OnThinkingEffort != nil {
 			r.observer.OnThinkingEffort(actual, t.metadata.ClientEffort)
 		}
 		if !applied {
-			r.reasoningApplyReason = "channel_rules_override"
+			r.reasoningApplyReason = mismatchReason
 		}
 	}
 	t.state.mu.Lock()

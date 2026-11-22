@@ -39,10 +39,12 @@ type ErrorInput struct {
 	ChannelModels      []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
 	KeyIndex           int
 	StatusCode         int
-	UpstreamStatusCode int // 原始上游 HTTP 状态码；0 表示与 StatusCode 相同
+	UpstreamStatusCode int  // 原始上游 HTTP 状态码；0 表示与 StatusCode 相同
+	SSEError           bool ///< 错误来自流内事件；响应头属于建立流的 HTTP 响应。
 	ErrorBody          []byte
 	IsNetworkError     bool
-	ModelScoped        bool // 调用方已确认该错误只影响当前实际模型
+	ModelScoped        bool      // 调用方已确认该错误只影响当前实际模型
+	ModelCooldownUntil time.Time ///< 调用方从结构化上游错误确认的模型恢复时间；零值沿用内置分类。
 	Headers            map[string][]string
 
 	// CooldownDetectionRules belongs to the selected channel and is evaluated
@@ -123,6 +125,11 @@ func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
 	}
 }
 
+/**
+ * @brief 按检测规则、上游分类和已确认作用域计算冷却决策，不写入状态。
+ * @param in 上游失败及调用方已确认的目标和截止时间。
+ * @return 供路由及持久化使用的冷却动作与期限。
+ */
 func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 	var errLevel util.ErrorLevel
 
@@ -215,6 +222,10 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 	// 2. 仅给出动作决策（不产生副作用）
 	if decision.modelScoped {
 		decision.action = ActionRetryModel
+		if !in.ModelCooldownUntil.IsZero() {
+			decision.modelCooldownUntil = in.ModelCooldownUntil
+			decision.hasModelCooldownUntil = true
+		}
 		return decision
 	}
 	switch errLevel {

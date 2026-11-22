@@ -1020,6 +1020,9 @@ func (s *Server) runProxyAttemptPass(
 		if operatorSkipped[cfg.ID] {
 			continue
 		}
+		if reqCtx.requireFastFallback && cfg.UsesCursorOAuth() {
+			continue // Cursor 模型变体不能证明与 Anthropic Fast 等价。
+		}
 		if cfg.AntigravityCredits {
 			current, loadErr := s.store.GetConfig(ctx, cfg.ID)
 			if loadErr != nil || !current.Enabled || !current.UsesAntigravityOAuth() || !s.configSupportsModelWithFuzzyMatch(current, reqCtx.originalModel) {

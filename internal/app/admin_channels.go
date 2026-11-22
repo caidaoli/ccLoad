@@ -24,6 +24,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/qoderauth"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -893,7 +894,12 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-	detail, _, err := s.buildChannelDetail(c.Request.Context(), id, cfg)
+	keys, err := s.getAPIKeys(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	detail, err := s.buildChannelDetail(c.Request.Context(), cfg, keys)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -905,26 +911,18 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 /**
  * @brief 构建渠道详情及持久化 Codex 刷新恢复提示
  * @param ctx 数据查询上下文
- * @param id 渠道 ID
  * @param cfg 当前渠道配置；会补齐显示用重定向模型
+ * @param apiKeys 与配置一起读取的 Key 列表
  * @return 供管理端展示的渠道详情
- * @return 渠道关联的 API Key 列表
  * @return 查询失败时返回错误
  */
-func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Config) (ChannelWithCooldown, []*model.APIKey, error) {
+func (s *Server) buildChannelDetail(ctx context.Context, cfg *model.Config, apiKeys []*model.APIKey) (ChannelWithCooldown, error) {
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
 	fillChannelRedirectModels(cfg)
 
-	apiKeys, err := s.getAPIKeys(ctx, id)
-	if err != nil {
-		return ChannelWithCooldown{}, nil, err
-	}
-	if apiKeys == nil {
-		apiKeys = make([]*model.APIKey, 0)
-	}
 	allModelCooldowns, err := s.getAllModelCooldowns(ctx)
 	if err != nil {
-		log.Printf("[WARN] 查询渠道模型冷却状态失败 (channel=%d): %v", id, err)
+		log.Printf("[WARN] 查询渠道模型冷却状态失败 (channel=%d): %v", cfg.ID, err)
 		allModelCooldowns = make(map[int64]map[string]time.Time)
 	}
 
@@ -934,13 +932,13 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 	detail := metadata[0].channelView(cfg)
 	detail.CodexRequiresReauthorization, err = s.codexCredentials.requiresReauthorization(ctx, cfg)
 	if err != nil {
-		return ChannelWithCooldown{}, nil, err
+		return ChannelWithCooldown{}, err
 	}
 	detail.ManagementAccount = s.managementAccountView(cfg)
 	detail.KeyStrategy = channelKeyStrategy(apiKeys)
-	detail.ModelCooldowns = activeModelCooldownInfos(allModelCooldowns[id], now)
-	applyProtocolProbeRetrySummary(&detail, s.protocolCapabilities.unsupportedRetrySummaries(now)[id], now)
-	return detail, apiKeys, nil
+	detail.ModelCooldowns = activeModelCooldownInfos(allModelCooldowns[cfg.ID], now)
+	applyProtocolProbeRetrySummary(&detail, s.protocolCapabilities.unsupportedRetrySummaries(now)[cfg.ID], now)
+	return detail, nil
 }
 
 // handleGetChannelKeys 获取渠道的所有 API Keys
@@ -1248,17 +1246,10 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 	RespondJSON(c, http.StatusOK, gin.H{"ok": true})
 }
 
-func (s *Server) handleUpdateChannelModelDisabled(c *gin.Context, id int64, modelName string, disabled bool) {
+func (s *Server) handleUpdateChannelModelDisabled(c *gin.Context, cfg *model.Config, version, modelName string, disabled bool) {
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
 		RespondErrorMsg(c, http.StatusBadRequest, "model cannot be empty")
-		return
-	}
-
-	ctx := c.Request.Context()
-	cfg, err := s.store.GetConfig(ctx, id)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
 		return
 	}
 
@@ -1283,15 +1274,57 @@ func (s *Server) handleUpdateChannelModelDisabled(c *gin.Context, id int64, mode
 		return
 	}
 
-	upd, err := s.store.UpdateConfig(ctx, id, cfg)
+	upd, err := s.store.UpdateChannelIfEditVersion(c.Request.Context(), cfg.ID, cfg, nil, false, version, nil)
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+		respondChannelEditError(c, err)
 		return
 	}
 
-	s.InvalidateAPIKeysCache(id)
+	s.InvalidateAPIKeysCache(cfg.ID)
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, upd)
+}
+
+/**
+ * @brief 判断客户端的强 ETag 或通配符是否匹配本次读取的编辑配置。
+ * @param headers 请求头；未携带 If-Match 的客户端可直接编辑。
+ * @param version 当前编辑快照的不透明摘要。
+ * @return 满足前提条件时为 true。
+ */
+func matchesChannelEditVersion(headers http.Header, version string) bool {
+	values := headers.Values("If-Match")
+	if len(values) == 0 {
+		return true
+	}
+	current := `"` + version + `"`
+	for _, line := range values {
+		for tag := range strings.SplitSeq(line, ",") {
+			if tag = strings.TrimSpace(tag); tag == current || tag == "*" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+/**
+ * @brief 将渠道编辑冲突映射为条件请求或普通请求对应的 HTTP 响应。
+ * @param c 当前 HTTP 请求。
+ * @param err 读取或提交编辑快照时的错误。
+ */
+func respondChannelEditError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, model.ErrChannelNotFound):
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+	case errors.Is(err, storage.ErrChannelEditConflict):
+		status := http.StatusConflict
+		if len(c.Request.Header.Values("If-Match")) != 0 {
+			status = http.StatusPreconditionFailed
+		}
+		RespondErrorMsg(c, status, "channel configuration changed; reopen the editor")
+	default:
+		RespondError(c, http.StatusInternalServerError, err)
+	}
 }
 
 // 更新渠道
@@ -1303,16 +1336,28 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		return
 	}
 
+	existing, oldKeys, version, err := s.store.GetChannelEditSnapshot(c.Request.Context(), id)
+	if err != nil {
+		respondChannelEditError(c, err)
+		return
+	}
+	if !matchesChannelEditVersion(c.Request.Header, version) {
+		RespondErrorMsg(c, http.StatusPreconditionFailed, "channel configuration changed; reopen the editor")
+		return
+	}
+
 	// 检查是否为简单的enabled字段更新
 	if len(rawReq) == 1 {
 		if enabled, ok := rawReq["enabled"].(bool); ok {
-			upd, err := s.store.UpdateChannelEnabled(c.Request.Context(), id, enabled)
+			var upd *model.Config
+			if len(c.Request.Header.Values("If-Match")) == 0 {
+				upd, err = s.store.UpdateChannelEnabled(c.Request.Context(), id, enabled)
+			} else {
+				existing.Enabled = enabled
+				upd, err = s.store.UpdateChannelIfEditVersion(c.Request.Context(), id, existing, nil, false, version, nil)
+			}
 			if err != nil {
-				if strings.Contains(err.Error(), "not found") {
-					RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
-				} else {
-					RespondError(c, http.StatusInternalServerError, err)
-				}
+				respondChannelEditError(c, err)
 				return
 			}
 			if enabled {
@@ -1332,15 +1377,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		modelName, hasModel := rawReq["model"].(string)
 		disabled, hasDisabled := rawReq["disabled"].(bool)
 		if hasModel && hasDisabled {
-			s.handleUpdateChannelModelDisabled(c, id, modelName, disabled)
+			s.handleUpdateChannelModelDisabled(c, existing, version, modelName, disabled)
 			return
 		}
-	}
-
-	existing, err := s.store.GetConfig(c.Request.Context(), id)
-	if err != nil {
-		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
-		return
 	}
 
 	// 处理完整更新：重新序列化为ChannelRequest
@@ -1414,13 +1453,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			}
 		}
 	}
-	var oldKeys []*model.APIKey
 	if !existing.UsesOAuth() {
-		oldKeys, err = s.getAPIKeys(c.Request.Context(), id)
-		if err != nil {
-			RespondError(c, http.StatusInternalServerError, err)
-			return
-		}
 		submittedKeys := req.normalizeAPIKeys()
 		preserveOmittedAPIKeyMetadata(submittedKeys, oldKeys)
 		req.APIKeys = submittedKeys
@@ -1441,6 +1474,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondErrorMsg(c, http.StatusConflict, "OpenCode channels cannot use management_account")
 		return
 	}
+	var mergeManagement func(string) (string, error)
 	managementChanged := false
 	if req.managementAccountSet {
 		// Sub2API login creates a real upstream session. Run it only after every
@@ -1462,7 +1496,10 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			return
 		}
 		managementChanged = nextManagement != existing.OAuthCredential
-		req.ManagementAccount = resolvedManagement
+		mergeManagement = func(current string) (string, error) {
+			_, raw, err := mergeChannelManagementSettings(current, resolvedManagement)
+			return raw, err
+		}
 	}
 
 	newKeys := req.normalizeAPIKeys()
@@ -1483,50 +1520,22 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	notesByIndex := make(map[int]string)
-	scopesByIndex := make(map[int]model.APIKeyModelScope)
-	multipliersByIndex := make(map[int]float64)
-	prioritiesByIndex := make(map[int]int)
+	priorityChanged, otherKeyMetadataChanged := false, false
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
-			if newKeys[i].Priority != nil && *newKeys[i].Priority != oldKey.Priority {
-				prioritiesByIndex[oldKey.KeyIndex] = *newKeys[i].Priority
+			if newKeys[i].CostMultiplier == nil {
+				newKeys[i].CostMultiplier = &oldKey.CostMultiplier
 			}
-			if oldKey.Note != newKeys[i].Note {
-				notesByIndex[oldKey.KeyIndex] = newKeys[i].Note
-			}
-			if newKeys[i].CostMultiplier != nil && *newKeys[i].CostMultiplier != oldKey.CostMultiplier {
-				multipliersByIndex[oldKey.KeyIndex] = *newKeys[i].CostMultiplier
-			}
-			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) ||
-				!slices.Equal(oldKey.DetectedModels, newKeys[i].DetectedModels) || oldKey.ModelScopeEmpty != newKeys[i].ModelScopeEmpty || oldKey.ModelScopeAuto != newKeys[i].ModelScopeAuto {
-				scopesByIndex[oldKey.KeyIndex] = model.APIKeyModelScope{
-					AllowedModels:   append([]string(nil), newKeys[i].AllowedModels...),
-					DetectedModels:  append([]string(nil), newKeys[i].DetectedModels...),
-					ModelScopeAuto:  newKeys[i].ModelScopeAuto,
-					ModelScopeEmpty: newKeys[i].ModelScopeEmpty,
-					// Only preserve a manually disabled key. A key disabled because
-					// its previous scope became empty is re-enabled by an explicit
-					// scope edit.
-					Disabled: (oldKey.Disabled && !oldKey.ModelScopeEmpty) || newKeys[i].ModelScopeEmpty,
-				}
-			}
+			key := newKeys[i]
+			priorityChanged = priorityChanged || apiKeyPriority(key) != oldKey.Priority
+			otherKeyMetadataChanged = otherKeyMetadataChanged || oldKey.Note != key.Note ||
+				apiKeyCostMultiplier(key) != oldKey.CostMultiplier ||
+				!slices.Equal(oldKey.AllowedModels, key.AllowedModels) ||
+				!slices.Equal(oldKey.DetectedModels, key.DetectedModels) ||
+				oldKey.ModelScopeEmpty != key.ModelScopeEmpty || oldKey.ModelScopeAuto != key.ModelScopeAuto
 		}
 	}
-	noteChanged := len(notesByIndex) > 0
-	modelsChanged := len(scopesByIndex) > 0
-	multiplierChanged := len(multipliersByIndex) > 0
-
-	// [INFO] 修复 (2025-10-11): 检测策略变化
-	strategyChanged := false
-	if !keyChanged && len(oldKeys) > 0 && len(newKeys) > 0 {
-		// Key内容未变化时，检查策略是否变化
-		oldStrategy := oldKeys[0].KeyStrategy
-		if oldStrategy == "" {
-			oldStrategy = model.KeyStrategySequential
-		}
-		strategyChanged = oldStrategy != keyStrategy
-	}
+	strategyChanged := len(oldKeys) > 0 && keyStrategy != channelKeyStrategy(oldKeys)
 
 	// OAuth 渠道倍率经合成 Key 行回传；未提交时保留现值，避免 UpdateConfig 无条件覆盖成 0。
 	if existing.UsesOAuth() {
@@ -1543,28 +1552,21 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	var apiKeys []*model.APIKey
-	if keyChanged {
-		existingByValue := make(map[string][]*model.APIKey, len(oldKeys))
-		for _, oldKey := range oldKeys {
-			if oldKey != nil {
-				existingByValue[oldKey.APIKey] = append(existingByValue[oldKey.APIKey], oldKey)
-			}
-		}
-		nextOccurrence := make(map[string]int, len(existingByValue))
+	if keyChanged || priorityChanged || otherKeyMetadataChanged || strategyChanged {
+		// 同值 Key 的运行状态由存储在事务内合并。
 
 		// 批量创建新的API Keys（优化：单次事务插入替代循环单条插入）
 		now := time.Now()
 		apiKeys = make([]*model.APIKey, 0, len(newKeys))
 		for i, key := range newKeys {
-			var wasDisabled bool
-			occurrence := nextOccurrence[key.APIKey]
-			if matches := existingByValue[key.APIKey]; occurrence < len(matches) {
-				wasDisabled = matches[occurrence].Disabled && !matches[occurrence].ModelScopeEmpty
-				nextOccurrence[key.APIKey] = occurrence + 1
+
+			index := i
+			if !keyChanged {
+				index = oldKeys[i].KeyIndex
 			}
 			apiKeys = append(apiKeys, &model.APIKey{
 				ChannelID:       id,
-				KeyIndex:        i,
+				KeyIndex:        index,
 				APIKey:          key.APIKey,
 				Note:            key.Note,
 				AllowedModels:   append([]string(nil), key.AllowedModels...),
@@ -1572,7 +1574,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				ModelScopeAuto:  key.ModelScopeAuto,
 				ModelScopeEmpty: key.ModelScopeEmpty,
 				KeyStrategy:     keyStrategy,
-				Disabled:        wasDisabled || key.ModelScopeEmpty,
+				Disabled:        key.ModelScopeEmpty,
 				CostMultiplier:  apiKeyCostMultiplier(key),
 				Priority:        apiKeyPriority(key),
 				CreatedAt:       model.JSONTime{Time: now},
@@ -1580,58 +1582,15 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			})
 		}
 	}
-	var upd *model.Config
-	if keyChanged {
-		upd, err = s.store.UpdateConfigWithAPIKeys(c.Request.Context(), id, req.ToConfig(), apiKeys)
-	} else {
-		upd, err = s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
-	}
+	upd, err := s.store.UpdateChannelIfEditVersion(c.Request.Context(), id, req.ToConfig(), apiKeys, keyChanged, version, mergeManagement)
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+		respondChannelEditError(c, err)
 		return
 	}
-	// Later metadata/account writes may fail after the channel has committed.
-	defer s.InvalidateChannelListCache()
-	defer s.InvalidateAPIKeysCache(id)
+	s.InvalidateChannelListCache()
+	s.InvalidateAPIKeysCache(id)
 	if existing.UsesXAIOAuth() && s.xaiCredentials != nil {
 		s.xaiCredentials.invalidate(id)
-	}
-	if !existing.UsesOAuth() && !keyChanged {
-		// Key内容未变化：策略和备注都是独立元数据，不能重建 Key 导致禁用状态丢失。
-		if strategyChanged {
-			if err := s.store.UpdateAPIKeysStrategy(c.Request.Context(), id, keyStrategy); err != nil {
-				log.Printf("[WARN] 批量更新API Key策略失败 (channel=%d): %v", id, err)
-			}
-		}
-		if noteChanged {
-			if err := s.store.UpdateAPIKeyNotes(c.Request.Context(), id, notesByIndex); err != nil {
-				log.Printf("[WARN] 批量更新API Key备注失败 (channel=%d): %v", id, err)
-			}
-		}
-		if len(prioritiesByIndex) > 0 {
-			if err := s.store.UpdateAPIKeyPriorities(c.Request.Context(), id, prioritiesByIndex); err != nil {
-				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key priorities: %w", err))
-				return
-			}
-		}
-		if multiplierChanged {
-			if err := s.store.UpdateAPIKeyCostMultipliers(c.Request.Context(), id, multipliersByIndex); err != nil {
-				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key cost multipliers: %w", err))
-				return
-			}
-		}
-		if modelsChanged {
-			if err := s.store.UpdateAPIKeyModelScopes(c.Request.Context(), id, scopesByIndex); err != nil {
-				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key model scopes: %w", err))
-				return
-			}
-		}
-	}
-	if req.managementAccountSet {
-		if _, err := s.channelManagement.SaveSettings(c.Request.Context(), upd, req.ManagementAccount); err != nil {
-			respondChannelManagementError(c, err)
-			return
-		}
 	}
 
 	// 仅调整优先级不代表凭据已经恢复，保留禁用和冷却状态。
@@ -1641,8 +1600,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		// API Key 渠道的旧渠道倍率会被 ToConfig 归一为 1，实际计费只读取 Key 倍率。
 		after.CostMultiplier = before.CostMultiplier
 	}
-	priorityOnly := len(prioritiesByIndex) > 0 && !keyChanged && !strategyChanged &&
-		!noteChanged && !modelsChanged && !multiplierChanged && !managementChanged &&
+	priorityOnly := priorityChanged && !keyChanged && !strategyChanged &&
+		!otherKeyMetadataChanged && !managementChanged &&
 		reflect.DeepEqual(before, after)
 	if !priorityOnly {
 		s.clearAllChannelCooldowns(c.Request.Context(), id)

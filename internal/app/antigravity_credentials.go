@@ -30,16 +30,26 @@ func isAntigravityTOSViolation(cfg *model.Config, res *fwResult) bool {
 	if !cfg.UsesAntigravityOAuth() {
 		return false
 	}
-	body := res.SSEErrorEvent
-	if len(body) == 0 {
-		status := res.UpstreamStatus
-		if status == 0 {
-			status = res.Status
-		}
-		if status != http.StatusForbidden {
-			return false
-		}
-		body = res.Body
+	if len(res.SSEErrorEvent) != 0 {
+		return isAntigravityPermissionReason(http.StatusForbidden, res.SSEErrorEvent, "TOS_VIOLATION")
+	}
+	status := res.UpstreamStatus
+	if status == 0 {
+		status = res.Status
+	}
+	return isAntigravityPermissionReason(status, res.Body, "TOS_VIOLATION")
+}
+
+/**
+ * @brief 识别 Antigravity 结构化权限拒绝。
+ * @param status 实际 HTTP 或 SSE 错误状态。
+ * @param body Google RPC 错误正文。
+ * @param reason 要匹配的 ErrorInfo 原因。
+ * @return 403 PERMISSION_DENIED 含匹配原因时为 true。
+ */
+func isAntigravityPermissionReason(status int, body []byte, reason string) bool {
+	if status != http.StatusForbidden {
+		return false
 	}
 	var payload struct {
 		Error struct {
@@ -55,7 +65,7 @@ func isAntigravityTOSViolation(cfg *model.Config, res *fwResult) bool {
 		return false
 	}
 	for _, detail := range payload.Error.Details {
-		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == "TOS_VIOLATION" {
+		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Reason == reason {
 			return true
 		}
 	}
@@ -74,48 +84,67 @@ func (s *Server) disableAntigravityTOSCredential(ctx context.Context, cfg *model
 	if !isAntigravityTOSViolation(cfg, res) {
 		return false
 	}
+	return s.disableAntigravityAccount(ctx, cfg.ID, gjson.Get(cfg.OAuthCredential, "refresh_token").String())
+}
 
+/**
+ * @brief 按实际被拒的刷新令牌条件停用渠道。
+ * @param ctx 本次上游请求上下文。
+ * @param channelID 保存该账号的渠道。
+ * @param refreshToken 产生这次拒绝的账号刷新令牌。
+ * @return 已停用、渠道原本停用或账号已更换时为 true；持久化失败为 false。
+ * @note 同账号的 access token 轮转可以继续停用；停用后失效凭证、渠道与冷却缓存。
+ */
+func (s *Server) disableAntigravityAccount(ctx context.Context, channelID int64, refreshToken string) bool {
 	disableCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
-	expected := cfg.OAuthCredential
-	refreshToken := gjson.Get(expected, "refresh_token").String()
 	for {
-		disabled, err := s.store.DisableOAuthChannelIfCredentialMatches(disableCtx, cfg.ID, model.AuthTypeAntigravityOAuth, expected)
+		current, err := s.store.GetConfig(disableCtx, channelID)
 		if err != nil {
-			log.Printf("[ERROR] 停用 Antigravity TOS 违规渠道失败: channel_id=%d err=%v", cfg.ID, err)
-			return false
-		}
-		if disabled {
-			s.antigravityCredentials.invalidate(cfg.ID)
-			s.invalidateChannelRelatedCache(cfg.ID)
-			s.InvalidateChannelListCache()
-			log.Printf("[DISABLED] Antigravity 账号被上游以 TOS_VIOLATION 停用: channel_id=%d", cfg.ID)
-			return true
-		}
-		current, err := s.store.GetConfig(disableCtx, cfg.ID)
-		if err != nil {
-			log.Printf("[ERROR] 核对 Antigravity TOS 违规账号失败: channel_id=%d err=%v", cfg.ID, err)
+			log.Printf("[ERROR] 核对 Antigravity TOS 违规账号失败: channel_id=%d err=%v", channelID, err)
 			return false
 		}
 		if !current.Enabled || !current.UsesAntigravityOAuth() ||
 			gjson.Get(current.OAuthCredential, "refresh_token").String() != refreshToken {
 			return true
 		}
-		expected = current.OAuthCredential
+		disabled, err := s.store.DisableOAuthChannelIfCredentialMatches(disableCtx, channelID, model.AuthTypeAntigravityOAuth, current.OAuthCredential)
+		if err != nil {
+			log.Printf("[ERROR] 停用 Antigravity TOS 违规渠道失败: channel_id=%d err=%v", channelID, err)
+			return false
+		}
+		if disabled {
+			s.antigravityCredentials.invalidate(channelID)
+			s.invalidateChannelRelatedCache(channelID)
+			s.InvalidateChannelListCache()
+			log.Printf("[DISABLED] Antigravity 账号被上游以 TOS_VIOLATION 停用: channel_id=%d", channelID)
+			return true
+		}
 	}
 }
 
+/**
+ * @brief 判断项目或订阅请求是否收到明确的账号 TOS 拒绝。
+ * @param err 元数据查询错误，允许被包装。
+ * @return 强类型元数据错误包含 TOS_VIOLATION 时为 true。
+ */
+func isAntigravityMetadataTOSViolation(err error) bool {
+	metadataErr, ok := errors.AsType[*antigravityauth.MetadataError](err)
+	return ok && isAntigravityPermissionReason(metadataErr.HTTPStatus, []byte(metadataErr.UpstreamResponseBody()), "TOS_VIOLATION")
+}
+
 type antigravityCredentialManager struct {
-	mu               sync.RWMutex
-	entries          map[int64]*antigravityauth.Credential
-	refreshes        singleflight.Group
-	metadata         singleflight.Group
-	refreshTracker   *oauthCredentialRefreshTracker
-	service          *antigravityauth.Service
-	store            storage.Store
-	clientFor        func(*model.Config) *http.Client
-	invalidateConfig func(int64)
-	now              func() time.Time
+	mu                sync.RWMutex
+	entries           map[int64]*antigravityauth.Credential
+	refreshes         singleflight.Group
+	metadata          singleflight.Group
+	refreshTracker    *oauthCredentialRefreshTracker
+	service           *antigravityauth.Service
+	store             storage.Store
+	clientFor         func(*model.Config) *http.Client
+	invalidateConfig  func(int64)
+	disableTOSAccount func(context.Context, int64, string) bool ///< 条件停用实际收到 TOS 拒绝的账号。
+	now               func() time.Time
 }
 
 func newAntigravityCredentialManager(
@@ -274,6 +303,16 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 	return result.Val.(*antigravityauth.Credential), nil
 }
 
+/**
+ * @brief 查询并保存 Antigravity 项目或订阅元数据。
+ * @param ctx 当前等待者的上下文；取消时仅停止此等待者。
+ * @param cfg 渠道配置。
+ * @param credential 本次使用的凭证。
+ * @param subscription 是否查询订阅和积分信息。
+ * @return 当前凭证，可能包含已完成的部分更新。
+ * @return 查询或保存失败，以及当前等待者的取消错误。
+ * @note 共享任务拥有独立的查询和 SOCKS5 握手生命周期。
+ */
 func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Context, cfg *model.Config, credential *antigravityauth.Credential, subscription bool) (*antigravityauth.Credential, error) {
 	key := fmt.Sprintf("%s:%t", oauthCredentialRefreshSingleflightKey(cfg.ID, credential.AccessToken, false), subscription)
 	ch := m.metadata.DoChan(key, func() (any, error) {
@@ -295,6 +334,7 @@ func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Contex
 		}
 		queryCtx, cancel := context.WithTimeout(queryCtx, timeout)
 		defer cancel()
+		metadataCtx := context.WithValue(queryCtx, socks5DialTaskContextKey{}, queryCtx)
 		current := cloneAntigravityCredential(credential)
 		for attempt := range 2 {
 			service := *m.service
@@ -306,7 +346,7 @@ func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Contex
 			var credits *antigravityauth.Credits
 			var err error
 			if project == "" {
-				project, err = service.FetchProjectID(queryCtx, current.AccessToken)
+				project, err = service.FetchProjectID(metadataCtx, current.AccessToken)
 				if err == nil {
 					current, err = m.updateStoredMetadata(queryCtx, cfg.ID, current, func(latest *antigravityauth.Credential) { latest.ProjectID = project })
 					if err != nil {
@@ -316,7 +356,7 @@ func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Contex
 				}
 			}
 			if err == nil && subscription {
-				tier, credits, err = service.FetchSubscription(queryCtx, current.AccessToken)
+				tier, credits, err = service.FetchSubscription(metadataCtx, current.AccessToken)
 			}
 			if antigravityauth.AccessTokenRejected(err) && attempt == 0 {
 				current, err = m.resolveTokenCredential(queryCtx, cfg, true, current.AccessToken)
@@ -326,6 +366,9 @@ func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Contex
 				continue
 			}
 			if err != nil {
+				if isAntigravityMetadataTOSViolation(err) && m.disableTOSAccount != nil {
+					m.disableTOSAccount(queryCtx, cfg.ID, current.RefreshToken)
+				}
 				if current.ProjectID == "" {
 					err = fmt.Errorf("%w: %w", antigravityauth.ErrProjectUnavailable, err)
 				}

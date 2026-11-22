@@ -967,6 +967,7 @@ function installFetchKeyRateGlobals({
 
 function installEditChannelGlobals(channel, {
   editorError = null,
+  editorETag = '"channel-edit-initial"',
   editorKeys = [],
   codexCredential = null,
   codexCredentialInfo = null
@@ -1035,11 +1036,15 @@ function installEditChannelGlobals(channel, {
     redirectTableData: [],
     selectedModelIndices: new Set(),
     currentModelFilter: '',
-    fetchDataWithAuth: async url => {
+    fetchAPIWithAuthRaw: async (url, options) => {
+      if (options?.method === 'PUT') {
+        const payload = await global.fetchAPIWithAuth(url, options);
+        return { res: { status: payload.success ? 200 : 400 }, payload };
+      }
       requests.push(url);
       if (url === `/admin/channels/${channel.id}/editor`) {
         if (editorError) throw editorError;
-        return {
+        const data = {
           channel,
           keys: editorKeys,
           oauth_credential: codexCredential,
@@ -1050,6 +1055,7 @@ function installEditChannelGlobals(channel, {
             items: [{ url: channel.urls[0].url, latency_ms: 125, requests: 1, failures: 0 }]
           },
         };
+        return { res: { headers: { get: () => editorETag } }, payload: { success: true, data } };
       }
       throw new Error(`unexpected fetch: ${url}`);
     },
@@ -1071,7 +1077,9 @@ function installEditChannelGlobals(channel, {
       authEditorCalls.push({ authType, credential, channel, credentialInfo });
     },
     renderRedirectTable() {},
+    markChannelFormDirty() { global.channelFormDirty = true; },
     resetChannelFormDirty() {},
+    channelFormDirty: false,
     syncChannelEditorTableSizing() {},
     scheduleChannelEditorTableSizingSync() {},
     console: { ...console, error() {} }
@@ -1369,7 +1377,7 @@ test('Loomy copy saves an independent session channel by source ID and ordinary 
     setGlobal('getValidInlineURLConfigs', () => channel.urls);
     setGlobal('getValidInlineKeyRows', () => { throw new Error('session channel must not collect API keys'); });
     setGlobal('fetchAPIWithAuth', async (url, options) => {
-      requests.push({ url, method: options.method, body: JSON.parse(options.body) });
+      requests.push({ url, method: options.method, headers: options.headers, body: JSON.parse(options.body) });
       return { success: false, error: 'captured' };
     });
     const { copyChannel, editChannel, saveChannel } = loadChannelsModals();
@@ -1383,6 +1391,7 @@ test('Loomy copy saves an independent session channel by source ID and ordinary 
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url, '/admin/channels/91/loomy-copy');
     assert.equal(requests[0].method, 'POST');
+    assert.equal(requests[0].headers['If-Match'], undefined);
     assert.equal(requests[0].body.auth_type, 'loomy_session');
     assert.deepEqual(requests[0].body.urls, channel.urls);
     assert.equal(requests[0].body.max_concurrency, 3);
@@ -1396,6 +1405,7 @@ test('Loomy copy saves an independent session channel by source ID and ordinary 
     await saveChannel({ preventDefault() {} });
     assert.equal(requests[1].url, '/admin/channels/91');
     assert.equal(requests[1].method, 'PUT');
+    assert.equal(requests[1].headers['If-Match'], '"channel-edit-initial"');
   } finally {
     for (const [key, descriptor] of previous) {
       if (descriptor) Object.defineProperty(global, key, descriptor);
@@ -1919,6 +1929,79 @@ test('editing a channel does not open a partial editor when bootstrap fails', as
     assert.deepEqual(fixture.errors, ['channels.loadChannelsFailed']);
     assert.equal(fixture.getElement('channelModal').classList.contains('show'), false);
   } finally {
+    fixture.restore();
+  }
+});
+
+test('editing requires a version from the same editor response', async () => {
+  const channel = {
+    id: 78,
+    name: 'no-version',
+    urls: [{ url: 'https://unversioned.test', protocols: ['openai'] }]
+  };
+  const fixture = installEditChannelGlobals(channel, { editorETag: null });
+
+  try {
+    const { editChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    assert.deepEqual(fixture.errors, ['channels.loadChannelsFailed']);
+    assert.equal(fixture.getElement('channelModal').classList.contains('show'), false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('a stale editor retains its draft until it is closed and reopened', async () => {
+  const channel = {
+    id: 79, name: 'initial', auth_type: 'zai_oauth', enabled: true,
+    urls: [{ url: 'https://upstream.test/v1/messages', protocols: ['anthropic'] }],
+    models: []
+  };
+  const fixture = installEditChannelGlobals(channel);
+  const captured = [];
+  const descriptor = Object.getOwnPropertyDescriptor(global, 'getValidInlineURLConfigs');
+  let version = '"initial"';
+  try {
+    global.getValidInlineURLConfigs = () => channel.urls;
+    global.fetchAPIWithAuthRaw = async (url, options) => {
+      if (!options) {
+        assert.equal(url, `/admin/channels/${channel.id}/editor`);
+        return {
+          res: { headers: new Headers({ ETag: version }) },
+          payload: { success: true, data: { channel, keys: [] } }
+        };
+      }
+      captured.push({ url, headers: options.headers, body: JSON.parse(options.body) });
+      return {
+        res: { status: 412, headers: new Headers({ ETag: '"unused-latest"' }) },
+        payload: { success: false, error: 'channel edit conflict' }
+      };
+    };
+    global.window.showConfirm = async () => true;
+    const { editChannel, saveChannel, closeModal } = loadChannelsModals();
+    await editChannel(channel.id);
+    fixture.getElement('channelName').value = 'draft';
+    await saveChannel({ preventDefault() {} });
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].url, `/admin/channels/${channel.id}`);
+    assert.equal(captured[0].headers['If-Match'], '"initial"');
+    assert.equal(captured[0].body.name, 'draft');
+    assert.equal(fixture.getElement('channelName').value, 'draft');
+    assert.equal(fixture.getElement('channelModal').classList.contains('show'), true);
+    assert.deepEqual(fixture.errors, ['channels.editorSaveConflict']);
+    await saveChannel({ preventDefault() {} });
+    assert.equal(captured.length, 1, 'conflict must not blindly adopt the current version');
+
+    await closeModal();
+    version = '"refreshed"';
+    channel.name = 'saved by another editor';
+    await editChannel(channel.id);
+    assert.equal(fixture.getElement('channelName').value, channel.name);
+    await saveChannel({ preventDefault() {} });
+    assert.equal(captured[1].headers['If-Match'], '"refreshed"');
+  } finally {
+    if (descriptor) Object.defineProperty(global, 'getValidInlineURLConfigs', descriptor);
+    else delete global.getValidInlineURLConfigs;
     fixture.restore();
   }
 });

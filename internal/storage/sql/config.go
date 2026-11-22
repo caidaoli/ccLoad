@@ -343,15 +343,26 @@ func (s *SQLStore) createConfig(ctx context.Context, c *model.Config, keys []*mo
 
 // UpdateConfig 更新渠道配置
 func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error) {
-	return s.updateConfig(ctx, id, upd, nil, false)
+	return s.updateConfig(ctx, id, upd, nil, false, nil)
 }
 
 // UpdateConfigWithAPIKeys atomically replaces the channel and its complete key set.
 func (s *SQLStore) UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error) {
-	return s.updateConfig(ctx, id, upd, keys, true)
+	return s.updateConfig(ctx, id, upd, keys, true, nil)
 }
 
-func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool) (*model.Config, error) {
+/**
+ * @brief 在一个事务中校验并写入渠道表单可编辑状态。
+ * @param ctx 数据库操作上下文。
+ * @param id 渠道 ID。
+ * @param upd 待保存的配置。
+ * @param keys Key 编辑值；原位更新时 nil 表示保留。
+ * @param replaceKeys 是否整体替换 Key。
+ * @param edit 表单编辑的前置条件及管理设置合并，普通存储调用传 nil。
+ * @return 提交后的渠道数据。
+ * @return 版本不匹配、参数非法、渠道不存在或持久化失败时返回错误。
+ */
+func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool, edit *channelEditUpdate) (*model.Config, error) {
 	if upd == nil {
 		return nil, errors.New("update payload cannot be nil")
 	}
@@ -371,7 +382,7 @@ func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config
 		}
 	}
 
-	if replaceKeys {
+	if replaceKeys || keys != nil {
 		if !model.UsesAPIKeyCredentials(existing.GetAuthType()) {
 			return nil, errors.New("OAuth channel API keys are read-only")
 		}
@@ -409,6 +420,14 @@ func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config
 	updatedAtUnix := timeToUnix(time.Now())
 
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		var currentKeys []*model.APIKey
+		if edit != nil {
+			var err error
+			currentKeys, err = s.checkChannelEditTx(ctx, tx, id, edit)
+			if err != nil {
+				return err
+			}
+		}
 		// 更新渠道记录
 		_, err := s.execTx(ctx, tx, `
 			UPDATE channels
@@ -424,15 +443,23 @@ func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config
 		if err := s.saveModelEntriesTx(ctx, tx, id, upd.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
 		}
+		if !replaceKeys && keys != nil {
+			if err := s.updateChannelEditKeysTx(ctx, tx, currentKeys, keys, updatedAtUnix); err != nil {
+				return err
+			}
+		}
 		if err := s.pruneAPIKeyAllowedModelsTx(ctx, tx, id, upd.ModelEntries, updatedAtUnix); err != nil {
 			return fmt.Errorf("prune API key model scopes: %w", err)
 		}
-
 		if replaceKeys {
+			replacement := keys
+			if edit != nil {
+				replacement = channelEditReplacementKeys(currentKeys, keys)
+			}
 			if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
 				return err
 			}
-			if err := s.createAPIKeysBatchTx(ctx, tx, keys); err != nil {
+			if err := s.createAPIKeysBatchTx(ctx, tx, replacement); err != nil {
 				return err
 			}
 		}
@@ -1647,12 +1674,16 @@ func (s *SQLStore) loadConfigSnapshotForUpdate(
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, s.q(`
+	modelQuery := `
 		SELECT model, redirect_model, disabled, pricing, model_variants
 		FROM channel_models
 		WHERE channel_id = ?
 		ORDER BY created_at ASC, model ASC
-	`), normalizeSQLArgs([]any{id})...)
+	`
+	if s.supportsRowLock() {
+		modelQuery += ` FOR UPDATE`
+	}
+	rows, err := s.queryTx(ctx, tx, modelQuery, id)
 	if err != nil {
 		return nil, err
 	}

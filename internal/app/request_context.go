@@ -38,6 +38,7 @@ type requestContext struct {
 	antigravityReplay             *antigravityReplay
 	anthropicClaudeCodeWire       bool
 	replayBodyRulesApplied        bool // 完整回放体已经过 applyBodyRules；增量体单独判定
+	requireFastFallback           bool ///< 备用上游的最终出站请求必须保留 Fast 档位。
 	openCodeResponses             *openCodeResponsesPlan
 	xaiResponses                  bool
 	xaiTools                      *xaiResponsesToolsPlan

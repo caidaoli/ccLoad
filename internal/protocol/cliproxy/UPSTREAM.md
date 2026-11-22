@@ -32,6 +32,9 @@ These targeted ports use official `v8.0.80` (`f5c5681a8361c9da53e93c60b6507816ee
   `e442c32d4` and `2e940ba1e` for Chat Completions, Claude and Gemini clients.
   The local translators recover previously unseen text and refusal parts from
   item and terminal snapshots using the item ID, output index and content index.
+  Indexed deltas after a gap wait for the snapshot so its earlier parts reach
+  the client first. Buffered deltas survive incomplete snapshots, and contiguous
+  deltas still stream immediately.
   When a terminal array omits a streamed reasoning or tool item, its original
   slot still counts when matching messages without IDs.
   With no item ID, index or associated item frame, terminal synthesis skips
