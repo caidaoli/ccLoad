@@ -84,6 +84,10 @@ func updateReasoningTestChannel(t *testing.T, env *proxyTestEnv, channelID int64
  */
 const reasoningRetryAnswer = `{"answers":{"effort":{"type":"choice","choice":"xhigh"}},"usage":{"input_tokens":12,"output_tokens":2}}`
 
+/**
+ * @brief 验证双选择题的原生请求与取档，包括校准门槛、置信度及无效答案
+ * @param t 测试上下文
+ */
 func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 	t.Parallel()
 	const usage = `,"usage":{"input_tokens":12,"output_tokens":6}}`
@@ -106,8 +110,14 @@ func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 		// Calibrated models read probability mass: a threshold reached at the
 		// reported two-decimal precision promotes, and depth no longer follows its choice.
 		{name: "jev mass reaches high", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.24,"probabilities":{"low":0.1,"medium":0.5,"high":0.36,"xhigh":0.04,"max":0}},"depth":{"type":"choice","choice":"xhigh","probabilities":{"high":0.4,"xhigh":0.55,"max":0.05}}}` + usage, status: 200, valid: true, effort: "high", levels: []string{"low", "medium", "high", "xhigh", "max"}},
-		{name: "jev mass reaches xhigh", modelName: "jev-latest", response: `{"model":"jev-1.14.0","answers":{"effort":{"type":"choice","choice":"high","confidence":0.5,"probabilities":{"low":0,"medium":0.2,"high":0.5,"xhigh":0.3,"max":0}},"depth":{"type":"choice","choice":"max","probabilities":{"high":0.35,"xhigh":0.25,"max":0.4}}}` + usage, status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"}},
-		{name: "d3 lower thresholds", modelName: "vllm-sr/d3-ultra", response: `{"model":"vllm-sr/d3-ultra","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.7,"probabilities":{"low":0.1,"medium":0.68,"high":0.2,"xhigh":0.01,"max":0.01}},"depth":{"type":"choice","choice":"high","probabilities":{"high":0.6,"xhigh":0.35,"max":0.05}}}` + usage, status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"}},
+		{name: "jev mass just below xhigh", modelName: "jev-latest", status: 200, valid: true, effort: "high", levels: []string{"low", "medium", "high", "xhigh", "max"},
+			response: `{"answers":{"effort":{"type":"choice","choice":"high"},"depth":{"type":"choice","choice":"max","probabilities":{"high":0.301,"xhigh":0.249,"max":0.45}}}` + usage},
+		{name: "jev mass reaches xhigh", modelName: "jev-latest", status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"},
+			response: `{"answers":{"effort":{"type":"choice","choice":"high"},"depth":{"type":"choice","choice":"max","probabilities":{"high":0.30,"xhigh":0.25,"max":0.45}}}` + usage},
+		{name: "d3 mass just below xhigh", modelName: "vllm-sr/d3-ultra", status: 200, valid: true, effort: "high", levels: []string{"low", "medium", "high", "xhigh", "max"},
+			response: `{"answers":{"effort":{"type":"choice","choice":"medium","confidence":0.7,"probabilities":{"low":0.1,"medium":0.7,"high":0.18,"xhigh":0.02,"max":0}},"depth":{"type":"choice","choice":"xhigh","probabilities":{"high":0.551,"xhigh":0.399,"max":0.05}}}` + usage},
+		{name: "d3 mass reaches xhigh", modelName: "vllm-sr/d3-ultra", status: 200, valid: true, effort: "xhigh", levels: []string{"low", "medium", "high", "xhigh", "max"},
+			response: `{"answers":{"effort":{"type":"choice","choice":"medium","confidence":0.7,"probabilities":{"low":0.1,"medium":0.7,"high":0.18,"xhigh":0.02,"max":0}},"depth":{"type":"choice","choice":"high","probabilities":{"high":0.55,"xhigh":0.4,"max":0.05}}}` + usage},
 		{name: "uncalibrated model keeps choice", modelName: "drex-latest", response: `{"model":"drex-v2.0","answers":{"effort":{"type":"choice","choice":"medium","confidence":0.5,"probabilities":{"low":0,"medium":0.5,"high":0.5,"xhigh":0}}}` + usage, status: 200, valid: true, effort: "medium"},
 		{name: "calibrated probabilities missing level", modelName: "jev-latest", response: `{"answers":{"effort":{"type":"choice","choice":"medium","probabilities":{"low":0.5,"medium":0.5}}}}`, status: 200},
 		{name: "missing answer", modelName: "jev-latest", response: `{"answers":{}}`, status: 200},
@@ -975,13 +985,39 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 func TestReasoningDecisionNativeProviders(t *testing.T) {
 	t.Parallel()
 	const score = `"effort":{"type":"score","score":1.1,"confidence":0.01,"probabilities":{"0":0.1,"1":0.2,"2":0.35,"3":0.35,"4":0}}`
+	const belowMiddle = `"effort":{"type":"score","probabilities":{"0":0.1251,"1":0.3749,"2":0.375,"3":0.125,"4":0}}`
 	const choice = `"effort":{"type":"choice","choice":"high","confidence":0.6},"depth":{"type":"choice","choice":"max","confidence":0.1}`
+	const d3Response = `{"answers":{"effort":{"type":"choice","choice":"high","confidence":0.6},"depth":{"type":"choice","choice":"high","probabilities":{"high":0.55,"xhigh":0.4,"max":0.05}}},"usage":{"input_tokens":16,"output_tokens":1}}`
 	for _, tc := range []struct {
 		name, actualModel, template, basePath, path, questionType, effort, response string
+		instructionsPrefix, depthHigh                                               string
 		input, output, cached                                                       int
 		unknown                                                                     bool
+		levels                                                                      []string
 	}{
 		{name: "aliyun root", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":12}}`, input: 12},
+		{name: "aliyun middle boundary", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.125,"1":0.375,"2":0.375,"3":0.125,"4":0}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun rounded middle boundary", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.02,"1":0.55,"2":0.34,"3":0.09,"4":0}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun accumulated rounding at middle boundary", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.04,"1":0.55,"2":0.32,"3":0.05,"4":0.04}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun just below middle boundary", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "medium", input: 12,
+			response: `{"answers":{` + belowMiddle + `},"usage":{"input_tokens":12}}`},
+		{name: "aliyun normalizes score mass", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.10,"1":0.46,"2":0.28,"3":0.13,"4":0.02}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun keeps tied low argmax", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "low", input: 12,
+			response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.34375,"1":0.34375,"2":0,"3":0,"4":0.3125}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun keeps max argmax", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "max", input: 12,
+			response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0,"1":0.4,"2":0,"3":0.1,"4":0.5}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun four levels", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			levels: []string{"low", "medium", "high", "xhigh"}, response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.1,"1":0.4,"2":0.3,"3":0.2}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun levels without low", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			levels: []string{"medium", "high", "xhigh", "max"}, response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.44,"1":0.34,"2":0.19,"3":0.03}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun levels without medium", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "high", input: 12,
+			levels: []string{"low", "high", "xhigh", "max"}, response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.4,"1":0.41,"2":0.18,"3":0.01}}},"usage":{"input_tokens":12}}`},
+		{name: "aliyun levels without high", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "medium", input: 12,
+			levels: []string{"low", "medium", "xhigh", "max"}, response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.1,"1":0.55,"2":0.05,"3":0.3}}},"usage":{"input_tokens":12}}`},
 		{name: "gemini version", actualModel: "gemini-decision-1", basePath: "/v1beta", path: "/v1beta/decisions", questionType: "score", effort: "max", response: `{"answers":{"effort":{"type":"score","confidence":0.01,"probabilities":{"0":0.1,"1":0.1,"2":0.1,"3":0.1,"4":0.6}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`, input: 13},
 		{name: "gemini xhigh mass promotes high", actualModel: "gemini-decision-1", basePath: "/v1beta", path: "/v1beta/decisions", questionType: "score", effort: "xhigh", response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.05,"1":0.15,"2":0.4,"3":0.3,"4":0.1}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`, input: 13},
 		{name: "gemini xhigh mass below threshold", actualModel: "gemini-decision-1", basePath: "/v1beta", path: "/v1beta/decisions", questionType: "score", effort: "high", response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.1,"1":0.2,"2":0.33,"3":0.3,"4":0.07}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`, input: 13},
@@ -989,14 +1025,23 @@ func TestReasoningDecisionNativeProviders(t *testing.T) {
 		{name: "openai expected level", actualModel: "gpt-6-luna", basePath: "/v1/decisions", path: "/v1/decisions", questionType: "score", effort: "high", response: `{"answers":[{"name":"effort","type":"score","probabilities":[{"value":0,"label":"low","probability":0.4},{"value":1,"label":"medium","probability":0},{"value":2,"label":"high","probability":0},{"value":3,"label":"xhigh","probability":0.6},{"value":4,"label":"max","probability":0}]}],"usage":{"input_tokens":14,"output_tokens":0,"input_tokens_details":{"cached_tokens":8}}}`, input: 6, cached: 8},
 		{name: "openai expected level half", actualModel: "gpt-6-luna", basePath: "/v1/decisions", path: "/v1/decisions", questionType: "score", effort: "high", response: `{"answers":[{"name":"effort","type":"score","probabilities":[{"value":0,"label":"low","probability":0.15},{"value":1,"label":"medium","probability":0.35},{"value":2,"label":"high","probability":0.35},{"value":3,"label":"xhigh","probability":0.15},{"value":4,"label":"max","probability":0}]}],"usage":{"input_tokens":14,"output_tokens":0,"input_tokens_details":{"cached_tokens":8}}}`, input: 6, cached: 8},
 		{name: "aliyun keeps argmax", actualModel: "decision-model-preview", path: "/compatible-mode/v1/systemone", questionType: "score", effort: "xhigh", response: `{"answers":{"effort":{"type":"score","probabilities":{"0":0.4,"1":0,"2":0,"3":0.6,"4":0}}},"usage":{"input_tokens":12}}`, input: 12},
-		{name: "jev with native template", actualModel: "jev-latest", template: "gemini", basePath: "/v1/systemone", path: "/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + score + `},"usage":{"input_tokens":15,"output_tokens":1}}`, input: 15, output: 1},
+		{name: "jev with native template", actualModel: "jev-latest", template: "gemini", basePath: "/v1/systemone", path: "/v1/systemone", questionType: "score", effort: "high", response: `{"answers":{` + belowMiddle + `},"usage":{"input_tokens":15,"output_tokens":1}}`, input: 15, output: 1},
+		{name: "d3 with automatic template", actualModel: "vllm-sr/d3-ultra", template: "auto", path: "/v1/systemone", questionType: "choice", effort: "xhigh", response: d3Response, input: 16, output: 1,
+			instructionsPrefix: "Assess the reasoning needed for the next unfinished work toward the user's current goal.",
+			depthHigh:          "Focused analysis, implementation, or verification. A bounded diagnostic or review method and ordinary checks can settle the open issues, even when the work is careful."},
+		{name: "d3 with jev template", actualModel: "vllm-sr/d3-ultra", template: "jev", path: "/v1/systemone", questionType: "choice", effort: "xhigh", response: d3Response, input: 16, output: 1,
+			instructionsPrefix: "Estimate the reasoning needed for the NEXT step toward the conversation's whole goal.",
+			depthHigh:          "Known approach; the work is careful execution and checking. Use high when the visible evidence bounds the remaining question and standard checks can resolve the relevant constraints, even in a sensitive or complex area."},
 		{name: "aliyun with jev template", actualModel: "decision-model-preview", template: "jev", basePath: "/compatible-mode/v1", path: "/compatible-mode/v1/systemone", questionType: "choice", effort: "xhigh", response: `{"answers":{` + choice + `},"usage":{"input_tokens":16,"output_tokens":1}}`, input: 16, output: 1},
 		{name: "gemini with jev template", actualModel: "gemini-decision-1", template: "jev", basePath: "/v1beta/decisions", path: "/v1beta/decisions", questionType: "choice", effort: "xhigh", response: `{"answers":{` + choice + `},"usage":{"total_input_tokens":17,"total_output_tokens":1}}`, input: 17, output: 1},
 		{name: "openai with jev template", actualModel: "gpt-6-luna", template: "jev", basePath: "/v1", path: "/v1/decisions", questionType: "choice", effort: "xhigh", response: `{"answers":[{"name":"effort","type":"choice","choice":"high","confidence":0.6},{"name":"depth","type":"choice","choice":"max","confidence":0.1}],"usage":{"input_tokens":18,"output_tokens":1}}`, input: 18, output: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			levels := []string{"low", "medium", "high", "xhigh", "max"}
+			levels := tc.levels
+			if levels == nil {
+				levels = []string{"low", "medium", "high", "xhigh", "max"}
+			}
 			env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "logical-judge", apiKey: "judge-key", authType: model.AuthTypeSystemOne,
 				modelEntries: []model.ModelEntry{{Model: "logical-judge", RedirectModel: tc.actualModel, Pricing: channelPrice(1, 2)}}}, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != tc.path || r.Method != http.MethodPost {
@@ -1041,6 +1086,12 @@ func TestReasoningDecisionNativeProviders(t *testing.T) {
 				}
 				if question.Get("type").String() != tc.questionType || question.Get("instructions").String() == "" {
 					t.Errorf("native question=%s", body)
+				}
+				if tc.instructionsPrefix != "" && !strings.HasPrefix(question.Get("instructions").String(), tc.instructionsPrefix) {
+					t.Errorf("effort instructions=%q, want prefix %q", question.Get("instructions").String(), tc.instructionsPrefix)
+				}
+				if got := gjson.GetBytes(body, "questions.depth.criteria.high").String(); tc.depthHigh != "" && got != tc.depthHigh {
+					t.Errorf("depth high criterion=%q, want %q", got, tc.depthHigh)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, tc.response)

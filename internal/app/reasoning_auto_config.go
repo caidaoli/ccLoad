@@ -80,7 +80,7 @@ func ParseReasoningAutoConfig(raw string) (model.ReasoningAutoConfig, error) {
  */
 func validateReasoningPromptConfig(cfg model.ReasoningAutoConfig, rawPrompt json.RawMessage) error {
 	switch cfg.PromptTemplate {
-	case "", "auto", "jev", "aliyun", "gemini", "openai":
+	case "", "auto", "jev", "vllm-sr", "aliyun", "gemini", "openai":
 		if cfg.CustomPrompt != nil {
 			return fmt.Errorf("custom_prompt requires prompt_template custom")
 		}

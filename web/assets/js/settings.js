@@ -289,6 +289,10 @@ function validateCustomPricingInput(value) {
 
 const reasoningAutoDefaults = { enabled: false, decision_model: '', business_models: [], timeout_ms: 2000 };
 /**
+ * @brief 保存设置与加载模板接口共用的内置模板标识。
+ */
+const reasoningBuiltinTemplateIDs = ['jev', 'vllm-sr', 'aliyun', 'gemini', 'openai'];
+/**
  * @brief 已加载的启用决策渠道逻辑模型，作为判断模型候选。
  */
 let reasoningAutoDecisionModels = [];
@@ -352,7 +356,7 @@ function validateReasoningAuto(value) {
   let config;
   try { config = JSON.parse(value); } catch (_) { return t('settings.reasoningAuto.invalid'); }
   if (!config || typeof config !== 'object' || Array.isArray(config)) return t('settings.reasoningAuto.invalid');
-  if ((Object.hasOwn(config, 'prompt_template') && !['', 'auto', 'jev', 'aliyun', 'gemini', 'openai', 'custom'].includes(config.prompt_template))
+  if ((Object.hasOwn(config, 'prompt_template') && !['', 'auto', 'custom', ...reasoningBuiltinTemplateIDs].includes(config.prompt_template))
     || (config.prompt_template === 'custom'
       ? !validReasoningPrompt(config.custom_prompt) || new TextEncoder().encode(JSON.stringify(config.custom_prompt)).length > 65536
       : Object.hasOwn(config, 'custom_prompt'))) {
@@ -592,8 +596,9 @@ async function loadReasoningAutoOptions() {
     } else errors.push(t('settings.reasoningAuto.loadFailed'));
     const templates = prompts?.templates;
     const modelTemplates = prompts?.model_templates;
-    if (Array.isArray(templates) && templates.length === 4 && new Set(templates.map(template => template?.id)).size === 4
-      && templates.every(template => ['jev', 'aliyun', 'gemini', 'openai'].includes(template?.id)
+    if (Array.isArray(templates) && templates.length === reasoningBuiltinTemplateIDs.length
+      && new Set(templates.map(template => template?.id)).size === reasoningBuiltinTemplateIDs.length
+      && templates.every(template => reasoningBuiltinTemplateIDs.includes(template?.id)
         && typeof template.name === 'string' && template.name.trim()
         && Array.isArray(template.model_prefixes) && template.model_prefixes.every(prefix => typeof prefix === 'string' && prefix.length)
         && validReasoningPrompt(template.prompt))

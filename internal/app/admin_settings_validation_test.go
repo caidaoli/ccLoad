@@ -148,6 +148,7 @@ func TestReasoningAutoSettingValidation(t *testing.T) {
 		{`{"enabled":null,"ENABLED":false}`, true}, {`{"business_models":null,"business_models":[]}`, true},
 		{`{"enabled":"false"}`, false}, {`{"decision_channel_id":"0"}`, true},
 		{`{"prompt_template":"auto"}`, true}, {`{"prompt_template":"jev"}`, true},
+		{`{"prompt_template":"vllm-sr"}`, true},
 		{`{"prompt_template":"aliyun"}`, true}, {`{"prompt_template":"gemini"}`, true}, {`{"prompt_template":"openai"}`, true},
 		{`{"prompt_template":"custom"}`, false}, {`{"prompt_template":"unknown"}`, false},
 		{`{"prompt_template":null}`, false}, {`{"PROMPT_TEMPLATE":null}`, false},

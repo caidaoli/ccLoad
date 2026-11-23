@@ -966,7 +966,7 @@ func TestReasoningAutoSettingsValidateModelAndPersist(t *testing.T) {
 }
 
 /**
- * @brief 管理端模板可作为完整自定义快照保存并热更新，非法修改不覆盖原设置
+ * @brief 管理端模板可固定选择或作为完整自定义快照保存并热更新，非法修改不覆盖原设置
  * @param t 测试上下文
  */
 func TestReasoningPromptTemplatesAndSettings(t *testing.T) {
@@ -981,6 +981,7 @@ func TestReasoningPromptTemplatesAndSettings(t *testing.T) {
 		Data    struct {
 			Templates []struct {
 				ID            string                `json:"id"`
+				Name          string                `json:"name"`
 				ModelPrefixes []string              `json:"model_prefixes"`
 				Prompt        model.ReasoningPrompt `json:"prompt"`
 			} `json:"templates"`
@@ -989,16 +990,24 @@ func TestReasoningPromptTemplatesAndSettings(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != http.StatusOK || !response.Success || len(response.Data.Templates) != 4 {
+	if w.Code != http.StatusOK || !response.Success || len(response.Data.Templates) != 5 {
 		t.Fatalf("templates response=%s", w.Body.String())
 	}
 	restarted := make(chan struct{}, 1)
 	server.SetRestartFunc(func() { restarted <- struct{}{} })
+	foundVLLM := false
 	for _, template := range response.Data.Templates {
 		if len(template.ModelPrefixes) == 0 {
 			t.Fatalf("missing matching rules for %s", template.ID)
 		}
-		if (template.Prompt.Depth != nil) != (template.ID == "jev") {
+		isVLLM := template.ID == "vllm-sr"
+		if isVLLM {
+			foundVLLM = true
+			if template.Name != "vllm-sr" || !slices.Equal(template.ModelPrefixes, []string{"vllm-sr/d3"}) {
+				t.Fatalf("vllm-sr template display name=%q prefixes=%v", template.Name, template.ModelPrefixes)
+			}
+		}
+		if (template.Prompt.Depth != nil) != (template.ID == "jev" || isVLLM) {
 			t.Fatalf("unexpected question strategy for %s", template.ID)
 		}
 		template.Prompt.Instructions += "\nAdditional custom instruction."
@@ -1032,6 +1041,18 @@ func TestReasoningPromptTemplatesAndSettings(t *testing.T) {
 			t.Fatal("invalid prompt overwrote persisted config")
 		}
 	}
+	if !foundVLLM {
+		t.Fatal("missing vllm-sr template")
+	}
+	const fixedVLLM = `{"enabled":false,"prompt_template":"vllm-sr"}`
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, fixedVLLM)
+	if w.Code != http.StatusOK || server.reasoningAuto.Load().PromptTemplate != "vllm-sr" || server.reasoningAuto.Load().CustomPrompt != nil {
+		t.Fatalf("fixed vllm-sr prompt not hot reloaded: %s", w.Body.String())
+	}
+	setting, err := server.store.GetSetting(context.Background(), reasoningAutoSettingKey)
+	if err != nil || setting.Value != fixedVLLM {
+		t.Fatalf("fixed vllm-sr prompt not persisted: %v", err)
+	}
 	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, `{"enabled":false}`)
 	if w.Code != http.StatusOK || server.reasoningAuto.Load().CustomPrompt != nil {
 		t.Fatal("restore automatic defaults failed")
@@ -1054,6 +1075,9 @@ func TestReasoningPromptResolvedModelTemplates(t *testing.T) {
 		{Name: "override", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "override", RedirectModel: "jev-latest"}},
 			CustomRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: "override", Path: "model", Value: json.RawMessage(`"gemini-decision-1"`)}}}},
 		{Name: "other", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "mixed", RedirectModel: "decision-model-preview"}, {Model: "gpt-6-luna"}}},
+		{Name: "vllm", Enabled: true, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{
+			{Model: "mixed", RedirectModel: "vllm-sr/d3"}, {Model: "vllm-alias", RedirectModel: "vllm-hop"}, {Model: "vllm-hop", RedirectModel: "vllm-sr/d3"},
+		}},
 		{Name: "disabled", Enabled: false, AuthType: model.AuthTypeSystemOne, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "jev-latest"}}},
 		{Name: "chat", Enabled: true, ModelEntries: []model.ModelEntry{{Model: "judge", RedirectModel: "gemini-decision-1"},
 			{Model: "Moonshotai/Kimi-K3"}, {Model: "private-chat"}, {Model: "gpt-6.2-sol", Disabled: true}}},
@@ -1080,14 +1104,17 @@ func TestReasoningPromptResolvedModelTemplates(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 判断模型只来自启用决策渠道的启用行，跨渠道去重；聊天渠道同名模型不算。
-	if wantDecision := []string{"alias", "gpt-6-luna", "judge", "mixed", "override"}; !slices.Equal(response.Data.Decision, wantDecision) {
+	if wantDecision := []string{"alias", "gpt-6-luna", "judge", "mixed", "override", "vllm-alias", "vllm-hop"}; !slices.Equal(response.Data.Decision, wantDecision) {
 		t.Fatalf("decision models=%v, want %v", response.Data.Decision, wantDecision)
 	}
 	// 只列启用聊天渠道中等级目录可判断的模型；决策渠道、停用行与停用渠道不参与。
 	if wantBusiness := []string{"Moonshotai/Kimi-K3", "gpt-5.5"}; !slices.Equal(response.Data.Business, wantBusiness) {
 		t.Fatalf("business models=%v, want %v", response.Data.Business, wantBusiness)
 	}
-	want := map[string][]string{"judge": {"openai"}, "alias": {"openai"}, "override": {"gemini"}, "mixed": {"aliyun", "jev"}, "gpt-6-luna": {"openai"}}
+	want := map[string][]string{
+		"judge": {"openai"}, "alias": {"openai"}, "override": {"gemini"}, "mixed": {"aliyun", "jev", "vllm-sr"}, "gpt-6-luna": {"openai"},
+		"vllm-alias": {"vllm-sr"}, "vllm-hop": {"vllm-sr"},
+	}
 	if w.Code != http.StatusOK || len(response.Data.Models) != len(want) {
 		t.Fatalf("model templates: %s", w.Body.String())
 	}

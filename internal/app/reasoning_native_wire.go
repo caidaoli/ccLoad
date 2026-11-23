@@ -194,14 +194,14 @@ type reasoningChoiceThresholds struct {
  * @brief 已校准判断模型的名称前缀与阈值；未列出的模型直接采用 choice
  * @details 2026-11-17 离线主集回放：Jev 与 D3 按 choice 都把大量 high/xhigh 判成 medium，
  * 改用阈值后 Jev 可接受率 75.9→85.3%、D3 75.0→87.9%。阈值依附模型而非模板：
- * D3 的阈值套到 Jev 上偏高从 10% 升到 24%。
+ * D3 的阈值套到 Jev 上偏高从 10% 升到 24%。2026-11-23 的 491 条样本回放进一步校准了两者的深度门槛。
  */
 var reasoningChoiceCalibrations = []struct {
 	prefix     string                    ///< 去掉思考后缀并转小写后的实际模型名前缀
 	thresholds reasoningChoiceThresholds ///< 该模型的阈值
 }{
-	{prefix: "jev-", thresholds: reasoningChoiceThresholds{high: 400, xhigh: 650}},
-	{prefix: "vllm-sr/d3", thresholds: reasoningChoiceThresholds{high: 200, xhigh: 350}},
+	{prefix: "jev-", thresholds: reasoningChoiceThresholds{high: 400, xhigh: 700}},
+	{prefix: "vllm-sr/d3", thresholds: reasoningChoiceThresholds{high: 200, xhigh: 450}},
 }
 
 /**
@@ -326,14 +326,17 @@ var reasoningScoreExpectedPrefixes = []string{"gpt-6-luna"}
 var reasoningScoreXhighThresholds = map[string]int{"gemini-decision": 380}
 
 /**
- * @brief 校验完整的评分概率并取档：按模型取期望四舍五入，或取最大项且平票选较低等级；已校准模型的 high 可按 xhigh 概率改判
+ * @brief 校验完整的评分概率并取档；最大项平票时选较低等级
  * @param answer 单个原生评分题答案
  * @param provider 实际模型的提供商
- * @param actualModel 完成重定向后的上游模型名，决定是否按期望取档
+ * @param actualModel 完成重定向后的上游模型名，决定校准规则
  * @param levels 按强度升序排列的候选等级
  * @return 选中的等级；无效时为空
  * @return 拒答、缺失等级或无效概率分布返回错误；成功时为 nil
  * @details 允许提供商将每项概率舍入到两位小数产生的总和误差；期望按候选等级下标计算并除以概率总和
+ * gpt-6-luna 四舍五入取期望；decision-model 在 medium、high 同为候选且最大项落在两者之一时，
+ * 期望达到这两档的下标中点则取 high，否则取 medium；
+ * gemini-decision 可按 xhigh 及以上概率之和把最大项 high 升为 xhigh。
  */
 func reasoningScoreChoice(answer gjson.Result, provider, actualModel string, levels []string) (string, error) {
 	invalid := errors.New("reasoning score probabilities missing or invalid")
@@ -390,6 +393,15 @@ func reasoningScoreChoice(answer gjson.Result, provider, actualModel string, lev
 	if slices.ContainsFunc(reasoningScoreExpectedPrefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) }) {
 		// 先按千分位取整，避免 1.5 被浮点累加成 1.4999… 而少取一档。
 		best = int(math.Floor(math.Round(expected/total*1000)/1000 + 0.5))
+	} else if provider == "aliyun" && strings.HasPrefix(name, "decision-model") {
+		medium, high := slices.Index(levels, "medium"), slices.Index(levels, "high")
+		if medium >= 0 && high >= 0 && (best == medium || best == high) {
+			best = medium
+			// 容许最多五项概率累加和归一化的舍入误差，使恰好达到中点时判为 high。
+			if expected/total >= float64(medium+high)/2-1e-14 {
+				best = high
+			}
+		}
 	}
 	if xhigh := slices.Index(levels, "xhigh"); xhigh > 0 && levels[best] == "high" {
 		for prefix, threshold := range reasoningScoreXhighThresholds {
