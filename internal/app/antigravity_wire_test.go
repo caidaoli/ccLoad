@@ -625,6 +625,52 @@ func TestAntigravityGeminiWireRejectsVertexSignature(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证客户端禁用工具后，Antigravity Claude 实际收到的请求保留 NONE。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravityClaudeToolChoiceNone(t *testing.T) {
+	t.Parallel()
+	const target = "claude-sonnet-4-6"
+	for _, tc := range []struct{ name, path, body, modePath string }{
+		{"chat", "/v1/chat/completions", `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":"none"}`, "toolConfig.functionCallingConfig.mode"},
+		{"gemini alias", "/v1beta/models/" + target + ":generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tool_config":{"function_calling_config":{"mode":" none "}}}`, "tool_config.function_calling_config.mode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				request := gjson.GetBytes(wire, "request")
+				if mode := request.Get(tc.modePath).String(); mode != "NONE" {
+					t.Errorf("%s=%q, want NONE; request=%s", tc.modePath, mode, wire)
+				}
+				if tc.name == "gemini alias" && request.Get("toolConfig.functionCallingConfig.mode").Exists() {
+					t.Errorf("conflicting tool modes: %s", wire)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			t.Cleanup(upstream.Close)
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity", upstreamProtocol: "gemini", models: target, authType: model.AuthTypeAntigravityOAuth,
+				oauthCredential: antigravityProxyTestCredential(t, "tool-mode"),
+			}}, map[int]string{0: upstream.URL})
+			var body map[string]any
+			if err := json.Unmarshal([]byte(tc.body), &body); err != nil {
+				t.Fatal(err)
+			}
+			body["model"] = target
+			response := doProxyRequest(t, env.engine, tc.path, body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 	t.Parallel()
 
@@ -967,6 +1013,81 @@ func TestNormalizeAntigravitySchemasFoldsGenerationConfigMixedFields(t *testing.
 		if gjson.GetBytes(got, "generationConfig."+alias).Exists() {
 			t.Fatalf("generationConfig.%s should be removed; output=%s", alias, got)
 		}
+	}
+}
+
+/**
+ * @brief 验证原生 Gemini 和 Claude JSON Schema 工具在出站时分别保留可表示的数组约束。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravityRequestBodyArraySchemaCarriers(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	const parameters = `{"type":"object","properties":{"enum":{"type":"string"},"tuple":{"type":"array","items":[{"type":"string"},{"type":"integer"}]},"closed":{"type":"array","prefixItems":[{"type":"boolean"}],"items":false},"open":{"type":"array","items":true}},"required":["enum","tuple","closed","open"]}`
+
+	t.Run("Gemini native schema", func(t *testing.T) {
+		t.Parallel()
+		source := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"lookup","parametersJsonSchema":` + parameters + `,"response":{"type":"array","items":false}}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":{"type":"array","items":false}}}`)
+		wire, err := prepareAntigravityRequestBody(cfg, antigravitySchemaTestModel, source, source, http.Header{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := gjson.GetBytes(wire, "request")
+		tool := request.Get("tools.0.functionDeclarations.0")
+		if tool.Get("parameters.properties.enum.type").String() != "string" || tool.Get("parameters.required.0").String() != "enum" {
+			t.Fatalf("native tool lost the required enum parameter: %s", tool.Raw)
+		}
+		items := tool.Get("parameters.properties.tuple.items")
+		if !items.IsObject() || items.Get("anyOf.0.type").String() != "string" || items.Get("anyOf.1.type").String() != "integer" {
+			t.Fatalf("native tool items should use a Schema object with both branches: %s", tool.Raw)
+		}
+		for _, schema := range []gjson.Result{tool.Get("response"), request.Get("generationConfig.responseSchema")} {
+			if !schema.Get("items").IsObject() || schema.Get("description").String() != "No items allowed" {
+				t.Fatalf("native response items should use a Schema object with a hint: %s", schema.Raw)
+			}
+		}
+	})
+
+	for _, tc := range []struct {
+		target    string
+		carrier   string
+		tuplePath string
+	}{
+		{antigravitySchemaTestModel, "parameters", "properties.tuple.items.anyOf"},
+		{"claude-sonnet-4-6", "parametersJsonSchema", "properties.tuple.items"},
+	} {
+		t.Run("Anthropic to "+tc.target, func(t *testing.T) {
+			t.Parallel()
+			source := []byte(`{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"lookup","input_schema":` + parameters + `}]}`)
+			translated, err := translateAntigravityRequest(protocol.Anthropic, tc.target, source, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, tc.target, translated, source, http.Header{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			schema := gjson.GetBytes(wire, "request.tools.0.functionDeclarations.0."+tc.carrier)
+			if schema.Get("properties.enum.type").String() != "string" || schema.Get("required.0").String() != "enum" {
+				t.Fatalf("schema lost the required enum parameter: %s", schema.Raw)
+			}
+			tuple := schema.Get(tc.tuplePath)
+			if !tuple.IsArray() || tuple.Get("0.type").String() != "string" || tuple.Get("1.type").String() != "integer" {
+				t.Fatalf("schema lost the tuple branches: %s", schema.Raw)
+			}
+			open := schema.Get("properties.open.items")
+			if !open.IsObject() || len(open.Map()) != 0 {
+				t.Fatalf("open items should remain unrestricted: %s", schema.Raw)
+			}
+			closed := schema.Get("properties.closed")
+			if tc.carrier == "parametersJsonSchema" {
+				if closed.Get("items").Type != gjson.False || closed.Get("prefixItems.0.type").String() != "boolean" {
+					t.Fatalf("JSON Schema lost the closed tuple: %s", schema.Raw)
+				}
+			} else if !closed.Get("items").IsObject() || closed.Get("description").String() != "No additional items allowed" {
+				t.Fatalf("native schema should project the closed tuple to a Schema object and hint: %s", schema.Raw)
+			}
+		})
 	}
 }
 

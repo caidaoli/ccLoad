@@ -33,6 +33,23 @@ var cooldownClearChannelFailCount atomic.Uint64
 var cooldownClearKeyFailCount atomic.Uint64
 var cooldownClearModelFailCount atomic.Uint64
 
+/**
+ * @brief 从 Antigravity 非流式成功响应中识别顶层业务错误。
+ * @param body 完整 HTTP 响应体。
+ * @return 内嵌 HTTP 状态，缺少有效错误码时为 502，没有顶层错误时为 0。
+ */
+func antigravityInBandHTTPStatus(body []byte) int {
+	upstreamError := gjson.GetBytes(body, "error")
+	if upstreamError.Type == gjson.Null || !gjson.ValidBytes(body) {
+		return 0
+	}
+	code, ok := jsonIntegerValue(upstreamError.Get("code"))
+	if !ok || code < http.StatusBadRequest || code > 599 {
+		return http.StatusBadGateway
+	}
+	return int(code)
+}
+
 func cooldownWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	// 断开请求取消链，但保留 ctx.Value（例如 trace ID）。
 	// 避免客户端取消/首字节超时导致冷却写入或清理被短路，从而出现“坏 Key/渠道反复被打爆”或“冷却未清除”的假象。

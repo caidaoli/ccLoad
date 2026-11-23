@@ -4044,6 +4044,7 @@ func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 		name, details, header                string
 		message                              string
 		sse, committed, paidOnly, headerDate bool
+		inBand                               bool
 		standard, paid                       int32
 		modelDelay, quotaDelay               time.Duration
 		wantStatus                           int
@@ -4067,6 +4068,8 @@ func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 		{name: "paid rate limit uses header without depleting credits", details: rate, header: "90", modelDelay: 90 * time.Second, paidOnly: true, paid: 1, wantStatus: 429, keepChannelReady: true},
 		{name: "paid balance exhaustion only changes credits", details: balance, header: "90", paidOnly: true, paid: 1, wantStatus: 429, balanceExhausted: true},
 		{name: "SSE ignores establishment header", details: quota, header: "90", quotaDelay: time.Minute, sse: true, standard: 1, paid: 1, wantStatus: 200},
+		{name: "HTTP 200 ignores header for embedded quota error", details: quota, header: "90", quotaDelay: time.Minute, inBand: true, standard: 1, paid: 1, wantStatus: 200},
+		{name: "HTTP 200 uses body retry info for embedded rate error", details: rate + "," + retry + `"8s"}`, header: "90", modelDelay: 8 * time.Second, inBand: true, standard: 1, wantStatus: 429, keepChannelReady: true},
 		{name: "committed SSE records body quota without replay", details: quota + "," + retry + `"13s"}`, header: "90", quotaDelay: 13 * time.Second, sse: true, committed: true, standard: 1, wantStatus: 200},
 		{name: "committed paid SSE records depleted balance", details: balance, header: "90", paidOnly: true, sse: true, committed: true, paid: 1, wantStatus: 200, balanceExhausted: true},
 	} {
@@ -4115,7 +4118,9 @@ func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 					}
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
 				} else {
-					w.WriteHeader(http.StatusTooManyRequests)
+					if !tc.inBand {
+						w.WriteHeader(http.StatusTooManyRequests)
+					}
 					_, _ = io.WriteString(w, payload)
 				}
 			}))
@@ -4260,11 +4265,13 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 		name         string
 		requestModel string
 		stream       bool
+		inBand       bool
 		otherModel   bool
 		allExhausted bool
 		multiURL     bool
 	}{
 		{name: "nonstream", requestModel: actualModel},
+		{name: "nonstream HTTP 200 quota failure", requestModel: actualModel, inBand: true},
 		{name: "stream preserves other models", requestModel: actualModel, stream: true, otherModel: true},
 		{name: "Claude alias to Gemini", requestModel: "claude-sonnet-4-6", stream: true},
 		{name: "all exhausted selects earliest reset", requestModel: actualModel, stream: true, allExhausted: true},
@@ -4292,7 +4299,9 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 					}
 					w.Header().Set("Content-Type", "application/json")
 					if i == 0 || tc.allExhausted {
-						w.WriteHeader(http.StatusTooManyRequests)
+						if !tc.inBand {
+							w.WriteHeader(http.StatusTooManyRequests)
+						}
 						_, _ = fmt.Fprintf(w, `{"error":{"code":429,"message":"Individual quota reached. Please upgrade your subscription to increase your limits.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"uiMessage":"true","model":%q,"quotaResetDelay":%q}}]}}`, actualModel, resetDelay[i].String())
 						return
 					}
@@ -7246,8 +7255,23 @@ func TestProxy_AntigravityProjectDiscoveryRetryAfter(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证普通 HTTP 401 与非流式 2xx 内嵌 401 都会刷新凭据并重试。
+ * @param t 测试上下文。
+ */
 func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	t.Parallel()
+	t.Run("HTTP 401", func(t *testing.T) { testAntigravityOAuthRefreshAfterUnauthorized(t, http.StatusUnauthorized) })
+	t.Run("HTTP 200 with error", func(t *testing.T) { testAntigravityOAuthRefreshAfterUnauthorized(t, http.StatusOK) })
+}
+
+/**
+ * @brief 通过实际代理请求检查拒绝后使用更新的令牌发送推理请求。
+ * @param t 测试上下文。
+ * @param status 第一次推理的传输 HTTP 状态。
+ */
+func testAntigravityOAuthRefreshAfterUnauthorized(t *testing.T, status int) {
+	t.Helper()
 	var upstreamAttempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := upstreamAttempts.Add(1)
@@ -7256,7 +7280,7 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 				t.Errorf("first Authorization = %q", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
+			w.WriteHeader(status)
 			_, _ = io.WriteString(w, `{"error":{"code":401,"message":"expired"}}`)
 			return
 		}
@@ -7316,6 +7340,43 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	persistedCredential, err := antigravityauth.ParseCredential([]byte(configs[0].OAuthCredential))
 	if err != nil || persistedCredential.PaidTier != nil {
 		t.Fatalf("persisted paid tier = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+/**
+ * @brief 验证 HTTP 200 中的 Antigravity TOS 拒绝只停用失败账号，并切换到可用账号。
+ * @param t 测试上下文。
+ */
+func TestProxy_AntigravityInBandTOSViolation(t *testing.T) {
+	t.Parallel()
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Account suspended","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"TOS_VIOLATION"}]}}`)
+	}))
+	backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"backup account"}]},"finishReason":"STOP"}]}}`)
+	}))
+	const modelName = "gemini-3-flash"
+	backupCredential := setJSONValue([]byte(antigravityProxyTestCredential(t, "at-tos-backup")), "refresh_token", "rt-tos-backup")
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "tos-primary", upstreamProtocol: "gemini", models: modelName, priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-tos-primary")},
+		{name: "tos-backup", upstreamProtocol: "gemini", models: modelName, priority: 10, authType: model.AuthTypeAntigravityOAuth, oauthCredential: string(backupCredential)},
+	}, map[int]string{0: primary.URL, 1: backup.URL})
+	res := doProxyRequest(t, env.engine, "/v1beta/models/"+modelName+":generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if res.Code != http.StatusOK || gjson.GetBytes(res.Body.Bytes(), "candidates.0.content.parts.0.text").String() != "backup account" {
+		t.Fatalf("response=%d body=%s", res.Code, res.Body.String())
+	}
+	configs, err := env.store.ListConfigs(t.Context())
+	if err != nil || len(configs) != 2 {
+		t.Fatalf("ListConfigs=%v, err=%v", configs, err)
+	}
+	for _, cfg := range configs {
+		if cfg.Enabled != (cfg.Name == "tos-backup") || cfg.CooldownUntil != 0 {
+			t.Fatalf("%s enabled=%t, cooldown=%d", cfg.Name, cfg.Enabled, cfg.CooldownUntil)
+		}
 	}
 }
 

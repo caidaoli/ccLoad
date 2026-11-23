@@ -43,6 +43,49 @@ func TestConvertOpenAIResponsesRequestToClaude_KeepsLatestConsecutiveReasoning(t
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_ReplaysSameResponseThinkingInOrder(t *testing.T) {
+	firstRaw, firstSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-first")
+	secondRaw, secondSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-second")
+	lastRaw, lastSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-last")
+	item := func(id, signature, text string) string {
+		return fmt.Sprintf(`{"type":"reasoning","id":%q,"encrypted_content":%q,"summary":[{"type":"summary_text","text":%q}]}`, id, signature, text)
+	}
+	first := item("rs_msg_same_0", firstRaw, "first")
+	second := item("rs_msg_same_1", secondRaw, "second")
+	for _, tt := range []struct {
+		name       string
+		items      []string
+		texts      []string
+		signatures []string
+	}{
+		{"ascending indices", []string{first, second}, []string{"first", "second"}, []string{firstSignature, secondSignature}},
+		{"duplicate tail", []string{first, second, item("rs_msg_same_1", lastRaw, "last")}, []string{"first", "last"}, []string{firstSignature, lastSignature}},
+		{"descending index", []string{first, second, item("rs_msg_same_0", lastRaw, "last")}, []string{"last"}, []string{lastSignature}},
+		{"different response", []string{first, second, item("rs_msg_other_2", lastRaw, "last")}, []string{"last"}, []string{lastSignature}},
+		{"invalid index", []string{first, second, item("rs_msg_same_+2", lastRaw, "last")}, []string{"last"}, []string{lastSignature}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := responsesRequestFromItems(append(tt.items,
+				responsesFunctionCallItem("call_same", "tool"),
+				responsesFunctionCallOutputItem("call_same", "done"),
+			)...)
+			out, err := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts := gjson.GetBytes(out, "messages.0.content").Array()
+			if len(parts) != len(tt.texts)+1 || parts[len(parts)-1].Get("type").String() != "tool_use" {
+				t.Fatalf("unexpected assistant content: %s", out)
+			}
+			for i, want := range tt.texts {
+				if part := parts[i]; part.Get("type").String() != "thinking" || part.Get("thinking").String() != want || part.Get("signature").String() != tt.signatures[i] {
+					t.Fatalf("unexpected thinking block at index %d: %s", i, part.Raw)
+				}
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_ToolCallsSeparateReasoningBlocks(t *testing.T) {
 	firstRaw, firstSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-first")
 	secondRaw, secondSignature := testClaudeResponsesThinkingSignatureForModel(t, "claude-opus-5-second")

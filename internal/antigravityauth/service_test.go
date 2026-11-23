@@ -61,25 +61,45 @@ func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Verifies loadCodeAssist credit decoding and spending eligibility.
+ * @param t Test context.
+ */
 func TestFetchSubscriptionCredits(t *testing.T) {
 	for _, tc := range []struct {
 		name, amount, minimum string
+		balance, threshold    float64
 		known, available      bool
 	}{
-		{"numbers", "4.5", "1", true, true},
-		{"protobuf strings", `"4.5"`, `"1"`, true, true},
-		{"insufficient", "0", "1", true, false},
-		{"zero minimum", "1", "0", true, true},
-		{"missing", "null", "1", false, false},
-		{"invalid", `"NaN"`, "1", false, false},
-		{"negative", "-1", "1", false, false},
+		{"numbers", "4.5", "1", 4.5, 1, true, true},
+		{"protobuf strings", `" 4.5 "`, `" 1 "`, 4.5, 1, true, true},
+		{"equal to minimum", "4.5", "4.5", 4.5, 4.5, true, true},
+		{"insufficient", "0.5", "1", 0.5, 1, true, false},
+		{"omitted minimum", "1", "", 1, 0, true, true},
+		{"null minimum", "1", "null", 1, 0, true, true},
+		{"empty minimum", "1", `""`, 1, 0, true, true},
+		{"blank minimum", "1", `" \t "`, 1, 0, true, true},
+		{"zero balance with omitted minimum", "0", "", 0, 0, true, false},
+		{"zero balance with explicit zero minimum", "0", "0", 0, 0, true, false},
+		{"missing balance", "null", "1", 0, 0, false, false},
+		{"invalid balance", `"NaN"`, "1", 0, 0, false, false},
+		{"infinite balance", `"Inf"`, "1", 0, 0, false, false},
+		{"negative balance", "-1", "1", 0, 0, false, false},
+		{"invalid minimum", "1", `"null"`, 0, 0, false, false},
+		{"nonfinite minimum", "1", `"NaN"`, 0, 0, false, false},
+		{"infinite minimum", "1", `"Inf"`, 0, 0, false, false},
+		{"negative minimum", "1", "-1", 0, 0, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			minimumField := ""
+			if tc.minimum != "" {
+				minimumField = `,"minimumCreditAmountForUsage":` + tc.minimum
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/v1internal:loadCodeAssist" || r.Header.Get("Authorization") != "Bearer token" {
 					t.Errorf("unexpected subscription request: %s", r.URL.Path)
 				}
-				_, _ = fmt.Fprintf(w, `{"paidTier":{"id":"paid","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":%s,"minimumCreditAmountForUsage":%s}]}}`, tc.amount, tc.minimum)
+				_, _ = fmt.Fprintf(w, `{"paidTier":{"id":"paid","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"NaN"},{"creditType":"GOOGLE_ONE_AI","creditAmount":%s%s}]}}`, tc.amount, minimumField)
 			}))
 			defer server.Close()
 			service := NewService(server.Client())
@@ -88,8 +108,17 @@ func TestFetchSubscriptionCredits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tier.ID != "paid" || credits.SampledAt.IsZero() || (credits.Balance != nil) != tc.known || credits.Available() != tc.available {
+			if tier.ID != "paid" || credits.SampledAt.IsZero() {
 				t.Fatalf("tier=%+v credits=%+v", tier, credits)
+			}
+			if (credits.Balance != nil) != tc.known || (credits.Minimum != nil) != tc.known {
+				t.Fatalf("credits=%+v, want both amounts known=%t", credits, tc.known)
+			}
+			if tc.known && (*credits.Balance != tc.balance || *credits.Minimum != tc.threshold) {
+				t.Errorf("balance=%v minimum=%v, want %v and %v", *credits.Balance, *credits.Minimum, tc.balance, tc.threshold)
+			}
+			if got := credits.Available(); got != tc.available {
+				t.Errorf("Available()=%t, want %t", got, tc.available)
 			}
 		})
 	}

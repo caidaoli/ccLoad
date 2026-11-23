@@ -24,6 +24,18 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-23)
+
+These targeted ports use official `v8.1.1` (`6eb8554f0ede597b2aa3e508ffb3f111d3c2b9e6`).
+
+- Responses to Claude replays adjacent signed thinking blocks with ascending
+  indices from the same response (`c71aa824e`). Tool outputs retain their
+  effective cache breakpoint on the outer Claude block (`8cab158fe`).
+- Gemini schema cleaning distinguishes user-defined property names from schema
+  keywords (`cad3ae5d6`). Native protobuf Schema requires an object for array
+  items (`c9e6e2e31`). JSON Schema tool parameters retain tuple and boolean
+  items, including on ccLoad's Antigravity Claude route.
+
 ## Post-snapshot compatibility fixes (2026-11-21)
 
 These targeted ports use official `v8.0.80` (`f5c5681a8361c9da53e93c60b6507816eee7468b`).

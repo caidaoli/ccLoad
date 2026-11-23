@@ -3602,10 +3602,13 @@ func TestHandleChannelTest_AntigravityValidationCredentialReplacement(t *testing
 	for _, tc := range []struct {
 		name           string
 		stream         bool
+		inBand         bool
 		replaceAccount bool
 	}{
 		{name: "HTTP access token rotation"},
 		{name: "HTTP account replacement", replaceAccount: true},
+		{name: "HTTP 200 access token rotation", inBand: true},
+		{name: "HTTP 200 account replacement", inBand: true, replaceAccount: true},
 		{name: "SSE access token rotation", stream: true},
 		{name: "SSE account replacement", stream: true, replaceAccount: true},
 	} {
@@ -3628,7 +3631,9 @@ func TestHandleChannelTest_AntigravityValidationCredentialReplacement(t *testing
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
+				if !tc.inBand {
+					w.WriteHeader(http.StatusForbidden)
+				}
 				_, _ = io.WriteString(w, rejection)
 			}))
 			t.Cleanup(upstream.Close)
@@ -3653,6 +3658,12 @@ func TestHandleChannelTest_AntigravityValidationCredentialReplacement(t *testing
 				resp.Data["cooldown_action"] != wantAction || resp.Data["error"] != "Verify your account to continue." {
 				t.Fatalf("channel test result=%+v, want failed validation and %q", resp.Data, wantAction)
 			}
+			if tc.inBand {
+				upstreamStatus, _ := getResultInt(resp.Data["upstream_status_code"])
+				if upstreamStatus != http.StatusOK || resp.Data["upstream_response_body"] != rejection {
+					t.Fatalf("channel test lost the original HTTP status or response: %+v", resp.Data)
+				}
+			}
 			current, err := srv.store.GetConfig(t.Context(), channel.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -3661,6 +3672,45 @@ func TestHandleChannelTest_AntigravityValidationCredentialReplacement(t *testing
 				t.Fatalf("enabled=%t credential changed=%t cooldown=%d", current.Enabled, current.OAuthCredential != renewed, current.CooldownUntil)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 验证 Antigravity 管理测试处理非流式 2xx 内嵌限流，忽略其传输响应头中的 Retry-After。
+ * @param t 测试上下文。
+ */
+func TestHandleChannelTest_AntigravityInBandRateLimit(t *testing.T) {
+	t.Parallel()
+	const rejection = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Capacity temporarily unavailable"}}`
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1200")
+		_, _ = io.WriteString(w, rejection)
+	}))
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = upstream.Client()
+	channel := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+	channelID := fmt.Sprintf("%d", channel.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	start := time.Now()
+	srv.HandleChannelTest(c)
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	status, _ := getResultInt(resp.Data["status_code"])
+	upstreamStatus, _ := getResultInt(resp.Data["upstream_status_code"])
+	if !resp.Success || resp.Data["success"] != false || status != http.StatusTooManyRequests || upstreamStatus != http.StatusOK ||
+		resp.Data["error"] != "Capacity temporarily unavailable" || resp.Data["upstream_response_body"] != rejection {
+		t.Fatalf("channel test result=%+v", resp.Data)
+	}
+	cooldowns, err := srv.store.GetAllModelCooldowns(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := cooldowns[channel.ID]["gemini-3-flash"]
+	if until.Before(start) || until.After(start.Add(10*time.Minute)) {
+		t.Fatalf("model cooldown=%v, want normal initial cooldown", until)
 	}
 }
 
@@ -3832,13 +3882,28 @@ func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 	}
 }
 
+/**
+ * @brief 验证容量错误仅冷却模型一次，并保留真实 HTTP 状态。
+ * @param t 测试上下文。
+ */
 func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *testing.T) {
 	t.Parallel()
+	t.Run("HTTP 503", func(t *testing.T) { testHandleChannelAntigravityCapacityExhausted(t, http.StatusServiceUnavailable) })
+	t.Run("HTTP 200 with error", func(t *testing.T) { testHandleChannelAntigravityCapacityExhausted(t, http.StatusOK) })
+}
+
+/**
+ * @brief 通过管理测试入口检查容量失败后的 URL 回退、响应状态与模型冷却。
+ * @param t 测试上下文。
+ * @param status 上游 HTTP 状态。
+ */
+func testHandleChannelAntigravityCapacityExhausted(t *testing.T, status int) {
+	t.Helper()
 	var calls atomic.Int32
 	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		calls.Add(1)
 		return &http.Response{
-			StatusCode: http.StatusServiceUnavailable,
+			StatusCode: status,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(antigravityCapacityBodyForAdminTest)),
 			Request:    req,
@@ -3858,6 +3923,9 @@ func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *t
 	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
 	if got, _ := resp.Data["status_code"].(float64); got != http.StatusTooManyRequests {
 		t.Fatalf("status_code=%v data=%+v", resp.Data["status_code"], resp.Data)
+	}
+	if got, _ := getResultInt(resp.Data["upstream_status_code"]); got != status {
+		t.Fatalf("upstream_status_code=%d, want %d, data=%+v", got, status, resp.Data)
 	}
 	if got, _ := resp.Data["retry_strategy"].(string); got != "model_capacity_retry_1" {
 		t.Fatalf("retry_strategy=%q data=%+v", got, resp.Data)

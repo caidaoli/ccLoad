@@ -1789,6 +1789,19 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	reqCtx.advisor.observeJSON(rawBody)
 	translatedRequestBody := reqCtx.transformPlan.TranslatedBody
 	if reqCtx.antigravityOAuth {
+		if status := antigravityInBandHTTPStatus(rawBody); status != 0 {
+			if status == http.StatusTooManyRequests {
+				hdrClone.Del("Retry-After")
+			}
+			return &fwResult{
+				Status:         status,
+				UpstreamStatus: resp.StatusCode,
+				Header:         hdrClone,
+				Body:           rawBody,
+				FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
+				BytesReceived:  readStats.totalBytes,
+			}, reqCtx.Duration().Seconds(), nil
+		}
 		responseBody, err = unwrapAntigravityResponse(rawBody)
 		if err != nil {
 			return nil, reqCtx.Duration().Seconds(), err

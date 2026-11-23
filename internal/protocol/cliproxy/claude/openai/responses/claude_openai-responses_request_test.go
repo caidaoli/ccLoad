@@ -792,6 +792,80 @@ func TestConvertOpenAIResponsesRequestToClaude_SynthesizesResultForTrailingToolU
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_HoistsToolOutputCacheControl(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		output   string
+		wantTTL  string
+		wantText string
+	}{
+		{"item marker", `"a.txt"`, "1h", "a.txt"},
+		{"last valid part marker", `[
+			{"type":"input_text","text":"a.txt","cache_control":{"type":"ephemeral","ttl":"1h"}},
+			{"type":"input_text","text":"b.txt","cache_control":{"type":"ephemeral","ttl":"5m"}},
+			{"type":"input_text","text":"c.txt","cache_control":{"type":"invalid"}}
+		]`, "5m", ""},
+		{"invalid part falls back", `{"type":"input_text","text":"a.txt","cache_control":{"type":"invalid"}}`, "1h", "a.txt"},
+		{"arbitrary JSON stays text", `{"cache_control":{"type":"ephemeral","ttl":"5m"},"result":"a.txt"}`, "1h", `{"cache_control":{"type":"ephemeral","ttl":"5m"},"result":"a.txt"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := responsesRequestFromItems(
+				responsesFunctionCallItem("call_a", "read"),
+				`{"type":"function_call_output","call_id":"call_a","cache_control":{"type":"ephemeral","ttl":"1h"},"output":`+tt.output+`}`,
+			)
+			out, err := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := gjson.GetBytes(out, "messages.1.content.0")
+			if result.Get("type").String() != "tool_result" || result.Get("cache_control.type").String() != "ephemeral" || result.Get("cache_control.ttl").String() != tt.wantTTL {
+				t.Fatalf("unexpected tool_result: %s", out)
+			}
+			content := result.Get("content")
+			if tt.wantText != "" {
+				if content.Type != gjson.String || content.String() != tt.wantText {
+					t.Fatalf("unexpected tool_result text: %s", content.Raw)
+				}
+				return
+			}
+			parts := content.Array()
+			if len(parts) != 3 {
+				t.Fatalf("unexpected tool_result parts: %s", content.Raw)
+			}
+			for i, want := range []string{"a.txt", "b.txt", "c.txt"} {
+				if parts[i].Get("text").String() != want || parts[i].Get("cache_control").Exists() {
+					t.Fatalf("unexpected tool_result part: %s", parts[i].Raw)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_StandaloneToolOutputCacheControl(t *testing.T) {
+	raw := responsesRequestFromItems(`{
+		"type":"custom_tool_call_output",
+		"output":[
+			{"type":"input_text","text":"a.txt"},
+			{"type":"input_text","text":"","cache_control":{"type":"ephemeral","ttl":"1h"}},
+			{"type":"input_text","text":"b.txt"}
+		],
+		"cache_control":{"type":"ephemeral","ttl":"5m"}
+	}`)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(parts) != 2 {
+		t.Fatalf("unexpected content: %s", out)
+	}
+	for i, want := range []struct{ text, ttl string }{{"a.txt", "1h"}, {"b.txt", "5m"}} {
+		if part := parts[i]; part.Get("type").String() != "text" || part.Get("text").String() != want.text || part.Get("cache_control.ttl").String() != want.ttl {
+			t.Fatalf("unexpected text block: %s", part.Raw)
+		}
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_LateOrphanToolResultFoldsToText(t *testing.T) {
 	// An output can pass the emittedToolUses gate but still land after an
 	// intervening assistant message, where its tool_result no longer answers
@@ -804,7 +878,7 @@ func TestConvertOpenAIResponsesRequestToClaude_LateOrphanToolResultFoldsToText(t
 			{"type":"function_call","call_id":"call_a","name":"exec","arguments":"{}"},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"wait"}]},
 			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"interlude"}]},
-			{"type":"function_call_output","call_id":"call_a","output":"a.txt"}
+			{"type":"function_call_output","call_id":"call_a","output":"a.txt","cache_control":{"type":"ephemeral","ttl":"1h"}}
 		]
 	}`)
 
@@ -840,6 +914,9 @@ func TestConvertOpenAIResponsesRequestToClaude_LateOrphanToolResultFoldsToText(t
 	})
 	if got := last.Get("content.0.text").String(); got != "a.txt" {
 		t.Fatalf("messages.4.content.0.text = %q, want a.txt. Output: %s", got, string(out))
+	}
+	if got := last.Get("content.0.cache_control.ttl").String(); got != "1h" {
+		t.Fatalf("messages.4.content.0.cache_control.ttl = %q, want 1h. Output: %s", got, out)
 	}
 }
 

@@ -432,9 +432,7 @@ func prepareAntigravityRequestBody(
 			}
 		}
 		request = normalizeAntigravityClaudeToolResultOrder(request)
-		if structuredOutputPrompt == "" {
-			request = ensureAntigravityValidatedToolMode(request)
-		}
+		request = normalizeAntigravityClaudeToolMode(request, structuredOutputPrompt != "")
 	} else {
 		request = cliproxysignature.SanitizeVertexSignaturesForNonVertex(request, "contents")
 		if gjson.GetBytes(request, "generationConfig").IsObject() {
@@ -490,10 +488,13 @@ func prepareAntigravityRequestBody(
 	return raw, nil
 }
 
-// takeAntigravityClaude55StructuredOutput 对齐 CPA PrepareAntigravityClaudeStructuredOutput：
-// Antigravity 的原生结构化输出靠强制工具实现，而 Opus/Sonnet 5.5 拒绝强制工具。
-// 这里取出未清洗的 schema 生成提示词，删除原生输出字段并把 ANY/VALIDATED 降为
-// AUTO。返回非空提示词时调用方不得再写回 VALIDATED。
+/**
+ * @brief 将 Claude 5.5 不支持的原生结构化输出转换为提示词。
+ * @param request Antigravity 信封内的请求，schema 尚未清洗。
+ * @param modelName 实际请求的上游模型。
+ * @return 移除了已转换 schema 和响应 MIME 类型的请求。
+ * @return 基于原始 schema 的提示词；无需转换时为空。
+ */
 func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) ([]byte, string) {
 	if anthropicForcedToolChoiceRejectingFamily(anthropicCanonicalModelName(modelName)) == "" {
 		return request, ""
@@ -515,17 +516,6 @@ func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) (
 	for _, configKey := range configKeys {
 		for _, key := range append(schemaKeys, "responseMimeType", "response_mime_type") {
 			request = deleteJSONPath(request, configKey+"."+key)
-		}
-	}
-	for _, toolConfigKey := range []string{"toolConfig", "tool_config"} {
-		for _, callingKey := range []string{"functionCallingConfig", "function_calling_config"} {
-			path := toolConfigKey + "." + callingKey
-			switch strings.ToUpper(jsonStringValue(gjson.GetBytes(request, path+".mode"))) {
-			case "ANY", "VALIDATED":
-				request = setJSONValue(request, path+".mode", "AUTO")
-				request = deleteJSONPath(request, path+".allowedFunctionNames")
-				request = deleteJSONPath(request, path+".allowed_function_names")
-			}
 		}
 	}
 	return request, prompt
@@ -892,7 +882,7 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 		}
 	}
 	if _, schemaRaw, found := firstAntigravityJSONObject(request, generationSchemaPaths); found {
-		cleaned := cleanAntigravitySchemaRaw(schemaRaw, true, true)
+		cleaned := cliproxyutil.CleanJSONSchemaForAntigravityResponse(schemaRaw)
 		request = consolidateAntigravitySchemaAliases(request, "generationConfig.responseSchema", generationSchemaPaths, cleaned)
 	}
 	return consolidateAntigravityGenerationConfigParents(request)
@@ -906,6 +896,10 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
  * @return 清理后的工具数组 JSON。
  */
 func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema, isClaudeModel bool) string {
+	cleanNative := cliproxyutil.CleanJSONSchemaForGemini
+	if useAntigravitySchema {
+		cleanNative = cliproxyutil.CleanJSONSchemaForAntigravity
+	}
 	out := []byte(tools)
 	for ti, tool := range gjson.Parse(tools).Array() {
 		if !tool.IsObject() {
@@ -923,11 +917,13 @@ func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema, isClaud
 				normalized := []byte(declaration.Raw)
 				for _, aliases := range [][]string{antigravityParameterSchemaKeys, antigravityResponseSchemaKeys} {
 					if _, schemaRaw, found := firstAntigravityJSONObject(normalized, aliases); found {
-						cleaned := cleanAntigravitySchemaRaw(schemaRaw, useAntigravitySchema, false)
 						canonical := aliases[0]
+						var cleaned string
 						if isClaudeModel && canonical == "parameters" {
 							canonical = "parametersJsonSchema"
-							cleaned = normalizeAntigravityJSONSchemaTypes(cleaned)
+							cleaned = normalizeAntigravityJSONSchemaTypes(cleanAntigravityToolSchemaRaw(schemaRaw, cliproxyutil.CleanJSONSchemaForAntigravityJSONSchema))
+						} else {
+							cleaned = cleanAntigravityToolSchemaRaw(schemaRaw, cleanNative)
 						}
 						normalized = consolidateAntigravitySchemaAliases(normalized, canonical, aliases, cleaned)
 					}
@@ -959,33 +955,45 @@ func normalizeAntigravityJSONSchemaTypes(schema string) string {
 	return schema
 }
 
-func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {
-	input := raw
-	if !response {
-		input = `{"schema":` + raw + `}`
+/**
+ * @brief 将工具 schema 作为嵌套节点清理，以保留已有的工具占位规则。
+ * @param raw 工具参数或返回值的 schema 对象。
+ * @param clean 实际载体对应的清理函数。
+ * @return 清理后的 schema 对象，清理后不再为对象时保留原 schema。
+ */
+func cleanAntigravityToolSchemaRaw(raw string, clean func(string) string) string {
+	cleaned := clean(`{"schema":` + raw + `}`)
+	if nested := gjson.Get(cleaned, "schema"); nested.IsObject() {
+		return nested.Raw
 	}
-	cleaned := ""
-	switch {
-	case response:
-		cleaned = cliproxyutil.CleanJSONSchemaForAntigravityResponse(input)
-	case antigravity:
-		cleaned = cliproxyutil.CleanJSONSchemaForAntigravity(input)
-	default:
-		cleaned = cliproxyutil.CleanJSONSchemaForGemini(input)
-	}
-	if !response {
-		if nested := gjson.Get(cleaned, "schema"); nested.IsObject() {
-			return nested.Raw
-		}
-		return raw
-	}
-	if !gjson.Valid(cleaned) {
-		return raw
-	}
-	return cleaned
+	return raw
 }
 
-func ensureAntigravityValidatedToolMode(request []byte) []byte {
+/**
+ * @brief 保留显式禁用工具的选择，并为 Claude 设置适用的调用模式。
+ * @param request Antigravity 信封内的请求。
+ * @param promptStructuredOutput 是否已改用提示词实现结构化输出，此时强制工具选择降为 AUTO。
+ * @return 带最终工具调用模式的请求。
+ */
+func normalizeAntigravityClaudeToolMode(request []byte, promptStructuredOutput bool) []byte {
+	for _, toolKey := range []string{"toolConfig", "tool_config"} {
+		for _, callingKey := range []string{"functionCallingConfig", "function_calling_config"} {
+			path := toolKey + "." + callingKey
+			switch strings.ToUpper(strings.TrimSpace(jsonStringValue(gjson.GetBytes(request, path+".mode")))) {
+			case "NONE":
+				return setJSONValue(request, path+".mode", "NONE")
+			case "ANY", "VALIDATED":
+				if promptStructuredOutput {
+					request = setJSONValue(request, path+".mode", "AUTO")
+					request = deleteJSONPath(request, path+".allowedFunctionNames")
+					request = deleteJSONPath(request, path+".allowed_function_names")
+				}
+			}
+		}
+	}
+	if promptStructuredOutput {
+		return request
+	}
 	return setJSONValue(request, "toolConfig.functionCallingConfig.mode", "VALIDATED")
 }
 

@@ -2309,7 +2309,7 @@ func (s *Server) doChannelTestCodexWebsocket(
 }
 
 /**
- * @brief 解析管理测试非流式响应，按代理边界拒绝 Gemini 零输出异常并写入测试结果。
+ * @brief 解析管理测试非流式响应，识别 Antigravity 业务错误和 Gemini 零输出异常。
  * @param ctx 测试请求上下文。
  * @param requestPlan 已确定客户端、上游协议和提供商的请求计划。
  * @param testReq 测试模型、计费和图片选项。
@@ -2338,7 +2338,16 @@ func (s *Server) parseTestNonStreamResponse(
 	}
 	result["duration_ms"] = time.Since(start).Milliseconds()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	statusCode := resp.StatusCode
+	if requestPlan.antigravityOAuth && statusCode >= 200 && statusCode < 300 {
+		if status := antigravityInBandHTTPStatus(bodyBytes); status != 0 {
+			statusCode = status
+			result["success"] = false
+			result["status_code"] = status
+			result["upstream_status_code"] = resp.StatusCode
+		}
+	}
+	if statusCode >= 200 && statusCode < 300 {
 		parseBody := bodyBytes
 		upstreamBody := bodyBytes
 		translatedRequestBody := requestPlan.requestBody
@@ -2433,7 +2442,11 @@ func (s *Server) parseTestNonStreamResponse(
 		result["raw_response"] = string(bodyBytes)
 	}
 	if errorMsg == "" {
-		errorMsg = "API返回错误状态: " + resp.Status
+		if statusCode != resp.StatusCode {
+			errorMsg = fmt.Sprintf("API返回错误状态: %d %s", statusCode, http.StatusText(statusCode))
+		} else {
+			errorMsg = "API返回错误状态: " + resp.Status
+		}
 	}
 	result["error"] = errorMsg
 	result["upstream_response_body"] = string(bodyBytes)
@@ -3506,8 +3519,10 @@ func markChannelTestCapacityExhausted(result map[string]any, retries int) {
 	if result == nil {
 		return
 	}
-	if statusCode, ok := getResultInt(result["status_code"]); ok {
-		result["upstream_status_code"] = statusCode
+	if _, exists := result["upstream_status_code"]; !exists {
+		if statusCode, ok := getResultInt(result["status_code"]); ok {
+			result["upstream_status_code"] = statusCode
+		}
 	}
 	result["status_code"] = http.StatusTooManyRequests
 	result["antigravity_model_capacity"] = true
@@ -3529,10 +3544,7 @@ func (s *Server) applyChannelTestCapacityCooldown(
 	}
 	upstreamStatus, ok := getResultInt(result["upstream_status_code"])
 	if !ok {
-		upstreamStatus, ok = getResultInt(result["status_code"])
-	}
-	if !ok {
-		upstreamStatus = http.StatusServiceUnavailable
+		upstreamStatus, _ = getResultInt(result["status_code"])
 	}
 	_, errorBody, headers := buildTestFailureClassificationInput(result)
 	actualModel := ""
@@ -3540,9 +3552,10 @@ func (s *Server) applyChannelTestCapacityCooldown(
 		actualModel = channelTestActualModel(result, testReq.Model)
 	}
 	s.applyAntigravityModelCapacityCooldown(ctx, cfg, keyIndex, actualModel, &fwResult{
-		Status: upstreamStatus,
-		Body:   errorBody,
-		Header: headers,
+		Status:         http.StatusServiceUnavailable,
+		UpstreamStatus: upstreamStatus,
+		Body:           errorBody,
+		Header:         headers,
 	})
 	result["antigravity_capacity_cooldown_applied"] = true
 }

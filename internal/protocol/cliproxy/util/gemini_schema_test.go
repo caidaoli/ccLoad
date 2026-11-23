@@ -4270,6 +4270,100 @@ func TestIssue6732_PropertyNamedConstRemainsProperty(t *testing.T) {
 	if parsed.Get("enum").Exists() {
 		t.Errorf("property named const fabricates a root enum: %s", got)
 	}
+	for _, path := range []string{"properties.enum", "properties.type", "properties.description"} {
+		if parsed.Get(path).Exists() {
+			t.Errorf("property named const fabricates %s: %s", path, got)
+		}
+	}
+}
+
+func TestCleanJSONSchemaDistinguishesPropertyNamesFromConstraints(t *testing.T) {
+	input := `{"type":"object","properties":{"const":{"type":"string","const":"fixed"},"enum":{"type":"string","enum":["a","b"]},"additionalProperties":false},"required":["const","enum"]}`
+	want := `{"type":"object","properties":{"const":{"type":"string","description":"Allowed: fixed"},"enum":{"type":"string","description":"Allowed: a, b"},"additionalProperties":false},"required":["const","enum"]}`
+	compareJSON(t, want, CleanJSONSchemaForAntigravity(input))
+	compareJSON(t, `{"type":"string","enum":["fixed"]}`, CleanJSONSchemaForGemini(`{"type":"string","const":"fixed"}`))
+}
+
+func TestCleanJSONSchemaNormalizesNativeArrayItems(t *testing.T) {
+	tests := []struct {
+		name  string
+		clean func(string) string
+		input string
+		want  string
+	}{
+		{
+			name:  "nested tuples retain distinct branches",
+			clean: CleanJSONSchemaForAntigravity,
+			input: `{"type":"array","items":[{"type":"array","items":[{"type":"string","description":"value"},{"description":"value","type":"string"}]},{"type":"boolean"}]}`,
+			want:  `{"type":"array","items":{"anyOf":[{"type":"array","items":{"type":"string","description":"value"}},{"type":"boolean"}]}}`,
+		},
+		{
+			name:  "nullable tuple on Antigravity",
+			clean: CleanJSONSchemaForAntigravity,
+			input: `{"type":"array","items":[{"type":"string"},{"type":"null"}]}`,
+			want:  `{"type":"array","items":{"type":"string","nullable":true,"description":"Accepts: string | null"}}`,
+		},
+		{
+			name:  "nullable tuple on Gemini",
+			clean: CleanJSONSchemaForGemini,
+			input: `{"type":"array","items":[{"type":"string"},{"type":"null"}]}`,
+			want:  `{"type":"array","items":{"type":"string","description":"Accepts: string | null"}}`,
+		},
+		{
+			name:  "legacy native Claude tool selects the strongest branch",
+			clean: func(s string) string { return CleanJSONSchemaForAntigravityClaudeTool(s, true) },
+			input: `{"type":"array","items":[{"type":"string"},{"type":"number"}]}`,
+			want:  `{"type":"array","items":{"type":"string","description":"Accepts: string | number"}}`,
+		},
+		{
+			name:  "empty tuple receives tool placeholder",
+			clean: CleanJSONSchemaForGemini,
+			input: `{"type":"array","items":[]}`,
+			want:  `{"type":"array","items":{"type":"string"}}`,
+		},
+		{
+			name:  "false items in native response",
+			clean: CleanJSONSchemaForAntigravityResponse,
+			input: `{"type":"array","items":false}`,
+			want:  `{"type":"array","items":{},"description":"No items allowed"}`,
+		},
+		{
+			name:  "false items after a prefix",
+			clean: CleanJSONSchemaForGemini,
+			input: `{"type":"array","prefixItems":[{"type":"integer"}],"items":false}`,
+			want:  `{"type":"array","prefixItems":[{"type":"integer"}],"items":{"type":"string"},"description":"No additional items allowed"}`,
+		},
+		{
+			name:  "malformed scalar items in native schema",
+			clean: CleanJSONSchemaForGemini,
+			input: `{"type":"array","items":null}`,
+			want:  `{"type":"array","items":{"type":"string"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.clean(tt.input)
+			compareJSON(t, tt.want, got)
+			compareJSON(t, got, tt.clean(got))
+		})
+	}
+}
+
+func TestCleanJSONSchemaPreservesArrayItemsForJSONSchemaCarrier(t *testing.T) {
+	cleaners := map[string]func(string) string{
+		"Gemini":      CleanJSONSchemaForGeminiJSONSchema,
+		"Antigravity": CleanJSONSchemaForAntigravityJSONSchema,
+	}
+	for name, clean := range cleaners {
+		t.Run(name, func(t *testing.T) {
+			for _, input := range []string{
+				`{"type":"array","prefixItems":[{"type":"integer"}],"items":false}`,
+				`{"type":"array","items":[{"type":"string"},{"type":"number"}]}`,
+			} {
+				compareJSON(t, input, clean(input))
+			}
+		})
+	}
 }
 
 // geminiSchemaDiamondInput builds a schema referencing D12, where each Di is an object with two

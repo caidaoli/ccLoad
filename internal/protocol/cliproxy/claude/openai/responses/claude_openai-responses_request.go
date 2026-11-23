@@ -174,6 +174,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	var pendingRole string
 	var pendingParts [][]byte
 	var pendingToolUseParts [][]byte
+	var pendingThinkingResponseID string
+	var pendingThinkingBlockIndex uint64
 	var turnHasEmptyWebSearchResult bool
 	type systemInputEntry struct {
 		blocks  [][]byte
@@ -231,6 +233,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		pendingRole = ""
 		pendingParts = nil
 		pendingToolUseParts = nil
+		pendingThinkingResponseID = ""
 	}
 	appendParts := func(role string, parts ...[]byte) {
 		if role == "" || len(parts) == 0 {
@@ -241,6 +244,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 		pendingRole = role
 		pendingParts = append(pendingParts, parts...)
+		pendingThinkingResponseID = ""
 	}
 	appendToolUse := func(toolUse []byte) {
 		if len(toolUse) == 0 {
@@ -252,7 +256,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		pendingRole = "assistant"
 		pendingToolUseParts = append(pendingToolUseParts, toolUse)
 	}
-	appendReasoning := func(reasoningPart []byte) {
+	appendReasoning := func(reasoningPart []byte, itemID string) {
 		if len(reasoningPart) == 0 {
 			return
 		}
@@ -266,17 +270,30 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		if len(pendingToolUseParts) > 0 {
 			pendingParts = append(pendingParts, pendingToolUseParts...)
 			pendingToolUseParts = nil
+			pendingThinkingResponseID = ""
 		}
 
-		currentType := gjson.GetBytes(reasoningPart, "type").String()
-		if currentType == "thinking" && len(pendingParts) > 0 {
-			lastIdx := len(pendingParts) - 1
-			if gjson.GetBytes(pendingParts[lastIdx], "type").String() == "thinking" {
-				pendingParts[lastIdx] = reasoningPart
-				return
+		if gjson.GetBytes(reasoningPart, "type").String() != "thinking" {
+			pendingParts = append(pendingParts, reasoningPart)
+			pendingThinkingResponseID = ""
+			return
+		}
+		responseID, blockIndex := parseClaudeReasoningItemID(itemID)
+		sameResponse := responseID != "" && responseID == pendingThinkingResponseID
+		if sameResponse && blockIndex == pendingThinkingBlockIndex {
+			pendingParts[len(pendingParts)-1] = reasoningPart
+			return
+		}
+		// Keep adjacent thinking blocks when their indices put them in order
+		// within one Claude response. Other runs retain only the latest block.
+		if !sameResponse || blockIndex < pendingThinkingBlockIndex {
+			for len(pendingParts) > 0 && gjson.GetBytes(pendingParts[len(pendingParts)-1], "type").String() == "thinking" {
+				pendingParts = pendingParts[:len(pendingParts)-1]
 			}
 		}
 		pendingParts = append(pendingParts, reasoningPart)
+		pendingThinkingResponseID = responseID
+		pendingThinkingBlockIndex = blockIndex
 	}
 
 	var inputItems []gjson.Result
@@ -471,7 +488,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			}
 
 		case "reasoning":
-			appendReasoning(convertResponsesReasoningToClaudeThinking(item, preserveEmptyThinkingBlocks))
+			appendReasoning(convertResponsesReasoningToClaudeThinking(item, preserveEmptyThinkingBlocks), item.Get("id").String())
 
 		case "function_call", "custom_tool_call":
 			// Map to assistant tool_use. Freeform custom input is wrapped in an
@@ -524,7 +541,6 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					outputItem = lastItem
 				}
 			}
-			output := outputItem.Get("output")
 			// Standalone outputs (no call_id, or one that never paired with a
 			// function_call in this input, e.g. the create_thread delegation seed)
 			// have no tool_use to attach to. Claude rejects orphan tool_result
@@ -532,7 +548,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			// decided on the raw id so two distinct ids that sanitize to the
 			// same Claude id are not mistaken for the same call.
 			if _, paired := emittedRawToolUses[rawID]; rawID == "" || !paired {
-				standaloneParts, errStandalone := convertResponsesStandaloneToolOutputToClaudeText(output)
+				standaloneParts, errStandalone := convertResponsesStandaloneToolOutputToClaudeText(outputItem)
 				if errStandalone != nil && toolOutputErr == nil {
 					toolOutputErr = errStandalone
 				}
@@ -550,7 +566,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				toolResult, _ = sjson.SetBytes(toolResult, "is_error", true)
 			}
 			var errToolResult error
-			toolResult, errToolResult = applyResponsesToolResultContent(toolResult, output)
+			toolResult, errToolResult = applyResponsesToolResultContent(toolResult, outputItem)
 			if errToolResult != nil && toolOutputErr == nil {
 				toolOutputErr = errToolResult
 			}
@@ -1040,6 +1056,24 @@ func convertResponsesReasoningToClaudeThinking(item gjson.Result, preserveEmptyT
 	return thinkingPart
 }
 
+// parseClaudeReasoningItemID recovers the source response and block index from
+// the Claude-to-Responses converter's rs_<response_id>_<block_index> IDs.
+func parseClaudeReasoningItemID(itemID string) (string, uint64) {
+	rest, ok := strings.CutPrefix(itemID, "rs_")
+	if !ok {
+		return "", 0
+	}
+	sep := strings.LastIndexByte(rest, '_')
+	if sep <= 0 || strings.TrimSpace(rest[:sep]) == "" {
+		return "", 0
+	}
+	index, err := strconv.ParseUint(rest[sep+1:], 10, strconv.IntSize-1)
+	if err != nil {
+		return "", 0
+	}
+	return rest[:sep], index
+}
+
 // responsesRedactedThinkingData reports whether encrypted_content carries an
 // Anthropic redacted_thinking payload and returns that payload.
 func responsesRedactedThinkingData(encryptedContent string) (string, bool) {
@@ -1140,7 +1174,9 @@ func responsesToolOutputItems(output gjson.Result) ([]gjson.Result, bool) {
 	return nil, false
 }
 
-func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]byte, error) {
+func applyResponsesToolResultContent(toolResult []byte, outputItem gjson.Result) ([]byte, error) {
+	toolResult = common.AttachCacheControl(toolResult, outputItem)
+	output := outputItem.Get("output")
 	if items, ok := responsesToolOutputItems(output); ok {
 		var partsJSON [][]byte
 		hasImage := false
@@ -1155,6 +1191,9 @@ func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]
 				}
 				continue
 			}
+			// Claude accepts cache_control on the outer tool_result block.
+			// The last valid marker on a convertible part overrides the item's.
+			toolResult = common.AttachCacheControl(toolResult, part)
 			if !contentPartHasVisibleContent(partJSON) {
 				droppedEmptyPart = true
 				continue
@@ -1321,14 +1360,18 @@ func normalizeClaudeToolResultMessage(msg []byte, answeredIDs map[string]struct{
 			if _, ok := answeredIDs[block.Get("tool_use_id").String()]; !ok {
 				changed = true
 				seenOther = true
-				if textParts := toolResultTextParts(block); len(textParts) > 0 {
-					otherParts = append(otherParts, textParts...)
-				} else {
+				parts := toolResultTextParts(block)
+				if len(parts) == 0 {
 					// An empty orphan result folds to nothing, so keep an
 					// explicit marker instead of producing an empty user
 					// message that Anthropic also rejects.
-					otherParts = append(otherParts, []byte(`{"type":"text","text":"Tool result was empty."}`))
+					parts = [][]byte{[]byte(`{"type":"text","text":"Tool result was empty."}`)}
 				}
+				last := len(parts) - 1
+				if !gjson.GetBytes(parts[last], "cache_control").Exists() {
+					parts[last] = common.AttachCacheControl(parts[last], block)
+				}
+				otherParts = append(otherParts, parts...)
 				return true
 			}
 			resultParts = append(resultParts, raw)
@@ -1388,7 +1431,9 @@ func toolResultTextParts(block gjson.Result) [][]byte {
 
 // convertResponsesStandaloneToolOutputToClaudeText renders a tool output that
 // has no matching tool_use as ordinary user content blocks.
-func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]byte, error) {
+func convertResponsesStandaloneToolOutputToClaudeText(outputItem gjson.Result) ([][]byte, error) {
+	output := outputItem.Get("output")
+	fallback := common.AttachCacheControl([]byte(`{"type":"text","text":"Tool result was empty."}`), outputItem)
 	if items, ok := responsesToolOutputItems(output); ok {
 		var partsJSON [][]byte
 		var unsupportedType string
@@ -1403,14 +1448,23 @@ func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]
 			// Drop empty text parts so a mixed array never emits blocks
 			// Anthropic rejects; images and documents always count.
 			if !contentPartHasVisibleContent(partJSON) {
+				if len(partsJSON) == 0 {
+					fallback = common.AttachCacheControl(fallback, part)
+				} else if last := len(partsJSON) - 1; !gjson.GetBytes(partsJSON[last], "cache_control").Exists() {
+					partsJSON[last] = common.AttachCacheControl(partsJSON[last], part)
+				}
 				continue
 			}
-			partsJSON = append(partsJSON, partJSON)
+			partsJSON = append(partsJSON, common.AttachCacheControl(partJSON, part))
 		}
 		if unsupportedType != "" {
 			return nil, &common.UnsupportedPartError{Type: unsupportedType}
 		}
 		if len(partsJSON) > 0 {
+			last := len(partsJSON) - 1
+			if !gjson.GetBytes(partsJSON[last], "cache_control").Exists() {
+				partsJSON[last] = common.AttachCacheControl(partsJSON[last], outputItem)
+			}
 			return partsJSON, nil
 		}
 	}
@@ -1420,11 +1474,11 @@ func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]
 		// it joins never degenerates to an empty content array. The structured
 		// guard keeps a raw array or part dump from leaking in as literal text
 		// when every converted part was empty.
-		return [][]byte{[]byte(`{"type":"text","text":"Tool result was empty."}`)}, nil
+		return [][]byte{fallback}, nil
 	}
 	contentPart := []byte(`{"type":"text","text":""}`)
 	contentPart, _ = sjson.SetBytes(contentPart, "text", text)
-	return [][]byte{contentPart}, nil
+	return [][]byte{common.AttachCacheControl(contentPart, outputItem)}, nil
 }
 
 // contentPartHasVisibleContent reports whether a converted Claude content

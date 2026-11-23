@@ -2,12 +2,44 @@ package antigravityauth
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"ccLoad/internal/oauthcost"
 )
+
+/**
+ * @brief Verifies whether cached credit snapshots can authorize spending.
+ * @param t Test context.
+ */
+func TestCreditsAvailable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		credits *Credits
+		want    bool
+	}{
+		{"finite positive balance", &Credits{Balance: new(1.0), Minimum: new(0.0)}, true},
+		{"at minimum", &Credits{Balance: new(1.0), Minimum: new(1.0)}, true},
+		{"below minimum", &Credits{Balance: new(0.5), Minimum: new(1.0)}, false},
+		{"zero balance", &Credits{Balance: new(0.0), Minimum: new(0.0)}, false},
+		{"negative balance", &Credits{Balance: new(-1.0), Minimum: new(0.0)}, false},
+		{"infinite balance", &Credits{Balance: new(math.Inf(1)), Minimum: new(0.0)}, false},
+		{"NaN balance", &Credits{Balance: new(math.NaN()), Minimum: new(0.0)}, false},
+		{"negative minimum", &Credits{Balance: new(1.0), Minimum: new(-1.0)}, false},
+		{"infinite minimum", &Credits{Balance: new(1.0), Minimum: new(math.Inf(1))}, false},
+		{"NaN minimum", &Credits{Balance: new(1.0), Minimum: new(math.NaN())}, false},
+		{"stored snapshot without minimum", &Credits{Balance: new(1.0)}, false},
+		{"rejected balance", &Credits{Balance: new(1.0), Minimum: new(0.0), UnavailableAt: 1}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.credits.Available(); got != tc.want {
+				t.Errorf("Available()=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestParseCredentialAndRefreshMerge(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)

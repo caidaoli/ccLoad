@@ -457,9 +457,14 @@ func (s *Service) FetchPaidTier(ctx context.Context, accessToken string) (*PaidT
 	return tier, err
 }
 
-// FetchSubscription uses loadCodeAssist's paidTier.availableCredits contract.
-// Both JSON numbers and protobuf decimal strings are accepted; absent or invalid
-// amounts remain unknown and cannot authorize spending credits.
+/**
+ * @brief Fetches the paid tier and Google One AI credit snapshot from loadCodeAssist.
+ * @param ctx Request context.
+ * @param accessToken Antigravity access token.
+ * @return Paid tier, or nil when the account has no tier metadata.
+ * @return Credit snapshot with unknown amounts when no valid Google One AI entry exists.
+ * @return Error when loadCodeAssist fails or returns an invalid response.
+ */
 func (s *Service) FetchSubscription(ctx context.Context, accessToken string) (*PaidTier, *Credits, error) {
 	sampledAt := time.Now().UTC()
 	body, err := s.loadCodeAssist(ctx, accessToken)
@@ -469,6 +474,14 @@ func (s *Service) FetchSubscription(ctx context.Context, accessToken string) (*P
 	return parseSubscription(body, sampledAt)
 }
 
+/**
+ * @brief Decodes subscription metadata and the first valid Google One AI credit entry.
+ * @param body JSON returned by loadCodeAssist.
+ * @param sampledAt Time at which the sample was requested.
+ * @return Paid tier, or nil when it is absent.
+ * @return Credit snapshot, with a zero minimum when the source leaves it unset.
+ * @return Error when the subscription response cannot be decoded.
+ */
 func parseSubscription(body []byte, sampledAt time.Time) (*PaidTier, *Credits, error) {
 	var response struct {
 		PaidTier *PaidTier `json:"paidTier"`
@@ -493,8 +506,13 @@ func parseSubscription(body []byte, sampledAt time.Time) (*PaidTier, *Credits, e
 		if !strings.EqualFold(entry.Type, "GOOGLE_ONE_AI") {
 			continue
 		}
-		credits.Balance = parseCreditAmount(entry.Balance)
-		credits.Minimum = parseCreditAmount(entry.Minimum)
+		balance := parseCreditAmount(entry.Balance, nil)
+		minimum := parseCreditAmount(entry.Minimum, new(float64))
+		if balance == nil || minimum == nil {
+			continue
+		}
+		credits.Balance = balance
+		credits.Minimum = minimum
 		break
 	}
 	if response.PaidTier == nil {
@@ -508,12 +526,25 @@ func parseSubscription(body []byte, sampledAt time.Time) (*PaidTier, *Credits, e
 	return response.PaidTier, credits, nil
 }
 
-func parseCreditAmount(raw json.RawMessage) *float64 {
+/**
+ * @brief Reads a finite non-negative credit amount from a protobuf JSON field.
+ * @param raw JSON number, decimal string, null, or an omitted field.
+ * @param defaultAmount Value to use when the field is omitted, null, or blank.
+ * @return Parsed amount or the default for an unset field, or nil for an invalid value.
+ */
+func parseCreditAmount(raw json.RawMessage, defaultAmount *float64) *float64 {
 	text := strings.TrimSpace(string(raw))
+	if text == "null" {
+		return defaultAmount
+	}
 	if strings.HasPrefix(text, "\"") {
 		if err := json.Unmarshal(raw, &text); err != nil {
 			return nil
 		}
+		text = strings.TrimSpace(text)
+	}
+	if text == "" {
+		return defaultAmount
 	}
 	value, err := strconv.ParseFloat(text, 64)
 	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {

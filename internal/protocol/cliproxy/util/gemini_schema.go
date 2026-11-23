@@ -44,6 +44,7 @@ type jsonSchemaCleanOptions struct {
 	preserveAdditionalPropertiesFalse bool
 	preserveAllAdditionalProperties   bool
 	preserveStandardConstraints       bool
+	preserveNonObjectArrayItems       bool
 }
 
 // CleanJSONSchemaForAntigravity transforms a tool schema to be compatible with Antigravity API.
@@ -58,7 +59,16 @@ func CleanJSONSchemaForAntigravity(jsonStr string) string {
 // type of generated function arguments, so numeric and boolean types must not be rewritten.
 // requirePlaceholder is used only for Claude VALIDATED mode.
 func CleanJSONSchemaForAntigravityTool(jsonStr string, requirePlaceholder bool) string {
-	return cleanJSONSchemaForAntigravityTool(jsonStr, requirePlaceholder, false)
+	return cleanJSONSchemaForAntigravityTool(jsonStr, jsonSchemaCleanOptions{addPlaceholder: requirePlaceholder})
+}
+
+// CleanJSONSchemaForAntigravityJSONSchema applies Antigravity tool cleanup for
+// parametersJsonSchema, where array item schemas may use non-object values.
+func CleanJSONSchemaForAntigravityJSONSchema(jsonStr string) string {
+	return cleanJSONSchemaForAntigravityTool(jsonStr, jsonSchemaCleanOptions{
+		addPlaceholder:              true,
+		preserveNonObjectArrayItems: true,
+	})
 }
 
 // CleanJSONSchemaForAntigravityClaudeTool is the Antigravity tool cleaner for Claude
@@ -68,19 +78,19 @@ func CleanJSONSchemaForAntigravityTool(jsonStr string, requirePlaceholder bool) 
 // nested multi-branch unions with "JSON schema is invalid", while the Gemini
 // backends accept preserved unions (see Issue 3662 and its regression follow-up).
 func CleanJSONSchemaForAntigravityClaudeTool(jsonStr string, requirePlaceholder bool) string {
-	return cleanJSONSchemaForAntigravityTool(jsonStr, requirePlaceholder, true)
+	return cleanJSONSchemaForAntigravityTool(jsonStr, jsonSchemaCleanOptions{
+		addPlaceholder:           requirePlaceholder,
+		flattenMultiBranchUnions: true,
+	})
 }
 
-func cleanJSONSchemaForAntigravityTool(jsonStr string, requirePlaceholder, flattenMultiBranchUnions bool) string {
-	return cleanJSONSchema(jsonStr, jsonSchemaCleanOptions{
-		addPlaceholder:           requirePlaceholder,
-		addMissingArrayItems:     true,
-		antigravitySemantics:     true,
-		removeToolTitle:          !requirePlaceholder,
-		flattenUnions:            true,
-		flattenMultiBranchUnions: flattenMultiBranchUnions,
-		dropAllEnums:             true,
-	})
+func cleanJSONSchemaForAntigravityTool(jsonStr string, options jsonSchemaCleanOptions) string {
+	options.addMissingArrayItems = true
+	options.antigravitySemantics = true
+	options.removeToolTitle = !options.addPlaceholder
+	options.flattenUnions = true
+	options.dropAllEnums = true
+	return cleanJSONSchema(jsonStr, options)
 }
 
 // CleanJSONSchemaForAntigravityResponse transforms a response schema without applying tool-only
@@ -184,7 +194,7 @@ func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
 	if !preserveConjunctions {
 		jsonStr = cleanupRequiredFields(jsonStr)
 		jsonStr = sanitizeObjectProperties(jsonStr)
-		jsonStr = sanitizeArrayItems(jsonStr, options.addMissingArrayItems)
+		jsonStr = sanitizeArrayItems(jsonStr, options)
 	}
 	// Phase 4: Add placeholder for empty object schemas (Claude VALIDATED mode requirement)
 	if options.addPlaceholder {
@@ -221,7 +231,7 @@ func sanitizeObjectProperties(jsonStr string) string {
 // sanitizeArrayItems normalizes native Schema arrays and supplies missing items placeholders.
 // The caller skips this pass for JSON Schema conjunctions, where element and instance types
 // may be constrained elsewhere and synthesizing local fields can make the intersection impossible.
-func sanitizeArrayItems(jsonStr string, addMissing bool) string {
+func sanitizeArrayItems(jsonStr string, options jsonSchemaCleanOptions) string {
 	paths := findPaths(jsonStr, "items")
 	sortByDepth(paths)
 	for _, p := range paths {
@@ -236,10 +246,18 @@ func sanitizeArrayItems(jsonStr string, addMissing bool) string {
 			jsonStr = string(updated)
 		} else if !strings.EqualFold(t, "array") {
 			jsonStr, _ = sjson.Delete(jsonStr, p)
+			continue
+		}
+		if options.preserveStandardConstraints || options.preserveNonObjectArrayItems {
+			continue
+		}
+		items := gjson.Get(jsonStr, p)
+		if !items.IsObject() {
+			jsonStr = normalizeNativeArrayItems(jsonStr, parentPath, p, items, options)
 		}
 	}
 
-	if !addMissing {
+	if !options.addMissingArrayItems {
 		return jsonStr
 	}
 	typePaths := findPaths(jsonStr, "type")
@@ -256,6 +274,86 @@ func sanitizeArrayItems(jsonStr string, addMissing bool) string {
 		jsonStr = string(updated)
 	}
 	return jsonStr
+}
+
+// normalizeNativeArrayItems projects tuple and boolean subschemas to a native
+// Gemini Schema object. The native items field cannot express tuple positions.
+func normalizeNativeArrayItems(jsonStr, parentPath, itemsPath string, items gjson.Result, options jsonSchemaCleanOptions) string {
+	replacement := "{}"
+	if options.addMissingArrayItems {
+		replacement = `{"type":"string"}`
+	}
+	switch {
+	case items.IsArray():
+		branches, nullable, _ := partitionUnionBranches(items.Array(), gjson.Result{})
+		branches = deduplicateTupleBranches(branches)
+		hint := ""
+		if nullable {
+			hint = "(nullable)"
+		}
+		switch {
+		case len(branches) >= 2 && !options.flattenMultiBranchUnions:
+			rawBranches := make([]json.RawMessage, 0, len(branches))
+			for _, branch := range branches {
+				rawBranches = append(rawBranches, json.RawMessage(branch.Raw))
+			}
+			replacement, _ = sjson.Set("{}", "anyOf", rawBranches)
+		case len(branches) > 0:
+			best, types := selectBest(branches)
+			replacement = branches[best].Raw
+			if nullable {
+				types = append(types, "null")
+			}
+			var unique []string
+			for _, typ := range types {
+				if !contains(unique, typ) {
+					unique = append(unique, typ)
+				}
+			}
+			if len(unique) > 1 {
+				hint = "Accepts: " + strings.Join(unique, " | ")
+			}
+		}
+		if nullable && !options.removeGeminiMetadata {
+			replacement, _ = sjson.Set(replacement, "nullable", true)
+		}
+		if hint != "" {
+			replacement = appendHintRaw(replacement, hint)
+		}
+	case items.Type == gjson.True:
+		replacement = "{}"
+	case items.Type == gjson.False:
+		hint := "No items allowed"
+		if prefixItems := gjson.Get(jsonStr, joinPath(parentPath, "prefixItems")); len(prefixItems.Array()) > 0 {
+			hint = "No additional items allowed"
+		}
+		jsonStr = appendHint(jsonStr, parentPath, hint)
+	}
+	return setRawAt(jsonStr, itemsPath, replacement)
+}
+
+// deduplicateTupleBranches treats object key order as irrelevant and keeps the
+// first occurrence of each distinct branch.
+func deduplicateTupleBranches(branches []gjson.Result) []gjson.Result {
+	seen := make(map[string]struct{}, len(branches))
+	unique := branches[:0]
+	for _, branch := range branches {
+		decoder := json.NewDecoder(strings.NewReader(branch.Raw))
+		decoder.UseNumber()
+		var parsed any
+		if decoder.Decode(&parsed) != nil {
+			unique = append(unique, branch)
+			continue
+		}
+		encoded, _ := json.Marshal(parsed) // A decoded JSON value can always be re-encoded.
+		key := string(encoded)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, branch)
+	}
+	return unique
 }
 
 // removeKeywords removes all occurrences of specified keywords from the JSON schema.
@@ -1333,11 +1431,15 @@ func convertRefsToHints(jsonStr string, preserveSiblings bool) string {
 
 func convertConstToEnum(jsonStr string) string {
 	for _, p := range findPaths(jsonStr, "const") {
+		parentPath := trimSuffix(p, ".const")
+		if isPropertyDefinition(parentPath) {
+			continue
+		}
 		val := gjson.Get(jsonStr, p)
 		if !val.Exists() {
 			continue
 		}
-		enumPath := trimSuffix(p, ".const") + ".enum"
+		enumPath := joinPath(parentPath, "enum")
 		if !gjson.Get(jsonStr, enumPath).Exists() {
 			updated, _ := sjson.SetBytes([]byte(jsonStr), enumPath, []interface{}{val.Value()})
 			jsonStr = string(updated)
@@ -1351,6 +1453,10 @@ func convertConstToEnum(jsonStr string) string {
 // emitted JSON type on both response and function-argument paths.
 func convertEnumValuesToStrings(jsonStr string, forceStringType bool) string {
 	for _, p := range findPaths(jsonStr, "enum") {
+		parentPath := trimSuffix(p, ".enum")
+		if isPropertyDefinition(parentPath) {
+			continue
+		}
 		arr := gjson.Get(jsonStr, p)
 		if !arr.IsArray() {
 			continue
@@ -1364,7 +1470,6 @@ func convertEnumValuesToStrings(jsonStr string, forceStringType bool) string {
 		updated, _ := sjson.SetBytes([]byte(jsonStr), p, stringVals)
 		jsonStr = string(updated)
 		if forceStringType {
-			parentPath := trimSuffix(p, ".enum")
 			updated, _ = sjson.SetBytes([]byte(jsonStr), joinPath(parentPath, "type"), "string")
 			jsonStr = string(updated)
 		}
@@ -1374,6 +1479,10 @@ func convertEnumValuesToStrings(jsonStr string, forceStringType bool) string {
 
 func addEnumHints(jsonStr string) string {
 	for _, p := range findPaths(jsonStr, "enum") {
+		parentPath := trimSuffix(p, ".enum")
+		if isPropertyDefinition(parentPath) {
+			continue
+		}
 		arr := gjson.Get(jsonStr, p)
 		if !arr.IsArray() {
 			continue
@@ -1387,7 +1496,7 @@ func addEnumHints(jsonStr string) string {
 		for _, item := range items {
 			vals = append(vals, item.String())
 		}
-		jsonStr = appendHint(jsonStr, trimSuffix(p, ".enum"), "Allowed: "+strings.Join(vals, ", "))
+		jsonStr = appendHint(jsonStr, parentPath, "Allowed: "+strings.Join(vals, ", "))
 	}
 	return jsonStr
 }
@@ -1398,6 +1507,9 @@ func addEnumHints(jsonStr string) string {
 func dropIgnoredEnumsToHints(jsonStr string, options jsonSchemaCleanOptions) string {
 	for _, path := range findPaths(jsonStr, "enum") {
 		parentPath := trimSuffix(path, ".enum")
+		if isPropertyDefinition(parentPath) {
+			continue
+		}
 		shouldDrop := options.dropAllEnums || (options.dropBooleanEnums && gjson.Get(jsonStr, joinPath(parentPath, "type")).String() == "boolean")
 		if !shouldDrop {
 			continue
@@ -1413,8 +1525,12 @@ func dropIgnoredEnumsToHints(jsonStr string, options jsonSchemaCleanOptions) str
 
 func addAdditionalPropertiesHints(jsonStr string) string {
 	for _, p := range findPaths(jsonStr, "additionalProperties") {
+		parentPath := trimSuffix(p, ".additionalProperties")
+		if isPropertyDefinition(parentPath) {
+			continue
+		}
 		if gjson.Get(jsonStr, p).Type == gjson.False {
-			jsonStr = appendHint(jsonStr, trimSuffix(p, ".additionalProperties"), "No extra properties allowed")
+			jsonStr = appendHint(jsonStr, parentPath, "No extra properties allowed")
 		}
 	}
 	return jsonStr

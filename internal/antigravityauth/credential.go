@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"strings"
 	"time"
 
@@ -36,9 +37,16 @@ type Credits struct {
 	UnavailableAt int64     `json:"unavailable_at,omitempty"`
 }
 
-// Available reports whether the sampled balance meets the upstream minimum.
+/**
+ * @brief Checks whether the snapshot permits spending Google One AI credits.
+ * @return True when there is a finite positive balance meeting the sampled minimum and spending has not been rejected.
+ */
 func (c *Credits) Available() bool {
-	return c != nil && c.UnavailableAt == 0 && c.Balance != nil && c.Minimum != nil && *c.Minimum >= 0 && *c.Balance >= *c.Minimum
+	if c == nil || c.UnavailableAt != 0 || c.Balance == nil || c.Minimum == nil {
+		return false
+	}
+	balance, minimum := *c.Balance, *c.Minimum
+	return balance > 0 && !math.IsInf(balance, 1) && minimum >= 0 && balance >= minimum
 }
 
 // Fresh limits spending decisions to a non-future sample from the last ten minutes.

@@ -34,7 +34,7 @@ func isAntigravityTOSViolation(cfg *model.Config, res *fwResult) bool {
 		return isAntigravityPermissionReason(http.StatusForbidden, res.SSEErrorEvent, "TOS_VIOLATION")
 	}
 	status := res.UpstreamStatus
-	if status == 0 {
+	if status == 0 || status >= 200 && status < 300 {
 		status = res.Status
 	}
 	return isAntigravityPermissionReason(status, res.Body, "TOS_VIOLATION")
