@@ -95,7 +95,14 @@ type channelCooldownSnapshot struct {
 	models   map[int64]map[string]time.Time
 }
 
-func (s *Server) loadChannelCooldownSnapshot(ctx context.Context) channelCooldownSnapshot {
+/**
+ * @brief 加载渠道列表与筛选使用的冷却快照。
+ * @param ctx 数据查询上下文。
+ * @param cfgs 本次请求的渠道配置及私有凭证快照。
+ * @param now 本次筛选和展示使用的当前时刻。
+ * @return 包含 Antigravity 标准额度投影的管理端快照。
+ */
+func (s *Server) loadChannelCooldownSnapshot(ctx context.Context, cfgs []*model.Config, now time.Time) channelCooldownSnapshot {
 	snapshot := channelCooldownSnapshot{}
 	var err error
 
@@ -114,7 +121,39 @@ func (s *Server) loadChannelCooldownSnapshot(ctx context.Context) channelCooldow
 		log.Printf("[WARN] 批量查询模型冷却状态失败: %v", err)
 		snapshot.models = make(map[int64]map[string]time.Time)
 	}
+	for _, cfg := range cfgs {
+		if cooldowns := mergeAntigravityStandardQuota(snapshot.models[cfg.ID], cfg, now); len(cooldowns) > 0 {
+			snapshot.models[cfg.ID] = cooldowns
+		}
+	}
 	return snapshot
+}
+
+/**
+ * @brief 将 Antigravity 标准额度恢复时间投影为管理端的模型冷却。
+ * @param cooldowns 该请求持有的通用冷却映射，允许为 nil。
+ * @param cfg 读取标准额度的渠道配置。
+ * @param now 已到期的标准额度截止时间不会投影。
+ * @return 每个实际上游模型的最晚截止时间。
+ * @note 有较晚的额度截止时间时修改入参映射，仅用于管理端。
+ */
+func mergeAntigravityStandardQuota(cooldowns map[string]time.Time, cfg *model.Config, now time.Time) map[string]time.Time {
+	if !cfg.UsesAntigravityOAuth() {
+		return cooldowns
+	}
+	credential, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return cooldowns
+	}
+	for name, until := range credential.StandardQuota {
+		if until.After(now) && until.After(cooldowns[name]) {
+			if cooldowns == nil {
+				cooldowns = make(map[string]time.Time)
+			}
+			cooldowns[name] = until
+		}
+	}
+	return cooldowns
 }
 
 func (snapshot channelCooldownSnapshot) hasActiveCooldown(channelID int64, now time.Time) bool {
@@ -154,7 +193,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	now := time.Now()
 
 	// 三类冷却必须使用同一份快照，否则筛选结果和列表状态会互相矛盾。
-	cooldowns := s.loadChannelCooldownSnapshot(c.Request.Context())
+	cooldowns := s.loadChannelCooldownSnapshot(c.Request.Context(), cfgs, now)
 
 	// 应用所有列表过滤（type / channel_name|search / status / model|model_like）
 	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
@@ -744,16 +783,17 @@ func (s *Server) HandleChannelsFilterOptions(c *gin.Context) {
 	}
 
 	status := strings.TrimSpace(c.Query("status"))
+	now := time.Now()
 	var cooldowns channelCooldownSnapshot
 	if status == "cooldown" {
-		cooldowns = s.loadChannelCooldownSnapshot(c.Request.Context())
+		cooldowns = s.loadChannelCooldownSnapshot(c.Request.Context(), cfgs, now)
 	}
 	cfgs = filterChannelOptionConfigs(
 		cfgs,
 		strings.TrimSpace(c.Query("protocol")),
 		status,
 		cooldowns,
-		time.Now(),
+		now,
 	)
 	RespondJSON(c, http.StatusOK, buildChannelFilterOptions(cfgs))
 }
@@ -936,7 +976,7 @@ func (s *Server) buildChannelDetail(ctx context.Context, cfg *model.Config, apiK
 	}
 	detail.ManagementAccount = s.managementAccountView(cfg)
 	detail.KeyStrategy = channelKeyStrategy(apiKeys)
-	detail.ModelCooldowns = activeModelCooldownInfos(allModelCooldowns[cfg.ID], now)
+	detail.ModelCooldowns = activeModelCooldownInfos(mergeAntigravityStandardQuota(allModelCooldowns[cfg.ID], cfg, now), now)
 	applyProtocolProbeRetrySummary(&detail, s.protocolCapabilities.unsupportedRetrySummaries(now)[cfg.ID], now)
 	return detail, nil
 }

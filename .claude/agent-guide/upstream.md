@@ -163,7 +163,7 @@
 - **Antigravity 非流式工具生成失败**（`antigravityNonStreamResponseErrorBody`，参照 sub2api `14a5fe3050616e35b5f123614f57e0e6adcaf069`）：原生 JSON 任一 candidate 的 `finishReason=MALFORMED_FUNCTION_CALL`，在协议转换前作为 HTTP 502 上游响应错误处理，不合成 `end_turn` / `stop` / `completed`。代理复用模型冷却与换渠流程，保留实际上游 HTTP 200 和 usage 供日志诊断，未提交失败尝试不收费；管理测试同样报告失败。正常 STOP 和工具调用保持原样。
 - **Antigravity 流内错误**(`antigravity_wire.go:antigravityEventPayload`):同一事件的多行 `data:` 按 SSE 拼接；后端在帧后追加的多行裸 JSON 错误在 EOF 补空行后照样解析，仍不可解码的残帧丢弃以暴露截断。顶层 `error` 对象不进转换器，交给 usage 解析器作为 SSE 错误：首帧即错按数字 `error.code`(400–599，须同时带字符串 `error.status`，其他上游的数字 code 不当 HTTP 状态)分类冷却并切换；已提交的流按该状态记日志，Claude 客户端补发带上游 message 的 `error` 事件；源流已到终态后追加的错误只记日志，不改判成功流。终态块后的客户端断开按成功计费，管理测试与代理共用同一解包规则。
 - **Antigravity 容量错误**:精确 `MODEL_CAPACITY_EXHAUSTED` 首次出现时立即冷却当前实际上游模型，优先采用有效的上游恢复时间，无有效提示时按原始 503 退避（默认首次 2 分钟）,默认在 daily 与 daily sandbox 间重试;自定义 URL 列表仍最多尝试 3 个。重试成功立即清除该模型冷却,全部失败保留上游 503 供诊断、对外统一为 429。容量/URL 回退失败的日志延迟到重试器定论后只落一条,避免一次逻辑请求产生多条失败日志;模型发现不因该错误冷却 URL
-- **Antigravity 限流与额度耗尽**：推理 429 优先采用正文恢复时间，缺失时采用该 HTTP 429 自身的 `Retry-After`（秒数或 HTTP 日期）。显式零秒表示可以立即重试；SSE 错误只采用帧内提示。只有实际上游模型为 Claude 时,`QUOTA_EXHAUSTED` 才写入独立 `StandardQuota` 状态,保留积分回退路径。Gemini 等不支持积分回退的模型走通用冷却,按上游 `metadata.model` 与精确 reset 时间冷却模型并切换渠道;所有配置模型均冷却时升级渠道冷却,管理测试与代理遵循相同规则。 积分尝试要求余额为正且达到最低门槛；订阅响应中的门槛缺省、为 null 或为空白时按零计，非法数值不可用。
+- **Antigravity 限流与额度耗尽**：推理 429 先采用 `ErrorInfo.metadata.quotaResetTimeStamp` 给出的未来截止时间，再看正文的相对延迟。正文没有有效提示时，采用该 HTTP 429 的 `Retry-After`；SSE 错误只采用帧内提示。显式零秒表示可以立即重试。Claude 的 `QUOTA_EXHAUSTED` 按实际上游模型写入凭证的 `StandardQuota`，保留积分回退。管理端将有效标准额度冷却与同一模型的通用冷却合并展示，取较晚的截止时间。编辑页上指向同一模型的别名行显示相同的恢复时间。Gemini 等不支持积分回退的模型走通用冷却,按上游 `metadata.model` 与精确 reset 时间冷却模型并切换渠道;所有配置模型均冷却时升级渠道冷却,管理测试与代理遵循相同规则。 积分尝试要求余额为正且达到最低门槛；订阅响应中的门槛缺省、为 null 或为空白时按零计，非法数值不可用。
 
 ## Vertex
 

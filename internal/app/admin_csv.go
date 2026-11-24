@@ -77,12 +77,9 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	cfgs = applyChannelListFilters(
-		cfgs,
-		c,
-		s.loadChannelCooldownSnapshot(c.Request.Context()),
-		time.Now(),
-	)
+	now := time.Now()
+	cooldowns := s.loadChannelCooldownSnapshot(c.Request.Context(), cfgs, now)
+	cfgs = applyChannelListFilters(cfgs, c, cooldowns, now)
 	if selectedIDs != nil {
 		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
 			_, selected := selectedIDs[cfg.ID]

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -169,6 +170,116 @@ func TestHandleListChannelsIncludesActiveModelCooldowns(t *testing.T) {
 	}
 	if got.CooldownRemainingMS <= 0 {
 		t.Fatalf("cooldown_remaining_ms=%d, want > 0", got.CooldownRemainingMS)
+	}
+}
+
+/**
+ * @brief 验证 Antigravity 标准额度按上游模型展示，并参与管理端冷却筛选。
+ * @param t 测试上下文。
+ */
+func TestAdminChannelsAntigravityStandardQuota(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	const opus = "claude-opus-4-6-thinking"
+	const opusAlias = "claude-opus-5-5"
+	const sonnet = "claude-sonnet-4-6"
+	const expired = "claude-expired"
+	now := time.Now().UTC().Truncate(time.Second)
+	opusReset := now.Add(time.Hour)
+	sonnetReset := now.Add(3 * time.Hour)
+	createChannel := func(name, alias string, quota map[string]time.Time) *model.Config {
+		t.Helper()
+		credential := &antigravityauth.Credential{
+			Type: antigravityauth.ChannelType, AccessToken: "test-access", RefreshToken: "test-refresh",
+			Expired: now.Add(time.Hour).Format(time.RFC3339), StandardQuota: quota,
+		}
+		raw, err := credential.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		created, err := store.CreateConfig(t.Context(), &model.Config{
+			Name: name, URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+			ModelEntries: []model.ModelEntry{
+				{Model: opus, RedirectModel: opus},
+				{Model: alias, RedirectModel: opus},
+				{Model: sonnet},
+				{Model: expired},
+			},
+			AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: raw, Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	channel := createChannel("standard-quota", opusAlias, map[string]time.Time{
+		opus: opusReset, sonnet: now.Add(2 * time.Hour), expired: now.Add(-time.Hour),
+	})
+	createChannel("expired-quota", "expired-alias", map[string]time.Time{expired: now.Add(-time.Hour)})
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?status=cooldown&limit=20", nil))
+	server.HandleChannels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", w.Code, w.Body.String())
+	}
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+	if list.Count != 1 || len(list.Data) != 1 || list.Data[0].ID != channel.ID {
+		t.Fatalf("cooldown list = %s, want only channel %d", w.Body.String(), channel.ID)
+	}
+	if got := list.Data[0].ModelCooldowns; len(got) != 2 || got[0].Model != opus ||
+		got[0].CooldownUntil == nil || !got[0].CooldownUntil.Equal(opusReset) || got[0].CooldownRemainingMS <= 0 {
+		t.Fatalf("model cooldowns = %+v, want active upstream models with %s reset at %v", got, opus, opusReset)
+	}
+
+	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/channels/filter-options?status=cooldown", nil))
+	server.HandleChannelsFilterOptions(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("options status=%d body=%s", w.Code, w.Body.String())
+	}
+	options := mustParseAPIResponse[channelFilterOptionsResponse](t, w.Body.Bytes()).Data
+	if !slices.Equal(options.ChannelNames, []string{channel.Name}) || !slices.Contains(options.Models, opusAlias) {
+		t.Fatalf("cooldown filter options = %+v, want only channel %q with its public model", options, channel.Name)
+	}
+
+	if err := store.SetModelCooldown(t.Context(), channel.ID, opus, now.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetModelCooldown(t.Context(), channel.ID, sonnet, sonnetReset); err != nil {
+		t.Fatal(err)
+	}
+	assertMergedCooldowns := func(got []ModelCooldownInfo) {
+		t.Helper()
+		if len(got) != 2 || got[0].Model != opus || got[0].CooldownUntil == nil || !got[0].CooldownUntil.Equal(opusReset) ||
+			got[1].Model != sonnet || got[1].CooldownUntil == nil || !got[1].CooldownUntil.Equal(sonnetReset) {
+			t.Fatalf("model cooldowns = %+v, want %s at %v and %s at %v", got, opus, opusReset, sonnet, sonnetReset)
+		}
+	}
+	detailPath := fmt.Sprintf("/admin/channels/%d", channel.ID)
+	params := gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	c, w = newTestContext(t, newRequest(http.MethodGet, detailPath, nil))
+	c.Params = params
+	server.HandleChannelByID(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", w.Code, w.Body.String())
+	}
+	detail := mustParseAPIResponse[ChannelWithCooldown](t, w.Body.Bytes()).Data
+	assertMergedCooldowns(detail.ModelCooldowns)
+
+	c, w = newTestContext(t, newRequest(http.MethodGet, detailPath+"/editor", nil))
+	c.Params = params
+	server.HandleChannelEditor(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("editor status=%d body=%s", w.Code, w.Body.String())
+	}
+	editor := mustParseAPIResponse[channelEditorData](t, w.Body.Bytes()).Data.Channel
+	assertMergedCooldowns(editor.ModelCooldowns)
+	for _, name := range []string{opus, opusAlias} {
+		if !slices.ContainsFunc(editor.ModelEntries, func(entry model.ModelEntry) bool {
+			return entry.Model == name && entry.RedirectModel == opus
+		}) {
+			t.Fatalf("editor models = %+v, want %s redirecting to %s", editor.ModelEntries, name, opus)
+		}
 	}
 }
 

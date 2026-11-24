@@ -204,7 +204,7 @@ func antigravityLimitReason(body []byte) (reason string) {
 }
 
 /**
- * @brief 从正文读取 Antigravity 恢复时间；没有有效提示时读取 HTTP 错误响应头。
+ * @brief Antigravity 优先采用正文的绝对配额恢复时间，其次采用重试延迟和 HTTP 错误响应头。
  * @param body 上游 HTTP 错误正文或 SSE 错误。
  * @param headers 实际 HTTP 错误的响应头；内嵌错误传 nil。
  * @param now 相对恢复时间的起算时间。
@@ -212,13 +212,25 @@ func antigravityLimitReason(body []byte) (reason string) {
  */
 func antigravityRetryAt(body []byte, headers http.Header, now time.Time) time.Time {
 	details := gjson.GetBytes(body, "error.details").Array()
+	var retryAt time.Time
 	for _, detail := range details {
-		if detail.Get("@type").String() == "type.googleapis.com/google.rpc.RetryInfo" {
-			delay, err := time.ParseDuration(strings.ToLower(strings.TrimSpace(detail.Get("retryDelay").String())))
-			if err == nil && delay >= 0 {
-				return now.Add(delay)
+		switch detail.Get("@type").String() {
+		case "type.googleapis.com/google.rpc.ErrorInfo":
+			timestamp := strings.TrimSpace(detail.Get("metadata.quotaResetTimeStamp").String())
+			if until, err := time.Parse(time.RFC3339, timestamp); err == nil && until.After(now) {
+				return until
+			}
+		case "type.googleapis.com/google.rpc.RetryInfo":
+			if retryAt.IsZero() {
+				delay, err := time.ParseDuration(strings.ToLower(strings.TrimSpace(detail.Get("retryDelay").String())))
+				if err == nil && delay >= 0 {
+					retryAt = now.Add(delay)
+				}
 			}
 		}
+	}
+	if !retryAt.IsZero() {
+		return retryAt
 	}
 	if until, ok := util.GoogleRateLimitRetryAt(body, now); ok {
 		return until

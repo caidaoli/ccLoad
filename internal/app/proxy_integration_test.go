@@ -4033,20 +4033,23 @@ func TestProxy_AntigravityCreditsFallback(t *testing.T) {
  */
 func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 	t.Parallel()
-	const actualModel = "claude-sonnet-4-6"
+	const actualModel = "claude-opus-4-6-thinking"
 	const quota = `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}`
 	const rate = `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"}`
 	const balance = `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INSUFFICIENT_G1_CREDITS_BALANCE"}`
 	const retry = `{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":`
 	const success = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"paid output"}]},"finishReason":"STOP"}]}}`
 	const partial = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"partial output"}]}}]}}`
+	resetAt := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	timedQuota := fmt.Sprintf(`{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED","metadata":{"model":%q,"quotaResetTimeStamp":%q}}`, actualModel, resetAt.Format(time.RFC3339))
 	for _, tc := range []struct {
 		name, details, header                string
 		message                              string
 		sse, committed, paidOnly, headerDate bool
-		inBand                               bool
+		inBand, rawHTTPError                 bool
 		standard, paid                       int32
 		modelDelay, quotaDelay               time.Duration
+		quotaResetAt                         time.Time
 		wantStatus                           int
 		balanceExhausted, keepChannelReady   bool
 	}{
@@ -4057,10 +4060,11 @@ func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 		{name: "body message has priority", message: "Please retry in 9s.", header: "90", modelDelay: 9 * time.Second, standard: 1, wantStatus: 429},
 		{name: "zero HTTP hint has no cooldown", header: "0", standard: 1, wantStatus: 429},
 		{name: "zero HTTP hint triggers bounded typed rate retry", details: rate, header: "0", standard: 2, wantStatus: 429},
-		{name: "zero body delay beats HTTP hint", details: rate + "," + retry + `"0s"}`, header: "90", standard: 2, wantStatus: 429},
+		{name: "zero body delay beats HTTP hint", details: rate + "," + retry + `" 0S "}`, header: "90", standard: 2, wantStatus: 429},
 		{name: "typed rate cooldown stays model scoped", details: rate, header: "90", modelDelay: 90 * time.Second, standard: 1, wantStatus: 429, keepChannelReady: true},
 		{name: "typed quota uses header for paid fallback", details: quota, header: "90", quotaDelay: 90 * time.Second, standard: 1, paid: 1, wantStatus: 200},
 		{name: "typed quota uses body metadata before header", details: quota[:len(quota)-1] + `,"metadata":{"quotaResetDelay":"11s"}}`, header: "90", quotaDelay: 11 * time.Second, standard: 1, paid: 1, wantStatus: 200},
+		{name: "HTTP 429 with SSE media type uses absolute quota reset", details: retry + `"37s"},` + timedQuota, header: "90", sse: true, rawHTTPError: true, quotaResetAt: resetAt, standard: 1, paid: 1, wantStatus: 200, keepChannelReady: true},
 		{name: "expired header is absent", details: quota, header: "Sat, 01 Jan 2000 00:00:00 GMT", quotaDelay: time.Minute, standard: 1, paid: 1, wantStatus: 200},
 		{name: "invalid header is absent", details: quota, header: "not a duration", quotaDelay: time.Minute, standard: 1, paid: 1, wantStatus: 200},
 		{name: "zero header does not authorize paid fallback", details: quota, header: "0", standard: 1, wantStatus: 429},
@@ -4112,7 +4116,7 @@ func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 				}
 				w.Header().Set("Retry-After", header)
 				payload := fmt.Sprintf(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":%q,"details":[%s]}}`, tc.message, tc.details)
-				if tc.sse {
+				if tc.sse && !tc.rawHTTPError {
 					if tc.committed {
 						_, _ = fmt.Fprintf(w, "data: %s\n\n", partial)
 					}
@@ -4171,7 +4175,11 @@ func TestProxy_Antigravity429RetryTimingAndCredits(t *testing.T) {
 			}
 			if !tc.paidOnly {
 				got := persisted.StandardQuota[actualModel]
-				if tc.quotaDelay == 0 && !got.IsZero() || tc.quotaDelay > 0 && (got.Before(started.Add(tc.quotaDelay)) || got.After(finished.Add(tc.quotaDelay))) {
+				if !tc.quotaResetAt.IsZero() {
+					if !got.Equal(tc.quotaResetAt) || len(persisted.StandardQuota) != 1 {
+						t.Fatalf("StandardQuota=%v, want exactly %s until %v", persisted.StandardQuota, actualModel, tc.quotaResetAt)
+					}
+				} else if tc.quotaDelay == 0 && !got.IsZero() || tc.quotaDelay > 0 && (got.Before(started.Add(tc.quotaDelay)) || got.After(finished.Add(tc.quotaDelay))) {
 					t.Fatalf("StandardQuota %v, want delay %v from %v", got, tc.quotaDelay, started)
 				}
 			}
