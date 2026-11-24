@@ -36,10 +36,13 @@ func TestCooldown_GetKeyCooldownUntil_AndClearAll(t *testing.T) {
 	if err := store.SetKeyCooldown(ctx, cfg.ID, 0, until); err != nil {
 		t.Fatalf("SetKeyCooldown failed: %v", err)
 	}
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 0, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 
 	gotUntil, ok := ss.GetKeyCooldownUntil(ctx, cfg.ID, 0)
-	if !ok || gotUntil.IsZero() {
-		t.Fatalf("GetKeyCooldownUntil ok=%v until=%v, want true,non-zero", ok, gotUntil)
+	if !ok || gotUntil.Unix() != until.Unix() {
+		t.Fatalf("GetKeyCooldownUntil ok=%v until=%v, want %v", ok, gotUntil, until)
 	}
 
 	if err := ss.ClearAllKeyCooldowns(ctx, cfg.ID); err != nil {

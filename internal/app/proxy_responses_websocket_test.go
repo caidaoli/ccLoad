@@ -9835,7 +9835,11 @@ func TestResponsesWebsocketNativeInterruptFailureDoesNotPoisonTurns(t *testing.T
 	}
 }
 
-func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingModel(t *testing.T) {
+/**
+ * @brief 验证原生 WebSocket 限流只报告错误码时也按恢复时间冷却当前 Key。
+ * @param t 测试上下文。
+ */
+func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingKey(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -9874,7 +9878,7 @@ func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingModel(t *testing.
 	if entry.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("capacity status=%d want=429", entry.StatusCode)
 	}
-	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	cooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -9882,14 +9886,15 @@ func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingModel(t *testing.
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("configs=%v err=%v", configs, err)
 	}
-	until := cooldowns[configs[0].ID]["gpt-test"]
-	if until.Before(before.Add(6*time.Second)) || until.After(time.Now().Add(7*time.Second)) {
+	until := cooldowns[configs[0].ID][0]
+	if until.Before(before.Add(6*time.Second)) || until.After(time.Now().Add(8*time.Second)) {
 		t.Fatalf("capacity cooldown=%v", until)
 	}
-	if _, exists := cooldowns[configs[0].ID]["gpt-other"]; exists {
-		t.Fatal("unrelated model cooled")
+	modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil || len(modelCooldowns[configs[0].ID]) != 0 {
+		t.Fatalf("model cooldowns=%v err=%v, want none", modelCooldowns, err)
 	}
-	if configs[0].IsCoolingDown(time.Now()) {
-		t.Fatal("capacity cooled channel")
+	if got := configs[0].CooldownUntil; got != until.Unix() {
+		t.Fatalf("channel cooldown=%d, want deadline of its only Key (%d)", got, until.Unix())
 	}
 }

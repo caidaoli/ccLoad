@@ -146,9 +146,18 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 	// Network errors intentionally bypass this branch because they do not have a
 	// trustworthy upstream response body to match.
 	if !in.IsNetworkError {
-		if configured, ok := configuredCooldownDecision(in, time.Now()); ok {
+		now := time.Now()
+		if configured, ok := configuredCooldownDecision(in, now); ok {
 			if !in.ModelScoped || configured.modelScoped {
 				return configured
+			}
+		}
+		if statusCode == http.StatusTooManyRequests && in.KeyIndex != NoKeyIndex {
+			return cooldownDecision{
+				action:              ActionRetryKey,
+				keyCooldownUntil:    util.APIKeyRateLimitUntil(in.Headers, errorBody, now),
+				hasKeyCooldownUntil: true,
+				keyCooldownReason:   "rate_limit",
 			}
 		}
 	}

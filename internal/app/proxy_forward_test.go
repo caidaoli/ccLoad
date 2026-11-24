@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -1438,6 +1439,75 @@ func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 
 	if forwardedBody != body {
 		t.Fatalf("unexpected response body forwarded: %q", forwardedBody)
+	}
+}
+
+/**
+ * @brief 验证最后一把 Key 限流后直接换渠道，显式渠道规则仍允许换 URL。
+ * @param t 测试上下文。
+ */
+func TestProxy_MultiURL429KeyCooldownSkipsOtherURL(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		scope string
+		calls int32
+	}{
+		{name: "key cooldown", calls: 1},
+		{name: "explicit channel cooldown", scope: model.CooldownScopeChannel, calls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var primaryCalls atomic.Int32
+			limited := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(w, `{"error":{"message":"Too many requests"}}`)
+			})
+			first := newTestHTTPServer(t, limited)
+			second := newTestHTTPServer(t, limited)
+			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"backup","choices":[{"message":{"content":"ok"}}]}`)
+			}))
+			t.Cleanup(first.Close)
+			t.Cleanup(second.Close)
+			t.Cleanup(backup.Close)
+
+			primary := testChannel{name: "primary", models: "gpt-test"}
+			if tc.scope != "" {
+				primary.cooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Shared endpoint rate limit", StatusCodes: []int{http.StatusTooManyRequests},
+					Scope: tc.scope, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}}
+			}
+			env := setupProxyTestEnv(t, []testChannel{primary, {name: "backup", models: "gpt-test"}}, map[int]string{
+				0: first.URL + "\n" + second.URL,
+				1: backup.URL,
+			})
+
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-test", "messages": []map[string]string{{"role": "user", "content": "hello"}},
+			}, nil)
+			if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "id").String() != "backup" {
+				t.Fatalf("status=%d response=%s, want backup response", response.Code, response.Body.String())
+			}
+			if calls := primaryCalls.Load(); calls != tc.calls {
+				t.Fatalf("primary URL calls=%d, want %d", calls, tc.calls)
+			}
+			keys, err := env.store.GetAPIKeys(t.Context(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantKeyCooldown := tc.scope == ""
+			if len(keys) != 1 || keys[0].IsCoolingDown(time.Now()) != wantKeyCooldown {
+				t.Fatalf("primary Key cooldown should be %v", wantKeyCooldown)
+			}
+			for _, endpoint := range []string{first.URL, second.URL} {
+				if cooled := env.server.urlSelector.IsCooledDown(1, endpoint); cooled == wantKeyCooldown {
+					t.Fatalf("URL %s cooling=%v, want %v", endpoint, cooled, !wantKeyCooldown)
+				}
+			}
+		})
 	}
 }
 

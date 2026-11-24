@@ -5102,9 +5102,10 @@ func (s *Server) attemptKeyAcrossURLs(
 		if result != nil {
 			urlLastFailure = result
 		}
-		if nextAction == cooldown.ActionSkipChannel {
-			// HTTP 分类器的能力失败来自 Anthropic Fast 积分拒绝。
+		if result != nil && result.status == http.StatusTooManyRequests && util.AnthropicFastModeCreditsRequired(result.body) {
 			reqCtx.requireFastFallback = true
+		}
+		if nextAction == cooldown.ActionSkipChannel {
 			return nil, urlLastFailure, nil
 		}
 		if cfg.AntigravityCredits {
@@ -5160,8 +5161,8 @@ func (s *Server) attemptKeyAcrossURLs(
 			break
 		}
 
-		// Key级错误：换URL无意义，跳出URL循环
-		if nextAction == cooldown.ActionRetryKey {
+		// Key 冷却耗尽整个渠道时，也不能用已冷却的 Key 再换 URL。
+		if nextAction == cooldown.ActionRetryKey || (result != nil && result.keyCooldownPromoted) {
 			break
 		}
 		// 模型级错误与 URL 无关，不要在同渠道继续浪费请求。

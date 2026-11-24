@@ -1828,6 +1828,68 @@ func TestClassifyOrdinaryRateLimitStillModelScoped(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证独立 API Key 的有效 429 优先采用明确恢复时间，否则冷却一分钟。
+ * @param t 当前测试上下文。
+ */
+func TestAPIKeyRateLimitUntil(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	windowReset := now.Add(2 * time.Hour)
+	for _, tt := range []struct {
+		name    string
+		headers map[string][]string
+		body    string
+		want    time.Time
+	}{
+		{name: "ordinary 429", want: now.Add(time.Minute)},
+		{name: "unknown reset for daily quota", body: `{"error":{"code":"daily_limit_exceeded"}}`, want: now.Add(time.Minute)},
+		{name: "unknown reset for API key quota", body: `{"error":{"code":"api_key_quota_exhausted"}}`, want: now.Add(time.Minute)},
+		{name: "unknown reset for free tier", body: `{"error":{"code":"free_tier_budget_exceeded"}}`, want: now.Add(time.Minute)},
+		{name: "unknown reset for usage limit", body: `{"error":{"type":"usage_limit_reached"}}`, want: now.Add(time.Minute)},
+		{name: "unknown reset for xAI", body: `{"code":"subscription:free-usage-exhausted"}`, want: now.Add(time.Minute)},
+		{name: "seconds header", headers: map[string][]string{"retry-after": {"13"}}, want: now.Add(13 * time.Second)},
+		{name: "immediate header", headers: map[string][]string{"Retry-After": {"0"}}, want: now},
+		{name: "date header", headers: map[string][]string{"Retry-After": {windowReset.Format(http.TimeFormat)}}, want: windowReset},
+		{name: "expired date header", headers: map[string][]string{"Retry-After": {now.Add(-time.Second).Format(http.TimeFormat)}}, want: now.Add(time.Minute)},
+		{name: "structured reset without error code", body: `{"error":{"reset_seconds":120}}`, want: now.Add(2 * time.Minute)},
+		{name: "structured reset with quota code", body: `{"error":{"code":"daily_limit_exceeded","resets_in_seconds":120}}`, want: now.Add(2 * time.Minute)},
+		{name: "Responses event reset", body: `{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","resets_in_seconds":17}}}`, want: now.Add(17 * time.Second)},
+		{name: "overflowing structured reset", body: `{"error":{"reset_seconds":18446744075}}`, want: now.Add(time.Minute)},
+		{name: "retry info", body: `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"37s"}]}}`, want: now.Add(37 * time.Second)},
+		{name: "retry in text", body: `{"error":{"message":"Please retry in 2.5s."}}`, want: now.Add(2500 * time.Millisecond)},
+		{name: "retry in plain text", body: `Please retry in 2m0s.`, want: now.Add(2 * time.Minute)},
+		{name: "unrelated JSON text", body: `{"debug":{"message":"Please retry in 2m0s."}}`, want: now.Add(time.Minute)},
+		{name: "retry after text", body: `{"error":{"message":"Please retry after 42 seconds."}}`, want: now.Add(42 * time.Second)},
+		{name: "provider reset text", body: `{"error":{"type":"1308","message":"您的限额将在 ` + windowReset.In(time.Local).Format("2006-01-02 15:04:05") + ` 重置。"}}`, want: windowReset},
+		{
+			name: "Anthropic rejected window",
+			headers: map[string][]string{
+				"Anthropic-Ratelimit-Unified-5h-Status": {"rejected"},
+				"Anthropic-Ratelimit-Unified-5h-Reset":  {strconv.FormatInt(windowReset.Unix(), 10)},
+				"Retry-After":                           {"30"},
+			},
+			want: windowReset,
+		},
+		{
+			name: "Anthropic per-minute limit",
+			headers: map[string][]string{
+				"Anthropic-Ratelimit-Unified-Reset": {strconv.FormatInt(windowReset.Unix(), 10)},
+				"Retry-After":                       {"30"},
+			},
+			body: `{"error":{"type":"rate_limit_error","message":"This request would exceed the requests per minute rate limit. Please try again later."}}`,
+			want: now.Add(30 * time.Second),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := APIKeyRateLimitUntil(tt.headers, []byte(tt.body), now)
+			if !got.Equal(tt.want) {
+				t.Fatalf("APIKeyRateLimitUntil=%s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassifyAnthropicRateLimitUsesUnifiedReset(t *testing.T) {
 	now := time.Date(2026, 8, 11, 12, 43, 49, 0, time.UTC)
 	want := time.Unix(1786462800, 0)

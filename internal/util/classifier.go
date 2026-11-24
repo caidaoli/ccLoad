@@ -172,6 +172,9 @@ type sseErrorDetail struct {
 	Message string `json:"message"`
 }
 
+/**
+ * @brief 上游配额错误的顶层字段和 Responses 事件的错误容器。
+ */
 type structuredQuotaErrorResponse struct {
 	Code            any                          `json:"code"`
 	Message         string                       `json:"message"`
@@ -184,6 +187,7 @@ type structuredQuotaErrorResponse struct {
 	Status          string                       `json:"status"`
 	Details         []structuredQuotaErrorDetail `json:"details"`
 	Error           json.RawMessage              `json:"error"`
+	Response        json.RawMessage              `json:"response"` ///< response.failed 事件中的 response.error 容器
 }
 
 type structuredQuotaErrorObject struct {
@@ -430,23 +434,27 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 	return GetStatusCodeMeta(statusCode).Level
 }
 
-// ClassifyHTTPResponseWithMeta 基于状态码 + headers + 响应体智能分类错误级别
-// 返回 HTTPResponseClassification，包含错误级别和固定Key冷却截止时间（如果存在）
-//
-// 分类策略：
-//   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
-//   - 400/413 默认按模型级处理，避免一个模型的请求约束误伤整个渠道；Anthropic 账号终态
-//     （组织禁用/余额耗尽/需身份验证）的 400 例外，按 Key 级处理；上下文超限与图片无法处理
-//     （`Could not process image`）由请求内容决定，换渠道也不会成功，按客户端错误直返；
-//     413 不能当客户端直返：同一份 Claude Code 历史在 Anthropic 能过、在别的网关会 RequestTooLarge，
-//     直返会打断已经开始的渠道 failover
-//   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
-//   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
-//   - 其他状态码：走表驱动分类（statusCodeMetaMap）
+/**
+ * @brief 根据上游响应判断错误影响范围和冷却截止时间。
+ * @param statusCode 本次尝试的有效状态码。
+ * @param headers 上游响应头。
+ * @param responseBody 上游错误正文。
+ * @return 错误级别及已识别的冷却作用域与截止时间。
+ * @details 1308 优先识别；401/403 在明确账户终态时影响整个渠道。400/413 默认只影响模型，
+ * 上下文超限与图片无法处理原样直返。429 优先识别具体配额，普通限流按实际模型退避。
+ */
 func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, responseBody []byte) HTTPResponseClassification {
 	return classifyHTTPResponseWithMetaAt(statusCode, headers, responseBody, time.Now())
 }
 
+/**
+ * @brief 基于本次分类的起算时间解释上游错误信号。
+ * @param statusCode 本次尝试的有效状态码。
+ * @param headers 上游响应头。
+ * @param responseBody 上游错误正文。
+ * @param now 冷却延迟的起算时间。
+ * @return 本次错误的分类和提供商冷却信息。
+ */
 func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string, responseBody []byte, now time.Time) HTTPResponseClassification {
 	// 上游 HTTP 499 与本地 context.Canceled 不同：切换渠道，但只冷却当前实际模型。
 	if statusCode == StatusClientClosedRequest {
@@ -478,8 +486,8 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
-	if quotaErr, parsed := parseStructuredQuotaError(responseBody); parsed {
-		if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(quotaErr, now); ok {
+	if quotaErr, parsed := parseStructuredQuotaError(responseBody, false); parsed {
+		if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(quotaErr, now, true); ok {
 			classification := HTTPResponseClassification{
 				Level: level,
 				Model: strings.TrimSpace(quotaErr.model),
@@ -587,12 +595,12 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			}
 			return classification
 		}
-		if anthropicFastModeCreditsRequired(responseBody) {
+		if AnthropicFastModeCreditsRequired(responseBody) {
 			return HTTPResponseClassification{Level: ErrorLevelCapability}
 		}
 	}
 
-	// 其余 429 无论限流范围如何，都只冷却当前实际模型。
+	// 普通 429 默认冷却实际模型。
 	if statusCode == 429 {
 		level := ErrorLevelKey
 		if headers != nil {
@@ -785,6 +793,52 @@ func ParseRetryAfter(headers map[string][]string, now time.Time) (time.Time, boo
  */
 func ParseRetryAfterHint(headers map[string][]string, now time.Time) (time.Time, bool) {
 	return parseRetryAfter(headers, now, true)
+}
+
+/**
+ * @brief 获取独立 API Key 遇到有效 429 时的冷却截止时间。
+ * @param headers 上游响应头。
+ * @param body 上游错误正文。
+ * @param now 相对延迟的起算时间。
+ * @return 上游明确给出的恢复时间（含立即重试），缺失时为 now 后一分钟。
+ */
+func APIKeyRateLimitUntil(headers map[string][]string, body []byte, now time.Time) time.Time {
+	if until, ok := ParseResetTimeFrom1308Error(body); ok && until.After(now) {
+		return until
+	}
+	quotaErr, _ := parseStructuredQuotaError(body, true)
+	if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+		return until
+	}
+	if until, _, _, ok := parseStructuredQuotaCooldown(quotaErr, now, false); ok && until.After(now) {
+		return until
+	}
+	message := quotaErr.message
+	if message == "" && !json.Valid(body) {
+		message = string(body)
+	}
+	if until, ok := parseGoogleMessageRetryAt(message, now, true); ok {
+		return until
+	}
+	if until, ok := parseRetryAfterSecondsCooldownUntil(message, now); ok {
+		return until
+	}
+	if until, ok := parseTryAgainInCooldownUntil(message, now); ok {
+		return until
+	}
+	if anthropicUnifiedWindowRejected(headers) {
+		if until, ok := anthropicRejectedWindowReset(headers, now); ok {
+			return until
+		}
+	} else if !anthropicPerMinuteRateLimit(headers, body) {
+		if until, ok := parseAnthropicRateLimitReset(headers, now); ok {
+			return until
+		}
+	}
+	if until, ok := ParseRetryAfterHint(headers, now); ok {
+		return until
+	}
+	return now.Add(time.Minute)
 }
 
 /**
@@ -1012,9 +1066,12 @@ func upstreamErrorMessageLower(body []byte) string {
 	return strings.ToLower(message)
 }
 
-// anthropicFastModeCreditsRequired 识别 fast 模式缺少 usage credits 的拒绝。
-// 真正的限流从不提 fast，因此不会误伤普通 429。
-func anthropicFastModeCreditsRequired(body []byte) bool {
+/**
+ * @brief 判断上游是否因缺少额度而拒绝 Fast 档位。
+ * @param body 上游响应正文。
+ * @return 后续尝试需要保留 Fast 档位时返回 true。
+ */
+func AnthropicFastModeCreditsRequired(body []byte) bool {
 	message := upstreamErrorMessageLower(body)
 	return strings.Contains(message, "fast request rejected") ||
 		(strings.Contains(message, "fast") &&
@@ -1137,7 +1194,17 @@ func isWebsocketConnectionLimitValue(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), WebsocketConnectionLimitCode)
 }
 
-func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) (time.Time, string, ErrorLevel, bool) {
+/**
+ * @brief 解释已知提供商配额错误的恢复时间和作用域。
+ * @param quotaErr 上游配额错误字段。
+ * @param now 相对延迟的起算时间。
+ * @param allowInferred 是否保留提供商规则中根据错误码推断的窗口。
+ * @return 恢复时间；模型冷却缺少时间或规则未命中时为零值。
+ * @return 规则原因；规则未命中时为空。
+ * @return 冷却的错误级别；规则未命中时为 ErrorLevelNone。
+ * @return 识别到可应用的规则时为 true。
+ */
+func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time, allowInferred bool) (time.Time, string, ErrorLevel, bool) {
 	code := quotaErr.code
 	message := quotaErr.message
 	messageUpper := strings.ToUpper(message)
@@ -1169,13 +1236,15 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 		}
 		// 没有精确 reset 时沿用滚动 24 小时窗口；分类出口按上游是否
 		// 明确命名模型区分模型额度和整个凭证的共享额度。
-		return now.Add(xaiFreeUsageExhaustedCooldown), "XAI_FREE_USAGE_EXHAUSTED", ErrorLevelChannel, true
-	case code == "API_KEY_QUOTA_EXHAUSTED":
+		if allowInferred {
+			return now.Add(xaiFreeUsageExhaustedCooldown), "XAI_FREE_USAGE_EXHAUSTED", ErrorLevelChannel, true
+		}
+	case allowInferred && code == "API_KEY_QUOTA_EXHAUSTED":
 		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", ErrorLevelKey, true
-	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):
+	case allowInferred && (code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED")):
 		return now.Add(30 * time.Minute), "FREE_TIER_BUDGET_EXCEEDED", ErrorLevelKey, true
-	case code == "DAILY_LIMIT_EXCEEDED" ||
-		(code == "USAGE_LIMIT_EXCEEDED" && strings.Contains(messageUpper, "DAILY_LIMIT_EXCEEDED")):
+	case allowInferred && (code == "DAILY_LIMIT_EXCEEDED" ||
+		(code == "USAGE_LIMIT_EXCEEDED" && strings.Contains(messageUpper, "DAILY_LIMIT_EXCEEDED"))):
 		return nextLocalMidnight(now), "DAILY_LIMIT_EXCEEDED", ErrorLevelKey, true
 	case code == "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED":
 		if until, ok := parseGlobalFixedWindowQuotaCooldownUntil(message, now); ok {
@@ -1209,16 +1278,32 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 			return until, "USAGE_LIMIT_REACHED", ErrorLevelKey, true
 		}
 		// 没有精确重置时间，默认30分钟
-		return now.Add(30 * time.Minute), "USAGE_LIMIT_REACHED", ErrorLevelKey, true
-	default:
-		return time.Time{}, "", ErrorLevelNone, false
+		if allowInferred {
+			return now.Add(30 * time.Minute), "USAGE_LIMIT_REACHED", ErrorLevelKey, true
+		}
 	}
+	return time.Time{}, "", ErrorLevelNone, false
 }
 
-func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool) {
+/**
+ * @brief 读取配额错误的代码、文案与结构化重置字段。
+ * @param responseBody 上游错误 JSON。
+ * @param readResponseError 是否允许从 Responses 失败事件的 response.error 中读取错误字段。
+ * @return 解析出的配额错误字段，无有效 JSON 时为零值。
+ * @return 包含错误码、文案或状态时为 true。
+ */
+func parseStructuredQuotaError(responseBody []byte, readResponseError bool) (structuredQuotaError, bool) {
 	var errResp structuredQuotaErrorResponse
 	if err := json.Unmarshal(responseBody, &errResp); err != nil {
 		return structuredQuotaError{}, false
+	}
+	if len(errResp.Error) == 0 && readResponseError && len(errResp.Response) != 0 {
+		var response struct {
+			Error json.RawMessage `json:"error"`
+		}
+		if json.Unmarshal(errResp.Response, &response) == nil {
+			errResp.Error = response.Error
+		}
 	}
 
 	message := errResp.Message
@@ -1305,7 +1390,7 @@ func mergeStructuredQuotaDetails(parsed *structuredQuotaError, details []structu
 // configurable cooldown detection so configured rules and built-in handling see
 // the same normalized fields.
 func ExtractUpstreamErrorCodeAndMessage(responseBody []byte) (string, string) {
-	parsed, ok := parseStructuredQuotaError(responseBody)
+	parsed, ok := parseStructuredQuotaError(responseBody, false)
 	if !ok {
 		return "", ""
 	}
@@ -1342,8 +1427,15 @@ func structuredScalarString(value any) string {
 	}
 }
 
+/**
+ * @brief 解析结构化配额重置时间或重试延迟。
+ * @param quotaErr 上游配额错误字段。
+ * @param now 相对延迟的起算时间。
+ * @return 未来的恢复时间；未提供有效时间时为零值。
+ * @return 识别到有效截止时间时为 true。
+ */
 func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) (time.Time, bool) {
-	if quotaErr.resetSeconds > 0 {
+	if quotaErr.resetSeconds > 0 && quotaErr.resetSeconds <= int64((1<<63-1)/time.Second) {
 		return now.Add(time.Duration(quotaErr.resetSeconds) * time.Second), true
 	}
 
@@ -1418,7 +1510,7 @@ func parseCodexUsageFrequencyLimitCooldown(message string, now time.Time) (time.
  * @return 有明确计时提示时为 true，含显式零秒。
  */
 func GoogleRateLimitRetryAt(body []byte, now time.Time) (time.Time, bool) {
-	quota, _ := parseStructuredQuotaError(body)
+	quota, _ := parseStructuredQuotaError(body, false)
 	if until, ok := parseStructuredCooldownUntil(quota, now); ok {
 		return until, true
 	}
@@ -1449,14 +1541,21 @@ func parseGoogleMessageRetryAt(message string, now time.Time, allowZero bool) (t
 	return now.Add(duration), true
 }
 
+/**
+ * @brief 读取上游文案明确给出的 Retry after … seconds 延迟。
+ * @param message 上游错误文案。
+ * @param now 相对延迟的起算时间。
+ * @return 未来的恢复时间；未提供有效延迟时为零值。
+ * @return 含有效正秒数时为 true。
+ */
 func parseRetryAfterSecondsCooldownUntil(message string, now time.Time) (time.Time, bool) {
 	matches := retryAfterSecondsRegex.FindStringSubmatch(message)
 	if matches == nil {
 		return time.Time{}, false
 	}
 
-	seconds, err := strconv.Atoi(matches[1])
-	if err != nil || seconds <= 0 {
+	seconds, err := strconv.ParseInt(matches[1], 10, 64)
+	if err != nil || seconds <= 0 || seconds > int64((1<<63-1)/time.Second) {
 		return time.Time{}, false
 	}
 	return now.Add(time.Duration(seconds) * time.Second), true

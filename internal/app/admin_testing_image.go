@@ -573,7 +573,7 @@ func (s *Server) testChannelImageGeneration(
 		if !hasNextURL {
 			break
 		}
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(cfg, lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
 		}

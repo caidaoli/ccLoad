@@ -2363,6 +2363,11 @@ func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {
 			http.Error(w, "invalid api key", http.StatusUnauthorized)
 			return
 		}
+		if auth == "Bearer sk-limited" {
+			w.Header().Set("Retry-After", "3600")
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
 		if auth != "Bearer sk-good" {
 			http.Error(w, "unexpected api key", http.StatusForbidden)
 			return
@@ -2390,7 +2395,8 @@ func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {
 	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
 		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-cooling", KeyStrategy: model.KeyStrategySequential},
 		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-bad", KeyStrategy: model.KeyStrategySequential},
-		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-good", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-limited", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 3, APIKey: "sk-good", KeyStrategy: model.KeyStrategySequential},
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 	}
@@ -2409,7 +2415,7 @@ func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {
 	if !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "gpt-5.4" {
 		t.Fatalf("unexpected response: %s", w.Body.String())
 	}
-	wantAuth := []string{"Bearer sk-bad", "Bearer sk-good"}
+	wantAuth := []string{"Bearer sk-bad", "Bearer sk-limited", "Bearer sk-good"}
 	if !reflect.DeepEqual(gotAuth, wantAuth) {
 		t.Fatalf("Authorization sequence=%v, want %v", gotAuth, wantAuth)
 	}

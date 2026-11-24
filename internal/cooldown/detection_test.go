@@ -399,17 +399,20 @@ func TestHandleError_ReusesConfiguredDetection(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 独立 Key 的 429 仍优先按自定义规则指定的范围和时长冷却。
+ * @param t 测试上下文。
+ */
 func TestHandleError_ConfiguredCooldownDetectionStoresSelectedScope(t *testing.T) {
 	tests := []struct {
 		name       string
 		scope      string
-		keyIndex   int
 		model      string
 		wantAction Action
 	}{
-		{name: "key", scope: model.CooldownScopeKey, keyIndex: 0, wantAction: ActionRetryKey},
-		{name: "model", scope: model.CooldownScopeModel, keyIndex: NoKeyIndex, model: "test-model", wantAction: ActionRetryModel},
-		{name: "channel", scope: model.CooldownScopeChannel, keyIndex: NoKeyIndex, wantAction: ActionRetryChannel},
+		{name: "key", scope: model.CooldownScopeKey, wantAction: ActionRetryKey},
+		{name: "model", scope: model.CooldownScopeModel, model: "test-model", wantAction: ActionRetryModel},
+		{name: "channel", scope: model.CooldownScopeChannel, wantAction: ActionRetryChannel},
 	}
 
 	for _, tt := range tests {
@@ -418,13 +421,11 @@ func TestHandleError_ConfiguredCooldownDetectionStoresSelectedScope(t *testing.T
 			defer cleanup()
 			ctx := context.Background()
 			cfg := createTestChannel(t, store, "configured-scope-"+tt.name)
-			if tt.scope == model.CooldownScopeKey {
-				if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-					{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "key-0", KeyStrategy: model.KeyStrategySequential},
-					{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "key-1", KeyStrategy: model.KeyStrategySequential},
-				}); err != nil {
-					t.Fatalf("CreateAPIKeysBatch() error = %v", err)
-				}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "key-0", KeyStrategy: model.KeyStrategySequential},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "key-1", KeyStrategy: model.KeyStrategySequential},
+			}); err != nil {
+				t.Fatalf("CreateAPIKeysBatch() error = %v", err)
 			}
 			if tt.scope == model.CooldownScopeModel {
 				cfg.ModelEntries = append(cfg.ModelEntries, model.ModelEntry{Model: "other-model"})
@@ -436,16 +437,21 @@ func TestHandleError_ConfiguredCooldownDetectionStoresSelectedScope(t *testing.T
 			before := time.Now()
 			action := NewManager(store, nil).HandleError(ctx, ErrorInput{
 				ChannelID:  cfg.ID,
-				KeyIndex:   tt.keyIndex,
+				KeyIndex:   0,
 				Model:      tt.model,
-				StatusCode: 406,
+				StatusCode: 429,
 				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
-					Enabled: true, Name: tt.name, Priority: 0, StatusCodes: []int{406},
+					Enabled: true, Name: tt.name, Priority: 0, StatusCodes: []int{429},
 					Scope: tt.scope, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
 				}}},
 			})
 			if action != tt.wantAction {
 				t.Fatalf("HandleError() action = %v, want %v", action, tt.wantAction)
+			}
+			if tt.scope != model.CooldownScopeKey {
+				if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists {
+					t.Fatalf("rule scope=%s, key cooldown=%v", tt.scope, until)
+				}
 			}
 
 			switch tt.scope {

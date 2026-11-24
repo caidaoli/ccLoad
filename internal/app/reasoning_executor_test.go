@@ -344,32 +344,40 @@ func TestReasoningDecisionMissingUsageWithCustomPrice(t *testing.T) {
 }
 
 /**
- * @brief 对照自动判定和公开 System One API 的 Key 轮换与冷却范围。
+ * @brief 对照普通 Gemini API、自动判定和公开 System One API 的 Key 轮换与冷却范围。
  * @param t 测试上下文。
  */
 func TestReasoningDecisionGeminiKeyFailover(t *testing.T) {
 	const actualModel = "gemini-decision-1"
+	const qpsLimit = `{"error":{"code":"too_many_requests","message":"The query-per-second (QPS) limit for identical or near-identical request payloads has been exceeded."}}`
+	const genericLimit = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted (e.g. check quota)."}}`
+	const quotaLimit = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded. Please retry in 17.4s."}}`
 	for _, tc := range []struct {
-		name              string
-		preferOtherKeys   bool
-		exhaustPrimary    bool
-		firstStatus       int
-		maxKeyRetries     int
-		wantAttempts      []string
-		wantModelCooldown bool
-		embeddedLimit     bool
+		name            string
+		preferOtherKeys bool
+		exhaustPrimary  bool
+		firstStatus     int
+		maxKeyRetries   int
+		wantAttempts    []string
+		wantCooldown    time.Duration
+		errorBody       string
 	}{
-		{"prefer other key", true, false, 429, 1, []string{"first", "second"}, false, false},
-		{"exhaust both keys", true, true, 429, 1, []string{"first", "second", "backup"}, false, false},
-		{"default model cooldown", false, false, 429, 2, []string{"first", "backup"}, true, false},
-		{"credential rejected", false, false, 401, 2, []string{"first", "second"}, false, false},
-		{"credential retry limit", false, false, 401, 1, []string{"first", "backup"}, false, false},
-		{"HTTP 200 wraps rate limit", true, false, 200, 1, []string{"first", "second"}, false, true},
+		{"QPS limit with key fallback enabled", true, false, 429, 1, []string{"first", "second"}, time.Minute, qpsLimit},
+		{"QPS limit with key fallback disabled", false, false, 429, 2, []string{"first", "second"}, time.Minute, qpsLimit},
+		{"QPS key retry limit", false, false, 429, 1, []string{"first", "backup"}, time.Minute, qpsLimit},
+		{"QPS limit exhausts both keys with key fallback enabled", true, true, 429, 1, []string{"first", "second", "backup"}, time.Minute, qpsLimit},
+		{"QPS limit exhausts both keys with key fallback disabled", false, true, 429, 2, []string{"first", "second", "backup"}, time.Minute, qpsLimit},
+		{"ordinary 429 with key fallback disabled", false, false, 429, 2, []string{"first", "second"}, time.Minute, genericLimit},
+		{"ordinary 429 with key fallback enabled", true, false, 429, 1, []string{"first", "second"}, time.Minute, genericLimit},
+		{"429 without error body", false, false, 429, 2, []string{"first", "second"}, time.Minute, ""},
+		{"quota retry in", false, false, 429, 2, []string{"first", "second"}, 17400 * time.Millisecond, quotaLimit},
+		{"credential rejected", false, false, 401, 2, []string{"first", "second"}, 0, ""},
+		{"credential retry limit", false, false, 401, 1, []string{"first", "backup"}, 0, ""},
+		{"HTTP 200 wraps rate limit", true, false, 200, 1, []string{"first", "second"}, time.Minute, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"decision quota exceeded"}}`},
 	} {
-		for _, entry := range []string{"automatic", "public API"} {
+		for _, entry := range []string{"automatic", "public API", "Gemini API"} {
 			automatic := entry == "automatic"
-			// Public System One forwards HTTP 200 bodies as received.
-			if tc.embeddedLimit && !automatic {
+			if tc.firstStatus == http.StatusOK && !automatic {
 				continue
 			}
 			t.Run(tc.name+"/"+entry, func(t *testing.T) {
@@ -377,7 +385,7 @@ func TestReasoningDecisionGeminiKeyFailover(t *testing.T) {
 				var attempts []string
 				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					key := r.Header.Get("x-goog-api-key")
-					if !automatic {
+					if entry == "public API" {
 						key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 					}
 					mu.Lock()
@@ -386,30 +394,44 @@ func TestReasoningDecisionGeminiKeyFailover(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 					if key == "first" || (key == "second" && tc.exhaustPrimary) {
 						w.WriteHeader(tc.firstStatus)
-						if tc.embeddedLimit {
-							_, _ = io.WriteString(w, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"decision quota exceeded"}}`)
-						} else if tc.firstStatus == http.StatusTooManyRequests {
-							_, _ = io.WriteString(w, `{"error":{"message":"The query-per-second (QPS) limit for identical or near-identical request payloads has been exceeded."}}`)
-						}
+						_, _ = io.WriteString(w, tc.errorBody)
+						return
+					}
+					if entry == "Gemini API" {
+						_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 						return
 					}
 					_, _ = io.WriteString(w, `{"answers":{"effort":{"type":"score","probabilities":{"0":0,"1":1,"2":0,"3":0}}},"usage":{"total_input_tokens":13,"total_output_tokens":0}}`)
 				}))
 				t.Cleanup(upstream.Close)
 				models := []model.ModelEntry{{Model: "decision-auto", RedirectModel: actualModel}}
+				authType := model.AuthTypeSystemOne
+				if entry == "Gemini API" {
+					authType = model.AuthTypeAPIKey
+				}
 				env := setupProxyTestEnvWithSettings(t, []testChannel{
-					{name: "primary", authType: model.AuthTypeSystemOne, modelEntries: models, apiKey: "first", priority: 100, retryOtherKeysOnFailure: tc.preferOtherKeys},
-					{name: "backup", authType: model.AuthTypeSystemOne, modelEntries: models, apiKey: "backup", priority: 50},
-				}, map[int]string{0: upstream.URL, 1: upstream.URL}, map[string]string{"debug_log_enabled": "true"})
+					{name: "primary", authType: authType, upstreamProtocol: util.ProtocolGemini, modelEntries: models, apiKey: "first", priority: 100, retryOtherKeysOnFailure: tc.preferOtherKeys},
+					{name: "backup", authType: authType, upstreamProtocol: util.ProtocolGemini, modelEntries: models, apiKey: "backup", priority: 50},
+				}, map[int]string{0: upstream.URL, 1: upstream.URL}, map[string]string{
+					"debug_log_enabled": "true", "cooldown_rate_limit_seconds": "127",
+				})
 				env.server.maxKeyRetries = tc.maxKeyRetries
 				if err := env.store.CreateAPIKeysBatch(t.Context(), []*model.APIKey{{ChannelID: 1, KeyIndex: 1, APIKey: "second", Priority: -1}}); err != nil {
 					t.Fatal(err)
 				}
+				started := time.Now()
 				if automatic {
 					env.server.reasoningAuto.Store(&model.ReasoningAutoConfig{Enabled: true, DecisionModel: "decision-auto", TimeoutMS: 2000})
 					result, err := env.server.executeReasoningDecision(t.Context(), "test task", reasoningDefaultLevels)
 					if err != nil || result.effort != "medium" {
 						t.Fatalf("effort=%q err=%v, want medium", result.effort, err)
+					}
+				} else if entry == "Gemini API" {
+					response := doProxyRequest(t, env.engine, "/v1beta/models/decision-auto:generateContent", map[string]any{
+						"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "test task"}}}},
+					}, nil)
+					if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "candidates.0.content.parts.0.text").String() != "ok" {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 					}
 				} else {
 					response := doProxyRequest(t, env.engine, "/v1/systemone", map[string]any{"model": "decision-auto", "state": "test task"}, nil)
@@ -417,6 +439,7 @@ func TestReasoningDecisionGeminiKeyFailover(t *testing.T) {
 						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 					}
 				}
+				finished := time.Now()
 				mu.Lock()
 				gotAttempts := slices.Clone(attempts)
 				mu.Unlock()
@@ -427,24 +450,33 @@ func TestReasoningDecisionGeminiKeyFailover(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(keys) != 2 || keys[0].IsCoolingDown(time.Now()) == tc.wantModelCooldown || keys[1].IsCoolingDown(time.Now()) != tc.exhaustPrimary {
+				if len(keys) != 2 || !keys[0].IsCoolingDown(finished) || keys[1].IsCoolingDown(finished) != tc.exhaustPrimary {
 					t.Fatalf("unexpected Key cooldowns: %+v", keys)
+				}
+				if tc.wantCooldown != 0 {
+					earliest := started.Add(tc.wantCooldown).Unix()
+					latest := finished.Add(tc.wantCooldown).Unix()
+					for _, key := range keys {
+						if key.IsCoolingDown(finished) && (key.CooldownUntil < earliest || key.CooldownUntil > latest) {
+							t.Fatalf("Key %d cooldown until %d, want %v cooldown (until %d–%d)", key.KeyIndex, key.CooldownUntil, tc.wantCooldown, earliest, latest)
+						}
+					}
 				}
 				windows, err := env.store.GetAllModelCooldowns(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, cooled := windows[1][actualModel]; cooled != tc.wantModelCooldown {
-					t.Fatalf("model cooldown=%v, want %v", cooled, tc.wantModelCooldown)
+				if len(windows) != 0 {
+					t.Fatalf("unexpected model cooldowns: %v", windows)
 				}
 				channels, err := env.store.GetAllChannelCooldowns(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, cooled := channels[1]; cooled != (tc.exhaustPrimary || tc.wantModelCooldown) {
+				if _, cooled := channels[1]; cooled != tc.exhaustPrimary {
 					t.Fatalf("channel cooldown=%v after attempts %v", cooled, gotAttempts)
 				}
-				if tc.embeddedLimit {
+				if tc.firstStatus == http.StatusOK {
 					entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
 						return entry.ClientProtocol == "system_one" && entry.StatusCode == http.StatusTooManyRequests
 					})
@@ -929,12 +961,20 @@ func TestReasoningDecisionSystemOneRedirectAndCustomPrice(t *testing.T) {
 // The database honors context cancellation but would otherwise outlast the judge budget.
 type slowReasoningCooldownStore struct{ storage.Store }
 
-func (s slowReasoningCooldownStore) BumpModelCooldown(ctx context.Context, _ int64, _ string, _ time.Time, _ int) (time.Duration, error) {
+/**
+ * @brief 模拟超出自动判定预算、支持取消的 Key 冷却写入。
+ * @param ctx 自动判定的请求上下文。
+ * @param channelID 渠道 ID，模拟写入不使用。
+ * @param keyIndex Key 索引，模拟写入不使用。
+ * @param until 冷却截止时间，模拟写入不使用。
+ * @return 上下文错误或模拟慢写错误。
+ */
+func (s slowReasoningCooldownStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error {
 	select {
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	case <-time.After(600 * time.Millisecond):
-		return 0, fmt.Errorf("simulated slow database")
+		return fmt.Errorf("simulated slow database")
 	}
 }
 

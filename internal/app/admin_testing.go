@@ -1446,6 +1446,7 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
+	statusCode = channelTestCooldownStatus(cfg, statusCode, errorBody)
 	if cfg.UsesLoomySession() && statusCode == http.StatusUnauthorized {
 		result["cooldown_action"] = "unknown_action"
 		// 最终禁用状态可能来自管理员或并发请求，只有本次 CAS 成功才能认领动作。
@@ -1458,9 +1459,6 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 			}
 		}
 		return result
-	}
-	if (cfg.UsesAccioOAuth() || cfg.UsesAntigravityOAuth()) && statusCode == util.StatusSSEError {
-		statusCode = classifySSEErrorStatus(errorBody)
 	}
 	input := httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers)
 	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
@@ -1718,7 +1716,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 		if capabilityExhausted && (testReq.UseURLProtocol || cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream) {
 			continue
 		}
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(cfg, lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
 		}
@@ -3465,7 +3463,31 @@ func buildTestFailureClassificationInput(result map[string]any) (statusCode int,
 	return statusCode, errorBody, headers
 }
 
-func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shouldCooldown bool) {
+/**
+ * @brief 让渠道检测的冷却和 URL 重试使用相同的有效错误状态。
+ * @param cfg 被测渠道。
+ * @param status HTTP 状态或结构化错误的内部状态。
+ * @param body 上游错误正文。
+ * @return 用于冷却分类的有效状态。
+ */
+func channelTestCooldownStatus(cfg *model.Config, status int, body []byte) int {
+	if status == util.StatusSSEError {
+		effective := classifySSEErrorStatus(body)
+		if cfg.UsesAccioOAuth() || cfg.UsesAntigravityOAuth() || (!cfg.UsesOAuth() && effective == http.StatusTooManyRequests) {
+			return effective
+		}
+	}
+	return status
+}
+
+/**
+ * @brief 判断渠道检测失败后是否应换 URL 并登记 URL 冷却。
+ * @param cfg 被测渠道，决定 429 能否归属于独立 Key。
+ * @param result 被测上游返回的结果。
+ * @return 应尝试备用 URL 时为 true。
+ * @return 应登记当前 URL 冷却时为 true。
+ */
+func shouldFallbackToNextURL(cfg *model.Config, result map[string]any) (continueFallback bool, shouldCooldown bool) {
 	if _, hasStatus := getResultInt(result["status_code"]); !hasStatus {
 		errMsg, _ := result["error"].(string)
 		if strings.HasPrefix(errMsg, "网络请求失败:") || strings.HasPrefix(errMsg, "读取响应失败:") {
@@ -3475,6 +3497,10 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
+	statusCode = channelTestCooldownStatus(cfg, statusCode, errorBody)
+	if statusCode == http.StatusTooManyRequests && !cfg.UsesOAuth() {
+		return false, false
+	}
 	if util.IsModelScopedHTTPStatus(statusCode) || util.IsModelScopedStreamFailure(statusCode) {
 		return false, false
 	}

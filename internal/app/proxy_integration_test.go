@@ -9802,6 +9802,10 @@ func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证同渠道重试仅适用于可恢复故障，独立 Key 限流立即生效。
+ * @param t 测试上下文。
+ */
 func TestProxy_SameChannelRetries(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -9876,6 +9880,20 @@ func TestProxy_SameChannelRetries(t *testing.T) {
 			modelCooldowns, err := env.store.GetAllModelCooldowns(ctx)
 			if err != nil {
 				t.Fatalf("get model cooldowns: %v", err)
+			}
+			if tt.failStatus == http.StatusTooManyRequests {
+				keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				until := keyCooldowns[1][0]
+				if remaining := time.Until(until); remaining < 58*time.Second || remaining > 61*time.Second {
+					t.Fatalf("remaining Key cooldown=%s, want one minute", remaining)
+				}
+				if len(modelCooldowns[1]) != 0 || cfg.CooldownUntil != until.Unix() {
+					t.Fatalf("after only Key cooled: model cooldowns=%v, channel until=%d, Key until=%v", modelCooldowns[1], cfg.CooldownUntil, until)
+				}
+				return
 			}
 			cooledUntil := time.Unix(cfg.CooldownUntil, 0)
 			for _, until := range modelCooldowns[1] {
@@ -10393,6 +10411,10 @@ func TestProxy_ResponseFailedSSERateLimitReturns429(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证显式模型冷却规则使用实际发给上游的模型名。
+ * @param t 测试上下文。
+ */
 func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
 	t.Parallel()
 	const finalModel = "shared-upstream-model"
@@ -10428,8 +10450,12 @@ func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
 			name:               "custom-rule-primary",
 			upstreamProtocol:   util.ProtocolCodex,
 			customRequestRules: rules,
-			models:             "external-model-a,external-model-b",
-			priority:           100,
+			cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+				Enabled: true, Name: "Shared upstream model", StatusCodes: []int{http.StatusTooManyRequests},
+				Scope: model.CooldownScopeModel, Mode: model.CooldownModeFixed, CooldownSeconds: 300,
+			}}},
+			models:   "external-model-a,external-model-b",
+			priority: 100,
 		},
 		{
 			name:             "fallback-secondary",
@@ -13470,6 +13496,10 @@ func TestProxy_AutomaticProtocolFallback_Sub2APIMessagesGroupPermission(t *testi
 	}
 }
 
+/**
+ * @brief 验证最终 429 按客户端配置映射，同时保留冷却恢复时间。
+ * @param t 测试上下文。
+ */
 func TestProxy_CodexMap429To503Setting(t *testing.T) {
 	t.Parallel()
 
@@ -13513,7 +13543,7 @@ func TestProxy_CodexMap429To503Setting(t *testing.T) {
 			upstreamBody := `{"error":{"type":"rate_limit_error","message":"retry later"}}`
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "60")
+				w.Header().Set("Retry-After", "73")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = io.WriteString(w, upstreamBody)
 			}))
@@ -13529,7 +13559,7 @@ func TestProxy_CodexMap429To503Setting(t *testing.T) {
 					tt.clientProtocol, response.Code, tt.wantStatus, response.Body.String())
 			}
 			seconds, err := strconv.Atoi(response.Header().Get("Retry-After"))
-			if err != nil || seconds < 58 || seconds > 60 || response.Body.String() != upstreamBody {
+			if err != nil || seconds < 71 || seconds > 73 || response.Body.String() != upstreamBody {
 				t.Fatalf("unexpected pool retry time or upstream body: headers=%v body=%s", response.Header(), response.Body.String())
 			}
 		})
@@ -19430,6 +19460,10 @@ func TestProxy_ModelNotFound(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证已提交 SSE 的限流冷却当前 Key，唯一 Key 耗尽时渠道一起冷却。
+ * @param t 测试上下文。
+ */
 func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	t.Parallel()
 
@@ -19510,10 +19544,24 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	if time.Until(until) <= 0 {
 		t.Fatalf("expected channel cooldown until in the future, got %v", until)
 	}
+	keys, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyUntil := keys[channelID][0]; !keyUntil.Equal(until) {
+		t.Fatalf("Key cooldown until=%s, want channel deadline %s", keyUntil, until)
+	}
+	models, err := env.store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models[channelID]) != 0 {
+		t.Fatalf("model cooldowns=%v, want none", models[channelID])
+	}
 }
 
 /**
- * @brief 缺少 Fast 积分时跳过该渠道的其余 URL，保留备用请求的速度档及普通请求的可用性。
+ * @brief 缺少 Fast 积分时冷却限流 Key，备用渠道沿用当前请求的速度档。
  * @param t 测试上下文。
  */
 func TestProxy_AnthropicFastCreditsFallback(t *testing.T) {
@@ -19527,19 +19575,23 @@ func TestProxy_AnthropicFastCreditsFallback(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		fast := gjson.GetBytes(body, "speed").String() == "fast"
+		speed := gjson.GetBytes(body, "speed").String()
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/primary/") {
 			primaryCalls.Add(1)
-			if fast {
+			if speed == "fast" {
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."}}`)
 				return
 			}
 		} else {
-			backupCalls.Add(1)
-			if !fast {
-				t.Error("unexpected standard-speed request on backup")
+			call := backupCalls.Add(1)
+			wantSpeed := ""
+			if call == 1 {
+				wantSpeed = "fast"
+			}
+			if speed != wantSpeed {
+				t.Errorf("backup request %d speed=%q, want %q", call, speed, wantSpeed)
 			}
 		}
 		_, _ = io.WriteString(w, success)
@@ -19553,10 +19605,13 @@ func TestProxy_AnthropicFastCreditsFallback(t *testing.T) {
 	if response.Code != http.StatusOK || primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
 		t.Fatalf("fast response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
 	}
-	assertNoProxyCooldowns(t, env)
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(t.Context())
+	if err != nil || len(keyCooldowns) != 1 || !keyCooldowns[1][0].After(time.Now()) {
+		t.Fatalf("Key cooldowns=%v err=%v, want only primary Key cooled", keyCooldowns, err)
+	}
 	delete(body, "speed")
 	response = doProxyRequest(t, env.engine, "/v1/messages", body, nil)
-	if response.Code != http.StatusOK || primaryCalls.Load() != 2 || backupCalls.Load() != 1 {
+	if response.Code != http.StatusOK || primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
 		t.Fatalf("standard response=%d primary=%d backup=%d body=%s", response.Code, primaryCalls.Load(), backupCalls.Load(), response.Body.String())
 	}
 }
@@ -19614,17 +19669,36 @@ func TestProxy_AnthropicFastCreditsCrossProtocolFallback(t *testing.T) {
 				gjson.GetBytes(response.Body.Bytes(), "error.message").String() != "Usage credits are required for fast mode." {
 				t.Fatalf("status=%d backup calls=%d body=%s", response.Code, backupCalls.Load(), response.Body)
 			}
-			assertNoProxyCooldowns(t, env)
+			keyCooldowns, err := env.store.GetAllKeyCooldowns(t.Context())
+			if err != nil || len(keyCooldowns) != 1 || !keyCooldowns[1][0].After(time.Now()) {
+				t.Fatalf("Key cooldowns=%v err=%v, want only primary Key cooled", keyCooldowns, err)
+			}
 		})
 	}
 }
 
-func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForModelCooldown(t *testing.T) {
+/**
+ * @brief 验证 Anthropic SSE 限流按统一重置时间冷却当前 Key 并允许使用备用 Key。
+ * @param t 测试上下文。
+ */
+func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForKeyCooldown(t *testing.T) {
 	t.Parallel()
 	resetAt := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	var upstreamCalls atomic.Int32
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
+		if r.Header.Get("X-Api-Key") == "sk-ant-second" || r.Header.Get("Authorization") == "Bearer sk-ant-second" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: message_start\ndata: "+
+				`{"type":"message_start","message":{"id":"msg-second-key","type":"message","role":"assistant","content":[]}}`+
+				"\n\nevent: content_block_start\ndata: "+
+				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+
+				"\n\nevent: content_block_delta\ndata: "+
+				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`+
+				"\n\nevent: content_block_stop\ndata: "+`{"type":"content_block_stop","index":0}`+
+				"\n\nevent: message_stop\ndata: "+`{"type":"message_stop"}`+"\n\n")
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Anthropic-Ratelimit-Unified-Reset", strconv.FormatInt(resetAt.Unix(), 10))
 		_, _ = fmt.Fprint(w, "event: error\n")
@@ -19634,14 +19708,14 @@ func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForModelCooldown(t *testing.
 
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "anthropic-sse-rate-limit", upstreamProtocol: util.ProtocolAnthropic,
-		models: "claude-sonnet-4-6", apiKey: "sk-ant", retryOtherKeysOnFailure: true,
+		models: "claude-sonnet-4-6", apiKey: "sk-ant",
 	}}, map[int]string{0: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("ListConfigs()=(%d, %v), want one channel", len(configs), err)
 	}
 	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
-		ChannelID: configs[0].ID, KeyIndex: 1, APIKey: "sk-ant-second",
+		ChannelID: configs[0].ID, KeyIndex: 1, APIKey: "sk-ant-second", Priority: -1,
 	}}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
 	}
@@ -19650,29 +19724,37 @@ func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForModelCooldown(t *testing.
 		"model": "claude-sonnet-4-6", "stream": true, "max_tokens": 16,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
-	if response.Code != http.StatusTooManyRequests {
-		t.Fatalf("status=%d body=%s, want 429", response.Code, response.Body.String())
+	var messageID string
+	for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+		name, payload := parseSSEEventChunk([]byte(event))
+		if name == "message_start" {
+			messageID = gjson.GetBytes(payload, "message.id").String()
+			break
+		}
 	}
-	if got := upstreamCalls.Load(); got != 1 {
-		t.Fatalf("upstream calls=%d, want 1 without rotating keys", got)
+	if response.Code != http.StatusOK || messageID != "msg-second-key" {
+		t.Fatalf("status=%d body=%s, want response from second Key", response.Code, response.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("upstream calls=%d, want 2 with Key rotation", got)
 	}
 	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllModelCooldowns: %v", err)
 	}
-	got, exists := cooldowns[configs[0].ID]["claude-sonnet-4-6"]
-	if !exists {
-		t.Fatal("expected Anthropic SSE rate limit to cool the model")
-	}
-	if !got.Equal(resetAt) {
-		t.Fatalf("model cooldown=%s, want header reset %s", got, resetAt)
+	if len(cooldowns[configs[0].ID]) != 0 {
+		t.Fatalf("model cooldowns=%v, want none", cooldowns[configs[0].ID])
 	}
 	keyCooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllKeyCooldowns: %v", err)
 	}
-	if len(keyCooldowns[configs[0].ID]) != 0 {
-		t.Fatalf("key cooldowns=%v, want none for model-wide Anthropic limit", keyCooldowns[configs[0].ID])
+	if keys := keyCooldowns[configs[0].ID]; len(keys) != 1 || !keys[0].Equal(resetAt) {
+		t.Fatalf("Key cooldowns=%v, want only first Key cooled until %s", keys, resetAt)
+	}
+	channels, err := env.store.GetAllChannelCooldowns(t.Context())
+	if err != nil || !channels[configs[0].ID].IsZero() {
+		t.Fatalf("channel cooldowns=%v err=%v, want none", channels, err)
 	}
 }
 
@@ -20207,9 +20289,10 @@ func TestProxy_CanceledCommittedStreamKeepsRateLimitCooldown(t *testing.T) {
 		name       string
 		rateLimit  bool
 		retryAfter string
+		cooldown   time.Duration
 	}{
-		{name: "explicit deadline", rateLimit: true, retryAfter: "45"},
-		{name: "rate limit without deadline", rateLimit: true},
+		{name: "explicit deadline", rateLimit: true, retryAfter: "45", cooldown: 45 * time.Second},
+		{name: "rate limit without deadline", rateLimit: true, cooldown: time.Minute},
 		{name: "cancel without rate-limit event", retryAfter: "45"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -20267,16 +20350,16 @@ func TestProxy_CanceledCommittedStreamKeepsRateLimitCooldown(t *testing.T) {
 			if entry := waitForProxyLog(t, env, "gpt-4"); entry.StatusCode != 499 {
 				t.Fatalf("client cancel status=%d, want 499", entry.StatusCode)
 			}
-			cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			cooldowns, err := env.store.GetAllKeyCooldowns(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.rateLimit && tc.retryAfter != "" {
-				if remaining := time.Until(cooldowns[1]["gpt-4"]); len(cooldowns) != 1 || remaining < 42*time.Second || remaining > 45*time.Second {
-					t.Fatalf("model cooldowns=%v, want about 45s on the primary channel", cooldowns)
+			if tc.cooldown > 0 {
+				if remaining := time.Until(cooldowns[1][0]); len(cooldowns) != 1 || remaining < tc.cooldown-3*time.Second || remaining > tc.cooldown+time.Second {
+					t.Fatalf("Key cooldowns=%v, want about %s on the primary channel", cooldowns, tc.cooldown)
 				}
 			} else if len(cooldowns) != 0 {
-				t.Fatalf("unconfirmed recovery time caused model cooldown: %v", cooldowns)
+				t.Fatalf("client cancellation caused Key cooldown: %v", cooldowns)
 			}
 		})
 	}

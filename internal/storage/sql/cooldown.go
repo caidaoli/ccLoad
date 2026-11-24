@@ -541,16 +541,24 @@ func (s *SQLStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex
 	return nextDuration, err
 }
 
-// SetKeyCooldown 设置指定Key的冷却截止时间（操作 api_keys 表）
+/**
+ * @brief 记录 Key 的冷却期限，并发失败时保留较晚的恢复时间。
+ * @param ctx 数据库操作上下文。
+ * @param configID 渠道 ID。
+ * @param keyIndex 当前 Key 的索引。
+ * @param until 冷却截止时间。
+ * @return 数据库更新失败时返回错误。
+ */
 func (s *SQLStore) SetKeyCooldown(ctx context.Context, configID int64, keyIndex int, until time.Time) error {
 	now := time.Now()
 	durationMs := util.CalculateCooldownDuration(until, now)
+	deadline := timeToUnix(until)
 
 	_, err := s.ExecContext(ctx, `
 		UPDATE api_keys
 		SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
-	`, timeToUnix(until), durationMs, timeToUnix(now), configID, keyIndex)
+		WHERE channel_id = ? AND key_index = ? AND cooldown_until < ?
+	`, deadline, durationMs, timeToUnix(now), configID, keyIndex, deadline)
 
 	return err
 }

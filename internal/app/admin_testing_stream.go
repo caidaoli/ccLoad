@@ -187,7 +187,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 			continue
 		}
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(cfg, lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
 		}

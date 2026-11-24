@@ -294,14 +294,18 @@ func TestHandleError_HTTPModelAvailabilityScope(t *testing.T) {
 	})
 }
 
-func TestHandleError_Generic429CoolsOnlyCurrentModel(t *testing.T) {
+/**
+ * @brief 普通 429 仅冷却失败的 Key 一分钟，重复失败不延长退避级别。
+ * @param t 测试上下文。
+ */
+func TestHandleError_Generic429CoolsOnlyCurrentKey(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "test-http-429-model-cooldown",
+		Name:     "test-http-429-key-cooldown",
 		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
@@ -313,39 +317,44 @@ func TestHandleError_Generic429CoolsOnlyCurrentModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create config: %v", err)
 	}
-	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-		ChannelID:   cfg.ID,
-		KeyIndex:    0,
-		APIKey:      "sk-generic-429",
-		KeyStrategy: model.KeyStrategySequential,
-	}}); err != nil {
-		t.Fatalf("create API key: %v", err)
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "rate-limit-a", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "rate-limit-b", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("create API keys: %v", err)
 	}
 
-	action := manager.HandleError(ctx, ErrorInput{
-		ChannelID:  cfg.ID,
-		Model:      "model-a",
-		KeyIndex:   0,
-		StatusCode: 429,
-		ErrorBody:  []byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`),
-	})
-
-	if action != ActionRetryModel {
-		t.Fatalf("action=%v, want ActionRetryModel", action)
+	for range 3 {
+		before := time.Now()
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:  cfg.ID,
+			Model:      "model-a",
+			KeyIndex:   0,
+			StatusCode: http.StatusTooManyRequests,
+			ErrorBody:  []byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`),
+		})
+		if action != ActionRetryKey {
+			t.Fatalf("action=%v, want ActionRetryKey", action)
+		}
+		until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+		if !exists || !cooldownWithinDuration(until, before, time.Now(), time.Minute) {
+			t.Fatalf("key 0 cooldown=%v exists=%v, want one minute", until, exists)
+		}
 	}
-	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
-	if !exists || !until.After(time.Now()) {
-		t.Fatalf("model-a should be cooled, until=%v exists=%v", until, exists)
+	if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 1); exists {
+		t.Fatalf("key 1 should remain available, cooldown=%v", until)
 	}
-	if keyUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyUntil.After(time.Now()) {
-		t.Fatalf("generic 429 must not cool key, until=%v", keyUntil)
+	for _, name := range []string{"model-a", "model-b"} {
+		if until, exists := getModelCooldownUntil(ctx, store, cfg.ID, name); exists {
+			t.Fatalf("model %s should remain available, cooldown=%v", name, until)
+		}
 	}
 	channelCfg, err := store.GetConfig(ctx, cfg.ID)
 	if err != nil {
 		t.Fatalf("get config: %v", err)
 	}
 	if channelCfg.IsCoolingDown(time.Now()) {
-		t.Fatal("generic 429 must not cool the whole channel while another model is available")
+		t.Fatal("channel should remain available with another key")
 	}
 }
 
@@ -800,12 +809,12 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyFallback: true,
 		},
 		{
-			name: "model cooldown reset retries another key until reset",
+			name: "429 model cooldown retries another key until reset",
 			input: ErrorInput{
 				Model: "test-model", KeyIndex: 0, StatusCode: 429,
 				ErrorBody: []byte(`{"error":{"code":"model_cooldown","message":"model is cooling down","model":"test-model","reset_seconds":600}}`),
 			},
-			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 10 * time.Minute, wantKeyFallback: true,
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 10 * time.Minute,
 		},
 		{
 			name: "configured model cooldown retries another key until rule deadline",
@@ -819,12 +828,12 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 7 * time.Minute, wantKeyFallback: true,
 		},
 		{
-			name: "websocket connection limit remains channel scoped",
+			name: "HTTP connection limit cools only the selected key",
 			input: ErrorInput{
 				Model: "test-model", KeyIndex: 0, StatusCode: 429,
 				ErrorBody: []byte(`{"type":"error","error":{"code":"websocket_connection_limit_reached"}}`),
 			},
-			wantAction: ActionRetryChannel, wantChannelCool: true,
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: time.Minute,
 		},
 		{
 			name: "configured channel cooldown remains channel scoped",
@@ -1305,8 +1314,10 @@ func TestHandleError_EdgeCases(t *testing.T) {
 	})
 }
 
-// TestHandleError_RateLimitClassification 测试429错误的智能分类
-// 验证基于headers和响应体的429错误分类
+/**
+ * @brief 429 的恢复提示和广域限流标记只影响失败 Key 的冷却期限。
+ * @param t 测试上下文。
+ */
 func TestHandleError_RateLimitClassification(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1326,109 +1337,98 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 	}
 	_ = store.CreateAPIKeysBatch(ctx, rateKeys)
 
+	resetAt := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
 	testCases := []struct {
-		name           string
-		headers        map[string][]string
-		responseBody   []byte
-		expectedAction Action
-		description    string
+		name         string
+		headers      map[string][]string
+		responseBody []byte
+		wantDuration time.Duration
 	}{
 		{
 			name: "429-Retry-After大于60秒",
 			headers: map[string][]string{
 				"Retry-After": {"120"},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "Retry-After > 60s indicates account/IP level rate limit",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: 120 * time.Second,
 		},
 		{
 			name: "429-Retry-After小于60秒",
 			headers: map[string][]string{
 				"Retry-After": {"30"},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryKey,
-			description:    "Retry-After <= 60s indicates key-level rate limit",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: 30 * time.Second,
 		},
 		{
 			name: "429-Retry-After为HTTP日期",
 			headers: map[string][]string{
-				"Retry-After": {"Wed, 29 Oct 2025 12:00:00 GMT"},
+				"Retry-After": {resetAt.Format(http.TimeFormat)},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "HTTP date format typically indicates long-term rate limit",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: 0,
 		},
 		{
 			name: "429-X-RateLimit-Scope-global",
 			headers: map[string][]string{
 				"X-Ratelimit-Scope": {"global"},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "Global scope indicates channel-level rate limit",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: time.Minute,
 		},
 		{
 			name: "429-X-RateLimit-Scope-ip",
 			headers: map[string][]string{
 				"X-Ratelimit-Scope": {"ip"},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "IP scope indicates channel-level rate limit",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: time.Minute,
 		},
 		{
 			name: "429-X-RateLimit-Scope-account",
 			headers: map[string][]string{
 				"X-Ratelimit-Scope": {"account"},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "Account scope indicates channel-level rate limit",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: time.Minute,
 		},
 		{
 			name: "429-响应体包含ip-rate-limit",
 			headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			responseBody:   []byte(`{"error":{"message":"IP rate limit exceeded"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "Response body with 'ip rate limit' indicates channel-level",
+			responseBody: []byte(`{"error":{"message":"IP rate limit exceeded"}}`),
+			wantDuration: time.Minute,
 		},
 		{
 			name: "429-响应体包含account-rate-limit",
 			headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			responseBody:   []byte(`{"error":{"message":"Account rate limit exceeded"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "Response body with 'account rate limit' indicates channel-level",
+			responseBody: []byte(`{"error":{"message":"Account rate limit exceeded"}}`),
+			wantDuration: time.Minute,
 		},
 		{
 			name: "429-响应体包含global-rate-limit",
 			headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			responseBody:   []byte(`{"error":{"message":"Global rate limit exceeded"}}`),
-			expectedAction: ActionRetryChannel,
-			description:    "Response body with 'global rate limit' indicates channel-level",
+			responseBody: []byte(`{"error":{"message":"Global rate limit exceeded"}}`),
+			wantDuration: time.Minute,
 		},
 		{
 			name: "429-无特殊headers和响应体",
 			headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryKey,
-			description:    "Default to key-level when no special indicators present",
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: time.Minute,
 		},
 		{
-			name:           "429-nil-headers",
-			headers:        nil,
-			responseBody:   []byte(`{"error":{"type":"rate_limit_error"}}`),
-			expectedAction: ActionRetryKey,
-			description:    "Nil headers should default to key-level",
+			name:         "429-nil-headers",
+			headers:      nil,
+			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
+			wantDuration: time.Minute,
 		},
 	}
 
@@ -1440,38 +1440,53 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 				_ = store.ResetKeyCooldown(ctx, cfg.ID, i)
 			}
 
+			before := time.Now()
 			action := manager.HandleError(ctx, ErrorInput{
 				ChannelID:      cfg.ID,
 				KeyIndex:       0,
+				Model:          "test-model",
 				StatusCode:     429,
 				ErrorBody:      tc.responseBody,
 				IsNetworkError: false,
 				Headers:        tc.headers,
 			})
 
-			if action != tc.expectedAction {
-				t.Errorf("%s: expected %v, got %v", tc.description, tc.expectedAction, action)
+			if action != ActionRetryKey {
+				t.Fatalf("action=%v, want ActionRetryKey", action)
 			}
 
-			// 验证冷却状态
-			switch tc.expectedAction {
-			case ActionRetryChannel:
-				channelCfg, _ := store.GetConfig(ctx, cfg.ID)
-				if channelCfg.CooldownUntil == 0 || time.Unix(channelCfg.CooldownUntil, 0).Before(time.Now()) {
-					t.Errorf("Channel should be cooled down for %s", tc.name)
-				}
-			case ActionRetryKey:
-				cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
-				if !exists || cooldownUntil.Before(time.Now()) {
-					t.Errorf("Key should be cooled down for %s", tc.name)
-				}
+			until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+			if !exists {
+				t.Fatal("expected cooldown for key 0")
 			}
-
-			t.Logf("[INFO] %s: %s", tc.name, tc.description)
+			if tc.wantDuration == 0 {
+				if !until.Equal(resetAt) {
+					t.Fatalf("key 0 cooldown=%v, want %v", until, resetAt)
+				}
+			} else if !cooldownWithinDuration(until, before, time.Now(), tc.wantDuration) {
+				t.Fatalf("key 0 cooldown=%v, want %v from %v", until, tc.wantDuration, before)
+			}
+			if _, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 1); exists {
+				t.Fatal("other key should remain available")
+			}
+			if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "test-model"); exists {
+				t.Fatal("model should remain available")
+			}
+			channel, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if channel.IsCoolingDown(time.Now()) {
+				t.Fatal("channel should remain available with another key")
+			}
 		})
 	}
 }
 
+/**
+ * @brief 配额错误缺少明确上游恢复时间时，429 统一冷却失败 Key 一分钟。
+ * @param t 测试上下文。
+ */
 func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1490,7 +1505,7 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 	}
 	_ = store.CreateAPIKeysBatch(ctx, keys)
 
-	t.Run("DAILY_LIMIT_EXCEEDED cools key until next local day", func(t *testing.T) {
+	t.Run("DAILY_LIMIT_EXCEEDED cools key for one minute", func(t *testing.T) {
 		before := time.Now()
 		action := manager.HandleError(ctx, ErrorInput{
 			ChannelID:      cfg.ID,
@@ -1511,16 +1526,12 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 			t.Fatal("expected key cooldown")
 		}
 
-		if !sameTimeSecond(cooldownUntil, nextLocalMidnight(before)) &&
-			!sameTimeSecond(cooldownUntil, nextLocalMidnight(after)) {
-			t.Fatalf("cooldownUntil=%s, want next local midnight from %s or %s",
-				cooldownUntil.Format(time.RFC3339),
-				before.Format(time.RFC3339),
-				after.Format(time.RFC3339))
+		if !cooldownWithinDuration(cooldownUntil, before, after, time.Minute) {
+			t.Fatalf("cooldown=%v, want one minute", cooldownUntil)
 		}
 	})
 
-	t.Run("API_KEY_QUOTA_EXHAUSTED cools key for thirty minutes", func(t *testing.T) {
+	t.Run("API_KEY_QUOTA_EXHAUSTED cools key for one minute", func(t *testing.T) {
 		if err := store.ResetKeyCooldown(ctx, cfg.ID, 0); err != nil {
 			t.Fatalf("reset key 0 cooldown: %v", err)
 		}
@@ -1543,13 +1554,16 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 			t.Fatal("expected key cooldown")
 		}
 
-		duration := cooldownUntil.Sub(before)
-		if duration < 29*time.Minute+55*time.Second || duration > 30*time.Minute+5*time.Second {
-			t.Fatalf("cooldown duration=%v, want about 30m", duration)
+		if !cooldownWithinDuration(cooldownUntil, before, time.Now(), time.Minute) {
+			t.Fatalf("cooldown=%v, want one minute", cooldownUntil)
 		}
 	})
 }
 
+/**
+ * @brief 结构化模型限流提供的恢复时间用于失败 Key，并在所有 Key 冷却时提升至渠道。
+ * @param t 测试上下文。
+ */
 func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1558,7 +1572,7 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 
 	body := []byte(`{"error":{"code":"model_cooldown","message":"All credentials for model gpt-5.5 are cooling down via provider codex","model":"gpt-5.5","provider":"codex","reset_seconds":13792,"reset_time":"3h49m51s"}}`)
 
-	t.Run("多Key渠道冷却当前模型到reset_seconds", func(t *testing.T) {
+	t.Run("多Key渠道冷却当前Key到reset_seconds", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-model-cooldown-multi-key")
 		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
 			{
@@ -1586,21 +1600,21 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		})
 		after := time.Now()
 
-		if action != ActionRetryModel {
-			t.Fatalf("expected ActionRetryModel, got %v", action)
+		if action != ActionRetryKey {
+			t.Fatalf("expected ActionRetryKey, got %v", action)
 		}
 
-		cooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.5")
+		cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 		if !exists {
-			t.Fatal("expected model cooldown")
+			t.Fatal("expected key cooldown")
 		}
 
 		if !cooldownWithinResetSeconds(cooldownUntil, before, after, 13792) {
-			t.Fatalf("model cooldownUntil=%s, want reset_seconds based cooldown",
+			t.Fatalf("key cooldownUntil=%s, want reset_seconds based cooldown",
 				cooldownUntil.Format(time.RFC3339))
 		}
-		if keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyCooldownUntil.After(time.Now()) {
-			t.Fatalf("model_cooldown must not cool the key, got until %s", keyCooldownUntil.Format(time.RFC3339))
+		if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.5"); exists {
+			t.Fatal("model should remain available")
 		}
 
 		channelCfg, err := store.GetConfig(ctx, cfg.ID)
@@ -1612,7 +1626,7 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		}
 	})
 
-	t.Run("单Key渠道只切换渠道不冷却Key或整个渠道", func(t *testing.T) {
+	t.Run("单Key渠道在Key恢复前冷却渠道", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-model-cooldown-single-key")
 		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 			ChannelID:   cfg.ID,
@@ -1633,32 +1647,35 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		})
 		after := time.Now()
 
-		if action != ActionRetryModel {
-			t.Fatalf("expected ActionRetryModel, got %v", action)
+		if action != ActionRetryChannel {
+			t.Fatalf("expected ActionRetryChannel, got %v", action)
 		}
-		if cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && cooldownUntil.After(time.Now()) {
-			t.Fatalf("model_cooldown must not cool the key, got until %s", cooldownUntil.Format(time.RFC3339))
+		if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.5"); exists {
+			t.Fatal("model should remain available")
 		}
-		modelCooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.5")
+		keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 		if !exists {
-			t.Fatal("expected model cooldown")
+			t.Fatal("expected key cooldown")
 		}
-		if !cooldownWithinResetSeconds(modelCooldownUntil, before, after, 13792) {
-			t.Fatalf("model cooldownUntil=%s, want reset_seconds based cooldown",
-				modelCooldownUntil.Format(time.RFC3339))
+		if !cooldownWithinResetSeconds(keyCooldownUntil, before, after, 13792) {
+			t.Fatalf("key cooldownUntil=%s, want reset_seconds based cooldown",
+				keyCooldownUntil.Format(time.RFC3339))
 		}
 
 		channelCfg, err := store.GetConfig(ctx, cfg.ID)
 		if err != nil {
 			t.Fatalf("get config: %v", err)
 		}
-		if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
-			t.Fatalf("model_cooldown must not cool the whole channel, got until %s",
-				time.Unix(channelCfg.CooldownUntil, 0).Format(time.RFC3339))
+		if channelCfg.CooldownUntil != keyCooldownUntil.Unix() {
+			t.Fatalf("channel cooldown=%v, want key recovery %v", time.Unix(channelCfg.CooldownUntil, 0), keyCooldownUntil)
 		}
 	})
 }
 
+/**
+ * @brief 上游文案的明确重置时间用于失败 Key，单 Key 渠道同步恢复。
+ * @param t 测试上下文。
+ */
 func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1683,19 +1700,26 @@ func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
 		StatusCode: 429,
 		ErrorBody:  body,
 	})
-	if action != ActionRetryModel {
-		t.Fatalf("action=%v, want ActionRetryModel", action)
+	if action != ActionRetryChannel {
+		t.Fatalf("action=%v, want ActionRetryChannel", action)
 	}
 
-	modelCooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-6-astra")
+	keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 	if !exists {
-		t.Fatal("expected model cooldown")
+		t.Fatal("expected key cooldown")
 	}
-	if !modelCooldownUntil.Equal(resetAt) {
-		t.Fatalf("model cooldown until=%s, want %s", modelCooldownUntil, resetAt)
+	if !keyCooldownUntil.Equal(resetAt) {
+		t.Fatalf("key cooldown until=%s, want %s", keyCooldownUntil, resetAt)
 	}
-	if keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyCooldownUntil.After(time.Now()) {
-		t.Fatalf("model-scoped cooldown must not cool the key, got until %s", keyCooldownUntil)
+	channel, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.CooldownUntil != resetAt.Unix() {
+		t.Fatalf("channel cooldown=%v, want key recovery %v", time.Unix(channel.CooldownUntil, 0), resetAt)
+	}
+	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-6-astra"); exists {
+		t.Fatal("model should remain available")
 	}
 }
 
@@ -2037,7 +2061,11 @@ func TestHandleError_ChineseRelativeQuotaCooldown(t *testing.T) {
 	}
 }
 
-func TestHandleError_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.T) {
+/**
+ * @brief 全站配额文案提供的恢复时钟仅应用于失败 Key。
+ * @param t 测试上下文。
+ */
+func TestHandleError_GlobalFixedWindowQuotaCoolsKeyUntilRetryClock(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
@@ -2056,6 +2084,12 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.
 	if err != nil {
 		t.Fatalf("create config: %v", err)
 	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "fixed-window-a"},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "fixed-window-b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	before := time.Now()
 	action := manager.HandleError(ctx, ErrorInput{
@@ -2069,24 +2103,26 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.
 	})
 	after := time.Now()
 
-	if action != ActionRetryModel {
-		t.Fatalf("expected ActionRetryModel, got %v", action)
+	if action != ActionRetryKey {
+		t.Fatalf("expected ActionRetryKey, got %v", action)
 	}
 
-	if cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && cooldownUntil.After(time.Now()) {
-		t.Fatalf("global fixed-window quota should not cool key, got %s", cooldownUntil.Format(time.RFC3339))
+	if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 1); exists {
+		t.Fatalf("key 1 should remain available, cooldown=%v", until)
 	}
-
-	modelCooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+	if until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a"); exists {
+		t.Fatalf("model should remain available, cooldown=%v", until)
+	}
+	keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
 	if !exists {
-		t.Fatal("expected model cooldown")
+		t.Fatal("expected key cooldown")
 	}
 	beforeExpected := nextBeijingTime(before, 12, 0)
 	afterExpected := nextBeijingTime(after, 12, 0)
-	if !sameTimeSecond(modelCooldownUntil, beforeExpected) &&
-		!sameTimeSecond(modelCooldownUntil, afterExpected) {
-		t.Fatalf("model cooldownUntil=%s, want %s or %s",
-			modelCooldownUntil.Format(time.RFC3339),
+	if !sameTimeSecond(keyCooldownUntil, beforeExpected) &&
+		!sameTimeSecond(keyCooldownUntil, afterExpected) {
+		t.Fatalf("key cooldownUntil=%s, want %s or %s",
+			keyCooldownUntil.Format(time.RFC3339),
 			beforeExpected.Format(time.RFC3339),
 			afterExpected.Format(time.RFC3339))
 	}
@@ -2313,11 +2349,6 @@ func TestHandleError_UsageLimitReachedSingleKeyCoolsChannel(t *testing.T) {
 
 // ========== 辅助函数 ==========
 
-func nextLocalMidnight(now time.Time) time.Time {
-	y, m, d := now.In(time.Local).Date()
-	return time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
-}
-
 func nextBeijingTime(now time.Time, hour int, minute int) time.Time {
 	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
 	local := now.In(loc)
@@ -2391,29 +2422,21 @@ func createTestChannel(t *testing.T, store storage.Store, name string) *model.Co
 	return created
 }
 
-// 上游 WebSocket 连接寿命到期：切渠道，但冷却必须是几秒级的固定窗口，
-// 而不是渠道指数退避（2 分钟起）或 Key/模型冷却。
-func TestHandleError_WebsocketConnectionLimit(t *testing.T) {
+/**
+ * @brief 无独立 Key 的 WebSocket 连接寿命到期仍保留原渠道短冷却。
+ * @param t 测试上下文。
+ */
+func TestHandleError_WebsocketConnectionLimitWithoutKey(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-ws-conn-limit")
-	key := &model.APIKey{
-		ChannelID:   cfg.ID,
-		KeyIndex:    0,
-		APIKey:      "sk-ws-0",
-		KeyStrategy: model.KeyStrategySequential,
-	}
-	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{key}); err != nil {
-		t.Fatalf("CreateAPIKeysBatch: %v", err)
-	}
-
 	before := time.Now()
 	action := manager.HandleError(ctx, ErrorInput{
 		ChannelID:  cfg.ID,
-		KeyIndex:   0,
+		KeyIndex:   NoKeyIndex,
 		StatusCode: 429,
 		Model:      "model-a",
 		ErrorBody:  []byte(`{"type":"error","error":{"code":"websocket_connection_limit_reached"}}`),
@@ -2435,9 +2458,6 @@ func TestHandleError_WebsocketConnectionLimit(t *testing.T) {
 		t.Errorf("channel cooldown=%v, want about %v", cooldown, util.WebsocketConnectionLimitCooldown)
 	}
 
-	if _, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists {
-		t.Error("connection lifetime limit must not cool down the key")
-	}
 	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a"); exists {
 		t.Error("connection lifetime limit must not cool down the model")
 	}
@@ -2530,7 +2550,11 @@ func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
 	}
 }
 
-func TestHandleError_CapacityRetryAfterReplacesBackoffForReportingModel(t *testing.T) {
+/**
+ * @brief 无独立 Key 的容量限流沿用当前模型的精确恢复时间。
+ * @param t 测试上下文。
+ */
+func TestHandleError_CapacityRetryAfterWithoutKeyCoolsReportingModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
@@ -2542,13 +2566,10 @@ func TestHandleError_CapacityRetryAfterReplacesBackoffForReportingModel(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "capacity-key"}}); err != nil {
-		t.Fatal(err)
-	}
 	for range 2 {
 		before := time.Now()
 		action := manager.HandleError(ctx, ErrorInput{
-			ChannelID: cfg.ID, Model: "model-a", KeyIndex: 0, StatusCode: http.StatusTooManyRequests,
+			ChannelID: cfg.ID, Model: "model-a", KeyIndex: NoKeyIndex, StatusCode: http.StatusTooManyRequests,
 			Headers: http.Header{"Retry-After": {"7"}}, ErrorBody: []byte(`{"error":{"code":"turn_rate_limit_exceeded"}}`),
 		})
 		if action != ActionRetryModel {
@@ -2561,9 +2582,6 @@ func TestHandleError_CapacityRetryAfterReplacesBackoffForReportingModel(t *testi
 		if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-b"); exists {
 			t.Fatal("unrelated model cooled")
 		}
-		if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && until.After(time.Now()) {
-			t.Fatal("capacity cooled key")
-		}
 		current, err := store.GetConfig(ctx, cfg.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -2574,7 +2592,11 @@ func TestHandleError_CapacityRetryAfterReplacesBackoffForReportingModel(t *testi
 	}
 }
 
-func TestHandleError_Ordinary429RetryAfterPreservesBackoff(t *testing.T) {
+/**
+ * @brief 无独立 Key 的普通 429 沿用模型指数退避及其上下限。
+ * @param t 测试上下文。
+ */
+func TestHandleError_Ordinary429RetryAfterWithoutKeyPreservesBackoff(t *testing.T) {
 	for _, retryAfter := range []string{"1", "86400"} {
 		t.Run(retryAfter, func(t *testing.T) {
 			store, cleanup := setupTestStore(t)
@@ -2588,13 +2610,10 @@ func TestHandleError_Ordinary429RetryAfterPreservesBackoff(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "rate-limit-key"}}); err != nil {
-				t.Fatal(err)
-			}
 			for _, wantSeconds := range []int{60, 120, 240, 480, 960, 1800, 1800} {
 				before := time.Now()
 				action := manager.HandleError(ctx, ErrorInput{
-					ChannelID: cfg.ID, Model: "model-a", KeyIndex: 0, StatusCode: http.StatusTooManyRequests,
+					ChannelID: cfg.ID, Model: "model-a", KeyIndex: NoKeyIndex, StatusCode: http.StatusTooManyRequests,
 					Headers: http.Header{"Retry-After": {retryAfter}}, ErrorBody: []byte(`{"error":{"code":"rate_limit_exceeded"}}`),
 				})
 				if action != ActionRetryModel {
@@ -2608,16 +2627,13 @@ func TestHandleError_Ordinary429RetryAfterPreservesBackoff(t *testing.T) {
 				if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-b"); exists {
 					t.Fatal("ordinary 429 cooled an unrelated model")
 				}
-				if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && until.After(time.Now()) {
-					t.Fatal("ordinary 429 cooled the key")
-				}
 			}
 			if err := store.SetModelCooldown(ctx, cfg.ID, "model-a", time.Now().Add(time.Second)); err != nil {
 				t.Fatal(err)
 			}
 			before := time.Now()
 			manager.HandleError(ctx, ErrorInput{
-				ChannelID: cfg.ID, Model: "model-a", KeyIndex: 0, StatusCode: http.StatusTooManyRequests,
+				ChannelID: cfg.ID, Model: "model-a", KeyIndex: NoKeyIndex, StatusCode: http.StatusTooManyRequests,
 				Headers: http.Header{"Retry-After": {retryAfter}}, ErrorBody: []byte(`{"error":{"code":"rate_limit_exceeded"}}`),
 			})
 			until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")

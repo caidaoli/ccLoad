@@ -1832,6 +1832,9 @@ func shouldTryNextKeyOnFetchModelsError(err error) bool {
 	if !ok {
 		return false
 	}
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
 	classification := util.ClassifyHTTPResponseWithMeta(statusCode, headers, []byte(body))
 	return classification.Level == util.ErrorLevelKey
 }

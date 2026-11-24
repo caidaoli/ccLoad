@@ -1118,6 +1118,11 @@ func (s *Server) handleProxyErrorResponse(
 
 	action := s.applyCooldownDecision(ctx, cfg, input)
 	failure.nextAction = action
+	if action == cooldown.ActionRetryChannel && input.StatusCode == http.StatusTooManyRequests && keyIndex != cooldown.NoKeyIndex {
+		completed := s.completeCooldownInput(cfg, input)
+		failure.keyCooldownPromoted = s.decideCooldownAction(ctx, cfg, completed) == cooldown.ActionRetryKey ||
+			cfg.RetryOtherKeysOnFailure && s.cooldownManager.CanFallbackToOtherKey(completed)
+	}
 	return failure, action
 }
 

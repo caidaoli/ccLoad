@@ -3,6 +3,7 @@ package cooldown
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"testing"
 	"time"
@@ -10,6 +11,10 @@ import (
 	"ccLoad/internal/model"
 )
 
+/**
+ * @brief 有效 1308 重置时间优先，缺少有效时间的 HTTP 429 使用一分钟。
+ * @param t 测试上下文。
+ */
 func TestHandleError_1308Error(t *testing.T) {
 	// 创建临时数据库
 	store, cleanup := setupTestStore(t)
@@ -32,11 +37,11 @@ func TestHandleError_1308Error(t *testing.T) {
 
 	// 创建Manager
 	manager := NewManager(store, nil)
+	const clockFormat = "2006-01-02 15:04:05"
+	expectedTime := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	resetBody := fmt.Appendf(nil, `{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 %s 重置。"},"request_id":"xxx"}`, expectedTime.Format(clockFormat))
 
 	t.Run("1308错误-自动解析重置时间", func(t *testing.T) {
-		// 模拟1308错误响应
-		errorBody := []byte(`{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"xxx"}`)
-
 		// 抑制日志输出
 		var buf bytes.Buffer
 		oldOutput := log.Writer()
@@ -48,7 +53,7 @@ func TestHandleError_1308Error(t *testing.T) {
 			ChannelID:      cfg.ID,
 			KeyIndex:       0,
 			StatusCode:     429,
-			ErrorBody:      errorBody,
+			ErrorBody:      resetBody,
 			IsNetworkError: false,
 			Headers:        nil,
 		})
@@ -70,7 +75,6 @@ func TestHandleError_1308Error(t *testing.T) {
 
 		// 验证Key 0的冷却时间
 		key0 := keys[0]
-		expectedTime, _ := time.ParseInLocation("2006-01-02 15:04:05", "2025-12-09 18:08:11", time.Local)
 
 		// 由于时间是Unix秒，可能有秒级误差
 		if key0.CooldownUntil == 0 {
@@ -90,9 +94,9 @@ func TestHandleError_1308Error(t *testing.T) {
 		t.Logf("[INFO] Key已正确禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
 	})
 
-	t.Run("普通429错误-使用指数退避", func(t *testing.T) {
+	t.Run("普通429错误-冷却一分钟", func(t *testing.T) {
 		// 重置Key冷却状态
-		if err := store.ResetKeyCooldown(ctx, cfg.ID, 1); err != nil {
+		if err := store.ResetKeyCooldown(ctx, cfg.ID, 0); err != nil {
 			t.Fatalf("Failed to reset key cooldown: %v", err)
 		}
 
@@ -147,18 +151,12 @@ func TestHandleError_1308Error(t *testing.T) {
 		}
 
 		cooldownTime := time.Unix(key1.CooldownUntil, 0)
-		duration := cooldownTime.Sub(beforeTime)
-
-		// 验证冷却时间在合理范围内（应该是几秒到几分钟）
-		// 注意：429错误第一次触发时，初始冷却时间可能较短（几秒）
-		if duration < 1*time.Second || duration > 10*time.Minute {
-			t.Errorf("Unexpected cooldown duration: %v", duration)
+		if !cooldownWithinDuration(cooldownTime, beforeTime, time.Now(), time.Minute) {
+			t.Errorf("key cooldown=%v, want one minute", cooldownTime)
 		}
-
-		t.Logf("[INFO] 使用指数退避策略，冷却时间: %.1f分钟", duration.Minutes())
 	})
 
-	t.Run("1308错误-无效时间格式回退到指数退避", func(t *testing.T) {
+	t.Run("1308错误-无效时间格式冷却一分钟", func(t *testing.T) {
 		// 每个子测试必须独立，避免前一个用例的 Key 冷却触发“全 Key 冷却”升级。
 		for keyIndex := range 2 {
 			if err := store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
@@ -207,15 +205,9 @@ func TestHandleError_1308Error(t *testing.T) {
 		}
 
 		cooldownTime := time.Unix(key0.CooldownUntil, 0)
-		duration := cooldownTime.Sub(beforeTime)
-
-		// 验证回退到指数退避策略（冷却时间在合理范围内）
-		// 注意：429错误第一次触发时，初始冷却时间可能较短（几秒）
-		if duration < 1*time.Second || duration > 10*time.Minute {
-			t.Errorf("Unexpected cooldown duration: %v", duration)
+		if !cooldownWithinDuration(cooldownTime, beforeTime, time.Now(), time.Minute) {
+			t.Errorf("key cooldown=%v, want one minute", cooldownTime)
 		}
-
-		t.Logf("[INFO] 回退到指数退避策略，冷却时间: %.1f分钟", duration.Minutes())
 	})
 
 	t.Run("单Key渠道的1308错误-应该冷却Channel并使用精确时间", func(t *testing.T) {
@@ -226,9 +218,6 @@ func TestHandleError_1308Error(t *testing.T) {
 			KeyIndex:  0,
 			APIKey:    "sk-single-key",
 		}})
-
-		// 模拟1308错误响应
-		errorBody := []byte(`{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2025-12-09 18:08:11 重置。"},"request_id":"xxx"}`)
 
 		// 抑制日志输出
 		var buf bytes.Buffer
@@ -241,14 +230,20 @@ func TestHandleError_1308Error(t *testing.T) {
 			ChannelID:      singleKeyCfg.ID,
 			KeyIndex:       0,
 			StatusCode:     429,
-			ErrorBody:      errorBody,
+			ErrorBody:      resetBody,
 			IsNetworkError: false,
 			Headers:        nil,
 		})
 
-		// 验证返回的Action应该是RetryKey（虽然会升级为Channel级，但1308有精确时间时保持Key级）
-		if action != ActionRetryKey {
-			t.Errorf("Expected ActionRetryKey for single-key 1308, got %v", action)
+		if action != ActionRetryChannel {
+			t.Errorf("Expected ActionRetryChannel for single-key 1308, got %v", action)
+		}
+		channel, err := store.GetConfig(ctx, singleKeyCfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if channel.CooldownUntil != expectedTime.Unix() {
+			t.Fatalf("channel cooldown=%v, want key recovery %v", time.Unix(channel.CooldownUntil, 0), expectedTime)
 		}
 
 		// 验证Key的冷却时间
@@ -262,7 +257,6 @@ func TestHandleError_1308Error(t *testing.T) {
 		}
 
 		key0 := keys[0]
-		expectedTime, _ := time.ParseInLocation("2006-01-02 15:04:05", "2025-12-09 18:08:11", time.Local)
 
 		if key0.CooldownUntil == 0 {
 			t.Error("Key cooldown was not set")

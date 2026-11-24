@@ -447,6 +447,7 @@ type proxyResult struct {
 	isNetworkError            bool
 	operatorAborted           bool            // 管理员跳过当前渠道，不重试同渠道或施加冷却
 	nextAction                cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
+	keyCooldownPromoted       bool            ///< 429 冷却当前 Key 后因资源耗尽升级为切渠道。
 	deferredCooldown          *cooldown.ErrorInput
 	deferredLog               *model.LogEntry
 	proxyLogWritten           bool

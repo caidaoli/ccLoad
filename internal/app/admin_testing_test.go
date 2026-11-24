@@ -2645,6 +2645,10 @@ func TestExecuteChannelTestWithCooldown_RespectsRPMLimitWithoutCooldown(t *testi
 	}
 }
 
+/**
+ * @brief 验证管理探测的显式模型冷却规则使用实际上游模型。
+ * @param t 测试上下文。
+ */
 func TestExecuteChannelTestWithCooldown_ModelCooldownUsesSentModelKey(t *testing.T) {
 	t.Parallel()
 	const sentModel = "model-b"
@@ -2674,6 +2678,10 @@ func TestExecuteChannelTestWithCooldown_ModelCooldownUsesSentModelKey(t *testing
 			{Model: "model-b", RedirectModel: sentModel},
 			{Model: sentModel, RedirectModel: "model-d"},
 		},
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Sent upstream model", StatusCodes: []int{http.StatusTooManyRequests},
+			Scope: model.CooldownScopeModel, Mode: model.CooldownModeFixed, CooldownSeconds: 300,
+		}}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -6401,67 +6409,67 @@ func TestHandleChannelTest_CodexJSONFailedResponseShouldBeFailure(t *testing.T) 
 	}
 }
 
-func TestHandleChannelTest_StringAPIErrorShouldExposeUpstreamMessage(t *testing.T) {
+/**
+ * @brief 验证普通渠道管理探测保留上游限流状态和正文，并仅冷却被测 Key。
+ * @param t 测试上下文。
+ */
+func TestHandleChannelTest_RateLimitPreservesUpstreamMessageAndCoolsKey(t *testing.T) {
 	t.Parallel()
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{
-			"error":"由于负载过高，为了尽量保证用户体验，本站已开启限流，当前用户本周无法使用，请下周重试",
-			"type":"error"
-		}`))
-	}))
-	defer upstream.Close()
+	const stringError = "由于负载过高，为了尽量保证用户体验，本站已开启限流，当前用户本周无法使用，请下周重试"
+	for _, tc := range []struct {
+		name, body, message string
+		status              int
+	}{
+		{name: "HTTP 429 string error", status: http.StatusTooManyRequests,
+			body: `{"error":"` + stringError + `","type":"error"}`, message: stringError},
+		{name: "HTTP 200 with embedded 429", status: http.StatusOK,
+			body: `{"error":{"status":429,"type":"rate_limit_error","message":"Too many requests"}}`, message: "Too many requests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			ctx := t.Context()
+			cfg, err := srv.store.CreateConfig(ctx, &model.Config{
+				Name: "test-rate-limit", URLs: model.ChannelURLs{{URL: upstream.URL}}, Enabled: true,
+				ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-tested-key"},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-spare-key"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			id := fmt.Sprint(cfg.ID)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/test", map[string]any{
+				"model": "gpt-5.4", "client_protocol": "openai", "key_index": 0,
+			}))
+			c.Params = gin.Params{{Key: "id", Value: id}}
+			srv.HandleChannelTest(c)
 
-	srv := newInMemoryServer(t)
-	srv.client = upstream.Client()
-
-	ctx := context.Background()
-	cfg := &model.Config{
-		Name:         "test-string-api-error",
-		URLs:         model.ChannelURLs{{URL: upstream.URL}},
-		Priority:     1,
-		ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
-		Enabled:      true,
-	}
-	created, err := srv.store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("创建测试渠道失败: %v", err)
-	}
-
-	err = srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"},
-	})
-	if err != nil {
-		t.Fatalf("添加 API key 失败: %v", err)
-	}
-
-	channelID := fmt.Sprintf("%d", created.ID)
-	reqBody := map[string]any{
-		"model":           "gpt-5.4",
-		"client_protocol": "openai",
-		"stream":          false,
-	}
-
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", reqBody))
-	c.Params = gin.Params{{Key: "id", Value: channelID}}
-
-	srv.HandleChannelTest(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
-	}
-
-	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
-	dataSuccess, _ := resp.Data["success"].(bool)
-	if dataSuccess {
-		t.Fatalf("data.success 应为 false, data=%+v", resp.Data)
-	}
-
-	errorMsg, _ := resp.Data["error"].(string)
-	expected := "由于负载过高，为了尽量保证用户体验，本站已开启限流，当前用户本周无法使用，请下周重试"
-	if errorMsg != expected {
-		t.Fatalf("应返回上游字符串错误信息，实际: %q, data=%+v", errorMsg, resp.Data)
+			resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+			status, _ := getResultInt(resp.Data["status_code"])
+			if w.Code != http.StatusOK || !resp.Success || resp.Data["success"] != false || status != tc.status ||
+				resp.Data["error"] != tc.message || resp.Data["cooldown_action"] != "key_cooldown_applied" {
+				t.Fatalf("channel test status=%d data=%+v", w.Code, resp.Data)
+			}
+			keyCooldowns, err := srv.store.GetAllKeyCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys := keyCooldowns[cfg.ID]
+			if remaining := time.Until(keys[0]); len(keys) != 1 || remaining < 58*time.Second || remaining > 61*time.Second {
+				t.Fatalf("key cooldowns=%v, want only first Key cooled for one minute", keys)
+			}
+		})
 	}
 }
 
@@ -6549,6 +6557,15 @@ func TestHandleChannelTest_HTMLBlockPageShouldBeFailure(t *testing.T) {
 
 func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
 	t.Parallel()
+	t.Run("API key rate limit keeps URL available", func(t *testing.T) {
+		result := map[string]any{
+			"status_code":      http.StatusTooManyRequests,
+			"response_headers": map[string]string{"Retry-After": "3600"},
+		}
+		if retry, cool := shouldFallbackToNextURL(&model.Config{}, result); retry || cool {
+			t.Fatalf("retry URL=%v, cool URL=%v after Key rate limit", retry, cool)
+		}
+	})
 	t.Run("key_level_soft_error_should_not_fallback_or_cooldown_url", func(t *testing.T) {
 		result := map[string]any{
 			"success":     false,
@@ -6564,7 +6581,7 @@ func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
 			},
 		}
 
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(result)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(&model.Config{}, result)
 		if continueFallback || shouldCooldown {
 			t.Fatalf("Key级软错误不应继续切URL或冷却URL，got fallback=%v cooldown=%v", continueFallback, shouldCooldown)
 		}
@@ -6583,7 +6600,7 @@ func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
 			},
 		}
 
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(result)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(&model.Config{}, result)
 		if !continueFallback || !shouldCooldown {
 			t.Fatalf("渠道级软错误应继续切URL并冷却当前URL，got fallback=%v cooldown=%v", continueFallback, shouldCooldown)
 		}
@@ -9217,10 +9234,11 @@ func TestHandleChannelTestSystemOneEffectiveFailureStatus(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, body, contentType, action string
+		retryAfter                      string
 		upstreamStatus, status          int
 		wantChannelCooldown             bool
 		wantKeyCooldown                 bool
-		wantModelCooldown               bool
+		wantKeyDuration                 time.Duration
 	}{
 		{
 			name: "invalid answer", body: `{"answers":{"effort":{"type":"choice","choice":"unknown"}},"usage":{"input_tokens":10,"output_tokens":2}}`,
@@ -9228,7 +9246,13 @@ func TestHandleChannelTestSystemOneEffectiveFailureStatus(t *testing.T) {
 		},
 		{
 			name: "recognised rate limit", body: `{"error":{"type":"rate_limit_error","message":"Too many requests"}}`,
-			upstreamStatus: http.StatusOK, status: http.StatusTooManyRequests, action: "model_cooldown_applied", wantModelCooldown: true,
+			upstreamStatus: http.StatusOK, status: http.StatusTooManyRequests, action: "key_cooldown_applied",
+			wantKeyCooldown: true, wantKeyDuration: time.Minute,
+		},
+		{
+			name: "HTTP rate limit with Retry-After", body: `{"error":{"type":"rate_limit_error","message":"Too many requests"}}`,
+			retryAfter: "77", upstreamStatus: http.StatusTooManyRequests, status: http.StatusTooManyRequests,
+			action: "key_cooldown_applied", wantKeyCooldown: true, wantKeyDuration: 77 * time.Second,
 		},
 		{
 			name: "configured JSON response", body: `{"message":"Service temporarily unavailable"}`,
@@ -9255,6 +9279,9 @@ func TestHandleChannelTestSystemOneEffectiveFailureStatus(t *testing.T) {
 					contentType = "application/json"
 				}
 				w.Header().Set("Content-Type", contentType)
+				if tc.retryAfter != "" {
+					w.Header().Set("Retry-After", tc.retryAfter)
+				}
 				w.WriteHeader(tc.upstreamStatus)
 				_, _ = io.WriteString(w, tc.body)
 			}))
@@ -9292,13 +9319,16 @@ func TestHandleChannelTestSystemOneEffectiveFailureStatus(t *testing.T) {
 			if err != nil || len(keys) != 2 || keys[0].IsCoolingDown(time.Now()) != tc.wantKeyCooldown || keys[1].IsCoolingDown(time.Now()) {
 				t.Fatalf("key cooldown differs: keys=%+v err=%v", keys, err)
 			}
+			if remaining := time.Until(time.Unix(keys[0].CooldownUntil, 0)); tc.wantKeyDuration > 0 &&
+				(remaining < tc.wantKeyDuration-2*time.Second || remaining > tc.wantKeyDuration+time.Second) {
+				t.Fatalf("key cooldown remaining=%s, want about %s", remaining, tc.wantKeyDuration)
+			}
 			cooldowns, err := server.store.GetAllModelCooldowns(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, cooled := cooldowns[cfg.ID]["judge"]
-			if cooled != tc.wantModelCooldown || len(cooldowns[cfg.ID]) > 1 {
-				t.Fatalf("model cooldown differs: %+v", cooldowns[cfg.ID])
+			if len(cooldowns[cfg.ID]) != 0 {
+				t.Fatalf("model cooldowns=%v, want none", cooldowns[cfg.ID])
 			}
 		})
 	}
