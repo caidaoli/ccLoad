@@ -1468,6 +1468,31 @@ func TestConvertClaudeRequestToOpenAI_EnabledThinkingEffort(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeRequestToOpenAI_BudgetRespectsModelEffort(t *testing.T) {
+	for _, tt := range []struct {
+		model  string
+		budget string
+		want   string
+	}{
+		{"gpt-6-chat-thinking", "32768", "xhigh"},
+		{"gpt-6-chat-thinking", "32769", "max"},
+		{"gpt-5.5", "32769", "xhigh"},
+		{"grok-4.5", "32769", "high"},
+		{"custom-model", "32769", "xhigh"},
+	} {
+		t.Run(tt.model+"/"+tt.budget, func(t *testing.T) {
+			input := []byte(`{"thinking":{"type":"enabled","budget_tokens":` + tt.budget + `}}`)
+			out, err := ConvertClaudeRequestToOpenAI(tt.model, input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(out, "reasoning_effort").String(); got != tt.want {
+				t.Fatalf("reasoning_effort=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertClaudeRequestToOpenAI_NormalizesBooleanSubschemas(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "claude-3-opus",

@@ -204,9 +204,9 @@ func antigravityLimitReason(body []byte) (reason string) {
 }
 
 /**
- * @brief 从正文读取 Antigravity 恢复时间；没有有效提示时看真正 HTTP 429 的响应头。
- * @param body 上游 HTTP 429 正文或 SSE 错误。
- * @param headers HTTP 429 的响应头；SSE 错误传 nil。
+ * @brief 从正文读取 Antigravity 恢复时间；没有有效提示时读取 HTTP 错误响应头。
+ * @param body 上游 HTTP 错误正文或 SSE 错误。
+ * @param headers 实际 HTTP 错误的响应头；内嵌错误传 nil。
  * @param now 相对恢复时间的起算时间。
  * @return 明确的恢复时间；无提示时为零值，显式零秒返回 now。
  */

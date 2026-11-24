@@ -14,7 +14,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var gjsonPathKeyReplacer = strings.NewReplacer(".", "\\.", "*", "\\*", "?", "\\?")
+var gjsonPathKeyReplacer = strings.NewReplacer(`\`, `\\`, ".", "\\.", "*", "\\*", "?", "\\?")
 
 const placeholderReasonDescription = "Brief explanation of why you are calling this tool"
 
@@ -195,6 +195,9 @@ func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
 		jsonStr = cleanupRequiredFields(jsonStr)
 		jsonStr = sanitizeObjectProperties(jsonStr)
 		jsonStr = sanitizeArrayItems(jsonStr, options)
+	}
+	if !options.preserveStandardConstraints && !options.preserveNonObjectArrayItems {
+		jsonStr = removeKeywords(jsonStr, []string{"prefixItems"})
 	}
 	// Phase 4: Add placeholder for empty object schemas (Claude VALIDATED mode requirement)
 	if options.addPlaceholder {
@@ -1693,6 +1696,9 @@ func constraintKeywords(options jsonSchemaCleanOptions) []string {
 	keywords := append([]string(nil), unsupportedConstraints...)
 	if options.antigravitySemantics {
 		keywords = append(keywords, "minimum", "maximum", "multipleOf")
+		if !options.preserveNonObjectArrayItems {
+			keywords = append(keywords, "minProperties", "maxProperties")
+		}
 	}
 	return keywords
 }
@@ -2349,7 +2355,7 @@ func addEmptySchemaPlaceholder(jsonStr string) string {
 
 	for _, p := range paths {
 		typeVal := gjson.Get(jsonStr, p)
-		if typeVal.String() != "object" {
+		if !strings.EqualFold(typeVal.String(), "object") {
 			continue
 		}
 
@@ -2596,7 +2602,7 @@ func orDefault(val, def string) string {
 
 func escapeGJSONPathKey(key string) string {
 	// Local lint adaptation (staticcheck S1003): equivalent to upstream strings.IndexAny(...) == -1.
-	if !strings.ContainsAny(key, ".*?") {
+	if !strings.ContainsAny(key, `\.*?`) {
 		return key
 	}
 	return gjsonPathKeyReplacer.Replace(key)

@@ -85,7 +85,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			case "enabled":
 				if budgetTokens := thinkingConfig.Get("budget_tokens"); budgetTokens.Exists() {
 					budget := int(budgetTokens.Int())
-					if mappedEffort, ok := thinking.ConvertBudgetToLevel(budget); ok && mappedEffort != "" {
+					if mappedEffort, ok := thinking.ConvertBudgetToModelLevel(budget, modelName, "openai"); ok {
 						out, _ = sjson.SetBytes(out, "reasoning_effort", mappedEffort)
 					}
 				} else if effort != "" {

@@ -9,6 +9,30 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertGeminiRequestToClaude_BudgetRespectsModelEffort(t *testing.T) {
+	for _, tt := range []struct {
+		model  string
+		budget int
+		want   string
+	}{
+		{"claude-sonnet-5-5", 32768, "xhigh"},
+		{"claude-sonnet-5-5", 32769, "max"},
+		{"claude-opus-4-6", 32768, "max"},
+		{"claude-opus-4-6", 32769, "max"},
+	} {
+		t.Run(fmt.Sprintf("%s/%d", tt.model, tt.budget), func(t *testing.T) {
+			input := fmt.Appendf(nil, `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":%d}}}`, tt.budget)
+			out, err := ConvertGeminiRequestToClaude(tt.model, input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if effort := gjson.GetBytes(out, "output_config.effort").String(); effort != tt.want || gjson.GetBytes(out, "thinking.type").String() != "adaptive" {
+				t.Fatalf("expected adaptive thinking with effort %q, got %s", tt.want, out)
+			}
+		})
+	}
+}
+
 func TestConvertGeminiRequestToClaude_PreservesToolSchemaValues(t *testing.T) {
 	for _, field := range []string{"parameters", "parametersJsonSchema"} {
 		t.Run(field, func(t *testing.T) {

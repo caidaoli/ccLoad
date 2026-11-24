@@ -33,6 +33,26 @@ func TestConvertGeminiResponseToOpenAINonStreamCompletionTokensIncludeThoughts(t
 	}
 }
 
+func TestGeminiParameterlessToolCallArguments(t *testing.T) {
+	ctx := context.Background()
+	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_ping","name":"ping"}}]},"finishReason":"STOP"}]}`)
+	var state any
+	chunks := ConvertGeminiResponseToOpenAI(ctx, "model", nil, nil, raw, &state)
+	if len(chunks) != 1 {
+		t.Fatalf("expected one streaming chunk, got %q", chunks)
+	}
+	nonStream := ConvertGeminiResponseToOpenAINonStream(ctx, "model", nil, nil, raw, nil)
+	for _, call := range []gjson.Result{
+		gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0"),
+		gjson.GetBytes(nonStream, "choices.0.message.tool_calls.0"),
+	} {
+		args := call.Get("function.arguments")
+		if call.Get("id").String() != "call_ping" || args.Type != gjson.String || args.String() != "{}" {
+			t.Fatalf("expected a function call with an empty argument object string, got %s", call.Raw)
+		}
+	}
+}
+
 func TestGeminiFinishReasonOnlyOnFinalChunk(t *testing.T) {
 	ctx := context.Background()
 	var param any

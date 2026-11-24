@@ -69,7 +69,6 @@ type Params struct {
 	HasFirstResponse        bool   // Indicates if the initial message_start event has been sent
 	ResponseType            int    // Current response type: 0=none, 1=content, 2=thinking, 3=function
 	ResponseIndex           int    // Index counter for content blocks in the streaming response
-	HasFinishReason         bool   // Tracks whether a finish reason has been observed
 	FinishReason            string // The finish reason string returned by the provider
 	HasUsageMetadata        bool   // Tracks whether usage metadata has been observed
 	PromptTokenCount        int64  // Cached prompt token count from usage metadata
@@ -173,6 +172,11 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
 		output := make([]byte, 0, 256)
+		if params.WebSearchStreamMode && !params.HasWebSearchTool && params.WebSearchTextBuffer.Len() > 0 {
+			appendBufferedWebSearchTextBlock(params, func(event, payload string) {
+				output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+			})
+		}
 		if params.HasFirstResponse && !params.HasContent {
 			output = translatorcommon.AppendSSEEventString(output, "content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex), 3)
 			params.ResponseType = 1
@@ -499,8 +503,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		}
 	}
 
-	if finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason"); finishReasonResult.Exists() {
-		params.HasFinishReason = true
+	if finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason"); finishReasonResult.Type == gjson.String {
 		if finishReason := strings.TrimSpace(finishReasonResult.String()); finishReason != "" {
 			params.FinishReason = finishReason
 			flushPendingToolInput()
@@ -528,7 +531,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		}
 	}
 
-	if webSearchStreamMode && !params.HasWebSearchTool && params.HasFinishReason && params.WebSearchTextBuffer.Len() > 0 {
+	if webSearchStreamMode && !params.HasWebSearchTool && params.FinishReason != "" && params.WebSearchTextBuffer.Len() > 0 {
 		appendBufferedWebSearchTextBlock(params, appendEvent)
 	}
 
@@ -544,7 +547,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		return [][]byte{output}
 	}
 
-	if params.HasUsageMetadata && params.HasFinishReason {
+	if params.HasUsageMetadata && params.FinishReason != "" {
 		appendFinalEvents(params, &output, false)
 	}
 

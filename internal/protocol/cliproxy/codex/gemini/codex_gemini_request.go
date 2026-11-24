@@ -386,7 +386,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					thinkingBudget = thinkingConfig.Get("thinking_budget")
 				}
 				if thinkingBudget.Exists() {
-					if effort, ok := thinking.ConvertBudgetToLevel(int(thinkingBudget.Int())); ok {
+					if effort, ok := thinking.ConvertBudgetToModelLevel(int(thinkingBudget.Int()), modelName, "codex"); ok {
 						out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
 						effortSet = true
 					}

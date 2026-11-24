@@ -377,7 +377,11 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							}
 							functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "name", name)
 						}
-						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "arguments", messageContentResult.Get("input").Raw)
+						arguments := strings.TrimSpace(messageContentResult.Get("input").Raw)
+						if arguments == "" {
+							arguments = "{}"
+						}
+						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "arguments", arguments)
 						inputItems = append(inputItems, functionCallMessage)
 					case "tool_reference", "tool_search_tool_result":
 						flushMessage()
@@ -546,7 +550,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 		case "enabled":
 			if budgetTokens := thinkingConfig.Get("budget_tokens"); budgetTokens.Exists() {
 				budget := int(budgetTokens.Int())
-				if effort, ok := thinking.ConvertBudgetToLevel(budget); ok && effort != "" {
+				if effort, ok := thinking.ConvertBudgetToModelLevel(budget, modelName, "codex"); ok {
 					reasoningEffort = effort
 				}
 			}

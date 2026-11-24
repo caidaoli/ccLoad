@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	corechat "ccLoad/internal/protocol/cliproxy/gemini/openai/chat-completions"
 	"ccLoad/internal/protocol/cliproxy/util"
 
@@ -190,7 +191,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 					template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 				}
 
-				functionCallTemplate := []byte(`{"id": "","index": 0,"type": "function","function": {"name": "","arguments": ""}}`)
+				functionCallTemplate := []byte(`{"id": "","index": 0,"type": "function","function": {"name": "","arguments": "{}"}}`)
 				fcName := util.RestoreSanitizedToolName((*param).(*convertCliResponseToOpenAIChatParams).SanitizedNameMap, functionCallResult.Get("name").String())
 				fcID := strings.TrimSpace(functionCallResult.Get("id").String())
 				if fcID == "" {
@@ -201,6 +202,8 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 				functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
 				if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
 					functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", fcArgsResult.Raw)
+				} else if translatorcommon.IsVertexStreamingFunctionCall(functionCallResult) {
+					functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", "")
 				}
 				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 				template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)

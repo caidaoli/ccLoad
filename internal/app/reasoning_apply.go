@@ -31,7 +31,7 @@ func applyAutomaticReasoning(body []byte, r *proxyRequestContext, upstream proto
 		// the catalogs cannot resolve still serves that model.
 		levels = turn.levels
 	}
-	effort := clampEffortToLevels(turn.effort, levels)
+	effort := thinking.ClampEffortToLevels(turn.effort, levels)
 	if !thinking.HasLevel(levels, effort) || effort == "none" || effort == "auto" {
 		r.reasoningApplyReason = "unsupported_model_effort"
 		return body
@@ -97,7 +97,7 @@ func reasoningCatalogLevels(model string) ([]string, bool) {
 func reasoningDecisionLevels(model string) []string {
 	var levels []string
 	catalog, _ := reasoningCatalogLevels(model)
-	for _, level := range openAIStyleLevelOrder {
+	for _, level := range thinking.OrderedLevels() {
 		if reasoningLevelCriteria[level] != "" && thinking.HasLevel(catalog, level) {
 			levels = append(levels, level)
 		}

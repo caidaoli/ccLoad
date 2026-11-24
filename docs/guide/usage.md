@@ -145,7 +145,7 @@ Every protocol entry point accepts a thinking suffix appended to the model name,
 - **Levels**: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`; a level beyond the upstream model's capability clamps to the nearest supported tier
 - **Disable**: `(none)` or `(0)` turns thinking off
 - **Auto**: `(auto)` defers to the upstream default thinking behavior, unless the model is covered by [dynamic reasoning effort](#dynamic-reasoning-effort)
-- **Numeric budget**: a non-negative integer such as `(16384)` is forwarded as a token budget (Anthropic `budget_tokens`, Gemini `thinkingBudget`)
+- **Numeric budget**: a non-negative integer such as `(16384)` is forwarded as a token budget (Anthropic `budget_tokens`, Gemini `thinkingBudget`). OpenAI and Codex map 24,577–32,768 to `xhigh` and larger budgets to `max` where supported, clamping to the levels available on the model.
 
 The suffix is not a model identity: routing, auth, cooldown, logging, and the upstream model name always use the base name, so channel model lists do not need suffixed entries. The HTTP proxy, Responses WebSocket, and admin channel testing all honor the suffix; channel custom request rules run later and can override the fields it writes. A parenthesized model name whose suffix is not a known level or non-negative integer (an upstream really named `foo(bar)`) passes through unchanged.
 

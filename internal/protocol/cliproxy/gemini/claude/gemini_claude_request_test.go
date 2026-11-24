@@ -293,6 +293,36 @@ func TestConvertClaudeRequestToGemini_PreservesToolPairingWithInterveningSystemM
 	}
 }
 
+func TestConvertClaudeRequestToGemini_ParameterlessToolCall(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"user","content":"Run ping"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ping","name":"ping"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ping","content":"pong"}]}]}`)
+	out, err := ConvertClaudeRequestToGemini("gemini-3-flash-preview", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := gjson.GetBytes(out, "contents.1.parts.0.functionCall")
+	args := call.Get("args")
+	if call.Get("id").String() != "toolu_ping" || !args.IsObject() || len(args.Map()) != 0 {
+		t.Fatalf("expected a function call with empty object arguments, got %s", out)
+	}
+	if response := gjson.GetBytes(out, "contents.2.parts.0.functionResponse"); response.Get("id").String() != "toolu_ping" || response.Get("name").String() != call.Get("name").String() {
+		t.Fatalf("expected matching function response, got %s", out)
+	}
+
+	for _, value := range []string{`""`, `null`, `[]`} {
+		t.Run(value, func(t *testing.T) {
+			explicitInput := []byte(`{"messages":[{"role":"user","content":"Run ping"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ping","name":"ping","input":` + value + `},{"type":"text","text":"done"}]}]}`)
+			out, err := ConvertClaudeRequestToGemini("gemini-3-flash-preview", explicitInput, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts := gjson.GetBytes(out, "contents.1.parts").Array()
+			if len(parts) != 1 || parts[0].Get("text").String() != "done" {
+				t.Fatalf("expected explicit non-object arguments to remain skipped, got %s", out)
+			}
+		})
+	}
+}
+
 func TestConvertClaudeRequestToGemini_SkipsEmptyTextParts(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "claude-3-5-sonnet",

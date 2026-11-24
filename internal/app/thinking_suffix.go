@@ -61,8 +61,13 @@ func applyThinkingSuffixForModel(
 	}
 }
 
-// thinkingEffortLabel 把后缀归一成日志用的等级名。
-func thinkingEffortLabel(cfg thinking.ThinkingConfig) string {
+/**
+ * @brief 解释显式思考后缀的等级，数字预算按模型支持的档位收敛。
+ * @param cfg 已解析的后缀。
+ * @param baseModel 请求模型或实际出站模型的基名。
+ * @return 离散等级或特殊值；未知模式返回空字符串。
+ */
+func thinkingEffortLabel(cfg thinking.ThinkingConfig, baseModel string) string {
 	switch cfg.Mode {
 	case thinking.ModeNone:
 		return string(thinking.LevelNone)
@@ -71,7 +76,7 @@ func thinkingEffortLabel(cfg thinking.ThinkingConfig) string {
 	case thinking.ModeLevel:
 		return strings.ToLower(strings.TrimSpace(string(cfg.Level)))
 	case thinking.ModeBudget:
-		level, _ := thinking.ConvertBudgetToLevel(cfg.Budget)
+		level, _ := thinking.ConvertBudgetToModelLevel(cfg.Budget, baseModel, "openai")
 		return level
 	default:
 		return ""
@@ -81,8 +86,8 @@ func thinkingEffortLabel(cfg thinking.ThinkingConfig) string {
 // thinkingEffortFromRequest 优先采用后缀声明的等级：(none)/(auto) 在部分协议上以
 // "删除字段"表达，请求体里读不回来。
 func thinkingEffortFromRequest(requestedModel string, body []byte) string {
-	if _, cfg, ok := model.ParseThinkingSuffix(requestedModel); ok {
-		if label := thinkingEffortLabel(cfg); label != "" {
+	if base, cfg, ok := model.ParseThinkingSuffix(requestedModel); ok {
+		if label := thinkingEffortLabel(cfg, base); label != "" {
 			return label
 		}
 	}
@@ -109,71 +114,22 @@ func applyOpenAIStyleThinking(body []byte, cfg thinking.ThinkingConfig, effortPa
 	return out
 }
 
-// openAIStyleEffort 按 catalog 里该模型的 thinking.levels 收敛后缀，对齐
-// CLIProxyAPI ApplyThinking：模型支持 max 就保留 max，不支持则夹到最近档。
+/**
+ * @brief 按实际模型支持的档位将后缀写成 OpenAI 或 Codex effort。
+ * @param cfg 已解析的思考后缀。
+ * @param baseModel 实际转发的模型名。
+ * @return 可用于出站请求的等级。
+ */
 func openAIStyleEffort(cfg thinking.ThinkingConfig, baseModel string) string {
-	return clampOpenAIStyleEffort(thinkingEffortLabel(cfg), baseModel)
-}
-
-var openAIStyleLevelOrder = []string{
-	string(thinking.LevelMinimal),
-	string(thinking.LevelLow),
-	string(thinking.LevelMedium),
-	string(thinking.LevelHigh),
-	string(thinking.LevelXHigh),
-	string(thinking.LevelMax),
-}
-
-func clampOpenAIStyleEffort(effort, baseModel string) string {
-	effort = strings.ToLower(strings.TrimSpace(effort))
-	if effort == "" {
-		return ""
+	effort := thinkingEffortLabel(cfg, baseModel)
+	if cfg.Mode != thinking.ModeLevel {
+		return effort
 	}
 	info := modelregistry.LookupModelInfo(baseModel, "openai")
 	if info == nil || info.Thinking == nil {
 		return effort
 	}
-	return clampEffortToLevels(effort, info.Thinking.Levels)
-}
-
-// clampEffortToLevels picks the nearest supported level, preferring the lower
-// one on a tie; unknown inputs and empty level lists pass through.
-func clampEffortToLevels(effort string, levels []string) string {
-	if len(levels) == 0 || thinking.HasLevel(levels, effort) {
-		return effort
-	}
-	pos := indexOfOpenAIStyleLevel(effort)
-	if pos < 0 {
-		return effort
-	}
-	bestIdx, bestDist := -1, len(openAIStyleLevelOrder)+1
-	for _, supported := range levels {
-		idx := indexOfOpenAIStyleLevel(supported)
-		if idx < 0 {
-			continue
-		}
-		dist := idx - pos
-		if dist < 0 {
-			dist = -dist
-		}
-		if dist < bestDist || (dist == bestDist && idx < bestIdx) {
-			bestIdx, bestDist = idx, dist
-		}
-	}
-	if bestIdx >= 0 {
-		return openAIStyleLevelOrder[bestIdx]
-	}
-	return effort
-}
-
-func indexOfOpenAIStyleLevel(level string) int {
-	level = strings.ToLower(strings.TrimSpace(level))
-	for i, name := range openAIStyleLevelOrder {
-		if name == level {
-			return i
-		}
-	}
-	return -1
+	return thinking.ClampEffortToLevels(effort, info.Thinking.Levels)
 }
 
 /**

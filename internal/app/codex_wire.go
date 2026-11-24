@@ -157,16 +157,16 @@ func normalizeCodexOAuthResponsesEffort(body []byte) []byte {
 		effort := strings.ToLower(strings.TrimSpace(value.String()))
 		switch effort {
 		case "auto":
-			effort = clampEffortToLevels("medium", info.Thinking.Levels)
+			effort = thinking.ClampEffortToLevels("medium", info.Thinking.Levels)
 		case "none":
 			if !info.Thinking.ZeroAllowed && !thinking.HasLevel(info.Thinking.Levels, effort) {
-				effort = clampEffortToLevels("minimal", info.Thinking.Levels)
+				effort = thinking.ClampEffortToLevels("minimal", info.Thinking.Levels)
 			}
 		default:
-			if indexOfOpenAIStyleLevel(effort) < 0 {
+			if _, ok := thinking.ParseLevelSuffix(effort); !ok {
 				continue
 			}
-			effort = clampEffortToLevels(effort, info.Thinking.Levels)
+			effort = thinking.ClampEffortToLevels(effort, info.Thinking.Levels)
 		}
 		if effort != value.String() {
 			body, _ = sjson.SetBytes(body, path, effort)

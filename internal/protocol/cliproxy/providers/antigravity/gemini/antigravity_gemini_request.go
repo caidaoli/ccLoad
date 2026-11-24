@@ -690,13 +690,13 @@ func logAntigravityClaudeGeminiSignatureSanitize(modelName, action, reason strin
 // FunctionCallGroup represents a group of function calls and their responses
 type FunctionCallGroup struct {
 	ResponsesNeeded int
-	CallIDs         []string // ordered function call IDs for matching responses when extras exist
+	CallIDs         []string // ordered function call IDs used to match responses
 	CallNames       []string // ordered function call names for backfilling empty response names
 }
 
 func selectGroupResponses(collected []gjson.Result, group *FunctionCallGroup) ([]gjson.Result, []gjson.Result) {
 	needed := group.ResponsesNeeded
-	if len(collected) <= needed {
+	if len(collected) == 1 {
 		return collected, nil
 	}
 
@@ -844,8 +844,10 @@ func attachInlineDataToFunctionResponse(response gjson.Result, images [][]byte) 
 // collectFunctionResponsesWithSiblingInlineData keeps functionResponse parts and
 // moves sibling inline_data/inlineData onto the nearest preceding functionResponse.
 // Leading images before the first functionResponse attach to that first response.
-func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) []gjson.Result {
+// Other parts remain ordinary user input.
+func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) ([]gjson.Result, []string) {
 	responses := make([]gjson.Result, 0)
+	var otherParts []string
 	leadingImages := make([][]byte, 0)
 	current := -1
 	parts.ForEach(func(_, part gjson.Result) bool {
@@ -860,6 +862,7 @@ func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) []gjson.R
 		}
 		imagePart, ok := normalizeAntigravityInlineDataPart(part)
 		if !ok {
+			otherParts = append(otherParts, part.Raw)
 			return true
 		}
 		if current >= 0 {
@@ -869,7 +872,7 @@ func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) []gjson.R
 		leadingImages = append(leadingImages, imagePart)
 		return true
 	})
-	return responses
+	return responses, otherParts
 }
 
 // parseFunctionResponseRaw attempts to normalize a function response part into a JSON object string.
@@ -960,6 +963,7 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 	contentItems := translatorcommon.NewRawArrayItems(contents.Get("#").Int())
 	var pendingGroups []*FunctionCallGroup // Groups awaiting completion with responses
 	var collectedResponses []gjson.Result  // Standalone responses to be matched
+	var mixedTurnFollowups [][]byte
 	appendFunctionResponses := func(responses []gjson.Result, callNames []string) {
 		partItems := make([][]byte, 0, len(responses))
 		for responseIndex, response := range responses {
@@ -982,11 +986,16 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 		parts := value.Get("parts")
 
 		// Collect function responses and attach sibling inlineData to the nearest one.
-		responsePartsInThisContent := collectFunctionResponsesWithSiblingInlineData(parts)
+		responsePartsInThisContent, otherParts := collectFunctionResponsesWithSiblingInlineData(parts)
 
 		// If this content has function responses, collect them
 		if len(responsePartsInThisContent) > 0 {
 			collectedResponses = append(collectedResponses, responsePartsInThisContent...)
+			if len(otherParts) > 0 {
+				followup, _ := sjson.SetBytes([]byte(value.Raw), "role", "user")
+				followup, _ = sjson.SetRawBytes(followup, "parts", []byte("["+strings.Join(otherParts, ",")+"]"))
+				mixedTurnFollowups = append(mixedTurnFollowups, followup)
+			}
 
 			// Check if pending groups can be satisfied (FIFO: oldest group first)
 			for len(pendingGroups) > 0 && len(collectedResponses) >= pendingGroups[0].ResponsesNeeded {
@@ -1002,9 +1011,11 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 			if len(pendingGroups) == 0 {
 				// Responses without a pending call group must not leak into later turns.
 				collectedResponses = nil
+				contentItems = append(contentItems, mixedTurnFollowups...)
+				mixedTurnFollowups = nil
 			}
 
-			return true // Skip adding this content, responses are merged
+			return true // Mixed-turn user input follows the completed response group.
 		}
 
 		// If this is a model with function calls, create a new group
@@ -1060,6 +1071,7 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 			appendFunctionResponses(groupResponses, group.CallNames)
 		}
 	}
+	contentItems = append(contentItems, mixedTurnFollowups...)
 
 	// Update the original JSON with the new contents
 	result, _ := sjson.SetRawBytes(input, "request.contents", translatorcommon.JoinRawArray(contentItems))

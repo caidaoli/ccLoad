@@ -3888,23 +3888,38 @@ func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *test
  */
 func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *testing.T) {
 	t.Parallel()
-	t.Run("HTTP 503", func(t *testing.T) { testHandleChannelAntigravityCapacityExhausted(t, http.StatusServiceUnavailable) })
-	t.Run("HTTP 200 with error", func(t *testing.T) { testHandleChannelAntigravityCapacityExhausted(t, http.StatusOK) })
+	t.Run("HTTP 503", func(t *testing.T) {
+		testHandleChannelAntigravityCapacityExhausted(t, http.StatusServiceUnavailable, "", util.ServerErrorInitialCooldown)
+	})
+	t.Run("HTTP 503 with Retry-After date", func(t *testing.T) {
+		const delay = 45 * time.Second
+		retryAfter := time.Now().UTC().Add(delay).Format(http.TimeFormat)
+		testHandleChannelAntigravityCapacityExhausted(t, http.StatusServiceUnavailable, retryAfter, delay)
+	})
+	t.Run("HTTP 200 with error ignores Retry-After", func(t *testing.T) {
+		testHandleChannelAntigravityCapacityExhausted(t, http.StatusOK, "300", util.ServerErrorInitialCooldown)
+	})
 }
 
 /**
  * @brief 通过管理测试入口检查容量失败后的 URL 回退、响应状态与模型冷却。
  * @param t 测试上下文。
  * @param status 上游 HTTP 状态。
+ * @param retryAfter 上游响应头；为空不发送。
+ * @param wantCooldown 预期冷却时长。
  */
-func testHandleChannelAntigravityCapacityExhausted(t *testing.T, status int) {
+func testHandleChannelAntigravityCapacityExhausted(t *testing.T, status int, retryAfter string, wantCooldown time.Duration) {
 	t.Helper()
 	var calls atomic.Int32
 	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		calls.Add(1)
+		headers := http.Header{"Content-Type": []string{"application/json"}}
+		if retryAfter != "" {
+			headers.Set("Retry-After", retryAfter)
+		}
 		return &http.Response{
 			StatusCode: status,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Header:     headers,
 			Body:       io.NopCloser(strings.NewReader(antigravityCapacityBodyForAdminTest)),
 			Request:    req,
 		}, nil
@@ -3938,8 +3953,8 @@ func testHandleChannelAntigravityCapacityExhausted(t *testing.T, status int) {
 		t.Fatal(err)
 	}
 	remaining := time.Until(cooldowns[created.ID]["gemini-3-flash"])
-	if remaining < util.ServerErrorInitialCooldown-10*time.Second || remaining > util.ServerErrorInitialCooldown+2*time.Second {
-		t.Fatalf("capacity cooldown remaining=%v, want one %v cooldown", remaining, util.ServerErrorInitialCooldown)
+	if remaining < wantCooldown-10*time.Second || remaining > wantCooldown+2*time.Second {
+		t.Fatalf("capacity cooldown remaining=%v, want one %v cooldown", remaining, wantCooldown)
 	}
 }
 

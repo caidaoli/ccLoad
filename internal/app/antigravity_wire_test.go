@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	antigravityclaude "ccLoad/internal/protocol/cliproxy/providers/antigravity/claude"
+	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
 )
@@ -316,6 +317,100 @@ func TestProxyAntigravityTOSViolation(t *testing.T) {
 }
 
 /**
+ * @brief 验证 Antigravity HTTP 和 SSE 容量提示只冷却实际上游模型。
+ * @param t 测试上下文。
+ */
+func TestProxyAntigravityCapacityRetryHints(t *testing.T) {
+	t.Parallel()
+	const capacityError = `{"error":{"code":503,"status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED"}]}}`
+	const textFrame = "data: {\"response\":{\"responseId\":\"r1\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"partial\"}]}}]}}\n\n"
+	for _, tc := range []struct {
+		name         string
+		httpStatus   int
+		header       string
+		retryDelay   string
+		sse          bool
+		committed    bool
+		ordinary503  bool
+		wantCooldown time.Duration
+	}{
+		{name: "HTTP header", httpStatus: 503, header: "45", wantCooldown: 45 * time.Second},
+		{name: "HTTP body takes priority", httpStatus: 503, header: "300", retryDelay: "45s", wantCooldown: 45 * time.Second},
+		{name: "HTTP invalid hint", httpStatus: 503, header: "invalid", retryDelay: "invalid", wantCooldown: util.ServerErrorInitialCooldown},
+		{name: "HTTP zero hint", httpStatus: 503, header: "0", wantCooldown: util.ServerErrorInitialCooldown},
+		{name: "ordinary 503", httpStatus: 503, header: "300", ordinary503: true, wantCooldown: util.ServerErrorInitialCooldown},
+		{name: "in-band error ignores header", httpStatus: 200, header: "300", wantCooldown: util.ServerErrorInitialCooldown},
+		{name: "SSE hint before output", httpStatus: 200, header: "300", retryDelay: "45s", sse: true, wantCooldown: 45 * time.Second},
+		{name: "SSE hint after output", httpStatus: 200, header: "300", retryDelay: "45s", sse: true, committed: true, wantCooldown: 45 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				body := []byte(capacityError)
+				if tc.ordinary503 {
+					body = setJSONValue(body, "error.details.0.reason", "OTHER_REASON")
+				}
+				if tc.retryDelay != "" {
+					body = setJSONValue(body, "error.details.-1", map[string]string{
+						"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": tc.retryDelay,
+					})
+				}
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				if tc.sse {
+					w.Header().Set("Content-Type", "text/event-stream")
+					if tc.committed {
+						_, _ = io.WriteString(w, textFrame)
+					}
+					_, _ = io.WriteString(w, "data: "+string(body)+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write(body)
+			}))
+			const target = "gemini-3-flash"
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "capacity", upstreamProtocol: "gemini", models: target + ",gemini-3-pro", authType: model.AuthTypeAntigravityOAuth,
+				oauthCredential: antigravityProxyTestCredential(t, "capacity-access"),
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": target, "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": tc.sse,
+			}, nil)
+			wantStatus := http.StatusTooManyRequests
+			if tc.committed {
+				wantStatus = http.StatusOK
+			} else if tc.ordinary503 {
+				wantStatus = http.StatusServiceUnavailable
+			}
+			if response.Code != wantStatus {
+				t.Fatalf("status=%d, want %d; body=%s", response.Code, wantStatus, response.Body.String())
+			}
+			configs, err := env.store.ListConfigs(t.Context())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs=(%d, %v)", len(configs), err)
+			}
+			cfg := configs[0]
+			cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			remaining := time.Until(cooldowns[cfg.ID][target])
+			if remaining < tc.wantCooldown-5*time.Second || remaining > tc.wantCooldown+time.Second {
+				t.Fatalf("model cooldown remaining=%v, want about %v", remaining, tc.wantCooldown)
+			}
+			if cfg.CooldownUntil != 0 || !cooldowns[cfg.ID]["gemini-3-pro"].IsZero() {
+				t.Fatalf("capacity error cooled another resource, channel=%d models=%v", cfg.CooldownUntil, cooldowns[cfg.ID])
+			}
+			if env.server.urlSelector.IsCooledDown(cfg.ID, upstream.URL) {
+				t.Fatal("model capacity exhaustion must not cool the URL")
+			}
+		})
+	}
+}
+
+/**
  * @brief 验证账号验证错误冷却当前渠道，普通请求和 Credits 尝试均可换渠，候选耗尽时保留验证详情。
  * @param t 测试上下文。
  */
@@ -605,6 +700,49 @@ func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
 				if level := gjson.GetBytes(got, outputPath).String(); level != tc.want {
 					t.Fatalf("%s=%q, want %q; body=%s", path, level, tc.want, got)
 				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证裁剪 Claude 上游输出上限后，发出的思考预算仍严格小于上限。
+ * @param t 测试上下文。
+ */
+func TestAntigravityClaudeWireClampsThinkingBudgetAfterOutputCap(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, tc := range []struct {
+		name       string
+		model      string
+		configPath string
+		budgetPath string
+		maxOut     int
+		budget     int
+		wantMax    int64
+		wantBudget int64
+	}{
+		{"canonical budget exceeds cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 70000, 64000, 63999},
+		{"canonical budget equals cap", "CLAUDE-OPUS-4-6-THINKING", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 64000, 64000, 63999},
+		{"snake budget", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinking_budget", 100000, 70000, 64000, 63999},
+		{"snake container", "claude-sonnet-4-6", "generationConfig", "thinking_config.thinkingBudget", 100000, 70000, 64000, 63999},
+		{"snake parent and budget", "claude-sonnet-4-6", "generation_config", "thinking_config.thinking_budget", 100000, 70000, 64000, 63999},
+		{"budget below cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 32000, 64000, 32000},
+		{"output already within cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 64000, 64000, 64000, 64000},
+		{"model cap unknown", "claude-unlisted", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 70000, 100000, 70000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+			body = setJSONValue(body, tc.configPath+".maxOutputTokens", tc.maxOut)
+			body = setJSONValue(body, tc.configPath+"."+tc.budgetPath, tc.budget)
+			wire, err := prepareAntigravityRequestBody(cfg, tc.model, body, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			generation := gjson.GetBytes(wire, "request.generationConfig")
+			maxOut, budget := generation.Get("maxOutputTokens").Int(), generation.Get(tc.budgetPath).Int()
+			if maxOut != tc.wantMax || budget != tc.wantBudget {
+				t.Fatalf("maxOutputTokens=%d budget=%d, want %d and %d; body=%s", maxOut, budget, tc.wantMax, tc.wantBudget, wire)
 			}
 		})
 	}

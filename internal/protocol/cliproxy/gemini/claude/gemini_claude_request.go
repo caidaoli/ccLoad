@@ -12,6 +12,7 @@ import (
 	"ccLoad/internal/protocol/cliproxy/gemini/common"
 	"ccLoad/internal/protocol/cliproxy/registry"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
@@ -20,12 +21,9 @@ import (
 
 const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
 
-var geminiThinkingLevelOrder = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
-
 func normalizeClaudeEffortForGemini(modelName, effort string) string {
 	effort = strings.ToLower(strings.TrimSpace(effort))
-	requestedIndex := geminiThinkingLevelIndex(effort)
-	if requestedIndex < 0 {
+	if _, ok := thinking.ParseLevelSuffix(effort); !ok {
 		return effort
 	}
 
@@ -37,32 +35,7 @@ func normalizeClaudeEffortForGemini(modelName, effort string) string {
 		return effort
 	}
 
-	bestLevel := ""
-	bestIndex := -1
-	bestDistance := len(geminiThinkingLevelOrder) + 1
-	for _, supported := range modelInfo.Thinking.Levels {
-		supported = strings.ToLower(strings.TrimSpace(supported))
-		if supported == effort {
-			return effort
-		}
-		index := geminiThinkingLevelIndex(supported)
-		if index < 0 {
-			continue
-		}
-		distance := requestedIndex - index
-		if distance < 0 {
-			distance = -distance
-		}
-		if distance < bestDistance || (distance == bestDistance && index < bestIndex) {
-			bestLevel = supported
-			bestIndex = index
-			bestDistance = distance
-		}
-	}
-	if bestLevel != "" {
-		return bestLevel
-	}
-	return effort
+	return thinking.ClampEffortToLevels(effort, modelInfo.Thinking.Levels)
 }
 
 func lookupGeminiThinkingModelInfo(modelName string) *registry.ModelInfo {
@@ -80,15 +53,6 @@ func lookupGeminiThinkingModelInfo(modelName string) *registry.ModelInfo {
 		}
 	}
 	return nil
-}
-
-func geminiThinkingLevelIndex(level string) int {
-	for index, candidate := range geminiThinkingLevelOrder {
-		if candidate == level {
-			return index
-		}
-	}
-	return -1
 }
 
 // ConvertClaudeRequestToGemini parses a Claude API request and returns a complete
@@ -255,7 +219,11 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 							}
 						}
 						functionName = util.SanitizeFunctionName(functionName)
-						functionArgs := contentResult.Get("input").String()
+						input := contentResult.Get("input")
+						functionArgs := input.String()
+						if !input.Exists() {
+							functionArgs = "{}"
+						}
 						argsResult := gjson.Parse(functionArgs)
 						if argsResult.IsObject() && gjson.Valid(functionArgs) {
 							part := []byte(`{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`)

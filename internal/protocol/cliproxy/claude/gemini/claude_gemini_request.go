@@ -183,8 +183,10 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						default:
 							level, ok := thinking.ConvertBudgetToLevel(budget)
 							if ok {
-								if !thinking.HasLevel(mi.Thinking.Levels, level) {
-									if mapped, okM := thinking.MapToClaudeEffort(level, supportsMax); okM {
+								if level == string(thinking.LevelMax) {
+									level = thinking.ClampEffortToLevels(level, mi.Thinking.Levels)
+								} else if !thinking.HasLevel(mi.Thinking.Levels, level) {
+									if mapped, ok := thinking.MapToClaudeEffort(level, supportsMax); ok {
 										level = mapped
 									}
 								}

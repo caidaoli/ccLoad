@@ -667,19 +667,14 @@ func compareJSON(t *testing.T, expectedJSON, actualJSON string) {
 // ============================================================================
 
 func TestCleanJSONSchemaForAntigravity_EmptySchemaPlaceholder(t *testing.T) {
-	// Empty object schema with no properties should get a placeholder
-	input := `{
-		"type": "object"
-	}`
-
-	result := CleanJSONSchemaForAntigravity(input)
-
-	// Should have placeholder property added
-	if !strings.Contains(result, `"reason"`) {
-		t.Errorf("Empty schema should have 'reason' placeholder property, got: %s", result)
-	}
-	if !strings.Contains(result, `"required"`) {
-		t.Errorf("Empty schema should have 'required' with 'reason', got: %s", result)
+	for _, typeName := range []string{"object", "OBJECT"} {
+		for _, clean := range []func(string) string{CleanJSONSchemaForAntigravity, CleanJSONSchemaForAntigravityJSONSchema} {
+			result := gjson.Parse(clean(`{"type":"` + typeName + `"}`))
+			required := result.Get("required").Array()
+			if result.Get("properties.reason.type").String() != "string" || len(required) != 1 || required[0].String() != "reason" {
+				t.Errorf("empty %s schema should require a string reason: %s", typeName, result.Raw)
+			}
+		}
 	}
 }
 
@@ -4331,7 +4326,7 @@ func TestCleanJSONSchemaNormalizesNativeArrayItems(t *testing.T) {
 			name:  "false items after a prefix",
 			clean: CleanJSONSchemaForGemini,
 			input: `{"type":"array","prefixItems":[{"type":"integer"}],"items":false}`,
-			want:  `{"type":"array","prefixItems":[{"type":"integer"}],"items":{"type":"string"},"description":"No additional items allowed"}`,
+			want:  `{"type":"array","items":{"type":"string"},"description":"No additional items allowed"}`,
 		},
 		{
 			name:  "malformed scalar items in native schema",
@@ -4361,6 +4356,49 @@ func TestCleanJSONSchemaPreservesArrayItemsForJSONSchemaCarrier(t *testing.T) {
 				`{"type":"array","items":[{"type":"string"},{"type":"number"}]}`,
 			} {
 				compareJSON(t, input, clean(input))
+			}
+		})
+	}
+}
+
+func TestCleanJSONSchemaPreservesEscapedPropertyNamesAndUsesCarrierKeywords(t *testing.T) {
+	input := `{"type":"object","properties":{
+		"a\\b":{"type":"object","minProperties":1,"maxProperties":4,"properties":{"prefixItems":{"type":"array","prefixItems":[{"type":"integer"}],"items":false}}}
+	}}`
+	for _, test := range []struct {
+		name          string
+		clean         func(string) string
+		keepPrefix    bool
+		keepObjLimits bool
+	}{
+		{"Antigravity native", CleanJSONSchemaForAntigravity, false, false},
+		{"Antigravity JSON Schema", CleanJSONSchemaForAntigravityJSONSchema, true, true},
+		{"Gemini native", CleanJSONSchemaForGemini, false, true},
+		{"Gemini JSON Schema", CleanJSONSchemaForGeminiJSONSchema, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := gjson.Parse(test.clean(input))
+			props := result.Get("properties").Map()
+			obj := props[`a\b`]
+			array := obj.Get("properties.prefixItems")
+			if len(props) != 1 || obj.Get("type").String() != "object" || array.Get("type").String() != "array" {
+				t.Fatalf("property names were changed: %s", result.Raw)
+			}
+			if test.keepPrefix {
+				if array.Get("prefixItems.0.type").String() != "integer" || array.Get("items").Type != gjson.False {
+					t.Fatalf("closed tuple must survive on JSON Schema: %s", result.Raw)
+				}
+			} else if array.Get("prefixItems").Exists() || !array.Get("items").IsObject() {
+				t.Fatalf("native schema should project the tuple to an items object: %s", result.Raw)
+			}
+			if test.keepObjLimits {
+				if obj.Get("minProperties").Int() != 1 || obj.Get("maxProperties").Int() != 4 {
+					t.Fatalf("object limits were lost: %s", result.Raw)
+				}
+			} else if obj.Get("minProperties").Exists() || obj.Get("maxProperties").Exists() ||
+				!strings.Contains(obj.Get("description").String(), "minProperties: 1") ||
+				!strings.Contains(obj.Get("description").String(), "maxProperties: 4") {
+				t.Fatalf("unsupported object limits must become description hints: %s", result.Raw)
 			}
 		})
 	}

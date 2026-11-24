@@ -357,7 +357,23 @@ func antigravitySSEData(event []byte) []byte {
 	if len(payload) == 0 || isAntigravityErrorPayload(payload) {
 		return nil
 	}
+	if antigravityBareFilterNotice(payload) {
+		return append(append([]byte(`{"response":`), payload...), '}')
+	}
 	return payload
+}
+
+/**
+ * @brief 识别未包在 response 信封中的 Antigravity 过滤通知。
+ * @param payload 原始 SSE JSON 载荷。
+ * @return 仅当裸 Gemini 帧符合稀疏过滤通知形状时为 true。
+ */
+func antigravityBareFilterNotice(payload []byte) bool {
+	if !gjson.GetBytes(payload, "candidates").IsArray() || gjson.GetBytes(payload, "response").Exists() {
+		return false
+	}
+	event, err := sseJSONObjectMap(payload)
+	return err == nil && geminiFilterNotice(event) != ""
 }
 
 /**
@@ -429,6 +445,16 @@ func prepareAntigravityRequestBody(
 		if maxOut, ok := jsonIntegerValue(gjson.GetBytes(request, "generationConfig.maxOutputTokens")); ok {
 			if info := cliproxyregistry.LookupModelInfo(lookupID, "antigravity"); info != nil && info.MaxCompletionTokens > 0 && maxOut > int64(info.MaxCompletionTokens) {
 				request = setJSONValue(request, "generationConfig.maxOutputTokens", info.MaxCompletionTokens)
+				for _, path := range []string{
+					"generationConfig.thinkingConfig.thinkingBudget",
+					"generationConfig.thinkingConfig.thinking_budget",
+					"generationConfig.thinking_config.thinkingBudget",
+					"generationConfig.thinking_config.thinking_budget",
+				} {
+					if budget, ok := jsonIntegerValue(gjson.GetBytes(request, path)); ok && budget >= int64(info.MaxCompletionTokens) {
+						request = setJSONValue(request, path, info.MaxCompletionTokens-1)
+					}
+				}
 			}
 		}
 		request = normalizeAntigravityClaudeToolResultOrder(request)
@@ -1411,7 +1437,7 @@ func unwrapAntigravitySSEEvent(event []byte) ([]byte, error) {
 	if len(payload) == 0 {
 		return nil, nil
 	}
-	if !bytes.Equal(payload, []byte("[DONE]")) && !isAntigravityErrorPayload(payload) {
+	if !bytes.Equal(payload, []byte("[DONE]")) && !isAntigravityErrorPayload(payload) && !antigravityBareFilterNotice(payload) {
 		inner, err := unwrapAntigravityResponse(payload)
 		if err != nil {
 			return nil, err

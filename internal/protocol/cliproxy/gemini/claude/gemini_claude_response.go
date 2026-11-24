@@ -638,8 +638,11 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		}
 	}
 
-	if finish := gjson.GetBytes(rawJSON, "candidates.0.finishReason"); finish.Exists() && finish.String() != "" {
-		(*param).(*Params).FinishReason = finish.String()
+	finish := gjson.GetBytes(rawJSON, "candidates.0.finishReason")
+	finishReason := strings.TrimSpace(finish.String())
+	hasFinishReason := finish.Type == gjson.String && finishReason != ""
+	if hasFinishReason {
+		p.FinishReason = finishReason
 		flushPendingToolInput()
 	}
 
@@ -674,7 +677,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		return [][]byte{output}
 	}
 
-	if usageResult.Exists() && bytes.Contains(rawJSON, []byte(`"finishReason"`)) && !(*param).(*Params).HasFinalEvents && p.ActiveToolCall == nil && !p.HasIncompleteToolCall {
+	if usageResult.Exists() && hasFinishReason && !p.HasFinalEvents && p.ActiveToolCall == nil && !p.HasIncompleteToolCall {
 		if !(*param).(*Params).HasContent && (*param).(*Params).HasFirstResponse {
 			appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, (*param).(*Params).ResponseIndex))
 			(*param).(*Params).ResponseType = 1

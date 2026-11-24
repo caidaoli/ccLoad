@@ -463,55 +463,43 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							toolNameByID[functionID] = originalFunctionName
 						}
 
-						// Preserve every present input as valid JSON for the function call.
-						var argsRaw string
-						if argsResult.IsObject() {
-							argsRaw = argsResult.Raw
-						} else if argsResult.Exists() {
-							switch argsResult.Type {
-							case gjson.String:
-								// Parse JSON-encoded object strings while preserving other strings as JSON strings.
-								parsed := gjson.Parse(argsResult.String())
-								if parsed.IsObject() {
-									argsRaw = parsed.Raw
-								} else {
-									argsRaw = argsResult.Raw
-								}
-							case gjson.Null:
-								argsRaw = `{}`
-							default:
-								argsRaw = argsResult.Raw
+						argsRaw := argsResult.Raw
+						switch argsResult.Type {
+						case gjson.Null:
+							argsRaw = `{}` // Missing or null input represents a parameterless call.
+						case gjson.String:
+							// Parse JSON-encoded object strings while preserving other strings as JSON strings.
+							if parsed := gjson.Parse(argsResult.String()); parsed.IsObject() {
+								argsRaw = parsed.Raw
 							}
 						}
 
-						if argsRaw != "" {
-							partJSON := []byte(`{}`)
+						partJSON := []byte(`{}`)
 
-							signature := resolveToolUseThoughtSignature(modelName, contentResult, true)
-							if pendingDetachedSignature != "" {
-								pendingMatchesTool := pendingDetachedTargetKind == "" || pendingDetachedTargetKind == geminiClaudeCarrierAny || pendingDetachedTargetKind == geminiClaudeCarrierFunction
-								if pendingMatchesTool && (signature == "" || signature == sigcompat.GeminiSkipThoughtSignatureValidator) {
-									signature = pendingDetachedSignature
-								} else {
-									appendDetachedCarrier(pendingDetachedSignature, true)
-								}
-								clearPendingDetachedSignature()
-							}
-							if signature != "" {
-								partJSON, _ = sjson.SetBytes(partJSON, "thoughtSignature", signature)
+						signature := resolveToolUseThoughtSignature(modelName, contentResult, true)
+						if pendingDetachedSignature != "" {
+							pendingMatchesTool := pendingDetachedTargetKind == "" || pendingDetachedTargetKind == geminiClaudeCarrierAny || pendingDetachedTargetKind == geminiClaudeCarrierFunction
+							if pendingMatchesTool && (signature == "" || signature == sigcompat.GeminiSkipThoughtSignatureValidator) {
+								signature = pendingDetachedSignature
 							} else {
-								logDroppedAntigravityToolUseSignature(modelName, i, j, contentResult)
+								appendDetachedCarrier(pendingDetachedSignature, true)
 							}
+							clearPendingDetachedSignature()
+						}
+						if signature != "" {
+							partJSON, _ = sjson.SetBytes(partJSON, "thoughtSignature", signature)
+						} else {
+							logDroppedAntigravityToolUseSignature(modelName, i, j, contentResult)
+						}
 
-							if functionID != "" {
-								partJSON, _ = sjson.SetBytes(partJSON, "functionCall.id", functionID)
-							}
-							partJSON, _ = sjson.SetBytes(partJSON, "functionCall.name", functionName)
-							partJSON, _ = sjson.SetRawBytes(partJSON, "functionCall.args", []byte(argsRaw))
-							partItems = append(partItems, partJSON)
-							if originalRole == "assistant" {
-								pendingToolUseIDs = append(pendingToolUseIDs, functionID)
-							}
+						if functionID != "" {
+							partJSON, _ = sjson.SetBytes(partJSON, "functionCall.id", functionID)
+						}
+						partJSON, _ = sjson.SetBytes(partJSON, "functionCall.name", functionName)
+						partJSON, _ = sjson.SetRawBytes(partJSON, "functionCall.args", []byte(argsRaw))
+						partItems = append(partItems, partJSON)
+						if originalRole == "assistant" {
+							pendingToolUseIDs = append(pendingToolUseIDs, functionID)
 						}
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "tool_result" {
 						toolCallID := contentResult.Get("tool_use_id").String()

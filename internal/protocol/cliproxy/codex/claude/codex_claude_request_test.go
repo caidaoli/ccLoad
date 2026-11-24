@@ -391,6 +391,23 @@ func TestConvertClaudeRequestToCodex_PreservesToolAdjacencyWithInterveningSystem
 	}
 }
 
+func TestConvertClaudeRequestToCodex_ParameterlessToolCall(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ping","name":"ping"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ping","content":"pong"}]}]}`)
+	out, err := ConvertClaudeRequestToCodex("gpt-5.5", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := gjson.GetBytes(out, "input.0")
+	args := call.Get("arguments")
+	if call.Get("type").String() != "function_call" || args.Type != gjson.String || args.String() != "{}" {
+		t.Fatalf("expected a function call with an empty argument object string, got %s", call.Raw)
+	}
+	result := gjson.GetBytes(out, "input.1")
+	if result.Get("type").String() != "function_call_output" || result.Get("call_id").String() != call.Get("call_id").String() {
+		t.Fatalf("expected matching tool output, call=%s result=%s", call.Raw, result.Raw)
+	}
+}
+
 func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 	tests := []struct {
 		name                  string

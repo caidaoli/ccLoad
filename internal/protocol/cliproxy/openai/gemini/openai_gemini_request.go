@@ -109,7 +109,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					thinkingBudget = thinkingConfig.Get("thinking_budget")
 				}
 				if thinkingBudget.Exists() {
-					if effort, ok := thinking.ConvertBudgetToLevel(int(thinkingBudget.Int())); ok {
+					if effort, ok := thinking.ConvertBudgetToModelLevel(int(thinkingBudget.Int()), modelName, "openai"); ok {
 						out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
 					}
 				}

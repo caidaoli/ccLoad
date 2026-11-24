@@ -24,6 +24,30 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-24)
+
+Selected ports from official `v8.1.2` (`85225381d89915595598ed13766cd79890c03a84`):
+
+- Gemini and Antigravity streams wait for a non-empty finish reason before
+  closing a Claude message. Claude output cut short by the token limit retains
+  `MAX_TOKENS` in Gemini SSE and aggregated JSON (`5ece0cde5`, `7e2b63230`,
+  `5621004e1`).
+- Preserve complete parameterless tool calls in Claude history sent to Gemini,
+  Antigravity or Codex, and emit valid Chat argument strings for complete
+  Gemini and Antigravity calls (`2b7af40e0`, `bb8be9648`, `d2b7dbbdb`,
+  `dd866f6c0`, `28a00389d`). Keep user parts accompanying Antigravity tool
+  results without moving independent user interruptions (`ae88b00c3`).
+- Keep search text when a grounding support has no usable source index
+  (`1b730a1d2`). Handle uppercase object schemas and escaped property names
+  while respecting each target schema format (`be39c4d54`, `65ba78635`).
+- Map numeric budgets above 32,768 to the target model's supported effort
+  (`a308c55bc`). Clamp Antigravity Claude's thinking budget after applying its
+  catalog output limit (`16bcf5a07`).
+- Handle a sparse Gemini filter notice followed by terminal metadata at the
+  ccLoad SSE boundary, preserving usage and transport errors (`5ddbfbaf4`,
+  `aeed97157`). Read upstream retry hints for Antigravity model capacity
+  errors in ccLoad's cooldown policy (`ae3d80f70`).
+
 ## Post-snapshot compatibility fixes (2026-11-23)
 
 These targeted ports use official `v8.1.1` (`6eb8554f0ede597b2aa3e508ffb3f111d3c2b9e6`).

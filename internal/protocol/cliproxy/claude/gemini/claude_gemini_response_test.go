@@ -9,6 +9,33 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertClaudeResponseToGemini_ClaudeSSEFinishReason(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name  string
+		delta string
+		want  string
+	}{
+		{"truncated", `{"stop_reason":"max_tokens"}`, "MAX_TOKENS"},
+		{"success", `{"stop_reason":"end_turn"}`, "STOP"},
+		{"omitted", `{}`, "STOP"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			event := `data: {"type":"message_delta","delta":` + tt.delta + `,"usage":{"output_tokens":2}}` + "\n\n"
+			var state any
+			out := ConvertClaudeResponseToGemini(ctx, "gemini-3-flash-preview", nil, nil, []byte(event), &state)
+			if len(out) != 1 || gjson.GetBytes(out[0], "candidates.0.finishReason").String() != tt.want {
+				t.Fatalf("stream finishReason should be %q, got %q", tt.want, out)
+			}
+			event += "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+			aggregate := ConvertClaudeResponseToGeminiNonStream(ctx, "gemini-3-flash-preview", nil, nil, []byte(event), nil)
+			if got := gjson.GetBytes(aggregate, "candidates.0.finishReason").String(); got != tt.want {
+				t.Fatalf("aggregated finishReason=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertClaudeResponseToGemini_StreamPreservesToolUseID(t *testing.T) {
 	ctx := context.Background()
 	var param any

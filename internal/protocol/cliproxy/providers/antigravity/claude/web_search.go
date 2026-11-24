@@ -292,7 +292,7 @@ func parseWebSearchGroundingSupports(groundingMetadata gjson.Result) []webSearch
 	for i, chunk := range chunks {
 		web := chunk.Get("web")
 		if web.Exists() {
-			chunkData[i].URL = web.Get("uri").String()
+			chunkData[i].URL = strings.TrimSpace(web.Get("uri").String())
 			chunkData[i].Title = web.Get("title").String()
 		}
 	}
@@ -318,9 +318,13 @@ func parseWebSearchGroundingSupports(groundingMetadata gjson.Result) []webSearch
 				if chunkIndex < 0 || chunkIndex >= len(chunkData) {
 					continue
 				}
-				parsed.ChunkURLs = append(parsed.ChunkURLs, chunkData[chunkIndex].URL)
+				chunk := chunkData[chunkIndex]
+				if chunk.URL == "" {
+					continue
+				}
+				parsed.ChunkURLs = append(parsed.ChunkURLs, chunk.URL)
 				if parsed.ChunkTitle == "" {
-					parsed.ChunkTitle = chunkData[chunkIndex].Title
+					parsed.ChunkTitle = chunk.Title
 				}
 			}
 		}
@@ -341,7 +345,7 @@ func buildWebSearchCitedTextBlocks(textContent string, supports []webSearchGroun
 	blocks := make([]webSearchCitedTextBlock, 0, len(supports)+1)
 	lastEnd := int64(0)
 	for _, support := range supports {
-		if support.EndIndex <= lastEnd {
+		if len(support.ChunkURLs) == 0 || support.EndIndex <= lastEnd {
 			continue
 		}
 		if support.StartIndex > lastEnd {
@@ -364,7 +368,7 @@ func buildWebSearchCitedTextBlocks(textContent string, supports []webSearchGroun
 				citedText = string(textBytes[start:end])
 			}
 		}
-		if citedText != "" && len(support.ChunkURLs) > 0 {
+		if citedText != "" {
 			citation := map[string]any{
 				"type":       "web_search_result_location",
 				"cited_text": citedText,

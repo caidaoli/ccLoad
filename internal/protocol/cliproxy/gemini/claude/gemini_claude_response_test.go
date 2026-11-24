@@ -15,6 +15,42 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestConvertGeminiResponseToClaudeStream_WaitsForNonEmptyFinishReason(t *testing.T) {
+	ctx := context.Background()
+	var state any
+	for _, reason := range []string{`null`, `""`, `" "`, `1`} {
+		raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]},"finishReason":` + reason + `}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1}}`)
+		out := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash-preview", nil, nil, raw, &state), nil)
+		for _, line := range strings.Split(string(out), "\n") {
+			if data, ok := strings.CutPrefix(line, "data: "); ok && gjson.Get(data, "type").String() == "message_stop" {
+				t.Fatalf("finishReason=%s ended the stream: %s", reason, out)
+			}
+		}
+	}
+	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"last"}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}`)
+	out := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash-preview", nil, nil, raw, &state), nil)
+	var lastText, stopReason string
+	var stops int
+	for _, line := range strings.Split(string(out), "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		event := gjson.Parse(data)
+		switch event.Get("type").String() {
+		case "content_block_delta":
+			lastText += event.Get("delta.text").String()
+		case "message_delta":
+			stopReason = event.Get("delta.stop_reason").String()
+		case "message_stop":
+			stops++
+		}
+	}
+	if lastText != "last" || stopReason != "max_tokens" || stops != 1 {
+		t.Fatalf("expected final text and one max_tokens terminal, got %s", out)
+	}
+}
+
 func TestConvertGeminiResponseToClaude_VertexStreamingPartialArgs(t *testing.T) {
 	ctx := context.Background()
 	var param any

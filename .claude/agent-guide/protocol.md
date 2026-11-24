@@ -21,7 +21,7 @@
 - Gemini/Antigravity 转 Claude 时，`MALFORMED_FUNCTION_CALL` 只有没有可见正文/有效工具时才输出错误，已有部分输出保留；空工具占位和签名载体不算有效输出。Antigravity 转 Chat 不输出无内容的空 delta，也不凭仅签名和零输出计量在 `[DONE]` 合成 stop。app 在转换前处理零输出异常，转换器保留自己的纯协议错误语义。
 - Chat `response_format` / Responses `text.format` 的 `json_schema` 转 Claude 时，只有模型名含 `claude` 且不属于老模型清单（claude-3/2/instant、opus-4/4.1、sonnet-4，见 `common/claude_system.go`）才写入原生 `output_config.format`，system 只保留 schema 名称与描述的短指令；GLM/Kimi/DeepSeek 等走 Anthropic 兼容端点的非 Claude 模型、老模型、`json_object` 及非对象 schema 继续用 system 提示词兜底（参照 CLIProxyAPI `43806c86`，非 Claude 门禁为本地差异）。
 - Gemini/Antigravity 转 Chat 丢弃 `thought=true` 的 inlineData 草稿图，单独的思考图片帧不输出空 delta，Antigravity 也不凭它在 `[DONE]` 合成 stop；转 Responses 时非思考图片（png/jpeg/webp/gif，空 mime 视为 png）输出 `image_generation_call`，流式同一 Part 按 sha256 去重。图片 Part 的签名仅在打开的 reasoning 中吸收，否则作为 standalone 载体，不绑定相邻正文或工具（图片项不回放给 Gemini）。参照 CLIProxyAPI `6684f3b5`、`0f8c40e1`。
-- Gemini/Antigravity 的 `MAX_TOKENS` 转 Chat 时使用标准 `finish_reason=length`，`native_finish_reason` 保留 `max_tokens`，工具调用仍优先 `tool_calls`。
+- Claude 的 `max_tokens` 在 Gemini SSE 及其聚合 JSON 中保留为 `MAX_TOKENS`。Gemini/Antigravity 的 `MAX_TOKENS` 转 Chat 时使用标准 `finish_reason=length`，`native_finish_reason` 保留 `max_tokens`，工具调用仍优先 `tool_calls`。
 - Gemini 转 Chat 的工具签名放在 `tool_calls[].extra_content.google.thought_signature`，延迟签名仅绑定当前候选最近的工具，正文、附件和不支持的 Part 隔断绑定。Gemini 经 Claude 回放的签名载体按标记恢复原 Part；不跨消息或语义边界，不降低提供商签名兼容性检查。
 - Chat 转 Responses 的 JSON/SSE 支持 typed content 数组及结构化 reasoning，思考和正文分别输出，未知 typed Part 不序列化成正文。同一消息/流帧的顶层 reasoning 表示非空时优先于内容数组的 thinking，避免重复输出；顶层表示为空时仍使用 typed thinking，普通正文始终保留。流式交错正文/思考保持独立 item 与顺序，已关闭的消息不因后续截断改为 incomplete；纯思考流有明确 finish_reason 才允许终结，缺失源协议终态不能伪造成功。
 - Responses 转 Chat、Claude、Gemini 的 JSON 和 SSE 均保留可见的拒绝说明。仅 `output_item.done` 或 `response.completed/incomplete` 提供的消息正文在跨协议流中补齐，可见片段按内容索引输出并去重。前置索引有缺口时暂存后续片段，普通有序流即时转发。原生 Responses 继续透传。
@@ -38,7 +38,7 @@
 - Gemini 转 Claude 的工具结果始终进入 user 回合；混合调用/结果按顺序拆分角色，合并后的结果排在其他 user 内容之前并保留调用 ID。Claude 转 Gemini 的普通/隐藏思考签名只输出兼容 Gemini 且可解码为标准 Base64 的值，补齐原生签名 padding；不输出 bypass 占位串或外来签名，保留普通思考文本及结束事件。流式、SSE 聚合和原生 JSON 响应遵守相同签名约束。
 - Chat/Claude/Gemini 转 Responses 保留输出 token 上限为 `max_output_tokens`；Chat 优先 `max_completion_tokens` 再 `max_tokens`，Claude 使用 `max_tokens`，Gemini 接受 generationConfig 及蛇形字段。普通同协议请求仍原样透传。
 - Responses 转 Claude 回放时，同一 assistant 回合存在空搜索结果则移除其文本的 `web_search_result_location` 引用，保留正文、其他引用和完整结果对应回合的引用；不引入运行时搜索缓存。
-- Antigravity 转 Claude 将安全/过滤终止原因映射为 `refusal`，工具调用仍优先 `tool_use`；流尾部空 `finishReason` 不覆盖先前非空原因，但仍触发待发搜索内容的排空。`MALFORMED_FUNCTION_CALL` 与 Gemini 转 Claude 一致不映射为 `refusal`（Claude Code 会将其报为违规），非流仍由应用层转为错误。
+- Antigravity 转 Claude 将安全/过滤终止原因映射为 `refusal`，工具调用仍优先 `tool_use`；仅非空字符串 `finishReason` 可与 usage 一起结束消息。空原因帧保留后续内容；搜索正文在有效终态或 `[DONE]` 时排空。`MALFORMED_FUNCTION_CALL` 与 Gemini 转 Claude 一致不映射为 `refusal`（Claude Code 会将其报为违规），非流仍由应用层转为错误。
 - Claude 会话中 system 消息的 `tool_addition` 转 Responses 为 `additional_tools`，转 Chat 合并工具声明；内联工具参与长名称缩短及响应反向映射。工具声明与文本提醒不能拆散待完成的调用/结果配对；不因此启用 Claude `tool_search`。
 - OpenAI Chat 转 Codex 时，`service_tier` 的 `fast`/`priority` 规范为 `priority`，保留 `ultrafast`，忽略其他值；匹配时忽略大小写与首尾空白。`input_audio` 输出 Responses 规范的嵌套 `input_audio.{data,format}`，不拍平到顶层。
 - Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。原生 Codex OAuth 的 HTTP/WS 共用 normalizer 也处理缺少调用引用的 `function_call_output/custom_tool_call_output`：能配对则补 call_id，否则保留文本与附件为 user 内容；显式 continuation 引用和 `codex_app` 委托输出不降级，不把 item id 当成未知远端调用引用。参照 CLIProxyAPI `05e668cf`。

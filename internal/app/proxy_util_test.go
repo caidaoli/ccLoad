@@ -288,6 +288,16 @@ func TestThinkingEffortFromRequestPrefersModelSuffix(t *testing.T) {
 		t.Fatalf("thinking_effort=%q, want max", got)
 	}
 
+	for requested, want := range map[string]string{
+		"gpt-5.6-sol(50000)":  "max",
+		"gpt-5.5(50000)":      "xhigh",
+		"custom-model(50000)": "xhigh",
+	} {
+		if got := thinkingEffortFromRequest(requested, nil); got != want {
+			t.Errorf("thinking effort for %s = %q, want %q", requested, got, want)
+		}
+	}
+
 	// (none)/(auto) 在部分协议上以删除字段表达，只能从后缀读回来。
 	got = thinkingEffortFromRequest("gpt-5.6-luna(none)", []byte(`{"model":"gpt-5.6-luna"}`))
 	if got != "none" {
@@ -323,6 +333,20 @@ func TestApplyThinkingSuffixWritesClientProtocolFields(t *testing.T) {
 			requestedModel: "gpt-5.6-sol(max)",
 			body:           `{"model":"gpt-5.6-sol","reasoning_effort":"low"}`,
 			wantStrings:    map[string]string{"reasoning_effort": "max"},
+		},
+		{
+			name:           "numeric budget above xhigh uses max on capable model",
+			clientProtocol: protocol.Codex,
+			requestedModel: "gpt-5.6-sol(32769)",
+			body:           `{"model":"gpt-5.6-sol"}`,
+			wantStrings:    map[string]string{"reasoning.effort": "max"},
+		},
+		{
+			name:           "unknown model keeps compatible numeric budget tier",
+			clientProtocol: protocol.OpenAI,
+			requestedModel: "custom-model(50000)",
+			body:           `{"model":"custom-model"}`,
+			wantStrings:    map[string]string{"reasoning_effort": "xhigh"},
 		},
 		{
 			name:           "openai 无 max 的模型夹到 xhigh",

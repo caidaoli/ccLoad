@@ -1,6 +1,11 @@
 package thinking
 
-import "strings"
+import (
+	"slices"
+	"strings"
+
+	"ccLoad/internal/protocol/cliproxy/registry"
+)
 
 // levelToBudgetMap defines the standard Level → Budget mapping.
 // All keys are lowercase; lookups should use strings.ToLower.
@@ -51,9 +56,11 @@ const (
 	ThresholdMedium = 8192
 	// ThresholdHigh is the upper bound for "high" level (8193-24576)
 	ThresholdHigh = 24576
+	// ThresholdXHigh is the upper bound for "xhigh" level (24577-32768).
+	ThresholdXHigh = 32768
 )
 
-// ConvertBudgetToLevel converts a budget value to the nearest thinking level.
+// ConvertBudgetToLevel converts a budget value to its canonical thinking level.
 //
 // This is a semantic conversion that maps numeric budgets to discrete levels.
 // Uses threshold-based mapping for range conversion.
@@ -65,7 +72,8 @@ const (
 //   - 513-1024  → low
 //   - 1025-8192 → medium
 //   - 8193-24576 → high
-//   - 24577+    → xhigh
+//   - 24577-32768 → xhigh
+//   - 32769+      → max
 //
 // Returns:
 //   - level: The converted thinking level string
@@ -87,9 +95,63 @@ func ConvertBudgetToLevel(budget int) (string, bool) {
 		return string(LevelMedium), true
 	case budget <= ThresholdHigh:
 		return string(LevelHigh), true
+	case budget <= ThresholdXHigh:
+		return string(LevelXHigh), true
 	default:
+		return string(LevelMax), true
+	}
+}
+
+// OrderedLevels returns the discrete thinking effort levels in ascending order.
+func OrderedLevels() [6]string {
+	return [6]string{string(LevelMinimal), string(LevelLow), string(LevelMedium), string(LevelHigh), string(LevelXHigh), string(LevelMax)}
+}
+
+// ClampEffortToLevels finds the nearest supported level, preferring the lower
+// level on a tie. Special values, unknown levels, and empty catalogs pass through.
+func ClampEffortToLevels(effort string, levels []string) string {
+	if len(levels) == 0 || HasLevel(levels, effort) {
+		return effort
+	}
+	order := OrderedLevels()
+	at := slices.Index(order[:], strings.ToLower(strings.TrimSpace(effort)))
+	if at < 0 {
+		return effort
+	}
+	best, bestDistance := -1, len(order)
+	for _, level := range levels {
+		idx := slices.Index(order[:], strings.ToLower(strings.TrimSpace(level)))
+		if idx < 0 {
+			continue
+		}
+		distance := max(idx-at, at-idx)
+		if distance < bestDistance || (distance == bestDistance && idx < best) {
+			best, bestDistance = idx, distance
+		}
+	}
+	if best >= 0 {
+		return order[best]
+	}
+	return effort
+}
+
+// ConvertBudgetToModelLevel converts a budget to an effort supported by the
+// target model. Without level metadata, retain the legacy xhigh ceiling.
+func ConvertBudgetToModelLevel(budget int, modelName, provider string) (string, bool) {
+	effort, ok := ConvertBudgetToLevel(budget)
+	if !ok || budget <= 0 {
+		return effort, ok
+	}
+	var levels []string
+	if info := registry.LookupModelInfo(modelName, provider); info == nil {
+		levels = registry.LookupThinkingLevels(modelName)
+	} else if info.Thinking != nil {
+		levels = info.Thinking.Levels
+	}
+	if len(levels) == 0 && effort == string(LevelMax) {
 		return string(LevelXHigh), true
 	}
+	return ClampEffortToLevels(effort, levels), true
 }
 
 // HasLevel reports whether the given target level exists in the levels slice.

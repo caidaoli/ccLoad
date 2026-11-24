@@ -1965,6 +1965,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 
 	parser := newSSEUsageParser(upstreamProtocol)
 	parser.advisor = reqCtx.advisor
+	parser.antigravityFilter = reqCtx.antigravityOAuth
 	// Usage belongs to the upstream; continuation IDs and output belong to the
 	// Responses events actually sent to the client after translation.
 	var translatedTurn responsesWebsocketTurnResult
@@ -1976,6 +1977,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	var translatedError []byte
 	var translationErr error
 	var promptBlockErr error
+	var pendingGeminiFilterEvent []byte
 	recordTranslatedOutput := func(chunks [][]byte) {
 		for _, chunk := range chunks {
 			eventType, data := parseSSEEventChunk(chunk)
@@ -2088,6 +2090,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		streamBody,
 		deferredWriter,
 		func(rawEvent []byte) error {
+			parser.geminiFilterEvent = false
 			parserEvent := rawEvent
 			if reqCtx.codeBuddyOAuth {
 				codeBuddyDone = bytes.Equal(sseEventData(parserEvent), sseDoneMarker)
@@ -2123,7 +2126,25 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			}
 			return nil
 		},
-		translateEvent,
+		func(rawEvent []byte) ([][]byte, error) {
+			if parser.geminiFilterNotice != "" {
+				if parser.geminiFilterEvent {
+					pendingGeminiFilterEvent = bytes.Clone(rawEvent)
+				}
+				return nil, nil
+			}
+			pending := pendingGeminiFilterEvent
+			pendingGeminiFilterEvent = nil
+			if pending == nil || parser.GetLastError() != nil {
+				return translateEvent(rawEvent)
+			}
+			chunks, err := translateEvent(pending)
+			if err != nil {
+				return chunks, err
+			}
+			next, err := translateEvent(rawEvent)
+			return append(chunks, next...), err
+		},
 		func() bool {
 			if parser.geminiErrorUsage || parser.isEmptyOpenAIStreamEnd() {
 				return true

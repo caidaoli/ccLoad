@@ -1185,6 +1185,67 @@ func TestConvertGeminiRequestToAntigravity_PreservesSiblingToolImageOnUserRole(t
 	}
 }
 
+func TestConvertGeminiRequestToAntigravity_PreservesMixedToolResultFollowups(t *testing.T) {
+	input := []byte(`{"contents":[
+		{"role":"model","parts":[
+			{"functionCall":{"id":"a","name":"read","args":{}}},
+			{"functionCall":{"id":"b","name":"read","args":{}}}
+		]},
+		{"role":"user","parts":[
+			{"text":"See the attached document."},
+			{"functionResponse":{"id":"b","name":"read","response":{"result":"second"}}},
+			{"inline_data":{"mime_type":"image/png","data":"QUJD"}},
+			{"fileData":{"mimeType":"application/pdf","fileUri":"gs://demo/note.pdf"}}
+		]},
+		{"role":"user","parts":[
+			{"functionResponse":{"id":"a","name":"read","response":{"result":"first"}}},
+			{"text":"Compare both results."}
+		]}
+	]}`)
+	output, err := ConvertGeminiRequestToAntigravity("gemini-3.8-flash-high", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := gjson.GetBytes(output, "request.contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("expected one call turn, one result turn and two followups: %s", output)
+	}
+	results := contents[1].Get("parts").Array()
+	if len(results) != 2 || results[0].Get("functionResponse.id").String() != "a" || results[1].Get("functionResponse.id").String() != "b" {
+		t.Fatalf("parallel results must follow call order: %s", output)
+	}
+	if got := results[1].Get("functionResponse.parts.0.inlineData.data").String(); got != "QUJD" {
+		t.Fatalf("tool image was detached from its result: %s", output)
+	}
+	if contents[2].Get("role").String() != "user" || contents[3].Get("role").String() != "user" ||
+		contents[2].Get("parts.0.text").String() != "See the attached document." ||
+		contents[2].Get("parts.1.fileData.mimeType").String() != "application/pdf" ||
+		contents[2].Get("parts.1.fileData.fileUri").String() != "gs://demo/note.pdf" ||
+		contents[3].Get("parts.0.text").String() != "Compare both results." {
+		t.Fatalf("mixed-turn user input was lost or reordered: %s", output)
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_PreservesFollowupWithIncompleteToolResults(t *testing.T) {
+	input := []byte(`{"contents":[
+		{"role":"model","parts":[
+			{"functionCall":{"id":"a","name":"read","args":{}}},
+			{"functionCall":{"id":"b","name":"read","args":{}}}
+		]},
+		{"role":"user","parts":[
+			{"functionResponse":{"id":"b","name":"read","response":{"result":"second"}}},
+			{"text":"Continue without the other result."}
+		]}
+	]}`)
+	output, err := ConvertGeminiRequestToAntigravity("gemini-3.8-flash-high", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(output, "request.contents.1.parts.0.text").String(); got != "Continue without the other result." {
+		t.Fatalf("mixed-turn user input was lost: %s", output)
+	}
+}
+
 func TestNormalizeRoles_InvalidRoleWithoutFunctionResponseAlternates(t *testing.T) {
 	inputJSON := []byte(`{
 		"contents": [

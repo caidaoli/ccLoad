@@ -147,7 +147,7 @@ curl -X POST http://localhost:8080/v1/alpha/search \
 - **等级**：`minimal` / `low` / `medium` / `high` / `xhigh` / `max`；超出上游模型能力时收敛到最近可用档
 - **关闭**：`(none)` 或 `(0)` 关闭思考
 - **自动**：`(auto)` 交由上游默认思考策略；模型启用了[动态思考等级](#动态思考等级)时改由判断结果决定
-- **数字预算**：`(16384)` 等非负整数按 token 预算下发（Anthropic `budget_tokens`、Gemini `thinkingBudget`）
+- **数字预算**：`(16384)` 等非负整数按 token 预算下发（Anthropic `budget_tokens`、Gemini `thinkingBudget`）。OpenAI/Codex 入口将 24577–32768 映射为 `xhigh`，更高预算在支持时映射为 `max`，并按模型可用档位收敛。
 
 后缀不是模型身份：选路、鉴权、冷却、日志和发往上游的模型名一律使用基名，渠道模型列表无需登记带后缀的条目。HTTP 代理、Responses WebSocket 和管理后台的渠道测试都支持该后缀；渠道自定义请求规则晚于后缀生效，可覆盖它写入的字段。括号内容不是已知等级或非负整数的模型名（如上游真的叫 `foo(bar)`）原样透传。
 

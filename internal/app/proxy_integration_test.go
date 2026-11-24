@@ -22653,51 +22653,79 @@ func TestProxySystemOneEndpointRoutesOnlySystemOneChannels(t *testing.T) {
 }
 
 /**
- * @brief 验证 Gemini 与 Antigravity 仅在流末尾缺少终态时识别稀疏过滤通知
+ * @brief 验证 Gemini 与 Antigravity 过滤通知的输出顺序、失败终态和计费
  * @param t 测试上下文
  */
 func TestProxy_GeminiTerminalFilterNotice(t *testing.T) {
 	t.Parallel()
 	const (
-		notice        = `{"candidates":[{"content":{"parts":[{"text":"This request was blocked by Gemini's filters. See https://policies.google.com/terms/generative-ai/use-policy"}]}}]}`
+		noticeText    = "This request was blocked by Gemini's filters. See https://policies.google.com/terms/generative-ai/use-policy"
+		notice        = `{"candidates":[{"content":{"parts":[{"text":"` + noticeText + `"}]}}]}`
 		partial       = `{"candidates":[{"content":{"role":"model","parts":[{"text":"partial answer"}]}}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005},"responseId":"filter-response","modelVersion":"gemini-3-flash"}`
 		complete      = `{"candidates":[{"content":{"role":"model","parts":[{"text":"completed answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005},"responseId":"filter-response","modelVersion":"gemini-3-flash"}`
 		usageOnly     = `{"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005}}`
 		explicitError = `{"error":{"code":429,"message":"upstream quota exhausted","status":"RESOURCE_EXHAUSTED"}}`
+		blocked       = `{"candidates":[{"finishReason":"BLOCKLIST"}],"usageMetadata":{"promptTokenCount":1000,"totalTokenCount":1000}}`
+		emptyMedia    = `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":""}}]},"finishReason":"BLOCKLIST"}],"usageMetadata":{"promptTokenCount":1000,"totalTokenCount":1000}}`
+		code          = `{"candidates":[{"content":{"role":"model","parts":[{"executableCode":{"language":"PYTHON","code":"print(1)"}}]},"finishReason":"STOP"}]}`
+		heartbeat     = ": ping\n\n"
 	)
 	for _, antigravity := range []bool{false, true} {
 		for _, adapter := range antigravityProviderAdapterCases() {
 			for _, tt := range []struct {
-				name       string
-				frames     []string
-				blocked    bool
-				committed  bool
-				readError  bool
-				usageTail  bool
-				errorFirst bool
+				name          string
+				frames        []string
+				blocked       bool
+				committed     bool
+				readError     bool
+				usageTail     bool
+				upstreamError bool
+				antigravity   bool
+				bareNotice    bool
+				trailing      string
+				wantText      []string
+				wantUsage     bool
+				wantCode      bool
 			}{
 				{name: "notice only", frames: []string{notice}, blocked: true},
 				{name: "after output", frames: []string{partial, notice}, blocked: true, committed: true},
-				{name: "quoted before completion", frames: []string{notice, complete}, committed: true},
-				{name: "after completion", frames: []string{complete, notice}, committed: true},
-				{name: "followed by ordinary output", frames: []string{notice, partial, complete}, committed: true},
-				{name: "followed by usage", frames: []string{partial, notice, usageOnly}, committed: true, usageTail: true},
+				{name: "quoted before completion", frames: []string{notice, complete}, committed: true, bareNotice: true, wantText: []string{noticeText, "completed answer"}},
+				{name: "after completion", frames: []string{complete, notice}, committed: true, wantText: []string{"completed answer"}},
+				{name: "followed by ordinary output", frames: []string{notice, partial, complete}, committed: true, wantText: []string{noticeText, "partial answer", "completed answer"}},
+				{name: "followed by usage", frames: []string{partial, notice, usageOnly}, committed: true, usageTail: true, blocked: antigravity},
+				{name: "blocked terminal and usage", frames: []string{notice, heartbeat, blocked}, blocked: true, antigravity: true, bareNotice: true, wantUsage: true},
+				{name: "blocked terminal with empty media", frames: []string{notice, emptyMedia}, blocked: true, antigravity: true, bareNotice: true, wantUsage: true},
+				{name: "followed by executable code", frames: []string{notice, heartbeat, code}, committed: true, antigravity: true, bareNotice: true, wantText: []string{noticeText}, wantCode: true},
 				{name: "network interruption", frames: []string{partial, notice}, committed: true, readError: true},
-				{name: "explicit error precedes notice", frames: []string{partial, explicitError, notice}, committed: true, errorFirst: true},
+				{name: "network interruption after partial frame", frames: []string{partial, notice}, committed: true, readError: true, trailing: "data: {", bareNotice: true},
+				{name: "network interruption after invalid terminal", frames: []string{partial, notice}, committed: true, readError: true, trailing: "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]\n\n", bareNotice: true},
+				{name: "explicit error precedes notice", frames: []string{partial, explicitError, notice}, committed: true, upstreamError: true},
+				{name: "explicit error follows notice", frames: []string{partial, notice, explicitError}, committed: true, upstreamError: true, bareNotice: true},
 				{name: "role identifies generated notice", frames: []string{partial, strings.Replace(notice, `"content":{`, `"content":{"role":"model",`, 1)}, committed: true, usageTail: true},
 				{name: "usage identifies generated notice", frames: []string{partial, strings.TrimSuffix(notice, "}") + `,"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005}}`}, committed: true, usageTail: true},
 			} {
+				if tt.antigravity && !antigravity || tt.wantCode && adapter.name != "Gemini" {
+					continue
+				}
 				t.Run(fmt.Sprintf("antigravity=%t/%s/%s", antigravity, adapter.name, tt.name), func(t *testing.T) {
 					t.Parallel()
 					var calls atomic.Int32
 					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						calls.Add(1)
+						w.Header().Set("Content-Type", "text/event-stream")
 						for _, frame := range tt.frames {
-							if antigravity {
-								frame = `{"response":` + frame + `}`
+							if frame == heartbeat {
+								_, _ = io.WriteString(w, frame)
+							} else {
+								if antigravity && (!tt.bareNotice || frame != notice) && frame != explicitError {
+									frame = `{"response":` + frame + `}`
+								}
+								_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
 							}
-							w.Header().Set("Content-Type", "text/event-stream")
-							_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+							w.(http.Flusher).Flush()
+						}
+						if tt.trailing != "" {
+							_, _ = io.WriteString(w, tt.trailing)
 							w.(http.Flusher).Flush()
 						}
 						if tt.readError {
@@ -22731,7 +22759,7 @@ func TestProxy_GeminiTerminalFilterNotice(t *testing.T) {
 						if !tt.committed {
 							wantClient = http.StatusBadRequest
 						}
-					} else if tt.errorFirst {
+					} else if tt.upstreamError {
 						wantLog = http.StatusTooManyRequests
 					} else if tt.readError || tt.usageTail && adapter.name != "Gemini" {
 						wantLog = util.StatusStreamIncomplete
@@ -22743,10 +22771,13 @@ func TestProxy_GeminiTerminalFilterNotice(t *testing.T) {
 					if entry.StatusCode != wantLog || calls.Load() != 1 {
 						t.Fatalf("log status=%d calls=%d, want status=%d with no replay; body=%s", entry.StatusCode, calls.Load(), wantLog, response.Body.String())
 					}
+					if tt.wantUsage && entry.InputTokens != 1000 {
+						t.Fatalf("blocked usage input=%d, want 1000", entry.InputTokens)
+					}
+					if tt.blocked && tt.committed && (entry.InputTokens != 1000 || entry.Cost <= 0) {
+						t.Fatalf("blocked usage input=%d cost=%g", entry.InputTokens, entry.Cost)
+					}
 					if tt.blocked && tt.committed {
-						if entry.InputTokens != 1000 || entry.Cost <= 0 {
-							t.Fatalf("blocked partial usage input=%d cost=%g", entry.InputTokens, entry.Cost)
-						}
 						frames := strings.Split(strings.TrimSpace(response.Body.String()), "\n\n")
 						event, terminal := parseSSEEventChunk([]byte(frames[len(frames)-1]))
 						errorObject := gjson.GetBytes(terminal, "error")
@@ -22756,12 +22787,51 @@ func TestProxy_GeminiTerminalFilterNotice(t *testing.T) {
 							}
 							errorObject = gjson.GetBytes(terminal, "response.error")
 						}
-						if !errorObject.IsObject() || !strings.Contains(errorObject.Get("message").String(), "This request was blocked by Gemini's filters.") {
+						if !errorObject.IsObject() || !strings.Contains(errorObject.Get("message").String(), noticeText) {
 							t.Fatalf("missing filter error terminal: %s", terminal)
 						}
 					}
-					if tt.errorFirst && strings.Contains(response.Body.String(), `"code":"content_filter"`) {
-						t.Fatalf("filter notice replaced explicit upstream error: %s", response.Body.String())
+					if tt.readError || tt.upstreamError {
+						if strings.Contains(response.Body.String(), noticeText) {
+							t.Fatalf("filter notice leaked after upstream failure: %s", response.Body.String())
+						}
+					}
+					if len(tt.wantText) > 0 {
+						var output []string
+						var executable string
+						for frame := range strings.SplitSeq(response.Body.String(), "\n\n") {
+							event, data := parseSSEEventChunk([]byte(frame))
+							payload := gjson.ParseBytes(data)
+							switch adapter.name {
+							case "Claude":
+								if event == "content_block_delta" && payload.Get("delta.type").String() == "text_delta" {
+									output = append(output, payload.Get("delta.text").String())
+								}
+							case "Codex":
+								if event == "response.output_text.delta" {
+									output = append(output, payload.Get("delta").String())
+								}
+							case "Gemini":
+								for _, part := range payload.Get("candidates.0.content.parts").Array() {
+									if value := part.Get("text").String(); value != "" {
+										output = append(output, value)
+									}
+									if value := part.Get("executableCode.code").String(); value != "" {
+										executable = value
+									}
+								}
+							case "OpenAI":
+								if value := payload.Get("choices.0.delta.content").String(); value != "" {
+									output = append(output, value)
+								}
+							}
+						}
+						if !slices.Equal(output, tt.wantText) {
+							t.Fatalf("stream text = %q, want %q", output, tt.wantText)
+						}
+						if tt.wantCode && executable != "print(1)" {
+							t.Fatalf("stream executable code = %q, want print(1)", executable)
+						}
 					}
 					if wantLog == http.StatusBadRequest || wantLog == http.StatusOK {
 						modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())

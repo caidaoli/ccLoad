@@ -164,6 +164,14 @@ func (s *Server) canTryAnotherURL(ctx context.Context, cfg *model.Config, in coo
 		(!cfg.RetryOtherKeysOnFailure || !s.cooldownManager.CanFallbackToOtherKey(in))
 }
 
+/**
+ * @brief 对 Antigravity 容量错误按上游提示或默认 503 策略写入冷却。
+ * @param ctx 当前请求上下文。
+ * @param cfg 实际出站渠道配置。
+ * @param keyIndex 当前 Key 索引。
+ * @param actualModel 实际上游模型。
+ * @param res 已确认的容量错误。
+ */
 func (s *Server) applyAntigravityModelCapacityCooldown(
 	ctx context.Context,
 	cfg *model.Config,
@@ -179,17 +187,45 @@ func (s *Server) applyAntigravityModelCapacityCooldown(
 	// server-error policy starts at two minutes. Bypass channel rules here: this
 	// exact error must never cool a Key, URL, or unrelated model.
 	in := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
+	setAntigravityCapacityRetryHint(&in)
 	in.ChannelModels = s.channelModelCooldownKeys(cfg)
 	s.cooldownManager.HandleError(cooldownCtx, in)
 	s.invalidateChannelRelatedCache(cfg.ID)
 }
 
+/**
+ * @brief 为 Antigravity 容量错误指定实际上游模型的冷却截止时间。
+ * @param in 已识别的容量错误；内嵌错误仅使用正文提示，缺少未来截止时间时保留默认策略。
+ */
+func setAntigravityCapacityRetryHint(in *cooldown.ErrorInput) {
+	headers := in.Headers
+	if in.SSEError || in.UpstreamStatusCode >= http.StatusOK && in.UpstreamStatusCode < http.StatusMultipleChoices {
+		headers = nil
+	}
+	now := time.Now()
+	until := antigravityRetryAt(in.ErrorBody, headers, now)
+	if !until.After(now) {
+		return
+	}
+	// 存储只保留秒，向上取整避免提前恢复。
+	if until.Nanosecond() != 0 {
+		until = until.Truncate(time.Second).Add(time.Second)
+	}
+	in.ModelScoped = true
+	in.ModelCooldownUntil = until
+}
+
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
-	if cfg.UsesAntigravityOAuth() && in.StatusCode == http.StatusTooManyRequests && in.ModelCooldownUntil.IsZero() {
-		if in.SSEError {
-			in.Headers = nil
+	if cfg.UsesAntigravityOAuth() && in.ModelCooldownUntil.IsZero() {
+		switch {
+		case in.StatusCode == http.StatusTooManyRequests:
+			if in.SSEError {
+				in.Headers = nil
+			}
+			in.ModelCooldownUntil = antigravityRetryAt(in.ErrorBody, in.Headers, time.Now())
+		case isAntigravityModelCapacityExhausted(in.StatusCode, in.ErrorBody):
+			setAntigravityCapacityRetryHint(&in)
 		}
-		in.ModelCooldownUntil = antigravityRetryAt(in.ErrorBody, in.Headers, time.Now())
 	}
 	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
 	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {

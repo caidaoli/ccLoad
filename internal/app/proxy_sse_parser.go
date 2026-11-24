@@ -68,7 +68,9 @@ type sseUsageParser struct {
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError            []byte // 最后一个error事件的完整JSON（data字段内容）
-	geminiFilterNotice   string ///< 最后一个非心跳帧是缺少生成身份和终态的过滤通知
+	geminiFilterNotice   string ///< 等待后续生成内容确认的稀疏过滤通知
+	geminiFilterEvent    bool   ///< 当前帧是过滤通知，需要挂起原始帧
+	antigravityFilter    bool   ///< Antigravity 过滤通知只能由后续可见内容解除
 	geminiVisibleOutput  bool   ///< 已见非思考文本、有效工具调用、媒体或搜索结果。
 	geminiSawPayload     bool   ///< 已见 Gemini candidate 或用量，纯签名不能构成输出。
 	geminiAbnormalFinish string ///< 零可见输出时的异常结束原因，锁定后只继续收集用量。
@@ -602,7 +604,8 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
 	if data == "[DONE]" {
-		if p.geminiAbnormalFinish != "" || p.upstreamProtocol == util.ProtocolGemini && !p.hasStreamOutput && !p.streamComplete {
+		if p.geminiAbnormalFinish != "" || p.antigravityFilter && p.geminiFilterNotice != "" ||
+			p.upstreamProtocol == util.ProtocolGemini && !p.hasStreamOutput && !p.streamComplete {
 			return nil
 		}
 		p.streamComplete, p.streamEnded = true, true
@@ -611,8 +614,6 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if isHeartbeatEvent(eventType, data) {
 		return nil
 	}
-	p.geminiFilterNotice = ""
-
 	// 先解析 usage。失败终态也可能包含已经消耗的 token，计费不能因为
 	// response.failed 提前返回而静默归零。Unmarshal 失败不改写、不丢弃
 	// 下游已经在拷的字节；终态仍用廉价字段认，避免把完整流记成 599。
@@ -620,10 +621,13 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if err != nil {
 		if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
 			log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
+			p.geminiFilterNotice = ""
 			p.recordError([]byte(data))
 			return nil
 		}
-		markSSETerminalFromRaw(p, eventType, data)
+		if p.geminiFilterNotice == "" {
+			markSSETerminalFromRaw(p, eventType, data)
+		}
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 	if p.advisor != nil && (event["type"] == "message_start" || event["type"] == "content_block_start") {
@@ -658,6 +662,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 		if notice := geminiFilterNotice(event); notice != "" {
 			p.geminiFilterNotice = notice
+			p.geminiFilterEvent = true
 			return nil
 		}
 	}
@@ -668,6 +673,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 兼容不带 event 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
 	if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
+		p.geminiFilterNotice = ""
 		p.recordError([]byte(data))
 		return nil // 不解析usage，避免误判
 	}
@@ -686,6 +692,12 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	openAIComplete := openAIStreamPayloadComplete(event)
 	if p.upstreamProtocol == util.ProtocolGemini {
 		visible, thought := geminiPayloadOutput(event)
+		if p.geminiFilterNotice != "" {
+			if p.antigravityFilter && !visible {
+				return nil
+			}
+			p.geminiFilterNotice = ""
+		}
 		p.geminiVisibleOutput = p.geminiVisibleOutput || visible
 		_, hasCandidates := event["candidates"]
 		p.geminiSawPayload = p.geminiSawPayload || hasCandidates || usage != nil
@@ -806,7 +818,7 @@ func geminiFilterNotice(event map[string]any) string {
 }
 
 /**
- * @brief 仅在干净 EOF 且上游未完成时将最后一个过滤通知判为请求错误
+ * @brief 仅在干净 EOF 且上游未完成时将未解除的过滤通知判为请求错误
  * @param streamErr 上游读取或取消错误
  * @return 过滤通知对应的客户端错误，或原有读取错误；正常流返回 nil
  */

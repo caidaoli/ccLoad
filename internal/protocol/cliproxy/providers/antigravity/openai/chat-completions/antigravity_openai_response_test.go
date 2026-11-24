@@ -75,6 +75,28 @@ func TestFinishReasonToolCallsNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestConvertAntigravityResponseToOpenAI_StreamToolArguments(t *testing.T) {
+	for _, tt := range []struct{ name, fields, want string }{
+		{name: "parameterless", want: `{}`},
+		{name: "explicit arguments", fields: `,"args":{"path":"."}`, want: `{"path":"."}`},
+		{name: "incremental arguments", fields: `,"willContinue":true`, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_ping","name":"ping"` + tt.fields + `}}]}}]}}`)
+			var state any
+			chunks := ConvertAntigravityResponseToOpenAI(t.Context(), "gemini-3.8-flash-high", nil, nil, raw, &state)
+			if len(chunks) != 1 {
+				t.Fatalf("got %d chunks, want one", len(chunks))
+			}
+			call := gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0")
+			args := call.Get("function.arguments")
+			if call.Get("id").String() != "call_ping" || call.Get("function.name").String() != "ping" || args.Type != gjson.String || args.String() != tt.want {
+				t.Fatalf("tool call = %s, want ping with arguments %q", call.Raw, tt.want)
+			}
+		})
+	}
+}
+
 func TestFinishReasonStopForNormalText(t *testing.T) {
 	ctx := context.Background()
 	var param any

@@ -420,7 +420,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 							}
 
-							functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":""}}`)
+							functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":"{}"}}`)
 							fcName := util.RestoreSanitizedToolName(p.SanitizedNameMap, rawName)
 							fcID := translatorcommon.VertexFunctionCallID(functionCallResult)
 							if fcID == "" {
@@ -662,7 +662,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 					} else if functionCallResult.Exists() {
 						// Append function call content to the tool_calls array.
 						hasFunctionCall = true
-						functionCallItemTemplate := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
+						functionCallItemTemplate := []byte(`{"id":"","type":"function","function":{"name":"","arguments":"{}"}}`)
 						fcName := util.RestoreSanitizedToolName(sanitizedNameMap, functionCallResult.Get("name").String())
 						functionCallID := translatorcommon.VertexFunctionCallID(functionCallResult)
 						if functionCallID == "" {
