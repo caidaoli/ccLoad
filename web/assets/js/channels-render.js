@@ -16,6 +16,7 @@ function buildPriorityRow(rowClass, valueClass, value) {
 
 const CHANNEL_PRIORITY_MIN = -99999;
 const CHANNEL_PRIORITY_MAX = 9999999;
+const CHANNEL_WEIGHT_MAX = 10000;
 
 // 列表只展示客户端请求用的模型名（去重），重定向目标在编辑页查看。
 function channelModelNames(models) {
@@ -373,15 +374,12 @@ function buildEffectivePriorityHtml(channel) {
   const priorityLabel = window.t('channels.table.priority');
   const healthLabel = window.t('channels.stats.healthScoreLabel');
   const channelId = Number(channel.id) || 0;
-  const escapedPriorityLabel = escapeChannelRefreshText(priorityLabel);
-  const basePriorityValue = normalizeInlinePriorityValue(basePriority, 0);
-  const baseRow = buildPriorityEditorRow(channelId, basePriorityValue, escapedPriorityLabel);
-  const weightRow = buildChannelWeightRow(channel);
+  const basePriorityValue = normalizeInlineChannelValue('priority', basePriority, 0);
+  const baseRow = buildInlineChannelEditorRow(channelId, 'priority', basePriorityValue, priorityLabel);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
-    const rows = [baseRow, weightRow];
-    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
+    return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${baseRow}</div>`;
   }
 
   const effPriority = formatHealthScoreDisplay(channel.effective_priority);
@@ -401,9 +399,6 @@ function buildEffectivePriorityHtml(channel) {
   }
   const title = tooltipParts.join(' | ');
 
-  const baseValueClass = isConsistent
-    ? 'ch-priority-value ch-priority-base-value'
-    : 'ch-priority-value ch-priority-base-value ch-priority-stale';
   const healthValueClass = isConsistent
     ? 'ch-priority-value ch-priority-health-good'
     : 'ch-priority-value ch-priority-health-bad';
@@ -412,43 +407,85 @@ function buildEffectivePriorityHtml(channel) {
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
   }
-  rows.push(weightRow);
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
 }
 
 /**
- * @brief 渲染渠道列表优先级列中的权重行
+ * @brief 渲染渠道列表权重列的行内编辑器
  * @param channel 渠道列表项
- * @return 权重行 HTML；自动权重显示实际参与分流的启用 Key 数（至少 1，与选路一致）
+ * @return 权重单元格 HTML；自动权重（0）留空，编辑时提示按启用 Key 数计算的权重
  */
-function buildChannelWeightRow(channel) {
-  const weight = Number(channel.weight) || 0;
-  const text = weight > 0
-    ? window.t('channels.weightValue', { value: weight })
-    : window.t('channels.weightAuto', { count: Math.max(Number(channel.key_count) || 0, 1) });
-  return buildPriorityRow('ch-priority-weight', 'ch-priority-value ch-priority-weight-value', escapeChannelRefreshText(text));
+function buildChannelWeightHtml(channel) {
+  const channelId = Number(channel.id) || 0;
+  const weight = normalizeInlineChannelValue('weight', channel.weight, 0);
+  const autoCount = Math.max(Number(channel.key_count) || 0, 1);
+  const title = weight > 0 ? window.t('channels.weightHint') : window.t('channels.weightAutoTitle', { count: autoCount });
+  const autoHint = window.t('channels.weightAutoCurrent', { count: autoCount });
+  const row = buildInlineChannelEditorRow(channelId, 'weight', weight, window.t('channels.weight'), autoCount);
+  return `<div class="ch-priority-stack" title="${escapeChannelRefreshText(title)}">${row}<span class="ch-weight-auto-hint">${escapeChannelRefreshText(autoHint)}</span></div>`;
 }
 
-function normalizeInlinePriorityValue(value, fallback) {
+/**
+ * @brief 渠道列表可行内编辑的数值字段
+ * @details 两者都以整数截断并夹到合法区间；权重 0 表示自动，输入框显示为空
+ */
+const INLINE_CHANNEL_FIELDS = {
+  priority: { min: CHANNEL_PRIORITY_MIN, max: CHANNEL_PRIORITY_MAX, successKey: 'channels.priorityUpdateSuccess', failedKey: 'channels.priorityUpdateFailed' },
+  weight: { min: 0, max: CHANNEL_WEIGHT_MAX, successKey: 'channels.weightUpdateSuccess', failedKey: 'channels.weightUpdateFailed' }
+};
+
+/**
+ * @brief 规整行内编辑字段的输入值
+ * @param field 字段名，取 INLINE_CHANNEL_FIELDS 的键
+ * @param value 原始值；空串按 0 处理（权重即自动）
+ * @param fallback 原始值非有限数时使用的值
+ * @return 截断为整数并夹到字段区间内的值
+ */
+function normalizeInlineChannelValue(field, value, fallback) {
+  const { min, max } = INLINE_CHANNEL_FIELDS[field];
   const fallbackValue = Number.isFinite(Number(fallback)) ? Number(fallback) : 0;
   const num = Number(value);
   if (!Number.isFinite(num)) return Math.trunc(fallbackValue);
-  return Math.max(CHANNEL_PRIORITY_MIN, Math.min(CHANNEL_PRIORITY_MAX, Math.trunc(num)));
+  return Math.max(min, Math.min(max, Math.trunc(num)));
 }
 
-function buildPriorityEditorRow(channelId, priority, priorityLabel) {
+/**
+ * @brief 行内编辑字段在输入框中的显示文本
+ * @param field 字段名
+ * @param value 已规整的值
+ * @return 权重 0 返回空串以显示自动模式，其余为数字文本
+ */
+function formatInlineChannelValue(field, value) {
+  return field === 'weight' && value === 0 ? '' : String(value);
+}
+
+/**
+ * @brief 渲染优先级/权重共用的行内数值编辑器
+ * @param channelId 渠道 ID；非正数或只读模式时输入框禁用
+ * @param field 字段名
+ * @param value 已规整的当前值
+ * @param label 输入框无障碍标签（未转义）
+ * @param autoCount 权重留空时显示的自动权重，优先级不传
+ * @return 编辑器行 HTML
+ */
+function buildInlineChannelEditorRow(channelId, field, value, label, autoCount) {
+  const { min, max } = INLINE_CHANNEL_FIELDS[field];
   const disabledAttr = channelId > 0 && !isTokenChannelsReadOnly() ? '' : ' disabled';
+  const autoLabel = field === 'weight'
+    ? `<span class="ch-weight-auto-label">${escapeChannelRefreshText(window.t('channels.weightAutoPlaceholder'))}<sup>${autoCount}</sup></span>`
+    : '';
   return `<div class="ch-priority-row ch-priority-base">
     <div class="ch-priority-editor-wrap" data-channel-id="${channelId}">
       <div class="ch-priority-editor">
-        <input class="ch-priority-input" type="number" min="${CHANNEL_PRIORITY_MIN}" max="${CHANNEL_PRIORITY_MAX}" step="1" value="${priority}" data-channel-id="${channelId}" data-original-priority="${priority}" aria-label="${priorityLabel}"${disabledAttr}>
+        <input class="ch-priority-input" type="number" min="${min}" max="${max}" step="1" value="${formatInlineChannelValue(field, value)}" data-channel-id="${channelId}" data-field="${field}" data-original-value="${value}" aria-label="${escapeChannelRefreshText(label)}"${autoLabel ? ' placeholder=" "' : ''}${disabledAttr}>
+        ${autoLabel}
       </div>
       <div class="ch-priority-hint" aria-hidden="true">${escapeChannelRefreshText(window.t('channels.priorityEditHint'))}</div>
     </div>
   </div>`;
 }
 
-function setInlinePrioritySaving(input, saving) {
+function setInlineChannelSaving(input, saving) {
   const editorWrap = input && input.closest ? input.closest('.ch-priority-editor-wrap') : null;
   if (!editorWrap) return;
   editorWrap.classList.toggle('is-saving', saving);
@@ -457,64 +494,100 @@ function setInlinePrioritySaving(input, saving) {
   });
 }
 
-function updateLocalChannelPriority(channelId, priority) {
+/**
+ * @brief 保存成功后同步本地渠道列表缓存中的字段
+ * @param channelId 渠道 ID
+ * @param field 字段名
+ * @param value 新值
+ * @note 修改共享的 channels / filteredChannels；优先级变化时动态优先级随之平移
+ */
+function updateLocalChannelField(channelId, field, value) {
   const updateList = (list) => {
     if (!Array.isArray(list)) return;
     list.forEach((channel) => {
       if (Number(channel && channel.id) !== channelId) return;
-      const oldPriority = normalizeInlinePriorityValue(channel.priority, 0);
-      if (channel.effective_priority !== undefined && channel.effective_priority !== null) {
-        const effectiveOffset = Number(channel.effective_priority) - oldPriority;
+      if (field === 'priority' && channel.effective_priority !== undefined && channel.effective_priority !== null) {
+        const effectiveOffset = Number(channel.effective_priority) - normalizeInlineChannelValue('priority', channel.priority, 0);
         if (Number.isFinite(effectiveOffset)) {
-          channel.effective_priority = priority + effectiveOffset;
+          channel.effective_priority = value + effectiveOffset;
         }
       }
-      channel.priority = priority;
+      channel[field] = value;
     });
   };
   if (typeof channels !== 'undefined') updateList(channels);
   if (typeof filteredChannels !== 'undefined') updateList(filteredChannels);
 }
 
-async function saveInlineChannelPriority(input) {
+/**
+ * @brief 提交单个渠道的优先级或权重
+ * @param channelId 渠道 ID
+ * @param field 字段名
+ * @param value 新值
+ * @return 接口失败时 reject，错误信息来自服务端
+ */
+function requestInlineChannelUpdate(channelId, field, value) {
+  const body = field === 'priority'
+    ? { updates: [{ id: channelId, priority: value }] }
+    : { channel_ids: [channelId], weight: value };
+  return fetchDataWithAuth(field === 'priority' ? '/admin/channels/batch-priority' : '/admin/channels/batch-advanced', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+/**
+ * @brief 恢复行内编辑框到已保存的值
+ * @param input 优先级或权重输入框
+ */
+function resetInlineChannelInput(input) {
+  const field = input.dataset.field;
+  input.value = formatInlineChannelValue(field, normalizeInlineChannelValue(field, input.dataset.originalValue, 0));
+  input.classList.remove('is-dirty');
+}
+
+/**
+ * @brief 保存行内编辑框的改动；值未变化时只清除脏状态
+ * @param input 优先级或权重输入框
+ * @return Promise<void>：成功后重渲染列表，失败时回滚输入并提示错误
+ */
+async function saveInlineChannelValue(input) {
   if (!input || isTokenChannelsReadOnly()) return;
   const channelId = Number(input.dataset.channelId);
   if (!Number.isFinite(channelId) || channelId <= 0) return;
 
-  const originalPriority = normalizeInlinePriorityValue(input.dataset.originalPriority, 0);
-  const nextPriority = normalizeInlinePriorityValue(input.value, originalPriority);
-  input.value = String(nextPriority);
-  if (nextPriority === originalPriority) {
+  const field = input.dataset.field;
+  const config = INLINE_CHANNEL_FIELDS[field];
+  const originalValue = normalizeInlineChannelValue(field, input.dataset.originalValue, 0);
+  const nextValue = normalizeInlineChannelValue(field, input.value, originalValue);
+  input.value = formatInlineChannelValue(field, nextValue);
+  if (nextValue === originalValue) {
     input.classList.remove('is-dirty');
     return;
   }
 
-  input.dataset.originalPriority = String(nextPriority);
+  input.dataset.originalValue = String(nextValue);
 
   try {
-    setInlinePrioritySaving(input, true);
-    await fetchDataWithAuth('/admin/channels/batch-priority', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ updates: [{ id: channelId, priority: nextPriority }] })
-    });
+    setInlineChannelSaving(input, true);
+    await requestInlineChannelUpdate(channelId, field, nextValue);
 
     input.classList.remove('is-dirty');
-    updateLocalChannelPriority(channelId, nextPriority);
+    updateLocalChannelField(channelId, field, nextValue);
     if (typeof filterChannels === 'function') filterChannels();
-    if (window.showSuccess) window.showSuccess(window.t('channels.priorityUpdateSuccess'));
+    if (window.showSuccess) window.showSuccess(window.t(config.successKey));
   } catch (error) {
-    console.error('Update channel priority failed:', error);
-    input.dataset.originalPriority = String(originalPriority);
-    input.value = String(originalPriority);
-    input.classList.remove('is-dirty');
+    console.error(`Update channel ${field} failed:`, error);
+    input.dataset.originalValue = String(originalValue);
+    resetInlineChannelInput(input);
     if (window.showError) {
-      window.showError(error.message || window.t('channels.priorityUpdateFailed'));
+      window.showError(error.message || window.t(config.failedKey));
     }
   } finally {
-    setInlinePrioritySaving(input, false);
+    setInlineChannelSaving(input, false);
   }
 }
 
@@ -1830,6 +1903,7 @@ function createChannelCard(channel) {
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsHtml,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
+    weightHtml: buildChannelWeightHtml(channel),
     quotaHtml: quotaHtml || CHANNEL_EMPTY_CELL_HTML,
     healthHtml: healthHtml || CHANNEL_EMPTY_CELL_HTML,
     enabled: channel.enabled,
@@ -1840,6 +1914,7 @@ function createChannelCard(channel) {
     mobileLabelQuota: window.t('channels.table.quota'),
     mobileLabelHealth: window.t('channels.table.health'),
     mobileLabelPriority: window.t('channels.table.priority'),
+    mobileLabelWeight: window.t('channels.weight'),
     mobileLabelActions: window.t('channels.table.actions')
   };
 
@@ -1921,18 +1996,16 @@ function initChannelEventDelegation() {
     if (!input || isTokenChannelsReadOnly()) return;
     if (e.key === 'Enter') {
       e.preventDefault();
-      saveInlineChannelPriority(input);
+      saveInlineChannelValue(input);
     } else if (e.key === 'Escape') {
-      const originalPriority = normalizeInlinePriorityValue(input.dataset.originalPriority, 0);
-      input.value = String(originalPriority);
-      input.classList.remove('is-dirty');
+      resetInlineChannelInput(input);
     }
   });
 
   container.addEventListener('focusout', (e) => {
     const input = e.target.closest('.ch-priority-input');
     if (!input || isTokenChannelsReadOnly()) return;
-    saveInlineChannelPriority(input);
+    saveInlineChannelValue(input);
   });
 
   // 事件委托：处理所有渠道操作按钮
@@ -2141,6 +2214,7 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-health">${window.t('channels.table.health')}</th>
       <th class="ch-col-quota">${window.t('channels.table.quota')}</th>
       ${buildChannelSortHeader('priority', 'ch-col-priority', window.t('channels.table.priority'))}
+      <th class="ch-col-weight">${window.t('channels.weight')}</th>
       ${buildChannelSortHeader('enabled', 'ch-col-actions', window.t('channels.table.enabledAndActions'))}
     </tr>
   </thead>`;
@@ -2185,6 +2259,7 @@ if (typeof module !== 'undefined' && module.exports) {
     isOpenCodeGoChannel,
     isOpenCodeChannel,
     channelAvatarType,
-    channelShowsOAuthUsage
+    channelShowsOAuthUsage,
+    saveInlineChannelValue
   };
 }

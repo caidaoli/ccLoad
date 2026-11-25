@@ -15,7 +15,8 @@ const {
   initChannelEventDelegation,
   isOpenCodeGoChannel,
   isOpenCodeChannel,
-  channelShowsOAuthUsage
+  channelShowsOAuthUsage,
+  saveInlineChannelValue
 } = require('./channels-render.js');
 
 test('ZAI 停用状态不被本地到期时间覆盖', () => {
@@ -851,5 +852,50 @@ test('Accio accessible progress follows credits rather than quota percentage', (
     global.window = previousWindow;
     global.getOAuthUsageState = previousUsage;
     global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+test('渠道列表行内编辑权重：提交 batch-advanced，清空即恢复自动权重 0', async () => {
+  const saved = {
+    window: global.window,
+    fetchDataWithAuth: global.fetchDataWithAuth,
+    isTokenChannelsReadOnly: global.isTokenChannelsReadOnly,
+    channels: global.channels,
+    filterChannels: global.filterChannels
+  };
+  const requests = [];
+  const channel = { id: 7, priority: 10, weight: 0 };
+  global.window = { t: key => key, showSuccess() {}, showError() {} };
+  global.fetchDataWithAuth = async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    return {};
+  };
+  global.isTokenChannelsReadOnly = () => false;
+  global.channels = [channel];
+  global.filterChannels = () => {};
+  const makeInput = (value, original) => ({
+    value,
+    dataset: { channelId: '7', field: 'weight', originalValue: original },
+    classList: { remove() {} },
+    closest: () => null
+  });
+
+  try {
+    const input = makeInput('4.8', '0');
+    await saveInlineChannelValue(input);
+    assert.deepEqual(requests.pop(), { url: '/admin/channels/batch-advanced', body: { channel_ids: [7], weight: 4 } });
+    assert.equal(channel.weight, 4);
+    assert.equal(input.value, '4');
+
+    const cleared = makeInput('', '4');
+    await saveInlineChannelValue(cleared);
+    assert.deepEqual(requests.pop(), { url: '/admin/channels/batch-advanced', body: { channel_ids: [7], weight: 0 } });
+    assert.equal(channel.weight, 0);
+    assert.equal(cleared.value, '', 'auto weight shows the placeholder');
+
+    await saveInlineChannelValue(makeInput('', '0'));
+    assert.equal(requests.length, 0, 'unchanged value does not submit');
+  } finally {
+    Object.assign(global, saved);
   }
 });

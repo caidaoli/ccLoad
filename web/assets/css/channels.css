@@ -2315,7 +2315,8 @@
       border-bottom: 1px solid var(--surface-border);
     }
 
-    .channel-table td.ch-col-priority {
+    .channel-table td.ch-col-priority,
+    .channel-table td.ch-col-weight {
       text-align: center;
     }
 
@@ -2385,6 +2386,13 @@
       text-align: center;
     }
 
+    .ch-col-weight {
+      width: 76px;
+      min-width: 76px;
+      max-width: 76px;
+      text-align: center;
+    }
+
     .ch-priority-stack {
       display: flex;
       flex-direction: column;
@@ -2434,7 +2442,8 @@
     }
 
     /* 改动未保存时在输入框下方提示快捷键；绝对定位，不撑高行 */
-    .ch-priority-hint {
+    .ch-priority-hint,
+    .ch-weight-auto-hint {
       position: absolute;
       top: calc(100% + 4px);
       left: 50%;
@@ -2448,7 +2457,7 @@
       pointer-events: none;
     }
 
-    .ch-priority-editor-wrap:has(.ch-priority-input.is-dirty) .ch-priority-hint {
+    .ch-priority-editor-wrap:has(.ch-priority-input.is-dirty:not(:placeholder-shown)) .ch-priority-hint {
       display: block;
     }
 
@@ -2457,10 +2466,44 @@
       visibility: hidden;
     }
 
-    .ch-priority-stack .ch-priority-weight-value {
-      color: var(--neutral-500);
-      font-size: 12px;
+    .ch-col-weight .ch-priority-stack {
+      position: relative;
+    }
+
+    .ch-col-weight:focus-within {
+      --weight-label-display: none;
+      --weight-hint-display: block;
+    }
+
+    .ch-col-weight .ch-priority-stack:has(input:enabled:placeholder-shown) .ch-weight-auto-hint {
+      display: var(--weight-hint-display, none);
+    }
+
+    .ch-weight-auto-label {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      display: none;
+      transform: translate(-50%, -50%);
+      color: var(--neutral-900);
+      font-size: 13px;
+      font-weight: 700;
       white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .ch-weight-auto-label sup {
+      margin-left: 1px;
+      font-size: 0.75em;
+      line-height: 0;
+    }
+
+    .ch-priority-input:placeholder-shown + .ch-weight-auto-label {
+      display: var(--weight-label-display, block);
+    }
+
+    .ch-priority-input:disabled:placeholder-shown + .ch-weight-auto-label {
+      display: block;
     }
 
     .ch-priority-stack .ch-priority-value {
@@ -2527,6 +2570,11 @@
     }
 
     @media (hover: hover) {
+      .channel-table-row:hover .ch-col-weight {
+        --weight-label-display: none;
+        --weight-hint-display: block;
+      }
+
       .channel-table-row:not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) {
         border-color: transparent;
         background: transparent;
@@ -5980,7 +6028,7 @@
 
       .channel-table tbody tr {
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-columns: auto auto minmax(0, 1fr);
         gap: 10px 0;
         padding: 14px;
         border: 1px solid var(--surface-border);
@@ -6030,10 +6078,15 @@
         grid-column: 1 / -1;
       }
 
-      /* 底部操作栏：优先级 | 启用开关 + 操作按钮，同一行 */
+      /* 底部操作栏：优先级 | 权重 | 启用开关 + 操作按钮，同一行 */
       .channel-table .ch-col-priority {
         order: 30;
         grid-column: 1;
+      }
+
+      .channel-table .ch-col-weight {
+        order: 30;
+        grid-column: 2;
       }
 
       .channel-table .ch-col-health {
@@ -6054,7 +6107,7 @@
 
       .channel-table .ch-col-actions {
         order: 30;
-        grid-column: 2;
+        grid-column: 3;
       }
 
       .channel-table .ch-col-name {
@@ -6068,12 +6121,14 @@
         padding: 10px 12px;
       }
 
-      .channel-table .ch-col-priority {
+      .channel-table .ch-col-priority,
+      .channel-table .ch-col-weight {
         justify-content: flex-start !important;
         gap: 8px !important;
       }
 
       .channel-table .ch-col-priority,
+      .channel-table .ch-col-weight,
       .channel-table .ch-col-actions {
         margin-top: 2px;
         padding-top: 10px;
@@ -6081,6 +6136,7 @@
       }
 
       .channel-table .ch-col-priority,
+      .channel-table .ch-col-weight,
       .channel-table .ch-col-quota {
         display: flex;
         align-items: center;
@@ -6088,21 +6144,33 @@
         gap: 12px;
       }
 
-      .channel-table .ch-col-priority::before {
+      .channel-table .ch-col-priority::before,
+      .channel-table .ch-col-weight::before {
         margin-bottom: 0;
         flex: 0 0 auto;
       }
 
-      .channel-table .ch-col-priority .ch-priority-stack {
+      .channel-table .ch-col-priority .ch-priority-stack,
+      .channel-table .ch-col-weight .ch-priority-stack {
         margin-left: auto;
       }
 
-      .channel-table .ch-col-priority .ch-priority-editor-wrap {
+      .channel-table .ch-col-priority .ch-priority-editor-wrap,
+      .channel-table .ch-col-weight .ch-priority-editor-wrap {
         flex: 0 0 auto;
       }
 
+      .ch-weight-auto-hint {
+        position: static;
+        width: 66px;
+        transform: none;
+        white-space: normal;
+        text-align: center;
+      }
+
       /* 触屏无 Enter/Esc 键盘习惯，不显示快捷键提示 */
-      .channel-table .ch-col-priority .ch-priority-hint {
+      .channel-table .ch-col-priority .ch-priority-hint,
+      .channel-table .ch-col-weight .ch-priority-hint {
         display: none !important;
       }
 
@@ -6122,7 +6190,8 @@
         box-sizing: border-box;
       }
 
-      .channel-table .ch-col-priority .ch-priority-stack {
+      .channel-table .ch-col-priority .ch-priority-stack,
+      .channel-table .ch-col-weight .ch-priority-stack {
         width: auto;
         min-width: 0;
       }
@@ -6769,11 +6838,30 @@
         gap: 8px 0;
         padding: 12px;
       }
+
+      /* 窄屏放不下优先级 | 权重 | 操作三段：权重占满剩余宽度，操作按钮换到下一行右对齐 */
+      .channel-table .ch-col-weight {
+        grid-column: 2 / -1;
+        padding-left: 16px;
+      }
+
+      .channel-table .ch-col-weight .ch-priority-stack {
+        margin-left: 0;
+      }
+
+      .channel-table .ch-col-actions {
+        order: 31;
+        grid-column: 1 / -1;
+        margin-top: 0;
+        padding-top: 0;
+        border-top: none;
+      }
     }
 
-    /* 超窄屏：省掉优先级标签，保证底部操作栏仍为一行 */
+    /* 超窄屏：省掉优先级与权重标签，保证底部操作栏仍为一行 */
     @media (max-width: 340px) {
-      .channel-table td.ch-col-priority::before {
+      .channel-table td.ch-col-priority::before,
+      .channel-table td.ch-col-weight::before {
         content: none;
         display: none;
       }
