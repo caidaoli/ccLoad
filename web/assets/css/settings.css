@@ -10,17 +10,37 @@
 
 .reasoning-prompt-toolbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   flex-wrap: wrap;
   gap: 12px;
 }
 
+/* 与上方判断模型同为行内标签，恢复按钮与下拉框同高 */
 .reasoning-prompt-toolbar > div {
+  display: flex;
   flex: 1 1 240px;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
+.reasoning-prompt-toolbar .form-label {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.reasoning-prompt-toolbar .btn {
+  padding: 7px 14px;
+  white-space: nowrap;
+}
+
 .reasoning-prompt-toolbar .form-input,
+.reasoning-prompt-toolbar .searchable-select-wrapper {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .reasoning-prompt-field textarea {
   width: 100%;
 }

@@ -4629,8 +4629,8 @@ button.settings-dialog-count[aria-pressed="true"] {
 
 .reasoning-auto-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.6fr);
-  gap: 10px 20px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 32px;
   margin-bottom: 22px;
 }
 
@@ -4651,6 +4651,12 @@ button.settings-dialog-count[aria-pressed="true"] {
 .reasoning-auto-fields .searchable-select-wrapper {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* 超时只有 0.1–10 秒，定宽输入框即可 */
+.reasoning-auto-fields #reasoningTimeout {
+  flex: 0 0 auto;
+  width: 6em;
 }
 
 .reasoning-model-table-container {
