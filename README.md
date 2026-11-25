@@ -224,6 +224,7 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 - **Any client on any upstream**: Anthropic Messages, OpenAI Chat, Codex Responses and Gemini clients can all use every channel that serves the model. Requests and streamed responses are converted when the protocols differ, including Codex Responses over WebSocket.
 - **Failover your client never sees**: If an upstream fails before the first byte reaches the client, ccLoad retries the next candidate. Errors disguised as HTTP 200 and rate limits inside SSE streams count as failures too.
 - **Cooldown at the right scope**: A revoked key, a rate-limited model, or a dead URL cools down on its own with exponential backoff and honors upstream reset times. The rest of the channel keeps serving.
+- **Thinking depth chosen per turn**: With dynamic reasoning effort on, ccLoad has a fast decision model read the conversation before each turn and pick how hard the model should think, with no client changes: quick follow-ups stay fast, hard problems get deep thinking.
 - **Secrets stay in the gateway**: Optionally replace keys, passwords, personal data and your own terms with placeholders before a request leaves for the upstream, then restore them in the reply so the client still sees the original text.
 - **Cost you can check and cap**: Pricing covers cache reads and writes, long-context tiers, OpenAI `service_tier` and image generation. Cap spend per channel per day and per token in total, per day or per month.
 - **Light to run**: One Go binary with embedded SQLite and a built-in admin console. Add MySQL or PostgreSQL only when you need them, or run it for free on Hugging Face Spaces.
@@ -232,7 +233,7 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 
 ### Routing and failover
 
-- **Priority routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin, with health-based dynamic sorting.
+- **Priority routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin by channel weight (default: the usable key count), with health-based dynamic sorting. Keys inside a channel can be weighted too.
 - **Scoped failover**: Errors are classified as key-, model-, channel-, or client-level, and only the failed scope is skipped. Cooldowns use one exponential-backoff policy and honor explicit upstream reset times.
 - **Model-aware cooldown**: A failing model cools down alone; other models on the same channel stay available. The channel cools only when every configured model or every enabled key is cooling.
 - **Soft-error detection**: HTTP 200 responses that carry an error body, SSE `error` events with explicit rate limits, and quota errors trigger the same failover path as regular upstream failures.
@@ -248,10 +249,34 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 - **Account-based channels**: Codex (ChatGPT) OAuth and personal access tokens, Anthropic (Claude), Antigravity, and xAI OAuth, CodeBuddy, Accio, Qoder, Loomy, Z.ai Coding Plan, Cursor, and Vertex AI service accounts, with token refresh where supported, batch import, quota refresh, and automatic disabling of permanently rejected credentials.
 - **ZCode trial plans**: Browser sign-in supports trial-only and paid accounts. Eligible trial quota is preferred by default; ordinary models may fall back to paid service before output starts, while explicit `-Trial` models never do. Coding Plan API keys alone provide paid access. See the [usage guide](docs/guide/usage.md#zai-coding-plan-zcode).
 - **Model thinking suffix**: `model(high)` or `model(16384)` maps to the upstream protocol's thinking parameters while routing uses the base model name.
-- **Dynamic reasoning effort**: For selected models, a decision model judges each turn and picks a reasoning level the model supports. Requests route across enabled System One channels serving that decision model, with failover within the shared timeout; an explicit level from the client is left alone.
 - **Multimodal fallback**: Requests with images or files are moved from non-vision models to configured fallback models before routing.
 - **Custom request rules**: Per-channel header and JSON body rewriting, with protected authentication headers.
 - **Local token counting**: `/v1/messages/count_tokens` is answered locally without an upstream call.
+
+### Dynamic reasoning effort
+
+Most turns of a coding agent read files, run commands or make small edits and need little thinking; a few involve design decisions or hard debugging and need a lot. A fixed reasoning level either wastes time and money or falls short when it matters. Dynamic reasoning effort lets a decision model judge every turn:
+
+- **Transparent to clients**: Claude Code, Codex and other clients need no changes. The chosen level is written into the thinking parameters of the protocol actually sent upstream (Anthropic `thinking`, OpenAI/Codex `reasoning.effort`, Gemini `thinkingBudget`) and clamped to the levels the model supports; `max` is never picked automatically.
+- **Several decision providers**: System One (Jev, vllm-sr), Alibaba Cloud, Gemini Decisions and OpenAI Decisions. Built-in prompts are tuned per provider and matched automatically, and the instructions and five-level criteria can be edited in Settings.
+- **Decision channels fail over too**: Configure one decision model on several decision channels; they are routed by priority, health and cooldown and retried within the shared decision timeout (2 s by default, 0.1–10 s).
+- **Failures never hold up the request**: On a timeout, error or low-confidence answer, the session keeps its previous level, or the request is sent as is. Explicit client levels such as `model(high)`, `(none)` or a numeric budget skip the judge.
+- **Observable**: Request logs show each decision's suggested level, confidence, the difference from the client's level, and the cost of the decision call.
+- **Opt-in per model**: Pick the covered request models in Settings; changes apply immediately without a restart.
+
+Decision models are recognized by name prefix, which selects the native API and built-in prompt:
+
+| Decision model | Provider | Upstream API |
+| --- | --- | --- |
+| `jev-*` | Jev (System One) | `/v1/systemone` |
+| `vllm-sr/d3*` | vllm-sr (System One) | `/v1/systemone` |
+| `decision-model*` | Alibaba Cloud | `/compatible-mode/v1/systemone` |
+| `gemini-decision*` | Google Gemini | `/v1beta/decisions` |
+| `gpt-6-luna*` | OpenAI | `/v1/decisions` |
+
+Other names use the System One API with the Jev prompt. Covered request models must have at least two reasoning levels in the model catalog; Settings lists only models that qualify.
+
+Setup: [Usage Guide](docs/guide/usage.md#dynamic-reasoning-effort).
 
 ### Cost, access control and privacy
 

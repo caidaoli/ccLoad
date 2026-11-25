@@ -1265,6 +1265,65 @@ html[data-resolved-theme="dark"] .www-logo-wordmark {
   }
 }
 
+/* 亮点通栏：所有断点都占满一行，避免奇数卡片留空 */
+.www-bento-full {
+  grid-column: 1 / -1;
+}
+
+/* 宽屏时文字在左、示意在右，避免通栏列表拉得过长 */
+@media (min-width: 1024px) {
+  .www-bento .www-feature-card.www-bento-full {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    grid-template-rows: auto auto 1fr;
+    column-gap: var(--space-10, 2.5rem);
+  }
+
+  .www-bento-full > :not(.www-bento-visual) {
+    grid-column: 1;
+  }
+
+  .www-bento-full > .www-bento-visual {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    align-self: center;
+    padding-top: 0;
+  }
+}
+
+/* 动态思考示意：每轮任务 → 判断出的等级 */
+.www-effort-map {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.www-effort-map li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--www-card-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+}
+
+.www-effort-map b {
+  flex: 0 0 auto;
+  padding: 0.125rem 0.625rem;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-bg);
+  color: var(--www-icon-fg);
+  font-family: var(--font-family-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
 .www-bento .www-feature-card {
   display: flex;
   flex-direction: column;

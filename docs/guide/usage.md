@@ -282,6 +282,8 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **Concurrency Limit Note**: `max_concurrency` is a per-channel cap on simultaneous in-flight upstream requests; `0` means unlimited. A slot is acquired before the upstream request starts and released when the response body is closed, so streaming requests hold the slot until the stream ends. Over-limit channels are skipped without cooldown. The counter is in-memory and per instance.
 
+> **Weight Note**: channel `weight` (0–10000) splits traffic among channels of the same priority with smooth weighted round-robin. `0` (default) is automatic and uses the usable key count; a positive weight replaces it, so partial key cooldown does not shrink the channel's share. Each `api_keys` entry may also set `weight` (0–10000, `0` counts as 1) to split traffic among keys of the same key priority; key weights never change the channel weight. Session affinity takes precedence over weights. On update, an omitted `weight` keeps the stored value and an explicit `0` resets to automatic. OAuth channels reject key weights.
+
 ### Z.ai Coding Plan (ZCode)
 
 In the channel manager, choose **Z.ai Coding Plan**, select **International Z.ai** or **China BigModel**, then authorize in the browser or import a Coding Plan API key for that site. Accounts from different sites are saved separately, even when they share the same email address. API-key import remains available when the provider's browser OAuth flow is unavailable.

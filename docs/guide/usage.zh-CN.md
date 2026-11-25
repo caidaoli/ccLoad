@@ -288,6 +288,8 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **并发限制说明**：`max_concurrency` 是渠道级同时在飞请求上限；`0` 表示不限制。槽位从发起上游请求前占用，到响应体关闭后释放，流式请求会占用到流结束；达到上限后该渠道会被跳过，不触发冷却。计数保存在当前进程内，多实例部署时各实例独立统计。
 
+> **权重说明**：渠道 `weight`（0–10000）决定同优先级渠道之间的平滑加权轮询比例。`0`（默认）为自动，按可用 Key 数计；设为正数后替代 Key 数，部分 Key 冷却也不缩减该渠道份额。每个 `api_keys` 条目还可设置 `weight`（0–10000，`0` 按 1 计），只在同一 Key 优先级档内分流，不影响渠道权重。会话亲和优先于权重。更新时省略 `weight` 保留原值，显式传 `0` 重置为自动。OAuth 渠道不支持 Key 权重。
+
 ### Z.ai Coding Plan（ZCode）
 
 在渠道管理中选择 **Z.ai Coding Plan**，先选择 **国际版 Z.ai** 或 **国内版 BigModel**，再完成浏览器授权或导入对应站点的 Coding Plan API Key。国内外账号分别保存，使用同一个邮箱也不会互相覆盖。提供商浏览器 OAuth 暂时不可用时，仍可通过 API Key 导入接入。
@@ -411,6 +413,7 @@ Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[
 - 支持中英文列名自动映射
 - 智能数据验证和错误提示
 - 增量导入和覆盖更新
+- `weight`、`api_key_weights` 列分别承载渠道与 Key 权重；缺少该列时导入保留原有权重
 - UTF-8编码，Excel兼容
 - `oauth_credential` 同时包含 OAuth 凭据和 API Key 渠道管理账号封套，可用于跨实例迁移；CSV 属于敏感文件，使用后应立即妥善删除
 

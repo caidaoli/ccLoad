@@ -223,6 +223,18 @@
             One Go binary with embedded SQLite and a built-in admin console. Add MySQL or PostgreSQL only when you need them, or run it for free on Hugging Face Spaces.
           </p>
         </div>
+        <div class="www-feature-card www-bento-wide www-bento-full">
+          <span class="www-feature-icon" data-icon="gauge"></span>
+          <h3 class="www-feature-title" data-i18n="www.home.why.reasoning.title">Thinking depth chosen per turn</h3>
+          <p class="www-feature-desc" data-i18n="www.home.why.reasoning.desc">
+            Most agent turns read files or make small edits; a few need real design work. A fixed reasoning level either wastes time and money or falls short when it matters. With dynamic reasoning effort, a fast decision model reads each turn and picks the level, so quick follow-ups stay fast and hard problems get deep thinking. Clients change nothing; System One, Alibaba Cloud, Gemini and OpenAI decision models are supported with failover, and a failed judgment never holds up the request.
+          </p>
+          <ul class="www-bento-visual www-effort-map" aria-hidden="true">
+            <li><span data-i18n="www.home.why.reasoning.turn1">Read package.json</span><b>low</b></li>
+            <li><span data-i18n="www.home.why.reasoning.turn2">Rename a helper across files</span><b>medium</b></li>
+            <li><span data-i18n="www.home.why.reasoning.turn3">Find why the cache races under load</span><b>xhigh</b></li>
+          </ul>
+        </div>
       </div>
     </div>
   </section>
@@ -314,7 +326,7 @@
           <span class="www-feature-icon" data-icon="route"></span>
           <h3 class="www-feature-title" data-i18n="www.home.features.routing.title">Smart Routing</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.routing.desc">
-            Higher-priority channels first; equal priority uses smooth weighted round-robin by usable keys. Optional health and first-byte scoring.
+            Higher-priority channels first; equal priority uses smooth weighted round-robin by channel weight, defaulting to usable keys. Optional health and first-byte scoring.
           </p>
         </div>
 
