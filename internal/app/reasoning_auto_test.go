@@ -981,7 +981,8 @@ func TestReasoningAutoResponsesSummaryDoesNotSpecifyEffort(t *testing.T) {
 				if explicit {
 					reasoning["effort"] = "low"
 				}
-				body := map[string]any{"model": "gpt-5.6-sol", "input": []any{map[string]any{"role": "user", "content": "Design a concurrent migration."}}, "reasoning": reasoning}
+				// Distinct content keeps the second turn from reusing the first decision.
+				body := map[string]any{"model": "gpt-5.6-sol", "input": []any{map[string]any{"role": "user", "content": fmt.Sprintf("Design a concurrent migration (explicit=%v).", explicit)}}, "reasoning": reasoning}
 				if conn != nil {
 					body["type"] = "response.create"
 					if err := conn.WriteJSON(body); err != nil {
@@ -1604,7 +1605,7 @@ func TestReasoningAutoStateCapacityKeepsExistingSessionsAndIndependentOverflow(t
 	}
 	started := time.Now()
 	for session := range retainedSessions {
-		reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Complex task."), map[string]string{
+		reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody(fmt.Sprintf("Complex task %d.", session)), map[string]string{
 			"Session-Id": fmt.Sprintf("retained-session-%d", session),
 		})
 	}

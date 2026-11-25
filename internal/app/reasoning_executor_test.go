@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,6 +341,97 @@ func TestReasoningDecisionMissingUsageWithCustomPrice(t *testing.T) {
 				t.Fatalf("unknown usage charged %v", cost)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 相同判定输入合并在途调用并复用成功结果，输入或等级不同、失败结果不复用
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionSharesIdenticalInput(t *testing.T) {
+	t.Parallel()
+	env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "jev-latest", apiKey: "judge-key", authType: model.AuthTypeSystemOne}, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "invalid task") {
+			_, _ = io.WriteString(w, `{"answers":{}}`)
+			return
+		}
+		_, _ = io.WriteString(w, reasoningRetryAnswer)
+	})
+	decide := func(transcript string, levels []string) reasoningCallResult {
+		t.Helper()
+		result, err := env.server.executeReasoningDecision(context.Background(), transcript, levels)
+		if err != nil || result.effort != "xhigh" {
+			t.Fatalf("decision=%+v error=%v", result, err)
+		}
+		return result
+	}
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() { decide("same task", reasoningDefaultLevels) })
+	}
+	wg.Wait()
+	decide("same task", reasoningDefaultLevels)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("identical input calls=%d, want 1", got)
+	}
+	decide("other task", reasoningDefaultLevels)
+	decide("same task", []string{"low", "medium", "high", "xhigh", "max"})
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("distinct input calls=%d, want 3", got)
+	}
+	for range 2 {
+		if _, err := env.server.executeReasoningDecision(context.Background(), "invalid task", reasoningDefaultLevels); err == nil {
+			t.Fatal("invalid answer accepted")
+		}
+	}
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("failed decisions calls=%d, want 5", got)
+	}
+}
+
+/**
+ * @brief 合并中的首个请求被取消时，等待中的相同请求在自身预算内重新判定
+ * @param t 测试上下文
+ */
+func TestReasoningDecisionSharedLeaderCancelled(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	var first atomic.Bool
+	env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "jev-latest", apiKey: "judge-key", authType: model.AuthTypeSystemOne}, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if first.CompareAndSwap(false, true) {
+			close(entered)
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, reasoningRetryAnswer)
+	})
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := env.server.executeReasoningDecision(leaderCtx, "same task", reasoningDefaultLevels)
+		leaderDone <- err
+	}()
+	<-entered
+	followerDone := make(chan reasoningCallResult, 1)
+	go func() {
+		result, err := env.server.executeReasoningDecision(context.Background(), "same task", reasoningDefaultLevels)
+		if err != nil {
+			result.reason = "error: " + err.Error()
+		}
+		followerDone <- result
+	}()
+	time.Sleep(20 * time.Millisecond) // let the follower join the in-flight call
+	cancelLeader()
+	if err := <-leaderDone; err == nil {
+		t.Fatal("cancelled leader succeeded")
+	}
+	if result := <-followerDone; result.effort != "xhigh" || calls.Load() != 2 {
+		t.Fatalf("follower=%+v calls=%d", result, calls.Load())
 	}
 }
 
@@ -1250,8 +1342,8 @@ func TestReasoningDecisionCompressionFallback(t *testing.T) {
 				_, _ = io.WriteString(w, tc.plainBody)
 			})
 			editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.PromptTemplate = "gemini" })
-			for range 2 {
-				result, err := env.server.executeReasoningDecision(context.Background(), transcript, []string{"low", "medium", "high", "xhigh", "max"})
+			for i := range 2 {
+				result, err := env.server.executeReasoningDecision(context.Background(), transcript+strconv.Itoa(i), []string{"low", "medium", "high", "xhigh", "max"})
 				if (err == nil) != tc.valid || (tc.valid && result.effort != "high") {
 					t.Fatalf("decision=%+v error=%v", result, err)
 				}

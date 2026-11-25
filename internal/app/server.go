@@ -192,6 +192,7 @@ type Server struct {
 	reasoningAuto          atomic.Pointer[model.ReasoningAutoConfig]
 	reasoningStates        reasoningStateStore
 	reasoningDecisionSlots chan struct{}
+	reasoningShared        reasoningDecisionShare
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter

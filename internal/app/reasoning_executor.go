@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -19,6 +22,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
+	"golang.org/x/sync/singleflight"
 )
 
 const reasoningResponseMaxBytes = 1024 * 1024
@@ -116,20 +120,138 @@ func (r *reasoningCallResult) setContextFailure(err error) {
 	}
 }
 
+const reasoningDecisionShareTTL = time.Minute ///< 相同判定输入的成功结果复用时长
+
+/**
+ * @brief 相同判定输入的在途合并与成功结果缓存
+ */
+type reasoningDecisionShare struct {
+	group     singleflight.Group
+	mu        sync.Mutex
+	done      map[string]reasoningSharedDecision ///< 判定输入摘要 -> 成功结果
+	lastSweep time.Time                          ///< 上次清理过期结果的时刻
+}
+
+/**
+ * @brief 可复用的成功判定，仅保留业务轮次需要的答案
+ */
+type reasoningSharedDecision struct {
+	effort     string    ///< 判定等级
+	confidence *float64  ///< 判定模型报告的置信度，未报告为 nil
+	expires    time.Time ///< 过期时刻
+}
+
+/**
+ * @brief 读取未过期的相同输入成功判定
+ * @param key 判定输入摘要
+ * @param now 当前时刻
+ * @return 成功判定，未命中时为零值
+ * @return 命中且未过期时为 true
+ * @note 并发安全
+ */
+func (s *reasoningDecisionShare) lookup(key string, now time.Time) (reasoningSharedDecision, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hit, ok := s.done[key]
+	return hit, ok && now.Before(hit.expires)
+}
+
+/**
+ * @brief 缓存成功判定，并按 TTL 间隔清理过期结果
+ * @param key 判定输入摘要
+ * @param result 成功判定结果
+ * @param now 当前时刻
+ * @note 并发安全
+ */
+func (s *reasoningDecisionShare) store(key string, result reasoningCallResult, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done == nil {
+		s.done = make(map[string]reasoningSharedDecision)
+	}
+	if now.Sub(s.lastSweep) >= reasoningDecisionShareTTL {
+		s.lastSweep = now
+		for k, v := range s.done {
+			if !now.Before(v.expires) {
+				delete(s.done, k)
+			}
+		}
+	}
+	s.done[key] = reasoningSharedDecision{effort: result.effort, confidence: result.confidence, expires: now.Add(reasoningDecisionShareTTL)}
+}
+
+/**
+ * @brief 计算决定判定答案的全部输入的摘要
+ * @param cfg 本次判定的配置快照
+ * @param transcript 已投影的判断上下文（脱敏前）
+ * @param levels 候选等级
+ * @return 十六进制 SHA-256 摘要
+ */
+func reasoningDecisionKey(cfg *model.ReasoningAutoConfig, transcript string, levels []string) string {
+	input, _ := json.Marshal(struct {
+		Model      string                 `json:"model"`
+		Template   string                 `json:"template"`
+		Custom     *model.ReasoningPrompt `json:"custom"`
+		Levels     []string               `json:"levels"`
+		Transcript string                 `json:"transcript"`
+	}{cfg.DecisionModel, cfg.PromptTemplate, cfg.CustomPrompt, levels, transcript})
+	sum := sha256.Sum256(input)
+	return hex.EncodeToString(sum[:])
+}
+
+/**
+ * @brief 执行判定；判定输入与配置完全相同时合并在途调用并复用成功结果
+ * @param parent 业务请求上下文，保留取消与隐私会话并解除客户端渠道范围限制
+ * @param transcript 已投影的判断上下文
+ * @param levels 按强度升序排列的候选等级
+ * @return 判定结果，duration 为本请求的总等待时间；缓存命中时仅含等级与置信度
+ * @return 候选耗尽、容量满或上下文结束时返回错误；成功时为 nil
+ * @note 只缓存成功结果；合并时首个请求被取消，其余请求在自身预算内重新判定
+ */
+func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (reasoningCallResult, error) {
+	start := time.Now()
+	cfg := s.reasoningAuto.Load() // one snapshot per decision, even if the setting is saved meanwhile
+	ctx, cancel := context.WithTimeout(reasoningDecisionContext(parent), time.Duration(cfg.TimeoutMS)*time.Millisecond)
+	defer cancel()
+	key := reasoningDecisionKey(cfg, transcript, levels)
+	if hit, ok := s.reasoningShared.lookup(key, start); ok {
+		return reasoningCallResult{effort: hit.effort, confidence: hit.confidence, status: http.StatusOK, duration: time.Since(start)}, nil
+	}
+	ch := s.reasoningShared.group.DoChan(key, func() (any, error) {
+		result, err := s.runReasoningDecision(ctx, start, cfg, transcript, levels)
+		if err == nil {
+			s.reasoningShared.store(key, result, time.Now())
+		}
+		return result, err
+	})
+	select {
+	case <-ctx.Done():
+		result := reasoningCallResult{duration: time.Since(start)}
+		result.setContextFailure(ctx.Err())
+		return result, ctx.Err()
+	case shared := <-ch:
+		result := shared.Val.(reasoningCallResult)
+		if shared.Shared && shared.Err != nil && result.reason == "cancelled" && ctx.Err() == nil {
+			// The first caller's client went away; this request still has budget.
+			return s.runReasoningDecision(ctx, start, cfg, transcript, levels)
+		}
+		result.duration = time.Since(start)
+		return result, shared.Err
+	}
+}
+
 /**
  * @brief 按 System One 模型选路，在同一超时预算内依次尝试候选渠道
- * @param parent 业务请求上下文，保留取消与隐私会话并解除客户端渠道范围限制
+ * @param ctx 已附加整次判定超时的上下文
+ * @param start 判定开始时刻，用于总耗时
+ * @param cfg 本次判定的配置快照
  * @param transcript 已投影的判断上下文
  * @param levels 按强度升序排列的候选等级
  * @return 最后一次尝试的结果，duration 为包含选路和故障转移的总耗时
  * @return 候选耗尽、容量满或上下文结束时返回错误；成功时为 nil
  * @note 每个实际尝试独立计费、写日志和冷却；取消后不再尝试其他渠道
  */
-func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (result reasoningCallResult, err error) {
-	start := time.Now()
-	cfg := s.reasoningAuto.Load() // one snapshot per decision, even if the setting is saved meanwhile
-	ctx, cancel := context.WithTimeout(reasoningDecisionContext(parent), time.Duration(cfg.TimeoutMS)*time.Millisecond)
-	defer cancel()
+func (s *Server) runReasoningDecision(ctx context.Context, start time.Time, cfg *model.ReasoningAutoConfig, transcript string, levels []string) (result reasoningCallResult, err error) {
 	result.reason = "decision_unavailable"
 	defer func() {
 		result.duration = time.Since(start)
