@@ -1267,18 +1267,36 @@
       flex: 0 1 auto;
     }
 
-    .channel-editor-basic-grid > .channel-editor-field--name,
-    .channel-editor-basic-grid > .channel-editor-field--switches {
+    .channel-editor-basic-grid > .channel-editor-field--name {
       grid-column: span 4;
     }
 
-    .channel-editor-basic-grid > .channel-editor-field--switches {
-      flex-wrap: wrap;
-      gap: 10px 24px;
+    /* 决策渠道隐藏协议处理，名称独占首行 */
+    .channel-editor--system-one .channel-editor-basic-grid > .channel-editor-field--name {
+      grid-column: 1 / -1;
     }
 
-    .channel-editor-basic-grid > .channel-editor-field--switches > .channel-editor-websocket-control {
-      flex: 0 1 auto;
+    /* 优先级、权重取值位数有限，用定宽输入框与 WebSocket 开关同排 */
+    .channel-editor-routing-row {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px 32px;
+    }
+
+    .channel-editor-routing-row > .channel-editor-field {
+      flex-direction: row;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .channel-editor-routing-row > .channel-editor-field > .form-label {
+      white-space: nowrap;
+    }
+
+    .channel-editor-routing-row > .channel-editor-field > .form-input {
+      width: 10em;
     }
 
     .channel-editor-name-row {
@@ -1286,6 +1304,12 @@
       align-items: center;
       gap: 6px;
       min-width: 0;
+    }
+
+    .channel-editor-name-row > .channel-editor-switch {
+      flex: 0 0 auto;
+      margin-left: 14px;
+      white-space: nowrap;
     }
 
     .channel-editor-name-input-wrap .channel-editor-input {
@@ -1405,8 +1429,19 @@
         grid-column: auto;
       }
 
-      .channel-editor-basic-grid > .channel-editor-field > .form-label {
+      .channel-editor-basic-grid > .channel-editor-field > .form-label,
+      .channel-editor-routing-row > .channel-editor-field > .form-label {
         min-width: 5.5em;
+      }
+
+      .channel-editor-routing-row > .channel-editor-field {
+        flex: 1 1 100%;
+      }
+
+      .channel-editor-routing-row > .channel-editor-field > .form-input {
+        flex: 1 1 auto;
+        width: auto;
+        min-width: 0;
       }
 
       .channel-editor-limits-grid {

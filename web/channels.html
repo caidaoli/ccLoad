@@ -62,7 +62,7 @@
             <div class="channel-page-hero">
               <div class="channel-page-heading">
                 <p class="page-subtitle" data-i18n="channels.description">
-                  配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级按Key数量加权随机</b>）</p>
+                  配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级按权重分配，未设权重按可用 Key 数</b>）</p>
               </div>
               <div class="channel-page-actions">
                 <div id="channelAddGroup" class="channel-page-menu">
@@ -1213,6 +1213,11 @@
                     aria-label="一键填充渠道配置">
                     <span class="channel-quick-add-emoji" aria-hidden="true">✨</span>
                   </button>
+                  <label id="channelEnabledWrapper" class="channel-editor-switch">
+                    <input type="checkbox" id="channelEnabled" checked>
+                    <span class="channel-editor-switch__track" aria-hidden="true"></span>
+                    <span data-i18n="channels.enableChannel">启用</span>
+                  </label>
                 </div>
               </div>
               <div class="channel-editor-field channel-editor-field--protocol">
@@ -1220,22 +1225,17 @@
                 <input id="protocolTransformModeValue" type="hidden" value="auto">
                 <div id="protocolTransformModeSelectContainer" class="channel-editor-protocol-select"></div>
               </div>
-              <div class="channel-editor-field">
-                <label class="form-label" for="channelPriority" data-i18n="channels.priority">优先级</label>
-                <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="9999999" step="1">
-              </div>
-              <div class="channel-editor-field">
-                <label class="form-label" for="channelWeight" data-i18n="channels.weight">权重</label>
-                <input type="number" id="channelWeight" class="form-input" min="0" max="10000" step="1"
-                  data-i18n-placeholder="channels.weightAutoPlaceholder" placeholder="自动"
-                  data-i18n-title="channels.weightHint" title="同优先级内按权重分配请求，留空按可用 Key 数">
-              </div>
-              <div class="channel-editor-field channel-editor-field--switches">
-                <label id="channelEnabledWrapper" class="channel-editor-switch">
-                  <input type="checkbox" id="channelEnabled" checked>
-                  <span class="channel-editor-switch__track" aria-hidden="true"></span>
-                  <span data-i18n="channels.enableChannel">启用</span>
-                </label>
+              <div class="channel-editor-routing-row">
+                <div class="channel-editor-field">
+                  <label class="form-label" for="channelPriority" data-i18n="channels.priority">优先级</label>
+                  <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="9999999" step="1">
+                </div>
+                <div class="channel-editor-field">
+                  <label class="form-label" for="channelWeight" data-i18n="channels.weight">权重</label>
+                  <input type="number" id="channelWeight" class="form-input" min="0" max="10000" step="1"
+                    data-i18n-placeholder="channels.weightAutoPlaceholder" placeholder="自动"
+                    data-i18n-title="channels.weightHint" title="同优先级内按权重分配请求，留空按可用 Key 数">
+                </div>
                 <div class="channel-editor-websocket-control">
                   <label class="channel-editor-switch" data-i18n-title="channels.enableWebsocketsHelp"
                     title="实际使用 Codex Responses 上游协议时复用原生 WebSocket">

@@ -164,7 +164,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 渠道管理
   // ============================================================
   'channels.title': '渠道管理 - Claude Code & Codex Proxy',
-  'channels.description': '配置API渠道、优先级和模型支持（优先请求高优先级渠道，相同优先级按Key数量加权随机）',
+  'channels.description': '配置API渠道、优先级和模型支持（优先请求高优先级渠道，相同优先级按权重分配，未设权重按可用 Key 数）',
   'channels.priorityEditHint': 'Enter 保存 · Esc 取消',
   'channels.importCsv': '导入 CSV',
   'channels.menu.newChannel': '新建渠道',

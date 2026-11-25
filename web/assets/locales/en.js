@@ -164,7 +164,7 @@ window.I18N_LOCALES['en'] = {
   // Channels Management
   // ============================================================
   'channels.title': 'Channels - Claude Code & Codex Proxy',
-  'channels.description': 'Configure API channels, priorities and model support (High priority channels preferred, same priority uses weighted random by key count)',
+  'channels.description': 'Configure API channels, priorities and model support (High priority channels preferred, same priority splits by weight, defaulting to the available key count)',
   'channels.priorityEditHint': 'Enter to save · Esc to cancel',
   'channels.importCsv': 'Import CSV',
   'channels.menu.newChannel': 'New channel',
