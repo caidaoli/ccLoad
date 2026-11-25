@@ -2367,7 +2367,7 @@ func (s *Server) parseTestNonStreamResponse(
 			parseBody = upstreamBody
 		}
 		if requestPlan.upstreamProtocol == util.ProtocolGemini {
-			if errorBody := geminiNonStreamResponseErrorBody(upstreamBody); len(errorBody) > 0 {
+			if errorBody := geminiNonStreamResponseErrorBody(upstreamBody, requestPlan.antigravityOAuth); len(errorBody) > 0 {
 				result["success"] = false
 				result["upstream_status_code"] = resp.StatusCode
 				result["status_code"] = http.StatusBadGateway

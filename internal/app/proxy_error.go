@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -1078,6 +1079,14 @@ func (s *Server) handleProxyErrorResponse(
 		succeeded:          false,
 		upstreamErrorEvent: len(res.SSEErrorEvent) > 0,
 		zaiTrial:           res.zaiTrial,
+	}
+	if message := anthropicGoogleInputTokenLimitMessage(reqCtx, res.Status, res.Body); message != "" {
+		failure.body, _ = json.Marshal(anthropicErrorBody(res.Status, message))
+		failure.header = res.Header.Clone()
+		if failure.header != nil {
+			failure.header.Set("Content-Type", "application/json")
+			failure.header.Del("Content-Encoding")
+		}
 	}
 	deferAntigravityFallbackLog := cfg.UsesAntigravityOAuth() && deferChannelCooldown &&
 		shouldFallbackAntigravityBaseURL(res.Status, res.Body)

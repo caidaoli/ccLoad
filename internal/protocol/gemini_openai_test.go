@@ -37,21 +37,25 @@ func TestRegistryGeminiChatToolSignatureRoundTrip(t *testing.T) {
 		t.Fatalf("replayed signature = %q, want %q: %s", got, signature, replayed)
 	}
 	stream := translateResponseStreamChunks(t, reg, protocol.Gemini, protocol.OpenAI, "gemini-2.5-pro",
-		`data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"query":"go"}}}]}}]}`+"\n\n",
-		`data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"`+signature+`"}]},"finishReason":"STOP"}]}`+"\n\n")
-	found := false
+		`data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"query":"go"}}}]},"finishReason":"STOP"}]}`+"\n\n",
+		`data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"`+signature+`"}]}}]}`+"\n\n",
+		"data: [DONE]\n\n")
+	found, finished := false, false
 	for _, event := range parseSSEEvents(t, stream) {
 		for _, call := range gjson.Get(event.RawData, "choices.0.delta.tool_calls").Array() {
 			if got := call.Get("extra_content.google.thought_signature").String(); got != "" {
-				if got != signature || call.Get("index").Int() != 0 {
+				if got != signature || call.Get("index").Int() != 0 || finished {
 					t.Fatalf("late signature bound to wrong call: %s", event.RawData)
 				}
 				found = true
 			}
 		}
+		if gjson.Get(event.RawData, "choices.0.finish_reason").String() == "tool_calls" {
+			finished = true
+		}
 	}
-	if !found {
-		t.Fatalf("late tool signature missing: %s", stream)
+	if !found || !finished {
+		t.Fatalf("expected the late tool signature before the terminal reason: %s", stream)
 	}
 }
 
@@ -86,8 +90,16 @@ func TestRegistryGeminiToOpenAIMultiPartContent(t *testing.T) {
 			}
 			stream := translateResponseStreamChunks(t, reg, protocol.Gemini, protocol.OpenAI, "gemini-2.5-pro", "data: "+string(raw)+"\n\n")
 			events := parseSSEEvents(t, stream)
-			if len(events) != 1 {
-				t.Fatalf("expected one candidate chunk, got %d: %s", len(events), stream)
+			wantEvents := 1
+			if tc.text != "" || tc.reasoning != "" {
+				wantEvents = 2
+			}
+			if len(events) != wantEvents {
+				t.Fatalf("expected %d chunks, got %d: %s", wantEvents, len(events), stream)
+			}
+			terminal := gjson.Parse(events[len(events)-1].RawData)
+			if terminal.Get("choices.0.finish_reason").String() != "stop" || terminal.Get("choices.0.delta").Raw != `{}` || terminal.Get("usage.total_tokens").Int() != 3 {
+				t.Fatalf("expected empty-delta terminal chunk with usage: %s", terminal.Raw)
 			}
 			for path, want := range map[string]string{"content": tc.text, "reasoning_content": tc.reasoning} {
 				value := gjson.Get(events[0].RawData, "choices.0.delta."+path)

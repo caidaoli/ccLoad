@@ -24,10 +24,16 @@
 - Claude 的 `max_tokens` 在 Gemini SSE 及其聚合 JSON 中保留为 `MAX_TOKENS`。Gemini/Antigravity 的 `MAX_TOKENS` 转 Chat 时使用标准 `finish_reason=length`，`native_finish_reason` 保留 `max_tokens`，工具调用仍优先 `tool_calls`。
 - Gemini 转 Chat 的工具签名放在 `tool_calls[].extra_content.google.thought_signature`，延迟签名仅绑定当前候选最近的工具，正文、附件和不支持的 Part 隔断绑定。Gemini 经 Claude 回放的签名载体按标记恢复原 Part；不跨消息或语义边界，不降低提供商签名兼容性检查。
 - Chat 转 Responses 的 JSON/SSE 支持 typed content 数组及结构化 reasoning，思考和正文分别输出，未知 typed Part 不序列化成正文。同一消息/流帧的顶层 reasoning 表示非空时优先于内容数组的 thinking，避免重复输出；顶层表示为空时仍使用 typed thinking，普通正文始终保留。流式交错正文/思考保持独立 item 与顺序，已关闭的消息不因后续截断改为 incomplete；纯思考流有明确 finish_reason 才允许终结，缺失源协议终态不能伪造成功。
+- Chat 转 Gemini 的 JSON 和 SSE 按 choice 索引分别输出候选，流式工具分片按候选和工具索引归集。结构化正文和思考分别输出为 Gemini Part。Claude 转 Gemini 时，缓存读取计入 `cachedContentTokenCount`，思考和可见输出分别计入 `thoughtsTokenCount` 与 `candidatesTokenCount`。
+- Chat 转 Gemini/Antigravity 时，显式 `reasoning_effort` 优先，其次采用原生生成配置，再读取 `extra_body.google.thinking_config` 中的等级或预算。显式 `(auto)` 或 `(-1)` 后缀将扩展中的等级与预算交回模型默认或动态思考策略。助手历史图片的 data URL 按 MIME 参数和逗号分隔的 Base64 内容解析。
+- Gemini/Antigravity 转 Chat 时，先送达正文、工具及关联签名，再以空 delta 结束候选。普通 Gemini 的各候选分别结束，全局用量在同一上游帧只报告一次。某候选已结束后，其他候选先前收到的结束原因仍在 EOF 时送达。 后续帧的空串、纯空白或非字符串不覆盖该候选已收到的结束原因。普通 Gemini 返回的工具名按请求实际发出的工具声明还原。 Responses 工具名发生缩写碰撞时，Gemini 和 Antigravity 出站按客户端声明名选择，回包按实际上游声明名还原工具名和命名空间。转 Claude 时使用有效的上游消息 ID，缺失或空白则为当前消息生成唯一 ID。
+- Claude 转 Gemini/Vertex 时，`max_tokens` 原值进入 `maxOutputTokens`，非空停止串进入 `stopSequences`。对象形态的 JSON Schema 同时设置 JSON MIME，普通 Gemini 使用 `responseJsonSchema`，Antigravity 使用 `responseSchema`，再按目标模型处理。
+- Responses 工具历史转 Chat 时，缺省、空串或纯空白的 `arguments` 写成字符串 `"{}"`。Antigravity 转 Chat 时，同一工具的参数续片共用一个索引，参数未收全时返回流错误。
+- Gemini 工具回放接受驼峰与蛇形字段混用。签名扫描跳过空别名，结果与调用按原顺序配对。
 - Responses 转 Chat、Claude、Gemini 的 JSON 和 SSE 均保留可见的拒绝说明。仅 `output_item.done` 或 `response.completed/incomplete` 提供的消息正文在跨协议流中补齐，可见片段按内容索引输出并去重。前置索引有缺口时暂存后续片段，普通有序流即时转发。原生 Responses 继续透传。
 - Responses 转 Claude 时，支持中途系统消息的模型将会话开始后的纯文本 system/developer 项放在下一个输出的 user／完整工具结果组之后，保留缓存前缀、内容块和 cache_control；初始 instructions、旧模型、不支持的内容及无可放置 user 回合的项保持顶层路径。模型判定由 cliproxy/util 与 app 共用；API Key Haiku 仅实际携带中途 system 时补对应 beta，OpenCode 与 Z.ai Anthropic wire 在转换前保持原顶层路径。不导入上游 executor 上下文。
 - Responses 并行工具结果之间的 developer/system 提醒不能拆散同一批结果；按 call_id 恢复调用顺序并保留图片附件，提醒放到结果组之后；不得跨越真实 user/assistant 回合、新工具调用或 reasoning 边界收集结果，也不得把孤立结果跨提醒搬移。
-- Gemini 工具参数转换为 JSON Schema 时，将 minLength/maxLength、minItems/maxItems、minProperties/maxProperties 的规范非负整数字符串转为 JSON 数字。转 Claude、Codex 或 OpenAI Chat 时，只将 Schema 节点的字符串 `type` 转为小写，保留联合类型数组、布尔子模式、名为 `type` 的属性及 const、default、enum、examples 和扩展元数据中的字面值。普通 Gemini 同协议请求仍遵循原样透传契约。
+- Gemini 工具参数转换为 JSON Schema 时，将 minLength/maxLength、minItems/maxItems、minProperties/maxProperties 的规范非负整数字符串转为 JSON 数字。转 Claude、Codex 或 OpenAI Chat 时，将 Schema 节点的字符串 `type` 转为小写，将 protobuf 数字类型 1–7 转为对应的 JSON Schema 类型名，保留联合类型数组、布尔子模式、名为 `type` 的属性及 const、default、enum、examples 和扩展元数据中的字面值。普通 Gemini 同协议请求仍遵循原样透传契约。
 - Antigravity Gemini 历史含多余工具结果时，优先按调用 ID 选择当前组结果，再按名称及顺序补齐；当前待配对组已全部完成后的多余结果丢弃，不得带入后续 model turn。
 - Gemini/Antigravity 请求清理 `systemInstruction.parts` / `system_instruction.parts` 中的空对象 `{}`，保留其他 Part 及顺序；全部为空时删除该系统指令字段。清理不扩大 Vertex 思考签名的既有端点边界；未知 Gemini 中继的原生请求继续透传，Antigravity 的身份提示仍按原规则注入。
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。

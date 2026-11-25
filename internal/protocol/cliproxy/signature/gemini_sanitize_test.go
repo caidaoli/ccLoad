@@ -23,6 +23,58 @@ func TestSanitizeGeminiRequestThoughtSignaturesPreservesGeminiSignature(t *testi
 	}
 }
 
+func TestSanitizeGeminiRequestThoughtSignatures_PromotesNonEmptyFallback(t *testing.T) {
+	sig := testGemini3ThoughtSignature([]byte{0x01, 0x0c, 0x39})
+	for _, empty := range []string{`""`, `"  "`, `null`} {
+		t.Run(empty, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"model","parts":[
+				{"function_call":{"name":"first","thought_signature":"` + sig + `"},"thoughtSignature":` + empty + `},
+				{"functionCall":{"name":"second"}},
+				{"text":"visible","thoughtSignature":"","thought_signature":null}
+			]},{"role":"user","parts":[
+				{"function_response":{"name":"first","thoughtSignature":"` + sig + `","response":{"thought_signature":"tool data"}},"thought_signature":""}
+			]}]}`)
+			out := SanitizeGeminiRequestThoughtSignatures(body, "contents")
+			if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != sig {
+				t.Fatalf("thoughtSignature=%q, want %q; output=%s", got, sig, out)
+			}
+			for _, path := range []string{
+				"contents.0.parts.0.function_call.thought_signature",
+				"contents.0.parts.1.thoughtSignature",
+				"contents.0.parts.2.thoughtSignature",
+				"contents.0.parts.2.thought_signature",
+				"contents.1.parts.0.function_response.thoughtSignature",
+				"contents.1.parts.0.thought_signature",
+			} {
+				if gjson.GetBytes(out, path).Exists() {
+					t.Errorf("unexpected signature at %s; output=%s", path, out)
+				}
+			}
+			if got := gjson.GetBytes(out, "contents.1.parts.0.function_response.response.thought_signature").String(); got != "tool data" {
+				t.Fatalf("tool data was changed: %s", out)
+			}
+		})
+	}
+}
+
+func TestSanitizeVertexSignaturesForNonVertex_SnakeCaseCalls(t *testing.T) {
+	sig := testGeminiBareTinkSignature(405)
+	body := []byte(`{"contents":[{"role":"model","parts":[
+		{"function_call":{"name":"first","thought_signature":"` + sig + `"}},
+		{"functionCall":{"name":"second"},"thoughtSignature":"` + sig + `"},
+		{"text":"keep","thoughtSignature":"existing"}
+	]}]}`)
+	out := SanitizeVertexSignaturesForNonVertex(body, "contents")
+	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		t.Errorf("first function_call did not gain its required signature: %s", out)
+	}
+	if gjson.GetBytes(out, "contents.0.parts.0.function_call.thought_signature").Exists() ||
+		gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature").Exists() ||
+		gjson.GetBytes(out, "contents.0.parts.2.thoughtSignature").String() != "existing" {
+		t.Fatalf("expected only incompatible Vertex signatures to change: %s", out)
+	}
+}
+
 func TestSanitizeGeminiRequestThoughtSignaturesNormalizesDuplicateCanonicalField(t *testing.T) {
 	input := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f","args":{}},"thoughtSignature":"` + GeminiSkipThoughtSignatureValidator + `","thoughtSignature":"bad","thoughtSignature":"worse"}]}]}`)
 

@@ -3729,14 +3729,24 @@ func TestHandleChannelTest_AntigravityInBandRateLimit(t *testing.T) {
 func TestHandleChannelTest_GeminiNonStreamZeroOutput(t *testing.T) {
 	t.Parallel()
 	for _, provider := range []string{"gemini", "antigravity"} {
+		reasons := []string{"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE"}
+		if provider == "antigravity" {
+			reasons = append(reasons, "empty-response")
+		}
 		for _, clientProtocol := range []string{"openai", "anthropic", "codex", "gemini"} {
-			for _, reason := range []string{"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE"} {
+			for _, reason := range reasons {
 				for _, text := range []string{"", "partial"} {
+					if reason == "empty-response" && text != "" {
+						continue
+					}
 					t.Run(provider+"/"+clientProtocol+"/"+reason+"/"+text, func(t *testing.T) {
 						t.Parallel()
 						upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 							w.Header().Set("Content-Type", "application/json")
 							payload := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"text":%q}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":5,"totalTokenCount":14}}`, text, reason)
+							if reason == "empty-response" {
+								payload = "{ \t\r\n }"
+							}
 							if provider == "antigravity" {
 								payload = `{"response":` + payload + `}`
 							}
@@ -3799,7 +3809,11 @@ func TestHandleChannelTest_GeminiNonStreamZeroOutput(t *testing.T) {
 						if success || resp.Data["status_code"] != float64(http.StatusBadGateway) || resp.Data["upstream_status_code"] != float64(http.StatusOK) {
 							t.Fatalf("zero output reported as success: %+v", resp.Data)
 						}
-						if resp.Data["cooldown_action"] != "model_cooldown_applied" || resp.Data["error"] != "Gemini response finished with "+reason {
+						wantError := "Gemini response finished with " + reason
+						if reason == "empty-response" {
+							wantError = "Antigravity returned an empty response object"
+						}
+						if resp.Data["cooldown_action"] != "model_cooldown_applied" || resp.Data["error"] != wantError {
 							t.Fatalf("failure classification=%+v", resp.Data)
 						}
 						if gjson.Get(fmt.Sprint(resp.Data["raw_response"]), "error.code").String() != "gemini_zero_output" {

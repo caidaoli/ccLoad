@@ -451,22 +451,7 @@ func prepareAntigravityRequestBody(
 	request = normalizeAntigravityThinkingLevel(request, modelName)
 	lookupID := strings.ToLower(strings.TrimSpace(modelName))
 	if strings.Contains(lookupID, "claude") {
-		// The translator preserves client limits; cap them for the actual upstream model.
-		if maxOut, ok := jsonIntegerValue(gjson.GetBytes(request, "generationConfig.maxOutputTokens")); ok {
-			if info := cliproxyregistry.LookupModelInfo(lookupID, "antigravity"); info != nil && info.MaxCompletionTokens > 0 && maxOut > int64(info.MaxCompletionTokens) {
-				request = setJSONValue(request, "generationConfig.maxOutputTokens", info.MaxCompletionTokens)
-				for _, path := range []string{
-					"generationConfig.thinkingConfig.thinkingBudget",
-					"generationConfig.thinkingConfig.thinking_budget",
-					"generationConfig.thinking_config.thinkingBudget",
-					"generationConfig.thinking_config.thinking_budget",
-				} {
-					if budget, ok := jsonIntegerValue(gjson.GetBytes(request, path)); ok && budget >= int64(info.MaxCompletionTokens) {
-						request = setJSONValue(request, path, info.MaxCompletionTokens-1)
-					}
-				}
-			}
-		}
+		request = normalizeAntigravityClaudeOutputLimit(request, lookupID)
 		request = normalizeAntigravityClaudeToolResultOrder(request)
 		request = normalizeAntigravityClaudeToolMode(request, structuredOutputPrompt != "")
 	} else {
@@ -525,11 +510,51 @@ func prepareAntigravityRequestBody(
 }
 
 /**
+ * @brief 归一 Claude 的输出上限别名，按有效上限限制思考预算。
+ * @param request 已合并 generationConfig 别名的 Antigravity 请求体。
+ * @param modelID 已归一为小写的实际上游模型 ID。
+ * @return 保留缺省或零输出上限，已有正上限按模型目录收紧后的请求体。
+ */
+func normalizeAntigravityClaudeOutputLimit(request []byte, modelID string) []byte {
+	const canonicalPath = "generationConfig.maxOutputTokens"
+	const aliasPath = "generationConfig.max_output_tokens"
+	canonical := gjson.GetBytes(request, canonicalPath)
+	maxOut, ok := jsonIntegerValue(canonical)
+	if alias := gjson.GetBytes(request, aliasPath); alias.Exists() {
+		aliasMax, aliasOK := jsonIntegerValue(alias)
+		if !canonical.Exists() || aliasOK && aliasMax > 0 && (!ok || maxOut < 0 || aliasMax < maxOut) {
+			request = setJSONRaw(request, canonicalPath, alias.Raw)
+			maxOut, ok = aliasMax, aliasOK
+		}
+		request = deleteJSONPath(request, aliasPath)
+	}
+	if !ok || maxOut <= 0 {
+		return request
+	}
+	if info := cliproxyregistry.LookupModelInfo(modelID, "antigravity"); info != nil &&
+		info.MaxCompletionTokens > 0 && maxOut > int64(info.MaxCompletionTokens) {
+		maxOut = int64(info.MaxCompletionTokens)
+		request = setJSONValue(request, canonicalPath, maxOut)
+	}
+	for _, path := range []string{
+		"generationConfig.thinkingConfig.thinkingBudget",
+		"generationConfig.thinkingConfig.thinking_budget",
+		"generationConfig.thinking_config.thinkingBudget",
+		"generationConfig.thinking_config.thinking_budget",
+	} {
+		if budget, ok := jsonIntegerValue(gjson.GetBytes(request, path)); ok && budget >= maxOut {
+			request = setJSONValue(request, path, maxOut-1)
+		}
+	}
+	return request
+}
+
+/**
  * @brief 将 Claude 5.5 不支持的原生结构化输出转换为提示词。
  * @param request Antigravity 信封内的请求，schema 尚未清洗。
  * @param modelName 实际请求的上游模型。
  * @return 移除了已转换 schema 和响应 MIME 类型的请求。
- * @return 基于原始 schema 的提示词；无需转换时为空。
+ * @return 将 Protobuf 类型转为 JSON Schema 类型后的提示词；无需转换时为空。
  */
 func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) ([]byte, string) {
 	if anthropicForcedToolChoiceRejectingFamily(anthropicCanonicalModelName(modelName)) == "" {
@@ -548,7 +573,8 @@ func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) (
 	if !schema.Exists() {
 		return request, ""
 	}
-	prompt := cliproxycommon.BuildClaudeStructuredOutputInstruction(gjson.Parse(`{"type":"json_schema","schema":` + schema.Raw + `}`))
+	schemaJSON := cliproxyutil.NormalizeJSONSchemaNumericConstraints(schema.Raw)
+	prompt := cliproxycommon.BuildClaudeStructuredOutputInstruction(gjson.Parse(`{"type":"json_schema","schema":` + schemaJSON + `}`))
 	for _, configKey := range configKeys {
 		for _, key := range append(schemaKeys, "responseMimeType", "response_mime_type") {
 			request = deleteJSONPath(request, configKey+"."+key)
@@ -1033,9 +1059,11 @@ func normalizeAntigravityClaudeToolMode(request []byte, promptStructuredOutput b
 	return setJSONValue(request, "toolConfig.functionCallingConfig.mode", "VALIDATED")
 }
 
-// Claude requires tool results before ordinary user content. Shared Gemini
-// translators put reminders first for Vertex, so enforce the Claude wire contract
-// here for every client protocol without changing model turns or result payloads.
+/**
+ * @brief 按 Claude 线协议将同轮工具结果移到普通内容之前，保留各组内的顺序。
+ * @param request 转换后的 Antigravity 请求体。
+ * @return 按 Claude 目标调整后的请求体。
+ */
 func normalizeAntigravityClaudeToolResultOrder(request []byte) []byte {
 	for index, content := range gjson.GetBytes(request, "contents").Array() {
 		if content.Get("role").String() != "user" {
@@ -1044,7 +1072,7 @@ func normalizeAntigravityClaudeToolResultOrder(request []byte) []byte {
 		var results, other []string
 		needsReorder := false
 		for _, part := range content.Get("parts").Array() {
-			if part.Get("functionResponse").IsObject() {
+			if cliproxycommon.GeminiPartFunctionResponse(part).IsObject() {
 				results = append(results, part.Raw)
 				needsReorder = needsReorder || len(other) > 0
 			} else {

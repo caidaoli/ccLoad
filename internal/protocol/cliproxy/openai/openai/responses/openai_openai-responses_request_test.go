@@ -67,6 +67,26 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFu
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefaultsBlankFunctionArguments(t *testing.T) {
+	for _, tc := range []struct{ name, arguments, want string }{
+		{"omitted", "", "{}"},
+		{"empty", `,"arguments":""`, "{}"},
+		{"whitespace", `,"arguments":" \t "`, "{}"},
+		{"explicit object", `,"arguments":" {\"path\":\".\"} "`, ` {"path":"."} `},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"input":[{"type":"function_call","call_id":"call_ping","name":"ping"` + tc.arguments + `},{"type":"function_call_output","call_id":"call_ping","output":"pong"}]}`)
+			out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-4o", raw, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(out, "messages.0.tool_calls.0.function.arguments"); got.Type != gjson.String || got.String() != tc.want {
+				t.Fatalf("tool arguments = %s, want %q", got.Raw, tc.want)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_SplitFunctionCallsWhenInterrupted(t *testing.T) {
 	raw := []byte(`{
 		"input": [

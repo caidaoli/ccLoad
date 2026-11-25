@@ -469,7 +469,10 @@ func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 	return false
 }
 
-// HandleProxyRequest 通用透明代理处理器
+/**
+ * @brief 按客户端协议解析请求，转发到可用渠道并返回结果。
+ * @param c 本次 HTTP 请求的上下文。
+ */
 func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// Responses GET is reserved for the downstream WebSocket handshake. A plain
 	// GET must stop here instead of entering the generic proxy, where it has no
@@ -561,6 +564,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// 先把后缀写成客户端协议字段；选定渠道后会再按实际上游模型能力收敛等级。
 	all = applyThinkingSuffix(all, clientProtocol, incoming.requestedModel)
 	thinkingEffort := thinkingEffortFromRequest(incoming.requestedModel, all)
+	if thinkingEffort == "" && clientProtocol == protocol.OpenAI && requestFamily == protocol.RequestFamilyChatCompletions {
+		thinkingEffort = openAIGoogleThinkingEffort(all)
+	}
 
 	tokenHashStr := ""
 	if v, ok := c.Get("token_hash"); ok {

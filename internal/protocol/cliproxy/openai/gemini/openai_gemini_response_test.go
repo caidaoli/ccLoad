@@ -18,56 +18,183 @@ func TestConvertOpenAIResponseToGeminiNonStreamPreservesToolCallID(t *testing.T)
 	}
 }
 
-func TestConvertOpenAIResponseToGeminiNonStream_MultiChoicePartsOverlay(t *testing.T) {
-	// Scenario 1: First choice has tool call, second choice has text on part 0 -> fields merge
-	raw1 := []byte(`{"choices":[
-		{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}},
-		{"index":1,"message":{"role":"assistant","content":"choice 1 text"}}
-	]}`)
-	out1 := ConvertOpenAIResponseToGeminiNonStream(context.Background(), "gpt-test", nil, nil, raw1, nil)
-	parts1 := gjson.GetBytes(out1, "candidates.0.content.parts").Array()
-	if len(parts1) != 1 {
-		t.Fatalf("expected 1 merged part, got %d. Output: %s", len(parts1), out1)
+func TestConvertOpenAIResponseToGeminiNonStream_SeparatesChoices(t *testing.T) {
+	raw := []byte(`{"choices":[
+		{"index":3,"message":{"reasoning_content":"first thought","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"one\"}"},"thoughtSignature":"signature"}]},"finish_reason":"tool_calls"},
+		{"index":1,"message":{"content":"second text"},"finish_reason":"length"},
+		{"message":{"content":"third text"}}
+	],"usage":{"prompt_tokens":10}}`)
+	out := ConvertOpenAIResponseToGeminiNonStream(context.Background(), "gpt-test", nil, nil, raw, nil)
+	candidates := gjson.GetBytes(out, "candidates").Array()
+	if len(candidates) != 3 {
+		t.Fatalf("expected three independent candidates, got %s", out)
 	}
-	if parts1[0].Get("text").String() != "choice 1 text" {
-		t.Fatalf("expected text to be 'choice 1 text', got %q", parts1[0].Get("text").String())
+	for pos, wantIndex := range []int64{3, 1, 2} {
+		candidate := candidates[pos]
+		if candidate.Get("index").Int() != wantIndex || candidate.Get("content.role").String() != "model" {
+			t.Fatalf("candidate %d has wrong index or role: %s", pos, candidate.Raw)
+		}
 	}
-	if parts1[0].Get("functionCall.id").String() != "call_1" {
-		t.Fatalf("expected functionCall.id to be preserved as 'call_1', got %q", parts1[0].Get("functionCall.id").String())
+	first := candidates[0]
+	if first.Get("finishReason").String() != "STOP" || first.Get("content.parts.#").Int() != 2 ||
+		!first.Get("content.parts.0.thought").Bool() || first.Get("content.parts.0.text").String() != "first thought" ||
+		first.Get("content.parts.1.functionCall.id").String() != "call_1" ||
+		first.Get("content.parts.1.functionCall.name").String() != "lookup" ||
+		first.Get("content.parts.1.functionCall.args.query").String() != "one" ||
+		first.Get("content.parts.1.thoughtSignature").String() != "signature" {
+		t.Fatalf("first candidate lost thinking, tool, or finish reason: %s", first.Raw)
+	}
+	second := candidates[1]
+	if second.Get("finishReason").String() != "MAX_TOKENS" || second.Get("content.parts.#").Int() != 1 ||
+		second.Get("content.parts.0.text").String() != "second text" || second.Get("content.parts.0.thought").Exists() ||
+		second.Get("content.parts.0.functionCall").Exists() {
+		t.Fatalf("second candidate was truncated or mixed with the first: %s", second.Raw)
+	}
+	third := candidates[2]
+	if third.Get("finishReason").Exists() || third.Get("content.parts.0.text").String() != "third text" ||
+		gjson.GetBytes(out, "usageMetadata.promptTokenCount").Int() != 10 {
+		t.Fatalf("expected optional finish reason and shared usage: %s", out)
+	}
+}
+
+func TestConvertOpenAIResponseToGeminiStream_SeparatesChoices(t *testing.T) {
+	var state any
+	send := func(payload string) [][]byte {
+		return ConvertOpenAIResponseToGemini(context.Background(), "gpt-test", nil, nil, []byte(payload), &state)
 	}
 
-	// Scenario 2: Reasoning in choice 0, text in choice 1 on part 0 -> thought preserved, text updated
-	raw2 := []byte(`{"choices":[
-		{"index":0,"message":{"role":"assistant","reasoning_content":"initial thought"}},
-		{"index":1,"message":{"role":"assistant","content":"final text"}}
-	]}`)
-	out2 := ConvertOpenAIResponseToGeminiNonStream(context.Background(), "gpt-test", nil, nil, raw2, nil)
-	parts2 := gjson.GetBytes(out2, "candidates.0.content.parts").Array()
-	if len(parts2) != 1 {
-		t.Fatalf("expected 1 merged part, got %d. Output: %s", len(parts2), out2)
-	}
-	if !parts2[0].Get("thought").Bool() {
-		t.Fatalf("expected thought: true to be preserved")
-	}
-	if parts2[0].Get("text").String() != "final text" {
-		t.Fatalf("expected text to be 'final text', got %q", parts2[0].Get("text").String())
+	out := send(`{"choices":[
+		{"index":1,"delta":{"content":"one","tool_calls":[{"index":0,"id":"call_1","function":{"name":"first","arguments":"{\"query\":"}}]}},
+		{"index":2,"delta":{"content":"two","tool_calls":[{"index":0,"id":"call_2","function":{"name":"second","arguments":"{\"query\":"}}]}}
+	],"usage":{"prompt_tokens":10}}`)
+	if len(out) != 2 || gjson.GetBytes(out[0], "candidates.0.content.parts.0.text").String() != "one" ||
+		gjson.GetBytes(out[1], "candidates.0.content.parts.0.text").String() != "two" ||
+		gjson.GetBytes(out[0], "usageMetadata.promptTokenCount").Int() != 10 ||
+		gjson.GetBytes(out[1], "usageMetadata").Exists() {
+		t.Fatalf("want two independent content chunks and one usage record, got %q", out)
 	}
 
-	// Scenario 3: Text in choice 0, functionCall in choice 1 on part 0 -> text preserved, functionCall added
-	raw3 := []byte(`{"choices":[
-		{"index":0,"message":{"role":"assistant","content":"original text"}},
-		{"index":1,"message":{"role":"assistant","tool_calls":[{"id":"call_2","type":"function","function":{"name":"search","arguments":"{}"}}]}}
+	out = send(`{"choices":[
+		{"index":1,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"one\"}"}}]},"finish_reason":"tool_calls"}
 	]}`)
-	out3 := ConvertOpenAIResponseToGeminiNonStream(context.Background(), "gpt-test", nil, nil, raw3, nil)
-	parts3 := gjson.GetBytes(out3, "candidates.0.content.parts").Array()
-	if len(parts3) != 1 {
-		t.Fatalf("expected 1 merged part, got %d. Output: %s", len(parts3), out3)
+	if len(out) != 1 || gjson.GetBytes(out[0], "candidates.0.index").Int() != 1 ||
+		gjson.GetBytes(out[0], "candidates.0.finishReason").String() != "STOP" ||
+		gjson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.id").String() != "call_1" ||
+		gjson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.args.query").String() != "one" {
+		t.Fatalf("candidate 1 received the wrong tool or terminal reason: %q", out)
 	}
-	if parts3[0].Get("text").String() != "original text" {
-		t.Fatalf("expected text to be 'original text', got %q", parts3[0].Get("text").String())
+
+	out = send(`{"choices":[
+		{"index":1,"delta":{},"finish_reason":"tool_calls"},
+		{"index":2,"delta":{"content":"still working","tool_calls":[{"index":0,"function":{"arguments":"\"two\"}"},"thoughtSignature":"sig_2"}]}},
+		{"index":3,"delta":{"content":"third"}}
+	]}`)
+	if len(out) != 2 || gjson.GetBytes(out[0], "candidates.0.index").Int() != 2 ||
+		gjson.GetBytes(out[0], "candidates.0.content.parts.0.text").String() != "still working" {
+		t.Fatalf("duplicate terminal for candidate 1 interrupted later candidates: %q", out)
 	}
-	if parts3[0].Get("functionCall.id").String() != "call_2" {
-		t.Fatalf("expected functionCall.id to be 'call_2', got %q", parts3[0].Get("functionCall.id").String())
+
+	out = send("[DONE]")
+	if len(out) != 2 || gjson.GetBytes(out[0], "candidates.0.index").Int() != 2 ||
+		gjson.GetBytes(out[0], "candidates.0.finishReason").String() != "STOP" ||
+		gjson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.id").String() != "call_2" ||
+		gjson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.args.query").String() != "two" ||
+		gjson.GetBytes(out[0], "candidates.0.content.parts.0.thoughtSignature").String() != "sig_2" ||
+		gjson.GetBytes(out[1], "candidates.0.index").Int() != 3 ||
+		gjson.GetBytes(out[1], "candidates.0.finishReason").String() != "STOP" {
+		t.Fatalf("stream completion did not flush only candidates 2 and 3: %q", out)
+	}
+	if out := send("[DONE]"); len(out) != 0 {
+		t.Fatalf("duplicate stream completion produced %q", out)
+	}
+}
+
+func TestConvertOpenAIResponseToGeminiStream_PreservesUpdatedUsage(t *testing.T) {
+	for _, tt := range []struct{ name, choices string }{
+		{"empty delta", `[{"index":0,"delta":{},"finish_reason":null}]`},
+		{"empty choices", `[]`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var state any
+			send := func(payload string) [][]byte {
+				return ConvertOpenAIResponseToGemini(context.Background(), "gpt-test", nil, nil, []byte(payload), &state)
+			}
+			assertUsage := func(chunks [][]byte, output, total int64) {
+				t.Helper()
+				if len(chunks) != 1 || gjson.GetBytes(chunks[0], "usageMetadata.candidatesTokenCount").Int() != output ||
+					gjson.GetBytes(chunks[0], "usageMetadata.totalTokenCount").Int() != total {
+					t.Fatalf("want output=%d and total=%d, got %q", output, total, chunks)
+				}
+			}
+			assertUsage(send(`{"choices":[{"index":0,"delta":{"content":"answer"}}],"usage":{"prompt_tokens":11,"completion_tokens":2}}`), 2, 13)
+			assertUsage(send(`{"choices":`+tt.choices+`,"usage":{"prompt_tokens":11,"completion_tokens":5,"total_tokens":16}}`), 5, 16)
+			assertUsage(send(`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":5}}`), 5, 16)
+			if out := send(`{"choices":[],"usage":{"output_tokens":5,"total_tokens":16,"input_tokens":11}}`); len(out) != 0 {
+				t.Fatalf("same terminal usage repeated: %q", out)
+			}
+			assertUsage(send(`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`), 7, 18)
+		})
+	}
+}
+
+func TestConvertOpenAIResponseToGemini_ReasoningAndTypedContent(t *testing.T) {
+	type part struct {
+		text    string
+		thought bool
+	}
+	for _, tt := range []struct {
+		name   string
+		fields string
+		want   []part
+	}{
+		{
+			name:   "top-level precedes inline thought",
+			fields: `"reasoning_content":"preferred","reasoning":"duplicate","reasoning_details":[{"text":"duplicate"}],"content":[{"type":"thinking","thinking":"duplicate"},{"type":"text","text":"answer"}]`,
+			want:   []part{{"preferred", true}, {"answer", false}},
+		},
+		{
+			name:   "reasoning alias",
+			fields: `"reasoning_content":"","reasoning":"alias","content":"answer"`,
+			want:   []part{{"alias", true}, {"answer", false}},
+		},
+		{
+			name:   "reasoning summary and details",
+			fields: `"reasoning_details":[{"type":"reasoning.summary","summary":"plan"},{"type":"reasoning.text","text":"check"}],"content":[{"type":"refusal","refusal":"refused"}]`,
+			want:   []part{{"plan", true}, {"check", true}, {"refused", false}},
+		},
+		{
+			name:   "typed parts retain order",
+			fields: `"content":[{"type":"text","text":"before"},{"type":"reasoning","reasoning":"inline"},{"type":"unknown","text":"hidden"},{"type":"output_text","text":"after"}]`,
+			want:   []part{{"before", false}, {"inline", true}, {"after", false}},
+		},
+	} {
+		for _, wire := range []string{"message", "delta"} {
+			t.Run(tt.name+"/"+wire, func(t *testing.T) {
+				raw := []byte(`{"choices":[{"index":0,"` + wire + `":{` + tt.fields + `}}]}`)
+				ctx := context.Background()
+				var out []byte
+				if wire == "delta" {
+					var state any
+					chunks := ConvertOpenAIResponseToGemini(ctx, "gpt-test", nil, nil, raw, &state)
+					if len(chunks) != 1 {
+						t.Fatalf("expected one output chunk, got %q", chunks)
+					}
+					out = chunks[0]
+				} else {
+					out = ConvertOpenAIResponseToGeminiNonStream(ctx, "gpt-test", nil, nil, raw, nil)
+				}
+
+				parts := gjson.GetBytes(out, "candidates.0.content.parts").Array()
+				if len(parts) != len(tt.want) {
+					t.Fatalf("want %d parts, got %s", len(tt.want), out)
+				}
+				for i, want := range tt.want {
+					if parts[i].Get("text").String() != want.text || parts[i].Get("thought").Bool() != want.thought {
+						t.Fatalf("part %d = %s, want %+v", i, parts[i].Raw, want)
+					}
+				}
+			})
+		}
 	}
 }
 

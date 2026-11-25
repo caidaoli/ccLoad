@@ -32,7 +32,7 @@ func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	const fallbackUserAgent = "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980)"
+	const fallbackUserAgent = "antigravity/hub/2.35.1 (aidev_client; os_type=darwin; arch=arm64; cl=1029194470)"
 	service := NewService(server.Client())
 	if got := service.RequestUserAgent(); got != fallbackUserAgent {
 		t.Fatalf("fallback User-Agent = %q, want %q", got, fallbackUserAgent)
@@ -44,10 +44,12 @@ func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
 		{"2.32.1", "antigravity/hub/2.32.1 (aidev_client; os_type=darwin; arch=arm64; cl=1021296516)"},
 		{"2.25.0", fallbackUserAgent},
 		{"2.32.2", "antigravity/hub/2.32.2 (aidev_client; os_type=darwin; arch=arm64; cl=1022991777)"},
-		{"2.34.0", fallbackUserAgent},
+		{"2.34.0", "antigravity/hub/2.34.0 (aidev_client; os_type=darwin; arch=arm64; cl=1026637980)"},
 		{"2.29.0", "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)"},
 		{"2.33.0", "antigravity/hub/2.33.0 (aidev_client; os_type=darwin; arch=arm64; cl=1023160026)"},
-		{"2.35.0", fallbackUserAgent},
+		{"2.35.0", "antigravity/hub/2.35.0 (aidev_client; os_type=darwin; arch=arm64; cl=1028447422)"},
+		{"2.35.1", fallbackUserAgent},
+		{"2.36.0", fallbackUserAgent},
 	} {
 		t.Run(tt.version, func(t *testing.T) {
 			service.ManifestURL = server.URL + "/latest-arm64-mac.yml?version=" + tt.version

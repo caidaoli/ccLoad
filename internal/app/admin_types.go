@@ -258,21 +258,21 @@ func validateChannelBaseURL(raw, authType string) (string, error) {
 	return normalized, nil
 }
 
+/**
+ * @brief 校验管理端输入的渠道代理地址，原样保留连接所需认证信息。
+ * @param raw 可为空的渠道代理设置。
+ * @return 去除首尾空白后的有效设置，或者空字符串。
+ * @return 无法作为渠道代理地址时返回诊断。
+ */
 func normalizeChannelProxyURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", nil
 	}
-	proxyURL, err := neturl.Parse(raw)
-	if err != nil || proxyURL.Host == "" {
-		return "", fmt.Errorf("invalid proxy_url: %q", raw)
+	if _, err := parseChannelProxyURL(raw); err != nil {
+		return "", err
 	}
-	switch proxyURL.Scheme {
-	case "http", "https", "socks5", "socks5h":
-		return raw, nil
-	default:
-		return "", fmt.Errorf("invalid proxy_url scheme: %q (allowed: http, https, socks5, socks5h)", proxyURL.Scheme)
-	}
+	return raw, nil
 }
 
 /**

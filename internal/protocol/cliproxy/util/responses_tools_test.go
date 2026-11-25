@@ -229,6 +229,58 @@ func TestBuildGeminiFunctionDeclarations_DisambiguationAndLongNames(t *testing.T
 	}
 }
 
+func TestResponsesToolIdentitySurvivesCollisionWithGeminiName(t *testing.T) {
+	namespace := "ns_" + strings.Repeat("A", 26)
+	firstName := strings.Repeat("Q", 42) + "A"
+	secondName := strings.Repeat("Q", 42) + "B"
+	group := `{"type":"namespace","name":"` + namespace + `","tools":[` +
+		`{"type":"function","name":"` + firstName + `","description":"first"},` +
+		`{"type":"function","name":"` + secondName + `","description":"second"}]}`
+	decls, _, _ := BuildGeminiFunctionDeclarations(gjson.Parse(`{"tools":[` + group + `]}`))
+	if len(decls) != 2 {
+		t.Fatalf("expected two namespace tools, got %q", decls)
+	}
+	alias := gjson.GetBytes(decls[0], "name").String()
+	if alias == "" || alias == firstName {
+		t.Fatalf("fixture must produce a Gemini name distinct from the original, got %q", alias)
+	}
+	independent := `{"type":"function","name":"` + alias + `","description":"independent"}`
+	for _, tc := range []struct{ name, tools string }{
+		{"namespace first", group + "," + independent},
+		{"independent tool first", independent + "," + group},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := []byte(`{"tools":[` + tc.tools + `]}`)
+			declarations, forward, _ := BuildGeminiFunctionDeclarations(gjson.ParseBytes(request))
+			wireNames := make(map[string]string, len(declarations))
+			for _, raw := range declarations {
+				decl := gjson.ParseBytes(raw)
+				wireNames[decl.Get("description").String()] = decl.Get("name").String()
+			}
+			if len(wireNames) != 3 || wireNames["first"] != alias || wireNames["independent"] == "" || wireNames["independent"] == alias {
+				t.Fatalf("expected distinct Gemini tool names, got %v", wireNames)
+			}
+
+			reverse := ResponsesToolReverseIdentityMap(request)
+			for _, tool := range []struct{ description, name, namespace string }{
+				{"first", firstName, namespace},
+				{"independent", alias, ""},
+			} {
+				choice := gjson.Parse(`{"type":"function","name":"` + tool.name + `","namespace":"` + tool.namespace + `"}`)
+				config, ok := ConvertResponsesToolChoiceToGemini(choice, forward)
+				wireName := wireNames[tool.description]
+				if got := gjson.GetBytes(config, "allowedFunctionNames.0").String(); !ok || got != wireName {
+					t.Errorf("forced choice for %s selected %q, want %q", tool.description, got, wireName)
+				}
+				identity := reverse[wireName]
+				if identity.Name != tool.name || identity.Namespace != tool.namespace {
+					t.Errorf("response identity for %q = %+v, want name %q in namespace %q", wireName, identity, tool.name, tool.namespace)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildGeminiApplyPatchDeclaration(t *testing.T) {
 	root := gjson.Parse(`{"tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":"start: patch"}}]}`)
 	declarations, _, reverse := BuildGeminiFunctionDeclarations(root)

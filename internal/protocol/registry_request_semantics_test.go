@@ -249,12 +249,12 @@ func TestRegistryGeminiToolSchema(t *testing.T) {
 		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
 		"tools":[{"googleSearch":{}},{"functionDeclarations":[{"name":"check","description":"validate",%q:{
 			"$schema":"https://json-schema.org/draft/2020-12/schema",
-			"type":"OBJECT","additionalProperties":true,"minProperties":"1","maxProperties":"10",
+			"type":6,"additionalProperties":true,"minProperties":"1","maxProperties":"10",
 			"properties":{
 				"type":{"type":"STRING","minLength":"1","maxLength":"200","enum":["1","2","MixedCase"],"default":"1"},
-				"items":{"type":"ARRAY","minItems":"1","maxItems":"5","items":{"type":"STRING","minLength":"2"}},
-				"payload":{"type":"OBJECT","const":{"type":"INVOICE"},"enum":[{"type":"INVOICE"},{"type":"RECEIPT"}],
-					"default":{"type":"INVOICE"},"examples":[{"type":"INVOICE"}]},
+				"items":{"type":5,"minItems":"1","maxItems":"5","items":{"type":1,"minLength":"2"}},
+				"payload":{"type":"OBJECT","const":{"type":6},"enum":[{"type":6},{"type":7}],
+					"default":{"type":6},"examples":[{"type":6}]},
 				"choice":{"anyOf":[{"type":"NUMBER"},{"type":["string","null"]}]}
 			},
 			"x-metadata":{"type":"KeepCase"}
@@ -265,8 +265,8 @@ func TestRegistryGeminiToolSchema(t *testing.T) {
 		"properties":{
 			"type":{"type":"string","minLength":1,"maxLength":200,"enum":["1","2","MixedCase"],"default":"1"},
 			"items":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"string","minLength":2}},
-			"payload":{"type":"object","const":{"type":"INVOICE"},"enum":[{"type":"INVOICE"},{"type":"RECEIPT"}],
-				"default":{"type":"INVOICE"},"examples":[{"type":"INVOICE"}]},
+			"payload":{"type":"object","const":{"type":6},"enum":[{"type":6},{"type":7}],
+				"default":{"type":6},"examples":[{"type":6}]},
 			"choice":{"anyOf":[{"type":"number"},{"type":["string","null"]}]}
 		},
 		"x-metadata":{"type":"KeepCase"}%s
@@ -309,6 +309,50 @@ func TestRegistryGeminiToolSchema(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+/**
+ * @brief Claude 转 Gemini 时保留生成上限、停止序列和有效 JSON Schema。
+ * @param t 测试上下文。
+ */
+func TestRegistryClaudeToGeminiGenerationConstraints(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	const base = `{"messages":[{"role":"user","content":"hi"}],`
+	const schema = `{"type":"object","properties":{"answer":{"type":"string"}}}`
+	for _, stream := range []bool{false, true} {
+		for _, limit := range []string{"0", "1048576", "9007199254740993"} {
+			t.Run(fmt.Sprintf("stream=%t/%s", stream, limit), func(t *testing.T) {
+				raw := []byte(base + `"max_tokens":` + limit + `,"stop_sequences":["end",""," ",3],"output_config":{"format":{"type":" JSON_SCHEMA ","schema":` + schema + `}}}`)
+				out, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-4-neon", raw, stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				generation := gjson.GetBytes(out, "generationConfig")
+				if got := generation.Get("maxOutputTokens"); got.Type != gjson.Number || got.Raw != limit {
+					t.Fatalf("maxOutputTokens = %s, want %s", got.Raw, limit)
+				}
+				if got := generation.Get("stopSequences").Value(); !reflect.DeepEqual(got, []any{"end", " "}) {
+					t.Fatalf("stopSequences = %v, want [end, space]", got)
+				}
+				if generation.Get("responseMimeType").Str != "application/json" ||
+					!reflect.DeepEqual(generation.Get("responseJsonSchema").Value(), gjson.Parse(schema).Value()) {
+					t.Fatalf("structured output missing: %s", generation.Raw)
+				}
+			})
+		}
+	}
+
+	raw := []byte(base + `"max_tokens":"512","stop_sequences":["",3],"output_config":{"format":{"type":"json_schema","schema":true}}}`)
+	out, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-4-neon", raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"maxOutputTokens", "stopSequences", "responseMimeType", "responseJsonSchema"} {
+		if gjson.GetBytes(out, "generationConfig."+key).Exists() {
+			t.Fatalf("invalid field %s reached Gemini: %s", key, out)
 		}
 	}
 }

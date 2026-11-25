@@ -250,7 +250,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 	if !(*param).(*Params).HasFirstResponse {
 		// Create the initial message structure with default values
 		// This follows the Claude API specification for streaming message initialization
-		messageStartTemplate := []byte(`{"type":"message_start","message":{"id":"msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+		messageStartTemplate := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
 
 		// Override default values with actual response metadata if available
 		if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
@@ -259,9 +259,8 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		if modelName != "" {
 			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelName)
 		}
-		if responseIDResult := gjson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id", responseIDResult.String())
-		}
+		messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id",
+			translatorcommon.GeminiClaudeMessageID(gjson.GetBytes(rawJSON, "responseId")))
 		appendEvent("message_start", string(messageStartTemplate))
 
 		(*param).(*Params).HasFirstResponse = true
@@ -726,7 +725,7 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 	sanitizedNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
-	out, _ = sjson.SetBytes(out, "id", root.Get("responseId").String())
+	out, _ = sjson.SetBytes(out, "id", translatorcommon.GeminiClaudeMessageID(root.Get("responseId")))
 	out, _ = sjson.SetBytes(out, "model", root.Get("modelVersion").String())
 	if modelName != "" {
 		out, _ = sjson.SetBytes(out, "model", modelName)

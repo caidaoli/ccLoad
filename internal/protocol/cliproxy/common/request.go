@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const tooluLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -58,4 +59,34 @@ func requestModelName(rawJSON []byte) string {
 		}
 	}
 	return ""
+}
+
+// ApplyClaudeGenerationConstraints copies Claude limits, stop sequences and a valid
+// structured-output schema to a Gemini generation config using its target schema field.
+func ApplyClaudeGenerationConstraints(out, source []byte, configPath, schemaKey string) []byte {
+	if value := gjson.GetBytes(source, "max_tokens"); value.Type == gjson.Number {
+		out, _ = sjson.SetRawBytes(out, configPath+".maxOutputTokens", []byte(value.Raw))
+	}
+
+	if stops := gjson.GetBytes(source, "stop_sequences"); stops.IsArray() {
+		var sequences []string
+		stops.ForEach(func(_, stop gjson.Result) bool {
+			if stop.Type == gjson.String && stop.Str != "" {
+				sequences = append(sequences, stop.Str)
+			}
+			return true
+		})
+		if len(sequences) > 0 {
+			out, _ = sjson.SetBytes(out, configPath+".stopSequences", sequences)
+		}
+	}
+
+	if format := gjson.GetBytes(source, "output_config.format"); format.IsObject() &&
+		strings.EqualFold(strings.TrimSpace(format.Get("type").String()), "json_schema") {
+		if schema := format.Get("schema"); schema.IsObject() {
+			out, _ = sjson.SetBytes(out, configPath+".responseMimeType", "application/json")
+			out, _ = sjson.SetRawBytes(out, configPath+"."+schemaKey, []byte(schema.Raw))
+		}
+	}
+	return out
 }

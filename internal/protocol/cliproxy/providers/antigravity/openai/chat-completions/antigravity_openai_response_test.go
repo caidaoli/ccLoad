@@ -3,6 +3,7 @@ package chat_completions
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"ccLoad/internal/protocol/cliproxy/util"
@@ -75,6 +76,41 @@ func TestFinishReasonToolCallsNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestAntigravityStreamSeparatesToolDeltasAndKeepsLateUsage(t *testing.T) {
+	var state any
+	convert := func(chunk string) [][]byte {
+		return ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(chunk), &state)
+	}
+	convert(`{"response":{"responseId":"resp-tools","modelVersion":"gemini-wire","createTime":"2026-11-25T00:00:00Z","candidates":[{"content":{"parts":[{"text":"calling tools"}]}}]}}`)
+	payload := `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"one","args":{}}},{"functionCall":{"name":"two","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":6}}}`
+	chunks := convert(payload)
+	if len(chunks) != 2 {
+		t.Fatalf("expected a tool delta and a terminal chunk, got %q", chunks)
+	}
+	delta, terminal := gjson.ParseBytes(chunks[0]), gjson.ParseBytes(chunks[1])
+	if delta.Get("choices.0.delta.tool_calls.#").Int() != 2 || delta.Get("choices.0.finish_reason").Type != gjson.Null || delta.Get("usage").Exists() {
+		t.Fatalf("expected both tool calls before finish_reason: %s", delta.Raw)
+	}
+	if terminal.Get("choices.0.finish_reason").String() != "tool_calls" || terminal.Get("choices.0.delta").Raw != `{}` || terminal.Get("usage.total_tokens").Int() != 6 {
+		t.Fatalf("expected terminal reason and usage with empty delta: %s", terminal.Raw)
+	}
+	for _, chunk := range []gjson.Result{delta, terminal} {
+		if chunk.Get("id").String() != "resp-tools" || chunk.Get("model").String() != "gemini-wire" || chunk.Get("created").Int() <= 0 {
+			t.Fatalf("missing response metadata: %s", chunk.Raw)
+		}
+	}
+	if chunks := convert(payload); len(chunks) != 0 {
+		t.Fatalf("replayed terminal frame emitted output: %q", chunks)
+	}
+	chunks = convert(`{"response":{"usageMetadata":{"totalTokenCount":7}}}`)
+	if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices").Raw != `[]` || gjson.GetBytes(chunks[0], "usage.total_tokens").Int() != 7 {
+		t.Fatalf("expected only usage after finish_reason: %q", chunks)
+	}
+	if chunks := convert(`[DONE]`); len(chunks) != 0 {
+		t.Fatalf("terminal reason repeated at [DONE]: %q", chunks)
+	}
+}
+
 func TestConvertAntigravityResponseToOpenAI_StreamToolArguments(t *testing.T) {
 	for _, tt := range []struct{ name, fields, want string }{
 		{name: "parameterless", want: `{}`},
@@ -94,6 +130,134 @@ func TestConvertAntigravityResponseToOpenAI_StreamToolArguments(t *testing.T) {
 				t.Fatalf("tool call = %s, want ping with arguments %q", call.Raw, tt.want)
 			}
 		})
+	}
+}
+
+func TestAntigravityStreamKeepsToolArgumentContinuationsOnTheirCall(t *testing.T) {
+	var state any
+	frames := []string{
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","partialArgs":[{"jsonPath":"$.city","stringValue":"Tok","willContinue":true}],"willContinue":true}},{"functionCall":{"id":"call_b","name":"lookup","args":{"units":"metric"},"willContinue":true}},{"functionCall":{"id":"call_c","name":"lookup","args":{"city":"Osaka"}}}]}}]}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"call_id":"call_b","args":{"city":"Paris"},"partial_args":[],"will_continue":false}},{"functionCall":{"id":"call_c"}}]}}]}}`,
+		`{"response":{"candidates":[{"finishReason":"MAX_TOKENS"}],"usageMetadata":{"totalTokenCount":8}}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","partial_args":[{"json_path":"$.city","string_value":"yo"}],"willContinue":true}}]}}]}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","args":{ },"willContinue":false}}]},"finishReason":""}]}}`,
+		`{"response":{"candidates":[{"finishReason":123}]}}`,
+		`[DONE]`,
+	}
+	var arguments [3]strings.Builder
+	var ids [3]string
+	terminalCount := 0
+	for frameIndex, frame := range frames {
+		chunks := ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(frame), &state)
+		if frameIndex == 2 && len(chunks) != 0 {
+			t.Fatalf("usage and a finish reason arrived while a call was still open: %q", chunks)
+		}
+		for _, chunk := range chunks {
+			payload := gjson.ParseBytes(chunk)
+			choice := payload.Get("choices.0")
+			if finish := choice.Get("finish_reason").String(); finish != "" {
+				terminalCount++
+				if frameIndex != len(frames)-1 || finish != "tool_calls" || choice.Get("native_finish_reason").String() != "max_tokens" ||
+					choice.Get("delta").Raw != `{}` || payload.Get("usage.total_tokens").Int() != 8 {
+					t.Fatalf("unexpected terminal chunk: %s", chunk)
+				}
+			}
+			for _, call := range choice.Get("delta.tool_calls").Array() {
+				idx := call.Get("index").Int()
+				if idx < 0 || idx >= int64(len(arguments)) {
+					t.Fatalf("a continuation created another tool: %s", chunk)
+				}
+				if id := call.Get("id").String(); id != "" {
+					if ids[idx] != "" || call.Get("function.name").String() != "lookup" {
+						t.Fatalf("expected one named start per call: %s", chunk)
+					}
+					ids[idx] = id
+				}
+				arguments[idx].WriteString(call.Get("function.arguments").String())
+			}
+		}
+	}
+	if ids != [3]string{"call_a", "call_b", "call_c"} || terminalCount != 1 {
+		t.Fatalf("got IDs %q and %d terminal chunks", ids, terminalCount)
+	}
+	for idx, want := range []string{`{"city":"Tokyo"}`, `{"units":"metric","city":"Paris"}`, `{"city":"Osaka"}`} {
+		if got := arguments[idx].String(); got != want {
+			t.Errorf("call %q arguments = %q, want %q", ids[idx], got, want)
+		}
+	}
+}
+
+func TestAntigravityStreamMatchesExplicitToolTailWithoutID(t *testing.T) {
+	var state any
+	convert := func(frame string) [][]byte {
+		return ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(frame), &state)
+	}
+	first := convert(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"units":"metric"},"willContinue":true}}]}}]}}`)
+	if len(first) != 1 || gjson.GetBytes(first[0], "choices.0.delta.tool_calls.0.id").String() == "" {
+		t.Fatalf("expected named tool start: %q", first)
+	}
+	if placeholders := convert(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{}},{"functionCall":{"args":{ }} }]}}]}}`); len(placeholders) != 0 {
+		t.Fatalf("empty placeholders changed tool arguments: %q", placeholders)
+	}
+	independent := convert(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"other":true}}}]}}]}}`)
+	if len(independent) != 1 || gjson.GetBytes(independent[0], "choices.0.delta.tool_calls.0.index").Int() != 1 ||
+		gjson.GetBytes(independent[0], "choices.0.delta.tool_calls.0.function.arguments").String() != `{"other":true}` {
+		t.Fatalf("unmarked same-name call did not receive its own index: %q", independent)
+	}
+	last := convert(`{"response":{"candidates":[{"content":{"parts":[{"function_call":{"name":"lookup","args":{"city":"Paris"},"will_continue":false}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":7}}}`)
+	if len(last) != 2 || gjson.GetBytes(last[1], "choices.0.finish_reason").String() != "tool_calls" {
+		t.Fatalf("expected the last tool delta followed by completion: %q", last)
+	}
+	delta := gjson.GetBytes(last[0], "choices.0.delta.tool_calls.0")
+	initial := gjson.GetBytes(first[0], "choices.0.delta.tool_calls.0.function.arguments").String()
+	if delta.Get("id").Exists() || delta.Get("index").Int() != 0 || initial+delta.Get("function.arguments").String() != `{"units":"metric","city":"Paris"}` {
+		t.Fatalf("explicit tail did not complete the first index: %q", last[0])
+	}
+}
+
+func TestAntigravityStreamRejectsInvalidOrTruncatedToolArguments(t *testing.T) {
+	for _, tc := range []struct{ name, frame, errorText string }{
+		{"invalid partial args", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","partialArgs":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":7}}}`, "vertex partialArgs must be an array"},
+		{"nonempty args without a matching call", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"city":"Paris"}}}]}}]}}`, "upstream Antigravity function arguments have no matching tool call"},
+		{"truncated tool", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","willContinue":true}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":7}}}`, "upstream Antigravity tool call ended before complete arguments"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var state any
+			chunks := ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(tc.frame), &state)
+			chunks = append(chunks, ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte("[DONE]"), &state)...)
+			for _, chunk := range chunks {
+				if gjson.GetBytes(chunk, "choices.0.finish_reason").String() != "" {
+					t.Fatalf("invalid tool arguments reported a successful finish: %s", chunk)
+				}
+			}
+			if err := state.(interface{ ToolInputError() error }).ToolInputError(); err == nil || err.Error() != tc.errorText {
+				t.Fatalf("got error %v, want %q", err, tc.errorText)
+			}
+		})
+	}
+	t.Run("nonempty args cannot replace partial arguments", func(t *testing.T) {
+		var state any
+		first := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","partialArgs":[{"jsonPath":"$.city","stringValue":"Tok","willContinue":true}],"willContinue":true}}]}}]}}`)
+		ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, first, &state)
+		final := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","args":{"units":"metric"},"willContinue":false}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":7}}}`)
+		if chunks := ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, final, &state); len(chunks) != 0 {
+			t.Fatalf("different argument formats emitted a terminal chunk: %q", chunks)
+		}
+		if err := state.(interface{ ToolInputError() error }).ToolInputError(); err == nil || err.Error() != "upstream Antigravity switched tool argument formats mid-call" {
+			t.Fatalf("different argument formats did not report an error: %v", err)
+		}
+	})
+	for _, text := range []string{`{"text":"interruption"}`, `{"thought":true,"text":"interruption"}`} {
+		var state any
+		first := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","willContinue":true}}]}}]}}`)
+		ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, first, &state)
+		next := []byte(`{"response":{"candidates":[{"content":{"parts":[` + text + `]}}]}}`)
+		if chunks := ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, next, &state); len(chunks) != 0 {
+			t.Fatalf("interleaved text leaked into an incomplete tool response: %q", chunks)
+		}
+		if err := state.(interface{ ToolInputError() error }).ToolInputError(); err == nil || err.Error() != "upstream Antigravity content interrupted incomplete tool arguments" {
+			t.Fatalf("interleaved text did not report interrupted tool arguments: %v", err)
+		}
 	}
 }
 
@@ -365,6 +529,23 @@ func TestConvertAntigravityResponseToOpenAINonStreamRestoresDisambiguatedName(t 
 	}
 }
 
+func TestConvertAntigravityResponseToOpenAINonStreamRestoresToolNameOnce(t *testing.T) {
+	original := []byte(`{"messages":[{"role":"user","content":"search"}],"tools":[{"type":"function","function":{"name":"mcp/search"}},{"type":"function","function":{"name":"mcp_search"}}],"tool_choice":{"type":"allowed_tools","allowed_tools":{"tools":[{"type":"function","function":{"name":"mcp/search"}}]}}}`)
+	request, err := ConvertOpenAIRequestToAntigravity("gemini", original, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireName := gjson.GetBytes(request, "request.tools.0.functionDeclarations.1.name").String()
+	if wireName == "" || wireName == "mcp_search" {
+		t.Fatalf("expected an Antigravity alias for mcp_search, got %q", wireName)
+	}
+	upstream := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + wireName + `","args":{}}}]}}]}}`)
+	output := ConvertAntigravityResponseToOpenAINonStream(t.Context(), "gemini", original, request, upstream, nil)
+	if got := gjson.GetBytes(output, "choices.0.message.tool_calls.0.function.name").String(); got != "mcp_search" {
+		t.Fatalf("function name = %q, want mcp_search: %s", got, output)
+	}
+}
+
 func TestConvertAntigravityResponseToOpenAINonStreamIncludesReasoningContent(t *testing.T) {
 	ctx := context.Background()
 	responseJSON := []byte(`{
@@ -516,8 +697,8 @@ func TestConvertAntigravityResponseToOpenAI_SkipsThoughtInlineDataImages(t *test
 		}
 		final := []byte(`{"response":{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"inline_data":{"mime_type":"image/png","data":"RFJBRlRfMg=="}},{"inlineData":{"mimeType":"image/png","data":"RklOQUxfSU1BR0U="},"thoughtSignature":"EjQKDg=="}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1120,"totalTokenCount":1132},"modelVersion":"gemini-3-pro-image","responseId":"resp_ag_7566"}}`)
 		out := ConvertAntigravityResponseToOpenAI(ctx, "gemini-3-pro-image", nil, nil, final, &param)
-		if len(out) != 1 {
-			t.Fatalf("final chunk count = %d, want 1", len(out))
+		if len(out) != 2 {
+			t.Fatalf("expected an image chunk followed by completion, got %q", out)
 		}
 		images := gjson.GetBytes(out[0], "choices.0.delta.images").Array()
 		if len(images) != 1 || images[0].Get("index").Int() != 0 || images[0].Get("image_url.url").String() != finalURL {

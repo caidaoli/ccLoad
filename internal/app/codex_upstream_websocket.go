@@ -1145,12 +1145,17 @@ func codexWebsocketHeaders(source http.Header) http.Header {
 	return header
 }
 
+/**
+ * @brief 使用渠道代理配置构建 Codex 上游 WebSocket 拨号器。
+ * @param cfg 已选定的渠道。
+ * @return 对应的拨号器；代理配置无效时使用全局传输设置。
+ */
 func (s *Server) codexWebsocketDialer(cfg *model.Config) *websocket.Dialer {
 	transport := buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount)
 	if cfg.ProxyURL != "" {
 		proxied, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify, s.upstreamChannelCount)
 		if err != nil {
-			log.Printf("[WARN] 渠道 %d WebSocket 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
+			log.Printf("[WARN] 渠道 %d WebSocket 代理 %q 无效，回退全局: %v", cfg.ID, channelProxyURLForLog(cfg.ProxyURL), err)
 		} else {
 			transport = proxied
 		}

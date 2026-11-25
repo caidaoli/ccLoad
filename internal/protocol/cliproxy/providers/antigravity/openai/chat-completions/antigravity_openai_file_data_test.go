@@ -18,3 +18,22 @@ func TestConvertOpenAIRequestToAntigravityNormalizesFileDataURL(t *testing.T) {
 		t.Fatalf("inlineData.data = %q, want raw base64 payload. Output: %s", got, out)
 	}
 }
+
+func TestConvertOpenAIRequestToAntigravityNormalizesAssistantImageDataURL(t *testing.T) {
+	input := []byte(`{"messages":[
+		{"role":"assistant","content":[
+			{"type":"image_url","image_url":{"url":"data:image/png ;name=diagram.png; BASE64 ,iVBORw0KGgo="}},
+			{"type":"image_url","image_url":{"url":"data:image/png;name=diagram.png,invalid"}}
+		]},
+		{"role":"user","content":"Describe the diagram"}
+	]}`)
+	out, err := ConvertOpenAIRequestToAntigravity("gemini-3-pro-preview", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
+	if len(parts) != 1 || parts[0].Get("inlineData.mimeType").String() != "image/png" ||
+		parts[0].Get("inlineData.data").String() != "iVBORw0KGgo=" {
+		t.Fatalf("unexpected assistant image parts: %s", out)
+	}
+}

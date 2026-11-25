@@ -5151,6 +5151,14 @@ func TestIssue7149_CleanJSONSchemaForGeminiJSONSchemaNormalizesNumericConstraint
 	}
 }
 
+func TestNormalizeJSONSchemaNumericConstraints_ProtobufTypes(t *testing.T) {
+	input := `{"\u0074ype":6,"properties":{"type":{"type":1},"a.b":{"type":2},"a\\b":{"type":3},"bool":{"type":4},"list":{"type":5,"items":{"type":7}},"union":{"type":["string","null"]},"zero":{"type":0},"unknown":{"type":8},"fraction":{"type":1.0},"string":{"type":"1"}},"default":{"type":6},"x-metadata":{"type":5}}`
+	want := `{"\u0074ype":"object","properties":{"type":{"type":"string"},"a.b":{"type":"number"},"a\\b":{"type":"integer"},"bool":{"type":"boolean"},"list":{"type":"array","items":{"type":"null"}},"union":{"type":["string","null"]},"zero":{"type":0},"unknown":{"type":8},"fraction":{"type":1.0},"string":{"type":"1"}},"default":{"type":6},"x-metadata":{"type":5}}`
+	if got := NormalizeJSONSchemaNumericConstraints(input); got != want {
+		t.Fatalf("schema = %s, want %s", got, want)
+	}
+}
+
 func TestNormalizeJSONSchemaNumericConstraints_IntegerStrings(t *testing.T) {
 	for _, tc := range []struct {
 		value      string

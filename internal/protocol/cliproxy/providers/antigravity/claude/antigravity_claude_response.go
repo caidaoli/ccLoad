@@ -261,7 +261,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 	if !params.HasFirstResponse {
 		// Create the initial message structure with default values according to Claude Code API specification
 		// This follows the Claude Code API specification for streaming message initialization
-		messageStartTemplate := []byte(`{"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`)
+		messageStartTemplate := []byte(`{"type": "message_start", "message": {"id": "", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`)
 
 		// Use cpaUsageMetadata within the message_start event for Claude.
 		if promptTokenCount := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata.promptTokenCount"); promptTokenCount.Exists() {
@@ -275,9 +275,8 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		if modelVersionResult := gjson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
 			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
 		}
-		if responseIDResult := gjson.GetBytes(rawJSON, "response.responseId"); responseIDResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id", responseIDResult.String())
-		}
+		messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id",
+			translatorcommon.GeminiClaudeMessageID(gjson.GetBytes(rawJSON, "response.responseId")))
 		appendEvent("message_start", string(messageStartTemplate))
 
 		params.HasFirstResponse = true
@@ -685,7 +684,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	}
 
 	responseJSON := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
-	responseJSON, _ = sjson.SetBytes(responseJSON, "id", root.Get("response.responseId").String())
+	responseJSON, _ = sjson.SetBytes(responseJSON, "id", translatorcommon.GeminiClaudeMessageID(root.Get("response.responseId")))
 	responseJSON, _ = sjson.SetBytes(responseJSON, "model", root.Get("response.modelVersion").String())
 	responseJSON, _ = sjson.SetBytes(responseJSON, "usage.input_tokens", inputTokens)
 	responseJSON, _ = sjson.SetBytes(responseJSON, "usage.output_tokens", outputTokens)

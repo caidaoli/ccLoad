@@ -575,16 +575,22 @@ func antigravityClaudeGeminiPartHasThoughtSignatureKeyInRaw(raw string) bool {
 	return false
 }
 
+var antigravityClaudeGeminiThoughtSignaturePaths = [][]string{
+	{"thoughtSignature"},
+	{"thought_signature"},
+	{"functionCall", "thoughtSignature"},
+	{"functionCall", "thought_signature"},
+	{"function_call", "thoughtSignature"},
+	{"function_call", "thought_signature"},
+	{"functionResponse", "thoughtSignature"},
+	{"functionResponse", "thought_signature"},
+	{"function_response", "thoughtSignature"},
+	{"function_response", "thought_signature"},
+	{"extra_content", "google", "thought_signature"},
+}
+
 func antigravityClaudeGeminiPartHasThoughtSignatureKey(part map[string]any) bool {
-	for _, path := range [][]string{
-		{"thoughtSignature"},
-		{"thought_signature"},
-		{"functionCall", "thoughtSignature"},
-		{"functionCall", "thought_signature"},
-		{"functionResponse", "thoughtSignature"},
-		{"functionResponse", "thought_signature"},
-		{"extra_content", "google", "thought_signature"},
-	} {
+	for _, path := range antigravityClaudeGeminiThoughtSignaturePaths {
 		if hasKeyAtPath(part, path...) {
 			return true
 		}
@@ -608,16 +614,8 @@ func hasKeyAtPath(value map[string]any, path ...string) bool {
 }
 
 func antigravityClaudeGeminiPartThoughtSignature(part map[string]any) (string, bool) {
-	for _, path := range [][]string{
-		{"thoughtSignature"},
-		{"thought_signature"},
-		{"functionCall", "thoughtSignature"},
-		{"functionCall", "thought_signature"},
-		{"functionResponse", "thoughtSignature"},
-		{"functionResponse", "thought_signature"},
-		{"extra_content", "google", "thought_signature"},
-	} {
-		if value, ok := stringAtPath(part, path...); ok {
+	for _, path := range antigravityClaudeGeminiThoughtSignaturePaths {
+		if value, ok := stringAtPath(part, path...); ok && strings.TrimSpace(value) != "" {
 			return value, true
 		}
 	}
@@ -625,15 +623,7 @@ func antigravityClaudeGeminiPartThoughtSignature(part map[string]any) (string, b
 }
 
 func deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part map[string]any) []byte {
-	for _, path := range [][]string{
-		{"thoughtSignature"},
-		{"thought_signature"},
-		{"functionCall", "thoughtSignature"},
-		{"functionCall", "thought_signature"},
-		{"functionResponse", "thoughtSignature"},
-		{"functionResponse", "thought_signature"},
-		{"extra_content", "google", "thought_signature"},
-	} {
+	for _, path := range antigravityClaudeGeminiThoughtSignaturePaths {
 		current := part
 		for _, key := range path[:len(path)-1] {
 			next, ok := current[key].(map[string]any)
@@ -716,7 +706,7 @@ func selectGroupResponses(collected []gjson.Result, group *FunctionCallGroup) ([
 	byName := make(map[string][]int, len(collected))
 	var emptyNameIdxs []int
 	for idx, resp := range collected {
-		funcResp := resp.Get("functionResponse")
+		funcResp := translatorcommon.GeminiPartFunctionResponse(resp)
 		if id := funcResp.Get("id").String(); id != "" {
 			byID[id] = append(byID[id], idx)
 		}
@@ -835,8 +825,9 @@ func attachInlineDataToFunctionResponse(response gjson.Result, images [][]byte) 
 		return response
 	}
 	target := []byte(response.Raw)
+	partsPath := geminiFunctionResponseField(response) + ".parts.-1"
 	for _, img := range images {
-		target, _ = sjson.SetRawBytes(target, "functionResponse.parts.-1", img)
+		target, _ = sjson.SetRawBytes(target, partsPath, img)
 	}
 	return gjson.ParseBytes(target)
 }
@@ -851,7 +842,7 @@ func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) ([]gjson.
 	leadingImages := make([][]byte, 0)
 	current := -1
 	parts.ForEach(func(_, part gjson.Result) bool {
-		if part.Get("functionResponse").Exists() {
+		if translatorcommon.GeminiPartFunctionResponse(part).Exists() {
 			responses = append(responses, part)
 			current = len(responses) - 1
 			if len(leadingImages) > 0 {
@@ -875,21 +866,28 @@ func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) ([]gjson.
 	return responses, otherParts
 }
 
+func geminiFunctionResponseField(part gjson.Result) string {
+	if part.Get("functionResponse").Exists() {
+		return "functionResponse"
+	}
+	return "function_response"
+}
+
 // parseFunctionResponseRaw attempts to normalize a function response part into a JSON object string.
 // Falls back to a minimal "functionResponse" object when parsing fails.
 // fallbackName is used when the response's own name is empty.
 func parseFunctionResponseRaw(response gjson.Result, fallbackName string) string {
+	funcResp := translatorcommon.GeminiPartFunctionResponse(response)
 	if response.IsObject() && gjson.Valid(response.Raw) {
 		raw := response.Raw
-		name := response.Get("functionResponse.name").String()
+		name := funcResp.Get("name").String()
 		if strings.TrimSpace(name) == "" && fallbackName != "" {
-			updated, _ := sjson.SetBytes([]byte(raw), "functionResponse.name", fallbackName)
+			updated, _ := sjson.SetBytes([]byte(raw), geminiFunctionResponseField(response)+".name", fallbackName)
 			raw = string(updated)
 		}
 		return raw
 	}
 
-	funcResp := response.Get("functionResponse")
 	if funcResp.Exists() {
 		fr := []byte(`{"functionResponse":{"name":"","response":{"result":""}}}`)
 		name := funcResp.Get("name").String()
@@ -947,7 +945,7 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 			return true
 		}
 		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
-			if part.Get("functionResponse").Exists() {
+			if translatorcommon.GeminiPartFunctionResponse(part).Exists() {
 				needsGrouping = true
 				return false
 			}
@@ -1023,9 +1021,9 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 			var callIDs []string
 			var callNames []string
 			parts.ForEach(func(_, part gjson.Result) bool {
-				if part.Get("functionCall").Exists() {
-					callIDs = append(callIDs, part.Get("functionCall.id").String())
-					callNames = append(callNames, part.Get("functionCall.name").String())
+				if call := translatorcommon.GeminiPartFunctionCall(part); call.Exists() {
+					callIDs = append(callIDs, call.Get("id").String())
+					callNames = append(callNames, call.Get("name").String())
 				}
 				return true
 			})

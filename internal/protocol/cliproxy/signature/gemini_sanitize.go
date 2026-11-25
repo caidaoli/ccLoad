@@ -190,7 +190,7 @@ func sanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string,
 			partJSON := []byte(part.Raw)
 			rawSignature, hasSignature := geminiPartThoughtSignature(part)
 			if opts.onlyBareTink {
-				hasFunctionCall := part.Get("functionCall").Exists()
+				hasFunctionCall := geminiPartHasFunctionCall(part)
 				isFirstFunctionCall := isModelTurn && hasFunctionCall && !firstFunctionCallSeen
 				if isModelTurn && (hasFunctionCall || !part.Get("thought").Bool()) {
 					firstFunctionCallSeen = hasFunctionCall
@@ -205,7 +205,7 @@ func sanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string,
 				partItems = append(partItems, partJSON)
 				return true
 			}
-			if part.Get("functionResponse").Exists() {
+			if geminiPartHasFunctionResponse(part) {
 				if hasSignature {
 					partJSON = deleteGeminiPartThoughtSignatureFields(partJSON)
 					partsChanged = true
@@ -222,7 +222,7 @@ func sanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string,
 				return true
 			}
 
-			hasFunctionCall := part.Get("functionCall").Exists()
+			hasFunctionCall := geminiPartHasFunctionCall(part)
 			isFirstFunctionCall := hasFunctionCall && !firstFunctionCallSeen
 			// A text part, even an empty signature carrier, ends the parallel group:
 			// the Gemini API rejects an unsigned functionCall after it. Thought parts do not.
@@ -307,7 +307,7 @@ func geminiContentsThoughtSignaturesNeedSanitize(contents gjson.Result, opts gem
 				needsSanitize = IsGeminiVertexBareTinkSignature(rawSignature)
 				return !needsSanitize
 			}
-			if part.Get("functionResponse").Exists() {
+			if geminiPartHasFunctionResponse(part) {
 				needsSanitize = hasSignature
 				return !needsSanitize
 			}
@@ -317,7 +317,7 @@ func geminiContentsThoughtSignaturesNeedSanitize(contents gjson.Result, opts gem
 			if part.Get("toolCall").Exists() || part.Get("tool_call").Exists() || part.Get("toolResponse").Exists() || part.Get("tool_response").Exists() {
 				return true
 			}
-			hasFunctionCall := part.Get("functionCall").Exists()
+			hasFunctionCall := geminiPartHasFunctionCall(part)
 			isFirstFunctionCall := hasFunctionCall && !firstFunctionCallSeen
 			if hasFunctionCall || !part.Get("thought").Bool() {
 				firstFunctionCallSeen = hasFunctionCall
@@ -352,19 +352,36 @@ var geminiPartThoughtSignaturePaths = []string{
 	"thought_signature",
 	"functionCall.thoughtSignature",
 	"functionCall.thought_signature",
+	"function_call.thoughtSignature",
+	"function_call.thought_signature",
 	"functionResponse.thoughtSignature",
 	"functionResponse.thought_signature",
+	"function_response.thoughtSignature",
+	"function_response.thought_signature",
 	"extra_content.google.thought_signature",
 }
 
+func geminiPartHasFunctionCall(part gjson.Result) bool {
+	return part.Get("functionCall").Exists() || part.Get("function_call").Exists()
+}
+
+func geminiPartHasFunctionResponse(part gjson.Result) bool {
+	return part.Get("functionResponse").Exists() || part.Get("function_response").Exists()
+}
+
 func geminiPartThoughtSignature(part gjson.Result) (string, bool) {
+	hasSignature := false
 	for _, path := range geminiPartThoughtSignaturePaths {
 		result := part.Get(path)
-		if result.Exists() {
+		if !result.Exists() {
+			continue
+		}
+		hasSignature = true
+		if result.Type == gjson.String && strings.TrimSpace(result.String()) != "" {
 			return result.String(), true
 		}
 	}
-	return "", false
+	return "", hasSignature
 }
 
 func hasNormalizedGeminiPartThoughtSignature(part gjson.Result, replaySignature string) bool {

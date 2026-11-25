@@ -597,6 +597,12 @@ func repairSchemaNode(node map[string]any) (map[string]any, bool) {
 	for k, v := range node {
 		clone[k] = v
 	}
+	if number, ok := clone["type"].(json.Number); ok {
+		if name := geminiProtoSchemaTypeName(string(number)); name != "" {
+			clone["type"] = name
+			modified = true
+		}
+	}
 
 	// 1. If not declared as a primitive/array type, collect bare property definition maps
 	if !isNonObjectDeclaredType(clone["type"]) {
@@ -1553,18 +1559,18 @@ type schemaEdit struct {
 
 // NormalizeJSONSchemaNumericConstraints converts string-encoded integer values on JSON Schema
 // numeric constraint keywords (minLength, maxLength, minItems, maxItems, minProperties,
-// maxProperties) to JSON numbers. Google's Protobuf Schema format represents these int64
-// fields as strings, whereas standard JSON Schema carriers (such as parametersJsonSchema)
-// require numeric values.
+// maxProperties) to JSON numbers. It also maps numeric Gemini Protobuf Schema.Type enum
+// values to JSON Schema type names.
 func NormalizeJSONSchemaNumericConstraints(jsonStr string) string {
-	if !hasNumericSchemaConstraintKeyword(jsonStr) && !strings.Contains(jsonStr, `\u`) && !strings.Contains(jsonStr, `\U`) {
+	if !hasNumericSchemaConstraintKeyword(jsonStr) && !hasNumericSchemaTypeCandidate(jsonStr) &&
+		!strings.Contains(jsonStr, `\u`) && !strings.Contains(jsonStr, `\U`) {
 		return jsonStr
 	}
 	return normalizeGeminiToolSchema(jsonStr, false)
 }
 
-// NormalizeGeminiToolSchema normalizes numeric constraints and lowercases string type
-// keywords in schema nodes, preserving non-string types and literal values.
+// NormalizeGeminiToolSchema normalizes numeric constraints and Protobuf Schema.Type enum
+// values and lowercases string type keywords, preserving literal values and union types.
 func NormalizeGeminiToolSchema(jsonStr string) string {
 	return normalizeGeminiToolSchema(jsonStr, true)
 }
@@ -1601,7 +1607,11 @@ func collectSchemaEdits(doc string, node gjson.Result, lowercaseTypes bool, edit
 		var replacement string
 		switch key.String() {
 		case "type":
-			if lowercaseTypes && val.Type == gjson.String {
+			if val.Type == gjson.Number {
+				if name := geminiProtoSchemaTypeName(val.Raw); name != "" {
+					replacement = strconv.Quote(name)
+				}
+			} else if lowercaseTypes && val.Type == gjson.String {
 				typeName := val.String()
 				if lower := strings.ToLower(typeName); lower != typeName {
 					encoded, _ := json.Marshal(lower)
@@ -1670,6 +1680,44 @@ func hasNumericSchemaConstraintKeyword(jsonStr string) bool {
 		}
 	}
 	return false
+}
+
+func hasNumericSchemaTypeCandidate(schema string) bool {
+	for {
+		_, after, found := strings.Cut(schema, `"type"`)
+		if !found {
+			return false
+		}
+		schema = after
+		value, found := strings.CutPrefix(strings.TrimLeft(after, " \t\r\n"), ":")
+		if found {
+			value = strings.TrimLeft(value, " \t\r\n")
+			if value != "" && value[0] >= '1' && value[0] <= '7' {
+				return true
+			}
+		}
+	}
+}
+
+func geminiProtoSchemaTypeName(raw string) string {
+	switch raw {
+	case "1":
+		return "string"
+	case "2":
+		return "number"
+	case "3":
+		return "integer"
+	case "4":
+		return "boolean"
+	case "5":
+		return "array"
+	case "6":
+		return "object"
+	case "7":
+		return "null"
+	default:
+		return ""
+	}
 }
 
 func parseSchemaNonNegativeInt(raw string) (int64, bool) {

@@ -234,19 +234,25 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound(t *testing.T)
 
 	t.Run("openai", func(t *testing.T) {
 		var state any
-		chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.OpenAI, "gpt-4o", nil, nil, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"query\":\"go\"}}}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\"}\n\n"), &state)
+		chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.OpenAI, "gpt-4o", nil, nil, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"query\":\"go\"}}}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\",\"usageMetadata\":{\"totalTokenCount\":8}}\n\n"), &state)
 		if err != nil {
 			t.Fatalf("TranslateResponseStream failed: %v", err)
 		}
-		joined := string(bytes.Join(chunks, nil))
-		payload := mustSSEEventData(t, joined, "")
+		if len(chunks) != 2 {
+			t.Fatalf("expected separate delta and terminal chunks, got %q", chunks)
+		}
+		payload := mustSSEEventData(t, string(chunks[0]), "")
 		choice := mustMap(t, mustSlice(t, payload["choices"])[0])
 		delta := mustMap(t, choice["delta"])
 		toolCall := mustMap(t, mustSlice(t, delta["tool_calls"])[0])
 		function := mustMap(t, toolCall["function"])
 		arguments := mustJSONMap(t, []byte(mustString(t, function["arguments"])))
-		if mustString(t, toolCall["id"]) == "" || mustInt(t, toolCall["index"]) != 0 || function["name"] != "lookup" || arguments["query"] != "go" || choice["finish_reason"] != "tool_calls" {
-			t.Fatalf("unexpected OpenAI stream chunk: %#v", chunks)
+		if mustString(t, toolCall["id"]) == "" || mustInt(t, toolCall["index"]) != 0 || function["name"] != "lookup" || arguments["query"] != "go" || choice["finish_reason"] != nil {
+			t.Fatalf("unexpected OpenAI tool delta: %s", chunks[0])
+		}
+		terminal := mustMap(t, mustSlice(t, mustSSEEventData(t, string(chunks[1]), "")["choices"])[0])
+		if terminal["finish_reason"] != "tool_calls" || len(mustMap(t, terminal["delta"])) != 0 {
+			t.Fatalf("unexpected OpenAI terminal chunk: %s", chunks[1])
 		}
 	})
 

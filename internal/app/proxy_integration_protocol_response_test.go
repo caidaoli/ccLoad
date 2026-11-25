@@ -1012,6 +1012,54 @@ func TestProxy_StructuredAnthropicResponseToCodexTransform(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Gemini 上游直接 EOF 时，候选的空占位不覆盖已收到的结束原因。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiChatChoiceFinishesAfterUsage(t *testing.T) {
+	t.Parallel()
+
+	const first = `{"candidates":[{"index":0,"content":{"parts":[{"text":"first"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":5}}`
+	const second = `{"candidates":[{"index":1,"content":{"parts":[{"text":"second"}]},"finishReason":"MAX_TOKENS"}]}`
+	const placeholder = `{"candidates":[{"index":1,"finishReason":""}]}`
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+first+"\n\ndata: "+second+"\n\ndata: "+placeholder+"\n\n")
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{name: "gemini", upstreamProtocol: "gemini", models: "gemini-test", protocolTransformMode: "local"}}, map[int]string{0: upstream.URL})
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gemini-test", "stream": true, "n": 2,
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", response.Code, response.Body)
+	}
+	texts, reasons, nativeReasons := map[int]string{}, map[int]string{}, map[int]string{}
+	var totalTokens int64
+	for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+		_, data := parseSSEEventChunk([]byte(event))
+		if usage := gjson.GetBytes(data, "usage.total_tokens"); usage.Exists() {
+			totalTokens = usage.Int()
+		}
+		for _, choice := range gjson.GetBytes(data, "choices").Array() {
+			idx := int(choice.Get("index").Int())
+			texts[idx] += choice.Get("delta.content").String()
+			if reason := choice.Get("finish_reason").String(); reason != "" {
+				if reasons[idx] != "" || len(choice.Get("delta").Map()) != 0 {
+					t.Fatalf("unexpected terminal frame: %s", data)
+				}
+				reasons[idx] = reason
+				nativeReasons[idx] = choice.Get("native_finish_reason").String()
+			}
+		}
+	}
+	if texts[0] != "first" || texts[1] != "second" || reasons[0] != "stop" || reasons[1] != "length" ||
+		nativeReasons[1] != "max_tokens" || totalTokens != 5 {
+		t.Fatalf("texts=%v finish reasons=%v native reasons=%v total=%d\n%s", texts, reasons, nativeReasons, totalTokens, response.Body)
+	}
+}
+
 func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcrossChunks(t *testing.T) {
 	t.Parallel()
 

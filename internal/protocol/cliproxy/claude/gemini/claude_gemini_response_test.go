@@ -203,3 +203,103 @@ func TestConvertClaudeResponseToGemini_RedactedThinkingSignature(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertClaudeResponseToGemini_UsageAcrossResponseFormats(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name           string
+		startUsage     string
+		deltaUsage     string
+		wantPrompt     int64
+		wantCandidates int64
+		wantTotal      int64
+		wantCached     int64
+		wantThoughts   int64
+	}{
+		{
+			name:           "cache read and write with nested thinking",
+			startUsage:     `"input_tokens":11,"cache_creation_input_tokens":13,"cache_read_input_tokens":17`,
+			deltaUsage:     `"output_tokens":19,"output_tokens_details":{"thinking_tokens":7},"reasoning_tokens":5`,
+			wantPrompt:     41,
+			wantCandidates: 12,
+			wantTotal:      60,
+			wantCached:     17,
+			wantThoughts:   7,
+		},
+		{
+			name:           "cache write alone with legacy thinking",
+			startUsage:     `"input_tokens":11,"cache_creation_input_tokens":13`,
+			deltaUsage:     `"output_tokens":19,"thinking_tokens":5`,
+			wantPrompt:     24,
+			wantCandidates: 14,
+			wantTotal:      43,
+			wantCached:     -1,
+			wantThoughts:   5,
+		},
+		{
+			name:           "thinking beyond reported output",
+			startUsage:     `"input_tokens":11,"cache_read_input_tokens":0`,
+			deltaUsage:     `"output_tokens":2,"reasoning_tokens":5`,
+			wantPrompt:     11,
+			wantCandidates: 0,
+			wantTotal:      13,
+			wantCached:     0,
+			wantThoughts:   5,
+		},
+	} {
+		for _, wire := range []string{"message JSON", "aggregated SSE", "streaming SSE"} {
+			t.Run(tt.name+"/"+wire, func(t *testing.T) {
+				events := []string{
+					`data: {"type":"message_start","message":{"id":"msg_a","model":"claude","usage":{` + tt.startUsage + `}}}`,
+					`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+					`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+					`data: {"type":"content_block_stop","index":0}`,
+					`data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{` + tt.deltaUsage + `}}`,
+					`data: {"type":"message_stop"}`,
+				}
+				var out []byte
+				switch wire {
+				case "message JSON":
+					message := `{"id":"msg_a","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"max_tokens","usage":{` + tt.startUsage + "," + tt.deltaUsage + "}}"
+					out = ConvertClaudeResponseToGeminiNonStream(ctx, "claude", nil, nil, []byte(message), nil)
+				case "aggregated SSE":
+					eventStream := strings.Join(events, "\n\n") + "\n\n"
+					out = ConvertClaudeResponseToGeminiNonStream(ctx, "claude", nil, nil, []byte(eventStream), nil)
+				case "streaming SSE":
+					var state any
+					for _, event := range events {
+						for _, chunk := range ConvertClaudeResponseToGemini(ctx, "claude", nil, nil, []byte(event), &state) {
+							if gjson.GetBytes(chunk, "candidates.0.finishReason").Exists() {
+								out = chunk
+							}
+						}
+					}
+				}
+
+				if gjson.GetBytes(out, "responseId").String() != "msg_a" ||
+					gjson.GetBytes(out, "candidates.0.finishReason").String() != "MAX_TOKENS" {
+					t.Fatalf("expected response ID and truncation, got %s", out)
+				}
+				if wire != "streaming SSE" && gjson.GetBytes(out, "candidates.0.content.parts.0.text").String() != "hello" {
+					t.Fatalf("expected assistant text, got %s", out)
+				}
+				usage := gjson.GetBytes(out, "usageMetadata")
+				for field, want := range map[string]int64{
+					"promptTokenCount":        tt.wantPrompt,
+					"candidatesTokenCount":    tt.wantCandidates,
+					"totalTokenCount":         tt.wantTotal,
+					"cachedContentTokenCount": tt.wantCached,
+					"thoughtsTokenCount":      tt.wantThoughts,
+				} {
+					got := usage.Get(field)
+					if want == -1 && !got.Exists() {
+						continue
+					}
+					if got.Type != gjson.Number || got.Int() != want {
+						t.Errorf("%s = %s, want %d; response=%s", field, got.Raw, want, out)
+					}
+				}
+			})
+		}
+	}
+}

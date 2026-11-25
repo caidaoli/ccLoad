@@ -704,7 +704,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		if reason := geminiAbnormalFinishReason(event); reason != "" && !p.geminiVisibleOutput {
 			p.geminiAbnormalFinish = reason
 			p.geminiErrorUsage = usage != nil
-			p.recordError(geminiZeroOutputErrorBody(reason))
+			p.recordError(geminiZeroOutputErrorBody("Gemini response finished with " + reason))
 			return nil
 		}
 		p.hasStreamOutput = p.hasStreamOutput || visible || thought || geminiStreamPayloadComplete(event)
@@ -1335,30 +1335,30 @@ func geminiAbnormalFinishReason(payload map[string]any) string {
 
 /**
  * @brief 将零输出异常表示为可跨协议传递的上游错误。
- * @param reason geminiAbnormalFinishReason 返回的原因；空字符串表示无终态 EOF。
+ * @param message 错误说明。
  * @return 带 gemini_zero_output 错误码的 JSON。
  */
-func geminiZeroOutputErrorBody(reason string) []byte {
-	message := "Gemini stream closed with zero output"
-	if reason != "" {
-		message = "Gemini response finished with " + reason
-	}
+func geminiZeroOutputErrorBody(message string) []byte {
 	return fmt.Appendf(nil, `{"error":{"type":"api_error","code":"gemini_zero_output","message":%q}}`, message)
 }
 
 /**
  * @brief 在协议转换前识别 Gemini 非流式零输出异常，已有有效输出保持原语义。
  * @param response 已去除 provider 信封的响应 JSON。
+ * @param antigravityOAuth 是否来自必须返回非空 response 对象的 Antigravity。
  * @return 零输出异常错误体；其他响应返回 nil，由原有响应校验继续处理。
  */
-func geminiNonStreamResponseErrorBody(response []byte) []byte {
+func geminiNonStreamResponseErrorBody(response []byte, antigravityOAuth bool) []byte {
 	payload, err := sseJSONObjectMap(response)
 	if err != nil {
 		return nil
 	}
+	if antigravityOAuth && len(payload) == 0 {
+		return geminiZeroOutputErrorBody("Antigravity returned an empty response object")
+	}
 	if reason := geminiAbnormalFinishReason(payload); reason != "" {
 		if visible, _ := geminiPayloadOutput(payload); !visible {
-			return geminiZeroOutputErrorBody(reason)
+			return geminiZeroOutputErrorBody("Gemini response finished with " + reason)
 		}
 	}
 	return nil
@@ -1370,7 +1370,7 @@ func geminiNonStreamResponseErrorBody(response []byte) []byte {
  */
 func (p *sseUsageParser) finalizeGeminiOutput() {
 	if p.geminiSawPayload && !p.hasStreamOutput && !p.streamComplete && p.lastError == nil {
-		p.recordError(geminiZeroOutputErrorBody(""))
+		p.recordError(geminiZeroOutputErrorBody("Gemini stream closed with zero output"))
 	}
 }
 

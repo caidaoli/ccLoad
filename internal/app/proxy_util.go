@@ -109,6 +109,24 @@ func anthropicErrorBody(status int, message string) gin.H {
 	return gin.H{"type": "error", "error": gin.H{"type": anthropicErrorType(status), "message": message}}
 }
 
+/**
+ * @brief Formats a Google context overflow for Claude Code's automatic compaction.
+ * @param reqCtx Client and actual upstream protocol for this attempt.
+ * @param status Proxy status derived from the upstream HTTP response or SSE event.
+ * @param body Original upstream error payload.
+ * @return Claude-compatible message, or an empty string if this error should stay unchanged.
+ */
+func anthropicGoogleInputTokenLimitMessage(reqCtx *proxyRequestContext, status int, body []byte) string {
+	if reqCtx.clientProtocol != protocol.Anthropic || reqCtx.upstreamProtocol != protocol.Gemini || status != http.StatusBadRequest {
+		return ""
+	}
+	message := util.GoogleInputTokenLimitMessage(body)
+	if message == "" || strings.HasPrefix(strings.ToLower(message), "prompt is too long:") {
+		return message
+	}
+	return "prompt is too long: " + message
+}
+
 func anthropicErrorType(status int) string {
 	switch status {
 	case http.StatusUnauthorized:
@@ -1020,6 +1038,14 @@ func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, selected modelRout
 	return actualModel
 }
 
+/**
+ * @brief 为本次渠道尝试应用模型路由及思考策略，再交给协议转换。
+ * @param cfg 当前尝试的渠道配置。
+ * @param reqCtx 本次代理请求上下文。
+ * @param upstreamProtocol 当前上游协议。
+ * @return 实际上游模型名。
+ * @return 转换前的客户端协议请求正文。
+ */
 func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext, upstreamProtocol protocol.Protocol) (actualModel string, bodyToSend []byte) {
 	selected := reqCtx.attemptModel
 	if selected.logicalModel == "" && reqCtx.originalModel != "" {
@@ -1038,6 +1064,10 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	}
 	// 后缀来自客户端字面模型名，能力却属于重定向/模糊匹配后的实际上游模型。
 	bodyToSend = applyThinkingSuffixForModel(bodyToSend, reqCtx.clientProtocol, requestedModel, actualModel)
+	if reqCtx.clientProtocol == protocol.OpenAI && upstreamProtocol == protocol.Gemini &&
+		protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyChatCompletions {
+		bodyToSend = omitOpenAIGoogleThinkingForAuto(bodyToSend, requestedModel)
+	}
 	bodyToSend = applyAutomaticReasoning(bodyToSend, reqCtx, upstreamProtocol, actualModel)
 	// billing/CCH 块是真 Claude Code 请求的身份与签名载体。只有跨协议
 	// 转换时才能删除；Anthropic -> Anthropic 必须保留，供 OAuth finalizer
@@ -1174,6 +1204,11 @@ func normalizeThinkingEffort(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+/**
+ * @brief 读取 JSON 声明的思考等级，结果独立于解析时的正文缓冲区。
+ * @param body 请求或响应的 JSON 正文。
+ * @return 规范化的思考等级，缺失或正文无效时为空。
+ */
 func extractThinkingEffortFromJSON(body []byte) string {
 	if len(body) == 0 {
 		return ""
@@ -1182,10 +1217,11 @@ func extractThinkingEffortFromJSON(body []byte) string {
 	if err := sonic.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
-	if effort := protocol.AnthropicEffortDirective(body); effort != "" {
-		return effort
+	effort := protocol.AnthropicEffortDirective(body)
+	if effort == "" {
+		effort = extractThinkingEffortFromPayload(payload)
 	}
-	return extractThinkingEffortFromPayload(payload)
+	return strings.Clone(effort)
 }
 
 func extractThinkingEffortFromPayload(payload map[string]any) string {

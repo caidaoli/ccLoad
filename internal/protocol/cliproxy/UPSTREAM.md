@@ -24,6 +24,46 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-25)
+
+Selected ports from official `v8.1.3` (`8cd6817b831f34caa593c76242d2c1f0674bf794`):
+
+- Chat responses translated to Gemini keep each choice's content, tools and
+  finish reason together. Both JSON and SSE support typed content and reasoning
+  aliases. ccLoad also isolates interleaved streaming choices that reuse a
+  tool index (`20c60014`, `2fbac976`).
+- Gemini and Antigravity Chat streams deliver the last delta before the
+  empty-delta finish chunk. Gemini Chat responses restore the names of effective
+  function declarations after request-side filtering (`8cd6817b`, `5a64cfa1`).
+- Convert protobuf numeric schema types before adapting tool and structured
+  output schemas. Read Google thinking controls on Chat requests and parse
+  assistant image data URLs with media parameters (`531aea15`, `ffa55112`,
+  `de472050`). Tool-result turn ordering follows the local provider contracts.
+- Claude usage translated to Gemini counts cache reads as cached input and
+  separates thoughts from visible output. Gemini and Antigravity responses
+  translated to Claude get a unique message ID when the upstream ID is absent
+  or blank (`e36449bc`, `da4396fd`).
+- Forward Claude output limits, non-empty stop sequences and object schemas to
+  Gemini and Antigravity. The Vertex transport preserves the caller's limit;
+  Antigravity Claude bounds its thinking budget by the effective output limit
+  (`32842348`, `62c419e0`, `14a95b19`).
+- Responses function calls with missing or blank arguments become parameterless
+  Chat calls. Antigravity Chat streams group continued arguments by call and
+  report incomplete arguments through ccLoad's stream error handling
+  (`927ed398`, `fe571afe`).
+- Gemini signature lookup skips empty aliases. Both spellings of function calls
+  and results participate in signature handling and Antigravity tool-result
+  pairing (`b82d3d4e`, `7be2a678`). The app's replay cache limits invalidation
+  to entries visible to the rejected request (`e9dd8bad`).
+
+Local fixes verified against the same snapshot:
+
+- Gemini Chat retains each candidate's last non-empty string finish reason
+  across tool continuations and usage frames. Responses tool choices going
+  to Gemini or Antigravity resolve client-declared names first. Returned calls
+  resolve the actual upstream declaration first, preserving the tool's namespace
+  when a shortened name collides with another client's tool name.
+
 ## Post-snapshot compatibility fixes (2026-11-24)
 
 Selected ports from official `v8.1.2` (`85225381d89915595598ed13766cd79890c03a84`):

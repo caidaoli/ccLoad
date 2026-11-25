@@ -458,10 +458,10 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 		out, _ = sjson.SetBytes(out, "generationConfig.topK", v.Num)
 	}
 
-	result := out
-	result = common.AttachDefaultSafetySettings(result, "safetySettings")
+	out = translatorcommon.ApplyClaudeGenerationConstraints(out, rawJSON, "generationConfig", "responseJsonSchema")
+	out = common.AttachDefaultSafetySettings(out, "safetySettings")
 
-	return result, drops.Err()
+	return out, drops.Err()
 }
 
 // claudeSourceToGeminiPart maps a Claude image or document source to a Gemini

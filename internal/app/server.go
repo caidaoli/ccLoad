@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -1501,6 +1500,11 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 	return fmt.Sprintf("oauth:%s:channel:%d:%x", cfg.GetAuthType(), cfg.ID, digest)
 }
 
+/**
+ * @brief 按渠道代理与 OAuth 账号作用域获取可复用的 HTTP 客户端。
+ * @param cfg 渠道配置，为 nil 时使用共享客户端。
+ * @return 渠道可用的客户端；代理配置无效时使用对应的默认客户端。
+ */
 func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	if cfg == nil {
 		return s.client
@@ -1570,7 +1574,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		if errors.Is(err, errCredentialHTTPClientCacheClosed) {
 			return closedCredentialHTTPClient
 		}
-		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退凭证隔离的直连池: %v", cfg.ID, cfg.ProxyURL, err)
+		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退凭证隔离的直连池: %v", cfg.ID, channelProxyURLForLog(cfg.ProxyURL), err)
 		fallbackKey := key
 		fallbackKey.proxyURL = ""
 		fallback, fallbackErr := cache.getOrCreate(fallbackKey, func() (*http.Client, error) {
@@ -1589,7 +1593,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		if errors.Is(err, errCredentialHTTPClientCacheClosed) {
 			return closedCredentialHTTPClient
 		}
-		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
+		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, channelProxyURLForLog(cfg.ProxyURL), err)
 		return defaultClient
 	}
 	return client
@@ -1616,16 +1620,23 @@ func (s *Server) proxyHTTPClient(proxyURL string, antigravity bool) (*http.Clien
 		if antigravity {
 			clientFactory = newAntigravityHTTPClient
 		}
-		log.Printf("[INFO] 使用独立代理: %s", proxyURL)
+		log.Printf("[INFO] 使用独立代理: %s", channelProxyURLForLog(proxyURL))
 		return clientFactory(t, s.upstreamConnectionMaxAge), nil
 	})
 }
 
-// buildChannelProxyTransport 构建带代理的 Transport（HTTP/HTTPS 直连，SOCKS5 用自定义 Dialer）。
+/**
+ * @brief 为渠道建立使用显式 HTTP、HTTPS 或 SOCKS5 代理的连接池。
+ * @param rawProxyURL 已配置的代理连接地址及可选凭据。
+ * @param skipTLSVerify 是否按网关配置跳过 TLS 验证。
+ * @param channelCount 网关渠道数，用于计算连接池上限。
+ * @return 应用代理后的 Transport，配置错误时为 nil。
+ * @return URL 解析或代理拨号器初始化出错时的诊断。
+ */
 func buildChannelProxyTransport(rawProxyURL string, skipTLSVerify bool, channelCount int) (*http.Transport, error) {
-	u, err := neturl.Parse(rawProxyURL)
+	u, err := parseChannelProxyURL(rawProxyURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse proxy url: %w", err)
+		return nil, err
 	}
 
 	base := buildHTTPTransport(skipTLSVerify, channelCount)
@@ -1641,8 +1652,6 @@ func buildChannelProxyTransport(rawProxyURL string, skipTLSVerify bool, channelC
 		base.Proxy = nil
 		base.DialContext = dialer
 		base.ForceAttemptHTTP2 = false // SOCKS5 自定义 Dialer 与 HTTP/2 TLS 协商不兼容
-	default:
-		return nil, fmt.Errorf("unsupported proxy scheme: %q", u.Scheme)
 	}
 
 	return base, nil

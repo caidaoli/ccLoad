@@ -9,6 +9,7 @@ import (
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/gemini/common"
 	"ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
@@ -51,21 +52,8 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetRawBytes(out, "request.generationConfig", []byte(genConfig.Raw))
 	}
 
-	// Apply thinking configuration: convert OpenAI reasoning_effort to Antigravity thinkingConfig.
-	// Inline translation-only mapping; capability checks happen later in ApplyThinking.
-	re := gjson.GetBytes(rawJSON, "reasoning_effort")
-	if re.Exists() {
-		effort := strings.ToLower(strings.TrimSpace(re.String()))
-		if effort != "" {
-			thinkingPath := "request.generationConfig.thinkingConfig"
-			if effort == "auto" {
-				out, _ = sjson.SetBytes(out, thinkingPath+".thinkingBudget", -1)
-			} else {
-				out, _ = sjson.SetBytes(out, thinkingPath+".thinkingLevel", effort)
-			}
-		}
-	}
 	out = applyOpenAIThinkingCompatibilityToAntigravity(out, rawJSON)
+	out = thinking.ApplyOpenAIGoogleThinking(out, rawJSON, "request.generationConfig")
 
 	// Temperature/top_p/top_k/max_tokens/max_completion_tokens
 	if tr := gjson.GetBytes(rawJSON, "temperature"); tr.Exists() && tr.Type == gjson.Number {
@@ -228,13 +216,8 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 								partItems = append(partItems, antigravityOpenAITextPart(text))
 							}
 						case "image_url":
-							imageURL := item.Get("image_url.url").String()
-							if len(imageURL) > 5 {
-								pieces := strings.SplitN(imageURL[5:], ";", 2)
-								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									part := antigravityOpenAIInlineDataPart(pieces[0], pieces[1][7:], false)
-									partItems = append(partItems, part)
-								}
+							if mimeType, data, ok := translatorcommon.NormalizeOpenAIFileData("", "", item.Get("image_url.url").String()); ok {
+								partItems = append(partItems, antigravityOpenAIInlineDataPart(mimeType, data, false))
 							}
 						}
 					}

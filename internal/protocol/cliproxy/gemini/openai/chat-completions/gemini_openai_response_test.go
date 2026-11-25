@@ -39,7 +39,7 @@ func TestGeminiParameterlessToolCallArguments(t *testing.T) {
 	var state any
 	chunks := ConvertGeminiResponseToOpenAI(ctx, "model", nil, nil, raw, &state)
 	if len(chunks) != 1 {
-		t.Fatalf("expected one streaming chunk, got %q", chunks)
+		t.Fatalf("expected one tool delta before usage, got %q", chunks)
 	}
 	nonStream := ConvertGeminiResponseToOpenAINonStream(ctx, "model", nil, nil, raw, nil)
 	for _, call := range []gjson.Result{
@@ -129,8 +129,8 @@ func TestConvertGeminiResponseToOpenAI_AudioTranscriptionPartStreamsContent(t *t
 
 	chunk := []byte(`{"candidates":[{"content":{"parts":[{"text":""},{"audioTranscription":{"text":"Testing one two three."}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":185,"candidatesTokenCount":8,"totalTokenCount":193}}`)
 	result := ConvertGeminiResponseToOpenAI(ctx, "model", nil, nil, chunk, &param)
-	if len(result) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(result))
+	if len(result) != 2 {
+		t.Fatalf("expected a transcript chunk followed by completion, got %q", result)
 	}
 
 	content := gjson.GetBytes(result[0], "choices.0.delta.content")
@@ -177,6 +177,131 @@ func TestConvertGeminiResponseToOpenAI_PinsSanitizedNameMapPerStream(t *testing.
 	}
 	if got := gjson.GetBytes(outNil[0], "choices.0.delta.tool_calls.0.function.name").String(); got != "mcp_search" {
 		t.Fatalf("tool name = %q, want mcp_search (must not rebuild nil SanitizedNameMap on later chunks)", got)
+	}
+}
+
+func TestOpenAIToolNamesRoundTripThroughGemini(t *testing.T) {
+	const declarations = `"tools":[{"type":"function","function":{"name":"mcp/search"}},{"type":"function","function":{"name":"mcp?search"}}]`
+	for _, tc := range []struct {
+		name, choice, wantName, wantMode string
+	}{
+		{"allowed tool", `,"tool_choice":{"type":"allowed_tools","allowed_tools":{"tools":[{"type":"function","function":{"name":"mcp/search"}}]}}`, "mcp/search", "AUTO"},
+		{"ambiguous tools", "", "mcp_search", "NONE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := []byte(`{"messages":[{"role":"user","content":"search"}],` + declarations + tc.choice + `}`)
+			request, err := ConvertOpenAIRequestToGemini("gemini", original, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(request, "toolConfig.functionCallingConfig.mode").String(); got != tc.wantMode {
+				t.Fatalf("function mode = %q, want %q", got, tc.wantMode)
+			}
+			wireName := gjson.GetBytes(request, "tools.0.functionDeclarations.0.name").String()
+			if wireName != "mcp_search" {
+				t.Fatalf("declared Gemini tool = %q, want mcp_search", wireName)
+			}
+			upstream := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + wireName + `","args":{"q":"test"}}}]}}]}`)
+			var state any
+			stream := ConvertGeminiResponseToOpenAI(t.Context(), "gemini", original, request, upstream, &state)
+			if len(stream) != 1 {
+				t.Fatalf("expected one tool delta, got %q", stream)
+			}
+			if got := gjson.GetBytes(stream[0], "choices.0.delta.tool_calls.0.function.name").String(); got != tc.wantName {
+				t.Errorf("stream tool name = %q, want %q", got, tc.wantName)
+			}
+			response := ConvertGeminiResponseToOpenAINonStream(t.Context(), "gemini", original, request, upstream, nil)
+			if got := gjson.GetBytes(response, "choices.0.message.tool_calls.0.function.name").String(); got != tc.wantName {
+				t.Errorf("non-stream tool name = %q, want %q", got, tc.wantName)
+			}
+		})
+	}
+}
+
+func TestGeminiStreamSeparatesToolDeltasAndKeepsLateUsage(t *testing.T) {
+	var state any
+	convert := func(chunk string) [][]byte {
+		return ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(chunk), &state)
+	}
+	payload := `{"candidates":[{"index":1,"content":{"parts":[{"functionCall":{"name":"one","args":{}}},{"functionCall":{"name":"two","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":6}}`
+	chunks := convert(payload)
+	if len(chunks) != 2 {
+		t.Fatalf("expected a tool delta and a terminal chunk, got %q", chunks)
+	}
+	delta, terminal := gjson.ParseBytes(chunks[0]), gjson.ParseBytes(chunks[1])
+	if delta.Get("choices.0.index").Int() != 1 || delta.Get("choices.0.delta.tool_calls.#").Int() != 2 || delta.Get("choices.0.finish_reason").Type != gjson.Null {
+		t.Fatalf("expected both tool calls before finish_reason: %s", delta.Raw)
+	}
+	if terminal.Get("choices.0.index").Int() != 1 || terminal.Get("choices.0.finish_reason").String() != "tool_calls" || terminal.Get("choices.0.delta").Raw != `{}` || terminal.Get("usage.total_tokens").Int() != 6 {
+		t.Fatalf("expected terminal reason with empty delta: %s", terminal.Raw)
+	}
+	if chunks := convert(payload); len(chunks) != 0 {
+		t.Fatalf("replayed terminal payload emitted another choice: %q", chunks)
+	}
+	chunks = convert(`{"usageMetadata":{"totalTokenCount":7}}`)
+	if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices").Raw != `[]` || gjson.GetBytes(chunks[0], "usage.total_tokens").Int() != 7 {
+		t.Fatalf("expected late usage without repeating finish_reason: %q", chunks)
+	}
+	chunks = convert(`{"candidates":[{"index":1,"finishReason":"STOP"},{"index":0,"content":{"parts":[{"text":"second choice"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":8}}`)
+	if len(chunks) != 2 || gjson.GetBytes(chunks[0], "choices.0.delta.content").String() != "second choice" ||
+		gjson.GetBytes(chunks[1], "choices.0.index").Int() != 0 || gjson.GetBytes(chunks[1], "choices.0.finish_reason").String() != "stop" {
+		t.Fatalf("expected only the unfinished choice to emit content and a terminal chunk: %q", chunks)
+	}
+	if chunks := convert(`[DONE]`); len(chunks) != 1 || string(chunks[0]) != `[DONE]` {
+		t.Fatalf("expected only the final SSE marker: %q", chunks)
+	}
+}
+
+func TestGeminiStreamFlushesAllFinishedChoicesWhenUsageArrives(t *testing.T) {
+	for _, tc := range []struct {
+		name, finalFrame string
+		wantDelta        bool
+	}{
+		{"usage with second choice", `{"candidates":[{"index":2,"content":{"parts":[{"text":"second"}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"totalTokenCount":7}}`, true},
+		{"usage alone", `{"usageMetadata":{"totalTokenCount":7}}`, false},
+		{"usage with empty finish reason", `{"candidates":[{"index":2,"finishReason":""}],"usageMetadata":{"totalTokenCount":7}}`, false},
+		{"usage with null finish reason", `{"candidates":[{"index":2,"finishReason":null}],"usageMetadata":{"totalTokenCount":7}}`, false},
+		{"usage with whitespace finish reason", `{"candidates":[{"index":2,"finishReason":"  "}],"usageMetadata":{"totalTokenCount":7}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var state any
+			convert := func(chunk string) [][]byte {
+				return ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(chunk), &state)
+			}
+			chunks := convert(`{"candidates":[{"index":1,"content":{"parts":[{"text":"first"}]},"finishReason":"STOP"}]}`)
+			if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices.0.finish_reason").Type != gjson.Null {
+				t.Fatalf("expected first delta while usage is pending: %q", chunks)
+			}
+			if !tc.wantDelta {
+				convert(`{"candidates":[{"index":2,"content":{"parts":[{"text":"second"}]},"finishReason":"MAX_TOKENS"}]}`)
+			}
+			chunks = convert(tc.finalFrame)
+			if tc.wantDelta {
+				if len(chunks) != 3 || gjson.GetBytes(chunks[0], "choices.0.delta.content").String() != "second" ||
+					gjson.GetBytes(chunks[0], "choices.0.finish_reason").Type != gjson.Null || gjson.GetBytes(chunks[0], "usage").Exists() {
+					t.Fatalf("expected second delta before both terminal chunks: %q", chunks)
+				}
+				chunks = chunks[1:]
+			}
+			if len(chunks) != 2 {
+				t.Fatalf("expected two terminal chunks: %q", chunks)
+			}
+			for i, chunk := range chunks {
+				terminal := gjson.ParseBytes(chunk)
+				choice := terminal.Get("choices.0")
+				finish, native := "stop", "stop"
+				if i == 1 {
+					finish, native = "length", "max_tokens"
+				}
+				if choice.Get("index").Int() != int64(i+1) || choice.Get("finish_reason").String() != finish ||
+					choice.Get("native_finish_reason").String() != native || choice.Get("delta").Raw != `{}` {
+					t.Fatalf("bad terminal choice: %s", terminal.Raw)
+				}
+				if usage := terminal.Get("usage.total_tokens"); i == 0 && usage.Exists() || i == 1 && usage.Int() != 7 {
+					t.Fatalf("expected global usage only on the last terminal chunk: %s", terminal.Raw)
+				}
+			}
+		})
 	}
 }
 
@@ -361,10 +486,16 @@ func TestConvertGeminiResponseToOpenAI_Done(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var param any
 			out := ConvertGeminiResponseToOpenAI(ctx, "gemini-2.5-pro", nil, nil, []byte(tc.chunk), &param)
-			if len(out) != 1 || gjson.GetBytes(out[0], "choices.0.finish_reason").String() != tc.wantFinishReason {
+			if len(out) != 1 || gjson.GetBytes(out[0], "choices.0.finish_reason").Type != gjson.Null {
 				t.Fatalf("unexpected content chunk: %q", out)
 			}
 			done := ConvertGeminiResponseToOpenAI(ctx, "gemini-2.5-pro", nil, nil, []byte("data: [DONE]"), &param)
+			if tc.wantFinishReason != "" {
+				if len(done) != 2 || gjson.GetBytes(done[0], "choices.0.delta").Raw != `{}` || gjson.GetBytes(done[0], "choices.0.finish_reason").String() != tc.wantFinishReason {
+					t.Fatalf("expected empty-delta terminal chunk before [DONE], got %q", done)
+				}
+				done = done[1:]
+			}
 			if len(done) != 1 || !bytes.Equal(done[0], []byte("[DONE]")) {
 				t.Fatalf("expected [DONE], got %q", done)
 			}
@@ -723,8 +854,8 @@ func TestConvertGeminiResponseToOpenAI_SkipsThoughtInlineDataImages(t *testing.T
 		}
 		final := []byte(`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thought":true,"inline_data":{"mime_type":"image/png","data":"RFJBRlRfMg=="}},{"inlineData":{"mimeType":"image/png","data":"RklOQUxfSU1BR0U="}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1120,"totalTokenCount":1132},"modelVersion":"gemini-3-pro-image","responseId":"resp_7566"}`)
 		out := ConvertGeminiResponseToOpenAI(ctx, "gemini-3-pro-image", nil, nil, final, &param)
-		if len(out) != 1 {
-			t.Fatalf("final chunk count = %d, want 1", len(out))
+		if len(out) != 2 {
+			t.Fatalf("expected an image chunk followed by completion, got %q", out)
 		}
 		images := gjson.GetBytes(out[0], "choices.0.delta.images").Array()
 		if len(images) != 1 || images[0].Get("index").Int() != 0 || images[0].Get("image_url.url").String() != finalURL {

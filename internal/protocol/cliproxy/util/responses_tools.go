@@ -469,10 +469,13 @@ func buildGeminiFunctionDeclarations(root gjson.Result, withDeclarations bool) (
 			geminiName = SanitizeFunctionName(desc.Name)
 		}
 
+		// Only the declared Responses name is authoritative on the way out.
 		if !desc.ClientSearch {
 			forwardMap[desc.Name] = geminiName
 		}
-		forwardMap[geminiName] = geminiName
+		if _, exists := forwardMap[geminiName]; !exists {
+			forwardMap[geminiName] = geminiName
+		}
 
 		identity := ResponsesToolIdentity{
 			Name:       desc.LocalName,
@@ -481,8 +484,9 @@ func buildGeminiFunctionDeclarations(root gjson.Result, withDeclarations bool) (
 			ApplyPatch: applypatch.IsCustomTool(desc.Tool),
 			ToolSearch: desc.ClientSearch,
 		}
+		// The actual Gemini name takes precedence over a Responses name on the way back.
 		reverseMap[geminiName] = identity
-		if !desc.ClientSearch && desc.Name != geminiName {
+		if _, exists := reverseMap[desc.Name]; !desc.ClientSearch && !exists {
 			reverseMap[desc.Name] = identity
 		}
 		if !withDeclarations {

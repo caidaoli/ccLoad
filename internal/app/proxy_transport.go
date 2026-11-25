@@ -2,12 +2,46 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	neturl "net/url"
+	"strings"
 
 	"golang.org/x/net/proxy"
 )
+
+/**
+ * @brief 解析渠道代理地址，失败时不回显可能含凭据的原始输入。
+ * @param raw 渠道配置中的代理地址。
+ * @return 带认证信息的实际连接地址；配置不合法时为 nil。
+ * @return 地址格式无效或代理协议不支持时的诊断。
+ */
+func parseChannelProxyURL(raw string) (*neturl.URL, error) {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return nil, errors.New("invalid proxy_url: expected scheme://host[:port]")
+	}
+	switch u.Scheme {
+	case "http", "https", "socks5", "socks5h":
+		return u, nil
+	default:
+		return nil, fmt.Errorf("invalid proxy_url scheme: %q (allowed: http, https, socks5, socks5h)", u.Scheme)
+	}
+}
+
+/**
+ * @brief 取可安全写入日志的渠道代理地址。
+ * @param raw 渠道配置中的代理地址，可能包含认证信息。
+ * @return 仅协议和主机（含端口）；无法安全解析时返回固定占位。
+ */
+func channelProxyURLForLog(raw string) string {
+	u, err := parseChannelProxyURL(strings.TrimSpace(raw))
+	if err != nil {
+		return "<invalid proxy URL>"
+	}
+	return (&neturl.URL{Scheme: u.Scheme, Host: u.Host}).String()
+}
 
 /**
  * @brief 保留需要限制 SOCKS5 握手生命周期的任务上下文。

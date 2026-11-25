@@ -878,10 +878,7 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	if v := gjson.GetBytes(rawJSON, "top_k"); v.Exists() && v.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "request.generationConfig.topK", v.Num)
 	}
-	if v := gjson.GetBytes(rawJSON, "max_tokens"); v.Exists() && v.Type == gjson.Number {
-		out, _ = sjson.SetBytes(out, "request.generationConfig.maxOutputTokens", v.Num)
-	}
-
+	out = translatorcommon.ApplyClaudeGenerationConstraints(out, rawJSON, "request.generationConfig", "responseSchema")
 	out = common.AttachDefaultSafetySettings(out, "request.safetySettings")
 	switch sigcompat.SignatureProviderFromModelName(modelName) {
 	case sigcompat.SignatureProviderGemini:

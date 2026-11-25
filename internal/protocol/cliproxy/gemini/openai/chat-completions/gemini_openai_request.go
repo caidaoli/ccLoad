@@ -9,6 +9,7 @@ import (
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/gemini/common"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
@@ -48,20 +49,7 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		out, _ = sjson.SetRawBytes(out, "generationConfig", []byte(genConfig.Raw))
 	}
 
-	// Apply thinking configuration: convert OpenAI reasoning_effort to Gemini thinkingConfig.
-	// Inline translation-only mapping; capability checks happen later in ApplyThinking.
-	re := gjson.GetBytes(rawJSON, "reasoning_effort")
-	if re.Exists() {
-		effort := strings.ToLower(strings.TrimSpace(re.String()))
-		if effort != "" {
-			thinkingPath := "generationConfig.thinkingConfig"
-			if effort == "auto" {
-				out, _ = sjson.SetBytes(out, thinkingPath+".thinkingBudget", -1)
-			} else {
-				out, _ = sjson.SetBytes(out, thinkingPath+".thinkingLevel", effort)
-			}
-		}
-	}
+	out = thinking.ApplyOpenAIGoogleThinking(out, rawJSON, "generationConfig")
 
 	// Temperature/top_p/top_k
 	if tr := gjson.GetBytes(rawJSON, "temperature"); tr.Exists() && tr.Type == gjson.Number {
@@ -222,12 +210,8 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 								partItems = append(partItems, geminiTextPart(text))
 							}
 						case "image_url":
-							imageURL := item.Get("image_url.url").String()
-							if len(imageURL) > 5 {
-								pieces := strings.SplitN(imageURL[5:], ";", 2)
-								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
-								}
+							if mimeType, data, ok := translatorcommon.NormalizeOpenAIFileData("", "", item.Get("image_url.url").String()); ok {
+								partItems = append(partItems, geminiInlineDataPart(mimeType, data, ""))
 							}
 						}
 					}
@@ -312,32 +296,7 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 	}
 
 	// tools -> tools[].functionDeclarations + tools[].googleSearch/codeExecution/urlContext passthrough
-	allowedToolNames := make(map[string]struct{})
-	isAllowedTools := false
-	allowedMode := "auto"
-	if toolChoice := gjson.GetBytes(rawJSON, "tool_choice"); toolChoice.Exists() && toolChoice.IsObject() && toolChoice.Get("type").String() == "allowed_tools" {
-		isAllowedTools = true
-		toolList := toolChoice.Get("allowed_tools.tools").Array()
-		if len(toolList) == 0 {
-			toolList = toolChoice.Get("tools").Array()
-		}
-		for _, t := range toolList {
-			fnName := strings.TrimSpace(t.Get("function.name").String())
-			if fnName == "" {
-				fnName = strings.TrimSpace(t.Get("name").String())
-			}
-			if fnName != "" {
-				allowedToolNames[fnName] = struct{}{}
-			}
-		}
-		modeVal := strings.ToLower(strings.TrimSpace(toolChoice.Get("allowed_tools.mode").String()))
-		if modeVal == "" {
-			modeVal = strings.ToLower(strings.TrimSpace(toolChoice.Get("mode").String()))
-		}
-		if modeVal != "" {
-			allowedMode = modeVal
-		}
-	}
+	allowedToolNames, isAllowedTools, allowedMode := parseGeminiOpenAIAllowedTools(rawJSON)
 
 	declaredOriginalToSanitized := make(map[string]string)
 	sanitizedToOriginalCounts := make(map[string]int)
@@ -565,6 +524,35 @@ func geminiTextPart(text string) []byte {
 	part := []byte(`{"text":""}`)
 	part, _ = sjson.SetBytes(part, "text", text)
 	return part
+}
+
+func parseGeminiOpenAIAllowedTools(rawJSON []byte) (map[string]struct{}, bool, string) {
+	toolChoice := gjson.GetBytes(rawJSON, "tool_choice")
+	if !toolChoice.IsObject() || toolChoice.Get("type").String() != "allowed_tools" {
+		return nil, false, "auto"
+	}
+	toolList := toolChoice.Get("allowed_tools.tools").Array()
+	if len(toolList) == 0 {
+		toolList = toolChoice.Get("tools").Array()
+	}
+	allowedToolNames := make(map[string]struct{}, len(toolList))
+	for _, t := range toolList {
+		fnName := strings.TrimSpace(t.Get("function.name").String())
+		if fnName == "" {
+			fnName = strings.TrimSpace(t.Get("name").String())
+		}
+		if fnName != "" {
+			allowedToolNames[fnName] = struct{}{}
+		}
+	}
+	allowedMode := strings.ToLower(strings.TrimSpace(toolChoice.Get("allowed_tools.mode").String()))
+	if allowedMode == "" {
+		allowedMode = strings.ToLower(strings.TrimSpace(toolChoice.Get("mode").String()))
+	}
+	if allowedMode == "" {
+		allowedMode = "auto"
+	}
+	return allowedToolNames, true, allowedMode
 }
 
 func geminiInlineDataPart(mimeType, data, thoughtSignature string) []byte {

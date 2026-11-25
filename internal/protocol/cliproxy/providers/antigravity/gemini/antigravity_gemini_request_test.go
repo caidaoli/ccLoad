@@ -114,7 +114,7 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelNormalizesStrictClaudeThou
 			{
 				"role": "model",
 				"parts": [
-					{"text": "internal reasoning", "thought": true, "thoughtSignature": "` + nativeSig + `"},
+					{"text": "internal reasoning", "thought": true, "thoughtSignature": " ", "thought_signature": "` + nativeSig + `"},
 					{"text": "visible answer"}
 				]
 			},
@@ -133,6 +133,67 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelNormalizesStrictClaudeThou
 	}
 	if got := part.Get("thoughtSignature").String(); got != expectedSig {
 		t.Fatalf("thoughtSignature = %q, want %q. Output: %s", got, expectedSig, output)
+	}
+	if part.Get("thought_signature").Exists() {
+		t.Fatalf("signature alias was not removed: %s", output)
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_GroupsMixedToolFieldAliases(t *testing.T) {
+	const nativeSig = "EgUKAwEMOQ=="
+	input := []byte(`{"contents":[
+		{"role":"user","parts":[{"text":"start"}]},
+		{"role":"model","parts":[
+			{"function_call":{"id":"first","name":"lookup","args":{},"thought_signature":"` + nativeSig + `"},"thoughtSignature":null},
+			{"functionCall":{"id":"second","name":"another","args":{}}}
+		]},
+		{"role":"user","parts":[
+			{"functionResponse":{"id":"second","name":"another","response":{"result":"second"}}},
+			{"function_response":{"id":"first","response":{"result":"first"},"thoughtSignature":"` + nativeSig + `"}},
+			{"inline_data":{"mime_type":"image/png","data":"AA=="}},
+			{"text":"continue"}
+		]}
+	]}`)
+	for _, tt := range []struct{ model, wantSignature string }{
+		{"gemini-3-flash", nativeSig},
+		{"claude-sonnet-4-6", signature.GeminiSkipThoughtSignatureValidator},
+	} {
+		t.Run(tt.model, func(t *testing.T) {
+			out, err := ConvertGeminiRequestToAntigravity(tt.model, input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents := gjson.GetBytes(out, "request.contents")
+			if contents.Get("#").Int() != 4 || contents.Get("2.parts.#").Int() != 2 {
+				t.Fatalf("expected one paired tool result turn followed by user text: %s", out)
+			}
+			for path, want := range map[string]string{
+				"1.parts.0.function_call.id":                          "first",
+				"1.parts.0.thoughtSignature":                          tt.wantSignature,
+				"2.role":                                              "user",
+				"2.parts.0.function_response.id":                      "first",
+				"2.parts.0.function_response.name":                    "lookup",
+				"2.parts.0.function_response.response.result":         "first",
+				"2.parts.0.function_response.parts.0.inlineData.data": "AA==",
+				"2.parts.1.functionResponse.id":                       "second",
+				"2.parts.1.functionResponse.response.result":          "second",
+				"3.parts.0.text":                                      "continue",
+			} {
+				if got := contents.Get(path).String(); got != want {
+					t.Errorf("%s=%q, want %q; output=%s", path, got, want, out)
+				}
+			}
+			for _, path := range []string{
+				"1.parts.0.function_call.thought_signature",
+				"1.parts.1.thoughtSignature",
+				"2.parts.0.functionResponse",
+				"2.parts.0.function_response.thoughtSignature",
+			} {
+				if contents.Get(path).Exists() {
+					t.Errorf("unexpected alias or signature at %s; output=%s", path, out)
+				}
+			}
+		})
 	}
 }
 

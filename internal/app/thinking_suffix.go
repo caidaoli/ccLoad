@@ -94,6 +94,47 @@ func thinkingEffortFromRequest(requestedModel string, body []byte) string {
 	return extractThinkingEffortFromJSON(body)
 }
 
+/**
+ * @brief 从 OpenAI Chat 的 Google 扩展获取日志标签，标签独立于请求内存。
+ * @param body 已解析协议的 OpenAI Chat 请求体。
+ * @return 显式等级或按预算换算的标签，缺少有效配置时为空字符串。
+ */
+func openAIGoogleThinkingEffort(body []byte) string {
+	level, budget, found := thinking.ParseOpenAIGoogleThinking(body)
+	if !found {
+		return ""
+	}
+	if level != "" {
+		return strings.Clone(level)
+	}
+	level, _ = thinking.ConvertBudgetToLevel(budget)
+	return level
+}
+
+/**
+ * @brief Chat 转 Gemini 时，显式 auto 后缀使用模型默认思考，保留扩展里的摘要开关。
+ * @param body 协议转换前的 Chat 请求体。
+ * @param requestedModel 客户端提交的模型名，可能含思考后缀。
+ * @return 显式 auto 时去掉扩展思考等级和预算，否则返回原始请求体。
+ */
+func omitOpenAIGoogleThinkingForAuto(body []byte, requestedModel string) []byte {
+	if _, cfg, ok := model.ParseThinkingSuffix(requestedModel); !ok || cfg.Mode != thinking.ModeAuto {
+		return body
+	}
+	for _, googlePath := range [...]string{"extra_body.google", "extra_body.extra_body.google", "google"} {
+		google := gjson.GetBytes(body, googlePath)
+		for _, configKey := range [...]string{"thinking_config", "thinkingConfig"} {
+			config := google.Get(configKey)
+			for _, key := range [...]string{"thinking_level", "thinkingLevel", "thinking_budget", "thinkingBudget"} {
+				if config.Get(key).Exists() {
+					body, _ = sjson.DeleteBytes(body, googlePath+"."+configKey+"."+key)
+				}
+			}
+		}
+	}
+	return body
+}
+
 func applyOpenAIStyleThinking(body []byte, cfg thinking.ThinkingConfig, effortPath, baseModel string) []byte {
 	if cfg.Mode == thinking.ModeAuto {
 		// auto 不是 OpenAI/Codex 的合法档位，删掉字段把决定权交回模型默认值。

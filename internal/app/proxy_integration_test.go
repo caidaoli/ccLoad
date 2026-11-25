@@ -4987,6 +4987,109 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 }
 
 /**
+ * @brief Verifies Google thinking compatibility on translated Chat requests and native pass-through.
+ * @param t Test context.
+ */
+func TestProxy_OpenAIGoogleThinkingOnGeminiRoutes(t *testing.T) {
+	t.Parallel()
+	const businessModel = "gpt-5.6-sol"
+	const geminiResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
+	for _, antigravity := range []bool{false, true} {
+		provider := "Gemini"
+		thinkingPath := "generationConfig.thinkingConfig"
+		if antigravity {
+			provider = "Antigravity"
+			thinkingPath = "request." + thinkingPath
+		}
+		for _, tc := range []struct {
+			name    string
+			suffix  string
+			config  string
+			dynamic bool
+			budget  string
+			level   string
+			logged  string
+		}{
+			{name: "extension", budget: "0", logged: "none"},
+			{name: "extension level", config: `"thinking_level":" HIGH "`, level: "high", logged: "high"},
+			{name: "auto defaults", suffix: "(auto)", logged: "auto"},
+			{name: "numeric auto with judgement", suffix: "(-1)", dynamic: true, level: "high", logged: "high"},
+		} {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				wireConfigs := make(chan gjson.Result, 1)
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					wireConfigs <- gjson.GetBytes(body, thinkingPath)
+					w.Header().Set("Content-Type", "application/json")
+					if antigravity {
+						_, _ = io.WriteString(w, `{"response":`+geminiResponse+`}`)
+					} else {
+						_, _ = io.WriteString(w, geminiResponse)
+					}
+				}))
+				t.Cleanup(upstream.Close)
+				channel := testChannel{
+					name: "google-thinking", upstreamProtocol: "gemini", apiKey: "gemini-test-key",
+					modelEntries: []model.ModelEntry{{Model: businessModel, RedirectModel: "gemini-3-flash"}},
+				}
+				if antigravity {
+					channel.authType = model.AuthTypeAntigravityOAuth
+					channel.oauthCredential = antigravityProxyTestCredential(t, "test-access")
+				}
+				var env *proxyTestEnv
+				if tc.dynamic {
+					judge := newReasoningAutoJudge(t, "high")
+					env = setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{channel}, []string{upstream.URL})
+				} else {
+					env = setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
+				}
+				body := reasoningAutoChatBody("Pick a concise migration plan")
+				body["model"] = businessModel + tc.suffix
+				config := tc.config
+				if config == "" {
+					config = `"thinking_budget":0`
+				}
+				body["extra_body"] = json.RawMessage(`{"google":{"thinking_config":{"include_thoughts":false,` + config + `}}}`)
+				reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+				thinkingConfig := <-wireConfigs
+				if thinkingConfig.Get("thinkingBudget").Raw != tc.budget || thinkingConfig.Get("thinkingLevel").String() != tc.level {
+					t.Errorf("thinking config=%s want budget=%q level=%q", thinkingConfig.Raw, tc.budget, tc.level)
+				}
+				if antigravity && thinkingConfig.Get("includeThoughts").Type != gjson.False {
+					t.Errorf("explicit summary setting lost: %s", thinkingConfig.Raw)
+				}
+				if entry := waitForProxyLog(t, env, businessModel); entry.ThinkingEffort != tc.logged {
+					t.Errorf("logged thinking effort=%q, want %q", entry.ThinkingEffort, tc.logged)
+				}
+			})
+		}
+	}
+	t.Run("native Chat preserves extension", func(t *testing.T) {
+		business := newReasoningAutoBusiness(t)
+		env := setupProxyTestEnv(t, []testChannel{{
+			name: "native-chat", upstreamProtocol: "openai", models: businessModel, apiKey: "native-test-key",
+		}}, map[int]string{0: business.server.URL})
+		body := reasoningAutoChatBody("hi")
+		body["model"] = businessModel + "(auto)"
+		body["extra_body"] = json.RawMessage(`{"google":{"thinking_config":{"thinking_budget":4096}}}`)
+		reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+		requests := business.snapshot()
+		if len(requests) != 1 {
+			t.Fatalf("expected one native Chat request, got %d", len(requests))
+		}
+		if value := gjson.GetBytes(requests[0], "extra_body.google.thinking_config.thinking_budget"); value.Type != gjson.Number || value.Int() != 4096 {
+			t.Fatalf("native Chat extension changed: %s", requests[0])
+		}
+		if gjson.GetBytes(requests[0], "reasoning_effort").Exists() {
+			t.Fatalf("native Chat auto suffix added an explicit effort: %s", requests[0])
+		}
+	})
+}
+
+/**
  * @brief 验证四种入口按实际上游模型选择工具 schema 载体并保留联合分支。
  * @param t 测试上下文。
  */
@@ -5818,22 +5921,30 @@ func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 }
 
 /**
- * @brief 非流式 Gemini 异常终止只拒绝零输出，保留部分答案并维持失败用量及冷却契约
+ * @brief 验证 Antigravity 非流响应的空对象与异常终止处理、用量及冷却契约。
  * @param t 测试上下文
  */
-func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
+func TestProxy_AntigravityNonStreamZeroOutput(t *testing.T) {
 	t.Parallel()
+	const abnormalMessage = "Gemini response finished with MALFORMED_FUNCTION_CALL"
+	const emptyMessage = "Antigravity returned an empty response object"
+	const usage = `"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":5,"totalTokenCount":14},"modelVersion":"gemini-3-flash"`
 	for _, adapter := range antigravityProviderAdapterCases() {
 		for _, test := range []struct {
-			name       string
-			candidates string
-			fallback   bool
-			partial    bool
+			name         string
+			payload      string
+			text         string
+			errorMessage string
+			fallback     bool
+			hasUsage     bool
 		}{
-			{name: "without-parts", candidates: `[{"finishReason":"MALFORMED_FUNCTION_CALL"}]`},
-			{name: "with-text", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]`, partial: true},
-			{name: "later-candidate", candidates: `[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"STOP"},{"finishReason":"MALFORMED_FUNCTION_CALL"}]`, partial: true},
-			{name: "channel-fallback", candidates: `[{"finishReason":"MALFORMED_FUNCTION_CALL"}]`, fallback: true},
+			{name: "without-parts", payload: `{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}],` + usage + "}", errorMessage: abnormalMessage, hasUsage: true},
+			{name: "with-text", payload: `{"candidates":[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],` + usage + "}", text: "not a successful answer", hasUsage: true},
+			{name: "later-candidate", payload: `{"candidates":[{"content":{"role":"model","parts":[{"text":"not a successful answer"}]},"finishReason":"STOP"},{"finishReason":"MALFORMED_FUNCTION_CALL"}],` + usage + "}", text: "not a successful answer", hasUsage: true},
+			{name: "channel-fallback", payload: `{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}],` + usage + "}", errorMessage: abnormalMessage, fallback: true, hasUsage: true},
+			{name: "empty-object", payload: "{}", errorMessage: emptyMessage},
+			{name: "empty-object-fallback", payload: "{ \t\r\n }", errorMessage: emptyMessage, fallback: true},
+			{name: "usage-only", payload: "{" + usage + "}", hasUsage: true},
 		} {
 			t.Run(adapter.name+"/"+test.name, func(t *testing.T) {
 				t.Parallel()
@@ -5844,7 +5955,7 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 						t.Errorf("non-stream URL=%s", r.URL.Path)
 					}
 					w.Header().Set("Content-Type", "application/json")
-					_, _ = io.WriteString(w, `{"response":{"candidates":`+test.candidates+`,"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":5,"totalTokenCount":14},"modelVersion":"gemini-3-flash"}}`)
+					_, _ = io.WriteString(w, `{"response":`+test.payload+`}`)
 				}))
 				fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					fallbackHits.Add(1)
@@ -5863,16 +5974,21 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 				}
 				env := setupProxyTestEnv(t, channels, map[int]string{0: primary.URL, 1: fallback.URL})
 				response := doProxyRequest(t, env.engine, adapter.path, adapter.body, nil)
-				if test.partial {
-					if response.Code != http.StatusOK || gjson.Get(response.Body.String(), adapter.nonStreamTextPath).String() != "not a successful answer" {
-						t.Fatalf("partial output status=%d body=%s", response.Code, response.Body.String())
-					}
-				} else if test.fallback {
+				switch {
+				case test.fallback:
 					if response.Code != http.StatusOK || gjson.Get(response.Body.String(), adapter.nonStreamTextPath).String() != "fallback answer" {
 						t.Fatalf("fallback status=%d body=%s", response.Code, response.Body.String())
 					}
-				} else if response.Code != http.StatusBadGateway || gjson.Get(response.Body.String(), "error.code").String() != "gemini_zero_output" {
-					t.Fatalf("status=%d body=%s, want structured 502", response.Code, response.Body.String())
+				case test.errorMessage != "":
+					if response.Code != http.StatusBadGateway ||
+						gjson.Get(response.Body.String(), "error.code").String() != "gemini_zero_output" ||
+						gjson.Get(response.Body.String(), "error.message").String() != test.errorMessage {
+						t.Fatalf("status=%d body=%s, want structured 502: %q", response.Code, response.Body, test.errorMessage)
+					}
+				default:
+					if response.Code != http.StatusOK || gjson.Get(response.Body.String(), adapter.nonStreamTextPath).String() != test.text {
+						t.Fatalf("output status=%d body=%s, want text=%q", response.Code, response.Body, test.text)
+					}
 				}
 				var wantFallbackHits int64
 				if test.fallback {
@@ -5882,19 +5998,23 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 					t.Fatalf("primary=%d fallback=%d", primaryHits.Load(), fallbackHits.Load())
 				}
 				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
-					wantStatus := http.StatusBadGateway
-					if test.partial {
-						wantStatus = http.StatusOK
+					wantStatus := http.StatusOK
+					if test.errorMessage != "" {
+						wantStatus = http.StatusBadGateway
 					}
 					return entry.StatusCode == wantStatus && entry.ChannelID > 0
 				})
 				if entry == nil {
 					t.Fatal("missing primary generation log")
 				}
-				if entry.InputTokens != 9 || entry.OutputTokens != 5 {
+				wantInput, wantOutput := 0, 0
+				if test.hasUsage {
+					wantInput, wantOutput = 9, 5
+				}
+				if entry.InputTokens != wantInput || entry.OutputTokens != wantOutput {
 					t.Fatalf("generation log=%+v, want usage preserved", entry)
 				}
-				if !test.partial && (entry.Cost != 0 || !strings.Contains(entry.Message, "MALFORMED_FUNCTION_CALL")) {
+				if test.errorMessage != "" && (entry.Cost != 0 || !strings.Contains(entry.Message, test.errorMessage)) {
 					t.Fatalf("failed generation log=%+v, want usage preserved and no charge", entry)
 				}
 				ctx := context.Background()
@@ -5902,7 +6022,7 @@ func TestProxy_AntigravityNonStreamMalformedFunctionCall(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if test.partial {
+				if test.errorMessage == "" {
 					if len(cooldowns[entry.ChannelID]) != 0 {
 						t.Fatalf("partial output unexpectedly cooled models: %v", cooldowns[entry.ChannelID])
 					}
@@ -5962,7 +6082,7 @@ func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 					t.Errorf("Antigravity stream client used URL %s?%s", r.URL.Path, r.URL.RawQuery)
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, `data: {"response":{"responseId":"gravity-stream","candidates":[{"content":{"role":"model","parts":[{"text":"provider stream"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`+"\n\n")
+				_, _ = io.WriteString(w, "data: {\"response\":{}}\n\n"+`data: {"response":{"responseId":"gravity-stream","candidates":[{"content":{"role":"model","parts":[{"text":"provider stream"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`+"\n\n")
 			}))
 			t.Cleanup(upstream.Close)
 
@@ -6007,6 +6127,74 @@ func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 			}
 			if !complete {
 				t.Fatalf("translated Claude stream missing message_stop: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Antigravity 工具续片在 Chat 客户端拼成一次调用，尚未收全的参数不能成为成功终态。
+ * @param t 测试上下文
+ */
+func TestProxy_AntigravityChatToolContinuation(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"complete", "truncated"} {
+		t.Run(name, func(t *testing.T) {
+			complete := name == "complete"
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				frames := []string{
+					`{"candidates":[{"content":{"parts":[{"text":"Looking up"}]}}]}`,
+					`{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-1","name":"lookup","willContinue":true,"partialArgs":[{"jsonPath":"$.city","stringValue":"Tok","willContinue":true}]}}]}}]}`,
+				}
+				if complete {
+					frames = append(frames, `{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-1","willContinue":false,"partialArgs":[{"jsonPath":"$.city","stringValue":"yo"}]}}]}}]}`)
+				}
+				frames = append(frames, `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}`)
+				for _, frame := range frames {
+					_, _ = fmt.Fprintf(w, "data: {\"response\":%s}\n\n", frame)
+				}
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity", upstreamProtocol: "gemini", models: "gemini-3-flash",
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-lookup"),
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gemini-3-flash", "stream": true, "messages": []map[string]string{{"role": "user", "content": "look up city"}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("HTTP %d: %s", response.Code, response.Body)
+			}
+			var arguments strings.Builder
+			var starts, finishes, failures int
+			for block := range strings.SplitSeq(response.Body.String(), "\n\n") {
+				_, data := parseSSEEventChunk([]byte(block))
+				choice := gjson.GetBytes(data, "choices.0")
+				for _, call := range choice.Get("delta.tool_calls").Array() {
+					if call.Get("index").Raw != "0" {
+						t.Fatalf("unexpected tool index in %s", data)
+					}
+					if call.Get("id").String() == "call-1" && call.Get("function.name").String() == "lookup" {
+						starts++
+					}
+					arguments.WriteString(call.Get("function.arguments").String())
+				}
+				if choice.Get("finish_reason").String() != "" {
+					if choice.Get("finish_reason").String() != "tool_calls" {
+						t.Fatalf("unexpected finish reason in %s", data)
+					}
+					finishes++
+				}
+				if gjson.GetBytes(data, "error").Exists() {
+					failures++
+				}
+			}
+			if complete {
+				if starts != 1 || finishes != 1 || failures != 0 || !gjson.Valid(arguments.String()) || gjson.Get(arguments.String(), "city").String() != "Tokyo" {
+					t.Fatalf("invalid completed call: %s", response.Body)
+				}
+			} else if finishes != 0 || failures != 1 {
+				t.Fatalf("unfinished tool call should end in a single client error: %s", response.Body)
 			}
 		})
 	}
@@ -21731,6 +21919,166 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+/**
+ * @brief Verifies that out-of-order signature rejections only invalidate cache entries visible to the failed attempt.
+ * @param t Test context.
+ */
+func TestProxy_AntigravitySignatureRejectionPreservesNewerEntries(t *testing.T) {
+	t.Parallel()
+	const modelName = "claude-sonnet-4-6"
+	signature := antigravityProxyClaudeThoughtSignature(modelName)
+
+	type blockedAttempt struct {
+		seen        chan bool
+		release     chan struct{}
+		releaseOnce sync.Once
+		reject      bool
+		thought     string
+	}
+	attempts := map[string]*blockedAttempt{
+		"first rejection":     {reject: true},
+		"duplicate rejection": {reject: true},
+		"newer rejection":     {reject: true},
+		"old write":           {thought: "old pending thought"},
+		"new write":           {thought: "new pending thought"},
+		"affected write":      {thought: "affected pending thought"},
+	}
+	for _, attempt := range attempts {
+		attempt.seen, attempt.release = make(chan bool, 1), make(chan struct{})
+	}
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		var prompt string
+		var restored bool
+		for _, turn := range gjson.GetBytes(body, "request.contents").Array() {
+			for _, part := range turn.Get("parts").Array() {
+				if part.Get("thought").Bool() && part.Get("thoughtSignature").String() != "" {
+					restored = true
+				}
+				if turn.Get("role").String() == "user" {
+					prompt = part.Get("text").String()
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var thought string
+		switch prompt {
+		case "seed":
+			thought = "old thought"
+		case "refresh":
+			thought = "fresh thought"
+		}
+		if attempt := attempts[prompt]; attempt != nil {
+			attempt.seen <- restored
+			select {
+			case <-attempt.release:
+			case <-req.Context().Done():
+				return
+			}
+			if attempt.reject {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"message":"Invalid thought signature"}}`)
+				return
+			}
+			thought = attempt.thought
+		}
+		parts := []any{map[string]any{"text": strconv.FormatBool(restored)}}
+		if thought != "" {
+			parts = append(parts, map[string]any{"thought": true, "text": thought, "thoughtSignature": signature})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"candidates": []any{map[string]any{
+			"content": map[string]any{"role": "model", "parts": parts}, "finishReason": "STOP",
+		}}}})
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "replay", upstreamProtocol: "gemini", models: modelName,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-replay"),
+	}}, map[int]string{0: upstream.URL})
+	var pending sync.WaitGroup
+	t.Cleanup(func() {
+		for _, attempt := range attempts {
+			attempt.releaseOnce.Do(func() { close(attempt.release) })
+		}
+		pending.Wait()
+	})
+	send := func(prompt, history string) *httptest.ResponseRecorder {
+		messages := []any{map[string]any{"role": "user", "content": "question"}}
+		if history != "" {
+			messages = append(messages, map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "thinking", "thinking": history},
+				map[string]any{"type": "text", "text": "previous answer"},
+			}})
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": prompt})
+		return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": modelName, "max_tokens": 128, "messages": messages,
+		}, map[string]string{"X-Claude-Code-Session-Id": "replay-overlap"})
+	}
+	start := func(prompt, history string) func(int) {
+		t.Helper()
+		attempt := attempts[prompt]
+		result := make(chan *httptest.ResponseRecorder, 1)
+		pending.Go(func() { result <- send(prompt, history) })
+		select {
+		case restored := <-attempt.seen:
+			if restored != (history != "") {
+				t.Fatalf("%s restored signature = %v, history = %q", prompt, restored, history)
+			}
+		case response := <-result:
+			t.Fatalf("%s returned before reaching upstream: %d %s", prompt, response.Code, response.Body)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not reach upstream", prompt)
+		}
+		return func(status int) {
+			t.Helper()
+			attempt.releaseOnce.Do(func() { close(attempt.release) })
+			select {
+			case response := <-result:
+				if response.Code != status {
+					t.Fatalf("%s returned %d, want %d: %s", prompt, response.Code, status, response.Body)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s did not finish", prompt)
+			}
+		}
+	}
+	check := func(history string, want bool) {
+		t.Helper()
+		response := send("probe", history)
+		if got := gjson.GetBytes(response.Body.Bytes(), "content.0.text").String(); response.Code != http.StatusOK || got != strconv.FormatBool(want) {
+			t.Fatalf("probe %q: want restored=%v, got status=%d %s", history, want, response.Code, response.Body)
+		}
+	}
+
+	if response := send("seed", ""); response.Code != http.StatusOK {
+		t.Fatalf("seed returned %d: %s", response.Code, response.Body)
+	}
+	finishFirst := start("first rejection", "old thought")
+	finishDuplicate := start("duplicate rejection", "old thought")
+	finishOldWrite := start("old write", "old thought")
+	if response := send("refresh", ""); response.Code != http.StatusOK {
+		t.Fatalf("refresh returned %d: %s", response.Code, response.Body)
+	}
+	finishNewerRejection := start("newer rejection", "fresh thought")
+	finishFirst(http.StatusBadRequest)
+	check("old thought", false)
+	check("fresh thought", true)
+	finishOldWrite(http.StatusOK)
+	check("old pending thought", false)
+
+	finishNewWrite := start("new write", "")
+	finishDuplicate(http.StatusBadRequest)
+	finishNewWrite(http.StatusOK)
+	check("new pending thought", true)
+
+	finishAffectedWrite := start("affected write", "fresh thought")
+	finishNewerRejection(http.StatusBadRequest)
+	check("fresh thought", false)
+	check("new pending thought", true)
+	finishAffectedWrite(http.StatusOK)
+	check("affected pending thought", false)
 }
 
 func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {

@@ -10,6 +10,41 @@ import (
 	"ccLoad/internal/protocol/cliproxy/signature"
 )
 
+func TestConvertOpenAIRequestToGeminiGoogleThinkingPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+		level  string
+		budget string
+	}{
+		{"extension level", `"extra_body":{"google":{"thinking_config":{"thinking_level":" XHIGH ","thinking_budget":512}}}`, "xhigh", ""},
+		{"nested extension budget", `"extra_body":{"extra_body":{"google":{"thinkingConfig":{"thinkingBudget":4096}}}}`, "", "4096"},
+		{"root auto", `"google":{"thinkingConfig":{"thinkingLevel":"auto"}}`, "", "-1"},
+		{"native budget", `"generationConfig":{"thinkingConfig":{"thinkingBudget":2048}},"google":{"thinking_config":{"thinking_level":"high"}}`, "", "2048"},
+		{"snake native level", `"generation_config":{"thinking_config":{"thinking_level":"low"}},"google":{"thinkingConfig":{"thinkingLevel":"xhigh"}}`, "low", ""},
+		{"explicit effort removes native budget", `"reasoning_effort":"medium","generationConfig":{"thinkingConfig":{"thinkingBudget":2048}},"google":{"thinkingConfig":{"thinkingLevel":"xhigh"}}`, "medium", ""},
+		{"explicit effort replaces native snake alias", `"reasoning_effort":"medium","generationConfig":{"thinking_config":{"thinking_budget":2048}}`, "medium", ""},
+		{"none maps to zero", `"reasoning_effort":"none","generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}`, "", "0"},
+		{"invalid native field lets extension apply", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null}},"google":{"thinkingConfig":{"thinkingBudget":512}}`, "", "512"},
+		{"invalid budget", `"extra_body":{"google":{"thinkingConfig":{"thinkingBudget":-2}}}`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := []byte(`{"messages":[{"role":"user","content":"hi"}],` + tc.fields + `}`)
+			out, err := ConvertOpenAIRequestToGemini("gemini-3-flash", input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := gjson.GetBytes(out, "generationConfig.thinkingConfig")
+			if config.Get("thinkingLevel").String() != tc.level || config.Get("thinkingBudget").Raw != tc.budget {
+				t.Fatalf("thinkingConfig = %s, want level %q and budget %q", config.Raw, tc.level, tc.budget)
+			}
+			if gjson.GetBytes(out, "generationConfig.thinking_config").Exists() {
+				t.Fatalf("duplicate snake_case thinking config: %s", out)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIRequestToGemini_StripsTrailingAssistantPrefill(t *testing.T) {
 	inputJSON := `{
 		"model": "gpt-5.4",

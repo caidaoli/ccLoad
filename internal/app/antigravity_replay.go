@@ -53,6 +53,7 @@ type antigravityReplay struct {
 	protocol   protocol.Protocol
 	scopeState *antigravityReplayScope
 	generation uint64
+	sequence   uint64 ///< Newest cache entry visible at begin or restored by this attempt.
 	pending    map[string]string
 	blocks     map[int]string
 	bytes      int
@@ -73,6 +74,16 @@ func antigravityReplayHash(parts ...string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+/**
+ * @brief Acquires the replay scope and snapshots its cache visibility for an upstream attempt.
+ * @param cfg Selected upstream channel and account.
+ * @param modelName Actual upstream model.
+ * @param baseURL Selected upstream origin.
+ * @param headers Caller and session headers.
+ * @param body Original client request.
+ * @param client Client wire protocol.
+ * @return Replay state, or nil without a supported protocol and stable identity.
+ */
 func (c *antigravityReplayCache) begin(cfg *model.Config, modelName, baseURL string, headers http.Header, body []byte, client protocol.Protocol) *antigravityReplay {
 	if client != protocol.Anthropic && client != protocol.Codex {
 		return nil
@@ -116,9 +127,12 @@ func (c *antigravityReplayCache) begin(cfg *model.Config, modelName, baseURL str
 		c.scopes[scope] = state
 	}
 	state.active++
-	generation := state.generation
+	generation, sequence := state.generation, c.sequence
 	c.mu.Unlock()
-	return &antigravityReplay{cache: c, scope: scope, scopeState: state, protocol: client, generation: generation, pending: make(map[string]string), blocks: make(map[int]string)}
+	return &antigravityReplay{
+		cache: c, scope: scope, scopeState: state, protocol: client, generation: generation, sequence: sequence,
+		pending: make(map[string]string), blocks: make(map[int]string),
+	}
 }
 
 func (r *antigravityReplay) close() {
@@ -137,6 +151,12 @@ func (r *antigravityReplay) key(kind, text string) string {
 	return antigravityReplayHash(r.scope, kind, text)
 }
 
+/**
+ * @brief Restores an unexpired entry and records its version for a possible upstream rejection.
+ * @param kind Cache entry kind.
+ * @param text Exact client history covered by the entry.
+ * @return Cached value, or empty on a miss or expiration.
+ */
 func (r *antigravityReplay) lookup(kind, text string) string {
 	c := r.cache
 	c.mu.Lock()
@@ -151,6 +171,7 @@ func (r *antigravityReplay) lookup(kind, text string) string {
 		delete(c.entries, key)
 		return ""
 	}
+	r.sequence = max(r.sequence, entry.sequence)
 	return entry.value
 }
 
@@ -366,7 +387,7 @@ func (r *antigravityReplay) captureStream(chunks [][]byte) {
 }
 
 /**
- * @brief 在成功终态保存签名，HTTP 或 SSE 签名拒绝时失效当前作用域。
+ * @brief 在成功终态保存签名，签名拒绝只失效本次尝试可见的作用域条目。
  * @param result 当前上游结果；nil 时不处理。
  * @param err 转发错误；非 nil 时不保存本轮签名。
  * @note 持有缓存锁更新作用域和缓存条目。
@@ -380,12 +401,17 @@ func (r *antigravityReplay) finish(result *fwResult, err error) {
 	defer c.mu.Unlock()
 	errorBody, status := forwardResultErrorPayload(result)
 	if status == http.StatusBadRequest && strings.Contains(strings.ToLower(gjson.GetBytes(errorBody, "error.message").String()), "signature") {
-		r.scopeState.generation++
+		removed := false
 		for key, entry := range c.entries {
-			if entry.scope == r.scope {
+			if entry.scope == r.scope && entry.sequence <= r.sequence {
 				c.bytes -= len(entry.value)
 				delete(c.entries, key)
+				removed = true
 			}
+		}
+		// A delayed duplicate rejection must not block writes that started after invalidation.
+		if removed || r.scopeState.generation == r.generation {
+			r.scopeState.generation++
 		}
 		return
 	}

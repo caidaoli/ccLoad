@@ -1301,6 +1301,10 @@ func TestClassifyHTTPResponse413(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Verifies recognized context overflows are returned to the caller without model cooldown.
+ * @param t Test context.
+ */
 func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1322,6 +1326,14 @@ func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
 			name: "anthropic_prompt_too_long",
 			body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215000 tokens > 200000 maximum"}}`),
 		},
+		{
+			name: "google_input_token_count",
+			body: []byte(`{"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed (1048576); input token count: 1050377.","status":"INVALID_ARGUMENT"}}`),
+		},
+		{
+			name: "google_input_token_count_with_parentheses",
+			body: []byte(`{"error":{"code":400,"message":"The input token count (1050377) exceeds the maximum number of tokens allowed (1048576).","status":"INVALID_ARGUMENT"}}`),
+		},
 	}
 
 	for _, tt := range tests {
@@ -1334,6 +1346,10 @@ func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Keeps unrelated failures that mention context or token counts on their existing cooldown paths.
+ * @param t Test context.
+ */
 func TestClassifyHTTPResponseContextLengthMessageDoesNotHideServerError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1346,6 +1362,14 @@ func TestClassifyHTTPResponseContextLengthMessageDoesNotHideServerError(t *testi
 		{
 			name: "top_level_explicit_non_context_code",
 			body: []byte(`{"type":"error","code":"billing_config_error","message":"Documentation mentions too many tokens, but billing configuration failed."}`),
+		},
+		{
+			name: "google_output_token_count",
+			body: []byte(`{"error":{"code":400,"message":"Requested output token count exceeds the maximum; input token count: 100.","status":"INVALID_ARGUMENT"}}`),
+		},
+		{
+			name: "google_rate_limit",
+			body: []byte(`{"error":{"code":429,"message":"The input token count exceeds the maximum rate.","status":"RESOURCE_EXHAUSTED"}}`),
 		},
 	}
 

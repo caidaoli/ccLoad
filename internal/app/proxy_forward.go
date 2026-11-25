@@ -1876,7 +1876,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	}
 
 	if upstreamProtocol == util.ProtocolGemini {
-		if errorBody := geminiNonStreamResponseErrorBody(responseBody); len(errorBody) > 0 {
+		if errorBody := geminiNonStreamResponseErrorBody(responseBody, reqCtx.antigravityOAuth); len(errorBody) > 0 {
 			result.Status = http.StatusBadGateway
 			result.Body = errorBody
 			result.Header.Set("Content-Type", "application/json")
@@ -2194,6 +2194,10 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	// 上游已给出语义终态（如 finish_reason、stop_reason）时先补发终止事件，转换器据此完成收尾；
 	// 之后的 Finalize 只拦截真正缺少终态的截断流。
 	// 上游已报错时不替转换器伪造正常终态。
+	if pending, ok := state.(interface{ HasPendingFinish() bool }); ok && streamErr == nil && pending.HasPendingFinish() {
+		// 一个 Chat 候选已经结束时，其他 Gemini 候选仍可能有等待 usage 或 EOF 的结束原因。
+		translatedComplete = false
+	}
 	terminator := synthesizedStreamTerminator(
 		reqCtx.transformPlan.UpstreamProtocol,
 		reqCtx.transformPlan.ClientProtocol,
@@ -3591,7 +3595,9 @@ func (s *Server) handleCommittedAwareProxyError(
 		geminiZeroOutput := gjson.GetBytes(res.SSEErrorEvent, "error.code").String() == "gemini_zero_output"
 		switch {
 		case reqCtx.clientProtocol == protocol.Anthropic:
-			if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() || geminiZeroOutput {
+			if contextMessage := anthropicGoogleInputTokenLimitMessage(reqCtx, res.Status, res.SSEErrorEvent); contextMessage != "" {
+				writeAnthropicStreamErrorEvent(w, http.StatusBadRequest, contextMessage)
+			} else if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() || geminiZeroOutput {
 				writeAnthropicStreamErrorEvent(w, http.StatusInternalServerError, message)
 			}
 		case reqCtx.clientProtocol == protocol.Gemini && geminiZeroOutput:

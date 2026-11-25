@@ -3,9 +3,19 @@ package common
 import (
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// GeminiClaudeMessageID keeps a valid provider response ID or creates an ID for
+// Claude clients when Gemini does not send one.
+func GeminiClaudeMessageID(responseID gjson.Result) string {
+	if id := strings.TrimSpace(responseID.Str); id != "" {
+		return id
+	}
+	return "msg_" + uuid.NewString()
+}
 
 // IsGeminiThoughtPart reports whether a Gemini part contains hidden model thought.
 func IsGeminiThoughtPart(part gjson.Result) bool {

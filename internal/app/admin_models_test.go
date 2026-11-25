@@ -993,6 +993,24 @@ func TestAdminModels_FetchModelsUsesChannelProxy(t *testing.T) {
 			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("malformed preview proxy with credentials", func(t *testing.T) {
+		const username = "preview-fixture-user"
+		const password = "preview-fixture-pass"
+		payload := map[string]any{
+			"protocol":  "openai",
+			"urls":      []map[string]any{{"url": upstream.URL}},
+			"api_keys":  []string{"sk-proxy"},
+			"proxy_url": "socks5://" + username + ":" + password + "%ZZ@proxy.example:1080",
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		body := w.Body.String()
+		if w.Code != http.StatusBadRequest || !strings.Contains(body, "invalid proxy_url") ||
+			strings.Contains(body, username) || strings.Contains(body, password) {
+			t.Fatalf("status=%d body=%s", w.Code, body)
+		}
+	})
 }
 
 func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {

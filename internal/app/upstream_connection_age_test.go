@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +33,89 @@ import (
 type closeIdleTrackingRoundTripper struct {
 	mu     sync.Mutex
 	closes int
+}
+
+/**
+ * @brief 检查渠道代理日志与配置错误不含凭据，实际 HTTP 请求仍能通过代理验证。
+ * @param t 测试上下文。
+ */
+func TestChannelProxyDiagnosticsRedactCredentials(t *testing.T) {
+	const username = "proxy-fixture-user"
+	const password = "proxy-fixture-pass@word"
+	const pathSecret = "proxy-fixture-path"
+	const querySecret = "proxy-fixture-query"
+	const fragmentSecret = "proxy-fixture-fragment"
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Proxy-Authorization") != wantAuth || r.URL.Host != "upstream.example" {
+			http.Error(w, "expected proxy authentication", http.StatusProxyAuthRequired)
+			return
+		}
+		_, _ = io.WriteString(w, "proxied")
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL.User = url.UserPassword(username, password)
+	proxyURL.Path = "/" + pathSecret
+	proxyURL.RawQuery = "token=" + querySecret
+	proxyURL.Fragment = fragmentSecret
+	malformed := "socks5h://" + username + ":proxy-fixture-pass%ZZ@proxy.example:1080"
+
+	server := &Server{
+		client: newUpstreamHTTPClient(buildHTTPTransport(false, 1), 0),
+	}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		server.credentialTransports.closeAll()
+	})
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	normalized, err := normalizeChannelProxyURL(proxyURL.String())
+	if err != nil || normalized != proxyURL.String() {
+		t.Fatal("valid proxy config or its credentials were modified")
+	}
+	client := server.getClientForChannel(&model.Config{ID: 11, ProxyURL: normalized})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://upstream.example", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy response status = %d", resp.StatusCode)
+	}
+
+	server.getClientForChannel(&model.Config{ID: 12, ProxyURL: malformed})
+	server.getClientForChannel(&model.Config{
+		ID: 13, ProxyURL: malformed, AuthType: model.AuthTypeCodexOAuth,
+		OAuthCredential: `{"type":"codex","account_id":"test-account","access_token":"test-token"}`,
+	})
+	server.codexWebsocketDialer(&model.Config{ID: 14, ProxyURL: malformed})
+	log.SetOutput(previous)
+
+	for _, expected := range []string{
+		"使用独立代理: " + proxy.URL,
+		"渠道 12 代理", "渠道 13 代理", "渠道 14 WebSocket 代理", "invalid proxy_url",
+	} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Errorf("expected diagnostic %q, logs: %s", expected, logs.String())
+		}
+	}
+	diagnostics := logs.String()
+	for _, secret := range []string{username, "proxy-fixture-pass", pathSecret, querySecret, fragmentSecret, wantAuth} {
+		if strings.Contains(diagnostics, secret) {
+			t.Errorf("proxy diagnostic exposed %q: %s", secret, diagnostics)
+		}
+	}
 }
 
 /**

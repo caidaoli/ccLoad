@@ -863,7 +863,9 @@ func TestAntigravityClaudeWireClampsThinkingBudgetAfterOutputCap(t *testing.T) {
 		{"snake container", "claude-sonnet-4-6", "generationConfig", "thinking_config.thinkingBudget", 100000, 70000, 64000, 63999},
 		{"snake parent and budget", "claude-sonnet-4-6", "generation_config", "thinking_config.thinking_budget", 100000, 70000, 64000, 63999},
 		{"budget below cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 32000, 64000, 32000},
-		{"output already within cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 64000, 64000, 64000, 64000},
+		{"output already within cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 64000, 64000, 64000, 63999},
+		{"smaller caller cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 32000, 40000, 32000, 31999},
+		{"smaller caller cap on unknown model", "claude-unlisted", "generationConfig", "thinkingConfig.thinkingBudget", 32000, 40000, 32000, 31999},
 		{"model cap unknown", "claude-unlisted", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 70000, 100000, 70000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -883,6 +885,43 @@ func TestAntigravityClaudeWireClampsThinkingBudgetAfterOutputCap(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Claude 出站统一输出上限别名并保留零上限。
+ * @param t 测试上下文。
+ */
+func TestAntigravityClaudeWireNormalizesOutputLimitAliases(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, tc := range []struct {
+		name, generation string
+		limit, budget    int64
+	}{
+		{"snake only", `"max_output_tokens":32000,`, 32000, 31999},
+		{"smaller snake", `"maxOutputTokens":50000,"max_output_tokens":32000,`, 32000, 31999},
+		{"smaller camel", `"maxOutputTokens":32000,"max_output_tokens":50000,`, 32000, 31999},
+		{"canonical zero", `"maxOutputTokens":0,"max_output_tokens":32000,`, 0, 40000},
+		{"snake zero", `"max_output_tokens":0,`, 0, 40000},
+		{"absent", "", -1, 40000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generation_config":{` + tc.generation + `"thinkingConfig":{"thinking_budget":40000}}}`)
+			wire, err := prepareAntigravityRequestBody(cfg, "claude-sonnet-4-6", body, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			generation := gjson.GetBytes(wire, "request.generationConfig")
+			if generation.Get("max_output_tokens").Exists() {
+				t.Fatalf("snake alias still sent: %s", generation.Raw)
+			}
+			limit := generation.Get("maxOutputTokens")
+			if tc.limit == -1 && limit.Exists() || tc.limit != -1 && (limit.Type != gjson.Number || limit.Int() != tc.limit) ||
+				generation.Get("thinkingConfig.thinking_budget").Int() != tc.budget {
+				t.Fatalf("want output %d and budget %d, got %s", tc.limit, tc.budget, generation.Raw)
+			}
+		})
+	}
+}
+
 func TestAntigravityGeminiWireRejectsVertexSignature(t *testing.T) {
 	t.Parallel()
 	sig := base64.StdEncoding.EncodeToString(append([]byte{1, 0x8f, 0x3d, 0x6b, 0x5f}, bytes.Repeat([]byte{0x42}, 400)...))
@@ -895,6 +934,31 @@ func TestAntigravityGeminiWireRejectsVertexSignature(t *testing.T) {
 	part := gjson.GetBytes(got, "request.contents.0.parts.0")
 	if part.Get("thoughtSignature").String() != "skip_thought_signature_validator" || part.Get("functionCall.name").String() != "lookup" {
 		t.Fatalf("Vertex signature reached Antigravity: %s", got)
+	}
+}
+
+/**
+ * @brief 验证两种拼写的 Gemini 工具结果在 Claude 出站时保留配对顺序。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravityClaudeMixedToolResultAliases(t *testing.T) {
+	t.Parallel()
+	const target = "claude-sonnet-4-6"
+	body := []byte(`{"contents":[{"role":"model","parts":[{"function_call":{"id":"a","name":"lookup","args":{}}},{"functionCall":{"id":"b","name":"lookup","args":{}}}]},{"role":"user","parts":[{"function_response":{"id":"a","name":"lookup","response":{"result":"first"}}},{"functionResponse":{"id":"b","name":"lookup","response":{"result":"second"}}},{"text":"continue"}]}]}`)
+	translated, err := translateAntigravityRequest(protocol.Gemini, target, body, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	wire, err := prepareAntigravityRequestBody(cfg, target, translated, body, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := gjson.GetBytes(wire, "request.contents").Array()
+	if len(turns) != 3 || turns[1].Get("parts.#").Int() != 2 ||
+		turns[1].Get("parts.0.function_response.id").Str != "a" || turns[1].Get("parts.1.functionResponse.id").Str != "b" ||
+		turns[2].Get("parts.0.text").Str != "continue" {
+		t.Fatalf("unexpected tool-result order: %s", wire)
 	}
 }
 
@@ -948,17 +1012,23 @@ func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 	t.Parallel()
 
 	const schema = `{"type":"object","title":"Answer","description":"Final answer","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}`
-	body := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` +
-		`"tools":[{"functionDeclarations":[{"name":"lookup","parameters":{"type":"object"}}]}],` +
-		`"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["lookup"]}},` +
-		`"generationConfig":{"temperature":0.2,"responseMimeType":"application/json","responseSchema":` + schema + `}}}`)
+	source := []byte(`{"messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"name":"lookup","input_schema":{"type":"object"}}],` +
+		`"tool_choice":{"type":"tool","name":"lookup"},` +
+		`"temperature":0.2,"max_tokens":32000,"stop_sequences":["DONE","",4],` +
+		`"output_config":{"format":{"type":"json_schema","schema":` + schema + `}}}`)
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
 	// 敏感词命中 schema 字段名：提示词必须在混淆之后追加，否则 schema 被插入零宽字符。
 	matcher := regexp.MustCompile(`answer`)
 
 	t.Run("claude 5.5 moves schema into the system prompt", func(t *testing.T) {
 		t.Parallel()
-		got, err := prepareAntigravityRequestBody(cfg, "claude-opus-5-5-high", body, body, http.Header{}, matcher)
+		const target = "claude-opus-5-5-high"
+		body, err := translateAntigravityRequest(protocol.Anthropic, target, source, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareAntigravityRequestBody(cfg, target, body, source, http.Header{}, matcher)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -973,6 +1043,10 @@ func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 		}
 		if request.Get("generationConfig.temperature").Float() != 0.2 {
 			t.Fatalf("unrelated generationConfig field lost: %s", got)
+		}
+		if request.Get("generationConfig.maxOutputTokens").Int() != 32000 ||
+			!reflect.DeepEqual(request.Get("generationConfig.stopSequences").Value(), []any{"DONE"}) {
+			t.Fatalf("Claude stop sequences or maximum output missing: %s", got)
 		}
 		parts := request.Get("systemInstruction.parts").Array()
 		if len(parts) == 0 {
@@ -997,17 +1071,76 @@ func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 
 	t.Run("other claude keeps native structured output", func(t *testing.T) {
 		t.Parallel()
-		got, err := prepareAntigravityRequestBody(cfg, "claude-sonnet-4-6", body, body, http.Header{}, matcher)
+		const target = "claude-sonnet-4-6"
+		body, err := translateAntigravityRequest(protocol.Anthropic, target, source, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareAntigravityRequestBody(cfg, target, body, source, http.Header{}, matcher)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if mode := gjson.GetBytes(got, "request.toolConfig.functionCallingConfig.mode").String(); mode != "VALIDATED" {
 			t.Fatalf("mode=%q, want VALIDATED: %s", mode, got)
 		}
-		if !gjson.GetBytes(got, "request.generationConfig.responseSchema").IsObject() {
-			t.Fatalf("responseSchema removed: %s", got)
+		if !gjson.GetBytes(got, "request.generationConfig.responseSchema").IsObject() ||
+			gjson.GetBytes(got, "request.generationConfig.responseMimeType").Str != "application/json" {
+			t.Fatalf("structured output missing: %s", got)
 		}
 	})
+}
+
+/**
+ * @brief 验证 Antigravity 出站把数字枚举解码为类型名并保留数组项的 schema。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravityRequestBodyNumericSchemaTypes(t *testing.T) {
+	t.Parallel()
+	const rawSchema = `{"type":6,"properties":{"tags":{"type":5,"items":{"type":1}}}}`
+	const wantSchema = `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"}}}}`
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"lookup","parameters":` + rawSchema + `}]}],"generationConfig":{"responseSchema":` + rawSchema + `}}`)
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	for _, tc := range []struct {
+		model, carrier string
+		prompt         bool
+	}{
+		{"gemini-3-pro", "parameters", false},
+		{"claude-sonnet-4-6", "parametersJsonSchema", false},
+		{"claude-opus-5-5-high", "parametersJsonSchema", true},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			translated, err := translateAntigravityRequest(protocol.Gemini, tc.model, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, tc.model, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			toolSchema := request.Get("tools.0.functionDeclarations.0." + tc.carrier)
+			if toolSchema.Get("type").String() != "object" || !reflect.DeepEqual(toolSchema.Get("properties.tags").Value(), gjson.Get(wantSchema, "properties.tags").Value()) {
+				t.Fatalf("tool schema lost array item type: %s", toolSchema.Raw)
+			}
+			responseSchema := request.Get("generationConfig.responseSchema")
+			if tc.prompt {
+				if responseSchema.Exists() {
+					t.Fatalf("response schema still sent alongside prompt: %s", wire)
+				}
+				parts := request.Get("systemInstruction.parts").Array()
+				if len(parts) == 0 {
+					t.Fatalf("missing structured output prompt: %s", wire)
+				}
+				prompt := parts[len(parts)-1].Get("text").String()
+				start := strings.IndexByte(prompt, '{')
+				if start < 0 || !reflect.DeepEqual(gjson.Parse(prompt[start:]).Value(), gjson.Parse(wantSchema).Value()) {
+					t.Fatalf("prompt has no decoded response schema: %s", wire)
+				}
+			} else if !reflect.DeepEqual(responseSchema.Value(), gjson.Parse(wantSchema).Value()) {
+				t.Fatalf("response schema = %s, want %s", responseSchema.Raw, wantSchema)
+			}
+		})
+	}
 }
 
 /**

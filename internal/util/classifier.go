@@ -236,10 +236,11 @@ func (r *sseErrorResponse) ErrorType() string {
 	return r.Error.Code
 }
 
-// IsContextLengthExceededError reports whether an upstream error says that the
-// current request exceeds the model context window. Codex can emit the error as
-// error, response.error, or a top-level streaming error object; Anthropic sends
-// it as an invalid_request_error identified only by its message.
+/**
+ * @brief Identifies an upstream context overflow in native Anthropic, OpenAI, or Google errors.
+ * @param responseBody HTTP error body or SSE error payload.
+ * @return True if the error identifies an exceeded input context window.
+ */
 func IsContextLengthExceededError(responseBody []byte) bool {
 	if len(responseBody) == 0 {
 		return false
@@ -247,7 +248,8 @@ func IsContextLengthExceededError(responseBody []byte) bool {
 
 	var payload sseErrorResponse
 	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return false
+		// Google RPC encodes error.code as an HTTP status number.
+		return GoogleInputTokenLimitMessage(responseBody) != ""
 	}
 
 	details := [...]sseErrorDetail{
@@ -279,6 +281,35 @@ func IsContextLengthExceededError(responseBody []byte) bool {
 		}
 	}
 	return false
+}
+
+/**
+ * @brief Matches the start of Google's input token limit error, including the optional reported count.
+ */
+var googleInputTokenLimit = regexp.MustCompile(`(?i)^(?:prompt is too long:\s*)?(?:the )?input token count(?:\s*\([0-9,]+\))?\s+exceeds the maximum\b`)
+
+/**
+ * @brief Recognizes the Google RPC context overflow envelope.
+ * @param body HTTP error body or SSE error payload.
+ * @return Upstream message, or an empty string for any other error.
+ */
+func GoogleInputTokenLimitMessage(body []byte) string {
+	var payload struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil ||
+		payload.Error.Code != http.StatusBadRequest || payload.Error.Status != "INVALID_ARGUMENT" {
+		return ""
+	}
+	message := strings.TrimSpace(payload.Error.Message)
+	if googleInputTokenLimit.MatchString(message) {
+		return message
+	}
+	return ""
 }
 
 /**
