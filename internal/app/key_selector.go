@@ -33,6 +33,9 @@ type rrCounterScope struct {
 type rrCounter struct {
 	counter    atomic.Uint32
 	lastAccess atomic.Int64 // UnixNano: 最后一次访问时间，用于后台清理
+
+	weightMu       sync.Mutex  ///< 保护 currentWeights
+	currentWeights map[int]int ///< 平滑加权轮询的 KeyIndex 当前权重，仅档内存在显式 Key 权重时使用
 }
 
 // SelectModelRow advances the cursor only after a usable row has been chosen.
@@ -103,10 +106,16 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 		return best.KeyIndex, best.APIKey, nil
 	}
 	peers := make([]*model.APIKey, 0, len(apiKeys))
+	weighted := false
 	for _, key := range apiKeys {
 		if key != nil && key.Priority == best.Priority {
 			peers = append(peers, key)
+			weighted = weighted || key.Weight > 0
 		}
+	}
+	if weighted {
+		keyIndex, apiKey := ks.selectWeighted(channelID, peers, excludeKeys, now)
+		return keyIndex, apiKey, nil
 	}
 	return ks.selectRoundRobin(channelID, peers, excludeKeys)
 }
@@ -266,6 +275,43 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 	}
 
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
+}
+
+/**
+ * @brief 在同优先级档内按 Key 权重做平滑加权轮询
+ * @param channelID 渠道 ID
+ * @param peers 同档全部候选 Key（非 nil），决定轮询状态作用域
+ * @param excludeKeys 本次请求已尝试的 KeyIndex
+ * @param now 判断冷却的参考时刻
+ * @return 选中 Key 的 KeyIndex
+ * @return 选中 Key 的密钥
+ * @details 自动权重（Weight=0）按 1 计；只有可用 Key 累加当前权重，
+ *          因此冷却、禁用或已尝试的 Key 不占份额。
+ * @note 调用方保证 peers 至少含一个可用 Key；并发安全，同作用域串行。
+ */
+func (ks *KeySelector) selectWeighted(channelID int64, peers []*model.APIKey, excludeKeys map[int]bool, now time.Time) (int, string) {
+	counter := ks.getOrCreateCounter(newRRCounterScope(channelID, peers))
+	counter.lastAccess.Store(now.UnixNano())
+	counter.weightMu.Lock()
+	defer counter.weightMu.Unlock()
+	if counter.currentWeights == nil {
+		counter.currentWeights = make(map[int]int, len(peers))
+	}
+	total := 0
+	var selected *model.APIKey
+	for _, key := range peers {
+		if key.Disabled || excludeKeys[key.KeyIndex] || key.IsCoolingDown(now) {
+			continue
+		}
+		weight := max(key.Weight, 1)
+		total += weight
+		counter.currentWeights[key.KeyIndex] += weight
+		if selected == nil || counter.currentWeights[key.KeyIndex] > counter.currentWeights[selected.KeyIndex] {
+			selected = key
+		}
+	}
+	counter.currentWeights[selected.KeyIndex] -= total
+	return selected.KeyIndex, selected.APIKey
 }
 
 // KeySelector 专注于Key选择逻辑，冷却管理已移至 cooldownManager

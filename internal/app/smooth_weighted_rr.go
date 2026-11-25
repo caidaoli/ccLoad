@@ -101,8 +101,16 @@ func (rr *SmoothWeightedRR) selectByWeight(
 	return channels
 }
 
-// selectWithCooldownInPlace 带冷却感知的平滑加权轮询，权重 = 有效Key数量（总Key - 冷却中Key）。
-// 与 selectByWeight 一样原地重排 channels，调用方必须持有私有 slice。
+/**
+ * @brief 带冷却感知的平滑加权轮询
+ * @param channels 同档候选渠道，原地重排
+ * @param keyCooldowns 渠道 Key 冷却截止时刻
+ * @param now 判断冷却是否结束的参考时刻
+ * @return 重排后的 channels，选中渠道位于首位
+ * @details 渠道显式权重（Weight>0）直接作为分流权重，部分 Key 冷却不缩减份额；
+ *          自动权重（Weight=0）取有效 Key 数（总 Key - 冷却中 Key）。
+ * @note 调用方必须持有私有 slice。
+ */
 func (rr *SmoothWeightedRR) selectWithCooldownInPlace(
 	channels []*modelpkg.Config,
 	keyCooldowns map[int64]map[int]time.Time,
@@ -113,6 +121,10 @@ func (rr *SmoothWeightedRR) selectWithCooldownInPlace(
 	}
 	weights := make([]int, len(channels))
 	for i, ch := range channels {
+		if ch.Weight > 0 {
+			weights[i] = ch.Weight
+			continue
+		}
 		weights[i] = calcEffectiveKeyCount(ch, keyCooldowns, now)
 	}
 	return rr.selectByWeight(channels, weights)

@@ -211,7 +211,7 @@ func (s *SQLStore) updateChannelEditKeysTx(ctx context.Context, tx *sql.Tx, curr
 		old := current[i]
 		sameScope := old.ModelScopeEmpty == key.ModelScopeEmpty && old.ModelScopeAuto == key.ModelScopeAuto &&
 			slices.Equal(old.AllowedModels, key.AllowedModels) && slices.Equal(old.DetectedModels, key.DetectedModels)
-		if old.KeyStrategy == key.KeyStrategy && old.Note == key.Note && old.Priority == key.Priority &&
+		if old.KeyStrategy == key.KeyStrategy && old.Note == key.Note && old.Priority == key.Priority && old.Weight == key.Weight &&
 			old.CostMultiplier == key.CostMultiplier && sameScope {
 			continue
 		}
@@ -228,10 +228,10 @@ func (s *SQLStore) updateChannelEditKeysTx(ctx context.Context, tx *sql.Tx, curr
 			disabled = (old.Disabled && !old.ModelScopeEmpty) || key.ModelScopeEmpty
 		}
 		if _, err := s.execTx(ctx, tx, `
-			UPDATE api_keys SET key_strategy = ?, note = ?, priority = ?, cost_multiplier = ?,
+			UPDATE api_keys SET key_strategy = ?, note = ?, priority = ?, weight = ?, cost_multiplier = ?,
 				allowed_models = ?, detected_models = ?, model_scope_empty = ?, model_scope_auto = ?, disabled = ?, updated_at = ?
 			WHERE id = ?
-		`, key.KeyStrategy, key.Note, key.Priority, normalizeCostMultiplier(key.CostMultiplier),
+		`, key.KeyStrategy, key.Note, key.Priority, key.Weight, normalizeCostMultiplier(key.CostMultiplier),
 			allowed, detected, key.ModelScopeEmpty, key.ModelScopeAuto, disabled, updatedAt, old.ID); err != nil {
 			return fmt.Errorf("update channel edit key index %d: %w", key.KeyIndex, err)
 		}

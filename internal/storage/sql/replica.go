@@ -158,10 +158,10 @@ func (s *SQLStore) replaceAPIKeysReplicaTx(ctx context.Context, tx *sql.Tx, chan
 		}
 		if _, err := s.execTx(ctx, tx, `
 			INSERT INTO api_keys(channel_id, key_index, api_key, note, allowed_models, detected_models, model_scope_empty, model_scope_auto, key_strategy,
-				cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, weight, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, channelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, detectedModelsJSON, key.ModelScopeEmpty, key.ModelScopeAuto, strategy,
-			key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, now, now); err != nil {
+			key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, key.Weight, now, now); err != nil {
 			return fmt.Errorf("insert API key replica: %w", err)
 		}
 	}

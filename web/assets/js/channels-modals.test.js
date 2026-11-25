@@ -114,7 +114,7 @@ test('inline Key rows preserve and normalize model scopes', () => {
     note: 'primary',
     allowed_models: ['GPT-5', 'Claude-4'],
     model_scope_auto: false,
-    priority: 0, cost_multiplier: 1
+    priority: 0, weight: 0, cost_multiplier: 1
   });
   assert.deepEqual(normalizeInlineKeyRow('legacy-key').allowed_models, []);
   assert.equal(normalizeInlineKeyRow('legacy-key').model_scope_auto, false);
@@ -172,16 +172,16 @@ test('removing configured models prunes every restricted Key scope', () => {
   ];
 
   assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: 'gpt-5' }]), [
-    { api_key: 'sk-primary', note: '', model_scope_auto: true, allowed_models: ['GPT-5'], priority: 0, cost_multiplier: 1 },
-    { api_key: 'sk-unrestricted', note: '', model_scope_auto: false, allowed_models: [], priority: 0, cost_multiplier: 1 }
+    { api_key: 'sk-primary', note: '', model_scope_auto: true, allowed_models: ['GPT-5'], priority: 0, weight: 0, cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', model_scope_auto: false, allowed_models: [], priority: 0, weight: 0, cost_multiplier: 1 }
   ]);
   assert.deepEqual(pruneKeyAllowedModels(
     [{ api_key: 'sk-thinking', allowed_models: ['gpt-5'] }],
     [{ model: 'gpt-5(max)' }]
-  ), [{ api_key: 'sk-thinking', note: '', model_scope_auto: false, allowed_models: ['gpt-5'], priority: 0, cost_multiplier: 1 }]);
+  ), [{ api_key: 'sk-thinking', note: '', model_scope_auto: false, allowed_models: ['gpt-5'], priority: 0, weight: 0, cost_multiplier: 1 }]);
   assert.deepEqual(pruneKeyAllowedModels(rows, []), [
-    { api_key: 'sk-primary', note: '', model_scope_auto: true, allowed_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 },
-    { api_key: 'sk-unrestricted', note: '', model_scope_auto: false, allowed_models: [], priority: 0, cost_multiplier: 1 }
+    { api_key: 'sk-primary', note: '', model_scope_auto: true, allowed_models: [], model_scope_empty: true, priority: 0, weight: 0, cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', model_scope_auto: false, allowed_models: [], priority: 0, weight: 0, cost_multiplier: 1 }
   ]);
 });
 
@@ -216,7 +216,7 @@ test('single and batch model deletion use the same Key scope reconciliation', ()
       allowed_models: [],
       model_scope_empty: true,
       model_scope_auto: false,
-      priority: 0, cost_multiplier: 1
+      priority: 0, weight: 0, cost_multiplier: 1
     }]);
     assert.deepEqual([...global.selectedModelIndices], []);
   } finally {
@@ -792,6 +792,9 @@ function installBatchProtocolModeGlobals(response) {
     batchPriority: makeNumericInput('9999999'),
     batchApplyPriorityBtn: makeButton(),
     batchPriorityError: { textContent: '', hidden: true },
+    batchWeight: makeNumericInput('7'),
+    batchApplyWeightBtn: makeButton(),
+    batchWeightError: { textContent: '', hidden: true },
     batchCostMultiplier: makeNumericInput('0.5'),
     batchApplyCostMultiplierBtn: makeButton(),
     batchCostMultiplierError: { textContent: '', hidden: true },
@@ -1564,7 +1567,7 @@ test('quota output refills and submits booleans without leaking the previous cha
     await showAddModal();
     assert.equal(checkbox.checked, false);
 
-    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'test-key', priority: 0 }]);
+    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'test-key', priority: 0, weight: 0 }]);
     for (const [entry, authType] of [[undefined, 'api_key'], ['system_one', 'system_one']]) {
       await showAddModal(entry);
       fixture.getElement('channelName').value = 'new-channel';
@@ -1881,8 +1884,8 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
     ]) fixture.getElement(id).value = '0';
     setGlobal('getValidInlineURLConfigs', () => channel.urls);
     setGlobal('getValidInlineKeyRows', () => [
-      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_auto: true, priority: -7, cost_multiplier: 2 },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 }
+      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_auto: true, priority: -7, weight: 3, cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, priority: 0, weight: 0, cost_multiplier: 1 }
     ]);
     setGlobal('fetchAPIWithAuth', async (_url, options) => {
       submitted = JSON.parse(options.body);
@@ -1891,17 +1894,32 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
 
     await saveChannel({ preventDefault() {} });
 	assert.deepEqual(submitted.api_keys, [
-		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], detected_models: [], model_scope_empty: false, model_scope_auto: true, priority: -7, cost_multiplier: 2 },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], detected_models: [], model_scope_empty: true, model_scope_auto: false, priority: 0, cost_multiplier: 1 }
+		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], detected_models: [], model_scope_empty: false, model_scope_auto: true, priority: -7, weight: 3, cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], detected_models: [], model_scope_empty: true, model_scope_auto: false, priority: 0, weight: 0, cost_multiplier: 1 }
     ]);
+    assert.equal(submitted.weight, 0, 'empty channel weight submits auto (0)');
     for (const priority of [1.5, -100000, 10000000, NaN]) {
       submitted = undefined;
-      setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority }]);
+      setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority, weight: 0 }]);
       await saveChannel({ preventDefault() {} });
       assert.equal(submitted, undefined, `invalid priority ${priority} must not be submitted`);
     }
-    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority: 0 }]);
+    for (const weight of [1.5, -1, 10001, NaN]) {
+      submitted = undefined;
+      setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority: 0, weight }]);
+      await saveChannel({ preventDefault() {} });
+      assert.equal(submitted, undefined, `invalid key weight ${weight} must not be submitted`);
+    }
+    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority: 0, weight: 0 }]);
+    for (const weight of ['-1', '10001', '1.5']) {
+      submitted = undefined;
+      fixture.getElement('channelWeight').value = weight;
+      await saveChannel({ preventDefault() {} });
+      assert.equal(submitted, undefined, `invalid channel weight ${weight} must not be submitted`);
+    }
+    fixture.getElement('channelWeight').value = '10000';
     await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.weight, 10000);
     assert.equal(submitted.api_keys[0].priority, 0);
     assert.equal(submitted.key_strategy, undefined);
 
@@ -2913,6 +2931,13 @@ for (const testCase of [
     summaryKey: 'channels.batchPrioritySummary'
   },
   {
+    name: 'weight',
+    exportName: 'batchSetSelectedChannelsWeight',
+    field: 'weight',
+    value: 7,
+    summaryKey: 'channels.batchWeightSummary'
+  },
+  {
     name: 'RPM',
     exportName: 'batchSetSelectedChannelsRPMLimit',
     field: 'rpm_limit',
@@ -3601,9 +3626,9 @@ test('Key sorting confirms priorities without rebuilding keys, cancels drafts, a
     close() { this.open = false; dialogEvents.close(); }
   };
   const rows = [
-    { api_key: 'sk-duplicate', note: 'first', allowed_models: ['gpt-5'], priority: -4, cost_multiplier: 2 },
-    { api_key: '', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 },
-    { api_key: 'sk-duplicate', note: 'second', allowed_models: [], model_scope_empty: true, priority: 20, cost_multiplier: 0 }
+    { api_key: 'sk-duplicate', note: 'first', allowed_models: ['gpt-5'], priority: -4, weight: 5, cost_multiplier: 2 },
+    { api_key: '', note: '', allowed_models: [], priority: 0, weight: 0, cost_multiplier: 1 },
+    { api_key: 'sk-duplicate', note: 'second', allowed_models: [], model_scope_empty: true, priority: 20, weight: 0, cost_multiplier: 0 }
   ].map(row => ({ ...row, model_scope_auto: false }));
   const states = [{ key_index: 0, disabled: true }, { key_index: 2, cooldown_remaining_ms: 30000 }];
   const context = vm.createContext({

@@ -1144,3 +1144,17 @@ func ensureAPIKeysPriority(ctx context.Context, db *sql.DB, dialect Dialect) err
 	return ensureColumn(ctx, db, dialect, "api_keys", "priority",
 		"INT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
 }
+
+/**
+ * @brief 为渠道或 API Key 表补充分流权重列
+ * @param ctx 迁移上下文
+ * @param db 目标数据库
+ * @param dialect 数据库方言
+ * @param table channels 或 api_keys
+ * @return 补列失败时返回错误
+ * @details 存量行为 0，即自动权重，保持升级前的分流结果。
+ */
+func ensureWeightColumn(ctx context.Context, db *sql.DB, dialect Dialect, table string) error {
+	return ensureColumn(ctx, db, dialect, table, "weight",
+		"INT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+}

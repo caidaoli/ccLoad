@@ -302,6 +302,7 @@ func protocolCapabilityRelevantConfig(cfg *model.Config) *model.Config {
 	}
 	relevant.Name = ""
 	relevant.Priority = 0
+	relevant.Weight = 0
 	relevant.RPMLimit = 0
 	relevant.MaxConcurrency = 0
 	relevant.Enabled = false

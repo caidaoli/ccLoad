@@ -967,6 +967,22 @@
                     <span id="batchPriorityError" class="channel-batch-advanced__error" role="alert" hidden></span>
                   </div>
                   <div class="channel-batch-advanced__field">
+                    <label for="batchWeight" data-i18n="channels.batchWeight">权重</label>
+                    <div class="channel-batch-advanced__control">
+                      <input id="batchWeight" class="channel-batch-input" type="number" value="0" min="0"
+                        max="10000" step="1" inputmode="numeric"
+                        aria-describedby="batchWeightHint batchWeightError" disabled>
+                      <button id="batchApplyWeightBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-weight" disabled>
+                        <span data-i18n="channels.batchApplyWeight">设置权重</span>
+                      </button>
+                    </div>
+                    <span id="batchWeightHint" class="channel-batch-advanced__hint"
+                      data-i18n="channels.batchWeightHint">同优先级内按权重分配请求，0 按可用 Key 数</span>
+                    <span id="batchWeightError" class="channel-batch-advanced__error" role="alert" hidden></span>
+                  </div>
+                  <div class="channel-batch-advanced__field">
                     <label for="batchCostMultiplier" data-i18n="channels.batchCostMultiplier">Key 倍率</label>
                     <div class="channel-batch-advanced__control">
                       <input id="batchCostMultiplier" class="channel-batch-input" type="number" value="1" min="0"
@@ -1208,6 +1224,12 @@
                 <label class="form-label" for="channelPriority" data-i18n="channels.priority">优先级</label>
                 <input type="number" id="channelPriority" class="form-input" value="0" min="-99999" max="9999999" step="1">
               </div>
+              <div class="channel-editor-field">
+                <label class="form-label" for="channelWeight" data-i18n="channels.weight">权重</label>
+                <input type="number" id="channelWeight" class="form-input" min="0" max="10000" step="1"
+                  data-i18n-placeholder="channels.weightAutoPlaceholder" placeholder="自动"
+                  data-i18n-title="channels.weightHint" title="同优先级内按权重分配请求，留空按可用 Key 数">
+              </div>
               <div class="channel-editor-field channel-editor-field--switches">
                 <label id="channelEnabledWrapper" class="channel-editor-switch">
                   <input type="checkbox" id="channelEnabled" checked>
@@ -1375,6 +1397,7 @@
                   <th style="width: 160px;" data-i18n="channels.tableApiKeyNote">备注</th>
                   <th class="inline-key-col-multiplier" data-i18n="channels.costMultiplier">倍率</th>
                   <th style="width: 64px;" data-i18n="channels.keyPriority" data-i18n-title="channels.keyPriorityHint" title="优先请求高优先级 Key，同优先级轮询">优先级</th>
+                  <th style="width: 64px;" data-i18n="channels.keyWeight" data-i18n-title="channels.keyWeightHint" title="同优先级 Key 按权重分配请求，0 为等分">权重</th>
                   <th style="width: 108px;"></th>
                   <th style="width: 104px;">
                     <select id="keyStatusFilter" class="modal-inline-select" data-change-action="filter-keys-by-status">
@@ -2480,6 +2503,11 @@
           data-index="{{index}}" min="-99999" max="9999999" step="1" aria-label="{{priorityLabel}}" title="{{priorityHint}}"
           style="width: 52px; padding: 4px 5px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px;">
       </td>
+      <td class="inline-key-col-weight" data-mobile-label="{{weightLabel}}">
+        <input type="number" value="{{weight}}" class="inline-key-weight-input modal-inline-input"
+          data-index="{{index}}" min="0" max="10000" step="1" aria-label="{{weightLabel}}" title="{{weightHint}}"
+          style="width: 52px; padding: 4px 5px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px;">
+      </td>
       <td class="inline-key-col-actions" style="text-align: center;" data-mobile-label="{{mobileLabelActions}}">{{{actionsHtml}}}</td>
       <td class="inline-key-col-status" data-mobile-label="{{mobileLabelStatus}}">{{{cooldownHtml}}}</td>
     </tr>
@@ -2487,7 +2515,7 @@
 
   <template id="tpl-key-empty">
     <tr>
-      <td colspan="7" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+      <td colspan="8" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
         {{message}}
       </td>
     </tr>

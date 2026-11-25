@@ -212,6 +212,28 @@ func TestSmoothWeightedRR_WithCooldown(t *testing.T) {
 	}
 }
 
+func TestSmoothWeightedRR_ExplicitChannelWeight(t *testing.T) {
+	// 显式渠道权重替代 Key 数：10 Key 渠道设权重 1，与 1 Key 自动渠道各占一半；
+	// 部分 Key 冷却不缩减显式权重渠道的份额。
+	rr := NewSmoothWeightedRR()
+	now := time.Now()
+	keyCooldowns := map[int64]map[int]time.Time{
+		3: {0: now.Add(time.Minute), 1: now.Add(time.Minute)},
+	}
+	counts := make(map[string]int)
+	for range 100 {
+		channels := []*modelpkg.Config{
+			{ID: 1, Name: "many-keys", Priority: 10, KeyCount: 10, Weight: 1},
+			{ID: 2, Name: "auto", Priority: 10, KeyCount: 1},
+			{ID: 3, Name: "heavy", Priority: 10, KeyCount: 3, Weight: 2},
+		}
+		counts[rrSelectWithCooldown(rr, channels, keyCooldowns, now)[0].Name]++
+	}
+	if counts["many-keys"] != 25 || counts["auto"] != 25 || counts["heavy"] != 50 {
+		t.Fatalf("distribution = %v, want many-keys=25 auto=25 heavy=50", counts)
+	}
+}
+
 func TestSmoothWeightedRR_Integration(t *testing.T) {
 	// 集成测试：验证 SmoothWeightedRR 的完整工作流
 

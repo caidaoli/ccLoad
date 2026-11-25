@@ -101,7 +101,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "api_key_model_scope_auto", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries"}
+	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_weights", "api_key_model_scope_empty", "api_key_model_scope_auto", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries", "weight"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -148,10 +148,17 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			return
 		}
 		apiKeyPriorities := make([]int, len(apiKeys))
+		apiKeyWeights := make([]int, len(apiKeys))
 		for i, key := range apiKeys {
 			apiKeyPriorities[i] = key.Priority
+			apiKeyWeights[i] = key.Weight
 		}
 		apiKeyPrioritiesJSON, err := sonic.Marshal(apiKeyPriorities)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		apiKeyWeightsJSON, err := sonic.Marshal(apiKeyWeights)
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
 			return
@@ -216,6 +223,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			string(apiKeyDetectedModelsJSON),
 			string(apiKeyCostMultipliersJSON),
 			string(apiKeyPrioritiesJSON),
+			string(apiKeyWeightsJSON),
 			string(apiKeyModelScopeEmptyJSON),
 			string(apiKeyModelScopeAutoJSON),
 			string(urlsJSON),
@@ -239,6 +247,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.Itoa(cfg.ScheduledCheckIntervalMinutes),
 			cfg.ScheduledCheckStartTime,
 			strconv.Itoa(cfg.SameChannelRetries),
+			strconv.Itoa(cfg.Weight),
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -331,13 +340,15 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasInterval := columnIndex["scheduled_check_interval_minutes"]
 	_, hasStart := columnIndex["scheduled_check_start_time"]
 	_, hasSameChannelRetries := columnIndex["same_channel_retries"]
+	_, hasWeightColumn := columnIndex["weight"]
+	_, hasAPIKeyWeightsColumn := columnIndex["api_key_weights"]
 	existingCooldownDetectionRulesByName := make(map[string]*model.CooldownDetectionRules)
 	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
 	existingWebsocketsByName := make(map[string]bool)
 	existingOAuthQuotaPassthroughByName := make(map[string]bool)
 	existingAPIKeysByName := make(map[string][]*model.APIKey)
 	existingModelEntriesByName := make(map[string][]model.ModelEntry)
-	if !hasInterval || !hasStart || !hasSameChannelRetries || !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasOAuthQuotaPassthroughColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyDetectedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn || !hasAPIKeyModelScopeAutoColumn || !hasModelPricingColumn {
+	if !hasInterval || !hasStart || !hasSameChannelRetries || !hasWeightColumn || !hasAPIKeyWeightsColumn || !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasOAuthQuotaPassthroughColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyDetectedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn || !hasAPIKeyModelScopeAutoColumn || !hasModelPricingColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -353,7 +364,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingOAuthQuotaPassthroughByName[cfg.Name] = cfg.OAuthQuotaPassthrough
 			existingModelEntriesByName[cfg.Name] = cfg.ModelEntries
 		}
-		if !hasAPIKeyAllowedModelsColumn || !hasAPIKeyDetectedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn || !hasAPIKeyModelScopeAutoColumn {
+		if !hasAPIKeyAllowedModelsColumn || !hasAPIKeyDetectedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyWeightsColumn || !hasAPIKeyModelScopeEmptyColumn || !hasAPIKeyModelScopeAutoColumn {
 			allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
 			if err != nil {
 				RespondError(c, http.StatusInternalServerError, err)
@@ -627,6 +638,7 @@ func (s *Server) parseChannelImportRow(
 	apiKeyDetectedModelsRaw := fetch("api_key_detected_models")
 	apiKeyCostMultipliersRaw := fetch("api_key_cost_multipliers")
 	apiKeyPrioritiesRaw := fetch("api_key_priorities")
+	apiKeyWeightsRaw := fetch("api_key_weights")
 	apiKeyModelScopeEmptyRaw := fetch("api_key_model_scope_empty")
 	apiKeyModelScopeAutoRaw := fetch("api_key_model_scope_auto")
 	rawAuthType := fetch("auth_type")
@@ -827,6 +839,20 @@ func (s *Server) parseChannelImportRow(
 			sameChannelRetries = parsed
 		}
 	}
+	weight := 0
+	if existing := existingSchedulesByName[name]; existing != nil {
+		weight = existing.Weight
+	}
+	if _, present := columnIndex["weight"]; present {
+		weight = 0
+		if raw := fetch("weight"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 || parsed > model.MaxRoutingWeight {
+				return nil, fmt.Sprintf("第%d行 weight 必须为 0–%d 的整数: %s", lineNo, model.MaxRoutingWeight, raw), true
+			}
+			weight = parsed
+		}
+	}
 	if err := model.ValidateScheduledCheckSchedule(interval, start); err != nil {
 		return nil, fmt.Sprintf("第%d行: %v", lineNo, err), true
 	}
@@ -961,6 +987,7 @@ func (s *Server) parseChannelImportRow(
 		CooldownDetectionRules:        cooldownDetectionRules,
 		RetryOtherKeysOnFailure:       retryOtherKeysOnFailure,
 		SameChannelRetries:            sameChannelRetries,
+		Weight:                        weight,
 	}
 
 	// 解析并构建API Keys
@@ -1076,6 +1103,29 @@ func (s *Server) parseChannelImportRow(
 			apiKeyPriorities[i] = *priority
 		}
 	}
+	apiKeyWeights := make([]int, len(apiKeyList))
+	if _, present := columnIndex["api_key_weights"]; !present {
+		existing := existingAPIKeysByName[name]
+		for i := range apiKeyWeights {
+			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
+				apiKeyWeights[i] = existing[i].Weight
+			}
+		}
+	} else if apiKeyWeightsRaw != "" {
+		var submittedWeights []*int
+		if err := sonic.Unmarshal([]byte(apiKeyWeightsRaw), &submittedWeights); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_weights 无效: %v", lineNo, err), true
+		}
+		if len(submittedWeights) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_weights 数量必须与 api_key 一致", lineNo), true
+		}
+		for i, w := range submittedWeights {
+			if w == nil || *w < 0 || *w > model.MaxRoutingWeight {
+				return nil, fmt.Sprintf("第%d行 api_key_weights[%d] 必须为 0–%d 的整数", lineNo, i, model.MaxRoutingWeight), true
+			}
+			apiKeyWeights[i] = *w
+		}
+	}
 	canonicalModels := make(map[string]string, len(modelEntries))
 	for _, entry := range modelEntries {
 		canonicalModels[strings.ToLower(model.RoutingModelName(entry.Model))] = model.RoutingModelName(entry.Model)
@@ -1121,6 +1171,7 @@ func (s *Server) parseChannelImportRow(
 			KeyStrategy:     keyStrategy,
 			CostMultiplier:  apiKeyCostMultipliers[i],
 			Priority:        apiKeyPriorities[i],
+			Weight:          apiKeyWeights[i],
 		}
 	}
 

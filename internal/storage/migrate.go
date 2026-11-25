@@ -233,6 +233,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsSameChannelRetries(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels same_channel_retries: %w", err)
 			}
+			if err := ensureWeightColumn(ctx, db, dialect, "channels"); err != nil {
+				return fmt.Errorf("migrate channels weight: %w", err)
+			}
 			if err := ensureChannelsOAuthQuotaPassthrough(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels oauth_quota_passthrough: %w", err)
 			}
@@ -261,6 +264,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "api_keys" {
 			if err := ensureAPIKeysPriority(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys priority: %w", err)
+			}
+			if err := ensureWeightColumn(ctx, db, dialect, "api_keys"); err != nil {
+				return fmt.Errorf("migrate api_keys weight: %w", err)
 			}
 			if err := ensureAPIKeysAPIKeyLength(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys api_key column: %w", err)

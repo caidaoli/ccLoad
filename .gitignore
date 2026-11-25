@@ -64,6 +64,7 @@ dist
 docs/*
 !docs/guide/
 !docs/agents/
+!docs/adr/
 .worktrees/
 # 步骤1：忽略所有目录下的 claude.md
 **/claude.md

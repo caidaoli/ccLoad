@@ -190,6 +190,7 @@ function initChannelsPageActions() {
         'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
         'batch-set-protocol-mode': () => batchSetSelectedChannelsProtocolMode(),
         'batch-set-priority': () => batchSetSelectedChannelsPriority(),
+        'batch-set-weight': () => batchSetSelectedChannelsWeight(),
         'batch-set-cost-multiplier': () => batchSetSelectedChannelsCostMultiplier(),
         'batch-set-rpm-limit': () => batchSetSelectedChannelsRPMLimit(),
         'batch-set-max-concurrency': () => batchSetSelectedChannelsMaxConcurrency(),

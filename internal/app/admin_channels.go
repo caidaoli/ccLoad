@@ -885,6 +885,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			Disabled:        entry.ModelScopeEmpty,
 			CostMultiplier:  apiKeyCostMultiplier(entry),
 			Priority:        apiKeyPriority(entry),
+			Weight:          submittedWeight(entry.Weight),
 			CreatedAt:       model.JSONTime{Time: now},
 			UpdatedAt:       model.JSONTime{Time: now},
 		})
@@ -1493,6 +1494,10 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			}
 		}
 	}
+	if req.Weight == nil {
+		weight := existing.Weight
+		req.Weight = &weight
+	}
 	if !existing.UsesOAuth() {
 		submittedKeys := req.normalizeAPIKeys()
 		preserveOmittedAPIKeyMetadata(submittedKeys, oldKeys)
@@ -1560,14 +1565,15 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	priorityChanged, otherKeyMetadataChanged := false, false
+	routingChanged, otherKeyMetadataChanged := false, false
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
 			if newKeys[i].CostMultiplier == nil {
 				newKeys[i].CostMultiplier = &oldKey.CostMultiplier
 			}
 			key := newKeys[i]
-			priorityChanged = priorityChanged || apiKeyPriority(key) != oldKey.Priority
+			routingChanged = routingChanged || apiKeyPriority(key) != oldKey.Priority ||
+				submittedWeight(key.Weight) != oldKey.Weight
 			otherKeyMetadataChanged = otherKeyMetadataChanged || oldKey.Note != key.Note ||
 				apiKeyCostMultiplier(key) != oldKey.CostMultiplier ||
 				!slices.Equal(oldKey.AllowedModels, key.AllowedModels) ||
@@ -1592,7 +1598,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	var apiKeys []*model.APIKey
-	if keyChanged || priorityChanged || otherKeyMetadataChanged || strategyChanged {
+	if keyChanged || routingChanged || otherKeyMetadataChanged || strategyChanged {
 		// 同值 Key 的运行状态由存储在事务内合并。
 
 		// 批量创建新的API Keys（优化：单次事务插入替代循环单条插入）
@@ -1617,6 +1623,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				Disabled:        key.ModelScopeEmpty,
 				CostMultiplier:  apiKeyCostMultiplier(key),
 				Priority:        apiKeyPriority(key),
+				Weight:          submittedWeight(key.Weight),
 				CreatedAt:       model.JSONTime{Time: now},
 				UpdatedAt:       model.JSONTime{Time: now},
 			})
@@ -1633,17 +1640,19 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		s.xaiCredentials.invalidate(id)
 	}
 
-	// 仅调整优先级不代表凭据已经恢复，保留禁用和冷却状态。
+	// 仅调整优先级或权重不代表凭据已经恢复，保留禁用和冷却状态。
 	before, after := existing.Clone(), upd.Clone()
+	routingChanged = routingChanged || before.Weight != after.Weight
 	after.UpdatedAt = before.UpdatedAt
+	after.Weight = before.Weight
 	if !existing.UsesOAuth() {
 		// API Key 渠道的旧渠道倍率会被 ToConfig 归一为 1，实际计费只读取 Key 倍率。
 		after.CostMultiplier = before.CostMultiplier
 	}
-	priorityOnly := priorityChanged && !keyChanged && !strategyChanged &&
+	routingOnly := routingChanged && !keyChanged && !strategyChanged &&
 		!otherKeyMetadataChanged && !managementChanged &&
 		reflect.DeepEqual(before, after)
-	if !priorityOnly {
+	if !routingOnly {
 		s.clearAllChannelCooldowns(c.Request.Context(), id)
 	}
 	if keyChanged || protocolCapabilityConfigChanged(existing, upd) {
@@ -1687,6 +1696,10 @@ func preserveOmittedAPIKeyMetadata(submitted []ChannelAPIKeyRequest, existing []
 			if submitted[i].Priority == nil {
 				priority := oldKey.Priority
 				submitted[i].Priority = &priority
+			}
+			if submitted[i].Weight == nil {
+				weight := oldKey.Weight
+				submitted[i].Weight = &weight
 			}
 			if !submitted[i].detectedModelsSet {
 				submitted[i].DetectedModels = append([]string(nil), oldKey.DetectedModels...)
@@ -2203,6 +2216,7 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 	var req struct {
 		ChannelIDs            []int64            `json:"channel_ids"`
 		Priority              *int               `json:"priority"`
+		Weight                *int               `json:"weight"`
 		CostMultiplier        *float64           `json:"cost_multiplier"`
 		DailyCostLimit        *float64           `json:"daily_cost_limit"`
 		RPMLimit              *int               `json:"rpm_limit"`
@@ -2225,6 +2239,7 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 
 	patch, err := (model.BatchConfigPatch{
 		Priority:              req.Priority,
+		Weight:                req.Weight,
 		CostMultiplier:        req.CostMultiplier,
 		DailyCostLimit:        req.DailyCostLimit,
 		RPMLimit:              req.RPMLimit,

@@ -32,7 +32,7 @@ type channelWithScore struct {
 }
 
 /**
- * @brief 按全局健康快照的有效优先级排序，并在同档渠道内按有效 Key 数轮询
+ * @brief 按全局健康快照的有效优先级排序，并在同档渠道内按渠道权重（自动时为有效 Key 数）轮询
  * @param channels 已通过冷却过滤的候选
  * @param keyCooldowns 各渠道 Key 的冷却截止时间
  * @param now 本轮选路的当前时间
@@ -55,8 +55,7 @@ func (s *Server) sortChannelsByHealth(
 		return scored[i].effPriority > scored[j].effPriority
 	})
 
-	// 同有效优先级内按 KeyCount 平滑加权轮询（负载均衡）
-	// 说明：healthCache 开启后仍需按 Key 数量分流。
+	// 同有效优先级内按渠道权重平滑加权轮询（自动权重为有效 Key 数）。
 	// 这里仅把“本轮选中的渠道”移动到组首，确保首选渠道按权重分布；其余顺序保持稳定，便于失败回退时可预测。
 	result := make([]*modelpkg.Config, len(scored))
 	groupStart := 0

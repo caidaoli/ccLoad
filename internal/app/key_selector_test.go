@@ -861,3 +861,55 @@ func TestSelectCooldownFallbackKey_PriorityTieBreak(t *testing.T) {
 		t.Fatalf("recovered keys must use priority: index=%d err=%v", index, err)
 	}
 }
+
+func TestSelectAvailableKey_WeightedWithinTier(t *testing.T) {
+	t.Parallel()
+	selector := NewKeySelector()
+	keys := []*model.APIKey{
+		{KeyIndex: 0, APIKey: "heavy", Weight: 3},
+		{KeyIndex: 1, APIKey: "auto"},
+		{KeyIndex: 2, APIKey: "low-tier", Priority: -1, Weight: 100},
+	}
+	counts := map[int]int{}
+	for range 40 {
+		index, _, err := selector.SelectAvailableKey(1, keys, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[index]++
+	}
+	if counts[0] != 30 || counts[1] != 10 || counts[2] != 0 {
+		t.Fatalf("weighted distribution = %v, want heavy=30 auto=10 low-tier=0", counts)
+	}
+
+	// 重试时排除已试 Key，剩余同档 Key 继续按权重选，同档耗尽才降档。
+	index, _, err := selector.SelectAvailableKey(1, keys, map[int]bool{0: true})
+	if err != nil || index != 1 {
+		t.Fatalf("retry after heavy excluded = %d, %v; want 1", index, err)
+	}
+	index, _, err = selector.SelectAvailableKey(1, keys, map[int]bool{0: true, 1: true})
+	if err != nil || index != 2 {
+		t.Fatalf("retry after tier exhausted = %d, %v; want 2", index, err)
+	}
+}
+
+func TestSelectAvailableKey_WeightedSkipsCoolingKey(t *testing.T) {
+	t.Parallel()
+	selector := NewKeySelector()
+	keys := []*model.APIKey{
+		{KeyIndex: 0, APIKey: "cooling", Weight: 9, CooldownUntil: time.Now().Add(time.Minute).Unix()},
+		{KeyIndex: 1, APIKey: "a", Weight: 1},
+		{KeyIndex: 2, APIKey: "b", Weight: 2},
+	}
+	counts := map[int]int{}
+	for range 30 {
+		index, _, err := selector.SelectAvailableKey(1, keys, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[index]++
+	}
+	if counts[0] != 0 || counts[1] != 10 || counts[2] != 20 {
+		t.Fatalf("distribution with cooling key = %v, want a=10 b=20", counts)
+	}
+}

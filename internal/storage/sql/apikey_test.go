@@ -19,7 +19,7 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	// 批量创建 API Keys
 	keys := []*model.APIKey{
 		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key-0", KeyStrategy: model.KeyStrategySequential},
-		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", Priority: -8, AllowedModels: []string{"gpt-5", "gpt-4.1"}, ModelScopeAuto: true, KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", Priority: -8, Weight: 6, AllowedModels: []string{"gpt-5", "gpt-4.1"}, ModelScopeAuto: true, KeyStrategy: model.KeyStrategySequential},
 		{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key-2", ModelScopeEmpty: true, Disabled: true, KeyStrategy: model.KeyStrategySequential},
 	}
 	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
@@ -34,8 +34,8 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	if key.APIKey != "sk-key-1" {
 		t.Errorf("api key: got %q, want %q", key.APIKey, "sk-key-1")
 	}
-	if key.Priority != -8 {
-		t.Fatalf("priority=%d", key.Priority)
+	if key.Priority != -8 || key.Weight != 6 {
+		t.Fatalf("priority=%d weight=%d", key.Priority, key.Weight)
 	}
 	if key.KeyIndex != 1 {
 		t.Errorf("key index: got %d, want %d", key.KeyIndex, 1)

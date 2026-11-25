@@ -31,9 +31,10 @@ type ChannelRequest struct {
 	KeyStrategy                   string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
 	URLs                          model.ChannelURLs             `json:"urls" binding:"required,min=1"`
 	Priority                      int                           `json:"priority"`
-	RPMLimit                      int                           `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
-	MaxConcurrency                int                           `json:"max_concurrency"` // 最大并发请求数，0表示无限制
-	Models                        []model.ModelEntry            `json:"models"`          ///< 模型配置；最少数量按认证类型校验。
+	Weight                        *int                          `json:"weight,omitempty"` ///< 渠道权重；省略时更新保留原值、创建取 0（自动）
+	RPMLimit                      int                           `json:"rpm_limit"`        // 每分钟请求数限制，0表示无限制
+	MaxConcurrency                int                           `json:"max_concurrency"`  // 最大并发请求数，0表示无限制
+	Models                        []model.ModelEntry            `json:"models"`           ///< 模型配置；最少数量按认证类型校验。
 	Enabled                       bool                          `json:"enabled"`
 	ScheduledCheckEnabled         bool                          `json:"scheduled_check_enabled"`
 	ScheduledCheckModel           string                        `json:"scheduled_check_model"`
@@ -89,6 +90,7 @@ type ChannelAPIKeyRequest struct {
 	// 0 是合法的「免费 Key」。OAuth 渠道的合成 Key 行也用它携带渠道倍率。
 	CostMultiplier *float64 `json:"cost_multiplier,omitempty"`
 	Priority       *int     `json:"priority,omitempty"`
+	Weight         *int     `json:"weight,omitempty"` ///< Key 权重；省略时更新保留原值、创建取 0（自动）
 	// allowedModelsSet distinguishes an omitted field from an explicit empty list.
 	// Updates preserve an existing scope when old clients do not send the new field.
 	allowedModelsSet  bool
@@ -107,6 +109,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 		ModelScopeAuto  *bool           `json:"model_scope_auto"`
 		CostMultiplier  *float64        `json:"cost_multiplier"`
 		Priority        *int            `json:"priority"`
+		Weight          *int            `json:"weight"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -119,6 +122,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 	r.ModelScopeAuto = raw.ModelScopeAuto != nil && *raw.ModelScopeAuto
 	r.CostMultiplier = raw.CostMultiplier
 	r.Priority = raw.Priority
+	r.Weight = raw.Weight
 	r.AllowedModels = nil
 	r.DetectedModels = nil
 	r.allowedModelsSet = raw.AllowedModels != nil
@@ -149,6 +153,31 @@ func apiKeyPriority(entry ChannelAPIKeyRequest) int {
 	return *entry.Priority
 }
 
+/**
+ * @brief 解析提交的权重
+ * @param weight 提交值；nil 表示未提交
+ * @return 权重；未提交时为 0（自动权重）
+ */
+func submittedWeight(weight *int) int {
+	if weight == nil {
+		return 0
+	}
+	return *weight
+}
+
+/**
+ * @brief 校验渠道权重或 Key 权重的取值范围
+ * @param field 出错时报告的字段名
+ * @param weight 提交值；nil 表示未提交
+ * @return 超出 0～model.MaxRoutingWeight 时返回错误
+ */
+func validateWeight(field string, weight *int) error {
+	if weight != nil && (*weight < 0 || *weight > model.MaxRoutingWeight) {
+		return fmt.Errorf("%s must be between 0 and %d", field, model.MaxRoutingWeight)
+	}
+	return nil
+}
+
 const (
 	maxAPIKeyNoteLength              = 512
 	maxAPIKeyAllowedModelsJSONLength = 8000
@@ -172,6 +201,7 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				modelScopeAutoSet: item.modelScopeAutoSet,
 				CostMultiplier:    item.CostMultiplier,
 				Priority:          item.Priority,
+				Weight:            item.Weight,
 				allowedModelsSet:  item.allowedModelsSet,
 				detectedModelsSet: item.detectedModelsSet,
 			})
@@ -355,6 +385,12 @@ func (cr *ChannelRequest) Validate() error {
 				return fmt.Errorf("api_keys[%d].priority must be between -99999 and 9999999", i)
 			}
 		}
+		if key.Weight != nil && !model.UsesAPIKeyCredentials(authType) {
+			return fmt.Errorf("OAuth channel API key weight is read-only")
+		}
+		if err := validateWeight(fmt.Sprintf("api_keys[%d].weight", i), key.Weight); err != nil {
+			return err
+		}
 		if key.CostMultiplier != nil && (math.IsNaN(*key.CostMultiplier) || math.IsInf(*key.CostMultiplier, 0) || *key.CostMultiplier < 0) {
 			return fmt.Errorf("api_keys[%d].cost_multiplier must be finite and >= 0 (got %v)", i, *key.CostMultiplier)
 		}
@@ -469,6 +505,9 @@ func (cr *ChannelRequest) Validate() error {
 	if cr.SameChannelRetries < 0 || cr.SameChannelRetries > model.MaxSameChannelRetries {
 		return fmt.Errorf("same_channel_retries must be between 0 and %d (got %d)", model.MaxSameChannelRetries, cr.SameChannelRetries)
 	}
+	if err := validateWeight("weight", cr.Weight); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -561,6 +600,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ProtocolTransformMode:         cr.ProtocolTransformMode,
 		URLs:                          cr.URLs.Clone(),
 		Priority:                      cr.Priority,
+		Weight:                        submittedWeight(cr.Weight),
 		RPMLimit:                      cr.RPMLimit,
 		MaxConcurrency:                cr.MaxConcurrency,
 		ModelEntries:                  normalizedModels,

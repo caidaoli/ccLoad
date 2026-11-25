@@ -44,6 +44,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			Enabled:                 true,
 			RetryOtherKeysOnFailure: true,
 			SameChannelRetries:      3,
+			Weight:                  6,
 		},
 		{
 			Name:     "Test-Export-2",
@@ -70,6 +71,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			AllowedModels:  []string{cfg.ModelEntries[0].Model},
 			DetectedModels: []string{cfg.ModelEntries[0].Model},
 			KeyStrategy:    model.KeyStrategySequential,
+			Weight:         cfg.Weight / 2,
 		}
 		if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{apiKey}); err != nil {
 			t.Fatalf("创建API Key失败: %v", err)
@@ -116,7 +118,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "api_key_model_scope_auto", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_weights", "api_key_model_scope_empty", "api_key_model_scope_auto", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries", "weight"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -137,6 +139,12 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	sameChannelRetriesIndex := slices.Index(header, "same_channel_retries")
 	if sameChannelRetriesIndex < 0 || records[1][sameChannelRetriesIndex] != "3" {
 		t.Errorf("same_channel_retries 导出值错误: row=%v", records[1])
+	}
+	if weightIndex := slices.Index(header, "weight"); records[1][weightIndex] != "6" {
+		t.Errorf("weight 导出值错误: row=%v", records[1])
+	}
+	if keyWeightsIndex := slices.Index(header, "api_key_weights"); records[1][keyWeightsIndex] != "[3]" {
+		t.Errorf("api_key_weights 导出值错误: row=%v", records[1])
 	}
 	allowedModelsIndex := slices.Index(header, "api_key_allowed_models")
 	if allowedModelsIndex < 0 || records[1][allowedModelsIndex] != `[["model-1"]]` {
@@ -1156,6 +1164,7 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		Enabled:                       true,
 		RetryOtherKeysOnFailure:       true,
 		SameChannelRetries:            4,
+		Weight:                        9,
 		ScheduledCheckEnabled:         true,
 		ScheduledCheckModel:           "old-model",
 		ScheduledCheckIntervalMinutes: 17,
@@ -1173,6 +1182,7 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		KeyIndex:       0,
 		APIKey:         "sk-old-key",
 		Priority:       -19,
+		Weight:         7,
 		AllowedModels:  []string{"old-model"},
 		DetectedModels: []string{"old-upstream-model"},
 		KeyStrategy:    model.KeyStrategySequential,
@@ -1235,6 +1245,9 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	if updated.SameChannelRetries != 4 {
 		t.Fatalf("缺少 same_channel_retries 列时应保留旧值 4，实际为 %d", updated.SameChannelRetries)
 	}
+	if updated.Weight != 9 {
+		t.Fatalf("缺少 weight 列时应保留旧值 9，实际为 %d", updated.Weight)
+	}
 	if !updated.OAuthQuotaPassthrough {
 		t.Fatal("missing quota passthrough column should preserve true")
 	}
@@ -1251,7 +1264,7 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	if err != nil {
 		t.Fatalf("查询更新后的 key 失败: %v", err)
 	}
-	if len(keys) != 1 || keys[0].Priority != -19 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) || !slices.Equal(keys[0].DetectedModels, []string{"old-upstream-model"}) {
+	if len(keys) != 1 || keys[0].Priority != -19 || keys[0].Weight != 7 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) || !slices.Equal(keys[0].DetectedModels, []string{"old-upstream-model"}) {
 		t.Fatalf("旧 CSV 缺少 api_key_allowed_models 列时应保留范围，实际为 %+v", keys)
 	}
 }
@@ -1900,12 +1913,20 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestAdminAPI_CSVKeyPriorityValidation(t *testing.T) {
 	server := newInMemoryServer(t)
+	type invalidCase struct{ column, value string }
+	cases := []invalidCase{{"weight", "-1"}, {"weight", "10001"}, {"weight", "1.5"}}
 	for _, priorities := range []string{`[1]`, `[1,2,3]`, `[1.5,0]`, `[null,0]`, `[10000000,0]`, `[-100000,0]`} {
+		cases = append(cases, invalidCase{"api_key_priorities", priorities})
+	}
+	for _, weights := range []string{`[1]`, `[1.5,0]`, `[null,0]`, `[-1,0]`, `[10001,0]`} {
+		cases = append(cases, invalidCase{"api_key_weights", weights})
+	}
+	for _, tc := range cases {
 		var data bytes.Buffer
 		csvWriter := csv.NewWriter(&data)
 		if err := csvWriter.WriteAll([][]string{
-			{"name", "api_key", "urls", "models", "api_key_priorities"},
-			{"invalid-priorities", "sk-one,sk-two", `[{"url":"https://api.example.com"}]`, "model-1", priorities},
+			{"name", "api_key", "urls", "models", tc.column},
+			{"invalid-routing", "sk-one,sk-two", `[{"url":"https://api.example.com"}]`, "model-1", tc.value},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1930,8 +1951,8 @@ func TestAdminAPI_CSVKeyPriorityValidation(t *testing.T) {
 		}
 		var summary ChannelImportSummary
 		mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
-		if summary.Skipped != 1 || summary.Created != 0 || len(summary.Errors) != 1 || !strings.Contains(summary.Errors[0], "api_key_priorities") {
-			t.Fatalf("priorities %s: %+v", priorities, summary)
+		if summary.Skipped != 1 || summary.Created != 0 || len(summary.Errors) != 1 || !strings.Contains(summary.Errors[0], tc.column) {
+			t.Fatalf("%s %s: %+v", tc.column, tc.value, summary)
 		}
 	}
 }

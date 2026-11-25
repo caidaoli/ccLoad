@@ -65,7 +65,8 @@ function normalizeInlineKeyRow(row) {
       allowed_models: normalizeKeyAllowedModels(row.allowed_models),
       model_scope_auto: row.model_scope_auto === true,
       cost_multiplier: normalizeKeyCostMultiplier(row.cost_multiplier),
-      priority: Number(row.priority ?? 0)
+      priority: Number(row.priority ?? 0),
+      weight: Number(row.weight ?? 0)
     };
     if (Array.isArray(row.detected_models) && row.detected_models.length > 0) {
       normalized.detected_models = normalizeKeyAllowedModels(row.detected_models);
@@ -79,7 +80,8 @@ function normalizeInlineKeyRow(row) {
     allowed_models: [],
     model_scope_auto: false,
     cost_multiplier: 1,
-    priority: 0
+    priority: 0,
+    weight: 0
   };
 }
 
@@ -207,7 +209,8 @@ function setInlineKeyTableDataFromAPI(apiKeys) {
         model_scope_empty: item.model_scope_empty === true,
         model_scope_auto: item.model_scope_auto === true,
         cost_multiplier: item.cost_multiplier,
-        priority: item.priority
+        priority: item.priority,
+        weight: item.weight
       });
     }
     return makeInlineKeyRow(item || '', '');
@@ -781,6 +784,9 @@ function createKeyRow(index) {
     priority: keyRow.priority,
     priorityLabel: window.t('channels.keyPriority'),
     priorityHint: window.t('channels.keyPriorityHint'),
+    weight: keyRow.weight,
+    weightLabel: window.t('channels.keyWeight'),
+    weightHint: window.t('channels.keyWeightHint'),
     fetchRateTitle: window.t('channels.fetchRateTitle'),
     fetchRateLabel: window.t('channels.fetchRate'),
     notePlaceholder: window.t('channels.keyNotePlaceholder')
@@ -805,6 +811,8 @@ function createKeyRow(index) {
     const noteInput = row.querySelector('.inline-key-note-input');
     const priorityInput = row.querySelector('.inline-key-priority-input');
     if (priorityInput) priorityInput.disabled = true;
+    const weightInput = row.querySelector('.inline-key-weight-input');
+    if (weightInput) weightInput.disabled = true;
     const checkbox = row.querySelector('.key-checkbox');
     if (keyInput) keyInput.readOnly = true;
     if (noteInput) noteInput.readOnly = true;
@@ -1042,6 +1050,11 @@ function initKeyTableEventDelegation() {
       updateInlineKeyPriority(Number(priorityInput.dataset.index), priorityInput.value);
       return;
     }
+    const weightInput = e.target.closest('.inline-key-weight-input');
+    if (weightInput) {
+      updateInlineKeyWeight(Number(weightInput.dataset.index), weightInput.value);
+      return;
+    }
     const input = e.target.closest('.inline-key-input');
     if (input) {
       const index = parseInt(input.dataset.index);
@@ -1058,7 +1071,7 @@ function initKeyTableEventDelegation() {
 
   // 处理输入框焦点样式
   tbody.addEventListener('focusin', (e) => {
-    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input, .inline-key-priority-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input, .inline-key-priority-input, .inline-key-weight-input');
     if (input) {
       input.style.borderColor = 'var(--primary-500)';
       input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
@@ -1066,7 +1079,7 @@ function initKeyTableEventDelegation() {
   });
 
   tbody.addEventListener('focusout', (e) => {
-    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input, .inline-key-priority-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input, .inline-key-priority-input, .inline-key-weight-input');
     if (input) {
       input.style.borderColor = 'var(--neutral-300)';
       input.style.boxShadow = 'none';
@@ -1237,6 +1250,21 @@ function updateInlineKeyPriority(index, value) {
   const priority = Number(value);
   if (row.priority === priority) return;
   row.priority = priority;
+  inlineKeyTableData[index] = row;
+  markChannelFormDirty();
+}
+
+/**
+ * @brief 记录 Key 行权重输入
+ * @param index Key 行下标
+ * @param value 输入框原始值；空串表示自动（0），非法值留给保存时校验
+ */
+function updateInlineKeyWeight(index, value) {
+  if (isChannelKeyEditorReadOnly()) return;
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  const weight = value.trim() === '' ? 0 : Number(value);
+  if (row.weight === weight) return;
+  row.weight = weight;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
 }

@@ -21,7 +21,7 @@ import (
  */
 const apiKeysByChannelQuery = `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
+		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, weight, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
@@ -67,6 +67,7 @@ func scanAPIKeys(rows *sql.Rows) ([]*model.APIKey, error) {
 			&disabled,
 			&key.CostMultiplier,
 			&key.Priority,
+			&key.Weight,
 			&createdAt,
 			&updatedAt,
 		)
@@ -102,7 +103,7 @@ func scanAPIKeys(rows *sql.Rows) ([]*model.APIKey, error) {
 func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
+		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, weight, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`
@@ -129,6 +130,7 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 		&disabled,
 		&key.CostMultiplier,
 		&key.Priority,
+		&key.Weight,
 		&createdAt,
 		&updatedAt,
 	)
@@ -190,14 +192,14 @@ func (s *SQLStore) createAPIKeysBatchTx(ctx context.Context, tx *sql.Tx, keys []
 		// 构建 VALUES 部分
 		var sb strings.Builder
 		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, allowed_models, detected_models, model_scope_empty, model_scope_auto, key_strategy,
-		                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at) VALUES `)
+		                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, weight, created_at, updated_at) VALUES `)
 
-		args := make([]any, 0, len(batch)*16)
+		args := make([]any, 0, len(batch)*17)
 		for j, key := range batch {
 			if j > 0 {
 				sb.WriteString(",")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 			strategy := key.KeyStrategy
 			if strategy == "" {
@@ -212,7 +214,7 @@ func (s *SQLStore) createAPIKeysBatchTx(ctx context.Context, tx *sql.Tx, keys []
 				return fmt.Errorf("api key index %d detected models: %w", key.KeyIndex, err)
 			}
 			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, detectedModelsJSON, key.ModelScopeEmpty, key.ModelScopeAuto, strategy,
-				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, nowUnix, nowUnix)
+				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, key.Weight, nowUnix, nowUnix)
 		}
 
 		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
@@ -521,8 +523,8 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		var channelUpsertByNameSQL string
 		if s.supportsONConflict() {
 			channelUpsertWithIDSQL = `
-				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, weight, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(id) DO UPDATE SET
 					name = excluded.name,
 					url = excluded.url,
@@ -544,10 +546,11 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					cooldown_detection_rules = excluded.cooldown_detection_rules,
 					retry_other_keys_on_failure = excluded.retry_other_keys_on_failure,
 					same_channel_retries = excluded.same_channel_retries,
+					weight = excluded.weight,
 					updated_at = excluded.updated_at`
 			channelUpsertByNameSQL = `
-				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, weight, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(name) DO UPDATE SET
 					url = excluded.url,
 					priority = excluded.priority,
@@ -568,11 +571,12 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					cooldown_detection_rules = excluded.cooldown_detection_rules,
 					retry_other_keys_on_failure = excluded.retry_other_keys_on_failure,
 					same_channel_retries = excluded.same_channel_retries,
+					weight = excluded.weight,
 					updated_at = excluded.updated_at`
 		} else {
 			channelUpsertWithIDSQL = `
-				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, weight, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 					name = VALUES(name),
 					url = VALUES(url),
@@ -591,10 +595,11 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					cooldown_detection_rules = VALUES(cooldown_detection_rules),
 					retry_other_keys_on_failure = VALUES(retry_other_keys_on_failure),
 					same_channel_retries = VALUES(same_channel_retries),
+					weight = VALUES(weight),
 					updated_at = VALUES(updated_at)`
 			channelUpsertByNameSQL = `
-				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, oauth_quota_passthrough, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_interval_minutes, scheduled_check_start_time, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, same_channel_retries, weight, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 					url = VALUES(url),
 					priority = VALUES(priority),
@@ -612,6 +617,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					cooldown_detection_rules = VALUES(cooldown_detection_rules),
 					retry_other_keys_on_failure = VALUES(retry_other_keys_on_failure),
 					same_channel_retries = VALUES(same_channel_retries),
+					weight = VALUES(weight),
 					updated_at = VALUES(updated_at)`
 		}
 
@@ -630,8 +636,8 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		// 预编译API Key插入语句
 		keyStmt, err := s.prepareTx(ctx, tx, `
 			INSERT INTO api_keys (channel_id, key_index, api_key, note, allowed_models, detected_models, model_scope_empty, model_scope_auto, key_strategy,
-				                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, weight, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		if err != nil {
 			return fmt.Errorf("prepare api key statement: %w", err)
@@ -700,7 +706,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				channelID = config.ID
 				_, err := channelStmtWithID.ExecContext(ctx,
 					config.ID, config.Name, config.URLs, config.Priority,
-					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, config.Websockets, config.OAuthQuotaPassthrough, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckIntervalMinutes, config.ScheduledCheckStartTime, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, config.SameChannelRetries, nowUnix, nowUnix)
+					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, config.Websockets, config.OAuthQuotaPassthrough, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckIntervalMinutes, config.ScheduledCheckStartTime, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, config.SameChannelRetries, config.Weight, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
@@ -710,7 +716,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			} else {
 				_, err := channelStmtByName.ExecContext(ctx,
 					config.Name, config.URLs, config.Priority,
-					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, config.Websockets, config.OAuthQuotaPassthrough, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckIntervalMinutes, config.ScheduledCheckStartTime, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, config.SameChannelRetries, nowUnix, nowUnix)
+					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, config.Websockets, config.OAuthQuotaPassthrough, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckIntervalMinutes, config.ScheduledCheckStartTime, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, config.SameChannelRetries, config.Weight, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
@@ -756,7 +762,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				}
 				_, err = keyStmt.ExecContext(ctx,
 					channelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, detectedModelsJSON, key.ModelScopeEmpty, key.ModelScopeAuto, key.KeyStrategy,
-					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, nowUnix, nowUnix)
+					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, key.Weight, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
 				}
@@ -798,7 +804,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
+		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, model_scope_auto, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, weight, created_at, updated_at
 		FROM api_keys
 		ORDER BY channel_id ASC, key_index ASC
 	`
@@ -831,6 +837,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 			&disabled,
 			&key.CostMultiplier,
 			&key.Priority,
+			&key.Weight,
 			&createdAt,
 			&updatedAt,
 		)

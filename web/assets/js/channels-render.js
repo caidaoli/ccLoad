@@ -376,10 +376,11 @@ function buildEffectivePriorityHtml(channel) {
   const escapedPriorityLabel = escapeChannelRefreshText(priorityLabel);
   const basePriorityValue = normalizeInlinePriorityValue(basePriority, 0);
   const baseRow = buildPriorityEditorRow(channelId, basePriorityValue, escapedPriorityLabel);
+  const weightRow = buildChannelWeightRow(channel);
 
   if (channel.effective_priority === undefined || channel.effective_priority === null) {
     const title = `${priorityLabel}: ${basePriority}`;
-    const rows = [baseRow];
+    const rows = [baseRow, weightRow];
     return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
   }
 
@@ -411,7 +412,21 @@ function buildEffectivePriorityHtml(channel) {
   if (!isConsistent) {
     rows.push(buildPriorityRow('ch-priority-health', healthValueClass, effPriority));
   }
+  rows.push(weightRow);
   return `<div class="ch-priority-stack" title="${title.replace(/"/g, '&quot;')}">${rows.join('')}</div>`;
+}
+
+/**
+ * @brief 渲染渠道列表优先级列中的权重行
+ * @param channel 渠道列表项
+ * @return 权重行 HTML；自动权重显示实际参与分流的启用 Key 数（至少 1，与选路一致）
+ */
+function buildChannelWeightRow(channel) {
+  const weight = Number(channel.weight) || 0;
+  const text = weight > 0
+    ? window.t('channels.weightValue', { value: weight })
+    : window.t('channels.weightAuto', { count: Math.max(Number(channel.key_count) || 0, 1) });
+  return buildPriorityRow('ch-priority-weight', 'ch-priority-value ch-priority-weight-value', escapeChannelRefreshText(text));
 }
 
 function normalizeInlinePriorityValue(value, fallback) {

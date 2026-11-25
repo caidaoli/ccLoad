@@ -732,6 +732,7 @@ async function editChannel(id, { copy = false } = {}) {
     );
   }
   document.getElementById('channelPriority').value = channel.priority;
+  document.getElementById('channelWeight').value = channel.weight > 0 ? String(channel.weight) : '';
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
   document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
@@ -1112,6 +1113,15 @@ function validateChannelRequiredFields(missingByField) {
 }
 
 /**
+ * @brief 判断渠道或 Key 权重是否合法
+ * @param value 已转为数字的权重
+ * @return 0..10000 的整数返回 true；0 表示自动权重
+ */
+function isValidRoutingWeight(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 10000;
+}
+
+/**
  * @brief 校验编辑器并创建或更新渠道。
  * @param event 可选的表单提交事件，用于阻止默认提交。
  * @return Promise<void>：保存及列表刷新完成，或已反馈校验与接口错误。
@@ -1142,6 +1152,16 @@ async function saveChannel(event) {
     if (window.showError) window.showError(window.t('channels.keyPriorityInvalid'));
     return;
   }
+  if (validKeyRows.some(row => !isValidRoutingWeight(row.weight))) {
+    if (window.showError) window.showError(window.t('channels.keyWeightInvalid'));
+    return;
+  }
+  const weightRaw = document.getElementById('channelWeight').value.trim();
+  const channelWeight = weightRaw === '' ? 0 : Number(weightRaw);
+  if (!isValidRoutingWeight(channelWeight)) {
+    if (window.showError) window.showError(window.t('channels.weightInvalid'));
+    return;
+  }
   const validKeys = validKeyRows.map(row => row.api_key);
 
   document.getElementById('channelApiKey').value = validKeys.join(',');
@@ -1164,10 +1184,12 @@ async function saveChannel(event) {
       model_scope_empty: row.model_scope_empty === true,
       model_scope_auto: row.model_scope_auto === true,
       cost_multiplier: row.cost_multiplier,
-      priority: row.priority
+      priority: row.priority,
+      weight: row.weight
     })),
     protocol_transform_mode: getProtocolTransformMode(),
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
+    weight: channelWeight,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,
     max_concurrency: parseInt(document.getElementById('channelMaxConcurrency').value) || 0,
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
@@ -1527,6 +1549,7 @@ function updateBatchChannelSelectionUI() {
     'batchRefreshReplaceBtn',
     'batchApplyProtocolBtn',
     'batchApplyPriorityBtn',
+    'batchApplyWeightBtn',
     'batchApplyCostMultiplierBtn',
     'batchApplyRPMLimitBtn',
     'batchApplyMaxConcurrencyBtn',
@@ -1541,7 +1564,7 @@ function updateBatchChannelSelectionUI() {
 
   const protocolMode = document.getElementById('batchProtocolTransformMode');
   if (protocolMode) protocolMode.disabled = selectedCount === 0 || batchBusy;
-  ['batchPriority', 'batchCostMultiplier', 'batchRPMLimit', 'batchMaxConcurrency', 'batchDailyCostLimit'].forEach((id) => {
+  ['batchPriority', 'batchWeight', 'batchCostMultiplier', 'batchRPMLimit', 'batchMaxConcurrency', 'batchDailyCostLimit'].forEach((id) => {
     const input = document.getElementById(id);
     if (input) input.disabled = selectedCount === 0 || batchBusy;
   });
@@ -1758,6 +1781,17 @@ const batchNumericSettingConfigs = {
     min: -99999,
     max: 9999999
   },
+  weight: {
+    inputID: 'batchWeight',
+    buttonID: 'batchApplyWeightBtn',
+    errorID: 'batchWeightError',
+    invalidKey: 'channels.batchWeightInvalid',
+    summaryKey: 'channels.batchWeightSummary',
+    summaryValueName: 'value',
+    integer: true,
+    min: 0,
+    max: 10000
+  },
   cost_multiplier: {
     inputID: 'batchCostMultiplier',
     buttonID: 'batchApplyCostMultiplierBtn',
@@ -1861,6 +1895,14 @@ async function batchSetSelectedChannelsCostMultiplier() {
 
 async function batchSetSelectedChannelsPriority() {
   return batchSetSelectedChannelsNumericSetting('priority');
+}
+
+/**
+ * @brief 批量设置所选渠道的权重
+ * @return Promise<void>：提交完成或已反馈校验与接口错误
+ */
+async function batchSetSelectedChannelsWeight() {
+  return batchSetSelectedChannelsNumericSetting('weight');
 }
 
 async function batchSetSelectedChannelsRPMLimit() {
@@ -2273,6 +2315,7 @@ async function copyChannel(id, name) {
   await ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
   scheduleChannelDuplicateHintCheck();
   document.getElementById('channelPriority').value = channel.priority;
+  document.getElementById('channelWeight').value = channel.weight > 0 ? String(channel.weight) : '';
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
   document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
@@ -4224,6 +4267,7 @@ if (typeof module !== 'undefined' && module.exports) {
     batchClearSelectedChannelCooldowns,
     batchRefreshSelectedChannelsMerge,
     batchSetSelectedChannelsPriority,
+    batchSetSelectedChannelsWeight,
     batchSetSelectedChannelsDailyCostLimit,
     batchSetSelectedChannelsCostMultiplier,
     batchSetSelectedChannelsMaxConcurrency,

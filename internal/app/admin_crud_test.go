@@ -3101,6 +3101,99 @@ func TestHandleCreateChannelRejectsInvalidKeyPriority(t *testing.T) {
 	}
 }
 
+func TestHandleChannelWeights(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.cooldownManager = cooldown.NewManager(store, server)
+	server.channelManagement = newChannelManagementService(store, func(*model.Config) *http.Client { return server.client })
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	ctx := context.Background()
+	channelWeight, keyWeight := 5, 3
+	payload := ChannelRequest{
+		Name: "weights", URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+		Models: []model.ModelEntry{{Model: "model-1"}}, Enabled: true, Weight: &channelWeight,
+		APIKeys: []ChannelAPIKeyRequest{{APIKey: "sk-a", Weight: &keyWeight}, {APIKey: "sk-b"}},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
+	server.handleCreateChannel(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	created := mustParseAPIResponse[*model.Config](t, w.Body.Bytes()).Data
+	read := func() (*model.Config, []*model.APIKey) {
+		t.Helper()
+		cfg, err := store.GetConfig(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/keys", nil))
+		server.handleGetChannelKeys(c, created.ID)
+		if w.Code != http.StatusOK {
+			t.Fatalf("read keys: %d %s", w.Code, w.Body.String())
+		}
+		return cfg, mustParseAPIResponse[[]*model.APIKey](t, w.Body.Bytes()).Data
+	}
+	cfg, keys := read()
+	if cfg.Weight != 5 || keys[0].Weight != 3 || keys[1].Weight != 0 {
+		t.Fatalf("created weights: channel=%d keys=%+v", cfg.Weight, keys)
+	}
+
+	update := func(want int) string {
+		t.Helper()
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels", payload))
+		server.handleUpdateChannel(c, created.ID)
+		if w.Code != want {
+			t.Fatalf("update: %d %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	// 省略权重保留现值。
+	payload.ManagementAccount = &channelManagementInput{} // Browser submits the unchanged management settings.
+	payload.Weight = nil
+	payload.APIKeys = []ChannelAPIKeyRequest{{APIKey: "sk-a"}, {APIKey: "sk-b"}}
+	update(http.StatusOK)
+	cfg, keys = read()
+	if cfg.Weight != 5 || keys[0].Weight != 3 {
+		t.Fatalf("omitted weights not kept: channel=%d keys=%+v", cfg.Weight, keys)
+	}
+
+	// 仅改权重不清冷却；显式 0 回到自动。
+	until := time.Now().Add(time.Hour).Truncate(time.Second)
+	if err := store.SetKeyCooldown(ctx, created.ID, 1, until); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChannelCooldown(ctx, created.ID, until); err != nil {
+		t.Fatal(err)
+	}
+	server.InvalidateAPIKeysCache(created.ID)
+	zero, newKeyWeight := 0, 8
+	payload.Weight = &zero
+	payload.APIKeys = []ChannelAPIKeyRequest{{APIKey: "sk-a", Weight: &zero}, {APIKey: "sk-b", Weight: &newKeyWeight}}
+	update(http.StatusOK)
+	cfg, keys = read()
+	if cfg.Weight != 0 || keys[0].Weight != 0 || keys[1].Weight != 8 || keys[1].CooldownUntil != until.Unix() {
+		t.Fatalf("weight-only update: channel=%d keys=%+v %+v", cfg.Weight, keys[0], keys[1])
+	}
+	channelCooldowns, err := store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channelCooldowns[created.ID].Unix() != until.Unix() {
+		t.Fatalf("weight-only update cleared channel cooldown: %v", channelCooldowns[created.ID])
+	}
+
+	for _, tc := range []struct {
+		channel, key *int
+	}{{channel: new(-1)}, {channel: new(model.MaxRoutingWeight + 1)}, {key: new(-1)}, {key: new(model.MaxRoutingWeight + 1)}} {
+		payload.Weight = tc.channel
+		payload.APIKeys = []ChannelAPIKeyRequest{{APIKey: "sk-a", Weight: tc.key}, {APIKey: "sk-b"}}
+		if body := update(http.StatusBadRequest); !strings.Contains(body, "weight") {
+			t.Fatalf("out-of-range error does not mention weight: %s", body)
+		}
+	}
+}
+
 func TestHandleUpdateChannelOAuthQuotaPassthrough(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

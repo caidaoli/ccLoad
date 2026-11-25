@@ -436,6 +436,7 @@ const (
 // ModelImportMode 为空时不修改模型；非空时 ModelEntries 必须至少包含一个条目。
 type BatchConfigPatch struct {
 	Priority              *int
+	Weight                *int ///< 渠道权重，0 为自动；范围 0..MaxRoutingWeight
 	CostMultiplier        *float64
 	DailyCostLimit        *float64
 	RPMLimit              *int
@@ -469,13 +470,20 @@ type BatchModelDeleteResult struct {
 
 // Normalize validates a batch patch and returns an independent normalized copy.
 func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
-	if p.Priority == nil && p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
+	if p.Priority == nil && p.Weight == nil && p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
 		p.ProtocolTransformMode == nil && p.ProxyURL == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
 		return BatchConfigPatch{}, errors.New("batch config patch cannot be empty")
 	}
 	if p.Priority != nil {
 		value := *p.Priority
 		p.Priority = &value
+	}
+	if p.Weight != nil {
+		value := *p.Weight
+		if value < 0 || value > MaxRoutingWeight {
+			return BatchConfigPatch{}, fmt.Errorf("weight must be between 0 and %d (got %d)", MaxRoutingWeight, value)
+		}
+		p.Weight = &value
 	}
 	if p.CostMultiplier != nil {
 		value := *p.CostMultiplier
@@ -697,6 +705,11 @@ type ChannelInfo struct {
 	CostMultiplierMax float64
 }
 
+/**
+ * @brief 渠道权重与 Key 权重的上限；下限为 0（自动权重）
+ */
+const MaxRoutingWeight = 10000
+
 // MaxSameChannelRetries 是渠道级同渠道原地重试次数上限。
 const MaxSameChannelRetries = 10
 
@@ -712,6 +725,7 @@ type Config struct {
 	ProtocolTransformMode         string      `json:"protocol_transform_mode"`
 	URLs                          ChannelURLs `json:"urls"`
 	Priority                      int         `json:"priority"`
+	Weight                        int         `json:"weight"`          ///< 同优先级渠道分流权重，0 为自动（按可用 Key 数）
 	RPMLimit                      int         `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
 	MaxConcurrency                int         `json:"max_concurrency"` // 最大并发请求数，0表示无限制
 	Enabled                       bool        `json:"enabled"`
@@ -799,6 +813,7 @@ func (c *Config) Clone() *Config {
 		ProtocolTransformMode:         c.ProtocolTransformMode,
 		URLs:                          c.URLs.Clone(),
 		Priority:                      c.Priority,
+		Weight:                        c.Weight,
 		RPMLimit:                      c.RPMLimit,
 		MaxConcurrency:                c.MaxConcurrency,
 		Enabled:                       c.Enabled,
@@ -1087,6 +1102,7 @@ type APIKey struct {
 	ModelScopeAuto  bool     `json:"model_scope_auto,omitempty"`  // true 表示范围来自明确应用的模型探测，可自动刷新
 
 	Priority    int    `json:"priority"`     // 数值越大越优先，仅在渠道内比较
+	Weight      int    `json:"weight"`       ///< 同 Key 优先级档内的分流权重，0 为自动（与同档自动 Key 等分）
 	KeyStrategy string `json:"key_strategy"` // 历史配置字段，保留读写；同优先级统一轮询
 	Disabled    bool   `json:"disabled"`
 

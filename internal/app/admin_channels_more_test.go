@@ -1407,6 +1407,8 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 		{name: "fractional RPM limit", field: "rpm_limit", value: 1.5},
 		{name: "negative max concurrency", field: "max_concurrency", value: -1},
 		{name: "negative daily cost limit", field: "daily_cost_limit", value: -0.01},
+		{name: "negative weight", field: "weight", value: -1},
+		{name: "weight above max", field: "weight", value: model.MaxRoutingWeight + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := map[string]any{"channel_ids": []int64{c1.ID}, tc.field: tc.value}
@@ -1447,6 +1449,7 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-advanced", map[string]any{
 			"channel_ids":             []int64{c1.ID, c2.ID, c3.ID, c2.ID, 99999},
 			"priority":                -20,
+			"weight":                  7,
 			"protocol_transform_mode": model.ProtocolTransformModeUpstream,
 			"cost_multiplier":         0.25,
 			"daily_cost_limit":        12.5,
@@ -1493,8 +1496,8 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 				t.Fatalf("channel %d mode=%q, want %q", channelID, cfg.GetProtocolTransformMode(), model.ProtocolTransformModeUpstream)
 			}
-			if cfg.Priority != -20 {
-				t.Fatalf("channel %d priority=%d, want -20", channelID, cfg.Priority)
+			if cfg.Priority != -20 || cfg.Weight != 7 {
+				t.Fatalf("channel %d priority=%d weight=%d, want -20 and 7", channelID, cfg.Priority, cfg.Weight)
 			}
 			// api_key 渠道的批量倍率落到 Key 级，渠道列保持不变（0=未设置）
 			if cfg.CostMultiplier != 0 {
