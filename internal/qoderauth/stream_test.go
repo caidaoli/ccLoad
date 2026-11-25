@@ -352,6 +352,85 @@ func TestNormalizeStreamQueueRetryHeader(t *testing.T) {
 }
 
 /**
+ * @brief TestNormalizeStreamBusinessErrorsTakePriority verifies failure frames cannot commit their choices or usage.
+ * @param t Test context.
+ */
+func TestNormalizeStreamBusinessErrorsTakePriority(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame, code, retry, message string
+		status                            int
+	}{
+		{"bare queue", `{"isQueued":true,"waitTime":"9"}`, "service_unavailable", "9", "", 503},
+		{"outer code and wrapped answer", `{"code":112,"body":{"choices":[{"delta":{"content":"do not emit"}}]}}`, "insufficient_quota", "", "", 429},
+		{"outer queue and wrapped empty", `{"isQueued":true,"body":"{}","retryAfterSeconds":8}`, "service_unavailable", "8", "", 503},
+		{"inner queue and usage", `{"statusCodeValue":200,"waitTime":13,"body":{"queue":{"serviceAvailable":false,"queueType":"p3","retryAfterSeconds":"7.5"},"usage":{"prompt_tokens":4}}}`, "service_unavailable", "8", "", 503},
+		{"inner auth and answer", `{"statusCodeValue":200,"body":"{\"code\":105,\"choices\":[{\"delta\":{\"content\":\"range of max_tokens should be [1, 1]\"}}]}"}`, "authentication_error", "", "", 401},
+		{"inner error and usage", `{"statusCodeValue":200,"body":{"error":{"status":403,"message":"Forbidden"},"usage":{"details":{"code":105}}}}`, "permission_denied", "", "Forbidden", 403},
+		{"unrelated fields in error frame", `{"error":{"status":401,"message":"Unauthorized","supplement":{"isQueued":true}},"supplement":{"code":10605},"choices":[]}`, "authentication_error", "", "Unauthorized", 401},
+		{"double-encoded unrelated error fields", `{"error":{"status":401},"message":"\"{\\\"supplement\\\":{\\\"isQueued\\\":true}}\""}`, "authentication_error", "", "", 401},
+		{"JSON embedded in a scalar field", `{"error":{"status":401},"type":"{\"isQueued\":true}","message":"\"Unauthorized\""}`, "authentication_error", "", `"Unauthorized"`, 401},
+		{"message-only business failure", `{"statusCodeValue":200,"body":{"message":"{\"error\":{\"code\":10605,\"retryAfterSeconds\":5}}"}}`, "service_unavailable", "5", "", 503},
+		{"bare explicit failure and usage", `{"success":false,"type":"error","usage":{"prompt_tokens":4}}`, "upstream_error", "", "", 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, prelude := range []string{"", nativeDelta("already emitted", nil)} {
+				chunks, done := readToolStream(t, prelude+"data: "+tc.frame+"\n\n"+nativeDelta("do not emit", "stop"))
+				last := chunks[len(chunks)-1]
+				failure, _ := last["error"].(map[string]any)
+				headers, _ := last["headers"].(map[string]any)
+				retry, _ := headers["Retry-After"].(string)
+				wantChunks := 1
+				if prelude != "" {
+					wantChunks++
+					if state := collectToolStream(t, chunks)[0]; state == nil || state.content != "already emitted" {
+						t.Fatalf("lost prior output: %v", chunks)
+					}
+				}
+				if done || len(chunks) != wantChunks || last["status"] != float64(tc.status) || failure["code"] != tc.code || retry != tc.retry {
+					t.Fatalf("unexpected error frames: %v DONE=%v", chunks, done)
+				}
+				if tc.message != "" && failure["message"] != tc.message {
+					t.Fatalf("message=%q, want %q", failure["message"], tc.message)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief TestNormalizeStreamHeartbeatAndBareChunks verifies control frames neither emit output nor terminate the stream.
+ * @param t Test context.
+ */
+func TestNormalizeStreamHeartbeatAndBareChunks(t *testing.T) {
+	for _, heartbeat := range []string{
+		`{}`, `null`, ``, `{"isQueued":false}`, `{"isQueued":false,"message":"{\"code\":105}" }`, `{"body":null}`, `{"body":{}}`, `{"body":" { } "}`, `{"body":"null"}`, `{"body":" "}`,
+	} {
+		t.Run(heartbeat, func(t *testing.T) {
+			beat := "data: " + heartbeat + "\n\n"
+			answer := `data: {"error":null,"choices":[{"delta":{"content":"insufficient_quota and Login expired"},"finish_reason":"stop"}]}` + "\n\n"
+			tool := `data: {"statusCodeValue":200,"body":{"error":null,"choices":[{"index":1,"delta":{"tool_calls":[{"id":"call_test","function":{"name":"lookup","arguments":"{\"isQueued\":true,\"code\":105}"}}]},"finish_reason":"tool_calls"}]}}` + "\n\n"
+			usage := `data: {"error":null,"usage":{"total_tokens":5}}` + "\n\n"
+			chunks, done := readToolStream(t, beat+answer+beat+tool+beat+usage+beat)
+			states := collectToolStream(t, chunks)
+			state, toolState := states[0], states[1]
+			last := chunks[len(chunks)-1]
+			tokens, _ := last["usage"].(map[string]any)
+			if !done || len(chunks) != 3 || state == nil || state.content != "insufficient_quota and Login expired" || state.finish != "stop" || tokens["total_tokens"] != float64(5) {
+				t.Fatalf("heartbeat disrupted valid chunks: %v DONE=%v", chunks, done)
+			}
+			if toolState == nil || toolState.finish != "tool_calls" || len(toolState.calls) != 1 || toolState.calls[0]["arguments"] != `{"isQueued":true,"code":105}` {
+				t.Fatalf("tool arguments were lost: %v", chunks)
+			}
+			chunks, done = readToolStream(t, beat)
+			failure, _ := chunks[0]["error"].(map[string]any)
+			if done || len(chunks) != 1 || failure["code"] != "upstream_stream_error" {
+				t.Fatalf("heartbeat acted as a terminal: %v DONE=%v", chunks, done)
+			}
+		})
+	}
+}
+
+/**
  * @brief TestNormalizeStreamDoneOnlyFinish supplies terminal reasons only after a real DONE marker.
  * @param t Test context.
  */
@@ -378,6 +457,96 @@ func TestNormalizeStreamDoneOnlyFinish(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+/**
+ * @brief TestNormalizeStreamEmptyTerminal rejects successful terminals without output.
+ * @param t Test context.
+ */
+func TestNormalizeStreamEmptyTerminal(t *testing.T) {
+	metadata := nativeEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "sequence": 1}}}, "usage": map[string]any{"prompt_tokens": 4}})
+	for _, tc := range []struct{ name, input string }{
+		{"bare DONE", "data: [DONE]\n\n"},
+		{"metadata and wrapped DONE", metadata + "data: {\"statusCodeValue\":200,\"body\":\"[DONE]\"}\n\n"},
+		{"empty stop and DONE", metadata + nativeDelta("", "stop") + "data: [DONE]\n\n"},
+		{"empty stop and EOF", metadata + nativeDelta("", "stop")},
+		{"empty tool finish", nativeDelta("", "tool_calls")},
+		{"invalid finish type", nativeDelta("do not emit", true) + "data: [DONE]\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks, done := readToolStream(t, tc.input)
+			if done || len(chunks) != 1 || chunks[0]["status"] != float64(502) || chunks[0]["error"] == nil {
+				t.Fatalf("empty stream did not fail before output: %v DONE=%v", chunks, done)
+			}
+		})
+	}
+}
+
+/**
+ * @brief TestNormalizeStreamPreservesTerminalResults keeps filtering and truncation outcomes with usage.
+ * @param t Test context.
+ */
+func TestNormalizeStreamPreservesTerminalResults(t *testing.T) {
+	for _, finish := range []string{"content_filter", "length"} {
+		t.Run(finish, func(t *testing.T) {
+			input := nativeDelta("", finish) + nativeEvent(map[string]any{"usage": map[string]any{"prompt_tokens": 4}})
+			chunks, done := readToolStream(t, input)
+			states := collectToolStream(t, chunks)
+			lastUsage, _ := chunks[len(chunks)-1]["usage"].(map[string]any)
+			if !done || states[0] == nil || states[0].finish != finish || lastUsage["prompt_tokens"] != float64(4) {
+				t.Fatalf("lost finish %s or usage: %v DONE=%v", finish, chunks, done)
+			}
+		})
+	}
+}
+
+/**
+ * @brief TestNormalizeStreamRejectsConflictingChoiceTerminals retains output before invalid follow-up frames.
+ * @param t Test context.
+ */
+func TestNormalizeStreamRejectsConflictingChoiceTerminals(t *testing.T) {
+	for _, tc := range []struct{ name, followUp string }{
+		{"conflicting finish", nativeDelta("", "length")},
+		{"late text", nativeDelta("late", nil)},
+		{"late reasoning", nativeEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"reasoning_content": "late"}}}})},
+		{"late tool", nativeToolsEvent([]any{map[string]any{"index": 0, "function": map[string]any{"name": "lookup"}}}, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks, done := readToolStream(t, nativeDelta("answer", "stop")+tc.followUp+"data: [DONE]\n\n")
+			state := collectToolStream(t, chunks)[0]
+			last := chunks[len(chunks)-1]
+			if done || state == nil || state.content != "answer" || state.finish != "stop" || state.reasoning != "" || len(state.calls) != 0 || last["status"] != float64(502) || last["error"] == nil {
+				t.Fatalf("invalid follow-up was accepted or prior output was lost: %v DONE=%v", chunks, done)
+			}
+		})
+	}
+}
+
+/**
+ * @brief TestNormalizeStreamRepeatedNativeFinish allows control and usage frames after a finish.
+ * @param t Test context.
+ */
+func TestNormalizeStreamRepeatedNativeFinish(t *testing.T) {
+	input := nativeToolsEvent([]any{map[string]any{"index": 0, "id": "call", "function": map[string]any{"name": "lookup", "arguments": "{}"}}}, "stop")
+	input += nativeToolsEvent([]any{}, "stop")
+	input += nativeEvent(map[string]any{"choices": []any{}, "usage": map[string]any{"completion_tokens": 5}})
+	chunks, done := readToolStream(t, input)
+	var finishes []any
+	for _, chunk := range chunks {
+		choices, _ := chunk["choices"].([]any)
+		for _, raw := range choices {
+			if finish := raw.(map[string]any)["finish_reason"]; finish != nil {
+				finishes = append(finishes, finish)
+			}
+		}
+	}
+	if !done || len(finishes) != 1 || finishes[0] != "tool_calls" {
+		t.Fatalf("lost or duplicated normalized finish: %v DONE=%v", chunks, done)
+	}
+	usage, _ := chunks[len(chunks)-1]["usage"].(map[string]any)
+	if usage["completion_tokens"] != float64(5) {
+		t.Fatalf("lost usage after finish: %v", chunks)
 	}
 }
 

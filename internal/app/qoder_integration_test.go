@@ -226,16 +226,23 @@ func TestQoderScheduledCheckinClaimsOncePerWindowWithoutOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	var claims atomic.Int32
+	dailyAvailable := false
 	qoderIntegrationClient(s, func(r *http.Request) (*http.Response, error) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/me/campaigns"):
-			return qoderIntegrationResponse(r, 200, `{"campaigns":[{"campaignId":"daily","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE"}]}`), nil
+			rows := `{"campaignId":"sonus","title":"Sonus Credits","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMED","benefit":{"kind":"CREDITS"}}`
+			if dailyAvailable {
+				rows += `,{"campaignId":"daily","title":"Daily Credits","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","benefit":{"kind":"CREDITS"}}`
+			}
+			return qoderIntegrationResponse(r, 200, `{"campaigns":[`+rows+`]}`), nil
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/me/campaigns/daily/claim"):
 			claims.Add(1)
 			return qoderIntegrationResponse(r, 200, `{"status":"CLAIMED"}`), nil
 		}
 		return qoderIntegrationResponse(r, 404, `{}`), nil
 	})
+	s.runDueQoderCheckins(context.Background())
+	dailyAvailable = true
 	for range 2 {
 		s.runDueQoderCheckins(context.Background())
 	}
@@ -247,8 +254,45 @@ func TestQoderScheduledCheckinClaimsOncePerWindowWithoutOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	persisted, err := qoderauth.ParseCredential([]byte(stored.OAuthCredential))
-	if err != nil || persisted.LastCheckinCampaign != "daily" || persisted.LastCheckinAt < qoderCheckinWindow(time.Now()).Unix() {
+	if err != nil || persisted.LastCheckinCampaign != "daily" || persisted.LastCheckinAt < qoderauth.CheckinWindow(time.Now()).Unix() {
 		t.Fatalf("scheduled check-in not persisted: %+v %v", persisted, err)
+	}
+}
+
+/**
+ * @brief 持久化签到依据活动选择时刻，并保留并发写入的新窗口签到。
+ * @param t 测试上下文。
+ */
+func TestQoderCheckinPersistsSelectedWindow(t *testing.T) {
+	s := newInMemoryServer(t)
+	ctx := context.Background()
+	credential := qoderIntegrationCredential(t, "cn", "dt-window-checkin")
+	cfg, err := s.store.CreateConfig(ctx, newQoderChannel("window-checkin", qoderIntegrationJSON(t, credential)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := time.Date(2026, 10, 19, 2, 0, 0, 0, time.UTC)
+	previous := qoderauth.CheckinResult{Status: "claimed", CampaignID: "previous", SelectedAt: window.Add(-time.Second)}
+	current := qoderauth.CheckinResult{Status: "already_claimed", CampaignID: "current", SelectedAt: window.Add(time.Second)}
+	for _, step := range []struct {
+		result qoderauth.CheckinResult
+		want   qoderauth.CheckinResult
+	}{
+		{previous, previous},
+		{current, current},
+		{previous, current},
+	} {
+		if err := s.updateQoderCredential(ctx, cfg.ID, credential, step.result.UpdateCredential); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := s.store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		persisted, err := qoderauth.ParseCredential([]byte(stored.OAuthCredential))
+		if err != nil || persisted.LastCheckinAt != step.want.SelectedAt.Unix() || persisted.LastCheckinCampaign != step.want.CampaignID {
+			t.Fatalf("persisting %s: got %+v, err=%v, want %s at %v", step.result.CampaignID, persisted, err, step.want.CampaignID, step.want.SelectedAt)
+		}
 	}
 }
 
@@ -267,7 +311,7 @@ func TestQoderCheckinWindowAtTenInUTCPlusEight(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := qoderCheckinWindow(now); !got.Equal(want) {
+		if got := qoderauth.CheckinWindow(now); !got.Equal(want) {
 			t.Errorf("window(%s)=%s want %s", now, got, want)
 		}
 	}
@@ -279,6 +323,10 @@ func qoderIntegrationEvent(value any) string {
 	return "data: " + string(envelope) + "\n\n"
 }
 
+/**
+ * @brief 验证心跳后的工具调用和用量通过流式及非流式代理返回给客户端。
+ * @param t 测试上下文。
+ */
 func TestQoderProxyStreamAndNonStreamKeepToolsAndUsage(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
@@ -298,7 +346,7 @@ func TestQoderProxyStreamAndNonStreamKeepToolsAndUsage(t *testing.T) {
 				body += qoderIntegrationEvent(map[string]any{"id": "chat-qoder", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": "1}"}}}}, "finish_reason": "tool_calls"}}})
 				body += qoderIntegrationEvent(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 7, "total_tokens": 17, "prompt_tokens_details": map[string]any{"cached_tokens": 3}}})
 				body += "data: {\"statusCodeValue\":200,\"body\":\"[DONE]\"}\n\n"
-				response := qoderIntegrationResponse(r, 200, body)
+				response := qoderIntegrationResponse(r, 200, "data: {\"isQueued\":false}\n\n"+body)
 				response.Header.Set("Content-Type", "text/event-stream")
 				return response, nil
 			})
@@ -549,8 +597,12 @@ func TestQoderProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
 	qoderIntegrationNoSecrets(t, w.Body.String(), credential.AccessToken, credential.RefreshToken, "dt-recovered-secret", "refresh-recovered-secret")
 }
 
+/**
+ * @brief 已写入客户端的 Qoder 回复遇到后续上游错误时通过 SSE 报错。
+ * @param t 测试上下文。
+ */
 func TestQoderProxyDoesNotReplayAfterCommittedOutput(t *testing.T) {
-	for _, failure := range []string{"truncated", "unauthorized"} {
+	for _, failure := range []string{"truncated", "unauthorized", "output after finish"} {
 		t.Run(failure, func(t *testing.T) {
 			primary := qoderIntegrationCredential(t, "cn", "dt-primary-secret")
 			fallback := qoderIntegrationCredential(t, "cn", "dt-fallback-secret")
@@ -574,8 +626,12 @@ func TestQoderProxyDoesNotReplayAfterCommittedOutput(t *testing.T) {
 					primaryChats.Add(1)
 				}
 				body := qoderIntegrationEvent(map[string]any{"id": "partial", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "visible partial"}, "finish_reason": nil}}})
-				if failure == "unauthorized" {
+				switch failure {
+				case "unauthorized":
 					body += `data: {"statusCodeValue":403,"body":{"code":105,"message":"expired"}}` + "\n\n"
+				case "output after finish":
+					body += qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}})
+					body += qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "late text"}}}})
 				}
 				response := qoderIntegrationResponse(r, 200, body)
 				response.Header.Set("Content-Type", "text/event-stream")
@@ -1032,27 +1088,85 @@ func TestQoderProxyKeepsEnabledFreeModelsWhenRecoveryUnavailable(t *testing.T) {
 }
 
 /**
- * @brief HTTP 与首帧 SSE 排队失败均保留上游 Retry-After
+ * @brief HTTP 错误、成功状态的 JSON 与首帧 SSE 排队失败均保留上游 Retry-After
  * @param t 测试上下文
  */
 func TestQoderProxyQueueKeepsRetryAfter(t *testing.T) {
-	for _, inStream := range []bool{false, true} {
-		t.Run(fmt.Sprint(inStream), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, wait string
+		transport        int
+		stream           bool
+	}{
+		{"HTTP", `{"code":10605,"queue":{"isQueued":true,"retryAfterSeconds":12}}`, "12", 403, false},
+		{"JSON", `{"statusCodeValue":403,"body":{"queue":{"serviceAvailable":false,"queueType":"p3","retryAfterSeconds":"12"}}}`, "12", 200, false},
+		{"SSE", `data: {"statusCodeValue":403,"body":{"code":10605,"waitTime":"9"}}` + "\n\n", "9", 200, false},
+		{"SSE outer wait", `data: {"statusCodeValue":200,"waitTime":"9","body":{"error":{"code":10605}}}` + "\n\n", "9", 200, false},
+		{"bare queue streaming", `data: {"isQueued":true,"waitTime":"9"}` + "\n\n", "9", 200, true},
+		{"bare queue aggregated", `data: {"isQueued":true,"waitTime":"9"}` + "\n\n", "9", 200, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			credential := qoderIntegrationCredential(t, "cn", "dt-queue")
 			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
 			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/algo/api/v2/model/list" {
 					return qoderIntegrationResponse(r, 200, `{"app":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 				}
-				failure := `{"code":10605,"queue":{"isQueued":true,"retryAfterSeconds":12}}`
-				if inStream {
-					return qoderIntegrationResponse(r, 200, `data: {"statusCodeValue":403,"body":`+failure+"}\n\n"), nil
+				return qoderIntegrationResponse(r, tc.transport, tc.body), nil
+			})
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "stream": tc.stream, "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+			if w.Code != 503 || w.Header().Get("Retry-After") != tc.wait {
+				t.Fatalf("status=%d retry-after=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 仅在 JSON 或首帧 SSE 业务错误明确拒绝凭证时触发代理刷新
+ * @param t 测试上下文
+ */
+func TestQoderProxyClassifiesHTTPBusinessErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, code string
+		transport, want  int
+	}{
+		{"bare forbidden", `{"message":"Forbidden"}`, "permission_denied", 403, 403},
+		{"embedded forbidden", `{"statusCodeValue":403,"body":{"message":"Forbidden"}}`, "permission_denied", 200, 403},
+		{"entitlement", `{"message":"Upgrade required","pricingUrl":"https://example.com/pricing"}`, "insufficient_quota", 403, 429},
+		{"embedded quota", `{"statusCodeValue":200,"body":"{\"code\":112}"}`, "insufficient_quota", 200, 429},
+		{"embedded auth", `{"statusCodeValue":403,"body":{"code":105,"message":"Login expired"}}`, "", 200, 200},
+		{"expired token while service unavailable", `{"code":105,"serviceAvailable":false}`, "", 403, 200},
+		{"SSE nested auth", `data: {"statusCodeValue":200,"body":{"error":{"status":401,"message":"Unauthorized"}}}` + "\n\n", "", 200, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, "cn", "dt-http-business-errors")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+			var chats, refreshes int
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/algo/api/v2/model/list":
+					return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+				case "/api/v1/deviceToken/refresh":
+					refreshes++
+					return qoderIntegrationResponse(r, 200, `{"device_token":"dt-rotated","refresh_token":"rotated-refresh","user_id":"same-user"}`), nil
+				default:
+					chats++
+					if chats == 1 {
+						return qoderIntegrationResponse(r, tc.transport, tc.body), nil
+					}
+					return qoderIntegrationResponse(r, 200, qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "recovered"}, "finish_reason": "stop"}}})), nil
 				}
-				return qoderIntegrationResponse(r, 403, failure), nil
 			})
 			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
-			if w.Code != 503 || w.Header().Get("Retry-After") != "12" {
-				t.Fatalf("status=%d retry-after=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+			if w.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.want, w.Body.String())
+			}
+			if tc.want == http.StatusOK {
+				if chats != 2 || refreshes != 1 || gjson.GetBytes(w.Body.Bytes(), "choices.0.message.content").String() != "recovered" {
+					t.Fatalf("chats=%d refreshes=%d body=%s", chats, refreshes, w.Body.String())
+				}
+			} else if chats != 1 || refreshes != 0 || gjson.GetBytes(w.Body.Bytes(), "error.code").String() != tc.code {
+				t.Fatalf("chats=%d refreshes=%d body=%s", chats, refreshes, w.Body.String())
 			}
 		})
 	}

@@ -8,12 +8,19 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"ccLoad/internal/util"
 )
+
+/**
+ * @brief Identifies a temporary control-plane transport failure before an HTTP response.
+ */
+var errAuthRetryableTransport = errors.New("qoder transport failed")
 
 // Service performs Qoder requests. BaseURL overrides the control-plane origin
 // for tests. RiskHeaders supplies official runtime-generated machine identity.
@@ -67,6 +74,17 @@ func authHeaders(c *Credential) http.Header {
 	return headers
 }
 
+/**
+ * @brief Sends a control-plane request and decodes its bounded JSON response.
+ * @param ctx Request context, including cancellation.
+ * @param method HTTP method.
+ * @param endpoint Control-plane URL.
+ * @param body Optional JSON payload.
+ * @param headers Request headers, copied before sending.
+ * @return Decoded JSON object, or nil when unavailable.
+ * @return Status of the response, or zero when no response was accepted.
+ * @return Request, response, or context error. Temporary failures before a response use errAuthRetryableTransport.
+ */
 func (s *Service) authDo(ctx context.Context, method, endpoint string, body any, headers http.Header) (map[string]json.RawMessage, int, error) {
 	var reader io.Reader
 	if body != nil {
@@ -93,11 +111,20 @@ func (s *Service) authDo(ctx context.Context, method, endpoint string, body any,
 		if ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
+		if errors.Is(err, context.Canceled) {
+			return nil, 0, context.Canceled
+		}
+		if resp == nil && isRetryableAuthTransport(err) {
+			return nil, 0, errAuthRetryableTransport
+		}
 		return nil, 0, errors.New("qoder transport failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, resp.StatusCode, ctx.Err()
+		}
 		return nil, resp.StatusCode, errors.New("read Qoder response failed")
 	}
 	if len(raw) > 2<<20 {
@@ -120,6 +147,32 @@ func (s *Service) authDo(ctx context.Context, method, endpoint string, body any,
 	return data, resp.StatusCode, nil
 }
 
+/**
+ * @brief Recognizes temporary failures from the HTTP client before it receives a response.
+ * @param err HTTP client error after the caller's context and redirect response have been checked.
+ * @return Whether the failure indicates a timeout, temporary name resolution error, or connection failure.
+ */
+func isRetryableAuthTransport(err error) bool {
+	if network, ok := errors.AsType[net.Error](err); ok && network.Timeout() {
+		return true
+	}
+	if dns, ok := errors.AsType[*net.DNSError](err); ok {
+		return dns.IsTemporary
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if network, ok := errors.AsType[*net.OpError](err); ok {
+		if call, ok := errors.AsType[*os.SyscallError](network.Err); ok && !errors.Is(call, os.ErrPermission) {
+			switch call.Syscall {
+			case "connect", "read", "write", "connectex", "wsarecv", "wsasend":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func authText(data map[string]json.RawMessage, keys ...string) string {
 	for _, key := range keys {
 		var value string
@@ -131,10 +184,45 @@ func authText(data map[string]json.RawMessage, keys ...string) string {
 }
 
 /**
- * @brief authTimestamp reads upstream absolute expiry or a token-specific lifetime.
- * Missing or unreadable expiry remains unknown rather than inventing a deadline.
+ * @brief Preserves string and numeric account IDs without rounding large numbers.
+ * @param data Device poll, refresh, or user profile response fields.
+ * @param keys Account ID fields in precedence order.
+ * @return First usable account ID, or empty if the response provides none.
  */
-func authTimestamp(data map[string]json.RawMessage, lifetimeUnit time.Duration) int64 {
+func authIdentity(data map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		if value := authText(data, key); value != "" {
+			return value
+		}
+		var number json.Number
+		if json.Unmarshal(data[key], &number) == nil && number != "" {
+			return number.String()
+		}
+	}
+	return ""
+}
+
+/**
+ * @brief Relative expiry formats used by Qoder authentication endpoints.
+ */
+type lifetimeFormat uint8
+
+/**
+ * @brief Selects the interpretation of an endpoint's expires_in field.
+ */
+const (
+	lifetimeSeconds       lifetimeFormat = iota ///< Device login uses seconds.
+	lifetimeMilliseconds                        ///< Job exchange and refresh use milliseconds.
+	lifetimeDeviceRefresh                       ///< Device refresh also reports milliseconds.
+)
+
+/**
+ * @brief Reads upstream absolute expiry first, then the endpoint's relative expiry.
+ * @param data Qoder authentication response fields.
+ * @param format Interpretation of expires_in for the responding endpoint.
+ * @return Expiry in Unix seconds, or zero when the response provides no usable expiry.
+ */
+func authTimestamp(data map[string]json.RawMessage, format lifetimeFormat) int64 {
 	for _, key := range []string{"expires_at", "expiresAt", "expire_time", "expireTime"} {
 		if value, ok := authNumber(data[key]); ok && value > 0 {
 			if value >= 1_000_000_000_000 {
@@ -149,7 +237,21 @@ func authTimestamp(data map[string]json.RawMessage, lifetimeUnit time.Duration) 
 		}
 	}
 	if value, ok := authNumber(data["expires_in"]); ok && value > 0 {
-		expiry := float64(time.Now().Unix()) + value*lifetimeUnit.Seconds()
+		switch format {
+		case lifetimeDeviceRefresh:
+			// A measured device refresh reported nearly 30 days in milliseconds.
+			// Retain seconds within that lifetime and treat values above both ranges as unknown.
+			const deviceLifetimeSeconds = 30 * 24 * 60 * 60
+			if value > deviceLifetimeSeconds*1000 {
+				return 0
+			}
+			if value > deviceLifetimeSeconds {
+				value *= time.Millisecond.Seconds()
+			}
+		case lifetimeMilliseconds:
+			value *= time.Millisecond.Seconds()
+		}
+		expiry := float64(time.Now().Unix()) + value
 		if expiry < math.MaxInt64 {
 			return int64(expiry)
 		}
@@ -194,11 +296,17 @@ func (s *Service) exchangePAT(ctx context.Context, c *Credential) (*Credential, 
 		return nil, errors.New("qoder exchange response is missing token")
 	}
 	c.RefreshToken = authText(data, "refresh_token", "refreshToken")
-	c.ExpiresAt = authTimestamp(data, time.Millisecond)
+	c.ExpiresAt = authTimestamp(data, lifetimeMilliseconds)
 	return s.CompleteIdentity(ctx, c)
 }
 
-// CompleteIdentity fetches the token owner and rejects mismatched imported IDs.
+/**
+ * @brief Fetches the token owner and rejects a mismatch with the credential identity.
+ * @param ctx Request context, including cancellation.
+ * @param credential Credential to verify without changing the caller's copy.
+ * @return Credential with the verified identity, or nil on failure.
+ * @return Validation, profile request, or identity mismatch error.
+ */
 func (s *Service) CompleteIdentity(ctx context.Context, credential *Credential) (*Credential, error) {
 	c, err := authCopy(credential)
 	if err != nil {
@@ -211,7 +319,7 @@ func (s *Service) CompleteIdentity(ctx context.Context, credential *Credential) 
 	if err != nil {
 		return nil, err
 	}
-	userID := authText(data, "id", "user_id", "userId")
+	userID := authIdentity(data, "id", "user_id", "userId", "uid")
 	if userID == "" {
 		return nil, errors.New("qoder profile is missing user identity")
 	}
@@ -237,9 +345,13 @@ func (s *Service) CompleteIdentity(ctx context.Context, credential *Credential) 
 	return c, nil
 }
 
-// Refresh rotates a token pair, re-exchanging a PAT after job refresh rejection.
 /**
- * @param credential The original credential, which remains unchanged on all outcomes.
+ * @brief Rotates tokens and checks any returned account ID against the credential owner.
+ * @param ctx Request context, including cancellation.
+ * @param credential Original credential, which is unchanged on all outcomes.
+ * @return Credential with updated tokens, or nil on failure.
+ * @return ErrCannotRefresh if no refresh token or PAT is available, or an error from validation, refresh, PAT exchange, or identity verification.
+ * @details A job refresh rejected with HTTP 401 or 403 uses the stored PAT when available.
  */
 func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credential, error) {
 	c, err := authCopy(credential)
@@ -253,10 +365,10 @@ func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credent
 		return s.exchangePAT(ctx, c)
 	}
 	path := "/api/v1/deviceToken/refresh"
-	lifetimeUnit := time.Second
+	format := lifetimeDeviceRefresh
 	if strings.HasPrefix(c.RefreshToken, "jrt-") {
 		path = "/api/v1/jobToken/refresh"
-		lifetimeUnit = time.Millisecond
+		format = lifetimeMilliseconds
 	}
 	headers := make(http.Header)
 	headers.Set("Accept", "application/json")
@@ -268,11 +380,11 @@ func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credent
 		}
 		return nil, err
 	}
-	token := authText(data, "device_token", "deviceToken", "token", "access_token")
+	token := authText(data, "device_token", "deviceToken", "token", "access_token", "accessToken")
 	if token == "" {
 		return nil, errors.New("qoder refresh response is missing token")
 	}
-	if userID := authText(data, "user_id", "userId", "uid"); userID != "" {
+	if userID := authIdentity(data, "user_id", "userId", "uid"); userID != "" {
 		if c.UserID != "" && userID != c.UserID {
 			return nil, errors.New("qoder refreshed token owner does not match credential")
 		}
@@ -283,7 +395,7 @@ func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credent
 		c.RefreshToken = refresh
 	}
 	// An omitted expiry must not leave the old, already-expired deadline behind.
-	c.ExpiresAt = authTimestamp(data, lifetimeUnit)
+	c.ExpiresAt = authTimestamp(data, format)
 	if err := c.Normalize(); err != nil {
 		return nil, err
 	}

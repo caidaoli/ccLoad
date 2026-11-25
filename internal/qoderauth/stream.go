@@ -48,7 +48,7 @@ type qoderStream struct {
  * @brief qoderChoice tracks native calls and buffered text belonging to one choice.
  */
 type qoderChoice struct {
-	finished       bool
+	finish         string
 	deferredFinish string
 	role           string
 	text           string
@@ -144,54 +144,68 @@ func (r *qoderStream) event() ([]byte, error) {
 /**
  * @brief consume validates one upstream envelope and normalizes every choice.
  * @param data Complete native SSE event data.
- * @return Invalid upstream data or tool-call error.
+ * @return An APIError for a classified business failure, another error for invalid data, or nil.
  */
 func (r *qoderStream) consume(data []byte) error {
 	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil
+	}
 	if bytes.Equal(data, []byte("[DONE]")) {
 		return r.complete()
 	}
 	if !utf8.Valid(data) {
 		return errors.New("invalid UTF-8 in SSE event")
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(data, &envelope); err != nil || envelope == nil {
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
 		return errors.New("invalid SSE envelope JSON")
 	}
-	if statusJSON, ok := envelope["statusCodeValue"]; ok {
-		var status int
-		if json.Unmarshal(statusJSON, &status) != nil {
-			return errors.New("invalid SSE envelope status")
+	chunk := envelope
+	body, wrapped := envelope["body"]
+	done, invalidBody := false, false
+	if wrapped {
+		chunk = nil
+		switch value := body.(type) {
+		case nil:
+		case map[string]any:
+			chunk = value
+		case string:
+			switch text := strings.TrimSpace(value); text {
+			case "[DONE]":
+				done = true
+			case "":
+			default:
+				invalidBody = json.Unmarshal([]byte(text), &chunk) != nil
+			}
+		default:
+			invalidBody = true
 		}
-		if status != 200 {
-			return ClassifyError(status, data)
-		}
 	}
-	body, ok := envelope["body"]
-	if !ok {
-		return errors.New("SSE envelope has no body")
+	if qoderSSEHasError(envelope) || wrapped && qoderSSEHasError(chunk) {
+		return classifyQoderSSEError(envelope, chunk)
 	}
-	if bytes.Equal(body, []byte("null")) {
-		return nil // Gateway heartbeat, not a completion.
-	}
-	var text string
-	if json.Unmarshal(body, &text) == nil {
-		body = []byte(text)
-	}
-	if bytes.Equal(bytes.TrimSpace(body), []byte("[DONE]")) {
+	if done {
 		return r.complete()
 	}
-	var chunk map[string]any
-	if !utf8.Valid(body) || json.Unmarshal(body, &chunk) != nil || chunk == nil {
+	if invalidBody {
 		return errors.New("invalid SSE body JSON")
 	}
-	if _, ok := chunk["error"]; ok {
-		return ClassifyError(502, body)
+	if len(chunk) == 0 {
+		return nil
 	}
 	choices, hasChoices := chunk["choices"].([]any)
 	_, hasUsage := chunk["usage"].(map[string]any)
 	if !hasChoices && !hasUsage {
-		return ClassifyError(502, body)
+		_, choicesPresent := chunk["choices"]
+		_, usagePresent := chunk["usage"]
+		if chunk["isQueued"] == false && !choicesPresent && !usagePresent {
+			return nil
+		}
+		if !wrapped {
+			return errors.New("SSE envelope has no body")
+		}
+		return classifyQoderSSEError(envelope, chunk)
 	}
 	if !hasChoices {
 		chunk["choices"] = []any{}
@@ -230,11 +244,25 @@ func (r *qoderStream) consume(data []byte) error {
 		if !ok {
 			return errors.New("SSE choice has no delta object")
 		}
+		finishValue := choice["finish_reason"]
+		finish, ok := finishValue.(string)
+		if !ok && finishValue != nil {
+			return errors.New("invalid SSE choice finish reason")
+		}
+		if state.finish != "" {
+			if finish != "" && finish != state.finish {
+				return errors.New("conflicting SSE choice finish reasons")
+			}
+			if hasDeltaOutput(delta) {
+				return errors.New("SSE choice returned output after finish")
+			}
+			choice["finish_reason"] = nil
+			finish = ""
+		}
 		if role, _ := delta["role"].(string); role != "" {
 			state.role = role
 		}
-		finish, finished := choice["finish_reason"].(string)
-		finished = finished && finish != ""
+		finished := finish != ""
 		if content, ok := delta["content"].(string); ok {
 			state.text += content
 			delete(delta, "content")
@@ -263,11 +291,9 @@ func (r *qoderStream) consume(data []byte) error {
 		if len(calls) > 0 {
 			delta["tool_calls"] = calls
 		}
-		if text, _ := delta["reasoning_content"].(string); content != "" || text != "" || len(calls) > 0 {
-			r.said = true
-		}
+		r.said = r.said || hasDeltaOutput(delta)
 		if finished {
-			state.finished = true
+			state.finish = finish
 			if finish == "stop" || finish == "tool_calls" {
 				if state.sawTool {
 					choice["finish_reason"] = "tool_calls"
@@ -276,12 +302,16 @@ func (r *qoderStream) consume(data []byte) error {
 				}
 			}
 			if !r.said {
+				holdFinish := finish != "length" && finish != "content_filter"
 				for _, call := range state.begun {
 					if !call.named {
-						state.deferredFinish = choice["finish_reason"].(string)
-						choice["finish_reason"] = nil
+						holdFinish = true
 						break
 					}
+				}
+				if holdFinish {
+					state.deferredFinish = choice["finish_reason"].(string)
+					choice["finish_reason"] = nil
 				}
 			}
 			frameFinished = frameFinished || choice["finish_reason"] != nil
@@ -316,16 +346,126 @@ func (r *qoderStream) consume(data []byte) error {
 	return nil
 }
 
+/**
+ * @brief Detects structural business failure on a decoded envelope or chunk before processing output.
+ * @param frame Decoded outer envelope or body.
+ * @return True when a control field reports a failure, regardless of choices or usage.
+ */
+func qoderSSEHasError(frame map[string]any) bool {
+	if frame["error"] != nil || frame["success"] == false || frame["type"] == "error" {
+		return true
+	}
+	queue, _ := frame["queue"].(map[string]any)
+	for _, fields := range [...]map[string]any{frame, queue} {
+		queueType, _ := fields["queueType"].(string)
+		if fields["isQueued"] == true || fields["serviceAvailable"] == false && strings.TrimSpace(queueType) != "" {
+			return true
+		}
+	}
+	for _, field := range [...]string{"statusCodeValue", "statusCode", "code", "errorCode"} {
+		switch frame[field] {
+		case nil, "", "0", "200", "SUCCESS", "OK", "success", float64(0), float64(200):
+		default:
+			return true
+		}
+	}
+	status := qoderErrorNumber(frame["status"])
+	return status >= 400 && status <= 599
+}
+
+/**
+ * @brief Classifies control data while retaining error metadata from both envelope layers.
+ * @param envelope Decoded outer envelope.
+ * @param chunk Decoded body, or the envelope itself for a bare event.
+ * @return Shared Qoder error classification.
+ * @note Reuses the decoded body in the discarded envelope.
+ */
+func classifyQoderSSEError(envelope, chunk map[string]any) *APIError {
+	if _, wrapped := envelope["body"]; wrapped && chunk != nil {
+		envelope["body"] = chunk
+	}
+	// The values came from decoding JSON.
+	data, _ := json.Marshal(qoderSSEErrorPayload(envelope, 0))
+	return ClassifyError(200, data)
+}
+
+/**
+ * @brief Keeps the Qoder error envelope fields used for classification.
+ * @param value Data from a known error path, possibly containing stringified JSON.
+ * @param depth Current error envelope depth.
+ * @return Filtered error data, or nil beyond the classifier's depth limit.
+ */
+func qoderSSEErrorPayload(value any, depth int) any {
+	if depth > 6 {
+		return nil
+	}
+	switch value := value.(type) {
+	case map[string]any:
+		payload := make(map[string]any)
+		for key, child := range value {
+			switch strings.ToLower(key) {
+			case "message", "body", "data", "error", "msg", "details", "queue":
+				payload[key] = qoderSSEErrorPayload(child, depth+1)
+			case "code", "errorcode", "statuscodevalue", "statuscode", "status", "type", "success", "pricingurl", "retryafterseconds", "waittime", "isqueued", "serviceavailable", "queuetype":
+				switch child := child.(type) {
+				case string:
+					if plain, ok := qoderSSEErrorPayload(child, depth+1).(string); ok {
+						payload[key] = plain
+					}
+				case float64, bool:
+					payload[key] = child
+				}
+			}
+		}
+		return payload
+	case []any:
+		payload := make([]any, len(value))
+		for i, child := range value {
+			payload[i] = qoderSSEErrorPayload(child, depth+1)
+		}
+		return payload
+	case string:
+		text := strings.TrimSpace(value)
+		if len(text) > 0 && (text[0] == '{' || text[0] == '[' || text[0] == '"') {
+			var nested any
+			if json.Unmarshal([]byte(text), &nested) == nil {
+				filtered := qoderSSEErrorPayload(nested, depth+1)
+				if unquoted, ok := nested.(string); ok && filtered == unquoted {
+					return value
+				}
+				return filtered
+			}
+		}
+	}
+	return value
+}
+
+/**
+ * @brief finished allows clean EOF as a terminal only after every choice finishes.
+ * @return True when all observed choices supplied native finish reasons.
+ */
 func (r *qoderStream) finished() bool {
 	if len(r.choices) == 0 {
 		return false
 	}
 	for _, choice := range r.choices {
-		if !choice.finished {
+		if choice.finish == "" {
 			return false
 		}
 	}
 	return true
+}
+
+/**
+ * @brief hasDeltaOutput recognizes Qoder text, reasoning, and tool deltas.
+ * @param delta Decoded upstream or normalized Chat delta.
+ * @return True when the delta has text, reasoning, or at least one tool fragment.
+ */
+func hasDeltaOutput(delta map[string]any) bool {
+	content, _ := delta["content"].(string)
+	reasoning, _ := delta["reasoning_content"].(string)
+	calls, _ := delta["tool_calls"].([]any)
+	return content != "" || reasoning != "" || len(calls) > 0
 }
 
 func (r *qoderStream) frame(value any) {
@@ -354,8 +494,8 @@ func (r *qoderStream) fail(err *APIError) {
 }
 
 /**
- * @brief complete flushes buffered calls before accepting a real upstream terminal event.
- * @return An incomplete or nameless-only tool-call error.
+ * @brief complete flushes buffered calls and rejects empty successful answers.
+ * @return An empty-answer, incomplete tool-call, or nameless-only tool-call error.
  */
 func (r *qoderStream) complete() error {
 	indices := make([]int, 0, len(r.choices))
@@ -364,9 +504,10 @@ func (r *qoderStream) complete() error {
 	}
 	sort.Ints(indices)
 	var choices []any
-	nameless := false
+	nameless, terminalResult := false, false
 	for _, index := range indices {
 		state := r.choices[index]
+		terminalResult = terminalResult || state.finish == "length" || state.finish == "content_filter"
 		content, reasoning := state.drain(true)
 		content, calls, err := state.tools.feed(content, true)
 		if err != nil {
@@ -391,7 +532,7 @@ func (r *qoderStream) complete() error {
 		var finish any
 		if state.deferredFinish != "" {
 			finish = state.deferredFinish
-		} else if !state.finished {
+		} else if state.finish == "" {
 			// EOF reaches complete only after every choice has a native finish.
 			finish = "stop"
 			if state.sawTool {
@@ -405,8 +546,13 @@ func (r *qoderStream) complete() error {
 			choices = append(choices, map[string]any{"index": index, "delta": delta, "finish_reason": finish})
 		}
 	}
-	if nameless && !r.said {
-		return errors.New("native tool call has no name")
+	if !r.said {
+		if nameless {
+			return errors.New("native tool call has no name")
+		}
+		if !terminalResult {
+			return errors.New("empty answer")
+		}
 	}
 	if len(choices) > 0 || r.usage != nil {
 		chunk := r.identity

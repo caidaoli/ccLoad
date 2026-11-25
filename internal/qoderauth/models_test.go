@@ -140,25 +140,52 @@ func TestFetchModelsRejectsInvalidAndBusinessErrors(t *testing.T) {
 }
 
 /**
- * @brief 业务错误优先于 HTTP 认证状态，并保留排队/输出上限信息
+ * @brief 业务错误优先于 HTTP 状态，普通拒绝不视为登录过期
  * @param t 测试上下文
  */
 func TestQoderClassifyRequestFailures(t *testing.T) {
 	for _, tc := range []struct {
-		name, body                      string
+		name, body, code                string
 		httpStatus, status, limit, wait int
 	}{
-		{"auth", `{"message":"Login expired"}`, 403, 401, 0, 0},
-		{"request", `{"code":80411,"message":"refused"}`, 403, 400, 0, 0},
-		{"quota", `{"code":112,"message":"exhausted"}`, 401, 429, 0, 0},
-		{"upstream", `{"message":"Error in upstream response"}`, 400, 502, 0, 0},
-		{"range", `{"message":"Error in upstream response: Range of max_tokens should be [1, 8192]"}`, 400, 400, 8192, 0},
-		{"queued", `{"code":10605,"queue":{"isQueued":true,"retryAfterSeconds":12}}`, 403, 503, 0, 12},
+		{"auth", `{"message":"Login expired"}`, "authentication_error", 403, 401, 0, 0},
+		{"auth wording", `{"error":{"message":"Login or access token expired"}}`, "authentication_error", 403, 401, 0, 0},
+		{"business auth", `{"code":"105"}`, "authentication_error", 403, 401, 0, 0},
+		{"unavailable flag alone preserves business auth", `{"code":105,"serviceAvailable":false}`, "authentication_error", 403, 401, 0, 0},
+		{"blank queue type preserves business auth", `{"code":105,"serviceAvailable":false,"queueType":" "}`, "authentication_error", 403, 401, 0, 0},
+		{"queue fields in separate objects preserve business auth", `{"code":105,"body":{"serviceAvailable":false},"details":{"queueType":"p3"}}`, "authentication_error", 403, 401, 0, 0},
+		{"transport auth", `{}`, "authentication_error", 401, 401, 0, 0},
+		{"embedded auth", `{"statusCodeValue":"401","body":{"message":"unauthorized"}}`, "authentication_error", 200, 401, 0, 0},
+		{"embedded auth code", `{"error":{"code":"401"}}`, "authentication_error", 200, 401, 0, 0},
+		{"forbidden", `{}`, "permission_denied", 403, 403, 0, 0},
+		{"forbidden code in JSON response", `{"code":"403","message":"Forbidden"}`, "permission_denied", 200, 403, 0, 0},
+		{"insufficient permission", `{"message":"Insufficient permission to view credit details","pricingUrl":null}`, "permission_denied", 403, 403, 0, 0},
+		{"embedded forbidden", `{"statusCodeValue":200,"body":"{\"status\":403}"}`, "permission_denied", 200, 403, 0, 0},
+		{"outer status wins", `{"statusCodeValue":403,"body":{"code":401}}`, "permission_denied", 200, 403, 0, 0},
+		{"pricing URL", `{"body":{"data":{"pricingUrl":"https://example.com/pricing"}}}`, "insufficient_quota", 403, 429, 0, 0},
+		{"explicit quota text", `{"message":"Insufficient credits"}`, "insufficient_quota", 403, 429, 0, 0},
+		{"quota text without business code", `{"message":"credits exhausted"}`, "insufficient_quota", 429, 429, 0, 0},
+		{"quota in plain body", `{"statusCodeValue":403,"body":"Insufficient credits"}`, "insufficient_quota", 403, 429, 0, 0},
+		{"expired login in plain body", `{"statusCodeValue":403,"body":"Login or access token expired"}`, "authentication_error", 403, 401, 0, 0},
+		{"explicit quota code in message", `{"message":"insufficient_quota"}`, "insufficient_quota", 403, 429, 0, 0},
+		{"explicit quota code", `{"error":{"code":"insufficient_quota"}}`, "insufficient_quota", 403, 429, 0, 0},
+		{"embedded rate limit", `{"statusCodeValue":429,"body":{"message":"retry later"}}`, "rate_limit_exceeded", 200, 429, 0, 0},
+		{"request", `{"code":80411,"message":"refused"}`, "invalid_request", 403, 400, 0, 0},
+		{"quota", `{"code":112,"message":"exhausted"}`, "insufficient_quota", 401, 429, 0, 0},
+		{"upstream", `{"message":"Error in upstream response"}`, "upstream_error", 400, 502, 0, 0},
+		{"range", `{"message":"Error in upstream response: Range of max_tokens should be [1, 8192]"}`, "max_tokens_exceeded", 400, 400, 8192, 0},
+		{"queued", `{"code":10605,"queue":{"isQueued":true,"retryAfterSeconds":12}}`, "service_unavailable", 403, 503, 0, 12},
+		{"queue code with no valid hint", `{"code":"10605","retryAfterSeconds":"Infinity","waitTime":-1}`, "service_unavailable", 403, 503, 0, 30},
+		{"queued flag with wait time", `{"message":"{\"isQueued\":true,\"waitTime\":\"12.25\"}"}`, "service_unavailable", 403, 503, 0, 13},
+		{"unavailable with queue type", `{"body":{"serviceAvailable":false,"queueType":"p3","retryAfterSeconds":0.2}}`, "service_unavailable", 403, 503, 0, 1},
+		{"retry seconds take priority across envelopes", `{"isQueued":true,"waitTime":30,"body":{"retryAfterSeconds":"8.5"}}`, "service_unavailable", 403, 503, 0, 9},
+		{"outer retry seconds take priority", `{"isQueued":true,"retryAfterSeconds":" 8 ","body":{"retryAfterSeconds":12}}`, "service_unavailable", 403, 503, 0, 8},
+		{"invalid retry seconds fall back to positive wait time", `{"isQueued":true,"retryAfterSeconds":"invalid","waitTime":7}`, "service_unavailable", 403, 503, 0, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ClassifyError(tc.httpStatus, []byte(tc.body))
-			if err.StatusCode != tc.status || err.MaxTokens != tc.limit || err.RetryAfter != tc.wait {
-				t.Fatalf("got %+v", err)
+			if err.StatusCode != tc.status || err.Code != tc.code || err.MaxTokens != tc.limit || err.RetryAfter != tc.wait {
+				t.Fatalf("got %+v, want status=%d code=%s max_tokens=%d retry_after=%d", *err, tc.status, tc.code, tc.limit, tc.wait)
 			}
 		})
 	}

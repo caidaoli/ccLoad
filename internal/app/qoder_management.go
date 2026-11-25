@@ -74,6 +74,14 @@ type qoderCheckinResponse struct {
 	Usage *oauthUsageSummary `json:"usage,omitempty"`
 }
 
+/**
+ * @brief 领取或确认 Qoder 每日签到，并保存对应活动窗口的状态。
+ * @param ctx 请求上下文。
+ * @param cfg Qoder 渠道及其账号配置。
+ * @return 确认的活动状态和可用的余额快照。
+ * @return 上游或凭据请求失败时返回错误，保存签到失败时附带已确认的活动状态。
+ * @note 同进程同渠道的手动和定时签到串行执行；认证拒绝后可刷新一次。
+ */
 func (s *Server) checkInQoder(ctx context.Context, cfg *model.Config) (*qoderCheckinResponse, error) {
 	// A per-channel lock serializes manual and scheduled claims. Upstream campaign
 	// state is authoritative across processes and after an uncertain POST outcome.
@@ -106,10 +114,7 @@ func (s *Server) checkInQoder(ctx context.Context, cfg *model.Config) (*qoderChe
 	}
 	result := &qoderCheckinResponse{CheckinResult: claimed}
 	if claimed.Status == "claimed" || claimed.Status == "already_claimed" {
-		if err = s.updateQoderCredential(ctx, cfg.ID, credential, func(c *qoderauth.Credential) {
-			c.LastCheckinAt = time.Now().Unix()
-			c.LastCheckinCampaign = claimed.CampaignID
-		}); err != nil {
+		if err = s.updateQoderCredential(ctx, cfg.ID, credential, claimed.UpdateCredential); err != nil {
 			return result, err
 		}
 	}
@@ -164,15 +169,11 @@ func (s *Server) HandleInstallQoderUMID(c *gin.Context) {
 	RespondJSON(c, 200, s.qoderUMID.Status())
 }
 
-func qoderCheckinWindow(now time.Time) time.Time {
-	local := now.In(time.FixedZone("Qoder", 8*3600))
-	start := time.Date(local.Year(), local.Month(), local.Day(), 10, 0, 0, 0, local.Location())
-	if local.Before(start) {
-		start = start.AddDate(0, 0, -1)
-	}
-	return start
-}
-
+/**
+ * @brief 扫描并签到本窗口尚未完成的已启用 Qoder 渠道。
+ * @param ctx 调度上下文，取消时停止分发。
+ * @note 启动最多四个工作协程，等待本轮签到全部退出。
+ */
 func (s *Server) runDueQoderCheckins(ctx context.Context) {
 	if s == nil || s.store == nil {
 		return
@@ -183,7 +184,7 @@ func (s *Server) runDueQoderCheckins(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	window := qoderCheckinWindow(now)
+	window := qoderauth.CheckinWindow(now)
 	jobs := make(chan *model.Config)
 	var wg sync.WaitGroup
 	for range 4 {

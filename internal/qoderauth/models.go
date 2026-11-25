@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,20 +56,114 @@ func (e *APIError) Error() string { return e.Message }
  */
 var outputRange = regexp.MustCompile(`(?i)range of max_tokens should be \[\s*1\s*,\s*([0-9]+)\s*\]`)
 
+/**
+ * @brief 识别明确的登录过期提示
+ */
+var loginExpiredText = regexp.MustCompile(`(?i)\b(?:login(?: or access token)?|access token) expired\b`)
+
+/**
+ * @brief 识别明确的配额或余额不足提示
+ */
+var quotaExhaustedText = regexp.MustCompile(`(?i)\b(insufficient (quota|credits?|balance)|not enough credits?|quota (exceeded|exhausted)|credit balance exhausted|credits? (are )?(exhausted|used up)|insufficient_quota|no_quota|quota_exceed(ed)?|exceed_quota|credit_balance_exhausted)\b`)
+
+/**
+ * @brief 解码 Qoder 的整数错误号，兼容 JSON 数字和数字字符串
+ * @param value 上游错误号字段
+ * @return 整数错误号，缺失或无法解码时为 0
+ */
+func qoderErrorNumber(value any) int {
+	switch number := value.(type) {
+	case float64:
+		if n := int(number); float64(n) == number {
+			return n
+		}
+	case string:
+		if n, err := strconv.Atoi(number); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+/**
+ * @brief 读取排队等待秒数，正小数向上取整
+ * @param value 上游排队时间的 JSON 数字或数字字符串
+ * @return 正的整秒数，无有效时间时为 0
+ */
+func qoderQueueWaitSeconds(value any) int {
+	var seconds float64
+	switch number := value.(type) {
+	case float64:
+		seconds = number
+	case string:
+		seconds, _ = strconv.ParseFloat(strings.TrimSpace(number), 64)
+	}
+	seconds = math.Ceil(seconds)
+	if seconds > 0 && seconds < math.Ldexp(1, strconv.IntSize-1) {
+		return int(seconds)
+	}
+	return 0
+}
+
+/**
+ * @brief 从外向内读取错误信封的显式 HTTP 状态
+ * @param value 当前错误信封，允许 JSON 字符串包裹
+ * @param depth 当前信封嵌套层级
+ * @return HTTP 4xx/5xx 状态，无显式状态时为 0
+ */
+func qoderEmbeddedErrorStatus(value any, depth int) int {
+	if depth > 6 {
+		return 0
+	}
+	if text, ok := value.(string); ok {
+		if json.Unmarshal([]byte(text), &value) != nil {
+			return 0
+		}
+	}
+	envelope, ok := value.(map[string]any)
+	if !ok {
+		return 0
+	}
+	for _, key := range [...]string{"statusCodeValue", "statusCode", "status"} {
+		if n := qoderErrorNumber(envelope[key]); n >= 400 && n <= 599 {
+			return n
+		}
+	}
+	for _, key := range [...]string{"body", "error"} {
+		if n := qoderEmbeddedErrorStatus(envelope[key], depth+1); n != 0 {
+			return n
+		}
+	}
+	switch n := qoderErrorNumber(envelope["code"]); n {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+		return n
+	}
+	return 0
+}
+
 // ClassifyError maps Qoder business failures before considering HTTP status.
 /**
  * @brief 优先按业务码区分排队、额度、请求错误和认证失败
  * @param status HTTP 状态或信封状态
  * @param body 上游响应 JSON
  * @return 规范化的 OpenAI 错误及明确的重试参数
+ * @details 等待提示优先用 retryAfterSeconds，其次 waitTime。同字段按父级在前、同级键排序读取。
  */
 func ClassifyError(status int, body []byte) *APIError {
 	var root any
-	_ = json.Unmarshal(body, &root)
+	jsonErr := json.Unmarshal(body, &root)
 	codes := map[int]bool{}
 	queued := false
-	retryAfter := 0
+	retryAfter, waitTime := 0, 0
 	message := ""
+	quota, loginExpired := false, false
+	scanText := func(text string) {
+		loginExpired = loginExpired || loginExpiredText.MatchString(text)
+		quota = quota || quotaExhaustedText.MatchString(text)
+	}
+	if jsonErr != nil {
+		scanText(string(body))
+	}
 	var visit func(any, int)
 	visit = func(value any, depth int) {
 		if depth > 6 {
@@ -77,48 +174,69 @@ func ClassifyError(status int, body []byte) *APIError {
 			var nested any
 			if json.Unmarshal([]byte(value), &nested) == nil {
 				visit(nested, depth+1)
+			} else if depth == 0 {
+				scanText(value)
 			}
 		case []any:
 			for _, child := range value {
 				visit(child, depth+1)
 			}
 		case map[string]any:
-			for key, child := range value {
-				switch strings.ToLower(key) {
-				case "code", "errorcode", "statuscodevalue", "status":
-					switch number := child.(type) {
-					case float64:
-						codes[int(number)] = true
-					case string:
-						if n, err := strconv.Atoi(number); err == nil {
-							codes[n] = true
-						}
+			unavailable, hasQueueType := false, false
+			keys := slices.Sorted(maps.Keys(value))
+			for _, field := range keys {
+				key, child := strings.ToLower(field), value[field]
+				switch key {
+				case "code", "errorcode", "statuscodevalue", "statuscode", "status":
+					codes[qoderErrorNumber(child)] = true
+					if text, ok := child.(string); ok {
+						scanText(text)
+					}
+				case "pricingurl":
+					if url, ok := child.(string); ok && url != "" {
+						quota = true
 					}
 				case "retryafterseconds":
-					if n, ok := child.(float64); ok && n > 0 {
-						retryAfter = int(n)
-						if float64(retryAfter) < n {
-							retryAfter++
-						}
+					if retryAfter == 0 {
+						retryAfter = qoderQueueWaitSeconds(child)
+					}
+				case "waittime":
+					if waitTime == 0 {
+						waitTime = qoderQueueWaitSeconds(child)
 					}
 				case "serviceavailable":
-					if child == false {
-						queued = true
+					unavailable = unavailable || child == false
+				case "queuetype":
+					if name, ok := child.(string); ok && strings.TrimSpace(name) != "" {
+						hasQueueType = true
 					}
 				case "isqueued":
-					if child == true {
-						queued = true
+					queued = queued || child == true
+				case "body":
+					if text, ok := child.(string); ok && !json.Valid([]byte(text)) {
+						scanText(text)
 					}
-				case "message", "msg":
+				case "message", "msg", "error", "type":
 					if text, ok := child.(string); ok && text != "" {
-						message = text
+						scanText(text)
+						if key == "message" || key == "msg" {
+							message = text
+						}
 					}
 				}
-				visit(child, depth+1)
+			}
+			queued = queued || unavailable && hasQueueType
+			for _, key := range keys {
+				visit(value[key], depth+1)
 			}
 		}
 	}
 	visit(root, 0)
+	if status < 400 || status > 599 {
+		if embedded := qoderEmbeddedErrorStatus(root, 0); embedded != 0 {
+			status = embedded
+		}
+	}
 	if message == "" {
 		message = strings.TrimSpace(string(body))
 	}
@@ -139,6 +257,9 @@ func ClassifyError(status int, body []byte) *APIError {
 		result.StatusCode, result.Type, result.Code = http.StatusServiceUnavailable, "server_error", "service_unavailable"
 		result.RetryAfter = retryAfter
 		if result.RetryAfter == 0 {
+			result.RetryAfter = waitTime
+		}
+		if result.RetryAfter == 0 {
 			result.RetryAfter = 30
 		}
 	case codes[110] || codes[112] || codes[113] || codes[114] || codes[115] || codes[116] || codes[117] || codes[118] || codes[119] || codes[122]:
@@ -150,12 +271,14 @@ func ClassifyError(status int, body []byte) *APIError {
 		result.MaxTokens = maxTokens
 	case strings.Contains(lower, "error in upstream response"):
 		result.StatusCode, result.Type, result.Code = http.StatusBadGateway, "server_error", "upstream_error"
-	case codes[105] || status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case codes[105] || status == http.StatusUnauthorized || loginExpired:
 		result.StatusCode, result.Type, result.Code = http.StatusUnauthorized, "authentication_error", "authentication_error"
-	case strings.Contains(lower, "insufficient") || strings.Contains(lower, "no_quota") || strings.Contains(lower, "quota_exceed") || strings.Contains(lower, "credit") || strings.Contains(lower, "pricingurl"):
+	case quota:
 		result.StatusCode, result.Type, result.Code = http.StatusTooManyRequests, "insufficient_quota", "insufficient_quota"
 	case status == http.StatusTooManyRequests || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests"):
 		result.StatusCode, result.Type, result.Code = http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"
+	case status == http.StatusForbidden:
+		result.Type, result.Code = "permission_error", "permission_denied"
 	case status < 400 || status > 599:
 		result.StatusCode = http.StatusBadGateway
 	}

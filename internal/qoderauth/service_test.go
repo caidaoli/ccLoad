@@ -3,14 +3,20 @@ package qoderauth
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -115,14 +121,29 @@ func TestExchangePATAndIdentity(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Verifies token rotation and account identity across device and job refresh endpoints.
+ * @param t Test context.
+ */
 func TestRefreshTokenFamiliesAndIdentity(t *testing.T) {
-	for _, family := range []string{"device", "job", "device refresh with job access"} {
-		t.Run(family, func(t *testing.T) {
-			c := &Credential{Region: "cn", AccessToken: "dt-old", RefreshToken: "drt-old", UserID: "user", MachineID: "machine", ExpiresAt: 1, OAuthUsage: `{"remaining":9}`, LastCheckinAt: 12, LastCheckinCampaign: "campaign"}
+	const owner = "9007199254740993"
+	for _, tc := range []struct {
+		family        string
+		tokenKey      string
+		ownerKey      string
+		originalOwner string
+	}{
+		{"device", "device_token", "uid", owner},
+		{"job", "accessToken", "userId", owner},
+		{"device refresh with job access", "deviceToken", "user_id", owner},
+		{"device credential without owner", "accessToken", "uid", ""},
+	} {
+		t.Run(tc.family, func(t *testing.T) {
+			c := &Credential{Region: "cn", AccessToken: "dt-old", RefreshToken: "drt-old", UserID: tc.originalOwner, MachineID: "machine", ExpiresAt: 1, OAuthUsage: `{"remaining":9}`, LastCheckinAt: 12, LastCheckinCampaign: "campaign"}
 			path := "/api/v1/deviceToken/refresh"
 			token := "dt-new"
 			refresh := "drt-new"
-			switch family {
+			switch tc.family {
 			case "job":
 				c.AccessToken, c.RefreshToken = "jt-old", "jrt-old"
 				path, token, refresh = "/api/v1/jobToken/refresh", "jt-new", "jrt-new"
@@ -138,7 +159,14 @@ func TestRefreshTokenFamiliesAndIdentity(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["refresh_token"] != c.RefreshToken {
 					t.Errorf("invalid refresh body: %v", err)
 				}
-				authTestJSON(t, w, map[string]any{"device_token": token, "refresh_token": refresh, "user_id": "user", "expires_at": 1800000000})
+				response := map[string]any{
+					tc.tokenKey: token, tc.ownerKey: json.Number(owner),
+					"refresh_token": refresh, "expires_at": 1800000000,
+				}
+				if tc.tokenKey != "accessToken" {
+					response["accessToken"] = "ignored"
+				}
+				authTestJSON(t, w, response)
 			})
 			fresh, err := service.Refresh(context.Background(), c)
 			if err != nil {
@@ -147,20 +175,35 @@ func TestRefreshTokenFamiliesAndIdentity(t *testing.T) {
 			if *c != original {
 				t.Fatal("refresh mutated input")
 			}
-			if fresh.AccessToken != token || fresh.RefreshToken != refresh || fresh.ExpiresAt != 1800000000 || fresh.LastCheckinAt != 12 || fresh.OAuthUsage != c.OAuthUsage {
+			want := original
+			want.Type = ChannelType
+			want.UserID = owner
+			want.AccessToken, want.RefreshToken, want.ExpiresAt = token, refresh, 1800000000
+			if *fresh != want {
 				t.Fatalf("refresh dropped credential fields: %+v", fresh)
 			}
 		})
 	}
 }
 
+/**
+ * @brief Ensures failed refresh responses cannot replace the original credential.
+ * @param t Test context.
+ */
 func TestRefreshRejectsInvalidResults(t *testing.T) {
-	for _, response := range []string{`{}`, `{"token":"jt-new","user_id":"different"}`, `{"token":"jt-new","refresh_token":"bad|packed"}`} {
+	for _, response := range []string{
+		`{}`,
+		`{"token":"jt-new","user_id":"different"}`,
+		`{"token":"jt-new","uid":9007199254740992}`,
+		`{"token":"jt-new","userId":9007199254740992,"uid":"9007199254740993"}`,
+		`{"token":"jt-new","user_id":9007199254740992,"userId":"9007199254740993"}`,
+		`{"token":"jt-new","refresh_token":"bad|packed"}`,
+	} {
 		t.Run(response, func(t *testing.T) {
 			service := authTestService(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(response)) })
-			c := &Credential{Region: "cn", AccessToken: "jt-old", RefreshToken: "jrt-old", UserID: "user"}
+			c := &Credential{Region: "cn", AccessToken: "jt-old", RefreshToken: "jrt-old", UserID: "9007199254740993"}
 			original := *c
-			if _, err := service.Refresh(context.Background(), c); err == nil {
+			if fresh, err := service.Refresh(context.Background(), c); fresh != nil || err == nil {
 				t.Fatal("accepted invalid refresh response")
 			}
 			if *c != original {
@@ -174,13 +217,17 @@ func TestRefreshRejectsInvalidResults(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Verifies refresh responses without rotation, identity, or expiry fields.
+ * @param t Test context.
+ */
 func TestRefreshMissingRotationRetainsRefreshToken(t *testing.T) {
 	service := authTestService(t, func(w http.ResponseWriter, _ *http.Request) { authTestJSON(t, w, map[string]string{"token": "dt-new"}) })
 	c, err := service.Refresh(context.Background(), &Credential{Region: "cn", AccessToken: "dt-old", RefreshToken: "drt-old", UserID: "user", ExpiresAt: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.RefreshToken != "drt-old" || c.ExpiresAt != 0 {
+	if c.AccessToken != "dt-new" || c.RefreshToken != "drt-old" || c.UserID != "user" || c.ExpiresAt != 0 {
 		t.Fatalf("incorrect fallback state: %+v", c)
 	}
 }
@@ -272,6 +319,11 @@ func TestTokenExpiryFormats(t *testing.T) {
 		{"past absolute remains past", "job", `{"expire_time":1,"expires_in":3600000}`, 1, false},
 		{"job milliseconds", "job", `{"expires_in":3600000}`, 3600, true},
 		{"device seconds", "device", `{"expires_in":"3600"}`, 3600, true},
+		{"device refresh milliseconds", "device", `{"expires_in":2591999994}`, 2591999, true},
+		{"device refresh absolute precedes milliseconds", "device", `{"expires_at":1800000000,"expires_in":2591999994}`, 1800000000, false},
+		{"device refresh max seconds", "device", `{"expires_in":2592000}`, 2592000, true},
+		{"device refresh max milliseconds", "device", `{"expires_in":"2592000000"}`, 2592000, true},
+		{"device refresh unsupported lifetime", "device", `{"expires_in":2592000001}`, 0, false},
 		{"PAT milliseconds and token alias", "pat", `{"expires_in":3600000,"device_token":"jt-new"}`, 3600, true},
 		{"PAT access alias", "pat", `{"expires_at":"1800000000","access_token":"jt-new"}`, 1800000000, false},
 		{"login seconds", "login", `{"expires_in":3600}`, 3600, true},
@@ -396,21 +448,163 @@ func TestLoginPKCEAndPending(t *testing.T) {
 	}
 }
 
+/**
+ * @brief Verifies device poll aliases against a userinfo response with an independent account ID.
+ * @param t Test context.
+ */
 func TestLoginDeviceTokenResponse(t *testing.T) {
-	session, err := StartLogin("cn")
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name     string
+		response string
+	}{
+		{"device_token", `{"device_token":"dt-token","refresh_token":"drt-token","user_id":"9007199254740993"}`},
+		{"access_token", `{"access_token":"dt-token","refreshToken":"drt-token","uid":9007199254740993}`},
+		{"accessToken", `{"accessToken":"dt-token","refreshToken":"drt-token","userId":"9007199254740993"}`},
+		{"deviceToken", `{"deviceToken":"dt-token","refreshToken":"drt-token"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := StartLogin("cn")
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/deviceToken/poll":
+					_, _ = io.WriteString(w, tc.response)
+				case "/api/v1/userinfo":
+					if r.Header.Get("Authorization") != "Bearer dt-token" {
+						t.Error("userinfo did not receive the polled device token")
+					}
+					_, _ = io.WriteString(w, `{"uid":9007199254740993,"name":"verified"}`)
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+			})
+			credential, err := service.PollLogin(t.Context(), session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential.AccessToken != "dt-token" || credential.RefreshToken != "drt-token" ||
+				credential.UserID != "9007199254740993" || credential.Name != "verified" {
+				t.Fatalf("incorrect device credential: %+v", credential)
+			}
+		})
 	}
-	service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/deviceToken/poll" {
-			authTestJSON(t, w, map[string]string{"device_token": "dt-token", "refresh_token": "drt-token", "user_id": "user"})
-			return
-		}
-		authTestJSON(t, w, map[string]string{"id": "user"})
-	})
-	credential, err := service.PollLogin(context.Background(), session)
-	if err != nil || credential.AccessToken != "dt-token" || credential.RefreshToken != "drt-token" {
-		t.Fatalf("device-token login failed: %+v %v", credential, err)
+}
+
+/**
+ * @brief Only temporary errors during the device poll permit a later poll.
+ * @param t Test context.
+ */
+func TestLoginPollTransport(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cause   error
+		pending bool
+	}{
+		{"dropped connection", io.EOF, true},
+		{"connection refused", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, true},
+		{"dial permission denied", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.EACCES)}, false},
+		{"Windows connection reset", &net.OpError{Op: "read", Err: os.NewSyscallError("wsarecv", syscall.Errno(10054))}, true},
+		{"temporary DNS", &net.DNSError{IsTemporary: true}, true},
+		{"timeout", &net.DNSError{IsTimeout: true}, true},
+		{"unknown host", &net.DNSError{IsNotFound: true}, false},
+		{"invalid certificate", x509.UnknownAuthorityError{}, false},
+		{"cancelled", context.Canceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := StartLogin("global")
+			if err != nil {
+				t.Fatal(err)
+			}
+			polls := 0
+			service := NewService(&http.Client{Transport: qoderRoundTripper(func(r *http.Request) (*http.Response, error) {
+				response := `{"id":"verified"}`
+				if r.URL.Path == "/api/v1/deviceToken/poll" {
+					polls++
+					if polls == 1 {
+						return nil, tc.cause
+					}
+					response = `{"accessToken":"dt-token"}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response))}, nil
+			})})
+			credential, err := service.PollLogin(t.Context(), session)
+			if credential != nil || err == nil || errors.Is(err, ErrLoginPending) != tc.pending {
+				t.Fatalf("unexpected first poll result: %+v %v", credential, err)
+			}
+			if !tc.pending {
+				if tc.cause == context.Canceled && !errors.Is(err, context.Canceled) {
+					t.Fatalf("lost cancellation: %v", err)
+				}
+				return
+			}
+			credential, err = service.PollLogin(t.Context(), session)
+			if err != nil || credential == nil || credential.UserID != "verified" || polls != 2 {
+				t.Fatalf("follow-up poll failed: %+v %v, polls=%d", credential, err, polls)
+			}
+		})
+	}
+}
+
+/**
+ * @brief Invalid poll responses and failures after token issuance terminate device login.
+ * @param t Test context.
+ */
+func TestLoginTerminalResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		pollStatus     int
+		pollBody       string
+		userinfoBody   string
+		userinfoErr    error
+		wantHTTPStatus int
+		wantError      string
+	}{
+		{"forbidden", http.StatusForbidden, `{}`, "", nil, http.StatusForbidden, ""},
+		{"rate limited", http.StatusTooManyRequests, `{}`, "", nil, http.StatusTooManyRequests, ""},
+		{"unavailable", http.StatusServiceUnavailable, `{}`, "", nil, http.StatusServiceUnavailable, ""},
+		{"redirect refused", http.StatusFound, `{}`, "", nil, 0, "qoder transport failed"},
+		{"invalid poll JSON", http.StatusOK, "bad JSON", "", nil, 0, "invalid Qoder JSON response"},
+		{"missing token", http.StatusOK, `{}`, "", nil, 0, "qoder login response is missing token"},
+		{"missing owner", http.StatusOK, `{"token":"dt-token","uid":"user"}`, `{}`, nil, 0, "qoder profile is missing user identity"},
+		{"mismatched numeric owner", http.StatusOK, `{"token":"dt-token","uid":9007199254740993}`, `{"userId":9007199254740992}`, nil, 0, "qoder token owner does not match credential user_id"},
+		{"userinfo connection dropped", http.StatusOK, `{"token":"dt-token","uid":"user"}`, "", io.EOF, 0, "qoder transport failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := StartLogin("global")
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(&http.Client{
+				Transport: qoderRoundTripper(func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/api/v1/deviceToken/poll" {
+						return &http.Response{
+							StatusCode: tc.pollStatus,
+							Header:     http.Header{"Location": {"https://elsewhere.invalid/device"}},
+							Body:       io.NopCloser(strings.NewReader(tc.pollBody)),
+						}, nil
+					}
+					if tc.userinfoErr != nil {
+						return nil, tc.userinfoErr
+					}
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tc.userinfoBody))}, nil
+				}),
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return io.EOF },
+			})
+			credential, err := service.PollLogin(t.Context(), session)
+			if credential != nil || err == nil || errors.Is(err, ErrLoginPending) {
+				t.Fatalf("expected terminal login failure: %+v %v", credential, err)
+			}
+			if tc.wantHTTPStatus != 0 {
+				var httpErr *HTTPError
+				if !errors.As(err, &httpErr) || httpErr.StatusCode != tc.wantHTTPStatus {
+					t.Fatalf("expected HTTP %d, got %v", tc.wantHTTPStatus, err)
+				}
+			} else if err.Error() != tc.wantError {
+				t.Fatalf("expected %q, got %v", tc.wantError, err)
+			}
+		})
 	}
 }
 
@@ -458,8 +652,13 @@ func TestFetchUsageRejectsUnknownAndMixedUnits(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 签到从包装清单选择本期通用每日额度，并解码包装领取结果。
+ * @param t 测试上下文。
+ */
 func TestCheckinClaimContract(t *testing.T) {
 	getCalls := 0
+	var postAt atomic.Int64
 	service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer dt-token" || r.Header.Get("Cosy-ClientType") != "10" || r.Header.Get("Cosy-Signature") != "" {
 			t.Error("invalid sash headers")
@@ -469,42 +668,59 @@ func TestCheckinClaimContract(t *testing.T) {
 			if r.URL.Query().Get("forceRefresh") != "true" {
 				t.Error("missing forceRefresh")
 			}
-			authTestJSON(t, w, map[string]any{"campaigns": []map[string]string{
-				{"campaignId": "promo", "actionType": "VIEW_DETAILS", "claimStatus": "CLAIMABLE"},
-				{"campaignId": "daily", "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMABLE"},
-			}})
+			now := time.Now()
+			_, _ = fmt.Fprintf(w, `{"data":{"campaigns":[
+				{"campaignId":"promo","actionType":"VIEW_DETAILS","claimStatus":"CLAIMABLE"},
+				{"campaignId":"sonus","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Sonus daily credits","benefit":{"kind":"CREDITS"}},
+				{"campaignId":"scoped","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily credits","benefit":{"kind":"CREDITS","modelScope":{"modelSeries":{"key":"QODER_SOTA"}}}},
+				{"campaignId":"not-credits","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily reward","benefit":{"kind":"COUPON"}},
+				{"campaignId":"invalid-date","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily credits","endAt":"invalid","benefit":{"kind":"CREDITS"}},
+				{"campaignId":"expired","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily credits","endAt":%q,"benefit":{"kind":"CREDITS"}},
+				{"campaignId":"future","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily credits","startAt":%d,"benefit":{"kind":"CREDITS"}},
+				{"campaignId":"daily","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","placements":[{"type":"USAGE","content":{"zh":{"title":"每日通用额度"}}}],"benefit":{"kind":"CREDITS","modelScope":{"modelSeries":{"key":"ALL_MODELS"}}}}
+			]}}`, now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(time.Hour).UnixMilli())
 			return
 		}
 		if r.URL.Path != authCampaignPath+"/daily/claim" {
 			t.Errorf("claimed wrong campaign: %s", r.URL.Path)
 		}
+		postAt.Store(time.Now().UnixNano())
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 0 {
 			t.Errorf("invalid claim body: %v", err)
 		}
-		authTestJSON(t, w, map[string]any{"status": "CLAIMED", "benefit": map[string]any{"kind": "CREDITS", "amount": 12.5}})
+		_, _ = w.Write([]byte(`{"data":{"status":"CLAIMED","benefit":{"kind":"CREDITS","amount":12.5}}}`))
 	})
 	result, err := service.Checkin(context.Background(), &Credential{Region: "cn", AccessToken: "dt-token"})
 	if err != nil || result.Status != "claimed" || result.CampaignID != "daily" || result.Reward != 12.5 || result.Unit != "credits" || getCalls != 1 {
 		t.Fatalf("claim failed: %+v %v", result, err)
 	}
+	if result.SelectedAt.IsZero() || result.SelectedAt.UnixNano() > postAt.Load() {
+		t.Fatalf("selection time %v should precede the claim request", result.SelectedAt)
+	}
 }
 
+/**
+ * @brief 领取状态不明确时仅认可对应活动的确认结果。
+ * @param t 测试上下文。
+ */
 func TestCheckinUncertainResults(t *testing.T) {
 	tests := []struct {
-		name      string
-		status    int
-		response  string
-		confirmed bool
-		want      string
+		name         string
+		status       int
+		response     string
+		confirmation string
+		want         string
 	}{
-		{"unauthorized replay", 401, `{"result":"ALREADY_CLAIMED"}`, false, "error"},
-		{"ordinary conflict", 409, `{"result":"CONFLICT"}`, false, "error"},
-		{"explicit replay", 409, `{"result":"ALREADY_CLAIMED"}`, false, "already_claimed"},
-		{"confirmed after error", 503, `{}`, true, "already_claimed"},
-		{"ambiguous success", 200, `{"status":"PENDING"}`, false, "error"},
-		{"missing reward", 200, `{"status":"CLAIMED"}`, false, "claimed"},
-		{"replayed reward", 200, `{"status":"CLAIMED","replayed":true,"benefit":{"amount":100}}`, false, "already_claimed"},
+		{"unauthorized replay", 401, `{"result":"ALREADY_CLAIMED"}`, "", "error"},
+		{"ordinary conflict", 409, `{"result":"CONFLICT"}`, "", "error"},
+		{"explicit replay", 409, `{"data":{"result":"ALREADY_CLAIMED"}}`, "", "already_claimed"},
+		{"confirmed after error", 503, `{}`, `{"campaignId":"daily","claimStatus":"CLAIMED"}`, "already_claimed"},
+		{"different campaign", 503, `{}`, `{"campaignId":"other","claimStatus":"CLAIMED"}`, "error"},
+		{"historical confirmation", 503, `{}`, `{"campaignId":"daily","claimStatus":"CLAIMED","claimedAt":"2025-11-25T02:06:00Z"}`, "error"},
+		{"ambiguous success", 200, `{"status":"PENDING"}`, "", "error"},
+		{"missing reward", 200, `{"status":"CLAIMED"}`, "", "claimed"},
+		{"replayed reward", 200, `{"status":"CLAIMED","replayed":true,"benefit":{"amount":100}}`, "", "already_claimed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -516,11 +732,11 @@ func TestCheckinUncertainResults(t *testing.T) {
 					return
 				}
 				lists++
-				status := "CLAIMABLE"
-				if lists > 1 && tc.confirmed {
-					status = "CLAIMED"
+				if lists > 1 && tc.confirmation != "" {
+					_, _ = fmt.Fprintf(w, `{"campaigns":[%s]}`, tc.confirmation)
+					return
 				}
-				authTestJSON(t, w, map[string]any{"campaigns": []map[string]string{{"campaignId": "daily", "actionType": "CLAIM_BENEFIT", "claimStatus": status}}})
+				_, _ = w.Write([]byte(`{"campaigns":[{"campaignId":"daily","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily credits","benefit":{"kind":"CREDITS"}}]}`))
 			})
 			result, err := service.Checkin(context.Background(), &Credential{Region: "cn", AccessToken: "dt-token"})
 			if tc.want == "error" {
@@ -529,46 +745,104 @@ func TestCheckinUncertainResults(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || result.Status != tc.want || result.Reward != 0 {
+			if err != nil || result.Status != tc.want || result.Reward != 0 || result.SelectedAt.IsZero() {
 				t.Fatalf("unexpected claim outcome: %+v %v", result, err)
 			}
 		})
 	}
 }
 
+/**
+ * @brief 奖励促销、历史签到及未启用的签到不满足本期签到。
+ * @param t 测试上下文。
+ */
 func TestCheckinUnavailableAndAlreadyClaimed(t *testing.T) {
-	for _, status := range []string{"CLAIMED", "DISABLED"} {
-		service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				t.Error("unnecessary claim")
+	for _, tc := range []struct {
+		name   string
+		row    func(time.Time) string
+		status string
+	}{
+		{"disabled", func(time.Time) string { return `"claimStatus":"DISABLED","title":"Daily Credits"` }, "unavailable"},
+		{"claimed promotion", func(time.Time) string { return `"claimStatus":"CLAIMED","title":"Welcome Credits"` }, "unavailable"},
+		{"unknown claim period", func(time.Time) string { return `"claimStatus":"CLAIMED","title":"Daily Credits"` }, "unavailable"},
+		{"historical claim time", func(window time.Time) string {
+			return fmt.Sprintf(`"claimStatus":"CLAIMED","title":"Daily Credits","claimedAt":%q`, window.Add(-time.Minute).Format(time.RFC3339Nano))
+		}, "unavailable"},
+		{"historical campaign start", func(window time.Time) string {
+			return fmt.Sprintf(`"claimStatus":"CLAIMED","title":"Daily Credits","startAt":%q`, fmt.Sprint(window.Add(-24*time.Hour).UnixMilli()))
+		}, "unavailable"},
+		{"current claim", func(window time.Time) string {
+			return fmt.Sprintf(`"claimStatus":"CLAIMED","title":"Daily Credits","claimedAt":%q`, window.Format(time.RFC3339Nano))
+		}, "already_claimed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Error("unnecessary claim")
+				}
+				_, _ = fmt.Fprintf(w, `{"campaigns":[{"campaignId":"daily","actionType":"CLAIM_BENEFIT","benefit":{"kind":"CREDITS"},%s}]}`, tc.row(CheckinWindow(time.Now())))
+			})
+			result, err := service.Checkin(context.Background(), &Credential{Region: "cn", AccessToken: "dt-token"})
+			if err != nil || result.Status != tc.status || result.SelectedAt.IsZero() != (tc.status == "unavailable") {
+				t.Fatalf("wrong campaign state: %+v %v", result, err)
 			}
-			authTestJSON(t, w, map[string]any{"campaigns": []map[string]string{{"campaignId": "daily", "actionType": "CLAIM_BENEFIT", "claimStatus": status}}})
 		})
-		result, err := service.Checkin(context.Background(), &Credential{Region: "cn", AccessToken: "dt-token"})
-		expected := "unavailable"
-		if status == "CLAIMED" {
-			expected = "already_claimed"
-		}
-		if err != nil || result.Status != expected {
-			t.Fatalf("wrong campaign state: %+v %v", result, err)
-		}
 	}
 }
 
+/**
+ * @brief 仅有已知旧版奖励特征且无标题的活动可以用旧版规则识别。
+ * @param t 测试上下文。
+ */
+func TestCheckinLegacyDailyCredits(t *testing.T) {
+	service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			if r.URL.Path != authCampaignPath+"/legacy/claim" {
+				t.Errorf("claimed wrong campaign: %s", r.URL.Path)
+			}
+			_, _ = w.Write([]byte(`{"status":"CLAIMED"}`))
+			return
+		}
+		window := CheckinWindow(time.Now())
+		end := window.Add(24 * time.Hour)
+		_, _ = fmt.Fprintf(w, `{"data":[
+			{"campaignId":"promo","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Welcome Credits","startAt":%d,"endAt":%d,"benefit":{"kind":"CREDITS","amount":100,"validity":{"mode":"RELATIVE_DAYS","days":30}}},
+			{"campaignId":"long","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","startAt":%d,"endAt":%d,"benefit":{"kind":"CREDITS","amount":100,"validity":{"mode":"RELATIVE_DAYS","days":30}}},
+			{"campaignId":"legacy","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","startAt":%d,"endAt":%d,"benefit":{"kind":"CREDITS","amount":100,"validity":{"days":30}}}
+		]}`, window.Unix(), end.Unix(), window.Unix(), end.Add(time.Hour).Unix(), window.Unix(), end.Unix())
+	})
+	result, err := service.Checkin(context.Background(), &Credential{Region: "cn", AccessToken: "dt-token"})
+	if err != nil || result.Status != "claimed" || result.CampaignID != "legacy" {
+		t.Fatalf("legacy claim failed: %+v %v", result, err)
+	}
+}
+
+/**
+ * @brief 国际版按 Sash UID 获取风控身份，忽略旧窗口活动并领取当前每日活动。
+ * @param t 测试上下文。
+ */
 func TestInternationalCheckinRiskDependency(t *testing.T) {
 	service := authTestService(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			if r.URL.Path != authCampaignPath+"/daily/claim" || r.Header.Get("Authorization") != "Bearer dt-token" {
+				t.Errorf("invalid international claim: %s", r.URL.Path)
+			}
 			authTestJSON(t, w, map[string]string{"status": "CLAIMED"})
 			return
 		}
-		campaigns := []map[string]string{}
 		if r.Header.Get("Cosy-MachineToken") == "risk-token" {
 			if r.Header.Get("Cosy-MachineCode") != "risk-code" || r.Header.Get("Cosy-MachineType") != "risk-type" {
 				t.Error("incomplete risk identity")
 			}
-			campaigns = append(campaigns, map[string]string{"campaignId": "daily", "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMABLE"})
+			window := CheckinWindow(time.Now())
+			_, _ = fmt.Fprintf(w, `{"data":{"uid":"sash-uid","campaigns":[
+				{"campaignId":"unknown","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily Credits","benefit":{"kind":"CREDITS"}},
+				{"campaignId":"stale","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily Credits","startAt":%d,"benefit":{"kind":"CREDITS"}},
+				{"campaignId":"daily","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","title":"Daily Credits","startAt":%d,"benefit":{"kind":"CREDITS"}}
+			]}}`, window.Add(-24*time.Hour).Unix(), window.Unix())
+			return
 		}
-		authTestJSON(t, w, map[string]any{"uid": "sash-uid", "campaigns": campaigns})
+		_, _ = w.Write([]byte(`{"data":{"uid":"sash-uid","campaigns":[]}}`))
 	})
 	credential := &Credential{Region: "global", AccessToken: "dt-token", UserID: "profile-uid"}
 	result, err := service.Checkin(context.Background(), credential)

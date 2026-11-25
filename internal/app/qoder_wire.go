@@ -247,7 +247,7 @@ func (s *Server) tryQoderOAuthChannel(ctx context.Context, cfg *model.Config, re
 }
 
 /**
- * @brief 将原生响应规范化为 Chat SSE 或结构化错误
+ * @brief 将原生 SSE 或 HTTP 响应中的业务错误规范化为 Chat 协议
  * @param resp 待原地更新的 HTTP 响应
  * @param tools 本次请求声明的工具
  * @return 读取或编码响应失败时的错误
@@ -256,7 +256,8 @@ func normalizeQoderResponse(resp *http.Response, tools []map[string]any) error {
 	if resp == nil || resp.Body == nil {
 		return nil
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	successful := resp.StatusCode >= 200 && resp.StatusCode < 300
+	if successful && responseIsSSE(resp, true) {
 		resp.Body = qoderauth.NormalizeStream(resp.Body, tools)
 		resp.Header.Set("Content-Type", "text/event-stream")
 	} else {
@@ -268,7 +269,10 @@ func normalizeQoderResponse(resp *http.Response, tools []map[string]any) error {
 		if len(raw) > 1<<20 {
 			return errors.New("qoder error response exceeds limit")
 		}
-		failure := qoderauth.ClassifyError(resp.StatusCode, raw)
+		failure := &qoderauth.APIError{StatusCode: http.StatusBadGateway, Type: "upstream_error", Code: "invalid_upstream_response", Message: "Qoder returned a non-SSE inference response"}
+		if !successful || json.Valid(raw) {
+			failure = qoderauth.ClassifyError(resp.StatusCode, raw)
+		}
 		if failure.RetryAfter > 0 {
 			resp.Header.Set("Retry-After", strconv.Itoa(failure.RetryAfter))
 		}
