@@ -226,7 +226,6 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				}
 				defer releaseSlots()
 				emptySession := len(executionSession.transcript.lastRequest) == 0
-				allowLocalPrewarm := emptySession
 				requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
 				if errNormalize != nil {
 					if errors.Is(errNormalize, errResponsesWebsocketPreviousResponseNotFound) {
@@ -248,8 +247,9 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 					}
 					return false
 				}
+				initialPrewarm := emptySession && gjson.GetBytes(message.payload, "generate").Type == gjson.False
 				turnResult, errTurn := s.executeResponsesWebsocketTurn(
-					turnCtx, c, conn, message.payload, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
+					turnCtx, c, conn, message.payload, requestBody, nativeRequestBody, executionSession, initialPrewarm, interrupt,
 				)
 				if errTurn != nil {
 					if turnResult.interrupted {
@@ -638,7 +638,7 @@ func (s *Server) acquireResponsesWebsocketTurnSlots(ctx context.Context, tokenHa
  * @param requestBody 完整会话请求
  * @param nativeRequestBody 原生上游增量请求
  * @param executionSession 当前执行会话
- * @param allowLocalPrewarm 是否允许本地预热响应
+ * @param initialPrewarm 客户端是否显式关闭空会话首轮生成
  * @param interrupt 当前回合的中断状态
  * @return 已发送响应和待提交会话状态
  * @return 请求、上游或传输失败；终态与重放错误由调用方按类型处理
@@ -651,7 +651,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	requestBody []byte,
 	nativeRequestBody []byte,
 	executionSession *responsesExecutionSession,
-	allowLocalPrewarm bool,
+	initialPrewarm bool,
 	interrupt *responsesWebsocketInterrupt,
 ) (turnResult responsesWebsocketTurnResult, turnErr error) {
 	nativeCodexWS := executionSession.upstream
@@ -723,9 +723,8 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if channelID, ok := executionSession.routeChannelSnapshot(); ok {
 		candidates = prioritizePinnedChannel(candidates, channelID)
 	}
-	if allowLocalPrewarm && responsesWebsocketGenerateDisabled(requestBody) &&
-		!isNativeCodexWebsocketCandidate(candidates[0]) {
-		return writeResponsesWebsocketSyntheticPrewarm(conn, requestBody)
+	if initialPrewarm && !isNativeCodexWebsocketCandidate(candidates[0]) {
+		return writeResponsesWebsocketSyntheticPrewarm(conn, nativeCodexWS, requestBody)
 	}
 
 	privacySession := s.privacySession(c)
@@ -767,6 +766,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		routingSession:     executionSession,
 		nativeCodexWS:      nativeCodexWS,
 		nativeCodexBody:    bytes.Clone(nativeRequestBody),
+		initialPrewarm:     initialPrewarm,
 		sessionAffinityKey: sessionAffinityKey,
 		sessionAffinity:    sessionAffinity,
 	}
@@ -847,6 +847,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 	// 本地中断按客户端取消收尾（499、不冷却、不换渠道）；上游抢先终结时以上游为准。
 	if payload := interrupt.localPayload(); payload != nil && !bridgeWriter.completed {
 		return writeResponsesWebsocketLocalInterrupt(conn, payload, bridgeWriter.collectedOutput())
+	}
+	if lastResult != nil && lastResult.localResponsesPrewarm {
+		return writeResponsesWebsocketSyntheticPrewarm(conn, nativeCodexWS, requestBody)
 	}
 	if clientReplay && !succeeded {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{}
@@ -971,11 +974,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 	return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{payload: payload}
 }
 
-func responsesWebsocketGenerateDisabled(payload []byte) bool {
-	generate := gjson.GetBytes(payload, "generate")
-	return generate.Exists() && !generate.Bool()
-}
-
 func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
 	return candidate != nil && candidate.Websockets && !candidate.UsesXAIOAuth() &&
 		configCanUseUpstreamProtocol(candidate, protocol.Codex)
@@ -990,10 +988,28 @@ func isResponsesWebsocketClientRetryAction(action cooldown.Action) bool {
 	}
 }
 
+/**
+ * @brief 终止首轮预热的代理尝试，交由下游 WebSocket 返回本地完成事件。
+ * @return 本地预热结果，不计作上游成功。
+ */
+func localResponsesWebsocketPrewarmResult() *proxyResult {
+	return &proxyResult{status: http.StatusOK, nextAction: cooldown.ActionReturnClient, localResponsesPrewarm: true}
+}
+
+/**
+ * @brief 完成本地预热，关闭旧上游连接，避免下一轮向它发送本地生成的 Response ID。
+ * @param conn 下游连接。
+ * @param upstream 当前执行会话的原生上游。
+ * @param request 归一化后的预热请求。
+ * @return 已发送的响应 ID 与空输出，供会话续接。
+ * @return 响应编码或写入下游失败时返回错误。
+ */
 func writeResponsesWebsocketSyntheticPrewarm(
 	conn *websocket.Conn,
+	upstream *codexUpstreamWebsocketSession,
 	request []byte,
 ) (responsesWebsocketTurnResult, error) {
+	upstream.Close()
 	responseID := "resp_prewarm_" + util.NewUUIDv4()
 	createdAt := time.Now().Unix()
 	modelName := strings.TrimSpace(gjson.GetBytes(request, "model").String())

@@ -12,6 +12,7 @@
 
 ## Responses WebSocket 会话与资源
 
+- **首轮预热**：空执行会话的 `generate:false` 可发给原生 WebSocket。选到 HTTP 渠道或原生握手回退 HTTP 时，网关关闭旧上游连接，在本地返回同一 Response ID 的 `response.created` 和零用量 `response.completed`。后续生成回合引用这个 ID 时，网关向上游发送预热已有的输入和本轮新输入。
 - **HTTP 跨协议续接**：流式 HTTP Responses 有执行会话身份且本进程持有 `previous_response_id` 对应历史时，跨协议转换使用完整输入、上一轮输出及工具调用历史；原生 HTTP 保持客户端请求体。转换后的终态保存客户端实际收到的 Response ID 和 output。历史不可用时拒绝该跨协议候选并保留原生候选回退机会；无可用候选则返回 400，要求发送完整 input 并移除 `previous_response_id`。`response.incomplete` 与 completed/done 同属转换流终态，不等待上游断开连接。
 - **执行身份**:同 Token 下以 `Session-Id` 标识顶层会话;存在 `Thread-Id` 时组合两者,隔离 Codex 主/子代理的 transcript、Response ID、turn lock;无 `Thread-Id` 回退原 `Session-Id` 契约。禁止改用请求体 `session_id`、`prompt_cache_key` 或每回合变化的 request/turn/window ID
 - **默认限制**(新安装):下游连接全局 1024、单 Token 64;执行会话 1024;transcript payload 总预算 256 MiB。连接与会话默认按 ~500 并发客户端留量,限额只约束真实存在的资源、不预分配。所有 `responses_ws_*` 整数配置保存 `0` 用内建默认,负数非法;已有数据库记录不迁移

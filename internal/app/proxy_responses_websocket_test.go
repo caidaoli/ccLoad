@@ -5624,6 +5624,219 @@ func TestResponsesWebsocketHandlesHTTPPrewarmLocally(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证原生上游预热失败时，本地完成预热，HTTP 渠道只接收后续生成请求。
+ * @param t Go 测试上下文。
+ */
+func TestResponsesWebsocketNativePrewarmStaysLocalOnHTTPFallback(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []string{"usage_limit_event", "rejected_handshake", "rejected_reconnect", "empty_incomplete"} {
+		t.Run(failure, func(t *testing.T) {
+			testResponsesWebsocketNativePrewarmFallback(t, failure)
+		})
+	}
+}
+
+/**
+ * @brief 通过公开 WebSocket 入口执行预热和随后的一次真实生成。
+ * @param t Go 测试上下文。
+ * @param failure 原生上游的失败类型，涵盖限额、握手拒绝和空终态。
+ */
+func testResponsesWebsocketNativePrewarmFallback(t *testing.T, failure string) {
+	t.Helper()
+	const modelName = "gpt-5.4-mini"
+	const turnMetadata = `{"request_kind":"prewarm","history_initialization":"new"}`
+	reconnect := failure == "rejected_reconnect"
+	emptyIncomplete := failure == "empty_incomplete"
+	fallbackChannel := failure == "usage_limit_event" || emptyIncomplete
+	prewarmInput := json.RawMessage(`[]`)
+	wantInputCount := int64(1)
+	userItem := "0"
+	if reconnect {
+		prewarmInput = json.RawMessage(`[{"type":"message","role":"developer","content":[{"type":"input_text","text":"initial instructions"}]}]`)
+		wantInputCount = 2
+		userItem = "1"
+	}
+	var websocketCalls, httpCalls atomic.Int32
+	nativeClose := make(chan error, 1)
+	httpFallback := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls.Add(1)
+		body, err := readTestUpstreamRequestBody(r)
+		if err != nil {
+			t.Errorf("read HTTP fallback request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		input := gjson.GetBytes(body, "input")
+		user := input.Get(userItem)
+		if !input.IsArray() || user.Get("role").String() != "user" {
+			t.Errorf("prewarm reached HTTP fallback with input=%q", input.Raw)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":"missing_required_parameter","message":"One of \"input\" or \"previous_response_id\" or 'prompt' or 'conversation' must be provided.","param":null,"type":"invalid_request_error"}}`)
+			return
+		}
+		if input.Get("#").Int() != wantInputCount || user.Get("content.0.text").String() != "generate now" ||
+			gjson.GetBytes(body, "previous_response_id").Exists() || gjson.GetBytes(body, "generate").Exists() {
+			t.Errorf("HTTP fallback generation did not receive full input: %s", body)
+		}
+		if reconnect && (input.Get("0.role").String() != "developer" ||
+			input.Get("0.content.0.text").String() != "initial instructions") {
+			t.Errorf("HTTP fallback generation lost initial developer input: %s", input.Raw)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-generated","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	})
+	upgrader := websocket.Upgrader{}
+	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			if fallbackChannel {
+				t.Error("native upstream received HTTP instead of using the fallback channel")
+			}
+			httpFallback.ServeHTTP(w, r)
+			return
+		}
+		handshakes := websocketCalls.Add(1)
+		if failure == "rejected_handshake" || reconnect && handshakes > 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade native prewarm upstream: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, frame, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read native prewarm upstream: %v", err)
+			return
+		}
+		if gjson.GetBytes(frame, "generate").Type != gjson.False {
+			t.Errorf("native upstream received a generation instead of prewarm: %s", frame)
+		}
+		if reconnect {
+			return
+		}
+		if emptyIncomplete && handshakes == 1 {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.incomplete","response":{"id":"upstream-incomplete","output":[],"usage":{"output_tokens":0},"incomplete_details":{"reason":"max_output_tokens"}}}`)); err != nil {
+				t.Errorf("write empty native prewarm terminal: %v", err)
+				return
+			}
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Errorf("set native prewarm close deadline: %v", err)
+				return
+			}
+			_, _, err := conn.ReadMessage()
+			nativeClose <- err
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","status_code":429,"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7260}}`)); err != nil {
+			t.Errorf("write native prewarm limit: %v", err)
+		}
+	}))
+	t.Cleanup(native.Close)
+
+	channels := []testChannel{{
+		name: "limited-native-prewarm", upstreamProtocol: "codex", websockets: true,
+		models: modelName, authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-prewarm", "rt-prewarm", "account-prewarm"),
+	}}
+	urls := map[int]string{0: native.URL}
+	if fallbackChannel {
+		httpUpstream := httptest.NewServer(httpFallback)
+		t.Cleanup(httpUpstream.Close)
+		channels = append(channels, testChannel{name: "http-prewarm-fallback", upstreamProtocol: "codex", models: modelName})
+		urls[1] = httpUpstream.URL
+	}
+	env := setupProxyTestEnv(t, channels, urls)
+	env.server.client = native.Client()
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set prewarm fallback deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": modelName, "generate": false, "input": prewarmInput,
+		"client_metadata": map[string]string{"x-codex-turn-metadata": turnMetadata},
+	}); err != nil {
+		t.Fatalf("write prewarm request: %v", err)
+	}
+	created := readWebsocketUntilType(t, conn, "response.created")
+	createdResponse, _ := created["response"].(map[string]any)
+	prewarmID, _ := createdResponse["id"].(string)
+	completed := readWebsocketUntilType(t, conn, "response.completed")
+	completedResponse, _ := completed["response"].(map[string]any)
+	usage, _ := completedResponse["usage"].(map[string]any)
+	if prewarmID == "" || completedResponse["id"] != prewarmID || usage["total_tokens"] != float64(0) {
+		t.Fatalf("prewarm response did not complete locally: created=%#v completed=%#v", created, completed)
+	}
+	wantHandshakes := int32(1)
+	if reconnect {
+		wantHandshakes = 2
+	}
+	if websocketCalls.Load() != wantHandshakes || httpCalls.Load() != 0 {
+		t.Fatalf("prewarm upstream websocket/http calls=%d/%d, want %d/0", websocketCalls.Load(), httpCalls.Load(), wantHandshakes)
+	}
+	if emptyIncomplete {
+		select {
+		case err := <-nativeClose:
+			if !websocket.IsCloseError(err, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
+				t.Fatalf("old native prewarm connection did not close: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("native prewarm connection remained open after local completion")
+		}
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": prewarmID,
+		"input": json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"generate now"}]}]`),
+	}); err != nil {
+		t.Fatalf("write generation after prewarm: %v", err)
+	}
+	generated := readWebsocketUntilType(t, conn, "response.completed")
+	generatedResponse, _ := generated["response"].(map[string]any)
+	if generatedResponse["id"] != "resp-generated" || httpCalls.Load() != 1 {
+		t.Fatalf("generation after prewarm: response=%#v HTTP calls=%d, want resp-generated and 1 call", generated, httpCalls.Load())
+	}
+}
+
+/**
+ * @brief 验证首轮明确传 generate:null 时仍将真实输入转发到 HTTP。
+ * @param t Go 测试上下文。
+ */
+func TestResponsesWebsocketNullGenerateStartsHTTPGeneration(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := readTestUpstreamRequestBody(r)
+		if err != nil {
+			t.Errorf("read null generate HTTP request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := gjson.GetBytes(body, "input.0.content").String(); got != "generate now" {
+			t.Errorf("null generate HTTP input = %q, want %q", got, "generate now")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-null-generate","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "null-generate-http", upstreamProtocol: "codex", models: "gpt-test",
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set null generate deadline: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-test","generate":null,"input":[{"role":"user","content":"generate now"}]}`)); err != nil {
+		t.Fatalf("write null generate request: %v", err)
+	}
+	event := readWebsocketUntilType(t, conn, "response.completed")
+	response, _ := event["response"].(map[string]any)
+	if response["id"] != "resp-null-generate" {
+		t.Fatalf("null generate did not reach HTTP upstream: %#v", event)
+	}
+}
+
 func TestResponsesWebsocketOnlyHandlesInitialHTTPPrewarmLocally(t *testing.T) {
 	t.Parallel()
 	var upstreamCalls atomic.Int32
@@ -7662,9 +7875,27 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	}
 }
 
+/**
+ * @brief 验证握手 EOF 只回退一次 HTTP，并保留 HTTP 的成功或错误响应。
+ * @param t Go 测试上下文。
+ */
 func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T) {
 	t.Parallel()
+	t.Run("http_success", func(t *testing.T) {
+		testNativeCodexWebsocketEOFHandshakeFallback(t, http.StatusOK)
+	})
+	t.Run("http_rejected", func(t *testing.T) {
+		testNativeCodexWebsocketEOFHandshakeFallback(t, http.StatusBadRequest)
+	})
+}
 
+/**
+ * @brief 通过 WebSocket 代理入口验证握手 EOF 后实际 HTTP 响应。
+ * @param t Go 测试上下文。
+ * @param httpStatus HTTP 上游返回的状态码。
+ */
+func testNativeCodexWebsocketEOFHandshakeFallback(t *testing.T, httpStatus int) {
+	t.Helper()
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7684,6 +7915,12 @@ func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T
 			return
 		}
 		httpCalls.Add(1)
+		if httpStatus == http.StatusBadRequest {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(httpStatus)
+			_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","code":"invalid_input","message":"upstream rejected input","param":"input"}}`)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-eof-fallback\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
@@ -7705,13 +7942,26 @@ func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T
 	}); err != nil {
 		t.Fatalf("write EOF fallback request: %v", err)
 	}
-	readWebsocketUntilType(t, conn, "response.completed")
+	if httpStatus == http.StatusBadRequest {
+		_, event, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read EOF fallback error: %v", err)
+		}
+		if gjson.GetBytes(event, "type").String() != "error" ||
+			gjson.GetBytes(event, "status").Int() != int64(httpStatus) ||
+			gjson.GetBytes(event, "error.code").String() != "invalid_input" ||
+			gjson.GetBytes(event, "error.message").String() != "upstream rejected input" {
+			t.Fatalf("EOF fallback error did not preserve the upstream rejection: %s", event)
+		}
+	} else {
+		readWebsocketUntilType(t, conn, "response.completed")
+	}
 	if websocketCalls.Load() != 1 || httpCalls.Load() != 1 {
 		t.Fatalf("EOF fallback calls websocket=%d http=%d, want 1/1", websocketCalls.Load(), httpCalls.Load())
 	}
 	entry := waitForProxyLog(t, env, "gpt-test")
-	if entry.UpstreamWebsocket {
-		t.Fatal("EOF HTTP fallback log must not be marked as upstream websocket")
+	if entry.UpstreamWebsocket || entry.StatusCode != httpStatus {
+		t.Fatalf("EOF fallback log got upstream_websocket=%t status=%d, want false/%d", entry.UpstreamWebsocket, entry.StatusCode, httpStatus)
 	}
 }
 

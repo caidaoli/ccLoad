@@ -2838,7 +2838,13 @@ type nativeCodexWebsocketAttempt struct {
 	session                     *codexUpstreamWebsocketSession
 	incrementalBody             []byte
 	incrementalBodyRulesApplied bool
+	initialPrewarm              bool ///< 握手失败后改用下游本地预热，不发送 HTTP。
 }
+
+/**
+ * @brief 首轮预热遇到原生 WebSocket 握手失败，HTTP 降级应由下游本地处理。
+ */
+var errResponsesWebsocketPrewarmHTTPFallback = errors.New("responses websocket prewarm needs local HTTP fallback")
 
 /**
  * @brief 执行一次协议转换与上游转发，支持原生 Responses WebSocket 会话和已最终化的重试正文。
@@ -3107,24 +3113,30 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			replayReq, wsReplayBody, incrementalReq, incrementalBody,
 			baseURL,
 		)
-		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
-			log.Printf("[INFO] 渠道 %d WebSocket 握手协商失败 (%v)，同 Key/URL 回退 HTTP", cfg.ID, err)
-			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
-			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
-			resp, err = s.doUpstreamRequest(cfg, req)
-		} else {
-			usedNativeWebsocket = err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
-		}
-		if err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		var handshakeFailure string
+		switch {
+		case err != nil && isCodexWebsocketHandshakeFallbackError(err):
+			handshakeFailure = err.Error()
+		case err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300):
 			// A concrete HTTP response here is a rejected WebSocket handshake. The
 			// selected channel may still support the ordinary Responses HTTP endpoint.
 			s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp, gjson.GetBytes(sentBody, "model").String())
 			_ = resp.Body.Close()
-			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
+			handshakeFailure = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		if handshakeFailure != "" {
+			if cause := context.Cause(reqCtx.ctx); cause != nil {
+				return s.handleRequestError(reqCtx, cfg, cause)
+			}
+			if native.initialPrewarm {
+				return nil, 0, errResponsesWebsocketPrewarmHTTPFallback
+			}
+			log.Printf("[INFO] 渠道 %d WebSocket 握手失败 (%s)，同 Key/URL 回退 HTTP", cfg.ID, handshakeFailure)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
 			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
 			resp, err = s.doUpstreamRequest(cfg, req)
-			usedNativeWebsocket = false
+		} else {
+			usedNativeWebsocket = err == nil && resp != nil
 		}
 	} else {
 		sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
@@ -3277,10 +3289,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		websocketDebug = native.session.debugSnapshot()
 	}
 	var reconnectFallbackErr *codexWebsocketHTTPFallbackError
-	if err != nil && usedNativeWebsocket && res != nil && !res.ResponseCommitted &&
+	if err != nil && usedNativeWebsocket && res != nil && !res.ResponseCommitted && reqCtx.ctx.Err() == nil &&
 		errors.As(err, &reconnectFallbackErr) {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
+		}
+		if native.initialPrewarm {
+			return nil, duration, errResponsesWebsocketPrewarmHTTPFallback
 		}
 		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
 		return s.forwardOnceAsyncWithNativeCodexWebsocket(
@@ -3785,7 +3800,11 @@ func (s *Server) forwardAttempt(
 			session:                     reqCtx.nativeCodexWS,
 			incrementalBody:             incrementalBody,
 			incrementalBodyRulesApplied: false,
+			initialPrewarm:              reqCtx.initialPrewarm,
 		}
+	} else if reqCtx.initialPrewarm {
+		result := localResponsesWebsocketPrewarmResult()
+		return result, result.nextAction, nil
 	} else if reqCtx.nativeCodexWS != nil {
 		// The conversation state belongs to the execution session, not the socket.
 		// Once this turn changes transport, the old upstream connection must not
@@ -3906,6 +3925,7 @@ func (s *Server) forwardAttempt(
 				session:                     nativeAttempt.session,
 				incrementalBody:             incrementalRetryBody,
 				incrementalBodyRulesApplied: incrementalBodyRulesApplied,
+				initialPrewarm:              nativeAttempt.initialPrewarm,
 			}
 		}
 		s.activeRequests.Retry(reqCtx.activeReqID)
@@ -3948,6 +3968,10 @@ func (s *Server) forwardAttempt(
 		if err != nil || res == nil {
 			break
 		}
+	}
+	if errors.Is(err, errResponsesWebsocketPrewarmHTTPFallback) {
+		result := localResponsesWebsocketPrewarmResult()
+		return result, result.nextAction, nil
 	}
 	// 未提交的 SSE 错误先归一，才能与 HTTP 错误共用修复终态和冷却判定。
 	if err == nil && res != nil && !res.ResponseCommitted && res.SSEErrorEvent != nil {
@@ -5095,7 +5119,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			if attemptErr != nil {
 				return nil, nil, attemptErr
 			}
-			if result != nil && result.operatorAborted {
+			if result != nil && (result.operatorAborted || result.localResponsesPrewarm) {
 				return result, nil, nil
 			}
 			if cfg.AntigravityCredits || result == nil || !result.protocolCapabilityMissing {

@@ -1046,6 +1046,12 @@ func (s *Server) runProxyAttemptPass(
 				continue
 			}
 		}
+		if reqCtx.initialPrewarm && !isNativeCodexWebsocketCandidate(cfg) {
+			if err := ctx.Err(); err != nil {
+				return buildCtxDoneResult(cfg, err), false
+			}
+			return localResponsesWebsocketPrewarmResult(), false
+		}
 		result, err := s.tryChannelWithZAIStartRouting(ctx, cfg, reqCtx, w)
 		if errors.Is(err, errNoAvailableModelRow) {
 			continue

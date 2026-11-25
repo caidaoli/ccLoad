@@ -400,6 +400,7 @@ type proxyRequestContext struct {
 	nativeCodexWS           *codexUpstreamWebsocketSession
 	nativeCodexBody         []byte
 	responsesReplayBody     []byte // HTTP Responses 的完整 transcript，供跨协议或本地压缩恢复使用
+	initialPrewarm          bool   ///< 下游 WebSocket 首轮仅预热，HTTP 上游不能承接。
 }
 
 // countTokens reports the auxiliary count_tokens request: it is never billed,
@@ -459,6 +460,7 @@ type proxyResult struct {
 	requestScopedProtocolMiss bool
 	websocketTargetCooling    bool
 	upstreamErrorEvent        bool   ///< 错误来自 SSE/原生 WS 事件，而非 HTTP 错误响应体
+	localResponsesPrewarm     bool   ///< 本轮应由下游 WebSocket 本地完成预热。
 	zaiTrial                  bool   ///< 最终响应来自体验套餐，不能据此刷新付费 Key。
 	zaiLocalPlanKind          string ///< 本地 Trial 拒绝，不计入渠道上游故障。
 	responsesTurn             responsesWebsocketTurnResult
