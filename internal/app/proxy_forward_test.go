@@ -3269,7 +3269,7 @@ func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
 	}
 
 	readStats := &streamReadStats{firstByteSec: 1.234}
-	res, _, err := s.handleErrorResponse(reqCtx, resp, http.Header{}, readStats)
+	res, _, err := s.handleErrorResponse(reqCtx, resp, http.Header{}, readStats, nil)
 	if err != nil {
 		t.Fatalf("expected err=nil, got %v", err)
 	}

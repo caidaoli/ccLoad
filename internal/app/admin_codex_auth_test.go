@@ -1028,10 +1028,22 @@ func TestCodeBuddyBatchImportWorkbuddyJSON(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证刷新期间完成的重新授权优先于旧请求的成功或失败结果。
+ * @param t 测试上下文。
+ */
 func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 	t.Parallel()
-	for _, reauthorize := range []bool{false, true} {
-		t.Run(fmt.Sprintf("reauthorize=%v", reauthorize), func(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		reauthorize   bool
+		refreshFailed bool
+	}{
+		{name: "refresh"},
+		{name: "reauthorize during refresh", reauthorize: true},
+		{name: "reauthorize with same access token during rejected refresh", reauthorize: true, refreshFailed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			srv := newInMemoryServer(t)
 			srv.client = codeBuddyModelCatalogTestClient()
 			importCredential := func(raw string) int64 {
@@ -1061,6 +1073,9 @@ func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 				case <-r.Context().Done():
 					return nil, r.Context().Err()
 				}
+				if tc.refreshFailed {
+					return jsonResponse(r, `{"code":12153}`)
+				}
 				return jsonResponse(r, `{"code":0,"data":{"accessToken":"rotated","refreshToken":"rotated-refresh","expiresIn":3600}}`)
 			})}
 			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/refresh", nil))
@@ -1073,11 +1088,15 @@ func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 				t.Fatal("refresh did not start")
 			}
 			wantToken, wantRefresh := "rotated", "rotated-refresh"
-			if reauthorize {
-				if updatedID := importCredential(`{"type":"codebuddy","access_token":"new-login","refresh_token":"new-refresh","uid":"uid","enterprise_id":"org"}`); updatedID != id {
+			if tc.reauthorize {
+				wantToken, wantRefresh = "new-login", "new-refresh"
+				if tc.refreshFailed {
+					wantToken = "old"
+				}
+				raw := fmt.Sprintf(`{"type":"codebuddy","access_token":%q,"refresh_token":%q,"uid":"uid","enterprise_id":"org"}`, wantToken, wantRefresh)
+				if updatedID := importCredential(raw); updatedID != id {
 					t.Fatalf("duplicate account channel %d != %d", updatedID, id)
 				}
-				wantToken, wantRefresh = "new-login", "new-refresh"
 			}
 			unblock()
 			select {
@@ -1096,9 +1115,137 @@ func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 			if err != nil || credential.AccessToken != wantToken || credential.RefreshToken != wantRefresh || credential.UID != "uid" {
 				t.Fatalf("unexpected persisted credential: err=%v", err)
 			}
+			result := mustParseAPIResponse[struct {
+				Credential codebuddyauth.Credential `json:"oauth_credential"`
+			}](t, w.Body.Bytes())
+			if !result.Success || result.Data.Credential != *credential {
+				t.Fatal("refresh did not return the stored credential")
+			}
 			configs, err := srv.store.ListConfigs(context.Background())
 			if err != nil || len(configs) != 1 {
 				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证刷新与额度写入并发时保留最新额度，并报告真实的刷新失败。
+ * @param t 测试上下文。
+ */
+func TestCodeBuddyCredentialRefreshWithConcurrentUsage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		casConflict   bool
+		refreshFailed bool
+	}{
+		{name: "usage updates legacy credential during refresh"},
+		{name: "usage wins first refresh CAS", casConflict: true},
+		{name: "usage updates credential during rejected refresh", refreshFailed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const raw = `{"auth":{"accessToken":"old-access","refreshToken":"old-refresh","domain":"old-domain"},"account":{"uid":"uid"}}`
+			var winner *concurrentOAuthWinnerStore
+			srv := newInMemoryServerWithCustomStore(t, func(store storage.Store) storage.Store {
+				if !tc.casConflict {
+					return store
+				}
+				winner = &concurrentOAuthWinnerStore{Store: store, authType: model.AuthTypeCodeBuddyOAuth}
+				return winner
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			cfg, err := srv.store.CreateConfig(ctx, newCodeBuddyChannel("codebuddy-refresh", raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if winner != nil {
+				usage := `{"requested_at":"2026-01-01T00:00:00Z","sampled_at":"2026-01-01T00:00:00Z","summary":{"provider":"codebuddy","codebuddy_credits":{"remain":42}}}`
+				winner.winnerJSON = fmt.Sprintf(`{"type":"codebuddy","access_token":"old-access","refresh_token":"old-refresh","domain":"old-domain","uid":"uid","oauth_usage":%q}`, usage)
+			}
+
+			started, release := make(chan struct{}), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			var refreshes atomic.Int32
+			srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/v2/plugin/auth/token/refresh":
+					if refreshes.Add(1) != 1 || r.Header.Get("X-Refresh-Token") != "old-refresh" {
+						return nil, errors.New("unexpected refresh grant")
+					}
+					close(started)
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return nil, r.Context().Err()
+					}
+					if tc.refreshFailed {
+						return jsonResponse(r, `{"code":12153}`)
+					}
+					return jsonResponse(r, `{"code":0,"data":{"accessToken":"rotated","refreshToken":"rotated-refresh","domain":"rotated-domain","expiresIn":3600}}`)
+				case "/v2/billing/meter/get-user-resource":
+					if r.Header.Get("Authorization") != "Bearer old-access" {
+						return nil, errors.New("unexpected token for usage request")
+					}
+					return jsonResponse(r, `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":42}]}}}}`)
+				default:
+					return nil, fmt.Errorf("unexpected request %s", r.URL.Path)
+				}
+			})}
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/refresh", nil).WithContext(ctx))
+			c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+			done := make(chan struct{})
+			go func() { defer close(done); srv.HandleRefreshCodeBuddyCredential(c) }()
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("refresh did not start")
+			}
+			if !tc.casConflict {
+				summary, err := srv.refreshOAuthUsage(ctx, cfg.ID)
+				if err != nil || summary.CodeBuddyCredits == nil || summary.CodeBuddyCredits.Remain != 42 {
+					t.Fatalf("refresh usage: %+v, error=%v", summary, err)
+				}
+			}
+			unblock()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("refresh did not finish")
+			}
+			latest, err := srv.store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := codebuddyauth.ParseCredential([]byte(latest.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), codebuddyauth.ChannelType)
+			if usage == nil || usage.CodeBuddyCredits == nil || usage.CodeBuddyCredits.Remain != 42 {
+				t.Fatalf("persisted usage: %+v, want remaining credits 42", usage)
+			}
+			result := mustParseAPIResponse[struct {
+				Credential codebuddyauth.Credential `json:"oauth_credential"`
+			}](t, w.Body.Bytes())
+			if tc.refreshFailed {
+				if w.Code != http.StatusBadGateway || result.Success || !strings.Contains(result.Error, "code 12153") {
+					t.Fatalf("refresh: %d %s", w.Code, w.Body.String())
+				}
+				if credential.AccessToken != "old-access" || credential.RefreshToken != "old-refresh" {
+					t.Fatal("rejected refresh changed stored tokens")
+				}
+				return
+			}
+			if w.Code != http.StatusOK || !result.Success {
+				t.Fatalf("refresh: %d %s", w.Code, w.Body.String())
+			}
+			if result.Data.Credential != *credential || credential.AccessToken != "rotated" ||
+				credential.RefreshToken != "rotated-refresh" || credential.Domain != "rotated-domain" ||
+				credential.UID != "uid" || credential.ExpiresAt <= time.Now().Unix() || refreshes.Load() != 1 {
+				t.Fatal("refresh did not return and persist the rotated credential with the latest usage")
 			}
 		})
 	}

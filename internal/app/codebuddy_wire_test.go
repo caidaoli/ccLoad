@@ -8,11 +8,13 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/model"
@@ -40,6 +42,28 @@ func TestFinalizeCodeBuddyBodyInjectsSystemStreamOptionsAndDeepSeekThinking(t *t
 	}
 	if gjson.GetBytes(body, "reasoning_effort").String() != "high" {
 		t.Fatal("deepseek reasoning_effort missing")
+	}
+}
+
+/**
+ * @brief 验证 DeepSeek 请求显式关闭推理时，出站请求保留客户端档位。
+ * @param t 测试上下文。
+ */
+func TestFinalizeCodeBuddyBodyPreservesExplicitThinkingOff(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"reasoning_effort", "reasoning.effort"} {
+		for _, effort := range []string{"none", "off"} {
+			t.Run(path+"/"+effort, func(t *testing.T) {
+				input := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`)
+				body, err := finalizeCodeBuddyBody(setJSONValue(input, path, effort), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gjson.GetBytes(body, path).String() != effort || gjson.GetBytes(body, "thinking").Exists() {
+					t.Fatalf("unexpected DeepSeek request: %s", body)
+				}
+			})
+		}
 	}
 }
 
@@ -825,7 +849,256 @@ func TestProxyCodeBuddyCommaRetryCacheScope(t *testing.T) {
 }
 
 /**
- * @brief 创建 CodeBuddy 逗号修复的代理测试环境并收集实际出站请求。
+ * @brief 验证上游拒绝对象类型后只强制已声明的指定工具，并原样转发上游结果。
+ * @param t 当前测试上下文。
+ */
+func TestProxyCodeBuddyNamedToolChoice(t *testing.T) {
+	t.Parallel()
+	type chatRequest struct {
+		ToolChoice string `json:"tool_choice"`
+	}
+	var request chatRequest
+	err := json.Unmarshal([]byte(`{"tool_choice":{"type":"function","function":{"name":"lookup"}}}`), &request)
+	if err == nil {
+		t.Fatal("JSON decoder unexpectedly accepted an object tool_choice as a string")
+	}
+	typeError := fmt.Sprintf(`{"code":11101,"msg":%q}`, "Unmarshal chat params failed: "+err.Error())
+	const retryError = `{"code":11101,"msg":"Invalid tool choice"}`
+	for _, tc := range []struct {
+		name         string
+		toolName     string
+		choiceName   string
+		upstreamBody string
+		acceptRetry  bool
+		noToolCall   bool
+		wantAttempts int
+	}{
+		{name: "object accepted", toolName: "lookup", choiceName: "lookup", wantAttempts: 1},
+		{name: "string required", toolName: "lookup", choiceName: "lookup", upstreamBody: typeError, acceptRetry: true, wantAttempts: 2},
+		{name: "model returned text", toolName: "lookup", choiceName: "lookup", upstreamBody: typeError, acceptRetry: true, noToolCall: true, wantAttempts: 2},
+		{name: "retry rejected", toolName: "lookup", choiceName: "lookup", upstreamBody: typeError, wantAttempts: 2},
+		{name: "other field", toolName: "lookup", choiceName: "lookup", upstreamBody: strings.Replace(typeError, ".tool_choice", ".model", 1), wantAttempts: 1},
+		{name: "nested field", toolName: "lookup", choiceName: "lookup", upstreamBody: strings.Replace(typeError, ".tool_choice", ".metadata.tool_choice", 1), wantAttempts: 1},
+		{name: "generic error", toolName: "lookup", choiceName: "lookup", upstreamBody: `{"code":11101,"msg":"Unmarshal chat params failed"}`, wantAttempts: 1},
+		{name: "unknown function", toolName: "lookup", choiceName: "missing", upstreamBody: typeError, wantAttempts: 1},
+		{name: "missing function name", toolName: "lookup", upstreamBody: typeError, wantAttempts: 1},
+		{name: "invalid function name", toolName: "look up", choiceName: "look up", upstreamBody: typeError, wantAttempts: 1},
+		{name: "duplicate function name", toolName: "decoy", choiceName: "decoy", upstreamBody: typeError, wantAttempts: 1},
+		{name: "function named auto", toolName: "auto", choiceName: "auto", upstreamBody: typeError, acceptRetry: true, wantAttempts: 2},
+		{name: "function named none", toolName: "none", choiceName: "none", upstreamBody: typeError, acceptRetry: true, wantAttempts: 2},
+		{name: "function named required", toolName: "required", choiceName: "required", upstreamBody: typeError, acceptRetry: true, wantAttempts: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, requests := setupCodeBuddyCommaRetryTest(t, nil, func(w http.ResponseWriter, attempt int) {
+				rejected := tc.upstreamBody
+				if tc.acceptRetry && attempt == 2 {
+					rejected = ""
+				} else if attempt == 2 {
+					rejected = retryError
+				}
+				if rejected != "" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = io.WriteString(w, rejected)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				finishReason := "tool_calls"
+				delta := fmt.Sprintf(`{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":%q,"arguments":"{\"query\":\"real tool arguments\"}"}}]}`, tc.choiceName)
+				if tc.noToolCall {
+					finishReason = "stop"
+					delta = `{"role":"assistant","content":"upstream returned text"}`
+				}
+				_, _ = fmt.Fprintf(w, `data: {"id":"chat","model":"hy3","choices":[{"index":0,"delta":%s,"finish_reason":%q}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`+"\n\ndata: [DONE]\n\n", delta, finishReason)
+			})
+			payload := json.RawMessage(fmt.Sprintf(`{"model":"hy3","messages":[{"role":"user","content":"call the specified tool"}],"tools":[{"type":"function","function":{"name":"decoy","parameters":{"type":"object"}}},{"type":"function","function":{"name":%q,"description":"Lookup tool","strict":true,"parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}}],"tool_choice":{"type":"function","function":{"name":%q}},"parallel_tool_calls":false}`, tc.toolName, tc.choiceName))
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", payload, nil)
+			if len(requests) != tc.wantAttempts {
+				t.Fatalf("attempts=%d want=%d, HTTP %d: %s", len(requests), tc.wantAttempts, response.Code, response.Body)
+			}
+			if tc.upstreamBody == "" || tc.acceptRetry {
+				if response.Code != http.StatusOK {
+					t.Fatalf("HTTP %d want HTTP 200: %s", response.Code, response.Body)
+				}
+				message := gjson.GetBytes(response.Body.Bytes(), "choices.0.message")
+				if tc.noToolCall {
+					if message.Get("content").Str != "upstream returned text" || len(message.Get("tool_calls").Array()) != 0 {
+						t.Fatalf("unexpected tool call synthesized from upstream text: %s", response.Body)
+					}
+				} else {
+					call := message.Get("tool_calls.0")
+					arguments := gjson.Parse(call.Get("function.arguments").Str)
+					if call.Get("function.name").Str != tc.choiceName || call.Get("id").Str != "call_1" || arguments.Get("query").Str != "real tool arguments" {
+						t.Fatalf("upstream tool %q or its arguments changed: %s", tc.choiceName, response.Body)
+					}
+				}
+			} else {
+				wantError := tc.upstreamBody
+				if tc.wantAttempts == 2 {
+					wantError = retryError
+				}
+				got := gjson.ParseBytes(response.Body.Bytes())
+				if response.Code != http.StatusBadRequest || got.Get("code").Int() != 11101 || got.Get("msg").Str != gjson.Get(wantError, "msg").Str {
+					t.Fatalf("HTTP %d body=%s, want HTTP 400 body=%s", response.Code, response.Body, wantError)
+				}
+			}
+			var first map[string]any
+			if err := json.Unmarshal(<-requests, &first); err != nil {
+				t.Fatal(err)
+			}
+			wantObject := map[string]any{"type": "function", "function": map[string]any{"name": tc.choiceName}}
+			if !reflect.DeepEqual(first["tool_choice"], wantObject) {
+				t.Fatalf("first tool_choice=%#v want=%#v", first["tool_choice"], wantObject)
+			}
+			var submitted struct {
+				Tools []any `json:"tools"`
+			}
+			if err := json.Unmarshal(payload, &submitted); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(first["tools"], submitted.Tools) {
+				t.Fatalf("first tools=%#v want=%#v", first["tools"], submitted.Tools)
+			}
+			if tc.wantAttempts == 2 {
+				var retried map[string]any
+				if err := json.Unmarshal(<-requests, &retried); err != nil {
+					t.Fatal(err)
+				}
+				first["tool_choice"] = "required"
+				first["tools"] = submitted.Tools[1:]
+				if !reflect.DeepEqual(retried, first) {
+					t.Fatalf("retried body=%#v want=%#v", retried, first)
+				}
+			}
+			if tc.acceptRetry {
+				waitForProxyLog(t, env, "hy3")
+				logs, err := env.store.ListLogs(t.Context(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(logs) != 1 || logs[0].StatusCode != http.StatusOK || logs[0].InputTokens != 7 || logs[0].OutputTokens != 3 {
+					t.Fatalf("proxy logs=%+v, want one HTTP 200 with 7 input and 3 output tokens", logs)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证过期重置时间回退到 Retry-After，流内头只有有效时才能覆盖真实 HTTP 头。
+ * @param t 测试上下文。
+ */
+func TestProxyCodeBuddyRetryAfterHints(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		sse            bool
+		eventHeader    string
+		wantEventDelay bool
+	}{
+		{name: "HTTP JSON"},
+		{name: "SSE missing event header", sse: true},
+		{name: "SSE invalid event header", sse: true, eventHeader: "; bad upstream hint"},
+		{name: "SSE valid event header", sse: true, wantEventDelay: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC().Truncate(time.Second)
+			httpUntil := now.Add(7 * time.Minute)
+			eventUntil := now.Add(11 * time.Minute)
+			eventHeader := tc.eventHeader
+			want := httpUntil
+			if tc.wantEventDelay {
+				eventHeader = eventUntil.Format(http.TimeFormat)
+				want = eventUntil
+			}
+			env, _ := setupCodeBuddyCommaRetryTest(t, nil, func(w http.ResponseWriter, _ int) {
+				w.Header().Set("Retry-After", httpUntil.Format(http.TimeFormat))
+				form := fmt.Sprintf(`{"status":"busy","error":{"code":6003,"reset_at":%d},"headers":{"retry-after":%q}}`, now.Add(-time.Minute).UnixMilli(), eventHeader)
+				if tc.sse {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", form)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, form)
+			})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "hy3", "stream": tc.sse, "messages": []any{map[string]string{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusTooManyRequests {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body)
+			}
+			cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cooldowns[1]["hy3"]; !got.Equal(want) {
+				t.Fatalf("model cooldown=%v, want %v", got, want)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证收到模型繁忙事件后取消已提交流也会写模型冷却，且保留取消状态。
+ * @param t 测试上下文。
+ */
+func TestProxyCodeBuddyCanceledStreamKeepsBusyCooldown(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	client := &cancelOnSSEOutput{
+		ResponseRecorder: httptest.NewRecorder(), firstOutput: make(chan struct{}),
+		cancelOn: []byte("14003"), cancel: cancel,
+	}
+	until := time.Now().Truncate(time.Second).Add(8 * time.Minute)
+	var attempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+`{"choices":[{"index":0,"delta":{"content":"partial-answer"}}]}`+"\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"code\":14003,\"reset_at\":%d}\n\n", until.UnixMilli())
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+			t.Error("client cancellation did not close the upstream stream")
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	credential, err := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codebuddy", upstreamProtocol: "openai", models: "hy3,other",
+		authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"hy3","stream":true,"messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	env.engine.ServeHTTP(client, req)
+	if client.Code != 200 || ctx.Err() != context.Canceled || attempts.Load() != 1 {
+		t.Fatalf("status=%d client context=%v attempts=%d body=%s", client.Code, ctx.Err(), attempts.Load(), client.Body)
+	}
+	if log := waitForProxyLog(t, env, "hy3"); log.StatusCode != 499 {
+		t.Fatalf("status=%d, want 499", log.StatusCode)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cooldowns[1]["hy3"]; !got.Equal(until) || len(cooldowns[1]) != 1 {
+		t.Fatalf("model cooldowns=%v, want hy3 until %v", cooldowns, until)
+	}
+}
+
+/**
+ * @brief 创建 CodeBuddy 的代理测试环境并收集实际出站请求。
  * @param t 当前测试上下文。
  * @param rules 渠道请求体规则；nil 表示无额外规则。
  * @param respond 按从一开始的请求次数生成上游响应。

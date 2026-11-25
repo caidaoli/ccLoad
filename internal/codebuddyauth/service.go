@@ -2,6 +2,7 @@ package codebuddyauth
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -417,8 +418,14 @@ type ResourceUsage struct {
 	Unlimited bool     `json:"unlimited,omitempty"`
 }
 
-// UserResource returns personal package credits or the enterprise member's
-// remaining allowance for the current billing cycle.
+/**
+ * @brief 查询当前周期个人套餐或企业成员的积分余额。
+ * @param ctx 查询上下文，取消时中止后续分页。
+ * @param credential 用于选择计费端点和个人或企业口径的账号凭证。
+ * @return 完整积分快照，查询失败时为 nil。
+ * @return 上游失败或分页数据不完整时返回错误。
+ * @details 个人接口有 TotalCount 时按总数收齐。缺少总数时，以短页为结束标志，最多读取 20 个满页及一次探测页。
+ */
 func (s *Service) UserResource(ctx context.Context, credential *Credential) (*ResourceUsage, error) {
 	if s == nil || credential == nil {
 		return nil, errors.New("CodeBuddy credential is required")
@@ -430,51 +437,113 @@ func (s *Service) UserResource(ctx context.Context, credential *Credential) (*Re
 	if s.Now != nil {
 		now = s.Now()
 	}
-	body, _ := json.Marshal(map[string]any{"PageNumber": 1, "PageSize": 100, "ProductCode": "p_tcaca", "Status": []int{0, 3}, "PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"), "PackageEndTimeRangeEnd": now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05")})
+	const pageSize, maxFullPagesWithoutTotal = 100, 20
+	params := map[string]any{
+		"PageSize": pageSize, "ProductCode": "p_tcaca", "Status": []int{0, 3},
+		"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
+		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
+	}
 	h := make(http.Header)
 	ApplyBillingHeaders(h, credential)
-	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURLForCredential(credential), http.MethodPost, "/v2/billing/meter/get-user-resource", h, body)
-	if err != nil {
-		return nil, err
+	baseURL := s.billingBaseURLForCredential(credential)
+	type account struct {
+		CapacityRemain             *float64        `json:"CapacityRemain"`
+		CapacitySize               *float64        `json:"CapacitySize"`
+		CycleCapacityRemain        *float64        `json:"CycleCapacityRemain"`
+		CycleCapacitySize          *float64        `json:"CycleCapacitySize"`
+		CycleCapacityUsed          *float64        `json:"CycleCapacityUsed"`
+		CapacityRemainPrecise      json.RawMessage `json:"CapacityRemainPrecise"`
+		CapacitySizePrecise        json.RawMessage `json:"CapacitySizePrecise"`
+		CycleCapacityRemainPrecise json.RawMessage `json:"CycleCapacityRemainPrecise"`
+		CycleCapacitySizePrecise   json.RawMessage `json:"CycleCapacitySizePrecise"`
+		CycleCapacityUsedPrecise   json.RawMessage `json:"CycleCapacityUsedPrecise"`
 	}
-	var v struct {
-		Response struct {
-			Data struct {
-				Accounts []struct {
-					CapacityRemain      float64  `json:"CapacityRemain"`
-					CapacitySize        *float64 `json:"CapacitySize"`
-					CycleCapacityRemain float64  `json:"CycleCapacityRemain"`
-					CycleCapacitySize   float64  `json:"CycleCapacitySize"`
-					CycleCapacityUsed   float64  `json:"CycleCapacityUsed"`
-				} `json:"Accounts"`
-			} `json:"Data"`
-		} `json:"Response"`
-	}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, fmt.Errorf("resource parse: %w", err)
+	amount := func(legacy *float64, precise json.RawMessage) *float64 {
+		if legacy != nil || len(precise) == 0 {
+			return legacy
+		}
+		var number json.Number
+		if json.Unmarshal(precise, &number) != nil {
+			return nil
+		}
+		value, err := number.Float64()
+		if err != nil {
+			return nil
+		}
+		return &value
 	}
 	usage := &ResourceUsage{}
-	var total float64
+	var total, zero float64
 	complete := true
-	for _, a := range v.Response.Data.Accounts {
-		remain := a.CapacityRemain
-		var size *float64
-		switch {
-		case a.CycleCapacitySize > 0:
-			remain = a.CycleCapacityRemain
-			size = &a.CycleCapacitySize
-		case a.CycleCapacityRemain > 0 || a.CycleCapacityUsed > 0:
-			remain = a.CycleCapacityRemain
-			cycleTotal := max(0, remain) + max(0, a.CycleCapacityUsed)
-			size = &cycleTotal
-		default:
-			size = a.CapacitySize
+	seen := 0
+	var totalCount *int
+	for page := 1; ; page++ {
+		params["PageNumber"] = page
+		body, _ := json.Marshal(params)
+		raw, err := s.requestAt(ctx, s.Client, baseURL, http.MethodPost, "/v2/billing/meter/get-user-resource", h, body)
+		if err != nil {
+			return nil, err
 		}
-		usage.Remain += max(0, remain)
-		if size == nil || *size < 0 {
-			complete = false
-		} else {
-			total += *size
+		var v struct {
+			Response struct {
+				Data struct {
+					Accounts   []account `json:"Accounts"`
+					TotalCount *int      `json:"TotalCount"`
+				} `json:"Data"`
+			} `json:"Response"`
+		}
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, fmt.Errorf("resource parse: %w", err)
+		}
+		data := v.Response.Data
+		if data.Accounts == nil || len(data.Accounts) > pageSize {
+			return nil, errors.New("CodeBuddy resource page is missing a valid Accounts array")
+		}
+		if count := data.TotalCount; count != nil {
+			if *count < 0 || (totalCount != nil && *count != *totalCount) {
+				return nil, errors.New("CodeBuddy resource pages report an invalid TotalCount")
+			}
+			totalCount = count
+		}
+		rows := len(data.Accounts)
+		if totalCount != nil && rows > *totalCount-seen {
+			return nil, errors.New("CodeBuddy resource pages exceed TotalCount")
+		}
+		seen += rows
+		if rows < pageSize && totalCount != nil && seen < *totalCount {
+			return nil, errors.New("CodeBuddy resource pages ended before reaching TotalCount")
+		}
+		if totalCount == nil && page > maxFullPagesWithoutTotal && rows == pageSize {
+			return nil, errors.New("CodeBuddy resource pagination exceeded the page limit without TotalCount")
+		}
+		for _, a := range data.Accounts {
+			remain := amount(a.CapacityRemain, a.CapacityRemainPrecise)
+			size := amount(a.CapacitySize, a.CapacitySizePrecise)
+			cycleSize := cmp.Or(amount(a.CycleCapacitySize, a.CycleCapacitySizePrecise), &zero)
+			cycleRemain := amount(a.CycleCapacityRemain, a.CycleCapacityRemainPrecise)
+			cycleRemainValue := *cmp.Or(cycleRemain, &zero)
+			cycleUsed := *cmp.Or(amount(a.CycleCapacityUsed, a.CycleCapacityUsedPrecise), &zero)
+			switch {
+			case *cycleSize > 0:
+				remain, size = cycleRemain, cycleSize
+			case cycleRemainValue > 0 || cycleUsed > 0:
+				cycleTotal := max(0, cycleRemainValue) + max(0, cycleUsed)
+				remain, size = cycleRemain, &cycleTotal
+			case remain == nil:
+				remain, size = cycleRemain, nil
+			}
+			if remain == nil {
+				return nil, errors.New("CodeBuddy resource account is missing a balance")
+			}
+			usage.Remain += max(0, *remain)
+			if size == nil || *size < 0 {
+				complete = false
+			} else {
+				total += *size
+			}
+		}
+		if rows < pageSize || (totalCount != nil && seen == *totalCount) {
+			break
 		}
 	}
 	if complete {

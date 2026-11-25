@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -208,6 +209,107 @@ func TestPersonalUserResourceTotals(t *testing.T) {
 	}
 	if usage.Remain != 1884.5 || usage.Total == nil || *usage.Total != 2000 || usage.Used == nil || *usage.Used != 115.5 {
 		t.Fatalf("incorrect personal aggregate: %+v", usage)
+	}
+}
+
+/**
+ * @brief 验证个人余额以完整分页为准，并区分合法空结果与无效响应。
+ * @param t 测试上下文。
+ */
+func TestPersonalUserResourcePagination(t *testing.T) {
+	t.Parallel()
+	const packageRow = `{"CapacitySize":10,"CapacityRemain":4}`
+	const lastRow = `{"CycleCapacitySize":3,"CycleCapacityRemain":2.5,"CapacityRemain":9}`
+	fullPage := strings.Repeat(packageRow+",", 99) + packageRow
+	pageData := func(rows string, count int) string {
+		return fmt.Sprintf(`{"Accounts":[%s],"TotalCount":%d}`, rows, count)
+	}
+	fullPageWithoutTotal := `{"Accounts":[` + fullPage + `]}`
+	for _, tc := range []struct {
+		name        string
+		pages       []string
+		wantRemain  float64
+		wantTotal   float64
+		wantNoTotal bool
+		wantError   bool
+	}{
+		{name: "empty accounts", pages: []string{pageData("", 0)}},
+		{name: "empty accounts without total", pages: []string{`{"Accounts":[]}`}},
+		{name: "multiple pages", pages: []string{pageData(fullPage, 101), pageData(lastRow, 101)}, wantRemain: 402.5, wantTotal: 1003},
+		{name: "exact page size", pages: []string{pageData(fullPage, 100)}, wantRemain: 400, wantTotal: 1000},
+		{name: "no total", pages: []string{fullPageWithoutTotal, `{"Accounts":[` + lastRow + `]}`}, wantRemain: 402.5, wantTotal: 1003},
+		{name: "known total beyond probe threshold", pages: append(slices.Repeat([]string{pageData(fullPage, 2001)}, 20), pageData(lastRow, 2001)), wantRemain: 8002.5, wantTotal: 20003},
+		{name: "empty probe page without total", pages: append(slices.Repeat([]string{fullPageWithoutTotal}, 20), `{"Accounts":[]}`), wantRemain: 8000, wantTotal: 20000},
+		{name: "full probe page without total", pages: slices.Repeat([]string{fullPageWithoutTotal}, 21), wantError: true},
+		{name: "missing accounts", pages: []string{`{"TotalCount":0}`}, wantError: true},
+		{name: "null accounts", pages: []string{`{"Accounts":null,"TotalCount":0}`}, wantError: true},
+		{name: "invalid accounts", pages: []string{`{"Accounts":{}}`}, wantError: true},
+		{name: "empty account", pages: []string{pageData(`{}`, 1)}, wantError: true},
+		{name: "null account", pages: []string{pageData(`null`, 1)}, wantError: true},
+		{name: "missing package balance", pages: []string{pageData(`{"CapacitySize":10}`, 1)}, wantError: true},
+		{name: "missing cycle balance", pages: []string{pageData(`{"CycleCapacitySize":10,"CapacityRemain":3}`, 1)}, wantError: true},
+		{name: "missing cycle balance with inferred total", pages: []string{pageData(`{"CycleCapacityUsed":10,"CapacityRemain":3}`, 1)}, wantError: true},
+		{name: "missing balance on later page", pages: []string{pageData(fullPage, 101), pageData(`{"CapacitySize":10}`, 101)}, wantError: true},
+		{name: "zero package balance", pages: []string{pageData(`{"CapacityRemain":0,"CapacitySize":10}`, 1)}, wantTotal: 10},
+		{name: "zero cycle balance", pages: []string{pageData(`{"CycleCapacityRemain":0,"CycleCapacityUsed":10}`, 1)}, wantTotal: 10},
+		{name: "zero cycle balance without total", pages: []string{pageData(`{"CycleCapacityRemain":0}`, 1)}, wantNoTotal: true},
+		{name: "precise package balance", pages: []string{pageData(`{"CapacitySizePrecise":"10.25","CapacityRemainPrecise":"2.5"}`, 1)}, wantRemain: 2.5, wantTotal: 10.25},
+		{name: "precise cycle balance", pages: []string{pageData(`{"CycleCapacitySizePrecise":"10.25","CycleCapacityRemainPrecise":"2.5","CapacityRemain":9}`, 1)}, wantRemain: 2.5, wantTotal: 10.25},
+		{name: "precise numeric balance", pages: []string{pageData(`{"CycleCapacityRemainPrecise":2.5,"CycleCapacityUsedPrecise":7.75}`, 1)}, wantRemain: 2.5, wantTotal: 10.25},
+		{name: "optional precise fields do not replace ordinary values", pages: []string{pageData(`{"CycleCapacitySize":8,"CycleCapacityRemain":0,"CycleCapacitySizePrecise":"","CycleCapacityRemainPrecise":7.5}`, 1)}, wantTotal: 8},
+		{name: "invalid precise balance alone", pages: []string{pageData(`{"CapacityRemainPrecise":"unknown"}`, 1)}, wantError: true},
+		{name: "invalid total", pages: []string{pageData("", -1)}, wantError: true},
+		{name: "too many accounts", pages: []string{pageData(fullPage+","+lastRow, 101)}, wantError: true},
+		{name: "total smaller than received", pages: []string{pageData(packageRow, 0)}, wantError: true},
+		{name: "short first page", pages: []string{pageData(packageRow, 2)}, wantError: true},
+		{name: "short later page without total", pages: []string{pageData(fullPage, 102), `{"Accounts":[` + lastRow + `]}`}, wantError: true},
+		{name: "total changed between pages", pages: []string{pageData(fullPage, 102), pageData(lastRow, 101)}, wantError: true},
+		{name: "later page missing accounts", pages: []string{pageData(fullPage, 101), `{}`}, wantError: true},
+		{name: "later request failed", pages: []string{pageData(fullPage, 101), ""}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var req struct {
+					PageNumber int `json:"PageNumber"`
+					PageSize   int `json:"PageSize"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PageNumber != calls || req.PageSize != 100 {
+					t.Fatalf("invalid page request: %+v, err=%v", req, err)
+				}
+				if calls > len(tc.pages) {
+					t.Fatalf("unexpected request for page %d", calls)
+				}
+				data := tc.pages[calls-1]
+				status, body := http.StatusOK, fmt.Sprintf(`{"code":0,"data":{"Response":{"Data":%s}}}`, data)
+				if data == "" {
+					status, body = http.StatusBadGateway, `{"code":10001}`
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			service := NewService(client)
+			usage, err := service.UserResource(t.Context(), &Credential{AccessToken: "access"})
+			if calls != len(tc.pages) {
+				t.Fatalf("requested %d pages, want %d", calls, len(tc.pages))
+			}
+			if tc.wantError {
+				if err == nil || usage != nil {
+					t.Fatalf("UserResource=%+v, err=%v, want error and no snapshot", usage, err)
+				}
+				return
+			}
+			if err != nil || usage.Remain != tc.wantRemain {
+				t.Fatalf("UserResource=%+v, err=%v, want remain=%g", usage, err, tc.wantRemain)
+			}
+			if tc.wantNoTotal {
+				if usage.Total != nil || usage.Used != nil {
+					t.Fatalf("UserResource=%+v, want no total or used credits", usage)
+				}
+			} else if usage.Total == nil || *usage.Total != tc.wantTotal || usage.Used == nil || *usage.Used != tc.wantTotal-tc.wantRemain {
+				t.Fatalf("UserResource=%+v, err=%v, want remain=%g total=%g", usage, err, tc.wantRemain, tc.wantTotal)
+			}
+		})
 	}
 }
 
@@ -483,6 +585,9 @@ func TestLoginRefreshAndCredentialRoundTrip(t *testing.T) {
 		if fresh.AccessToken != "new-access" || fresh.RefreshToken != "rotated" || fresh.Domain != "team" || fresh.UID != "u1" {
 			t.Fatal("refresh lost fields")
 		}
+		if fresh.ExpiresAt != 8200 {
+			t.Fatalf("refreshed expiry = %d, want 8200", fresh.ExpiresAt)
+		}
 		raw, err := fresh.JSON()
 		if err != nil {
 			t.Fatal(err)
@@ -538,6 +643,44 @@ func TestCredentialImportAndFailureContracts(t *testing.T) {
 	_, err = s.Start(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
+	}
+}
+
+/**
+ * @brief Verify that WorkBuddy imports and saved credentials use Unix seconds for refresh and storage.
+ * @param t Test context.
+ */
+func TestWorkBuddyCredentialExpiry(t *testing.T) {
+	t.Parallel()
+	const expiresAt = 1_800_000_000
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"import seconds", `{"auth":{"accessToken":"a","expiresAt":1800000000}}`},
+		{"import milliseconds", `{"auth":{"accessToken":"a","expiresAt":1800000000123}}`},
+		{"saved milliseconds", `{"type":"codebuddy","access_token":"a","expires_at":1800000000123}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credential, err := ParseCredential([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential.ExpiresAt != expiresAt || !credential.NeedsRefresh(time.Unix(expiresAt-30, 0)) {
+				t.Fatalf("expiry = %d, want %d and refresh within lead time", credential.ExpiresAt, expiresAt)
+			}
+			stored, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var canonical Credential
+			if err := json.Unmarshal([]byte(stored), &canonical); err != nil {
+				t.Fatal(err)
+			}
+			if canonical.ExpiresAt != expiresAt {
+				t.Fatalf("stored expiry = %d, want %d", canonical.ExpiresAt, expiresAt)
+			}
+		})
 	}
 }
 

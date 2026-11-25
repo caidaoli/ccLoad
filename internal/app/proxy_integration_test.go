@@ -687,6 +687,228 @@ func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 CodeBuddy 尾部独立用量帧进入 Responses 完成事件和代理日志。
+ * @param t 测试上下文。
+ */
+func TestProxy_CodeBuddyResponsesStreamUsage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		choices string
+	}{
+		{name: "missing choices"},
+		{name: "empty choices", choices: `"choices":[],`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: "+`{"id":"chat-usage","object":"response","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`+"\n\n"+
+					"data: "+`{"id":"chat-usage","object":"response","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
+					"data: "+`{"id":"chat-usage","object":"response",`+tc.choices+`"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`+"\n\n"+
+					"data: [DONE]\n\n")
+			}))
+			t.Cleanup(upstream.Close)
+			credential, _ := (&codebuddyauth.Credential{AccessToken: "access", RefreshToken: "refresh", UID: "uid"}).JSON()
+			env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", upstreamProtocol: "openai", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "hy3", "input": "hi", "stream": true}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var completed gjson.Result
+			for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
+				data := gjson.ParseBytes(sseEventData([]byte(event)))
+				if data.Get("type").String() == "response.completed" {
+					completed = data.Get("response")
+				}
+			}
+			if completed.Get("output.0.content.0.text").String() != "hello" {
+				t.Fatalf("incomplete response: %s", response.Body.String())
+			}
+			usage := completed.Get("usage")
+			if usage.Get("input_tokens").Int() != 9 || usage.Get("output_tokens").Int() != 4 || usage.Get("total_tokens").Int() != 13 {
+				t.Errorf("response usage=%s, want 9 input + 4 output = 13 total tokens", usage.Raw)
+			}
+			entry := waitForProxyLog(t, env, "hy3")
+			if entry.InputTokens != 9 || entry.OutputTokens != 4 {
+				t.Fatalf("logged usage=(%d,%d), want (9,4)", entry.InputTokens, entry.OutputTokens)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证凭证过期仅在客户端收到内容前刷新并重放，已提交的流保留首轮输出。
+ * @param t 测试上下文。
+ */
+func TestProxy_CodeBuddyBusinessCodeRefresh(t *testing.T) {
+	for _, scenario := range []string{"first SSE", "HTTP 200 JSON", "HTTP 403 JSON", "after content"} {
+		t.Run(scenario, func(t *testing.T) {
+			var chats, refreshes atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v2/plugin/auth/token/refresh" {
+					refreshes.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"code":0,"data":{"accessToken":"rotated","expiresIn":3600}}`)
+					return
+				}
+				if chats.Add(1) == 1 {
+					const failure = `{"error":{"data":{"code":12153,"msg":"expired"}}}`
+					if scenario == "HTTP 200 JSON" || scenario == "HTTP 403 JSON" {
+						w.Header().Set("Content-Type", "application/json")
+						if scenario == "HTTP 403 JSON" {
+							w.WriteHeader(http.StatusForbidden)
+						}
+						_, _ = io.WriteString(w, failure)
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					if scenario == "after content" {
+						_, _ = io.WriteString(w, "data: "+`{"choices":[{"index":0,"delta":{"content":"first answer"}}]}`+"\n\n")
+					}
+					_, _ = io.WriteString(w, "data: "+failure+"\n\n")
+					return
+				}
+				if r.Header.Get("Authorization") != "Bearer rotated" {
+					t.Error("retry used the rejected access token")
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: "+`{"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+			}))
+			defer upstream.Close()
+			credential, _ := (&codebuddyauth.Credential{AccessToken: "old", RefreshToken: "refresh"}).JSON()
+			env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", upstreamProtocol: "openai", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+			env.server.codeBuddyService.BaseURL = upstream.URL
+			stream := scenario == "first SSE" || scenario == "after content"
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "hy3", "stream": stream, "messages": []any{map[string]string{"role": "user", "content": "hi"}}}, nil)
+			if stream {
+				parser := newSSEUsageParser("openai")
+				if err := parser.Feed(response.Body.Bytes()); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != 200 || !parser.HasStreamOutput() {
+					t.Fatalf("status=%d stream=%s", response.Code, response.Body.String())
+				}
+				if scenario == "after content" {
+					if parser.GetLastError() == nil || chats.Load() != 1 || refreshes.Load() != 0 {
+						t.Fatalf("chats=%d refreshes=%d stream=%s", chats.Load(), refreshes.Load(), response.Body.String())
+					}
+				} else if parser.GetLastError() != nil || !parser.IsStreamComplete() || chats.Load() != 2 || refreshes.Load() != 1 {
+					t.Fatalf("chats=%d refreshes=%d stream=%s", chats.Load(), refreshes.Load(), response.Body.String())
+				}
+				return
+			}
+			if response.Code != 200 || gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String() != "recovered" || chats.Load() != 2 || refreshes.Load() != 1 {
+				t.Fatalf("status=%d chats=%d refreshes=%d body=%s", response.Code, chats.Load(), refreshes.Load(), response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 校验 CodeBuddy 限频和容量错误只冷却请求模型，明确的积分耗尽冷却账号。
+ * @param t 测试上下文。
+ */
+func TestProxy_CodeBuddyBusinessCooldown(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		code       int
+		upstream   int
+		sse        bool
+		wantStatus int
+	}{
+		{"rate limited SSE", 6003, 200, true, 429},
+		{"model busy HTTP", 14003, 400, false, 503},
+		{"quota SSE", 14012, 200, true, 402},
+		{"quota JSON", 14001, 200, false, 402},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reset := time.Now().Truncate(time.Second).Add(7*time.Minute + 400*time.Millisecond)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				frame := fmt.Sprintf(`{"response":{"data":{"code":%d,"resetAt":%d,"msg":"private upstream diagnostic"}}}`, tc.code, reset.UnixMilli())
+				if tc.sse {
+					w.Header().Set("Content-Type", "text/event-stream")
+					frame = "data: " + frame + "\n\n"
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				w.WriteHeader(tc.upstream)
+				_, _ = io.WriteString(w, frame)
+			}))
+			defer upstream.Close()
+			credential, _ := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+			env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", upstreamProtocol: "openai", models: "hy3,other", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "hy3", "stream": tc.sse, "messages": []any{map[string]string{"role": "user", "content": "hi"}}}, nil)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.wantStatus, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "private upstream diagnostic") {
+				t.Fatal("client received the upstream diagnostic")
+			}
+			cfgs, err := env.store.ListConfigs(t.Context())
+			if err != nil || len(cfgs) != 1 {
+				t.Fatalf("ListConfigs: count=%d err=%v", len(cfgs), err)
+			}
+			cfg := cfgs[0]
+			cooldowns, err := env.server.getAllModelCooldowns(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			models := cooldowns[cfg.ID]
+			wantUntil := reset.Unix() + 1
+			if tc.wantStatus == http.StatusPaymentRequired {
+				if cfg.CooldownUntil != wantUntil || len(models) != 0 {
+					t.Fatalf("channel cooldown=%d want=%d models=%v", cfg.CooldownUntil, wantUntil, models)
+				}
+			} else if cfg.CooldownUntil != 0 || len(models) != 1 || models["hy3"].Unix() != wantUntil {
+				t.Fatalf("channel cooldown=%d models=%v want hy3 until %d", cfg.CooldownUntil, models, wantUntil)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 HTTP 错误脱敏前按原始状态与文案匹配模型冷却规则。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_CodeBuddyNormalizedHTTPErrorKeepsConfiguredModelCooldown(t *testing.T) {
+	reset := time.Now().Add(4 * time.Minute).Truncate(time.Second)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, `{"code":14003,"msg":"internal capacity window %d","resetAt":%d}`, reset.Unix(), reset.Add(3*time.Minute).UnixMilli())
+	}))
+	defer upstream.Close()
+	credential, _ := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codebuddy", upstreamProtocol: "openai", models: "hy3,other", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential,
+		cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Capacity window", StatusCodes: []int{http.StatusBadRequest},
+			MessagePattern: `^internal capacity window (?P<reset>\d+)$`, Scope: model.CooldownScopeModel,
+			Mode: model.CooldownModeResetTime, TimeCapture: "reset", TimeFormat: model.CooldownTimeFormatUnix,
+		}}},
+	}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "hy3", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "internal capacity window") {
+		t.Fatalf("status=%d body=%s, want 503 without the original diagnostic", response.Code, response.Body.String())
+	}
+	configs, err := env.store.ListConfigs(t.Context())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: count=%d err=%v", len(configs), err)
+	}
+	models, err := env.server.getAllModelCooldowns(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := configs[0]
+	if actual := models[cfg.ID]; cfg.CooldownUntil != 0 || len(actual) != 1 || !actual["hy3"].Equal(reset) {
+		t.Fatalf("channel cooldown=%d models=%v, want only hy3 until %v", cfg.CooldownUntil, actual, reset)
+	}
+}
+
 func TestProxy_CodeBuddyNonStreamToolCallsAndErrors(t *testing.T) {
 	for _, scenario := range []string{"tools", "length", "missing-done", "truncated", "error", "business-error", "json-error", "empty-done", "empty-eof"} {
 		t.Run(scenario, func(t *testing.T) {

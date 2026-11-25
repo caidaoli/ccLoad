@@ -170,7 +170,11 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	return &c, nil
 }
 
-// Normalize validates credentials before storage or use in request headers.
+/**
+ * @brief Validate credentials and normalize absolute expiry to Unix seconds before use or storage.
+ * @details WorkBuddy exports and credentials saved from them may carry Unix milliseconds (13 or more digits).
+ * @return nil on success, or an error for a nil credential, invalid type, header values, endpoint, missing token, or negative expiry.
+ */
 func (c *Credential) Normalize() error {
 	if c == nil {
 		return errors.New("CodeBuddy credential is nil")
@@ -197,6 +201,9 @@ func (c *Credential) Normalize() error {
 	}
 	if c.ExpiresAt < 0 {
 		return errors.New("CodeBuddy credential has invalid expires_at")
+	}
+	if c.ExpiresAt >= 1_000_000_000_000 {
+		c.ExpiresAt /= 1000
 	}
 	return nil
 }

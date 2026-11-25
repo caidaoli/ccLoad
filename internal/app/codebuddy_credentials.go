@@ -18,6 +18,16 @@ type codeBuddyCredentialManager struct {
 	refreshes singleflight.Group
 }
 
+/**
+ * @brief 加载 CodeBuddy 凭证，轮换令牌时保留最新额度并优先使用并发完成的重新授权。
+ * @param ctx 等待共享刷新结果的请求上下文。
+ * @param cfg 请求使用的渠道快照。
+ * @param force 是否强制刷新，无需检查到期时间。
+ * @param rejected 上游拒绝的访问令牌，空值表示使用渠道快照中的令牌。
+ * @return 可用凭证；刷新失败时返回原快照供调用方判断是否还能使用，快照不可用时为 nil。
+ * @return 凭证无效、刷新或保存失败、渠道认证类型变化或请求取消时返回错误。
+ * @note 刷新归服务器生命周期管理，同渠道上针对同一被拒令牌的刷新合并。
+ */
 func (m *codeBuddyCredentialManager) credential(ctx context.Context, cfg *model.Config, force bool, rejected string) (*codebuddyauth.Credential, error) {
 	if m == nil || m.server == nil || m.server.codeBuddyService == nil || m.server.oauthCredentialRefreshes == nil || cfg == nil || !cfg.UsesCodeBuddyOAuth() {
 		return nil, errors.New("CodeBuddy credentials unavailable")
@@ -56,41 +66,46 @@ func (m *codeBuddyCredentialManager) credential(ctx context.Context, cfg *model.
 		service := *s.codeBuddyService
 		service.Client = s.getClientForChannel(currentCfg)
 		refreshed, refreshErr := service.Refresh(refreshCtx, current)
-		// Reauthorization wins even when the old refresh request was rejected.
-		latest, latestErr := s.store.GetConfig(refreshCtx, cfg.ID)
-		if latestErr != nil {
-			return nil, latestErr
-		}
-		if !latest.UsesCodeBuddyOAuth() {
-			return nil, errors.New("CodeBuddy channel authentication changed")
-		}
-		if latest.OAuthCredential != currentCfg.OAuthCredential {
-			return codebuddyauth.ParseCredential([]byte(latest.OAuthCredential))
-		}
-		if refreshErr != nil {
-			return nil, refreshErr
-		}
-		payload, encodeErr := refreshed.JSON()
-		if encodeErr != nil {
-			return nil, encodeErr
-		}
-		updated, persistErr := s.store.CompareAndSwapOAuthCredential(refreshCtx, cfg.ID, model.AuthTypeCodeBuddyOAuth, currentCfg.OAuthCredential, payload)
-		if persistErr != nil {
-			return nil, persistErr
-		}
-		if !updated {
-			winner, winnerErr := s.store.GetConfig(refreshCtx, cfg.ID)
-			if winnerErr != nil {
-				return nil, winnerErr
+		for {
+			if err := refreshCtx.Err(); err != nil {
+				return nil, err
 			}
-			if !winner.UsesCodeBuddyOAuth() {
+			latest, latestErr := s.store.GetConfig(refreshCtx, cfg.ID)
+			if latestErr != nil {
+				return nil, latestErr
+			}
+			if !latest.UsesCodeBuddyOAuth() {
 				return nil, errors.New("CodeBuddy channel authentication changed")
 			}
-			return codebuddyauth.ParseCredential([]byte(winner.OAuthCredential))
+			latestCredential, parseErr := codebuddyauth.ParseCredential([]byte(latest.OAuthCredential))
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			// Usage writes can change the JSON while the upstream refresh consumes the old token.
+			if latestCredential.AccessToken != current.AccessToken || latestCredential.RefreshToken != current.RefreshToken ||
+				latestCredential.UID != current.UID || latestCredential.EnterpriseID != current.EnterpriseID ||
+				latestCredential.Domain != current.Domain || latestCredential.Endpoint() != current.Endpoint() {
+				return latestCredential, nil
+			}
+			if refreshErr != nil {
+				return nil, refreshErr
+			}
+			refreshed.OAuthUsage, refreshed.Nickname = latestCredential.OAuthUsage, latestCredential.Nickname
+			payload, encodeErr := refreshed.JSON()
+			if encodeErr != nil {
+				return nil, encodeErr
+			}
+			updated, persistErr := s.store.CompareAndSwapOAuthCredential(refreshCtx, cfg.ID, model.AuthTypeCodeBuddyOAuth, latest.OAuthCredential, payload)
+			if persistErr != nil {
+				return nil, persistErr
+			}
+			if !updated {
+				continue
+			}
+			s.invalidateChannelRelatedCache(cfg.ID)
+			s.InvalidateChannelListCache()
+			return refreshed, nil
 		}
-		s.invalidateChannelRelatedCache(cfg.ID)
-		s.InvalidateChannelListCache()
-		return refreshed, nil
 	})
 	select {
 	case <-ctx.Done():

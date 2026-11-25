@@ -215,6 +215,12 @@ func setAntigravityCapacityRetryHint(in *cooldown.ErrorInput) {
 	in.ModelCooldownUntil = until
 }
 
+/**
+ * @brief 附加渠道规则及上游确认的模型冷却。
+ * @param cfg 当前渠道配置。
+ * @param in 从本次错误及实际模型构造的输入。
+ * @return 补全后的冷却输入。
+ */
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
 	if cfg.UsesAntigravityOAuth() && in.ModelCooldownUntil.IsZero() {
 		switch {
@@ -225,6 +231,12 @@ func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput
 			in.ModelCooldownUntil = antigravityRetryAt(in.ErrorBody, in.Headers, time.Now())
 		case isAntigravityModelCapacityExhausted(in.StatusCode, in.ErrorBody):
 			setAntigravityCapacityRetryHint(&in)
+		}
+	}
+	if cfg.UsesCodeBuddyOAuth() && (in.StatusCode == http.StatusTooManyRequests || in.StatusCode == http.StatusServiceUnavailable) {
+		if matched, until := codeBuddyFailureRecovery(in.ErrorBody, in.Headers, in.StatusCode, time.Now()); matched {
+			in.ModelScoped = true
+			in.ModelCooldownUntil = until
 		}
 	}
 	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
@@ -269,7 +281,7 @@ func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
 }
 
 /**
- * @brief 将转发结果转换为冷却输入，保留原始状态及成功响应已命中的规则
+ * @brief 将转发结果转换为冷却输入，保留原始状态及规则匹配结果
  * @param channelID 当前渠道 ID
  * @param keyIndex 当前 Key 索引
  * @param res 转发结果；nil 时生成空错误输入
@@ -925,7 +937,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 			} else {
 				_ = s.applyCooldownDecision(ctx, cfg, input)
 			}
-		} else if !s.recordAntigravity429State(ctx, cfg, actualModel, res) {
+		} else if !s.recordCodeBuddyQuotaState(ctx, cfg, res) && !s.recordAntigravity429State(ctx, cfg, actualModel, res) {
 			_ = s.applyCooldownDecision(ctx, cfg, input)
 		}
 	}
@@ -1096,6 +1108,10 @@ func (s *Server) handleProxyErrorResponse(
 		action := s.decideCooldownAction(ctx, cfg, s.completeCooldownInput(cfg, input))
 		failure.nextAction = action
 		return failure, action
+	}
+	if s.recordCodeBuddyQuotaState(ctx, cfg, res) {
+		failure.nextAction = cooldown.ActionSkipChannel
+		return failure, cooldown.ActionSkipChannel
 	}
 	if s.recordAntigravity429State(ctx, cfg, actualModel, res) {
 		failure.nextAction = cooldown.ActionRetryChannel

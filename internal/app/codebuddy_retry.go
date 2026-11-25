@@ -21,6 +21,21 @@ import (
 const pauseCodeBuddyIdentityStrategy = "pause_codebuddy_identity"
 
 /**
+ * @brief CodeBuddy 使用 required 和单个工具保持强制选择的重试策略。
+ */
+const codeBuddyNamedToolChoiceStrategy = "codebuddy_named_tool_choice"
+
+/**
+ * @brief 识别 Go JSON 解码器对 tool_choice 字段的对象到字符串类型错误。
+ */
+var codeBuddyToolChoiceTypeError = regexp.MustCompile(`\bcannot unmarshal object into Go struct field (?:[[:word:]]*\.)?tool_choice of type string\b`)
+
+/**
+ * @brief OpenAI Chat 声明的函数名字符与长度限制。
+ */
+var codeBuddyFunctionName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+/**
  * @brief Magpie OPENERS 的身份句形态；已有逗号和跨句文本不匹配。
  */
 var codeBuddyIdentityOpener = regexp.MustCompile(`(?i)(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b`)
@@ -163,4 +178,47 @@ func codeBuddyRetryBodyFor11128(upstream protocol.Protocol, cfg *model.Config, p
 		return nil, "", false
 	}
 	return body, pauseCodeBuddyIdentityStrategy, true
+}
+
+/**
+ * @brief 在上游明确要求字符串时，用 required 和唯一工具声明重放指定工具。
+ * @param upstream 当前上游协议。
+ * @param cfg 发送请求的渠道。
+ * @param plan 含实际发送正文的转换计划。
+ * @param res 当前发送结果；只有未提交的 HTTP 400 可修复。
+ * @return 仅改写工具模式和工具列表的正文；无需修复时为 nil。
+ * @return 找到唯一有效的工具声明且可以重放时为 true。
+ */
+func codeBuddyRetryBodyForNamedToolChoice(upstream protocol.Protocol, cfg *model.Config, plan protocol.TransformPlan, res *fwResult) ([]byte, bool) {
+	if !isCodeBuddyChatRequest(cfg, upstream) || res == nil || res.ResponseCommitted || res.UpstreamStatus != http.StatusBadRequest || !gjson.ValidBytes(res.Body) {
+		return nil, false
+	}
+	node, code := codeBuddyBusinessNode(gjson.ParseBytes(res.Body), 6)
+	if code != 11101 || (!codeBuddyToolChoiceTypeError.MatchString(node.Get("msg").Str) && !codeBuddyToolChoiceTypeError.MatchString(node.Get("message").Str)) {
+		return nil, false
+	}
+	body := plan.TranslatedBody
+	choice := gjson.GetBytes(body, "tool_choice")
+	if choice.Get("type").Str != "function" {
+		return nil, false
+	}
+	name := choice.Get("function.name").Str
+	tools := gjson.GetBytes(body, "tools")
+	if !codeBuddyFunctionName.MatchString(name) || !tools.IsArray() {
+		return nil, false
+	}
+	var selected gjson.Result
+	for _, tool := range tools.Array() {
+		if tool.Get("type").Str == "function" && tool.Get("function.name").Str == name {
+			if selected.Exists() {
+				return nil, false
+			}
+			selected = tool
+		}
+	}
+	if !selected.Exists() {
+		return nil, false
+	}
+	body = setJSONValue(body, "tool_choice", "required")
+	return setJSONRaw(body, "tools", "["+selected.Raw+"]"), true
 }

@@ -270,7 +270,7 @@ type fwResult struct {
 	zaiTrial            bool      ///< 实际体验请求注入了日期消息，修复错误位置需减一。
 	Status              int
 	UpstreamStatus      int                           // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
-	ConfiguredDetection *cooldown.DetectionEvaluation ///< 成功响应探测已确认的规则与截止时间，错误处理不重新匹配
+	ConfiguredDetection *cooldown.DetectionEvaluation ///< 对原始响应的冷却规则匹配结果，避免用归一后的错误正文重新匹配
 	Header              http.Header
 	Body                []byte              // filled for non-2xx or when needed
 	upstreamRequestBody []byte              // 实际发送的 provider wire body，仅用于同请求内安全降级重试

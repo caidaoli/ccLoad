@@ -844,14 +844,23 @@ func (s *Server) handleRequestError(
 	}, durationSec, err
 }
 
-// handleErrorResponse 处理错误响应（读取完整响应体）
-// 从proxy.go提取，遵循SRP原则
-// 限制错误体大小防止 OOM（与入站 DefaultMaxBodyBytes 限制对称）
+/**
+ * @brief 读取有界错误响应体，将已知 CodeBuddy 业务错误映射为有效代理状态。
+ * @param reqCtx 当前尝试的请求上下文。
+ * @param resp 上游原始 HTTP 响应。
+ * @param hdrClone 上游响应头快照。
+ * @param readStats 上游读取统计。
+ * @param rules 非 2xx 响应适用的规则，用于在归一前匹配原始错误；不预先匹配时为 nil。
+ * @return 保留原始 HTTP 状态的错误响应。
+ * @return 尝试耗时，单位秒。
+ * @return nil；读取异常作为结果中的诊断保留。
+ */
 func (s *Server) handleErrorResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	hdrClone http.Header,
 	readStats *streamReadStats,
+	rules *model.CooldownDetectionRules,
 ) (*fwResult, float64, error) {
 	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
 	diagMsg := ""
@@ -860,16 +869,32 @@ func (s *Server) handleErrorResponse(
 		diagMsg = fmt.Sprintf("error reading upstream body: %v", readErr)
 	}
 
+	status := resp.StatusCode
+	var detection *cooldown.DetectionEvaluation
+	if reqCtx.codeBuddyOAuth && status != http.StatusGatewayTimeout && status != util.StatusClientClosedRequest && gjson.ValidBytes(rb) {
+		normalized, mapped := normalizeCodeBuddyBusinessError(gjson.ParseBytes(rb))
+		if mapped != 0 && (status != http.StatusUnauthorized || mapped == http.StatusUnauthorized) {
+			if rules != nil && (mapped == http.StatusTooManyRequests || mapped == http.StatusServiceUnavailable) {
+				evaluation := cooldown.EvaluateCooldownDetectionRules(rules, cooldown.DetectionInput{StatusCode: status, ErrorBody: rb}, time.Now())
+				detection = &evaluation
+			}
+			status, rb = mapped, normalized
+			hdrClone.Set("Content-Type", "application/json")
+			hdrClone.Del("Content-Length")
+			markFirstStreamResponse(reqCtx, readStats)
+		}
+	}
 	duration := reqCtx.Duration().Seconds()
 
 	return &fwResult{
-		Status:         resp.StatusCode,
-		UpstreamStatus: resp.StatusCode,
-		Header:         hdrClone,
-		Body:           rb,
-		FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
-		StreamDiagMsg:  diagMsg,
-		ThinkingEffort: extractThinkingEffortFromJSON(rb),
+		Status:              status,
+		UpstreamStatus:      resp.StatusCode,
+		Header:              hdrClone,
+		Body:                rb,
+		FirstByteTime:       responseFirstByteSec(reqCtx, readStats),
+		StreamDiagMsg:       diagMsg,
+		ThinkingEffort:      extractThinkingEffortFromJSON(rb),
+		ConfiguredDetection: detection,
 	}, duration, nil
 }
 
@@ -1457,6 +1482,10 @@ func (s *Server) handleSuccessResponse(
 	}
 	if reqCtx.codeBuddyOAuth {
 		if !responseIsSSE(resp, true) {
+			result, duration, err := s.handleErrorResponse(reqCtx, resp, hdrClone, readStats, nil)
+			if result.Status != resp.StatusCode {
+				return result, duration, err
+			}
 			return &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: hdrClone},
 				reqCtx.Duration().Seconds(), fmt.Errorf("%w: CodeBuddy requires an SSE completion", util.ErrUpstreamInvalidResponse)
 		}
@@ -2628,7 +2657,7 @@ func (s *Server) probeSoftErrorResponse(
 		log.Printf("[WARN] [软错误检测] 渠道ID=%d, 响应200但疑似错误响应: %s", cfg.ID, truncateErr(safeBodyToString(validData)))
 		resp.StatusCode = classifySSEErrorStatus(validData)
 		prependToBody(resp, validData)
-		res, duration, err = s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
+		res, duration, err = s.handleErrorResponse(reqCtx, resp, hdrClone, readStats, nil)
 		if res != nil {
 			res.UpstreamStatus = http.StatusOK
 		}
@@ -2745,8 +2774,8 @@ func (s *Server) handleResponse(
 ) (*fwResult, float64, error) {
 	hdrClone := resp.Header.Clone()
 	readStats := &streamReadStats{}
-	rules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
-	rules = cooldown.SuccessResponseDetectionRules(rules, resp.StatusCode)
+	configuredRules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
+	rules := cooldown.SuccessResponseDetectionRules(configuredRules, resp.StatusCode)
 	if rules != nil && cfg.UsesOAuth() {
 		rules.Rules = slices.DeleteFunc(rules.Rules, func(rule model.CooldownDetectionRule) bool {
 			return rule.Scope == model.CooldownScopeKey
@@ -2766,7 +2795,7 @@ func (s *Server) handleResponse(
 	attachFirstByteDetector(reqCtx, resp, readStats, observer)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
+		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats, configuredRules)
 	}
 	if looksLikeHTMLResponse(resp.Header.Get("Content-Type"), "") {
 		log.Printf(
@@ -4040,12 +4069,17 @@ func (s *Server) forwardAttempt(
 			)
 			return result, action, nil
 		}
-		// An upstream rate limit already received on a committed stream still
-		// applies when the client cancels. Keep the request's 499 result.
+		// 上游已发送的限频或容量错误在已提交流取消后仍有效，当前请求保留 499。
 		if errors.Is(err, context.Canceled) && res != nil && res.ResponseCommitted && len(res.SSEErrorEvent) > 0 {
 			rateLimit := *res
 			markSSEErrorForwardResult(&rateLimit)
-			if rateLimit.Status == http.StatusTooManyRequests && !s.recordAntigravity429State(ctx, cfg, actualModel, &rateLimit) {
+			codeBuddyModelLimit := false
+			if cfg.UsesCodeBuddyOAuth() && (rateLimit.Status == http.StatusTooManyRequests || rateLimit.Status == http.StatusServiceUnavailable) {
+				codeBuddyModelLimit, _ = codeBuddyFailureRecovery(rateLimit.Body, rateLimit.Header, rateLimit.Status, time.Now())
+			}
+			if !s.recordCodeBuddyQuotaState(ctx, cfg, &rateLimit) &&
+				(codeBuddyModelLimit || rateLimit.Status == http.StatusTooManyRequests) &&
+				!s.recordAntigravity429State(ctx, cfg, actualModel, &rateLimit) {
 				cooldownModel := actualModel
 				if cfg.UsesZAIOAuth() && res.zaiTrial {
 					cooldownModel = zaiTrialModelKey(actualModel)
@@ -4057,7 +4091,7 @@ func (s *Server) forwardAttempt(
 				} else {
 					until = s.cooldownManager.Evaluate(s.completeCooldownInput(cfg, input)).Until
 				}
-				if until.After(time.Now()) {
+				if codeBuddyModelLimit || until.After(time.Now()) {
 					// 请求已取消；冷却针对上游限流，ZCode 体验路径不能因取消跳过写入。
 					s.applyCooldownDecision(context.WithoutCancel(ctx), cfg, input)
 				}
@@ -4302,6 +4336,9 @@ func retryBodyForRejectedRequest(
 	}
 	if retryBody, strategy, ok := codeBuddyRetryBodyFor11128(upstreamProtocol, cfg, plan, res); ok {
 		return retryBody, strategy, true
+	}
+	if retryBody, ok := codeBuddyRetryBodyForNamedToolChoice(upstreamProtocol, cfg, plan, res); ok {
+		return retryBody, codeBuddyNamedToolChoiceStrategy, true
 	}
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
 		return retryBody, strategy, true

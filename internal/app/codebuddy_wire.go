@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/model"
@@ -177,6 +179,10 @@ func normalizeCodeBuddyAssistantReasoning(message map[string]json.RawMessage) {
 	delete(message, "reasoning_details")
 }
 
+/**
+ * @brief 为 DeepSeek 补充默认思考参数，尊重调用方显式关闭思考的设置。
+ * @param request 即将发送的 CodeBuddy Chat 请求，默认值直接写入该对象。
+ */
 func finalizeCodeBuddyThinking(request map[string]json.RawMessage) {
 	var modelName string
 	_ = json.Unmarshal(request["model"], &modelName)
@@ -186,6 +192,12 @@ func finalizeCodeBuddyThinking(request map[string]json.RawMessage) {
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(request["thinking"], "type").String()))
 	if thinkingType == "disabled" {
 		return
+	}
+	for _, effort := range [...]gjson.Result{gjson.ParseBytes(request["reasoning_effort"]), gjson.GetBytes(request["reasoning"], "effort")} {
+		switch strings.ToLower(strings.TrimSpace(effort.String())) {
+		case "none", "off":
+			return
+		}
 	}
 	if _, ok := request["thinking"]; !ok || thinkingType == "" {
 		request["thinking"] = json.RawMessage(`{"type":"enabled"}`)
@@ -237,9 +249,169 @@ func (s *Server) tryCodeBuddyOAuthChannel(ctx context.Context, cfg *model.Config
 }
 
 /**
- * @brief 归一 CodeBuddy SSE 别名及业务错误，使 11128 使用请求拒绝的 HTTP 400 语义。
+ * @brief 在 CodeBuddy 的响应信封中定位首个明确业务码。
+ * @param root 当前响应对象。
+ * @param depth 剩余允许读取的信封层数。
+ * @return 携带业务码的对象；没有业务码时为空。
+ * @return 业务码；信封未声明时为零。
+ */
+func codeBuddyBusinessNode(root gjson.Result, depth int) (gjson.Result, int64) {
+	if depth == 0 {
+		return gjson.Result{}, 0
+	}
+	if code, err := strconv.ParseInt(root.Get("code").String(), 10, 64); err == nil && code >= 1000 {
+		return root, code
+	}
+	for _, path := range [...]string{"data", "error", "response.data"} {
+		child := root.Get(path)
+		if child.IsObject() {
+			if node, code := codeBuddyBusinessNode(child, depth-1); code != 0 {
+				return node, code
+			}
+		}
+	}
+	return gjson.Result{}, 0
+}
+
+/**
+ * @brief 将已知 CodeBuddy 业务码映射到代理的认证、限频、容量和额度策略。
+ * @param code CodeBuddy 响应声明的业务码。
+ * @return 代理 HTTP 状态；未归类的业务码返回零。
+ */
+func codeBuddyBusinessStatus(code int64) int {
+	switch code {
+	case 12153:
+		return http.StatusUnauthorized
+	case 6003:
+		return http.StatusTooManyRequests
+	case 14003:
+		return http.StatusServiceUnavailable
+	case 14001, 14012, 14013, 14014, 14018, 14019:
+		return http.StatusPaymentRequired
+	default:
+		return 0
+	}
+}
+
+/**
+ * @brief 从 CodeBuddy 业务节点及外层响应读取明确的额度或限频重置时间。
+ * @param root 最外层响应对象。
+ * @param node 携带业务码的对象。
+ * @param now 时间有效性校验基准。
+ * @return 实际 Unix 毫秒截止时间；缺失或无效时返回零值。
+ */
+func codeBuddyErrorResetAt(root, node gjson.Result, now time.Time) time.Time {
+	for _, value := range []gjson.Result{node, root} {
+		for _, field := range [...]string{"resetAt", "reset_at"} {
+			if ms, ok := jsonIntegerValue(value.Get(field)); ok && ms > now.UnixMilli() {
+				until := time.UnixMilli(ms).Add(time.Second - time.Nanosecond).Truncate(time.Second)
+				if now.Add(until.Sub(now)).Equal(until) {
+					return time.UnixMilli(ms)
+				}
+			}
+		}
+	}
+	return time.Time{}
+}
+
+/**
+ * @brief 解释 CodeBuddy 失败后应等待的确切截止时间。
+ * @param body 上游 HTTP JSON 错误或已归一的 SSE 错误。
+ * @param headers HTTP 响应头，流内错误优先使用事件声明的同名头。
+ * @param status 已归一的 HTTP 状态。
+ * @param now 判断时间提示是否过期的基准。
+ * @return 是否有与该状态匹配的明确业务码。
+ * @return 上游给出的截止时间并向上取整到存储精度；没有有效提示时为零。
+ */
+func codeBuddyFailureRecovery(body []byte, headers http.Header, status int, now time.Time) (bool, time.Time) {
+	if !gjson.ValidBytes(body) {
+		return false, time.Time{}
+	}
+	root := gjson.ParseBytes(body)
+	node, code := codeBuddyBusinessNode(root, 6)
+	if codeBuddyBusinessStatus(code) != status {
+		return false, time.Time{}
+	}
+	until := codeBuddyErrorResetAt(root, node, now)
+	if until.IsZero() {
+		var ok bool
+		if until, ok = util.ParseRetryAfter(headers, now); !ok {
+			return true, time.Time{}
+		}
+	}
+	until = until.Add(time.Second - time.Nanosecond).Truncate(time.Second)
+	if !now.Add(until.Sub(now)).Equal(until) {
+		return true, time.Time{}
+	}
+	return true, until
+}
+
+/**
+ * @brief 对上游确认的 CodeBuddy 账号额度错误写入凭证冷却。
+ * @param ctx 当前代理请求上下文。
+ * @param cfg 发送请求所用的渠道及凭证。
+ * @param res 上游错误响应，可能来自已提交的流。
+ * @return 已按 CodeBuddy 账号额度处理且应跳过该账号时为 true。
+ * @note 凭证匹配与冷却写入同一事务，避免惩罚重新登录的账号。
+ */
+func (s *Server) recordCodeBuddyQuotaState(ctx context.Context, cfg *model.Config, res *fwResult) bool {
+	if !cfg.UsesCodeBuddyOAuth() || res.Status != http.StatusPaymentRequired {
+		return false
+	}
+	now := time.Now()
+	matched, until := codeBuddyFailureRecovery(res.Body, res.Header, res.Status, now)
+	if !matched {
+		return false
+	}
+	var duration time.Duration
+	if !until.IsZero() {
+		duration = until.Sub(now)
+	}
+	s.applyOAuthCredentialCooldown(ctx, cfg.ID, "CodeBuddy", cfg.GetAuthType(), cfg.OAuthCredential, res.Status, duration, oauthCooldownCredential)
+	return true
+}
+
+/**
+ * @brief 将明确的 CodeBuddy 业务错误转换为不包含上游回显信息的标准错误。
+ * @param root 已校验的上游 JSON 对象。
+ * @return 含业务码和明确时间提示的错误 JSON；未识别时为 nil。
+ * @return 归一后的 HTTP 状态；未识别时为零。
+ */
+func normalizeCodeBuddyBusinessError(root gjson.Result) ([]byte, int) {
+	node, code := codeBuddyBusinessNode(root, 6)
+	status := codeBuddyBusinessStatus(code)
+	if status == 0 {
+		return nil, 0
+	}
+	body := map[string]any{
+		"error":  map[string]any{"type": "upstream_error", "code": code, "message": fmt.Sprintf("CodeBuddy upstream business error %d", code)},
+		"status": status,
+	}
+	if status != http.StatusUnauthorized {
+		now := time.Now()
+		if until := codeBuddyErrorResetAt(root, node, now); !until.IsZero() {
+			body["resetAt"] = until.UnixMilli()
+		}
+		root.Get("headers").ForEach(func(name, value gjson.Result) bool {
+			if strings.EqualFold(name.String(), "Retry-After") {
+				retryAfter := value.String()
+				if _, ok := util.ParseRetryAfter(http.Header{"Retry-After": {retryAfter}}, now); ok {
+					body["headers"] = map[string]string{"Retry-After": retryAfter}
+				}
+				return false
+			}
+			return true
+		})
+	}
+	errorBody, _ := json.Marshal(body)
+	return errorBody, status
+}
+
+/**
+ * @brief 归一 CodeBuddy SSE 别名及已识别的业务错误。
  * @param raw 原始完整 SSE 事件。
  * @return 归一后的事件；空数据、DONE 或无法解析的事件保持原样。
+ * @details 尾部仅含用量的帧补空 choices 数组，满足 Chat Completions 流式转换契约。
  */
 func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	data := sseEventData(raw)
@@ -250,7 +422,11 @@ func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	if json.Unmarshal(data, &payload) != nil {
 		return raw
 	}
-	if code := gjson.GetBytes(data, "code"); code.Exists() && code.Int() != 0 {
+	root := gjson.ParseBytes(data)
+	if errorBody, _ := normalizeCodeBuddyBusinessError(root); errorBody != nil {
+		return append(append([]byte("data: "), errorBody...), '\n', '\n')
+	}
+	if code := root.Get("code"); code.Exists() && code.Int() != 0 {
 		errorBody, _ := json.Marshal(map[string]any{"error": map[string]any{"type": "upstream_error", "code": code.Int(), "message": fmt.Sprintf("CodeBuddy upstream business error %d", code.Int())}})
 		if code.Int() == 11128 {
 			errorBody = setJSONValue(errorBody, "status", http.StatusBadRequest)
@@ -261,6 +437,9 @@ func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 		data = setJSONValue(data, "status", http.StatusBadRequest)
 		return append(append([]byte("data: "), data...), '\n', '\n')
 	}
+	if payload["choices"] == nil && root.Get("usage").IsObject() {
+		payload["choices"] = json.RawMessage(`[]`)
+	}
 	var choices []map[string]json.RawMessage
 	if json.Unmarshal(payload["choices"], &choices) != nil {
 		return raw
@@ -269,7 +448,7 @@ func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	// "response". Normalize this provider-specific alias before the protocol
 	// registry sees the event; otherwise the OpenAI -> Responses converter
 	// rejects every chunk and the downstream response is empty.
-	if gjson.GetBytes(data, "object").String() == "response" {
+	if root.Get("object").String() == "response" {
 		payload["object"] = json.RawMessage(`"chat.completion.chunk"`)
 	}
 	for _, choice := range choices {
