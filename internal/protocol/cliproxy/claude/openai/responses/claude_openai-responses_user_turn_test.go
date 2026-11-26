@@ -6,7 +6,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -88,7 +88,7 @@ func TestConvertOpenAIResponsesRequestToClaude_RefusesAnyEmptiedUserTurn(t *test
 			if got, want := err.Error(), "unsupported content part: "+tc.wantType; got != want {
 				t.Fatalf("error text = %q, want %q", got, want)
 			}
-			if !gjson.ValidBytes(body) {
+			if !ojson.ValidBytes(body) {
 				t.Fatalf("body is not JSON: %q", body)
 			}
 
@@ -108,7 +108,7 @@ func TestConvertOpenAIResponsesRequestToClaude_KeepsTurnWithTextBesideAttachment
 			if err != nil {
 				t.Fatalf("err = %v", err)
 			}
-			if got := gjson.GetBytes(body, "messages.2.content").String(); got != "keep me" {
+			if got := ojson.GetBytes(body, "messages.2.content").String(); got != "keep me" {
 				t.Fatalf("text was lost: %s", body)
 			}
 		})
@@ -121,7 +121,7 @@ func TestConvertOpenAIResponsesRequestToClaude_InlineFileStaysADocument(t *testi
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	part := gjson.GetBytes(body, "messages.2.content.0")
+	part := ojson.GetBytes(body, "messages.2.content.0")
 	if part.Get("type").String() != "document" || part.Get("source.data").String() != "JVBERi0xLjQK" {
 		t.Fatalf("part = %s, body = %s", part.Raw, body)
 	}
@@ -132,7 +132,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ExportedWrappersKeepAJSONBody(t *
 	plain, errPlain := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4", input, false)
 	compat, errCompat := ConvertOpenAIResponsesRequestToClaudeWithCompat("claude-sonnet-4", input, false)
 	for name, body := range map[string][]byte{"plain": plain, "compat": compat} {
-		if !gjson.ValidBytes(body) {
+		if !ojson.ValidBytes(body) {
 			t.Fatalf("%s: body is not JSON: %q", name, body)
 		}
 	}

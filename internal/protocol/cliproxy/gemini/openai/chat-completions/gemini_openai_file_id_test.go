@@ -6,7 +6,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestConvertOpenAIRequestToGemini_FileID(t *testing.T) {
@@ -37,7 +37,7 @@ func TestConvertOpenAIRequestToGemini_FileID(t *testing.T) {
 			if got.Err != nil {
 				t.Fatalf("err = %v", got.Err)
 			}
-			if n := int(gjson.GetBytes(got.Body, "contents.0.parts.#").Int()); n != tc.wantParts {
+			if n := int(ojson.GetBytes(got.Body, "contents.0.parts.#").Int()); n != tc.wantParts {
 				t.Fatalf("parts = %d, want %d. Output: %s", n, tc.wantParts, got.Body)
 			}
 		})

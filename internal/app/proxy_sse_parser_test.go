@@ -197,6 +197,109 @@ func TestClassifySSEErrorStatusTreatsWebsocketConnectionLimitAsRateLimit(t *test
 	}
 }
 
+/**
+ * @brief 验证缺少 type 的错误帧被识别为错误，显式类型的正常事件不被误判。
+ * @param t 测试上下文。
+ */
+func TestIsErrorPayloadRecognizesUntypedErrorFrames(t *testing.T) {
+	for _, tc := range []struct {
+		payload string
+		want    bool
+	}{
+		{`{"error":{"code":"bio_policy","message":"blocked"},"sequence_number":7}`, true},
+		{`{"type":"error","body":{"error":{"code":"bio_policy","message":" "}},"sequence_number":7}`, true},
+		{`{"body":{"error":{"code":"bio_policy"}},"sequence_number":7}`, true},
+		{`{"status":400,"body":{"error":{"code":"bio_policy"}},"sequence_number":7}`, true},
+		{`{"type":"response.failed","body":{"error":{"code":"bio_policy"}},"sequence_number":7}`, true},
+		{`{"response":{"error":{"code":"bio_policy"}},"sequence_number":7}`, true},
+		{`{"code":"bio_policy","message":"blocked","sequence_number":7}`, true},
+		{`{"status":400,"code":"bio_policy","message":"blocked","sequence_number":7}`, true},
+		{`{"body":{"error":"blocked"}}`, true},
+		{`{"error":null}`, false},
+		{`{"error":" "}`, false},
+		{`{"body":{"error":null}}`, false},
+		{`{"response":{"error":null,"status":"completed"}}`, false},
+		{`{"message":"This content was flagged for possible biological risk."}`, false},
+		{`{"code":"bio_policy"}`, false},
+		{`{"type":"response.metadata","body":{"error":{"code":"bio_policy"}}}`, false},
+		{`{"type":"response.created","response":{"id":"resp-1","status":"in_progress","error":null}}`, false},
+		{`{"type":"response.output_text.delta","delta":"code and message","item_id":"msg-1"}`, false},
+		{`{"error":{"code":"bio_policy"}}trailing data`, false},
+	} {
+		t.Run(tc.payload, func(t *testing.T) {
+			if got := isErrorPayload(tc.payload, true); got != tc.want {
+				t.Fatalf("isErrorPayload()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+	// code+message 兜底仅在 Codex 上游启用，非 Codex 流的每 chunk 成功帧不能被误判。
+	for _, payload := range []string{
+		`{"code":"bio_policy","message":"blocked","sequence_number":7}`,
+		`{"status":400,"code":"bio_policy","message":"blocked","sequence_number":7}`,
+		`{"code":0,"message":"success"}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			if isErrorPayload(payload, false) {
+				t.Fatalf("isErrorPayload(%q, false)=true", payload)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证解析器把只在 body.error 携带详情的无 type 帧记为带详情的错误。
+ * @param t 测试上下文。
+ */
+func TestSSEUsageParserRecordsUntypedBodyError(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	frame := `{"body":{"error":{"code":"bio_policy","message":"blocked"}},"sequence_number":7}`
+	if err := parser.Feed([]byte("data: " + frame + "\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	lastErr := parser.GetLastError()
+	if got := gjson.GetBytes(lastErr, "body.error.code").String(); got != "bio_policy" {
+		t.Fatalf("last error=%s, want body.error.code=bio_policy", lastErr)
+	}
+	if !sseErrorHasDetail(lastErr) {
+		t.Fatalf("last error=%s, want classifiable detail", lastErr)
+	}
+	if got := classifySSEErrorStatus(lastErr); got != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", got)
+	}
+}
+
+/**
+ * @brief 验证 Gemini 音频转录 part 计入可见输出，空白或非字符串文本不计。
+ * @param t 测试上下文。
+ */
+func TestGeminiPayloadOutputCountsAudioTranscription(t *testing.T) {
+	for _, tc := range []struct {
+		payload     string
+		wantVisible bool
+		wantThought bool
+	}{
+		{`{"candidates":[{"content":{"parts":[{"audioTranscription":{"text":"hello world"}}]},"finishReason":"STOP"}]}`, true, false},
+		{`{"candidates":[{"content":{"parts":[{"audio_transcription":{"text":"hello world"}}]},"finishReason":"STOP"}]}`, true, false},
+		{`{"candidates":[{"content":{"parts":[{"text":""},{"audioTranscription":{"text":"hello world"}}]}}]}`, true, false},
+		{`{"candidates":[{"content":{"parts":[{"audioTranscription":{"text":"   "}}]}}]}`, false, false},
+		{`{"candidates":[{"content":{"parts":[{"audio_transcription":{}}]}}]}`, false, false},
+		{`{"candidates":[{"content":{"parts":[{"audioTranscription":{"text":{}}}]}}]}`, false, false},
+		{`{"candidates":[{"content":{"parts":[{"audioTranscription":"hello"}]}}]}`, false, false},
+		{`{"candidates":[{"content":{"parts":[{"thought":true,"audioTranscription":{"text":"thinking"}}]}}]}`, false, true},
+	} {
+		t.Run(tc.payload, func(t *testing.T) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(tc.payload), &payload); err != nil {
+				t.Fatal(err)
+			}
+			visible, thought := geminiPayloadOutput(payload)
+			if visible != tc.wantVisible || thought != tc.wantThought {
+				t.Fatalf("visible=%v thought=%v, want %v/%v", visible, thought, tc.wantVisible, tc.wantThought)
+			}
+		})
+	}
+}
+
 func feedAndAssertUsage(t *testing.T, parser usageParser, data string, wantInput, wantOutput, wantCacheRead, wantCacheCreation int) {
 	t.Helper()
 

@@ -63,7 +63,7 @@ HTTP 200 但实际是错误的响应，和普通上游故障走同一条故障�
   - `protocol/builtin/register.go`：注册全部 12 个跨协议有向组合
   - `protocol/builtin/cliproxy_adapter.go`：ccLoad 自有的输入验证、JSON/SSE 规范化与流帧封装
   - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 四协议核心及 allowlist provider 请求/响应适配器快照边界；来源、同步规则和 provider 实际导入状态见 [`UPSTREAM.md`](../../internal/protocol/cliproxy/UPSTREAM.md)
-  - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；一次原子操作固定一个 commit，同时同步核心和全部已登记 provider adapter
+  - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；一次原子操作固定一个 commit 区间，同时同步核心和全部已登记 provider adapter，并逐 commit 审查上游运行时（executor/auth/handlers）修复
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
   - 自动检测仅在未提交响应的 HTTP 400、非模型 404/405、结构化 `convert_request_failed` + `not implemented` 500，或请求到达 API 前的 Cloudflare 403 拦截页后本地转换；未声明协议的 Exact URL 跨协议直接转换
 - **冷却管理器**（DRY原则）：

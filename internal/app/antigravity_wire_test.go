@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -808,7 +809,7 @@ func TestProxyAntigravityTOSViolationCredentialReplacement(t *testing.T) {
 }
 
 /**
- * @brief 验证最终发送的 Antigravity 请求按模型能力保留 xhigh，并兼容旧等级映射。
+ * @brief 验证最终发送的 Antigravity 请求按模型能力保留 xhigh、兼容旧等级映射，并以大写枚举名发送。
  * @param t 测试上下文。
  */
 func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
@@ -818,14 +819,16 @@ func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
 		level string
 		want  string
 	}{
-		{"gemini-4-hydrogen-xhigh", " XHIGH ", "xhigh"},
-		{"gemini-4-neon-xhigh", "xhigh", "xhigh"},
-		{"gemini-3.8-flash-tiered", "xhigh", "high"},
-		{"gemini-3-pro", "xhigh", "high"},
-		{"gemini-unlisted", "xhigh", "high"},
-		{"gemini-4-hydrogen-xhigh", "max", "high"},
-		{"gemini-4-hydrogen-xhigh", "minimal", "low"},
+		{"gemini-4-hydrogen-xhigh", " XHIGH ", "XHIGH"},
+		{"gemini-4-neon-xhigh", "xhigh", "XHIGH"},
+		{"gemini-3.8-flash-tiered", "xhigh", "HIGH"},
+		{"gemini-3-pro", "xhigh", "HIGH"},
+		{"gemini-unlisted", "xhigh", "HIGH"},
+		{"gemini-4-hydrogen-xhigh", "max", "HIGH"},
+		{"gemini-4-hydrogen-xhigh", "minimal", "LOW"},
+		{"gemini-3.8-flash-tiered", "Medium", "MEDIUM"},
 		{"gemini-unlisted", "THINKING_LEVEL_UNSPECIFIED", "THINKING_LEVEL_UNSPECIFIED"},
+		{"gemini-unlisted", "thinking_level_unspecified", "THINKING_LEVEL_UNSPECIFIED"},
 	} {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			for _, path := range []string{"generationConfig.thinkingConfig.thinkingLevel", "generation_config.thinking_config.thinking_level"} {
@@ -850,10 +853,10 @@ func TestAntigravityGeminiWireThinkingAliases(t *testing.T) {
 	for _, tc := range []struct {
 		name, fields, want string
 	}{
-		{"null level falls back to mixed alias", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null},"thinking_config":{"thinking_level":"high"}}`, `{"thinkingLevel":"high"}`},
-		{"same config leaf alias", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null,"thinking_level":"high"}}`, `{"thinkingLevel":"high"}`},
-		{"level wins over budget", `"generationConfig":{"thinkingConfig":{"thinkingLevel":"high","thinkingBudget":1024},"thinking_config":{"thinking_level":"low","include_thoughts":false}}`, `{"thinkingLevel":"high","includeThoughts":false}`},
-		{"summary and level from different parents", `"generationConfig":{"thinkingConfig":{"includeThoughts":true}},"generation_config":{"thinkingConfig":{"thinkingLevel":"high"}}`, `{"thinkingLevel":"high","includeThoughts":true}`},
+		{"null level falls back to mixed alias", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null},"thinking_config":{"thinking_level":"high"}}`, `{"thinkingLevel":"HIGH"}`},
+		{"same config leaf alias", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null,"thinking_level":"high"}}`, `{"thinkingLevel":"HIGH"}`},
+		{"level wins over budget", `"generationConfig":{"thinkingConfig":{"thinkingLevel":"high","thinkingBudget":1024},"thinking_config":{"thinking_level":"low","include_thoughts":false}}`, `{"thinkingLevel":"HIGH","includeThoughts":false}`},
+		{"summary and level from different parents", `"generationConfig":{"thinkingConfig":{"includeThoughts":true}},"generation_config":{"thinkingConfig":{"thinkingLevel":"high"}}`, `{"thinkingLevel":"HIGH","includeThoughts":true}`},
 		{"zero budget survives null", `"generationConfig":{"thinkingConfig":{"thinkingBudget":null},"thinking_config":{"thinking_budget":0}}`, `{"thinkingBudget":0}`},
 		{"preserves other settings", `"generationConfig":{"thinkingConfig":{"thinkingBudget":512,"custom.setting":{"limit":4}},"thinking_config":{"thinking_budget":1024,"custom.setting":{"limit":5},"custom.flag":true}}`, `{"thinkingBudget":512,"custom.setting":{"limit":4},"custom.flag":true}`},
 	} {
@@ -956,6 +959,102 @@ func TestAntigravityClaudeWireNormalizesOutputLimitAliases(t *testing.T) {
 				t.Fatalf("want output %d and budget %d, got %s", tc.limit, tc.budget, generation.Raw)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 验证 Claude 思考预算低于 1024 时删除整个思考配置，不留孤立的可见性开关。
+ * @param t 测试上下文。
+ */
+func TestAntigravityClaudeWireDropsThinkingBelowMinimumBudget(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, tc := range []struct {
+		name, generation string
+		wantThinking     string
+	}{
+		{"camel container", `"generationConfig":{"maxOutputTokens":1024,"thinkingConfig":{"thinkingBudget":2048,"includeThoughts":true}}`, ""},
+		{"snake parent and container", `"generation_config":{"max_output_tokens":512,"thinking_config":{"thinking_budget":4096,"include_thoughts":true}}`, ""},
+		{"mixed containers", `"generationConfig":{"maxOutputTokens":800,"thinkingConfig":{"includeThoughts":true}},"generation_config":{"thinking_config":{"thinking_budget":800}}`, ""},
+		{"clamped to minimum", `"generationConfig":{"maxOutputTokens":1025,"thinkingConfig":{"thinkingBudget":4096,"includeThoughts":true}}`, `{"thinkingBudget":1024,"includeThoughts":true}`},
+		{"dynamic budget untouched", `"generationConfig":{"maxOutputTokens":512,"thinkingConfig":{"thinkingBudget":-1}}`, `{"thinkingBudget":-1}`},
+		{"unclamped budget untouched", `"generationConfig":{"maxOutputTokens":4096,"thinkingConfig":{"thinkingBudget":2048}}`, `{"thinkingBudget":2048}`},
+		{"unclamped below minimum", `"generationConfig":{"maxOutputTokens":4096,"thinkingConfig":{"thinkingBudget":500,"includeThoughts":true}}`, ""},
+		{"zero budget below minimum", `"generationConfig":{"maxOutputTokens":4096,"thinkingConfig":{"thinkingBudget":0}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` + tc.generation + `}`)
+			wire, err := prepareAntigravityRequestBody(cfg, "claude-sonnet-4-6", body, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			if request.Get("generation_config").Exists() || request.Get("generationConfig.thinking_config").Exists() {
+				t.Fatalf("thinking config alias still sent: %s", request.Raw)
+			}
+			thinking := request.Get("generationConfig.thinkingConfig")
+			if tc.wantThinking == "" && thinking.Exists() ||
+				tc.wantThinking != "" && !reflect.DeepEqual(thinking.Value(), gjson.Parse(tc.wantThinking).Value()) {
+				t.Fatalf("thinkingConfig=%s, want %q; generationConfig=%s", thinking.Raw, tc.wantThinking, request.Get("generationConfig").Raw)
+			}
+			if !request.Get("generationConfig.maxOutputTokens").Exists() {
+				t.Fatalf("output limit lost: %s", request.Raw)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证无输出上限时低于 1024 的思考预算同样删除整个思考配置。
+ * @param t 测试上下文。
+ */
+func TestAntigravityClaudeWireDropsUndersizedBudgetWithoutOutputLimit(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, tc := range []struct {
+		name, generation, wantThinking string
+	}{
+		{"undersized budget", `"generationConfig":{"thinkingConfig":{"thinkingBudget":500,"includeThoughts":true}}`, ""},
+		{"valid budget", `"generationConfig":{"thinkingConfig":{"thinkingBudget":2048}}`, `{"thinkingBudget":2048}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` + tc.generation + `}`)
+			wire, err := prepareAntigravityRequestBody(cfg, "claude-sonnet-4-6", body, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			thinking := request.Get("generationConfig.thinkingConfig")
+			if tc.wantThinking == "" && thinking.Exists() ||
+				tc.wantThinking != "" && !reflect.DeepEqual(thinking.Value(), gjson.Parse(tc.wantThinking).Value()) {
+				t.Fatalf("thinkingConfig=%s, want %q; generationConfig=%s", thinking.Raw, tc.wantThinking, request.Get("generationConfig").Raw)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证非 Claude 目标不发送任何拼写的输出上限，并保留同级生成参数。
+ * @param t 测试上下文。
+ */
+func TestAntigravityGeminiWireStripsOutputLimitAliases(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, parent := range []string{"generationConfig", "generation_config"} {
+		for _, key := range []string{"maxOutputTokens", "max_output_tokens"} {
+			t.Run(parent+"."+key, func(t *testing.T) {
+				body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"` + parent + `":{"` + key + `":4096,"temperature":0.5}}`)
+				wire, err := prepareAntigravityRequestBody(cfg, "gemini-3.8-flash-high", body, body, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := gjson.GetBytes(wire, "request")
+				if request.Get("generation_config").Exists() ||
+					!reflect.DeepEqual(request.Get("generationConfig").Value(), gjson.Parse(`{"temperature":0.5}`).Value()) {
+					t.Fatalf("want only temperature in generationConfig, got %s", request.Raw)
+				}
+			})
+		}
 	}
 }
 
@@ -1209,7 +1308,7 @@ func TestPrepareAntigravityChatGenerationConfigAliases(t *testing.T) {
 			}
 			generation := gjson.GetBytes(wire, "request.generationConfig")
 			if generation.Get("temperature").Num != tc.temperature ||
-				!reflect.DeepEqual(generation.Get("thinkingConfig").Value(), gjson.Parse(`{"thinkingLevel":"high","includeThoughts":true}`).Value()) {
+				!reflect.DeepEqual(generation.Get("thinkingConfig").Value(), gjson.Parse(`{"thinkingLevel":"HIGH","includeThoughts":true}`).Value()) {
 				t.Fatalf("expected temperature %v and explicit high thinking, got %s", tc.temperature, generation.Raw)
 			}
 		})
@@ -1225,7 +1324,7 @@ func TestProxyAntigravityClaudeToolChoiceNone(t *testing.T) {
 	const target = "claude-sonnet-4-6"
 	for _, tc := range []struct{ name, path, body, modePath string }{
 		{"chat", "/v1/chat/completions", `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":"none"}`, "toolConfig.functionCallingConfig.mode"},
-		{"gemini alias", "/v1beta/models/" + target + ":generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tool_config":{"function_calling_config":{"mode":" none "}}}`, "tool_config.function_calling_config.mode"},
+		{"gemini alias", "/v1beta/models/" + target + ":generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tool_config":{"function_calling_config":{"mode":" none "}}}`, "toolConfig.functionCallingConfig.mode"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1238,8 +1337,8 @@ func TestProxyAntigravityClaudeToolChoiceNone(t *testing.T) {
 				if mode := request.Get(tc.modePath).String(); mode != "NONE" {
 					t.Errorf("%s=%q, want NONE; request=%s", tc.modePath, mode, wire)
 				}
-				if tc.name == "gemini alias" && request.Get("toolConfig.functionCallingConfig.mode").Exists() {
-					t.Errorf("conflicting tool modes: %s", wire)
+				if request.Get("tool_config").Exists() || request.Get("toolConfig.function_calling_config").Exists() {
+					t.Errorf("duplicate tool config aliases: %s", wire)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
@@ -1257,6 +1356,62 @@ func TestProxyAntigravityClaudeToolChoiceNone(t *testing.T) {
 			response := doProxyRequest(t, env.engine, tc.path, body, nil)
 			if response.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Claude 出站把 snake_case 工具配置合并进 camelCase 容器，同一字段只发一份且 camelCase 已有值胜出。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravityClaudeToolConfigAliases(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	for _, tc := range []struct {
+		name, toolConfig, want string
+	}{
+		{
+			name:       "snake only",
+			toolConfig: `"tool_config":{"include_server_side_tool_invocations":false,"function_calling_config":{"mode":"AUTO","allowed_function_names":["bash"]}}`,
+			want:       `{"include_server_side_tool_invocations":false,"functionCallingConfig":{"mode":"VALIDATED","allowed_function_names":["bash"]}}`,
+		},
+		{
+			name:       "snake parent camel child",
+			toolConfig: `"tool_config":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["read_file"]}}`,
+			want:       `{"functionCallingConfig":{"mode":"VALIDATED","allowedFunctionNames":["read_file"]}}`,
+		},
+		{
+			name:       "camel parent snake child",
+			toolConfig: `"toolConfig":{"function_calling_config":{"mode":"AUTO","allowed_function_names":["grep"]}}`,
+			want:       `{"functionCallingConfig":{"mode":"VALIDATED","allowed_function_names":["grep"]}}`,
+		},
+		{
+			name:       "camel wins and snake fills gaps",
+			toolConfig: `"tool_config":{"include_server_side_tool_invocations":false,"function_calling_config":{"mode":"ANY","allowed_function_names":["read_file"]}},"toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}`,
+			want:       `{"include_server_side_tool_invocations":false,"functionCallingConfig":{"mode":"VALIDATED","allowed_function_names":["read_file"]}}`,
+		},
+		{
+			name:       "proto field spelled both ways",
+			toolConfig: `"tool_config":{"include_server_side_tool_invocations":false,"function_calling_config":{"allowed_function_names":["read_file"]}},"toolConfig":{"includeServerSideToolInvocations":true,"functionCallingConfig":{"allowedFunctionNames":["bash"]}}`,
+			want:       `{"includeServerSideToolInvocations":true,"functionCallingConfig":{"mode":"VALIDATED","allowedFunctionNames":["bash"]}}`,
+		},
+		{
+			name:       "none from snake alias wins",
+			toolConfig: `"tool_config":{"function_calling_config":{"mode":"none"}},"toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}`,
+			want:       `{"functionCallingConfig":{"mode":"NONE"}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` + tc.toolConfig + `}`)
+			wire, err := prepareAntigravityRequestBody(cfg, "claude-sonnet-4-6", body, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			if request.Get("tool_config").Exists() ||
+				!reflect.DeepEqual(request.Get("toolConfig").Value(), gjson.Parse(tc.want).Value()) {
+				t.Fatalf("toolConfig=%s, want %s; request=%s", request.Get("toolConfig").Raw, tc.want, request.Raw)
 			}
 		})
 	}
@@ -1623,6 +1778,51 @@ func TestProxyAntigravitySessionFollowsAccount(t *testing.T) {
 	const explicitID = "client-session"
 	if got := send(headers, explicitID, "other-at"); got != explicitID {
 		t.Fatalf("explicit session ID=%q, want %q", got, explicitID)
+	}
+}
+
+/**
+ * @brief 验证自动会话 ID 取首个用户轮的首个非空文本，多模态首轮跨轮稳定，并以有符号 int64 十进制发送。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravitySessionIDFromContents(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{
+		AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project",
+		OAuthCredential: `{"email":"user@example.com"}`,
+	}
+	sessionID := func(contents string) string {
+		t.Helper()
+		body := []byte(`{"contents":` + contents + `}`)
+		wire, err := prepareAntigravityRequestBody(cfg, "gemini-3-flash", body, body, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := gjson.GetBytes(wire, "request.sessionId").String()
+		if _, err := strconv.ParseInt(id, 10, 64); err != nil {
+			t.Fatalf("sessionId=%q, want signed int64 decimal: %v", id, err)
+		}
+		return id
+	}
+
+	const firstTurn = `{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}},{"text":""},{"text":"describe the image"}]}`
+	first := sessionID(`[` + firstTurn + `]`)
+	later := sessionID(`[` + firstTurn + `,{"role":"model","parts":[{"text":"a cat"}]},{"role":"user","parts":[{"text":"what color?"}]}]`)
+	if first != later {
+		t.Fatalf("multimodal first turn sessionId changed across turns: %q then %q", first, later)
+	}
+	if other := sessionID(`[{"role":"user","parts":[{"text":"describe the image"}]}]`); other != first {
+		t.Fatalf("same first text gave sessionId %q, want %q", other, first)
+	}
+
+	var positive, negative bool
+	for i := 0; i < 64 && (!positive || !negative); i++ {
+		id := sessionID(`[{"role":"user","parts":[{"text":"prompt ` + strconv.Itoa(i) + `"}]}]`)
+		negative = negative || strings.HasPrefix(id, "-")
+		positive = positive || !strings.HasPrefix(id, "-")
+	}
+	if !positive || !negative {
+		t.Fatalf("sessionId sign coverage positive=%v negative=%v, want both", positive, negative)
 	}
 }
 

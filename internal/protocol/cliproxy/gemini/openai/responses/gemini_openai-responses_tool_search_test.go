@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 const toolSearchFixtureRequest = `{
@@ -33,11 +35,11 @@ func TestConvertOpenAIResponsesRequestToGemini_ToolSearchRoundTrip(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	root := gjson.ParseBytes(out)
+	root := util.ParseGJSONBytesNoCopy(out)
 
 	declarations := root.Get("tools.0.functionDeclarations")
 	names := make([]string, 0)
-	declarations.ForEach(func(_, declaration gjson.Result) bool {
+	declarations.ForEach(func(_, declaration ojson.Result) bool {
 		names = append(names, declaration.Get("name").String())
 		return true
 	})
@@ -85,7 +87,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ToolSearchRoundTrip(t *testing.T)
 	if got := searchOutput.Get("parts.0.functionResponse.id").String(); got != "search_1" {
 		t.Fatalf("search output id = %q, want search_1", got)
 	}
-	result := gjson.Parse(searchOutput.Get("parts.0.functionResponse.response.result").String())
+	result := ojson.Parse(searchOutput.Get("parts.0.functionResponse.response.result").String())
 	if got := result.Get("status").String(); got != "completed" {
 		t.Fatalf("search output status = %q; raw result: %s", got, result.Raw)
 	}
@@ -108,7 +110,7 @@ func TestConvertGeminiResponseToOpenAIResponses_ToolSearchCallStream(t *testing.
 	}
 
 	var param any
-	var added, done, completed gjson.Result
+	var added, done, completed ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.8-flash-high", []byte(toolSearchFixtureRequest), nil, chunk, &param) {
 			event, data := parseSSEEvent(t, output)
@@ -129,7 +131,7 @@ func TestConvertGeminiResponseToOpenAIResponses_ToolSearchCallStream(t *testing.
 	}
 	for _, test := range []struct {
 		label  string
-		item   gjson.Result
+		item   ojson.Result
 		status string
 	}{
 		{label: "added", item: added.Get("item"), status: "in_progress"},
@@ -151,7 +153,7 @@ func TestConvertGeminiResponseToOpenAIResponses_ToolSearchCallStream(t *testing.
 	}
 	for _, test := range []struct {
 		label string
-		item  gjson.Result
+		item  ojson.Result
 	}{
 		{label: "done", item: done.Get("item")},
 		{label: "completed", item: completed.Get("response.output.0")},
@@ -172,7 +174,7 @@ func TestConvertGeminiResponseToOpenAIResponses_ToolSearchCallStream(t *testing.
 	wantItemID := "tsc_" + added.Get("item.call_id").String()
 	for _, test := range []struct {
 		label string
-		item  gjson.Result
+		item  ojson.Result
 	}{
 		{label: "added", item: added.Get("item")},
 		{label: "done", item: done.Get("item")},
@@ -194,7 +196,7 @@ func TestOpenAIResponsesToolSearchCallItemID(t *testing.T) {
 func TestConvertGeminiResponseToOpenAIResponsesNonStream_ToolSearchCall(t *testing.T) {
 	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"tool_search","args":{"query":"fixture tools"}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp_tool_search_nonstream"}`)
 	out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3.8-flash-high", []byte(toolSearchFixtureRequest), nil, raw, nil)
-	root := gjson.ParseBytes(out)
+	root := util.ParseGJSONBytesNoCopy(out)
 
 	item := root.Get("output.0")
 	if got := item.Get("type").String(); got != "tool_search_call" {
@@ -219,7 +221,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_ToolSearchCall(t *testi
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallArrayArgumentsDefaultsToEmptyObject(t *testing.T) {
+func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallStringArrayArgumentsDefaultsToEmptyObject(t *testing.T) {
 	for _, rawArgs := range []string{`["bad","array"]`, `"[\"bad\",\"array\"]"`} {
 		request := []byte(`{"tools":[{"type":"tool_search","execution":"client"}],"input":[
 			{"type":"tool_search_call","execution":"client","call_id":"search_1","arguments":` + rawArgs + `},
@@ -229,7 +231,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallArrayArgumentsDefau
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := gjson.GetBytes(out, "contents.0.parts.0.functionCall.args")
+		args := ojson.GetBytes(out, "contents.0.parts.0.functionCall.args")
 		if args.Raw != "{}" {
 			t.Fatalf("tool_search args for %s = %s, want {}. Output: %s", rawArgs, args.Raw, out)
 		}
@@ -250,7 +252,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallWithStringArguments
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	root := gjson.ParseBytes(out)
+	root := util.ParseGJSONBytesNoCopy(out)
 	contents := root.Get("contents").Array()
 	if len(contents) != 3 {
 		t.Fatalf("expected 3 contents, got %d: %s", len(contents), root.Get("contents").Raw)
@@ -258,7 +260,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallWithStringArguments
 	if got := contents[1].Get("parts.0.functionCall.args.query").String(); got != "nothing" {
 		t.Fatalf("string arguments must be parsed into args, got %s", contents[1].Raw)
 	}
-	result := gjson.Parse(contents[2].Get("parts.0.functionResponse.response.result").String())
+	result := ojson.Parse(contents[2].Get("parts.0.functionResponse.response.result").String())
 	if !result.Get("tools").IsArray() || len(result.Get("tools").Array()) != 0 {
 		t.Fatalf("empty discovery must produce an empty tools list, got %s", result.Raw)
 	}
@@ -270,7 +272,7 @@ func TestConvertGeminiResponseToOpenAIResponses_DiscoveredToolCallRestoresNamesp
 		[]byte(`data: [DONE]`),
 	}
 	var param any
-	var done gjson.Result
+	var done ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.8-flash-high", []byte(toolSearchFixtureRequest), nil, chunk, &param) {
 			event, data := parseSSEEvent(t, output)
@@ -344,7 +346,7 @@ func TestConvertGeminiResponses_SameNamedUserFunctionAndClientToolSearchCoexist(
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			geminiReq := gjson.ParseBytes(geminiReqBytes)
+			geminiReq := util.ParseGJSONBytesNoCopy(geminiReqBytes)
 			decls := geminiReq.Get("tools.0.functionDeclarations").Array()
 			if len(decls) != 2 {
 				t.Fatalf("expected 2 functionDeclarations (user tool_search + client shim, with deferred hidden), got %d: %s", len(decls), geminiReqBytes)
@@ -382,7 +384,7 @@ func TestConvertGeminiResponses_SameNamedUserFunctionAndClientToolSearchCoexist(
 			// Response restoration: calling shimGeminiName -> tool_search_call; calling "tool_search" -> function_call.
 			streamChunk := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"c_shim","name":"` + shimGeminiName + `","args":{"query":"agents"}}},{"functionCall":{"id":"c_user","name":"tool_search","args":{"x":"abc"}}}]},"finishReason":"STOP"}],"responseId":"resp_coexist"}`)
 			var param any
-			var doneItems []gjson.Result
+			var doneItems []ojson.Result
 			for _, frame := range [][]byte{streamChunk, []byte("data: [DONE]")} {
 				for _, output := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.8-flash-high", request, nil, frame, &param) {
 					event, data := parseSSEEvent(t, output)
@@ -443,7 +445,7 @@ func TestConvertOpenAIResponsesRequestToGemini_HistoryOnlyWithNamespacedToolSear
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	root := gjson.ParseBytes(out)
+	root := util.ParseGJSONBytesNoCopy(out)
 	if got := root.Get("tools.0.functionDeclarations.0.name").String(); got != "fixture_tools__tool_search" {
 		t.Fatalf("discovered declaration name = %q, want fixture_tools__tool_search; raw: %s", got, out)
 	}
@@ -456,5 +458,38 @@ func TestConvertOpenAIResponsesRequestToGemini_HistoryOnlyWithNamespacedToolSear
 	}
 	if got := contents[1].Get("parts.0.functionResponse.name").String(); got != "tool_search" {
 		t.Fatalf("replayed tool_search_output name = %q, want tool_search (must not be hijacked by fixture_tools__tool_search)", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallArrayArgumentsDefaultsToEmptyObject(t *testing.T) {
+	request := []byte(`{
+		"model": "gemini-3.8-flash-high",
+		"stream": true,
+		"tools": [],
+		"input": [
+			{
+				"type": "tool_search_call",
+				"execution": "client",
+				"call_id": "search_arr",
+				"status": "completed",
+				"arguments": ["bad", "array"]
+			},
+			{
+				"type": "tool_search_output",
+				"execution": "client",
+				"call_id": "search_arr",
+				"status": "completed",
+				"tools": []
+			}
+		]
+	}`)
+	out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash-high", request, true)
+	if errConvert != nil {
+		t.Fatalf("unexpected error: %v", errConvert)
+	}
+	root := util.ParseGJSONBytesNoCopy(out)
+	args := root.Get("contents.0.parts.0.functionCall.args")
+	if !args.IsObject() || args.Raw != "{}" {
+		t.Fatalf("tool_search_call array arguments translated to %s, want {}", args.Raw)
 	}
 }

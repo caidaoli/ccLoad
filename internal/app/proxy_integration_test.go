@@ -4967,8 +4967,8 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 				if !antigravityWireContainsText(wire, "provider request") {
 					t.Errorf("client text missing from provider request: %s", wire)
 				}
-				if got := gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != "high" {
-					t.Errorf("thinkingLevel=%q, want high; body=%s", got, wire)
+				if got := gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != "HIGH" {
+					t.Errorf("thinkingLevel=%q, want HIGH; body=%s", got, wire)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"provider response"}]},"finishReason":"STOP"}]}}`)
@@ -5244,8 +5244,12 @@ func TestProxy_OpenAIGoogleThinkingOnGeminiRoutes(t *testing.T) {
 				}
 				reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
 				thinkingConfig := <-wireConfigs
-				if thinkingConfig.Get("thinkingBudget").Raw != tc.budget || thinkingConfig.Get("thinkingLevel").String() != tc.level {
-					t.Errorf("thinking config=%s want budget=%q level=%q", thinkingConfig.Raw, tc.budget, tc.level)
+				wantLevel := tc.level
+				if antigravity {
+					wantLevel = strings.ToUpper(wantLevel)
+				}
+				if thinkingConfig.Get("thinkingBudget").Raw != tc.budget || thinkingConfig.Get("thinkingLevel").String() != wantLevel {
+					t.Errorf("thinking config=%s want budget=%q level=%q", thinkingConfig.Raw, tc.budget, wantLevel)
 				}
 				if antigravity && thinkingConfig.Get("includeThoughts").Type != gjson.False {
 					t.Errorf("explicit summary setting lost: %s", thinkingConfig.Raw)
@@ -5541,7 +5545,7 @@ func TestProxy_AntigravityClaude55ThinkingLevel(t *testing.T) {
 						if err != nil {
 							t.Errorf("read Antigravity request: %v", err)
 						}
-						if gjson.GetBytes(wire, "model").String() != target || gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").String() != "medium" {
+						if gjson.GetBytes(wire, "model").String() != target || gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").String() != "MEDIUM" {
 							t.Errorf("Claude 5.5 thinking level was lost: %s", wire)
 						}
 						if gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingBudget").Exists() {
@@ -6064,11 +6068,8 @@ func TestProxy_AntigravityOAuthSeparatesThreadsAcrossSessionSources(t *testing.T
 				t.Fatalf("thread-scoped Antigravity session IDs=%v", sessionIDs)
 			}
 			for _, providerSessionID := range sessionIDs {
-				if !strings.HasPrefix(providerSessionID, "-") {
-					t.Fatalf("Antigravity sessionId=%q, want negative decimal", providerSessionID)
-				}
-				if _, err := strconv.ParseUint(strings.TrimPrefix(providerSessionID, "-"), 10, 63); err != nil {
-					t.Fatalf("Antigravity sessionId=%q, want negative decimal: %v", providerSessionID, err)
+				if _, err := strconv.ParseInt(providerSessionID, 10, 64); err != nil {
+					t.Fatalf("Antigravity sessionId=%q, want signed int64 decimal: %v", providerSessionID, err)
 				}
 			}
 		})
@@ -7099,8 +7100,8 @@ func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) 
 				if err != nil {
 					t.Fatalf("read Antigravity wire body: %v", err)
 				}
-				if got := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != tt.want {
-					t.Errorf("Antigravity thinkingLevel=%q, want %s; body=%s", got, tt.want, wireBody)
+				if got := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != strings.ToUpper(tt.want) {
+					t.Errorf("Antigravity thinkingLevel=%q, want %s; body=%s", got, strings.ToUpper(tt.want), wireBody)
 				}
 				if !gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.includeThoughts").Bool() {
 					t.Errorf("Antigravity includeThoughts=false; body=%s", wireBody)
@@ -17405,7 +17406,7 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 				}
 				switch testCase.path {
 				case "/v1/responses":
-					assertResponsesStreamEndsFailed(t, body, "upstream stream interrupted before completion")
+					assertResponsesStreamEndsFailed(t, body, "upstream_stream_interrupted", "upstream stream interrupted before completion")
 				case "/v1/chat/completions":
 					assertOpenAIStreamEndsWithError(t, body, "upstream stream interrupted before completion")
 				}
@@ -17513,9 +17514,9 @@ func TestProxy_TranslatedGeminiPromptBlockReturnsClientError(t *testing.T) {
 	}
 }
 
-// assertResponsesStreamEndsFailed 断言 Responses 流以补写的 response.failed 收尾，
-// 且沿用流内 response id、紧接最后一个 sequence_number。
-func assertResponsesStreamEndsFailed(t *testing.T, body, wantMessage string) {
+// assertResponsesStreamEndsFailed 断言 Responses 流以 response.failed 收尾，
+// 携带指定错误码与消息，且沿用流内 response id、紧接最后一个 sequence_number。
+func assertResponsesStreamEndsFailed(t *testing.T, body, wantCode, wantMessage string) {
 	t.Helper()
 	frames := strings.Split(strings.TrimSpace(body), "\n\n")
 	var responseID string
@@ -17534,7 +17535,7 @@ func assertResponsesStreamEndsFailed(t *testing.T, body, wantMessage string) {
 		responseID == "" || gjson.GetBytes(failed, "response.id").String() != responseID ||
 		gjson.GetBytes(failed, "sequence_number").Int() != lastSequence+1 ||
 		gjson.GetBytes(failed, "response.status").String() != "failed" ||
-		gjson.GetBytes(failed, "response.error.code").String() != "upstream_stream_interrupted" ||
+		gjson.GetBytes(failed, "response.error.code").String() != wantCode ||
 		gjson.GetBytes(failed, "response.error.message").String() != wantMessage {
 		t.Fatalf("Responses stream did not end with a continuous response.failed (id=%q last_seq=%d): %s", responseID, lastSequence, body)
 	}
@@ -17570,7 +17571,10 @@ func TestProxy_TranslatedStreamUpstreamErrorAfterOutputEndsWithClientError(t *te
 		body   map[string]any
 		assert func(*testing.T, string, string)
 	}{
-		{path: "/v1/responses", body: map[string]any{"input": []any{map[string]any{"role": "user", "content": "hi"}}}, assert: assertResponsesStreamEndsFailed},
+		{path: "/v1/responses", body: map[string]any{"input": []any{map[string]any{"role": "user", "content": "hi"}}}, assert: func(t *testing.T, body, message string) {
+			// 转换器把 Claude error 事件直接收尾为携带上游错误码的 response.failed。
+			assertResponsesStreamEndsFailed(t, body, "overloaded_error", message)
+		}},
 		{path: "/v1/chat/completions", body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}, assert: assertOpenAIStreamEndsWithError},
 	} {
 		t.Run(tc.path, func(t *testing.T) {

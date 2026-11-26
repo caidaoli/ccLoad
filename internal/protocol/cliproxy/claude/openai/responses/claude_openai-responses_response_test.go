@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
-func parseClaudeResponsesSSEEvent(t *testing.T, chunk []byte) (string, gjson.Result) {
+func parseClaudeResponsesSSEEvent(t *testing.T, chunk []byte) (string, ojson.Result) {
 	t.Helper()
 
 	var event string
@@ -28,7 +28,7 @@ func parseClaudeResponsesSSEEvent(t *testing.T, chunk []byte) (string, gjson.Res
 		t.Fatalf("SSE chunk has no data line: %s", string(chunk))
 	}
 
-	return event, gjson.Parse(data)
+	return event, ojson.Parse(data)
 }
 
 func TestConvertClaudeResponseToOpenAIResponses_CreatedIncludesOriginalRequestModel(t *testing.T) {
@@ -88,8 +88,8 @@ func TestConvertClaudeResponseToOpenAIResponses_ThinkingIncludesSignature(t *tes
 		outputs = append(outputs, ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, chunk, &param)...)
 	}
 
-	var reasoningDone gjson.Result
-	var completed gjson.Result
+	var reasoningDone ojson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		switch event {
@@ -138,7 +138,7 @@ func TestConvertClaudeResponseToOpenAIResponses_RedactedThinkingBecomesMarkedRea
 	}
 
 	want := ClaudeResponsesRedactedThinkingPrefix + data
-	var reasoningDone, completed gjson.Result
+	var reasoningDone, completed ojson.Result
 	for _, output := range outputs {
 		event, parsed := parseClaudeResponsesSSEEvent(t, output)
 		switch event {
@@ -175,7 +175,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_RedactedThinkingBecomes
 	}, "\n")
 
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, []byte(raw), nil)
-	parsed := gjson.ParseBytes(out)
+	parsed := ojson.ParseBytes(out)
 	if got := parsed.Get("output.0.type").String(); got != "reasoning" {
 		t.Fatalf("output.0.type = %q, want reasoning; body=%s", got, out)
 	}
@@ -216,7 +216,7 @@ func TestConvertClaudeResponseToOpenAIResponses_AggregatesTextBlocksUntilMessage
 	outputs := translateClaudeResponsesStream(chunks)
 
 	counts := map[string]int{}
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		counts[event]++
@@ -281,7 +281,7 @@ func TestConvertClaudeResponseToOpenAIResponses_FinalizesMessageBeforeFunctionCa
 	functionDonePosition := -1
 	messageDoneCount := 0
 	functionDoneCount := 0
-	var completed gjson.Result
+	var completed ojson.Result
 	for position, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		itemType := data.Get("item.type").String()
@@ -381,7 +381,7 @@ func TestConvertClaudeResponseToOpenAIResponses_UsesContiguousIndicesForReasonin
 	outputs := translateClaudeResponsesStream(chunks)
 
 	seen := map[string]int{}
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		var itemType string
@@ -465,7 +465,7 @@ func TestConvertClaudeResponseToOpenAIResponses_ServerToolsSurfaceWithoutOutputI
 
 	messageAddedCount := 0
 	messageDoneCount := 0
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		switch {
@@ -516,7 +516,7 @@ func TestConvertClaudeResponseToOpenAIResponses_StartsNewMessageAfterFunctionCal
 
 	var lifecycle []string
 	var messageIDs []string
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		if event == "response.output_item.added" || event == "response.output_item.done" {
@@ -576,7 +576,7 @@ func TestConvertClaudeResponseToOpenAIResponses_FinalizesMessageBeforeReasoning(
 	outputs := translateClaudeResponsesStream(chunks)
 
 	var lifecycle []string
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		if event == "response.output_item.added" || event == "response.output_item.done" {
@@ -621,7 +621,7 @@ func TestConvertClaudeResponseToOpenAIResponses_PreservesMultipleReasoningItems(
 	outputs := translateClaudeResponsesStream(chunks)
 
 	reasoningDoneCount := 0
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		if event == "response.output_item.done" && data.Get("item.type").String() == "reasoning" {
@@ -663,8 +663,8 @@ func TestConvertClaudeResponseToOpenAIResponses_NormalizesEmptyFunctionArguments
 
 	outputs := translateClaudeResponsesStream(chunks)
 
-	var functionDone gjson.Result
-	var completed gjson.Result
+	var functionDone ojson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		if event == "response.output_item.done" && data.Get("item.type").String() == "function_call" {
@@ -696,8 +696,8 @@ func TestConvertClaudeResponseToOpenAIResponses_IncludesEmptyReasoningInComplete
 
 	outputs := translateClaudeResponsesStream(chunks)
 
-	var reasoningDone gjson.Result
-	var completed gjson.Result
+	var reasoningDone ojson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		if event == "response.output_item.done" && data.Get("item.type").String() == "reasoning" {
@@ -733,7 +733,7 @@ func TestConvertClaudeResponseToOpenAIResponses_ReportsCacheTokens(t *testing.T)
 	}
 
 	var param any
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -772,7 +772,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_ThinkingIncludesSignatu
 	}, "\n"))
 
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, raw, nil)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("output.0.encrypted_content").String(); got != signature {
 		t.Fatalf("non-stream reasoning encrypted_content = %q, want %q", got, signature)
@@ -802,7 +802,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_PreservesContentBlockOr
 		`data: {"type":"message_stop"}`,
 	}, "\n"))
 
-	root := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, raw, nil))
+	root := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, raw, nil))
 	wantTypes := []string{"message", "reasoning", "function_call", "message", "reasoning"}
 	if got := root.Get("output.#").Int(); got != int64(len(wantTypes)) {
 		t.Fatalf("non-stream output count = %d, want %d", got, len(wantTypes))
@@ -843,7 +843,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_ReportsCacheTokens(t *t
 	}, "\n"))
 
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, raw, nil)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("usage.input_tokens").Int(); got != 22044 {
 		t.Fatalf("non-stream usage input_tokens = %d, want %d", got, 22044)
@@ -875,7 +875,7 @@ func TestConvertClaudeResponseToOpenAIResponses_RestoresAdditionalNamespaceCusto
 	}
 
 	var param any
-	var added, inputDone, done, completed gjson.Result
+	var added, inputDone, done, completed ojson.Result
 	functionEvents := 0
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", originalRequest, nil, chunk, &param) {
@@ -907,7 +907,7 @@ func TestConvertClaudeResponseToOpenAIResponses_RestoresAdditionalNamespaceCusto
 	}
 	for _, test := range []struct {
 		label string
-		item  gjson.Result
+		item  ojson.Result
 	}{
 		{label: "added", item: added.Get("item")},
 		{label: "done", item: done.Get("item")},
@@ -951,7 +951,7 @@ func TestConvertClaudeResponseToOpenAIResponses_DirectCustomWinsNamespaceCollisi
 	}
 
 	var param any
-	var streamCompleted gjson.Result
+	var streamCompleted ojson.Result
 	for _, chunk := range streamChunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", originalRequest, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -981,7 +981,7 @@ func TestConvertClaudeResponseToOpenAIResponses_DirectCustomWinsNamespaceCollisi
 		`data: {"type":"content_block_stop","index":0}`,
 		`data: {"type":"message_stop"}`,
 	}, "\n"))
-	nonStream := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, nonStreamRaw, nil))
+	nonStream := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, nonStreamRaw, nil))
 	if got := nonStream.Get("output.0.type").String(); got != "custom_tool_call" {
 		t.Fatalf("non-stream output type = %q, want custom_tool_call", got)
 	}
@@ -1012,7 +1012,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_RestoresAdditionalNames
 		`data: {"type":"message_stop"}`,
 	}, "\n"))
 
-	root := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, raw, nil))
+	root := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, raw, nil))
 	if got := root.Get("output.0.type").String(); got != "custom_tool_call" {
 		t.Fatalf("non-stream output type = %q, want custom_tool_call; output=%s", got, root.Raw)
 	}
@@ -1043,7 +1043,7 @@ func TestConvertClaudeResponseToOpenAIResponses_CustomToolEmptyInputMatchesNonSt
 	}
 
 	var param any
-	var streamCompleted gjson.Result
+	var streamCompleted ojson.Result
 	for _, chunk := range streamChunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", originalRequest, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1062,7 +1062,7 @@ func TestConvertClaudeResponseToOpenAIResponses_CustomToolEmptyInputMatchesNonSt
 		`data: {"type":"content_block_stop","index":0}`,
 		`data: {"type":"message_stop"}`,
 	}, "\n"))
-	nonStream := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, raw, nil))
+	nonStream := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, raw, nil))
 	if got := nonStream.Get("output.0.input").String(); got != "" {
 		t.Fatalf("non-stream empty custom input = %q, want empty string", got)
 	}
@@ -1088,9 +1088,9 @@ func TestConvertClaudeResponseToOpenAIResponses_RestoresNamespaceFunctionCall(t 
 	}
 
 	var param any
-	var added gjson.Result
-	var done gjson.Result
-	var completed gjson.Result
+	var added ojson.Result
+	var done ojson.Result
+	var completed ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", originalRequest, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1111,7 +1111,7 @@ func TestConvertClaudeResponseToOpenAIResponses_RestoresNamespaceFunctionCall(t 
 
 	for _, tc := range []struct {
 		label string
-		got   gjson.Result
+		got   ojson.Result
 	}{
 		{"added", added},
 		{"done", done},
@@ -1158,7 +1158,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_RestoresNamespaceFuncti
 	}, "\n"))
 
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", originalRequest, nil, raw, nil)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("output.0.name").String(); got != "js" {
 		t.Fatalf("non-stream output name = %q, want js", got)
@@ -1180,7 +1180,7 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensEmitsIncomplete(t *test
 	}
 
 	var param any
-	var incomplete gjson.Result
+	var incomplete ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1226,7 +1226,7 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_MaxTokensPreservesParti
 	}, "\n"))
 
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-fable-5-1", nil, nil, raw, nil)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	if got := root.Get("status").String(); got != "incomplete" {
 		t.Fatalf("status = %q, want incomplete; response=%s", got, out)
 	}
@@ -1253,8 +1253,8 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensWithToolCallAndTextEmit
 	}
 
 	var param any
-	var incomplete gjson.Result
-	var funcDone gjson.Result
+	var incomplete ojson.Result
+	var funcDone ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1314,8 +1314,8 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensWithWebSearchEmitsIncom
 	}
 
 	var param any
-	var incomplete gjson.Result
-	var wsDone gjson.Result
+	var incomplete ojson.Result
+	var wsDone ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1351,7 +1351,7 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensWithWebSearchEmitsIncom
 		`data: {"type":"message_stop"}`,
 	}, "\n"))
 	nonStreamOut := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-fable-5-1", nil, nil, raw, nil)
-	nsRoot := gjson.ParseBytes(nonStreamOut)
+	nsRoot := ojson.ParseBytes(nonStreamOut)
 	if got := nsRoot.Get("status").String(); got != "incomplete" {
 		t.Fatalf("ns status = %q, want incomplete", got)
 	}
@@ -1370,8 +1370,8 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensReasoningWithoutBlockSt
 	}
 
 	var param any
-	var incomplete gjson.Result
-	var rsDone gjson.Result
+	var incomplete ojson.Result
+	var rsDone ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1415,8 +1415,8 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensWithToolBlockStopEmitsI
 	}
 
 	var param any
-	var incomplete gjson.Result
-	var funcDone gjson.Result
+	var incomplete ojson.Result
+	var funcDone ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1456,8 +1456,8 @@ func TestConvertClaudeResponseToOpenAIResponses_MaxTokensWithWebSearchResultsEmi
 	}
 
 	var param any
-	var incomplete gjson.Result
-	var wsDone gjson.Result
+	var incomplete ojson.Result
+	var wsDone ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1525,8 +1525,8 @@ func TestConvertClaudeResponseToOpenAIResponses_CustomToolTruncatedInputUnwrappe
 	}
 
 	var param any
-	var customDone gjson.Result
-	var incomplete gjson.Result
+	var customDone ojson.Result
+	var incomplete ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", originalRequest, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1569,9 +1569,9 @@ func TestConvertClaudeResponseToOpenAIResponses_EmptyFunctionArgsConsistentOnTru
 	}
 
 	var param any
-	var funcDone gjson.Result
-	var argsDone gjson.Result
-	var incomplete gjson.Result
+	var funcDone ojson.Result
+	var argsDone ojson.Result
+	var incomplete ojson.Result
 	for _, chunk := range chunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-fable-5-1", nil, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -1619,9 +1619,9 @@ func applyPatchClaudeFragment(index int, fragment string) []byte {
 func applyPatchClaudeEnd() [][]byte {
 	return [][]byte{[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`), []byte(`data: {"type":"message_stop"}`)}
 }
-func applyPatchClaudeEvents(t *testing.T, chunks [][]byte) []gjson.Result {
+func applyPatchClaudeEvents(t *testing.T, chunks [][]byte) []ojson.Result {
 	t.Helper()
-	var events []gjson.Result
+	var events []ojson.Result
 	for _, chunk := range chunks {
 		_, data := parseClaudeResponsesSSEEvent(t, chunk)
 		events = append(events, data)
@@ -1634,7 +1634,7 @@ const applyPatchClaudeRequest = `{"tools":[{"type":"custom","name":"apply_patch"
 func TestApplyPatchClaudePreviewBeforeDone(t *testing.T) {
 	request := []byte(applyPatchClaudeRequest)
 	var param any
-	feed := func(chunk []byte) []gjson.Result {
+	feed := func(chunk []byte) []ojson.Result {
 		return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", request, nil, chunk, &param))
 	}
 	feed(applyPatchClaudeStart(0, "c1", "apply_patch"))
@@ -1645,7 +1645,7 @@ func TestApplyPatchClaudePreviewBeforeDone(t *testing.T) {
 	if preview[0].Get("call_id").String() != "c1" || preview[0].Get("item_id").String() != "ctc_c1" {
 		t.Fatalf("preview identity: %s", preview[0].Raw)
 	}
-	var events []gjson.Result
+	var events []ojson.Result
 	events = append(events, preview...)
 	events = append(events, feed(applyPatchClaudeFragment(0, `*** End Patch"}`))...)
 	for _, chunk := range applyPatchClaudeEnd() {
@@ -1688,7 +1688,7 @@ func TestApplyPatchClaudePreviewBeforeDone(t *testing.T) {
 
 func TestApplyPatchClaudeLateIdentityAndInterleavedCalls(t *testing.T) {
 	var param any
-	feed := func(chunk []byte) []gjson.Result {
+	feed := func(chunk []byte) []ojson.Result {
 		return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 	}
 	feed(applyPatchClaudeStart(0, "", ""))
@@ -1697,7 +1697,7 @@ func TestApplyPatchClaudeLateIdentityAndInterleavedCalls(t *testing.T) {
 			t.Fatalf("emitted before identity: %s", event.Raw)
 		}
 	}
-	var events []gjson.Result
+	var events []ojson.Result
 	events = append(events, feed(applyPatchClaudeStart(0, "c1", "apply_patch"))...)
 	events = append(events, feed(applyPatchClaudeStart(1, "c2", "apply_patch"))...)
 	events = append(events, feed(applyPatchClaudeFragment(1, `{"input":"second`))...)
@@ -1730,7 +1730,7 @@ func TestApplyPatchClaudeInvalidArgumentsFailOnce(t *testing.T) {
 	for _, arguments := range []string{`plain patch`, `{}`, `{"input":42}`, `{"input":"x","extra":1}`, `{"input":"x","input":"y"}`, `{"input":"x"} {}`, `{"input":"unfinished`, `{"input":"bad\q"}`, `{"input":"\ud800"}`} {
 		t.Run(arguments, func(t *testing.T) {
 			var param any
-			var events []gjson.Result
+			var events []ojson.Result
 			feed := func(chunk []byte) {
 				events = append(events, applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))...)
 			}
@@ -1778,7 +1778,7 @@ func TestApplyPatchClaudeWinnerAndNamespace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var param any
 			request := []byte(tc.request)
-			feed := func(chunk []byte) []gjson.Result {
+			feed := func(chunk []byte) []ojson.Result {
 				return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", request, nil, chunk, &param))
 			}
 			feed(applyPatchClaudeStart(0, "c1", tc.upstream))
@@ -1790,7 +1790,7 @@ func TestApplyPatchClaudeWinnerAndNamespace(t *testing.T) {
 			for _, chunk := range applyPatchClaudeEnd() {
 				events = append(events, feed(chunk)...)
 			}
-			var item gjson.Result
+			var item ojson.Result
 			for _, event := range events {
 				if event.Get("type").String() == "response.completed" {
 					item = event.Get("response.output.0")
@@ -1820,7 +1820,7 @@ func TestApplyPatchClaudeNonStreamStrictInput(t *testing.T) {
 		t.Run(tc.arguments, func(t *testing.T) {
 			var param any
 			raw := []byte(string(applyPatchClaudeStart(0, "c1", "apply_patch")) + "\n" + string(applyPatchClaudeFragment(0, tc.arguments)) + "\n" + `data: {"type":"message_stop"}`)
-			result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
+			result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
 			if tc.invalid {
 				state, ok := param.(interface{ ToolInputError() error })
 				if result.Get("status").String() != "failed" || result.Get("error.code").String() != "invalid_tool_arguments" || !ok || state.ToolInputError() == nil {
@@ -1835,7 +1835,7 @@ func TestApplyPatchClaudeNonStreamStrictInput(t *testing.T) {
 
 func TestApplyPatchClaudeTerminalValidatesTruncatedCall(t *testing.T) {
 	var param any
-	feed := func(chunk []byte) []gjson.Result {
+	feed := func(chunk []byte) []ojson.Result {
 		return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 	}
 	feed(applyPatchClaudeStart(0, "c1", "apply_patch"))
@@ -1851,7 +1851,7 @@ func TestApplyPatchClaudeUnicodeFragments(t *testing.T) {
 	arguments := `{"input":"line\n\u4f60\u597d \ud83d\ude00 \" \\ \u96ea"}`
 	for split := 1; split < len(arguments); split++ {
 		var param any
-		feed := func(chunk []byte) []gjson.Result {
+		feed := func(chunk []byte) []ojson.Result {
 			return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 		}
 		feed(applyPatchClaudeStart(0, "c1", "apply_patch"))
@@ -1875,7 +1875,7 @@ func TestApplyPatchClaudeUnicodeFragments(t *testing.T) {
 func TestApplyPatchClaudeIdentityFieldsArriveSeparately(t *testing.T) {
 	for _, tc := range []struct{ id, name string }{{"c1", ""}, {"", "apply_patch"}} {
 		var param any
-		feed := func(chunk []byte) []gjson.Result {
+		feed := func(chunk []byte) []ojson.Result {
 			return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 		}
 		feed(applyPatchClaudeStart(0, tc.id, tc.name))
@@ -1899,7 +1899,7 @@ func TestApplyPatchClaudeIdentityFieldsArriveSeparately(t *testing.T) {
 func TestApplyPatchClaudeConflictingIdentityFails(t *testing.T) {
 	for _, tc := range []struct{ id, name string }{{"other", "apply_patch"}, {"c1", "other"}} {
 		var param any
-		feed := func(chunk []byte) []gjson.Result {
+		feed := func(chunk []byte) []ojson.Result {
 			return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 		}
 		feed(applyPatchClaudeStart(0, "c1", "apply_patch"))
@@ -1918,7 +1918,7 @@ func TestApplyPatchClaudeNonStreamOriginalDeclarationWins(t *testing.T) {
 	original := []byte(`{"tools":[{"type":"function","name":"apply_patch"}]}`)
 	var param any
 	raw := []byte(string(applyPatchClaudeStart(0, "c1", "apply_patch")) + "\n" + string(applyPatchClaudeFragment(0, `{"not_input":42}`)) + "\n" + `data: {"type":"message_stop"}`)
-	result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", original, []byte(applyPatchClaudeRequest), raw, &param))
+	result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", original, []byte(applyPatchClaudeRequest), raw, &param))
 	if result.Get("output.0.type").String() != "function_call" || result.Get("output.0.arguments").String() != `{"not_input":42}` {
 		t.Fatalf("converted declaration overrode original: %s", result.Raw)
 	}
@@ -1938,7 +1938,7 @@ func TestApplyPatchClaudeSnapshotsValidateAndDoNotPreview(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var param any
 			request := []byte(applyPatchClaudeRequest)
-			feed := func(chunk []byte) []gjson.Result {
+			feed := func(chunk []byte) []ojson.Result {
 				return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", request, nil, chunk, &param))
 			}
 			start := applyPatchClaudeStart(0, "c1", "apply_patch")
@@ -1967,7 +1967,7 @@ func TestApplyPatchClaudeSnapshotsValidateAndDoNotPreview(t *testing.T) {
 				raw = append(raw, chunk...)
 				raw = append(raw, '\n')
 			}
-			var terminal gjson.Result
+			var terminal ojson.Result
 			var input strings.Builder
 			for _, event := range events {
 				if event.Get("type").String() == "response.custom_tool_call_input.delta" {
@@ -1978,7 +1978,7 @@ func TestApplyPatchClaudeSnapshotsValidateAndDoNotPreview(t *testing.T) {
 				}
 			}
 			var nonStreamParam any
-			nonStream := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", request, nil, raw, &nonStreamParam))
+			nonStream := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", request, nil, raw, &nonStreamParam))
 			if tc.invalid {
 				if terminal.Get("type").String() != "response.failed" || nonStream.Get("status").String() != "failed" {
 					t.Fatalf("conflicting/invalid snapshot succeeded: stream=%s nonstream=%s", terminal.Raw, nonStream.Raw)
@@ -1993,7 +1993,7 @@ func TestApplyPatchClaudeSnapshotsValidateAndDoNotPreview(t *testing.T) {
 func TestApplyPatchClaudeNonStreamConflictingIdentityFails(t *testing.T) {
 	var param any
 	raw := []byte(string(applyPatchClaudeStart(0, "c1", "apply_patch")) + "\n" + string(applyPatchClaudeFragment(0, `{"input":"x"}`)) + "\n" + string(applyPatchClaudeStart(0, "c2", "apply_patch")) + "\n" + `data: {"type":"message_stop"}`)
-	result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
+	result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
 	state, ok := param.(interface{ ToolInputError() error })
 	if result.Get("status").String() != "failed" || !ok || state.ToolInputError() == nil {
 		t.Fatalf("conflicting non-stream identity succeeded: %s", result.Raw)
@@ -2004,7 +2004,7 @@ func TestApplyPatchClaudeConflictingSnapshotsFail(t *testing.T) {
 	var param any
 	request := []byte(applyPatchClaudeRequest)
 	var raw []byte
-	var events []gjson.Result
+	var events []ojson.Result
 	for _, input := range []string{`{"input":"first"}`, `{"input":"replacement"}`} {
 		chunk := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"apply_patch","input":%s}}`, input))
 		raw = append(raw, chunk...)
@@ -2026,7 +2026,7 @@ func TestApplyPatchClaudeConflictingSnapshotsFail(t *testing.T) {
 		}
 	}
 	var nonStreamParam any
-	result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", request, nil, raw, &nonStreamParam))
+	result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", request, nil, raw, &nonStreamParam))
 	if failures != 1 || result.Get("status").String() != "failed" {
 		t.Fatalf("snapshot replacement did not fail: stream failures=%d nonstream=%s", failures, result.Raw)
 	}
@@ -2034,7 +2034,7 @@ func TestApplyPatchClaudeConflictingSnapshotsFail(t *testing.T) {
 
 func TestApplyPatchClaudePendingIdentityConflictFails(t *testing.T) {
 	var param any
-	feed := func(chunk []byte) []gjson.Result {
+	feed := func(chunk []byte) []ojson.Result {
 		return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 	}
 	feed(applyPatchClaudeStart(0, "c1", ""))
@@ -2047,16 +2047,16 @@ func TestApplyPatchClaudePendingIdentityConflictFails(t *testing.T) {
 
 func TestApplyPatchClaudeMissingIDSynthesizedAtTerminal(t *testing.T) {
 	var param any
-	feed := func(chunk []byte) []gjson.Result {
+	feed := func(chunk []byte) []ojson.Result {
 		return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 	}
 	feed(applyPatchClaudeStart(0, "", "apply_patch"))
 	feed(applyPatchClaudeFragment(0, `{"input":"x"}`))
-	var events []gjson.Result
+	var events []ojson.Result
 	for _, chunk := range applyPatchClaudeEnd() {
 		events = append(events, feed(chunk)...)
 	}
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, event := range events {
 		if event.Get("type").String() == "response.completed" {
 			completed = event
@@ -2071,14 +2071,14 @@ func TestApplyPatchClaudeMissingIDSynthesizedAtTerminal(t *testing.T) {
 func TestApplyPatchClaudeNonStreamLateIdentity(t *testing.T) {
 	var param any
 	raw := []byte(string(applyPatchClaudeStart(0, "", "apply_patch")) + "\n" + string(applyPatchClaudeFragment(0, `{"input":"x"}`)) + "\n" + string(applyPatchClaudeStart(0, "c1", "")) + "\n" + `data: {"type":"message_stop"}`)
-	result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
+	result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
 	item := result.Get("output.0")
 	if item.Get("type").String() != "custom_tool_call" || item.Get("input").String() != "x" || item.Get("id").String() != "ctc_c1" {
 		t.Fatalf("late ID/name lost: %s", result.Raw)
 	}
 }
 
-func assertApplyPatchClaudeDeferredFailure(t *testing.T, events []gjson.Result, param any) {
+func assertApplyPatchClaudeDeferredFailure(t *testing.T, events []ojson.Result, param any) {
 	t.Helper()
 	failures := 0
 	for _, event := range events {
@@ -2119,9 +2119,9 @@ func TestApplyPatchClaudeDeferredIdentityConflict(t *testing.T) {
 			}
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				var param any
-				var result gjson.Result
+				var result ojson.Result
 				if stream {
-					var events []gjson.Result
+					var events []ojson.Result
 					for i, chunk := range chunks {
 						current := applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(tc.request), nil, chunk, &param))
 						if i < 2 && len(current) != 0 {
@@ -2139,7 +2139,7 @@ func TestApplyPatchClaudeDeferredIdentityConflict(t *testing.T) {
 						}
 					}
 				} else {
-					result = gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(tc.request), nil, bytes.Join(chunks, []byte("\n")), &param))
+					result = ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(tc.request), nil, bytes.Join(chunks, []byte("\n")), &param))
 					if tc.invalid {
 						if result.Get("status").String() != "failed" || result.Get("error.code").String() != "invalid_tool_arguments" || param.(interface{ ToolInputError() error }).ToolInputError() == nil {
 							t.Fatalf("lost pending conflict: %s", result.Raw)
@@ -2206,9 +2206,9 @@ func TestApplyPatchClaudeDeferredSnapshots(t *testing.T) {
 			}
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				var param any
-				var result gjson.Result
+				var result ojson.Result
 				if stream {
-					var events []gjson.Result
+					var events []ojson.Result
 					var deltas strings.Builder
 					for i, chunk := range chunks {
 						current := applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(request), nil, chunk, &param))
@@ -2233,7 +2233,7 @@ func TestApplyPatchClaudeDeferredSnapshots(t *testing.T) {
 						t.Fatalf("snapshot/partial input mismatch: delta=%q want=%q", deltas.String(), tc.want)
 					}
 				} else {
-					result = gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(request), nil, bytes.Join(chunks, []byte("\n")), &param))
+					result = ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(request), nil, bytes.Join(chunks, []byte("\n")), &param))
 					if tc.invalid {
 						if result.Get("status").String() != "failed" || result.Get("error.code").String() != "invalid_tool_arguments" || param.(interface{ ToolInputError() error }).ToolInputError() == nil {
 							t.Fatalf("lost pending snapshot evidence: %s", result.Raw)
@@ -2281,12 +2281,12 @@ func TestApplyPatchClaudeSnapshotAfterItemCompletion(t *testing.T) {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				request := []byte(applyPatchClaudeRequest)
 				var param any
-				var result gjson.Result
+				var result ojson.Result
 				if stream {
-					feed := func(chunk []byte) []gjson.Result {
+					feed := func(chunk []byte) []ojson.Result {
 						return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", request, nil, chunk, &param))
 					}
-					var events []gjson.Result
+					var events []ojson.Result
 					for _, chunk := range chunks[:5] {
 						events = append(events, feed(chunk)...)
 					}
@@ -2319,7 +2319,7 @@ func TestApplyPatchClaudeSnapshotAfterItemCompletion(t *testing.T) {
 					if !tc.invalid && len(snapshotEvents) != 0 {
 						t.Fatalf("late snapshot fabricated events: %v", snapshotEvents)
 					}
-					after := append([]gjson.Result(nil), snapshotEvents...)
+					after := append([]ojson.Result(nil), snapshotEvents...)
 					for _, chunk := range chunks[6:] {
 						after = append(after, feed(chunk)...)
 					}
@@ -2350,7 +2350,7 @@ func TestApplyPatchClaudeSnapshotAfterItemCompletion(t *testing.T) {
 						t.Fatalf("expected one successful response completion, got %d", completions)
 					}
 				} else {
-					result = gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", request, nil, bytes.Join(chunks, []byte("\n")), &param))
+					result = ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", request, nil, bytes.Join(chunks, []byte("\n")), &param))
 					if tc.invalid {
 						if result.Get("status").String() != "failed" || result.Get("error.code").String() != "invalid_tool_arguments" || param.(interface{ ToolInputError() error }).ToolInputError() == nil {
 							t.Fatalf("late conflicting snapshot succeeded: %s", result.Raw)
@@ -2385,7 +2385,7 @@ func TestApplyPatchClaudeSuccessfulTerminalSealsState(t *testing.T) {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				var param any
 				if stream {
-					feed := func(chunk []byte) []gjson.Result {
+					feed := func(chunk []byte) []ojson.Result {
 						return applyPatchClaudeEvents(t, ConvertClaudeResponseToOpenAIResponses(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, chunk, &param))
 					}
 					completions := 0
@@ -2411,7 +2411,7 @@ func TestApplyPatchClaudeSuccessfulTerminalSealsState(t *testing.T) {
 					raw := bytes.Join(chunks, []byte("\n"))
 					raw = append(raw, '\n')
 					raw = append(raw, tc.late...)
-					result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
+					result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "test", []byte(applyPatchClaudeRequest), nil, raw, &param))
 					if result.Get("status").String() != "completed" || result.Get("output.0.input").String() != "x" {
 						t.Fatalf("successful terminal became a failure: %s", result.Raw)
 					}
@@ -2443,7 +2443,7 @@ func TestApplyPatchClaudeNativeJSONPreservesIdentityAndRejectsInvalidInput(t *te
 			}
 			raw := []byte(fmt.Sprintf(`{"type":"message","id":"msg_native_patch","content":[{"type":"tool_use","id":"call_native_patch","name":%q,"input":%s}],"stop_reason":%q,"usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":2,"cache_creation_input_tokens":1,"reasoning_tokens":1}}`, tc.wireName, tc.arguments, stopReason))
 			var state any
-			result := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-sonnet-4-5", []byte(tc.request), nil, raw, &state))
+			result := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-sonnet-4-5", []byte(tc.request), nil, raw, &state))
 			errInput := state.(interface{ ToolInputError() error }).ToolInputError()
 			if tc.invalid {
 				if result.Get("status").String() != "failed" || result.Get("error.code").String() != "invalid_tool_arguments" || errInput == nil || result.Get("output.#").Int() != 0 {
@@ -2486,7 +2486,7 @@ func TestConvertClaudeResponseToOpenAIResponses_PinsRequestPerStream(t *testing.
 	}
 
 	var param any
-	var added, completed gjson.Result
+	var added, completed ojson.Result
 	for i, chunk := range chunks {
 		// Only the first chunk carries the request copy; the pinned state
 		// must keep tool metadata and completed-event fields working even
@@ -2538,4 +2538,213 @@ func BenchmarkConvertClaudeResponseToOpenAIResponses_TextDelta(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", request, nil, delta, &param)
 	}
+}
+
+func TestConvertClaudeResponseToOpenAIResponses_ErrorEventStream(t *testing.T) {
+	ctx := context.Background()
+	origReq := []byte(`{"model":"claude-sonnet-4-5","input":"Hello"}`)
+
+	t.Run("standalone error event emits response.failed and terminates stream", func(t *testing.T) {
+		var param any
+		errChunk := []byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
+		out := ConvertClaudeResponseToOpenAIResponses(ctx, "claude-sonnet-4-5", origReq, nil, errChunk, &param)
+		if len(out) != 1 {
+			t.Fatalf("len(out) = %d, want 1", len(out))
+		}
+		event, data := parseClaudeResponsesSSEEvent(t, out[0])
+		if event != "response.failed" || data.Get("type").String() != "response.failed" {
+			t.Fatalf("event=%q data.type=%q, want response.failed", event, data.Get("type").String())
+		}
+		if data.Get("sequence_number").Int() != 1 {
+			t.Fatalf("sequence_number = %d, want 1", data.Get("sequence_number").Int())
+		}
+		if data.Get("response.status").String() != "failed" {
+			t.Fatalf("response.status = %q, want failed", data.Get("response.status").String())
+		}
+		if data.Get("response.error.code").String() != "overloaded_error" || data.Get("response.error.message").String() != "Overloaded" {
+			t.Fatalf("response.error = %s, want overloaded_error / Overloaded", data.Get("response.error").Raw)
+		}
+		if data.Get("response.created_at").Int() <= 0 {
+			t.Fatalf("response.created_at = %d, want > 0", data.Get("response.created_at").Int())
+		}
+		if data.Get("response.model").String() != "claude-sonnet-4-5" {
+			t.Fatalf("response.model = %q, want claude-sonnet-4-5", data.Get("response.model").String())
+		}
+		// Subsequent events after error must be ignored.
+		after := ConvertClaudeResponseToOpenAIResponses(ctx, "claude-sonnet-4-5", origReq, nil, []byte(`data: {"type":"message_stop"}`), &param)
+		if len(after) != 0 {
+			t.Fatalf("expected no events after response.failed, got %d", len(after))
+		}
+	})
+
+	t.Run("mid-stream error preserves response id, usage, and partial outputs without completing unfinished tool calls", func(t *testing.T) {
+		var param any
+		chunks := [][]byte{
+			[]byte(`data: {"type":"message_start","message":{"id":"msg_err_1","model":"claude-sonnet-4-5","usage":{"input_tokens":7,"output_tokens":2}}}`),
+			[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+			[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial text"}}`),
+			[]byte(`data: {"type":"content_block_stop","index":0}`),
+			[]byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}`),
+			[]byte(`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Tok"}}`),
+			[]byte(`data: {"type":"error","error":{"type":"api_error","message":"Internal server error"}}`),
+		}
+		var failed ojson.Result
+		foundFailed := false
+		for _, ch := range chunks {
+			for _, emitted := range ConvertClaudeResponseToOpenAIResponses(ctx, "claude-sonnet-4-5", origReq, nil, ch, &param) {
+				event, data := parseClaudeResponsesSSEEvent(t, emitted)
+				if event == "response.failed" {
+					foundFailed = true
+					failed = data
+				}
+			}
+		}
+		if !foundFailed {
+			t.Fatalf("expected response.failed event")
+		}
+		if failed.Get("response.id").String() != "msg_err_1" {
+			t.Fatalf("response.id = %q, want msg_err_1", failed.Get("response.id").String())
+		}
+		if failed.Get("response.error.code").String() != "api_error" || failed.Get("response.error.message").String() != "Internal server error" {
+			t.Fatalf("response.error = %s", failed.Get("response.error").Raw)
+		}
+		if failed.Get("response.usage.input_tokens").Int() != 7 || failed.Get("response.usage.output_tokens").Int() != 2 {
+			t.Fatalf("response.usage = %s, want input_tokens=7 output_tokens=2", failed.Get("response.usage").Raw)
+		}
+		outputs := failed.Get("response.output").Array()
+		if len(outputs) != 2 {
+			t.Fatalf("response.output len = %d, want 2; raw=%s", len(outputs), failed.Get("response.output").Raw)
+		}
+		if outputs[0].Get("type").String() != "message" || outputs[0].Get("status").String() != "completed" || outputs[0].Get("content.0.text").String() != "partial text" {
+			t.Fatalf("output[0] = %s, want completed message with partial text", outputs[0].Raw)
+		}
+		if outputs[1].Get("type").String() != "function_call" || outputs[1].Get("status").String() != "incomplete" || outputs[1].Get("arguments").String() != `{"city":"Tok` {
+			t.Fatalf("output[1] = %s, want incomplete function_call with partial arguments", outputs[1].Raw)
+		}
+	})
+
+	t.Run("error event with missing fields falls back to default code and message", func(t *testing.T) {
+		var param any
+		out := ConvertClaudeResponseToOpenAIResponses(ctx, "claude-sonnet-4-5", origReq, nil, []byte(`data: {"type":"error","error":{}}`), &param)
+		if len(out) != 1 {
+			t.Fatalf("len(out) = %d, want 1", len(out))
+		}
+		_, data := parseClaudeResponsesSSEEvent(t, out[0])
+		if data.Get("response.error.code").String() != "api_error" || data.Get("response.error.message").String() != "Upstream Claude error" {
+			t.Fatalf("response.error = %s, want defaults", data.Get("response.error").Raw)
+		}
+	})
+}
+
+func TestConvertClaudeResponseToOpenAIResponsesNonStream_ErrorEvent(t *testing.T) {
+	ctx := context.Background()
+	origReq := []byte(`{"model":"claude-sonnet-4-5","input":"Hello"}`)
+
+	t.Run("SSE error event returns failed response with error payload", func(t *testing.T) {
+		rawSSE := []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")
+		out := ConvertClaudeResponseToOpenAIResponsesNonStream(ctx, "claude-sonnet-4-5", origReq, nil, rawSSE, nil)
+		root := ojson.ParseBytes(out)
+		if root.Get("status").String() != "failed" {
+			t.Fatalf("status = %q, want failed; out=%s", root.Get("status").String(), string(out))
+		}
+		if root.Get("error.code").String() != "overloaded_error" || root.Get("error.message").String() != "Overloaded" {
+			t.Fatalf("error = %s, want overloaded_error / Overloaded", root.Get("error").Raw)
+		}
+		if root.Get("created_at").Int() <= 0 {
+			t.Fatalf("created_at = %d, want > 0", root.Get("created_at").Int())
+		}
+		if root.Get("model").String() != "claude-sonnet-4-5" {
+			t.Fatalf("model = %q, want claude-sonnet-4-5", root.Get("model").String())
+		}
+	})
+
+	t.Run("SSE error after message_start preserves response id, usage, and partial outputs without completing unfinished tool calls", func(t *testing.T) {
+		rawSSE := bytes.Join([][]byte{
+			[]byte(`data: {"type":"message_start","message":{"id":"msg_ns_err","model":"claude-sonnet-4-5","usage":{"input_tokens":7,"output_tokens":2}}}`),
+			[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+			[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial text"}}`),
+			[]byte(`data: {"type":"content_block_stop","index":0}`),
+			[]byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_ns_1","name":"get_weather","input":{}}}`),
+			[]byte(`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Tok"}}`),
+			[]byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`),
+		}, []byte("\n\n"))
+		out := ConvertClaudeResponseToOpenAIResponsesNonStream(ctx, "claude-sonnet-4-5", origReq, nil, rawSSE, nil)
+		root := ojson.ParseBytes(out)
+		if root.Get("status").String() != "failed" || root.Get("id").String() != "msg_ns_err" {
+			t.Fatalf("out = %s, want status=failed and id=msg_ns_err", string(out))
+		}
+		if root.Get("error.code").String() != "overloaded_error" || root.Get("error.message").String() != "Overloaded" {
+			t.Fatalf("error = %s", root.Get("error").Raw)
+		}
+		if root.Get("usage.input_tokens").Int() != 7 || root.Get("usage.output_tokens").Int() != 2 {
+			t.Fatalf("usage = %s, want input_tokens=7 output_tokens=2", root.Get("usage").Raw)
+		}
+		outputs := root.Get("output").Array()
+		if len(outputs) != 2 {
+			t.Fatalf("output len = %d, want 2; raw=%s", len(outputs), root.Get("output").Raw)
+		}
+		if outputs[0].Get("type").String() != "message" || outputs[0].Get("status").String() != "completed" || outputs[0].Get("content.0.text").String() != "partial text" {
+			t.Fatalf("output[0] = %s, want completed message with partial text", outputs[0].Raw)
+		}
+		if outputs[1].Get("type").String() != "function_call" || outputs[1].Get("status").String() != "incomplete" || outputs[1].Get("arguments").String() != `{"city":"Tok` {
+			t.Fatalf("output[1] = %s, want incomplete function_call with partial arguments", outputs[1].Raw)
+		}
+	})
+
+	t.Run("SSE error after stopped web_search without result marks web_search_call incomplete", func(t *testing.T) {
+		chunks := [][]byte{
+			[]byte(`data: {"type":"message_start","message":{"id":"msg_ws_err","model":"claude-sonnet-4-5","usage":{"input_tokens":11,"output_tokens":3}}}`),
+			[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"weather tokyo"}}}`),
+			[]byte(`data: {"type":"content_block_stop","index":0}`),
+			[]byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`),
+		}
+		rawSSE := bytes.Join(chunks, []byte("\n\n"))
+		out := ConvertClaudeResponseToOpenAIResponsesNonStream(ctx, "claude-sonnet-4-5", origReq, nil, rawSSE, nil)
+		root := ojson.ParseBytes(out)
+		if root.Get("status").String() != "failed" || root.Get("id").String() != "msg_ws_err" {
+			t.Fatalf("non-stream out = %s, want status=failed and id=msg_ws_err", string(out))
+		}
+		if root.Get("usage.input_tokens").Int() != 11 || root.Get("usage.output_tokens").Int() != 3 {
+			t.Fatalf("non-stream usage = %s, want input_tokens=11 output_tokens=3", root.Get("usage").Raw)
+		}
+		outputs := root.Get("output").Array()
+		if len(outputs) != 1 || outputs[0].Get("type").String() != "web_search_call" || outputs[0].Get("status").String() != "incomplete" {
+			t.Fatalf("non-stream output = %s, want single incomplete web_search_call", root.Get("output").Raw)
+		}
+
+		var param any
+		var failed ojson.Result
+		foundFailed := false
+		for _, ch := range chunks {
+			for _, emitted := range ConvertClaudeResponseToOpenAIResponses(ctx, "claude-sonnet-4-5", origReq, nil, ch, &param) {
+				event, data := parseClaudeResponsesSSEEvent(t, emitted)
+				if event == "response.failed" {
+					foundFailed = true
+					failed = data
+				}
+			}
+		}
+		if !foundFailed {
+			t.Fatalf("expected streaming response.failed event")
+		}
+		streamOutputs := failed.Get("response.output").Array()
+		if len(streamOutputs) != 1 || streamOutputs[0].Get("type").String() != "web_search_call" || streamOutputs[0].Get("status").String() != "incomplete" {
+			t.Fatalf("stream response.output = %s, want single incomplete web_search_call", failed.Get("response.output").Raw)
+		}
+	})
+
+	t.Run("native non-SSE JSON error returns failed response", func(t *testing.T) {
+		rawJSON := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}`)
+		out := ConvertClaudeResponseToOpenAIResponsesNonStream(ctx, "claude-sonnet-4-5", origReq, nil, rawJSON, nil)
+		root := ojson.ParseBytes(out)
+		if root.Get("status").String() != "failed" {
+			t.Fatalf("status = %q, want failed; out=%s", root.Get("status").String(), string(out))
+		}
+		if root.Get("error.code").String() != "rate_limit_error" || root.Get("error.message").String() != "Rate limited" {
+			t.Fatalf("error = %s, want rate_limit_error / Rate limited", root.Get("error").Raw)
+		}
+		if root.Get("created_at").Int() <= 0 {
+			t.Fatalf("created_at = %d, want > 0", root.Get("created_at").Int())
+		}
+	})
 }

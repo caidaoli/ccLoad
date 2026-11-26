@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 // A known name does not make either missing downstream ID safe to publish.
@@ -49,7 +51,7 @@ func TestApplyPatchResponsesNamedLateIdentity(t *testing.T) {
 				counts := map[string]int{}
 				var fragments []string
 				for _, event := range events {
-					root := gjson.ParseBytes(event)
+					root := util.ParseGJSONBytesNoCopy(event)
 					kind := root.Get("type").String()
 					counts[kind]++
 					identity := root
@@ -117,7 +119,7 @@ func TestApplyPatchResponsesNamedLateIdentityEvidence(t *testing.T) {
 				}
 				out, errTransform = b.Transform(tc.after)
 			}
-			if errTransform == nil || len(out) != 1 || gjson.GetBytes(out[0], "type").String() != "response.failed" {
+			if errTransform == nil || len(out) != 1 || ojson.GetBytesNoCopy(out[0], "type").String() != "response.failed" {
 				t.Fatalf("lost evidence: %s %v", out, errTransform)
 			}
 			if out, errTransform = b.Transform(tc.after); len(out) != 0 || errTransform != nil {
@@ -143,7 +145,7 @@ func TestApplyPatchResponsesNamedLateIdentityInterleaved(t *testing.T) {
 	}
 	events = append(events, patchSend(t, b, []byte(`{"type":"response.completed","response":{"output":[]}}`))...)
 	for _, event := range events {
-		root := gjson.ParseBytes(event)
+		root := util.ParseGJSONBytesNoCopy(event)
 		if root.Get("type").String() == "response.completed" {
 			for i, item := range root.Get("response.output").Array() {
 				if item.Get("id").String() != fmt.Sprint("a", i) || item.Get("call_id").String() != fmt.Sprint("c", i) || item.Get("input").String() != fmt.Sprint(i) {

@@ -1,9 +1,10 @@
 package signature
 
 import (
-	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/MoeForge/moego/base64"
 )
 
 // testMetaReasoningSignature builds a synthetic Meta Muse envelope with the

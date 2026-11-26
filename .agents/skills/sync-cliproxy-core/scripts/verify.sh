@@ -88,7 +88,7 @@ audit_provider_imports() {
   while IFS= read -r import_path; do
     [[ -n "$import_path" ]] || continue
     case "$import_path" in
-      github.com/tidwall/gjson|github.com/tidwall/sjson)
+      github.com/MoeForge/moego/ojson)
         continue
         ;;
       google.golang.org/protobuf/encoding/protowire)

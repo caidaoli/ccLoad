@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // Chat Completions has no tool-search item type. A client-executed Responses
@@ -17,16 +16,16 @@ import (
 const responsesChatToolSearchFunctionName = "tool_search"
 
 type responsesToolSearchDeclaration struct {
-	tool gjson.Result
+	tool ojson.Result
 }
 
-func walkResponsesToolSearchDeclarations(root gjson.Result, visit func(responsesToolSearchDeclaration) bool) {
+func walkResponsesToolSearchDeclarations(root ojson.Result, visit func(responsesToolSearchDeclaration) bool) {
 	proceed := true
-	scan := func(tools gjson.Result) {
+	scan := func(tools ojson.Result) {
 		if !proceed || !tools.Exists() || !tools.IsArray() {
 			return
 		}
-		tools.ForEach(func(_, tool gjson.Result) bool {
+		tools.ForEach(func(_, tool ojson.Result) bool {
 			if strings.TrimSpace(tool.Get("type").String()) == "tool_search" {
 				proceed = visit(responsesToolSearchDeclaration{tool: tool})
 			}
@@ -36,7 +35,7 @@ func walkResponsesToolSearchDeclarations(root gjson.Result, visit func(responses
 
 	scan(root.Get("tools"))
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		input.ForEach(func(_, item gjson.Result) bool {
+		input.ForEach(func(_, item ojson.Result) bool {
 			switch strings.TrimSpace(item.Get("type").String()) {
 			case "additional_tools":
 				scan(item.Get("tools"))
@@ -53,13 +52,13 @@ func walkResponsesToolSearchDeclarations(root gjson.Result, visit func(responses
 
 func responsesToolSearchNames(requestRawJSON []byte) map[string]struct{} {
 	names := make(map[string]struct{})
-	root := gjson.ParseBytes(requestRawJSON)
+	root := ojson.ParseBytes(requestRawJSON)
 	walkResponsesToolSearchDeclarations(root, func(responsesToolSearchDeclaration) bool {
 		names[responsesChatToolSearchFunctionName] = struct{}{}
 		return true
 	})
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		input.ForEach(func(_, item gjson.Result) bool {
+		input.ForEach(func(_, item ojson.Result) bool {
 			switch strings.TrimSpace(item.Get("type").String()) {
 			case "tool_search_call", "tool_search_output":
 				names[responsesChatToolSearchFunctionName] = struct{}{}
@@ -74,16 +73,16 @@ func responsesToolSearchNames(requestRawJSON []byte) map[string]struct{} {
 // Responses tool_search_call. The Responses API normally sends an object, but
 // accepting a JSON object string here keeps replayed history compatible with
 // clients that serialize all tool arguments as strings.
-func normalizeResponsesToolSearchArguments(value gjson.Result) (string, error) {
+func normalizeResponsesToolSearchArguments(value ojson.Result) (string, error) {
 	if !value.Exists() {
 		return "", fmt.Errorf("tool_search_call.arguments is required")
 	}
 	candidate := value
-	if value.Type == gjson.String {
-		if !gjson.Valid(value.String()) {
+	if value.Type == ojson.String {
+		if !ojson.Valid(value.String()) {
 			return "", fmt.Errorf("tool_search_call.arguments must be an object")
 		}
-		candidate = gjson.Parse(value.String())
+		candidate = ojson.Parse(value.String())
 	}
 	if !candidate.IsObject() {
 		return "", fmt.Errorf("tool_search_call.arguments must be an object")
@@ -95,7 +94,7 @@ func normalizeResponsesToolSearchArguments(value gjson.Result) (string, error) {
 }
 
 func responsesToolSearchArgumentsObject(arguments string) []byte {
-	if raw, err := normalizeResponsesToolSearchArguments(gjson.Parse(arguments)); err == nil {
+	if raw, err := normalizeResponsesToolSearchArguments(ojson.Parse(arguments)); err == nil {
 		return []byte(raw)
 	}
 	// An invalid search call must never be represented as an executable
@@ -105,25 +104,25 @@ func responsesToolSearchArgumentsObject(arguments string) []byte {
 	return nil
 }
 
-func setToolSearchOutputContent(toolMessage []byte, tools gjson.Result) []byte {
+func setToolSearchOutputContent(toolMessage []byte, tools ojson.Result) []byte {
 	if tools.Exists() && tools.IsArray() {
 		// Chat tool messages have string content. Keeping the loaded tool
 		// declarations as JSON preserves namespace/function metadata for the
 		// next Responses request and is also readable by ordinary providers.
-		toolMessage, _ = sjson.SetBytes(toolMessage, "content", tools.Raw)
+		toolMessage, _ = ojson.SetBytes(toolMessage, "content", tools.Raw)
 		return toolMessage
 	}
-	toolMessage, _ = sjson.SetBytes(toolMessage, "content", "[]")
+	toolMessage, _ = ojson.SetBytes(toolMessage, "content", "[]")
 	return toolMessage
 }
 
-func responsesRequestHasToolSearch(root gjson.Result) bool {
+func responsesRequestHasToolSearch(root ojson.Result) bool {
 	found := false
-	scan := func(tools gjson.Result) {
+	scan := func(tools ojson.Result) {
 		if found || !tools.Exists() || !tools.IsArray() {
 			return
 		}
-		tools.ForEach(func(_, tool gjson.Result) bool {
+		tools.ForEach(func(_, tool ojson.Result) bool {
 			if strings.TrimSpace(tool.Get("type").String()) == "tool_search" {
 				found = true
 				return false
@@ -133,7 +132,7 @@ func responsesRequestHasToolSearch(root gjson.Result) bool {
 	}
 	scan(root.Get("tools"))
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		input.ForEach(func(_, item gjson.Result) bool {
+		input.ForEach(func(_, item ojson.Result) bool {
 			typeName := strings.TrimSpace(item.Get("type").String())
 			if typeName == "tool_search_call" || typeName == "tool_search_output" {
 				found = true
@@ -149,10 +148,10 @@ func responsesRequestHasToolSearch(root gjson.Result) bool {
 }
 
 func validateOpenAIResponsesRequestForChat(raw []byte) error {
-	if !gjson.ValidBytes(raw) {
+	if !ojson.ValidBytes(raw) {
 		return fmt.Errorf("invalid OpenAI Responses request JSON")
 	}
-	root := gjson.ParseBytes(raw)
+	root := ojson.ParseBytes(raw)
 	if !root.IsObject() {
 		return fmt.Errorf("OpenAI Responses request must be a JSON object")
 	}
@@ -167,8 +166,8 @@ func validateOpenAIResponsesRequestForChat(raw []byte) error {
 	searchCallIDs := make(map[string]struct{})
 	searchOutputIDs := make(map[string]struct{})
 
-	var validateToolArray func(gjson.Result, string, bool, bool) error
-	validateToolArray = func(tools gjson.Result, path string, allowSearch, strict bool) error {
+	var validateToolArray func(ojson.Result, string, bool, bool) error
+	validateToolArray = func(tools ojson.Result, path string, allowSearch, strict bool) error {
 		if !tools.Exists() {
 			return nil
 		}
@@ -255,7 +254,7 @@ func validateOpenAIResponsesRequestForChat(raw []byte) error {
 		return nil
 	}
 	input := root.Get("input")
-	if input.Exists() && !input.IsArray() && input.Type != gjson.String {
+	if input.Exists() && !input.IsArray() && input.Type != ojson.String {
 		return fmt.Errorf("input must be a string or array")
 	}
 
@@ -338,7 +337,7 @@ func validateOpenAIResponsesRequestForChat(raw []byte) error {
 // calls continue through the historical best-effort response converter,
 // including when their argument text is malformed.
 func validateOpenAIChatCompletionsToolSearchArguments(requestForNamespace, responseRawJSON []byte) error {
-	if len(requestForNamespace) == 0 || !gjson.ValidBytes(requestForNamespace) {
+	if len(requestForNamespace) == 0 || !ojson.ValidBytes(requestForNamespace) {
 		return nil
 	}
 	searchNames := responsesToolSearchNames(requestForNamespace)
@@ -346,13 +345,13 @@ func validateOpenAIChatCompletionsToolSearchArguments(requestForNamespace, respo
 		return nil
 	}
 
-	root := gjson.ParseBytes(responseRawJSON)
+	root := ojson.ParseBytes(responseRawJSON)
 	choices := root.Get("choices")
 	if !choices.Exists() || !choices.IsArray() {
 		return nil
 	}
 	var validationErr error
-	choices.ForEach(func(_, choice gjson.Result) bool {
+	choices.ForEach(func(_, choice ojson.Result) bool {
 		if validationErr != nil {
 			return false
 		}
@@ -360,13 +359,13 @@ func validateOpenAIChatCompletionsToolSearchArguments(requestForNamespace, respo
 		if !toolCalls.Exists() || !toolCalls.IsArray() {
 			return true
 		}
-		toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
+		toolCalls.ForEach(func(_, toolCall ojson.Result) bool {
 			name := strings.TrimSpace(toolCall.Get("function.name").String())
 			if _, isSearchTool := searchNames[name]; !isSearchTool {
 				return true
 			}
 			arguments := toolCall.Get("function.arguments")
-			if _, err := normalizeResponsesToolSearchArguments(gjson.Parse(arguments.String())); err != nil {
+			if _, err := normalizeResponsesToolSearchArguments(ojson.Parse(arguments.String())); err != nil {
 				callID := strings.TrimSpace(toolCall.Get("id").String())
 				if callID == "" {
 					returnErr := fmt.Errorf("tool_search_call.arguments: %w", err)
@@ -399,7 +398,7 @@ func validateOpenAIChatCompletionsToolSearchState(st *oaiToResponsesState) error
 		if buffer := st.FuncArgsBuf[key]; buffer != nil {
 			arguments = buffer.String()
 		}
-		if _, err := normalizeResponsesToolSearchArguments(gjson.Parse(arguments)); err != nil {
+		if _, err := normalizeResponsesToolSearchArguments(ojson.Parse(arguments)); err != nil {
 			callID := strings.TrimSpace(st.FuncCallIDs[key])
 			if callID == "" {
 				return fmt.Errorf("tool_search_call.arguments: %w", err)
@@ -418,13 +417,13 @@ func openAIChatCompletionChunkIsTerminal(rawJSON []byte) bool {
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
 		return true
 	}
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 	choices := root.Get("choices")
 	if !choices.Exists() || !choices.IsArray() {
 		return false
 	}
 	terminal := false
-	choices.ForEach(func(_, choice gjson.Result) bool {
+	choices.ForEach(func(_, choice ojson.Result) bool {
 		if finishReason := choice.Get("finish_reason"); finishReason.Exists() && strings.TrimSpace(finishReason.String()) != "" {
 			terminal = true
 			return false

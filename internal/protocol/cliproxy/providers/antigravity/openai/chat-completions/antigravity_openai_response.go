@@ -18,8 +18,7 @@ import (
 	corechat "ccLoad/internal/protocol/cliproxy/gemini/openai/chat-completions"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // convertCliResponseToOpenAIChatParams holds parameters for response conversion.
@@ -90,7 +89,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 		if params.SawResponse && !params.SawFinishReason {
 			template := params.finishChunk(params.newChunk())
 			if len(params.PendingUsageMetadata) > 0 {
-				template = setOpenAIUsageMetadata(template, gjson.ParseBytes(params.PendingUsageMetadata))
+				template = setOpenAIUsageMetadata(template, ojson.ParseBytes(params.PendingUsageMetadata))
 			}
 			return [][]byte{template}
 		}
@@ -98,37 +97,37 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	}
 
 	if !params.SawResponse {
-		params.SawResponse = hasAntigravityResponsePayload(rawJSON)
+		params.SawResponse = translatorcommon.HasAntigravityResponsePayload(rawJSON)
 	}
 
 	// Carry the response metadata forward when sparse frames omit it.
-	if modelVersionResult := gjson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
+	if modelVersionResult := ojson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
 		params.ModelVersion = modelVersionResult.String()
 	}
-	if createTimeResult := gjson.GetBytes(rawJSON, "response.createTime"); createTimeResult.Exists() {
+	if createTimeResult := ojson.GetBytes(rawJSON, "response.createTime"); createTimeResult.Exists() {
 		t, err := time.Parse(time.RFC3339Nano, createTimeResult.String())
 		if err == nil {
 			params.UnixTimestamp = t.Unix()
 		}
 	}
-	if responseIDResult := gjson.GetBytes(rawJSON, "response.responseId"); responseIDResult.Exists() {
+	if responseIDResult := ojson.GetBytes(rawJSON, "response.responseId"); responseIDResult.Exists() {
 		params.ResponseID = responseIDResult.String()
 	}
 	template := params.newChunk()
 
-	usageResult := gjson.GetBytes(rawJSON, "response.usageMetadata")
+	usageResult := ojson.GetBytes(rawJSON, "response.usageMetadata")
 	hasUsage := usageResult.IsObject()
 	if params.SawFinishReason {
 		if !hasUsage || usageResult.Raw == params.LastUsageMetadata {
 			return nil
 		}
 		params.LastUsageMetadata = strings.Clone(usageResult.Raw)
-		template, _ = sjson.SetRawBytes(template, "choices", []byte(`[]`))
+		template, _ = ojson.SetRawBytes(template, "choices", []byte(`[]`))
 		return [][]byte{setOpenAIUsageMetadata(template, usageResult)}
 	}
 
 	// Sparse tool continuations can carry an empty finish reason after a terminal notice.
-	if finishReason := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason"); finishReason.Type == gjson.String {
+	if finishReason := ojson.GetBytes(rawJSON, "response.candidates.0.finishReason"); finishReason.Type == ojson.String {
 		if reason := strings.TrimSpace(finishReason.String()); reason != "" {
 			params.UpstreamFinishReason = strings.ToUpper(reason)
 		}
@@ -138,7 +137,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	// non-terminal usage to cpaUsageMetadata, so retain the latest copy for [DONE]
 	// instead of treating an intermediate chunk as terminal.
 	if !hasUsage {
-		if pendingUsage := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata"); pendingUsage.IsObject() {
+		if pendingUsage := ojson.GetBytes(rawJSON, "response.cpaUsageMetadata"); pendingUsage.IsObject() {
 			params.PendingUsageMetadata = append(params.PendingUsageMetadata[:0], pendingUsage.Raw...)
 		}
 	}
@@ -146,7 +145,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	// Process the main content part of the response.
 	hasDeltaContent := false
 	hasNonEmptyDelta := false
-	partsResult := gjson.GetBytes(rawJSON, "response.candidates.0.content.parts")
+	partsResult := ojson.GetBytes(rawJSON, "response.candidates.0.content.parts")
 	if partsResult.IsArray() {
 		partResults := partsResult.Array()
 		var textContent strings.Builder
@@ -190,7 +189,7 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 					hasTextContent = true
 					textContent.WriteString(text)
 				}
-				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+				template, _ = ojson.SetBytes(template, "choices.0.delta.role", "assistant")
 			} else if functionCallResult.Exists() {
 				call, err := params.convertToolCall(functionCallResult)
 				if err != nil {
@@ -201,11 +200,11 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 					continue
 				}
 				hasDeltaContent = true
-				if !gjson.GetBytes(template, "choices.0.delta.tool_calls").IsArray() {
-					template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+				if !ojson.GetBytes(template, "choices.0.delta.tool_calls").IsArray() {
+					template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 				}
-				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
-				template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", call)
+				template, _ = ojson.SetBytes(template, "choices.0.delta.role", "assistant")
+				template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", call)
 			} else if inlineDataResult.Exists() {
 				if partResult.Get("thought").Bool() {
 					continue
@@ -222,24 +221,24 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 					mimeType = "image/png"
 				}
 				imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, data)
-				imagesResult := gjson.GetBytes(template, "choices.0.delta.images")
+				imagesResult := ojson.GetBytes(template, "choices.0.delta.images")
 				if !imagesResult.Exists() || !imagesResult.IsArray() {
-					template, _ = sjson.SetRawBytes(template, "choices.0.delta.images", []byte(`[]`))
+					template, _ = ojson.SetRawBytes(template, "choices.0.delta.images", []byte(`[]`))
 				}
-				imageIndex := len(gjson.GetBytes(template, "choices.0.delta.images").Array())
+				imageIndex := len(ojson.GetBytes(template, "choices.0.delta.images").Array())
 				imagePayload := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-				imagePayload, _ = sjson.SetBytes(imagePayload, "index", imageIndex)
-				imagePayload, _ = sjson.SetBytes(imagePayload, "image_url.url", imageURL)
+				imagePayload, _ = ojson.SetBytes(imagePayload, "index", imageIndex)
+				imagePayload, _ = ojson.SetBytes(imagePayload, "image_url.url", imageURL)
 				hasDeltaContent = true
-				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
-				template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
+				template, _ = ojson.SetBytes(template, "choices.0.delta.role", "assistant")
+				template, _ = ojson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
 			}
 		}
 		if hasTextContent {
-			template, _ = sjson.SetBytes(template, "choices.0.delta.content", textContent.String())
+			template, _ = ojson.SetBytes(template, "choices.0.delta.content", textContent.String())
 		}
 		if hasReasoningContent {
-			template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", reasoningContent.String())
+			template, _ = ojson.SetBytes(template, "choices.0.delta.reasoning_content", reasoningContent.String())
 		}
 		hasNonEmptyDelta = hasDeltaContent || textContent.Len() > 0 || reasoningContent.Len() > 0
 		hasDeltaContent = hasDeltaContent || hasTextContent || hasReasoningContent
@@ -275,12 +274,12 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	return [][]byte{template}
 }
 
-func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc gjson.Result) ([]byte, error) {
+func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc ojson.Result) ([]byte, error) {
 	rawName := strings.TrimSpace(fc.Get("name").String())
 	id := strings.TrimSpace(translatorcommon.VertexFunctionCallID(fc))
 	args := fc.Get("args")
 	streaming := translatorcommon.IsVertexStreamingFunctionCall(fc)
-	marked := streaming || fc.Get("willContinue").Type == gjson.False || fc.Get("will_continue").Type == gjson.False
+	marked := streaming || fc.Get("willContinue").Type == ojson.False || fc.Get("will_continue").Type == ojson.False
 	if rawName == "" && id == "" && !marked && (!args.IsObject() || strings.TrimSpace(args.Raw[1:len(args.Raw)-1]) == "") {
 		return nil, nil // An empty placeholder carries no continuation information.
 	}
@@ -299,7 +298,7 @@ func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc gjson.Result) 
 		if delta == "" {
 			return nil, nil
 		}
-		call, _ := sjson.SetBytes([]byte(`{"index":0,"function":{"arguments":""}}`), "index", active.Index)
+		call, _ := ojson.SetBytes([]byte(`{"index":0,"function":{"arguments":""}}`), "index", active.Index)
 		return translatorcommon.SetStringWithoutHTMLEscape(call, "function.arguments", delta)
 	}
 	if rawName == "" {
@@ -314,9 +313,9 @@ func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc gjson.Result) 
 		id = fmt.Sprintf("%s-%d-%d", name, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
 	}
 	call := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":"{}"}}`)
-	call, _ = sjson.SetBytes(call, "id", id)
-	call, _ = sjson.SetBytes(call, "index", p.FunctionIndex)
-	call, _ = sjson.SetBytes(call, "function.name", name)
+	call, _ = ojson.SetBytes(call, "id", id)
+	call, _ = ojson.SetBytes(call, "index", p.FunctionIndex)
+	call, _ = ojson.SetBytes(call, "function.name", name)
 	if streaming {
 		active := &antigravityChatToolCall{RawName: rawName, Index: p.FunctionIndex}
 		delta, done, err := active.pushArguments(fc)
@@ -331,7 +330,7 @@ func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc gjson.Result) 
 		}
 		call, _ = translatorcommon.SetStringWithoutHTMLEscape(call, "function.arguments", delta)
 	} else if args.IsObject() {
-		call, _ = sjson.SetBytes(call, "function.arguments", args.Raw)
+		call, _ = ojson.SetBytes(call, "function.arguments", args.Raw)
 	}
 	p.FunctionIndex++
 	p.SawToolCall = true
@@ -363,7 +362,7 @@ func (p *convertCliResponseToOpenAIChatParams) findActiveToolCall(id, rawName st
 	return matchID, match, nil
 }
 
-func (c *antigravityChatToolCall) pushArguments(fc gjson.Result) (string, bool, error) {
+func (c *antigravityChatToolCall) pushArguments(fc ojson.Result) (string, bool, error) {
 	args := fc.Get("args")
 	var members string
 	if args.IsObject() {
@@ -420,12 +419,12 @@ func (p *convertCliResponseToOpenAIChatParams) FinalizeToolInput() [][]byte {
 // newChunk creates a stream chunk using the most recent response metadata.
 func (p *convertCliResponseToOpenAIChatParams) newChunk() []byte {
 	chunk := []byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null},"finish_reason":null,"native_finish_reason":null}]}`)
-	chunk, _ = sjson.SetBytes(chunk, "created", p.UnixTimestamp)
+	chunk, _ = ojson.SetBytes(chunk, "created", p.UnixTimestamp)
 	if p.ModelVersion != "" {
-		chunk, _ = sjson.SetBytes(chunk, "model", p.ModelVersion)
+		chunk, _ = ojson.SetBytes(chunk, "model", p.ModelVersion)
 	}
 	if p.ResponseID != "" {
-		chunk, _ = sjson.SetBytes(chunk, "id", p.ResponseID)
+		chunk, _ = ojson.SetBytes(chunk, "id", p.ResponseID)
 	}
 	return chunk
 }
@@ -434,56 +433,10 @@ func (p *convertCliResponseToOpenAIChatParams) newChunk() []byte {
 func (p *convertCliResponseToOpenAIChatParams) finishChunk(chunk []byte) []byte {
 	p.SawFinishReason = true
 	finishReason, nativeFinishReason := resolveOpenAIFinishReason(p)
-	chunk, _ = sjson.SetRawBytes(chunk, "choices.0.delta", []byte(`{}`))
-	chunk, _ = sjson.SetBytes(chunk, "choices.0.finish_reason", finishReason)
-	chunk, _ = sjson.SetBytes(chunk, "choices.0.native_finish_reason", nativeFinishReason)
+	chunk, _ = ojson.SetRawBytes(chunk, "choices.0.delta", []byte(`{}`))
+	chunk, _ = ojson.SetBytes(chunk, "choices.0.finish_reason", finishReason)
+	chunk, _ = ojson.SetBytes(chunk, "choices.0.native_finish_reason", nativeFinishReason)
 	return chunk
-}
-
-// hasAntigravityResponsePayload reports whether a chunk carries actual generated
-// content or non-zero output token accounting. Presence alone is not enough: an
-// envelope such as `{}`, `{"response":{}}`, `{"response":{"candidates":[]}}`, or
-// a signature-only empty-text part with zero output tokens must not count as a
-// started stream, otherwise a keepalive or zero-output event would be enough to
-// finalize a stream that produced nothing.
-func hasAntigravityResponsePayload(rawJSON []byte) bool {
-	for _, path := range []string{"response.candidates", "candidates"} {
-		if candidates := gjson.GetBytes(rawJSON, path); candidates.IsArray() {
-			for _, cand := range candidates.Array() {
-				if strings.TrimSpace(cand.Get("finishReason").Str) != "" {
-					return true
-				}
-				if chunks := cand.Get("groundingMetadata.groundingChunks"); chunks.IsArray() && len(chunks.Array()) > 0 {
-					return true
-				}
-				for _, part := range cand.Get("content.parts").Array() {
-					hasVisibleInlineData := !part.Get("thought").Bool() &&
-						(part.Get("inlineData.data").String() != "" || part.Get("inline_data.data").String() != "")
-					if part.Get("text").String() != "" ||
-						strings.TrimSpace(translatorcommon.GeminiPartFunctionCall(part).Get("name").Str) != "" ||
-						hasVisibleInlineData ||
-						part.Get("fileData").Exists() || part.Get("file_data").Exists() ||
-						part.Get("executableCode").Exists() || part.Get("executable_code").Exists() ||
-						part.Get("codeExecutionResult").Exists() || part.Get("code_execution_result").Exists() {
-						return true
-					}
-				}
-			}
-		}
-	}
-	// FilterSSEUsageMetadata renames non-terminal usage to cpaUsageMetadata before
-	// the translator sees it, so both spellings must be accepted.
-	for _, path := range []string{
-		"response.usageMetadata", "response.cpaUsageMetadata",
-		"usageMetadata", "cpaUsageMetadata",
-	} {
-		if usage := gjson.GetBytes(rawJSON, path); usage.IsObject() {
-			if usage.Get("candidatesTokenCount").Int() > 0 || usage.Get("thoughtsTokenCount").Int() > 0 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // resolveOpenAIFinishReason maps the cached upstream state to the OpenAI
@@ -516,20 +469,20 @@ func isAntigravityContentFilterFinishReason(reason string) bool {
 	}
 }
 
-func setOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {
+func setOpenAIUsageMetadata(template []byte, usageResult ojson.Result) []byte {
 	cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
-	template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
-	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Type != gjson.Null {
-		template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
+	template, _ = ojson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
+	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Type != ojson.Null {
+		template, _ = ojson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 	}
 	promptTokenCount := usageResult.Get("promptTokenCount").Int()
 	thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
-	template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
+	template, _ = ojson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
 	if thoughtsTokenCount > 0 {
-		template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
+		template, _ = ojson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
 	}
 	if cachedTokenCount > 0 {
-		template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokenCount)
+		template, _ = ojson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokenCount)
 	}
 	return template
 }
@@ -548,7 +501,7 @@ func setOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {
 // Returns:
 //   - []byte: An OpenAI-compatible JSON response containing all message content and metadata
 func ConvertAntigravityResponseToOpenAINonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
-	responseResult := gjson.GetBytes(rawJSON, "response")
+	responseResult := ojson.GetBytes(rawJSON, "response")
 	if responseResult.Exists() {
 		responseJSON := restoreAntigravityOpenAIFunctionNames([]byte(responseResult.Raw), originalRequestRawJSON)
 		// Antigravity restores its own aliases before invoking the Gemini converter.
@@ -562,7 +515,7 @@ func restoreAntigravityOpenAIFunctionNames(rawJSON, originalRequestRawJSON []byt
 	if len(nameMap) == 0 {
 		return rawJSON
 	}
-	candidates := gjson.GetBytes(rawJSON, "candidates")
+	candidates := ojson.GetBytes(rawJSON, "candidates")
 	for candidateIndex, candidate := range candidates.Array() {
 		for partIndex, part := range candidate.Get("content.parts").Array() {
 			for _, field := range []string{"functionCall", "functionResponse"} {
@@ -572,11 +525,11 @@ func restoreAntigravityOpenAIFunctionNames(rawJSON, originalRequestRawJSON []byt
 					continue
 				}
 				restoredName := util.RestoreSanitizedToolName(nameMap, name)
-				if nameResult.Type == gjson.String && restoredName == name {
+				if nameResult.Type == ojson.String && restoredName == name {
 					continue
 				}
 				path := fmt.Sprintf("candidates.%d.content.parts.%d.%s.name", candidateIndex, partIndex, field)
-				rawJSON, _ = sjson.SetBytes(rawJSON, path, restoredName)
+				rawJSON, _ = ojson.SetBytes(rawJSON, path, restoredName)
 			}
 		}
 	}

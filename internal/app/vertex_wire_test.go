@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
@@ -1204,5 +1205,25 @@ func TestHandleImportVertexCredentialEgressesThroughProxy(t *testing.T) {
 	}
 	if !created.Created || cfg.ProxyURL != proxy.URL || proxyHits.Load() != 1 {
 		t.Fatalf("created=%v proxy=%q proxy hits=%d", created.Created, cfg.ProxyURL, proxyHits.Load())
+	}
+}
+
+/**
+ * @brief 验证精确 Vertex 发布者端点按最后一个冒号识别动作，模型 ID 可含冒号。
+ * @param t 测试上下文。
+ */
+func TestUsesVertexWireExactEndpointModelWithColons(t *testing.T) {
+	const base = "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google/models/"
+	for endpoint, want := range map[string]bool{
+		"qwen3:32b:streamGenerateContent": true,
+		"qwen3:32b:countTokens":           true,
+		"gemini-2.5-pro:generateContent":  true,
+		"qwen3:32b":                       false,
+		":generateContent":                false,
+		"gemini-2.5-pro":                  false,
+	} {
+		if got := usesVertexWire(&model.Config{}, protocol.Gemini, base+endpoint+model.ExactUpstreamURLMarker); got != want {
+			t.Errorf("usesVertexWire(%q)=%v, want %v", endpoint, got, want)
+		}
 	}
 }

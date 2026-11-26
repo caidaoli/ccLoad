@@ -8,15 +8,15 @@ package gemini
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"strings"
 	"time"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
 )
 
 var (
@@ -54,7 +54,7 @@ type claudeGeminiUsage struct {
 	hasReasoningTokens       bool
 }
 
-func (u *claudeGeminiUsage) merge(usage gjson.Result) {
+func (u *claudeGeminiUsage) merge(usage ojson.Result) {
 	if !usage.IsObject() {
 		return
 	}
@@ -73,7 +73,7 @@ func (u *claudeGeminiUsage) merge(usage gjson.Result) {
 		u.hasCacheReadTokens = true
 	}
 	for _, path := range []string{"output_tokens_details.thinking_tokens", "reasoning_tokens", "thinking_tokens"} {
-		if value := usage.Get(path); value.Type == gjson.Number || value.Type == gjson.String {
+		if value := usage.Get(path); value.Type == ojson.Number || value.Type == ojson.String {
 			u.reasoningTokens = value.Int()
 			u.hasReasoningTokens = true
 			break
@@ -81,21 +81,20 @@ func (u *claudeGeminiUsage) merge(usage gjson.Result) {
 	}
 }
 
-func (u claudeGeminiUsage) apply(out []byte) []byte {
+func (u claudeGeminiUsage) apply(doc *ojson.Doc) {
 	if !u.present {
-		return out
+		return
 	}
 	promptTokens := u.inputTokens + u.cacheCreationInputTokens + u.cacheReadInputTokens
-	out, _ = sjson.SetBytes(out, "usageMetadata.promptTokenCount", promptTokens)
-	out, _ = sjson.SetBytes(out, "usageMetadata.candidatesTokenCount", max(0, u.outputTokens-u.reasoningTokens))
-	out, _ = sjson.SetBytes(out, "usageMetadata.totalTokenCount", promptTokens+u.outputTokens)
+	_ = doc.Set("usageMetadata.promptTokenCount", promptTokens)
+	_ = doc.Set("usageMetadata.candidatesTokenCount", max(0, u.outputTokens-u.reasoningTokens))
+	_ = doc.Set("usageMetadata.totalTokenCount", promptTokens+u.outputTokens)
 	if u.hasCacheReadTokens {
-		out, _ = sjson.SetBytes(out, "usageMetadata.cachedContentTokenCount", u.cacheReadInputTokens)
+		_ = doc.Set("usageMetadata.cachedContentTokenCount", u.cacheReadInputTokens)
 	}
 	if u.hasReasoningTokens {
-		out, _ = sjson.SetBytes(out, "usageMetadata.thoughtsTokenCount", u.reasoningTokens)
+		_ = doc.Set("usageMetadata.thoughtsTokenCount", u.reasoningTokens)
 	}
-	return out
 }
 
 func claudeToGeminiFinishReason(stopReason string) string {
@@ -133,35 +132,35 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 	}
 	rawJSON = bytes.TrimSpace(rawJSON[5:])
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	eventType := root.Get("type").String()
 
 	// Base Gemini response template with default values
-	template := []byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"","createTime":"","responseId":""}`)
+	templateDoc := ojson.NewDoc([]byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"","createTime":"","responseId":""}`))
 
 	// Set model version
 	if (*param).(*ConvertAnthropicResponseToGeminiParams).Model != "" {
 		// Map Claude model names back to Gemini model names
-		template, _ = sjson.SetBytes(template, "modelVersion", (*param).(*ConvertAnthropicResponseToGeminiParams).Model)
+		_ = templateDoc.Set("modelVersion", (*param).(*ConvertAnthropicResponseToGeminiParams).Model)
 	}
 
 	// Set response ID and creation time
 	if (*param).(*ConvertAnthropicResponseToGeminiParams).ResponseID != "" {
-		template, _ = sjson.SetBytes(template, "responseId", (*param).(*ConvertAnthropicResponseToGeminiParams).ResponseID)
+		_ = templateDoc.Set("responseId", (*param).(*ConvertAnthropicResponseToGeminiParams).ResponseID)
 	}
 
 	// Set creation time to current time if not provided
 	if (*param).(*ConvertAnthropicResponseToGeminiParams).CreatedAt == 0 {
 		(*param).(*ConvertAnthropicResponseToGeminiParams).CreatedAt = time.Now().Unix()
 	}
-	template, _ = sjson.SetBytes(template, "createTime", time.Unix((*param).(*ConvertAnthropicResponseToGeminiParams).CreatedAt, 0).Format(time.RFC3339Nano))
+	_ = templateDoc.Set("createTime", time.Unix((*param).(*ConvertAnthropicResponseToGeminiParams).CreatedAt, 0).Format(time.RFC3339Nano))
 
 	switch eventType {
 	case "message_start":
 		// Initialize response with message metadata when a new message begins
 		if message := root.Get("message"); message.Exists() {
-			(*param).(*ConvertAnthropicResponseToGeminiParams).ResponseID = message.Get("id").String()
-			(*param).(*ConvertAnthropicResponseToGeminiParams).Model = message.Get("model").String()
+			(*param).(*ConvertAnthropicResponseToGeminiParams).ResponseID = strings.Clone(message.Get("id").String())
+			(*param).(*ConvertAnthropicResponseToGeminiParams).Model = strings.Clone(message.Get("model").String())
 			(*param).(*ConvertAnthropicResponseToGeminiParams).usage.merge(message.Get("usage"))
 		}
 		return [][]byte{}
@@ -175,23 +174,25 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 					(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseNames = map[int]string{}
 				}
 				if name := cb.Get("name"); name.Exists() {
-					(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseNames[idx] = name.String()
+					(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseNames[idx] = strings.Clone(name.String())
 				}
 				if toolID := cb.Get("id").String(); toolID != "" {
 					if (*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs == nil {
 						(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs = map[int]string{}
 					}
-					(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs[idx] = toolID
+					(*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs[idx] = strings.Clone(toolID)
 				}
 			} else if cb.Get("type").String() == "redacted_thinking" {
 				if part := geminiCompatibleThoughtSignaturePart(cb.Get("data").String()); len(part) > 0 {
-					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
-					return [][]byte{template}
+					_ = templateDoc.SetRawBytes("candidates.0.content.parts.-1", part)
+					return [][]byte{templateDoc.Bytes()}
 				}
 			} else if cb.Get("type").String() == "thinking" {
-				if part := geminiCompatibleThoughtSignaturePart(cb.Get("signature").String()); len(part) > 0 {
-					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
-					return [][]byte{template}
+				if sig := cb.Get("signature"); sig.Exists() && sig.String() != "" {
+					if thinkingPart := geminiCompatibleThoughtSignaturePart(sig.String()); len(thinkingPart) > 0 {
+						_ = templateDoc.SetRawBytes("candidates.0.content.parts.-1", thinkingPart)
+						return [][]byte{templateDoc.Bytes()}
+					}
 				}
 			}
 		}
@@ -207,21 +208,23 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 				// Regular text content delta for normal response text
 				if text := delta.Get("text"); text.Exists() && text.String() != "" {
 					textPart := []byte(`{"text":""}`)
-					textPart, _ = sjson.SetBytes(textPart, "text", text.String())
-					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", textPart)
+					textPart, _ = ojson.SetBytes(textPart, "text", text.String())
+					_ = templateDoc.SetRawBytes("candidates.0.content.parts.-1", textPart)
 				}
 			case "thinking_delta":
 				// Thinking/reasoning content delta for models with reasoning capabilities
 				if text := delta.Get("thinking"); text.Exists() && text.String() != "" {
 					thinkingPart := []byte(`{"thought":true,"text":""}`)
-					thinkingPart, _ = sjson.SetBytes(thinkingPart, "text", text.String())
-					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", thinkingPart)
+					thinkingPart, _ = ojson.SetBytes(thinkingPart, "text", text.String())
+					_ = templateDoc.SetRawBytes("candidates.0.content.parts.-1", thinkingPart)
 				}
 			case "signature_delta":
-				if part := geminiCompatibleThoughtSignaturePart(delta.Get("signature").String()); len(part) > 0 {
-					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
-				} else {
-					return [][]byte{}
+				if sig := delta.Get("signature"); sig.Exists() && sig.String() != "" {
+					if thinkingPart := geminiCompatibleThoughtSignaturePart(sig.String()); len(thinkingPart) > 0 {
+						_ = templateDoc.SetRawBytes("candidates.0.content.parts.-1", thinkingPart)
+					} else {
+						return [][]byte{}
+					}
 				}
 			case "input_json_delta":
 				// Tool use input delta - accumulate partial_json by index for later assembly at content_block_stop
@@ -241,7 +244,7 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 				return [][]byte{}
 			}
 		}
-		return [][]byte{template}
+		return [][]byte{templateDoc.Bytes()}
 
 	case "content_block_stop":
 		// End of content block - finalize tool calls if any
@@ -263,18 +266,20 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 			toolID = (*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs[idx]
 		}
 		if name != "" || argsTrim != "" {
-			functionCall := []byte(`{"functionCall":{"name":"","args":{}}}`)
+			fcDoc := ojson.NewDoc([]byte(`{"functionCall":{"name":"","args":{}}}`))
 			if name != "" {
-				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.name", name)
+				_ = fcDoc.Set("functionCall.name", name)
 			}
 			if argsTrim != "" {
-				functionCall, _ = sjson.SetRawBytes(functionCall, "functionCall.args", []byte(argsTrim))
+				_ = fcDoc.SetRaw("functionCall.args", argsTrim)
 			}
 			if toolID != "" {
-				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.id", toolID)
+				_ = fcDoc.Set("functionCall.id", toolID)
 			}
-			template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", functionCall)
-			(*param).(*ConvertAnthropicResponseToGeminiParams).LastStorageOutput = append([]byte(nil), template...)
+			_ = templateDoc.SetRawBytes("candidates.0.content.parts.-1", fcDoc.Bytes())
+			// Do not set candidates.0.finishReason here; message_delta emits the authoritative finishReason.
+			outBytes := templateDoc.Bytes()
+			(*param).(*ConvertAnthropicResponseToGeminiParams).LastStorageOutput = append([]byte(nil), outBytes...)
 			// cleanup used state for this index
 			if (*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseArgs != nil {
 				delete((*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseArgs, idx)
@@ -285,17 +290,18 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 			if (*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs != nil {
 				delete((*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseIDs, idx)
 			}
-			return [][]byte{template}
+			return [][]byte{outBytes}
 		}
 		return [][]byte{}
 
 	case "message_delta":
 		// Handle message-level changes (like stop reason and usage information)
-		template, _ = sjson.SetBytes(template, "candidates.0.finishReason", claudeToGeminiFinishReason(root.Get("delta.stop_reason").String()))
+		_ = templateDoc.Set("candidates.0.finishReason", claudeToGeminiFinishReason(root.Get("delta.stop_reason").String()))
 
 		usage := &(*param).(*ConvertAnthropicResponseToGeminiParams).usage
 		usage.merge(root.Get("usage"))
-		return [][]byte{usage.apply(template)}
+		usage.apply(templateDoc)
+		return [][]byte{templateDoc.Bytes()}
 	case "message_stop":
 		// Final message with usage information - no additional output needed
 		return [][]byte{}
@@ -308,7 +314,7 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 
 		// Create error response in Gemini format
 		errorResponse := []byte(`{"error":{"code":400,"message":"","status":"INVALID_ARGUMENT"}}`)
-		errorResponse, _ = sjson.SetBytes(errorResponse, "error.message", errorMsg)
+		errorResponse, _ = ojson.SetBytes(errorResponse, "error.message", errorMsg)
 		return [][]byte{errorResponse}
 
 	default:
@@ -330,72 +336,16 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 //
 // Returns:
 //   - []byte: A Gemini-compatible JSON response containing all message content and metadata
-func convertClaudeResponseToGeminiNonStreamMessage(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	_ = originalRequestRawJSON
-	_ = requestRawJSON
-
-	root := gjson.ParseBytes(rawJSON)
-	if root.Get("type").String() != "message" || !root.Get("content").IsArray() {
-		return nil
-	}
-
-	out := []byte(`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"modelVersion":"","responseId":""}`)
-	out, _ = sjson.SetBytes(out, "modelVersion", modelName)
-	out, _ = sjson.SetBytes(out, "responseId", root.Get("id").String())
-
-	parts := make([][]byte, 0, len(root.Get("content").Array()))
-	for _, block := range root.Get("content").Array() {
-		var part []byte
-		switch block.Get("type").String() {
-		case "text":
-			part = []byte(`{"text":""}`)
-			part, _ = sjson.SetBytes(part, "text", block.Get("text").String())
-		case "thinking":
-			part = geminiCompatibleThoughtSignaturePart(block.Get("signature").String())
-			if len(part) == 0 {
-				part = []byte(`{"thought":true,"text":""}`)
-			}
-			part, _ = sjson.SetBytes(part, "text", block.Get("thinking").String())
-		case "redacted_thinking":
-			part = geminiCompatibleThoughtSignaturePart(block.Get("data").String())
-			if len(part) == 0 {
-				continue
-			}
-		case "tool_use":
-			part = []byte(`{"functionCall":{"id":"","name":"","args":{}}}`)
-			part, _ = sjson.SetBytes(part, "functionCall.id", block.Get("id").String())
-			part, _ = sjson.SetBytes(part, "functionCall.name", block.Get("name").String())
-			if input := block.Get("input"); input.Exists() && input.IsObject() {
-				part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte(input.Raw))
-			}
-		default:
-			return nil
-		}
-		parts = append(parts, part)
-	}
-	if len(parts) > 0 {
-		out, _ = sjson.SetRawBytes(out, "candidates.0.content.parts", translatorcommon.JoinRawArray(parts))
-	}
-
-	out, _ = sjson.SetBytes(out, "candidates.0.finishReason", claudeToGeminiFinishReason(root.Get("stop_reason").String()))
-
-	var usage claudeGeminiUsage
-	usage.merge(root.Get("usage"))
-	return usage.apply(out)
-}
-
-// ConvertClaudeResponseToGeminiNonStream converts a Claude non-stream response
-// or a newline-delimited Claude event payload into a Gemini response.
-func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	if root := gjson.ParseBytes(rawJSON); root.Get("type").String() == "message" && root.Get("content").IsArray() {
-		return convertClaudeResponseToGeminiNonStreamMessage(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, nil)
+func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
+	if root := util.ParseGJSONBytesNoCopy(rawJSON); root.Get("type").String() == "message" && root.Get("content").IsArray() {
+		return convertClaudeMessageToGemini(modelName, root)
 	}
 
 	// Base Gemini response template for non-streaming with default values
-	template := []byte(`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"","createTime":"","responseId":""}`)
+	templateDoc := ojson.NewDoc([]byte(`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"","createTime":"","responseId":""}`))
 
 	// Set model version
-	template, _ = sjson.SetBytes(template, "modelVersion", modelName)
+	_ = templateDoc.Set("modelVersion", modelName)
 
 	streamingEvents := make([][]byte, 0)
 	remaining := rawJSON
@@ -432,6 +382,8 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 
 	// Process each streaming event and collect parts
 	var allParts [][]byte
+	var usage claudeGeminiUsage
+	var finishReason string
 	var responseID string
 	var createdAt int64
 
@@ -440,12 +392,12 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 			continue
 		}
 
-		root := gjson.ParseBytes(eventData)
+		root := util.ParseGJSONBytesNoCopy(eventData)
 		eventType := root.Get("type").String()
 
 		switch eventType {
 		case "message_start":
-			// Extract response metadata including ID, model, and creation time
+			// Extract response metadata including ID, model, creation time, and initial usage
 			if message := root.Get("message"); message.Exists() {
 				responseID = message.Get("id").String()
 				newParam.ResponseID = responseID
@@ -454,7 +406,8 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 				// Set creation time to current time if not provided
 				createdAt = time.Now().Unix()
 				newParam.CreatedAt = createdAt
-				newParam.usage.merge(message.Get("usage"))
+
+				usage.merge(message.Get("usage"))
 			}
 
 		case "content_block_start":
@@ -475,8 +428,10 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 						newParam.ToolUseIDs[idx] = toolID
 					}
 				} else if cb.Get("type").String() == "thinking" {
-					if partJSON := geminiCompatibleThoughtSignaturePart(cb.Get("signature").String()); len(partJSON) > 0 {
-						allParts = append(allParts, partJSON)
+					if sig := cb.Get("signature"); sig.Exists() && sig.String() != "" {
+						if partJSON := geminiCompatibleThoughtSignaturePart(sig.String()); len(partJSON) > 0 {
+							allParts = append(allParts, partJSON)
+						}
 					}
 				}
 			}
@@ -491,19 +446,21 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 					// Process regular text content
 					if text := delta.Get("text"); text.Exists() && text.String() != "" {
 						partJSON := []byte(`{"text":""}`)
-						partJSON, _ = sjson.SetBytes(partJSON, "text", text.String())
+						partJSON, _ = ojson.SetBytes(partJSON, "text", text.String())
 						allParts = append(allParts, partJSON)
 					}
 				case "thinking_delta":
 					// Process reasoning/thinking content
 					if text := delta.Get("thinking"); text.Exists() && text.String() != "" {
 						partJSON := []byte(`{"thought":true,"text":""}`)
-						partJSON, _ = sjson.SetBytes(partJSON, "text", text.String())
+						partJSON, _ = ojson.SetBytes(partJSON, "text", text.String())
 						allParts = append(allParts, partJSON)
 					}
 				case "signature_delta":
-					if partJSON := geminiCompatibleThoughtSignaturePart(delta.Get("signature").String()); len(partJSON) > 0 {
-						allParts = append(allParts, partJSON)
+					if sig := delta.Get("signature"); sig.Exists() && sig.String() != "" {
+						if partJSON := geminiCompatibleThoughtSignaturePart(sig.String()); len(partJSON) > 0 {
+							allParts = append(allParts, partJSON)
+						}
 					}
 				case "input_json_delta":
 					// accumulate args partial_json for this index
@@ -540,17 +497,17 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 				toolID = newParam.ToolUseIDs[idx]
 			}
 			if name != "" || argsTrim != "" {
-				functionCallJSON := []byte(`{"functionCall":{"name":"","args":{}}}`)
+				fcDoc := ojson.NewDoc([]byte(`{"functionCall":{"name":"","args":{}}}`))
 				if name != "" {
-					functionCallJSON, _ = sjson.SetBytes(functionCallJSON, "functionCall.name", name)
+					_ = fcDoc.Set("functionCall.name", name)
 				}
 				if argsTrim != "" {
-					functionCallJSON, _ = sjson.SetRawBytes(functionCallJSON, "functionCall.args", []byte(argsTrim))
+					_ = fcDoc.SetRaw("functionCall.args", argsTrim)
 				}
 				if toolID != "" {
-					functionCallJSON, _ = sjson.SetBytes(functionCallJSON, "functionCall.id", toolID)
+					_ = fcDoc.Set("functionCall.id", toolID)
 				}
-				allParts = append(allParts, functionCallJSON)
+				allParts = append(allParts, fcDoc.Bytes())
 				// cleanup used state for this index
 				if newParam.ToolUseArgs != nil {
 					delete(newParam.ToolUseArgs, idx)
@@ -564,19 +521,24 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 			}
 
 		case "message_delta":
-			if stopReason := root.Get("delta.stop_reason").String(); stopReason != "" {
-				template, _ = sjson.SetBytes(template, "candidates.0.finishReason", claudeToGeminiFinishReason(stopReason))
+			if delta := root.Get("delta"); delta.Exists() {
+				if stopReason := delta.Get("stop_reason").String(); stopReason != "" {
+					finishReason = claudeToGeminiFinishReason(stopReason)
+				}
 			}
-			newParam.usage.merge(root.Get("usage"))
+			usage.merge(root.Get("usage"))
 		}
 	}
 
 	// Set response metadata
+	if finishReason != "" {
+		_ = templateDoc.Set("candidates.0.finishReason", finishReason)
+	}
 	if responseID != "" {
-		template, _ = sjson.SetBytes(template, "responseId", responseID)
+		_ = templateDoc.Set("responseId", responseID)
 	}
 	if createdAt > 0 {
-		template, _ = sjson.SetBytes(template, "createTime", time.Unix(createdAt, 0).Format(time.RFC3339Nano))
+		_ = templateDoc.Set("createTime", time.Unix(createdAt, 0).Format(time.RFC3339Nano))
 	}
 
 	// Consolidate consecutive text parts and thinking parts for cleaner output
@@ -584,13 +546,64 @@ func ConvertClaudeResponseToGeminiNonStream(ctx context.Context, modelName strin
 
 	// Set the consolidated parts array
 	if len(consolidatedParts) > 0 {
-		template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts", translatorcommon.JoinRawArray(consolidatedParts))
+		_ = templateDoc.SetRawBytes("candidates.0.content.parts", translatorcommon.JoinRawArray(consolidatedParts))
 	}
 
-	return newParam.usage.apply(template)
+	usage.apply(templateDoc)
+
+	return templateDoc.Bytes()
 }
 
-// GeminiTokenCount builds a Gemini token count response.
+// convertClaudeMessageToGemini converts a native Claude message JSON directly,
+// one Gemini part per Claude block.
+func convertClaudeMessageToGemini(modelName string, root ojson.Result) []byte {
+	outDoc := ojson.NewDoc([]byte(`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"","createTime":"","responseId":""}`))
+	_ = outDoc.Set("modelVersion", modelName)
+	_ = outDoc.Set("createTime", time.Unix(time.Now().Unix(), 0).Format(time.RFC3339Nano))
+	_ = outDoc.Set("responseId", root.Get("id").String())
+
+	blocks := root.Get("content").Array()
+	parts := make([][]byte, 0, len(blocks))
+	for _, block := range blocks {
+		var part []byte
+		switch block.Get("type").String() {
+		case "text":
+			part, _ = ojson.SetBytes([]byte(`{"text":""}`), "text", block.Get("text").String())
+		case "thinking":
+			part = geminiCompatibleThoughtSignaturePart(block.Get("signature").String())
+			if len(part) == 0 {
+				part = []byte(`{"thought":true,"text":""}`)
+			}
+			part, _ = ojson.SetBytes(part, "text", block.Get("thinking").String())
+		case "redacted_thinking":
+			part = geminiCompatibleThoughtSignaturePart(block.Get("data").String())
+			if len(part) == 0 {
+				continue
+			}
+		case "tool_use":
+			fcDoc := ojson.NewDoc([]byte(`{"functionCall":{"id":"","name":"","args":{}}}`))
+			_ = fcDoc.Set("functionCall.id", block.Get("id").String())
+			_ = fcDoc.Set("functionCall.name", block.Get("name").String())
+			if input := block.Get("input"); input.Exists() && input.IsObject() {
+				_ = fcDoc.SetRaw("functionCall.args", input.Raw)
+			}
+			part = fcDoc.Bytes()
+		default:
+			return nil
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) > 0 {
+		_ = outDoc.SetRawBytes("candidates.0.content.parts", translatorcommon.JoinRawArray(parts))
+	}
+	_ = outDoc.Set("candidates.0.finishReason", claudeToGeminiFinishReason(root.Get("stop_reason").String()))
+
+	var usage claudeGeminiUsage
+	usage.merge(root.Get("usage"))
+	usage.apply(outDoc)
+	return outDoc.Bytes()
+}
+
 func GeminiTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.GeminiTokenCountJSON(count)
 }
@@ -609,9 +622,9 @@ func geminiCompatibleThoughtSignaturePart(rawSignature string) []byte {
 		}
 		signature = base64.StdEncoding.EncodeToString(decoded)
 	}
-	part := []byte(`{"thought":true,"thoughtSignature":""}`)
-	part, _ = sjson.SetBytes(part, "thoughtSignature", signature)
-	return part
+	partDoc := ojson.NewDocString(`{"thought":true,"thoughtSignature":""}`)
+	_ = partDoc.Set("thoughtSignature", signature)
+	return partDoc.Bytes()
 }
 
 // consolidateParts merges consecutive text parts and thinking parts to create a cleaner response.
@@ -633,7 +646,7 @@ func consolidateParts(parts [][]byte) [][]byte {
 		// Flush accumulated text content to the consolidated parts array
 		if hasText && currentTextPart.Len() > 0 {
 			textPartJSON := []byte(`{"text":""}`)
-			textPartJSON, _ = sjson.SetBytes(textPartJSON, "text", currentTextPart.String())
+			textPartJSON, _ = ojson.SetBytes(textPartJSON, "text", currentTextPart.String())
 			consolidated = append(consolidated, textPartJSON)
 			currentTextPart.Reset()
 			hasText = false
@@ -643,12 +656,12 @@ func consolidateParts(parts [][]byte) [][]byte {
 	flushThought := func() {
 		// Flush accumulated thinking content to the consolidated parts array
 		if hasThought && (currentThoughtPart.Len() > 0 || currentThoughtSignature != "") {
-			thoughtPartJSON := []byte(`{"thought":true,"text":""}`)
-			thoughtPartJSON, _ = sjson.SetBytes(thoughtPartJSON, "text", currentThoughtPart.String())
+			thoughtPartDoc := ojson.NewDoc([]byte(`{"thought":true,"text":""}`))
+			_ = thoughtPartDoc.Set("text", currentThoughtPart.String())
 			if currentThoughtSignature != "" {
-				thoughtPartJSON, _ = sjson.SetBytes(thoughtPartJSON, "thoughtSignature", currentThoughtSignature)
+				_ = thoughtPartDoc.Set("thoughtSignature", currentThoughtSignature)
 			}
-			consolidated = append(consolidated, thoughtPartJSON)
+			consolidated = append(consolidated, thoughtPartDoc.Bytes())
 			currentThoughtPart.Reset()
 			currentThoughtSignature = ""
 			hasThought = false
@@ -656,7 +669,7 @@ func consolidateParts(parts [][]byte) [][]byte {
 	}
 
 	for _, partJSON := range parts {
-		part := gjson.ParseBytes(partJSON)
+		part := util.ParseGJSONBytesNoCopy(partJSON)
 		if !part.Exists() || !part.IsObject() {
 			// Flush any pending parts and add this non-text part
 			flushText()
@@ -666,19 +679,19 @@ func consolidateParts(parts [][]byte) [][]byte {
 		}
 
 		thought := part.Get("thought")
-		if thought.Exists() && thought.Type == gjson.True {
+		if thought.Exists() && thought.Type == ojson.True {
 			// This is a thinking part - flush any pending text first
 			flushText() // Flush any pending text first
 
-			if text := part.Get("text"); text.Exists() && text.Type == gjson.String {
+			if text := part.Get("text"); text.Exists() && text.Type == ojson.String {
 				currentThoughtPart.WriteString(text.String())
 				hasThought = true
 			}
-			if sig := part.Get("thoughtSignature"); sig.Exists() && sig.Type == gjson.String && sig.String() != "" {
+			if sig := part.Get("thoughtSignature"); sig.Exists() && sig.Type == ojson.String && sig.String() != "" {
 				currentThoughtSignature = sig.String()
 				hasThought = true
 			}
-		} else if text := part.Get("text"); text.Exists() && text.Type == gjson.String {
+		} else if text := part.Get("text"); text.Exists() && text.Type == ojson.String {
 			// This is a regular text part - flush any pending thought first
 			flushThought() // Flush any pending thought first
 

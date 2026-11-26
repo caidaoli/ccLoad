@@ -7,7 +7,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -58,7 +58,7 @@ func TestOpenAIResponsesToAntigravityRegistryCarriesTheRefusal(t *testing.T) {
 			if !errors.As(err, &unsupported) || unsupported.Type != "input_file" || unsupported.StatusCode() != 400 {
 				t.Fatalf("err = %v, want unsupported content part: input_file; body = %s", err, body)
 			}
-			if !gjson.ValidBytes(body) {
+			if !ojson.ValidBytes(body) {
 				t.Fatalf("body is not JSON: %q", body)
 			}
 		})
@@ -71,7 +71,7 @@ func TestOpenAIResponsesToAntigravityKeepsTurnWithTextBesideFileID(t *testing.T)
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v", envelope.Err)
 	}
-	if got := gjson.GetBytes(envelope.Body, "request.contents.2.parts.0.text").String(); got != "keep me" {
+	if got := ojson.GetBytes(envelope.Body, "request.contents.2.parts.0.text").String(); got != "keep me" {
 		t.Fatalf("text was lost: %s", envelope.Body)
 	}
 }
@@ -82,7 +82,7 @@ func TestOpenAIResponsesToAntigravityInlineFileStaysInlineData(t *testing.T) {
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v", envelope.Err)
 	}
-	inline := gjson.GetBytes(envelope.Body, "request.contents.2.parts.0.inlineData")
+	inline := ojson.GetBytes(envelope.Body, "request.contents.2.parts.0.inlineData")
 	if inline.Get("mimeType").String() != "application/pdf" || inline.Get("data").String() != "JVBERi0xLjQK" {
 		t.Fatalf("inline file was not kept: %s", envelope.Body)
 	}
@@ -90,7 +90,7 @@ func TestOpenAIResponsesToAntigravityInlineFileStaysInlineData(t *testing.T) {
 
 func TestConvertOpenAIResponsesRequestToAntigravity_ExportedWrapperKeepsAJSONBody(t *testing.T) {
 	input := antigravityTurnPayload("", antigravityUserTurn(antigravityTurnFileID))
-	if body, _ := ConvertOpenAIResponsesRequestToAntigravity("gemini-3-flash", input, false); !gjson.ValidBytes(body) {
+	if body, _ := ConvertOpenAIResponsesRequestToAntigravity("gemini-3-flash", input, false); !ojson.ValidBytes(body) {
 		t.Fatalf("body is not JSON: %q", body)
 	}
 }
@@ -104,4 +104,34 @@ type requestEnvelope struct {
 
 func newRequestEnvelope(body []byte, err error) requestEnvelope {
 	return requestEnvelope{Body: body, Err: err}
+}
+
+func TestOpenAIResponsesToAntigravityRemoteFileUsesCanonicalFileData(t *testing.T) {
+	input := antigravityTurnPayload("", antigravityUserTurn(`{"type":"input_file","file_url":"https://example.com/report.pdf","format":"pdf"}`))
+	envelope := newRequestEnvelope(ConvertOpenAIResponsesRequestToAntigravity("gemini-3-flash", input, false))
+	if envelope.Err != nil {
+		t.Fatalf("envelope.Err = %v", envelope.Err)
+	}
+	part := ojson.GetBytesNoCopy(envelope.Body, "request.contents.0.parts.0")
+	if got := part.Get("fileData.mimeType").String(); got != "application/pdf" {
+		t.Fatalf("fileData.mimeType = %q, want application/pdf. Output: %s", got, envelope.Body)
+	}
+	if got := part.Get("fileData.fileUri").String(); got != "https://example.com/report.pdf" {
+		t.Fatalf("fileData.fileUri = %q, want remote URL. Output: %s", got, envelope.Body)
+	}
+	if part.Get("file_data").Exists() || part.Get("fileData.mime_type").Exists() || part.Get("fileData.file_uri").Exists() {
+		t.Fatalf("remote file contains non-canonical media keys: %s", envelope.Body)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_ExportedWrapperCarriesTheRefusal(t *testing.T) {
+	input := antigravityTurnPayload("", antigravityUserTurn(antigravityTurnNoFile))
+	body, err := ConvertOpenAIResponsesRequestToAntigravity("gemini-3-flash", input, false)
+	var unsupported *translatorcommon.UnsupportedPartError
+	if !errors.As(err, &unsupported) || unsupported.Type != "input_file" || unsupported.StatusCode() != 400 {
+		t.Fatalf("err = %v, want unsupported content part: input_file with status 400", err)
+	}
+	if !ojson.ValidBytes(body) {
+		t.Fatalf("body is not JSON: %q", body)
+	}
 }

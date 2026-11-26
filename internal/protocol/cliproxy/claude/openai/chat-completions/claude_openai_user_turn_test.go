@@ -6,7 +6,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -52,7 +52,7 @@ func TestConvertOpenAIRequestToClaude_RefusesAnyEmptiedUserTurn(t *testing.T) {
 			if got, want := err.Error(), "unsupported content part: "+tc.wantType; got != want {
 				t.Fatalf("error text = %q, want %q", got, want)
 			}
-			if !gjson.ValidBytes(body) {
+			if !ojson.ValidBytes(body) {
 				t.Fatalf("body is not JSON: %q", body)
 			}
 		})
@@ -65,7 +65,7 @@ func TestConvertOpenAIRequestToClaude_KeepsTurnWithTextBesideAttachment(t *testi
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if got := gjson.GetBytes(body, "messages.2.content.0.text").String(); got != "keep me" {
+	if got := ojson.GetBytes(body, "messages.2.content.0.text").String(); got != "keep me" {
 		t.Fatalf("text was lost: %s", body)
 	}
 }
@@ -76,7 +76,7 @@ func TestConvertOpenAIRequestToClaude_InlineFileAfterHistoryStaysADocument(t *te
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if got := gjson.GetBytes(body, "messages.2.content.0.type").String(); got != "document" {
+	if got := ojson.GetBytes(body, "messages.2.content.0.type").String(); got != "document" {
 		t.Fatalf("inline file was not kept: %s", body)
 	}
 }

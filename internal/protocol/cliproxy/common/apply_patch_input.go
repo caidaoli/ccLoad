@@ -1,12 +1,13 @@
 package common
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/MoeForge/moego/json"
 
 	applypatch "ccLoad/internal/protocol/cliproxy/applypatch"
 )

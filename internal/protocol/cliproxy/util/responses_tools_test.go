@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestCollectResponsesToolDescriptors_PriorityAndNamespace(t *testing.T) {
@@ -31,7 +31,7 @@ func TestCollectResponsesToolDescriptors_PriorityAndNamespace(t *testing.T) {
 		]
 	}`
 
-	root := gjson.Parse(raw)
+	root := ojson.Parse(raw)
 	descriptors := CollectResponsesToolDescriptors(root)
 	if len(descriptors) != 4 {
 		t.Fatalf("expected 4 descriptors, got %d", len(descriptors))
@@ -72,7 +72,7 @@ func TestResponsesToolWinners_TopLevelBeatsAdditionalTools(t *testing.T) {
 		]
 	}`
 
-	root := gjson.Parse(raw)
+	root := ojson.Parse(raw)
 	winners := CollectResponsesToolWinners(root)
 	winner := winners["shared_fn"]
 	if winner.SourcePriority != 0 {
@@ -91,7 +91,7 @@ func TestResponsesToolWinners_DirectBeatsNamespaceChild(t *testing.T) {
 		]
 	}`
 
-	root := gjson.Parse(raw)
+	root := ojson.Parse(raw)
 	winners := CollectResponsesToolWinners(root)
 	winner := winners["n__x"]
 	if !winner.Direct {
@@ -143,17 +143,17 @@ func TestConvertResponsesToolChoiceToGemini(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			choice := gjson.Parse(tt.choiceJSON)
+			choice := ojson.Parse(tt.choiceJSON)
 			out, ok := ConvertResponsesToolChoiceToGemini(choice, tt.forwardMap)
 			if !ok {
 				t.Fatalf("ConvertResponsesToolChoiceToGemini returned false")
 			}
-			mode := gjson.GetBytes(out, "mode").String()
+			mode := ojson.GetBytes(out, "mode").String()
 			if mode != tt.wantMode {
 				t.Fatalf("mode = %q, want %q", mode, tt.wantMode)
 			}
 			if len(tt.wantNames) > 0 {
-				names := gjson.GetBytes(out, "allowedFunctionNames").Array()
+				names := ojson.GetBytes(out, "allowedFunctionNames").Array()
 				if len(names) != len(tt.wantNames) {
 					t.Fatalf("allowedFunctionNames count = %d, want %d", len(names), len(tt.wantNames))
 				}
@@ -161,6 +161,177 @@ func TestConvertResponsesToolChoiceToGemini(t *testing.T) {
 					if names[i].String() != want {
 						t.Fatalf("allowedFunctionNames[%d] = %q, want %q", i, names[i].String(), want)
 					}
+				}
+			}
+		})
+	}
+}
+
+func TestConvertResponsesToolChoiceToGemini_AllowedTools(t *testing.T) {
+	buildForwardMap := func(toolsJSON string) map[string]string {
+		_, fm, _ := BuildGeminiFunctionDeclarations(ojson.Parse(toolsJSON))
+		return fm
+	}
+
+	weatherForwardMap := buildForwardMap(`{"tools":[{"type":"function","name":"get_weather"}]}`)
+
+	tests := []struct {
+		name       string
+		choiceJSON string
+		forwardMap map[string]string
+		wantMode   string
+		wantNames  []string
+	}{
+		{
+			name:       "required mode with function and deduplication",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"get_weather"},{"type":"function","function":{"name":"get_weather"}},{"type":"custom","name":"exec","namespace":"functions"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"function","name":"get_weather"},{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]}`),
+			wantMode:   "ANY",
+			wantNames:  []string{"get_weather", "functions__exec"},
+		},
+		{
+			name:       "any mode with tool_search and real namespace identity from BuildGeminiFunctionDeclarations",
+			choiceJSON: `{"type":"allowed_tools","mode":"any","tools":[{"type":"tool_search"},{"type":"namespace","name":"codex_app"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"tool_search","execution":"client"},{"type":"namespace","name":"codex_app","tools":[{"type":"function","name":"read"},{"type":"function","name":"write"}]},{"type":"function","name":"other"}]}`),
+			wantMode:   "ANY",
+			wantNames:  []string{"tool_search", "codex_app__read", "codex_app__write"},
+		},
+		{
+			name:       "namespace entry authorizes real namespace member via 2-arg call",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"namespace","name":"ops"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"namespace","name":"ops","tools":[{"type":"function","name":"read"}]}]}`),
+			wantMode:   "ANY",
+			wantNames:  []string{"ops__read"},
+		},
+		{
+			name:       "plain map without declaration identity metadata fails closed to NONE",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"custom","name":"run"}]}`,
+			forwardMap: map[string]string{"run": "run"},
+			wantMode:   "NONE",
+		},
+		{
+			name:       "namespace entry does not match top-level prefix without identity metadata",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"namespace","name":"ops"}]}`,
+			forwardMap: map[string]string{"ops__delete": "ops__delete"},
+			wantMode:   "NONE",
+		},
+		{
+			name:       "namespace entry does not match top-level prefix with BuildGeminiFunctionDeclarations",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"namespace","name":"ops"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"function","name":"ops__delete"}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "namespaced choice does not authorize colliding top-level winner",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","namespace":"ops","name":"read"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"function","name":"ops__read"},{"type":"namespace","name":"ops","tools":[{"type":"function","name":"read"}]}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "top-level choice does not authorize colliding namespace winner",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"ops__read"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"namespace","name":"ops","tools":[{"type":"function","name":"read"}]}],"input":[{"type":"additional_tools","tools":[{"type":"function","name":"ops__read"}]}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "namespaced choice does not authorize same-namespace local-name collision winner",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","namespace":"ops","name":"read"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"namespace","name":"ops","tools":[{"type":"function","name":"ops__read"},{"type":"function","name":"read"}]}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "custom choice does not authorize function tool with same name",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"custom","name":"run"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"function","name":"run"}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "untyped custom wrapper does not authorize function tool with same name",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"custom":{"name":"run"}}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"function","name":"run"}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "untyped function wrapper does not authorize custom tool with same name",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"function":{"name":"exec"}}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"custom","name":"exec"}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "tool type without custom wrapper does not authorize custom tool",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[{"type":"tool","name":"exec"}]}`,
+			forwardMap: buildForwardMap(`{"tools":[{"type":"custom","name":"exec"}]}`),
+			wantMode:   "NONE",
+		},
+		{
+			name:       "auto mode omits allowedFunctionNames",
+			choiceJSON: `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"get_weather"}]}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "AUTO",
+		},
+		{
+			name:       "omitted mode defaults to AUTO without allowedFunctionNames",
+			choiceJSON: `{"type":"allowed_tools","tools":[{"type":"function","name":"get_weather"}]}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "AUTO",
+		},
+		{
+			name:       "none mode sets NONE without allowedFunctionNames",
+			choiceJSON: `{"type":"allowed_tools","mode":"none","tools":[{"type":"function","name":"get_weather"}]}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "NONE",
+		},
+		{
+			name:       "empty tools under required fails closed to NONE",
+			choiceJSON: `{"type":"allowed_tools","mode":"required","tools":[]}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "NONE",
+		},
+		{
+			name:       "empty tools under auto fails closed to NONE",
+			choiceJSON: `{"type":"allowed_tools","mode":"auto","tools":[]}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "NONE",
+		},
+		{
+			name:       "unknown mode fails closed to NONE",
+			choiceJSON: `{"type":"allowed_tools","mode":"bogus","tools":[{"type":"function","name":"get_weather"}]}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "NONE",
+		},
+		{
+			name:       "nested allowed_tools shape supported",
+			choiceJSON: `{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"function","function":{"name":"get_weather"}}]}}`,
+			forwardMap: weatherForwardMap,
+			wantMode:   "ANY",
+			wantNames:  []string{"get_weather"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			choice := ojson.Parse(tt.choiceJSON)
+			out, ok := ConvertResponsesToolChoiceToGemini(choice, tt.forwardMap)
+			if !ok {
+				t.Fatalf("ConvertResponsesToolChoiceToGemini returned false for %s", tt.choiceJSON)
+			}
+			if mode := ojson.GetBytes(out, "mode").String(); mode != tt.wantMode {
+				t.Fatalf("mode = %q, want %q; out=%s", mode, tt.wantMode, out)
+			}
+			namesRes := ojson.GetBytes(out, "allowedFunctionNames")
+			if len(tt.wantNames) == 0 {
+				if namesRes.Exists() {
+					t.Fatalf("expected no allowedFunctionNames, got %s", out)
+				}
+				return
+			}
+			names := namesRes.Array()
+			if len(names) != len(tt.wantNames) {
+				t.Fatalf("allowedFunctionNames count = %d, want %d; out=%s", len(names), len(tt.wantNames), out)
+			}
+			for i, want := range tt.wantNames {
+				if names[i].String() != want {
+					t.Fatalf("allowedFunctionNames[%d] = %q, want %q; out=%s", i, names[i].String(), want, out)
 				}
 			}
 		})
@@ -197,7 +368,7 @@ func TestBuildGeminiFunctionDeclarations_DisambiguationAndLongNames(t *testing.T
 		]
 	}`
 
-	root := gjson.Parse(raw)
+	root := ojson.Parse(raw)
 	decls, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(root)
 	if len(decls) != 3 {
 		t.Fatalf("expected 3 decls, got %d", len(decls))
@@ -236,11 +407,11 @@ func TestResponsesToolIdentitySurvivesCollisionWithGeminiName(t *testing.T) {
 	group := `{"type":"namespace","name":"` + namespace + `","tools":[` +
 		`{"type":"function","name":"` + firstName + `","description":"first"},` +
 		`{"type":"function","name":"` + secondName + `","description":"second"}]}`
-	decls, _, _ := BuildGeminiFunctionDeclarations(gjson.Parse(`{"tools":[` + group + `]}`))
+	decls, _, _ := BuildGeminiFunctionDeclarations(ojson.Parse(`{"tools":[` + group + `]}`))
 	if len(decls) != 2 {
 		t.Fatalf("expected two namespace tools, got %q", decls)
 	}
-	alias := gjson.GetBytes(decls[0], "name").String()
+	alias := ojson.GetBytes(decls[0], "name").String()
 	if alias == "" || alias == firstName {
 		t.Fatalf("fixture must produce a Gemini name distinct from the original, got %q", alias)
 	}
@@ -251,10 +422,10 @@ func TestResponsesToolIdentitySurvivesCollisionWithGeminiName(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			request := []byte(`{"tools":[` + tc.tools + `]}`)
-			declarations, forward, _ := BuildGeminiFunctionDeclarations(gjson.ParseBytes(request))
+			declarations, forward, _ := BuildGeminiFunctionDeclarations(ojson.ParseBytes(request))
 			wireNames := make(map[string]string, len(declarations))
 			for _, raw := range declarations {
-				decl := gjson.ParseBytes(raw)
+				decl := ojson.ParseBytes(raw)
 				wireNames[decl.Get("description").String()] = decl.Get("name").String()
 			}
 			if len(wireNames) != 3 || wireNames["first"] != alias || wireNames["independent"] == "" || wireNames["independent"] == alias {
@@ -266,10 +437,10 @@ func TestResponsesToolIdentitySurvivesCollisionWithGeminiName(t *testing.T) {
 				{"first", firstName, namespace},
 				{"independent", alias, ""},
 			} {
-				choice := gjson.Parse(`{"type":"function","name":"` + tool.name + `","namespace":"` + tool.namespace + `"}`)
+				choice := ojson.Parse(`{"type":"function","name":"` + tool.name + `","namespace":"` + tool.namespace + `"}`)
 				config, ok := ConvertResponsesToolChoiceToGemini(choice, forward)
 				wireName := wireNames[tool.description]
-				if got := gjson.GetBytes(config, "allowedFunctionNames.0").String(); !ok || got != wireName {
+				if got := ojson.GetBytes(config, "allowedFunctionNames.0").String(); !ok || got != wireName {
 					t.Errorf("forced choice for %s selected %q, want %q", tool.description, got, wireName)
 				}
 				identity := reverse[wireName]
@@ -282,12 +453,12 @@ func TestResponsesToolIdentitySurvivesCollisionWithGeminiName(t *testing.T) {
 }
 
 func TestBuildGeminiApplyPatchDeclaration(t *testing.T) {
-	root := gjson.Parse(`{"tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":"start: patch"}}]}`)
+	root := ojson.Parse(`{"tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":"start: patch"}}]}`)
 	declarations, _, reverse := BuildGeminiFunctionDeclarations(root)
 	if len(declarations) != 1 {
 		t.Fatalf("declarations: %d", len(declarations))
 	}
-	declaration := gjson.ParseBytes(declarations[0])
+	declaration := ojson.ParseBytes(declarations[0])
 	if !strings.Contains(declaration.Get("description").String(), "*** Begin Patch") || !strings.Contains(declaration.Get("description").String(), "start: patch") {
 		t.Fatal("patch format is missing")
 	}
@@ -300,7 +471,7 @@ func TestBuildGeminiApplyPatchDeclaration(t *testing.T) {
 }
 
 func TestBuildGeminiApplyPatchIdentityUsesWinningOriginalDeclaration(t *testing.T) {
-	root := gjson.Parse(`{"tools":[{"type":"namespace","name":"a.b","tools":[{"type":"custom","name":"apply_patch"}]},{"type":"function","name":"a_b__apply_patch","parameters":{"type":"object","properties":{"n":{"type":"number"}}}},{"type":"function","name":"apply_patch"}],"input":[{"type":"additional_tools","tools":[{"type":"custom","name":"apply_patch"}]}]}`)
+	root := ojson.Parse(`{"tools":[{"type":"namespace","name":"a.b","tools":[{"type":"custom","name":"apply_patch"}]},{"type":"function","name":"a_b__apply_patch","parameters":{"type":"object","properties":{"n":{"type":"number"}}}},{"type":"function","name":"apply_patch"}],"input":[{"type":"additional_tools","tools":[{"type":"custom","name":"apply_patch"}]}]}`)
 	declarations, forward, reverse := BuildGeminiFunctionDeclarations(root)
 	if len(declarations) != 3 {
 		t.Fatalf("declarations=%d", len(declarations))
@@ -309,7 +480,7 @@ func TestBuildGeminiApplyPatchIdentityUsesWinningOriginalDeclaration(t *testing.
 		t.Fatal("sanitized collision was not separated")
 	}
 	for _, raw := range declarations {
-		decl := gjson.ParseBytes(raw)
+		decl := ojson.ParseBytes(raw)
 		identity := reverse[decl.Get("name").String()]
 		patch := identity.Custom && identity.Namespace == "a.b"
 		if identity.ApplyPatch != patch || strings.Contains(decl.Get("description").String(), "*** Begin Patch") != patch {
@@ -330,12 +501,12 @@ func TestBuildGeminiFunctionDeclarations_ClientToolSearchShimAndDeferredFilterin
 			{"type": "web_search"}
 		]
 	}`
-	declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(gjson.Parse(raw))
+	declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(ojson.Parse(raw))
 
 	if len(declarations) != 2 {
 		t.Fatalf("expected exec_command and tool_search declarations (with deferred_fn hidden), got %d: %s", len(declarations), declarations)
 	}
-	shim := gjson.ParseBytes(declarations[1])
+	shim := ojson.ParseBytes(declarations[1])
 	if got := shim.Get("name").String(); got != "tool_search" {
 		t.Fatalf("shim name = %q, want tool_search", got)
 	}
@@ -361,35 +532,35 @@ func TestBuildGeminiFunctionDeclarations_ClientToolSearchShimAndDeferredFilterin
 
 func TestBuildGeminiFunctionDeclarations_ToolSearchShimDefaultsAndPrecedence(t *testing.T) {
 	t.Run("default parameters when omitted and custom schema preserved when provided", func(t *testing.T) {
-		defaultDecls, _, _ := BuildGeminiFunctionDeclarations(gjson.Parse(`{"tools": [{"type": "tool_search", "execution": "client"}]}`))
+		defaultDecls, _, _ := BuildGeminiFunctionDeclarations(ojson.Parse(`{"tools": [{"type": "tool_search", "execution": "client"}]}`))
 		if len(defaultDecls) != 1 {
 			t.Fatalf("expected one shim declaration, got %d", len(defaultDecls))
 		}
-		if got := gjson.GetBytes(defaultDecls[0], "parametersJsonSchema.properties.query.type").String(); got != "string" {
+		if got := ojson.GetBytes(defaultDecls[0], "parametersJsonSchema.properties.query.type").String(); got != "string" {
 			t.Fatalf("default parameters missing query: %s", defaultDecls[0])
 		}
-		if !gjson.GetBytes(defaultDecls[0], `parametersJsonSchema.required.#(=="query")`).Exists() {
+		if !ojson.GetBytes(defaultDecls[0], `parametersJsonSchema.required.#(=="query")`).Exists() {
 			t.Fatalf("default parameters missing required query: %s", defaultDecls[0])
 		}
 
 		customGoalRaw := `{"tools": [{"type": "tool_search", "execution": "client", "description": "Custom goal search", "parameters": {"type": "object", "properties": {"goal": {"type": "string"}}, "required": ["goal"], "additionalProperties": false}}]}`
-		customDecls, _, _ := BuildGeminiFunctionDeclarations(gjson.Parse(customGoalRaw))
+		customDecls, _, _ := BuildGeminiFunctionDeclarations(ojson.Parse(customGoalRaw))
 		if len(customDecls) != 1 {
 			t.Fatalf("expected one shim declaration, got %d", len(customDecls))
 		}
-		if got := gjson.GetBytes(customDecls[0], "parametersJsonSchema.properties.goal.type").String(); got != "string" {
+		if got := ojson.GetBytes(customDecls[0], "parametersJsonSchema.properties.goal.type").String(); got != "string" {
 			t.Fatalf("custom goal property not preserved: %s", customDecls[0])
 		}
-		if gjson.GetBytes(customDecls[0], "parametersJsonSchema.properties.query").Exists() {
+		if ojson.GetBytes(customDecls[0], "parametersJsonSchema.properties.query").Exists() {
 			t.Fatalf("custom schema must not be mutated to inject query: %s", customDecls[0])
 		}
-		if gjson.GetBytes(customDecls[0], `parametersJsonSchema.required.#(=="query")`).Exists() {
+		if ojson.GetBytes(customDecls[0], `parametersJsonSchema.required.#(=="query")`).Exists() {
 			t.Fatalf("custom required array must not inject query: %s", customDecls[0])
 		}
 	})
 	t.Run("server executed search is not emulated", func(t *testing.T) {
 		raw := `{"tools": [{"type": "tool_search"}, {"type": "tool_search", "execution": "server"}]}`
-		declarations, _, reverseMap := BuildGeminiFunctionDeclarations(gjson.Parse(raw))
+		declarations, _, reverseMap := BuildGeminiFunctionDeclarations(ojson.Parse(raw))
 		if len(declarations) != 0 || len(reverseMap) != 0 {
 			t.Fatalf("server-executed tool_search must be dropped, got %s", declarations)
 		}
@@ -410,7 +581,7 @@ func TestBuildGeminiFunctionDeclarations_ToolSearchShimDefaultsAndPrecedence(t *
 				},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(gjson.Parse(tc.raw))
+					declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(ojson.Parse(tc.raw))
 					if len(declarations) != 2 {
 						t.Fatalf("expected both user %s and client tool_search shim (with deferred_fn hidden), got %d declarations: %s", userFnName, len(declarations), declarations)
 					}
@@ -434,7 +605,7 @@ func TestBuildGeminiFunctionDeclarations_ToolSearchShimDefaultsAndPrecedence(t *
 	})
 	t.Run("sanitized name collision with tool.search keeps both", func(t *testing.T) {
 		raw := `{"tools": [{"type": "function", "name": "tool.search", "description": "dotted user tool"}, {"type": "tool_search", "execution": "client", "description": "client search"}]}`
-		declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(gjson.Parse(raw))
+		declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(ojson.Parse(raw))
 		if len(declarations) != 2 {
 			t.Fatalf("expected 2 declarations, got %d: %s", len(declarations), declarations)
 		}
@@ -455,14 +626,14 @@ func TestBuildGeminiFunctionDeclarations_ToolSearchShimDefaultsAndPrecedence(t *
 	})
 	t.Run("shared CollectResponsesToolDescriptors keeps deferred tools for non-search callers", func(t *testing.T) {
 		raw := `{"tools": [{"type": "tool_search", "execution": "client"}, {"type": "function", "name": "deferred_fn", "defer_loading": true}, {"type": "function", "name": "eager_fn"}]}`
-		descriptors := CollectResponsesToolDescriptors(gjson.Parse(raw))
+		descriptors := CollectResponsesToolDescriptors(ojson.Parse(raw))
 		if len(descriptors) != 2 || descriptors[0].Name != "deferred_fn" || descriptors[1].Name != "eager_fn" {
 			t.Fatalf("CollectResponsesToolDescriptors = %+v, want [deferred_fn eager_fn]", descriptors)
 		}
 	})
 	t.Run("additional_tools declaration", func(t *testing.T) {
 		raw := `{"input": [{"type": "additional_tools", "tools": [{"type": "tool_search", "execution": "client"}]}]}`
-		_, _, reverseMap := BuildGeminiFunctionDeclarations(gjson.Parse(raw))
+		_, _, reverseMap := BuildGeminiFunctionDeclarations(ojson.Parse(raw))
 		if !reverseMap[ResponsesToolSearchFunctionName].ToolSearch {
 			t.Fatalf("tool_search inside additional_tools must be exposed: %+v", reverseMap)
 		}
@@ -489,16 +660,16 @@ func TestBuildGeminiFunctionDeclarations_CollectsToolSearchOutputTools(t *testin
 			]}
 		]
 	}`
-	declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(gjson.Parse(raw))
+	declarations, forwardMap, reverseMap := BuildGeminiFunctionDeclarations(ojson.Parse(raw))
 
 	names := make([]string, 0, len(declarations))
 	for _, declaration := range declarations {
-		names = append(names, gjson.GetBytes(declaration, "name").String())
+		names = append(names, ojson.GetBytes(declaration, "name").String())
 	}
 	if len(names) != 3 || names[0] != "mcp__cua_repl__js" || names[1] != "tool_search" || names[2] != "fixture_tools__ping" {
 		t.Fatalf("declarations = %v, want [mcp__cua_repl__js tool_search fixture_tools__ping]", names)
 	}
-	if got := gjson.GetBytes(declarations[0], "description").String(); got != "current" {
+	if got := ojson.GetBytes(declarations[0], "description").String(); got != "current" {
 		t.Fatalf("top-level declaration must win over a discovered duplicate, got %q", got)
 	}
 	if got := forwardMap["fixture_tools__ping"]; got != "fixture_tools__ping" {
@@ -529,7 +700,7 @@ func TestResponsesToolReverseIdentityMap_MatchesFullDeclarations(t *testing.T) {
 			{"type": "namespace", "name": "mcp", "tools": [{"type": "function", "name": "search", "parameters": {"$defs": {"filter": {"type": "object", "properties": {"tag": {"type": ["string", "null"]}}}}, "type": "object", "properties": {"q": {"type": ["string", "null"]}, "filter": {"$ref": "#/$defs/filter"}}, "additionalProperties": false}}]}
 		]
 	}`)
-	_, _, full := BuildGeminiFunctionDeclarations(gjson.ParseBytes(heavyRaw))
+	_, _, full := BuildGeminiFunctionDeclarations(ojson.ParseBytes(heavyRaw))
 	fast := ResponsesToolReverseIdentityMap(heavyRaw)
 	if len(full) == 0 || !reflect.DeepEqual(full, fast) {
 		t.Fatalf("reverse identity map differs from full declarations:\nfull=%#v\nfast=%#v", full, fast)

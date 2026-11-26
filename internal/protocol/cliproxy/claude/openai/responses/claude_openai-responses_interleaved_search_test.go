@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestInterleavedThinkingAndSearchSurvivesRoundTrip(t *testing.T) {
@@ -48,14 +48,14 @@ func TestInterleavedThinkingAndSearchSurvivesRoundTrip(t *testing.T) {
 		[]byte(`data: {"type":"message_stop"}`))
 
 	outputs := translateClaudeResponsesStream(chunks)
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" {
 			completed = data
 		}
 	}
 	var items []json.RawMessage
-	completed.Get("response.output").ForEach(func(_, value gjson.Result) bool {
+	completed.Get("response.output").ForEach(func(_, value ojson.Result) bool {
 		items = append(items, json.RawMessage(value.Raw))
 		return true
 	})

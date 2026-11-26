@@ -15,8 +15,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 var (
@@ -71,7 +70,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 	}
 	rawJSON = bytes.TrimSpace(rawJSON[5:])
 
-	rootResult := gjson.ParseBytes(rawJSON)
+	rootResult := ojson.ParseBytes(rawJSON)
 	typeResult := rootResult.Get("type")
 	typeStr := typeResult.String()
 
@@ -100,11 +99,11 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 
 	// Base Gemini response template
 	template := []byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"}}`)
-	template, _ = sjson.SetBytes(template, "modelVersion", params.Model)
+	template, _ = ojson.SetBytes(template, "modelVersion", params.Model)
 	if params.createTime != "" {
-		template, _ = sjson.SetBytes(template, "createTime", params.createTime)
+		template, _ = ojson.SetBytes(template, "createTime", params.createTime)
 	}
-	template, _ = sjson.SetBytes(template, "responseId", params.ResponseID)
+	template, _ = ojson.SetBytes(template, "responseId", params.ResponseID)
 
 	if typeStr == "response.image_generation_call.partial_image" {
 		itemID := rootResult.Get("item_id").String()
@@ -127,8 +126,8 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 		mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
 
 		part := []byte(`{"inlineData":{"data":"","mimeType":""}}`)
-		part, _ = sjson.SetBytes(part, "inlineData.data", b64)
-		part, _ = sjson.SetBytes(part, "inlineData.mimeType", mimeType)
+		part, _ = ojson.SetBytes(part, "inlineData.data", b64)
+		part, _ = ojson.SetBytes(part, "inlineData.mimeType", mimeType)
 		part = attachPendingThoughtSignature(part)
 		template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", [][]byte{part})
 		return [][]byte{template}
@@ -173,7 +172,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 			}
 			for _, thoughtText := range thoughtTexts {
 				part := []byte(`{"thought":true,"text":""}`)
-				part, _ = sjson.SetBytes(part, "text", thoughtText)
+				part, _ = ojson.SetBytes(part, "text", thoughtText)
 				emittedParts = append(emittedParts, part)
 			}
 			if signature != "" {
@@ -206,8 +205,8 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 			mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
 
 			part := []byte(`{"inlineData":{"data":"","mimeType":""}}`)
-			part, _ = sjson.SetBytes(part, "inlineData.data", b64)
-			part, _ = sjson.SetBytes(part, "inlineData.mimeType", mimeType)
+			part, _ = ojson.SetBytes(part, "inlineData.data", b64)
+			part, _ = ojson.SetBytes(part, "inlineData.mimeType", mimeType)
 			part = attachPendingThoughtSignature(part)
 			template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", [][]byte{part})
 			return [][]byte{template}
@@ -222,7 +221,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 				if orig, ok := rev[n]; ok {
 					n = orig
 				}
-				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.name", n)
+				functionCall, _ = ojson.SetBytes(functionCall, "functionCall.name", n)
 			}
 
 			functionCall = setGeminiFunctionCallArgs(functionCall, itemResult.Get("arguments").String())
@@ -273,7 +272,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 			emittedParts = append(emittedParts, carrier)
 		}
 		part := []byte(`{"thought":true,"text":""}`)
-		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
+		part, _ = ojson.SetBytes(part, "text", rootResult.Get("delta").String())
 		emittedParts = append(emittedParts, part)
 		template = translatorcommon.SetRawArrayItems(template, "candidates.0.content.parts", emittedParts)
 	case "response.output_text.delta", "response.refusal.delta":
@@ -282,7 +281,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 			return nil
 		}
 		part := []byte(`{"text":""}`)
-		part, _ = sjson.SetBytes(part, "text", delta)
+		part, _ = ojson.SetBytes(part, "text", delta)
 		if delta != "" {
 			// An empty text part may be discarded by clients; never spend the
 			// only signature copy on one.
@@ -299,15 +298,15 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 		}
 		for _, missing := range missingParts {
 			part := []byte(`{"text":""}`)
-			part, _ = sjson.SetBytes(part, "text", missing.Text)
+			part, _ = ojson.SetBytes(part, "text", missing.Text)
 			part = attachPendingThoughtSignature(part)
-			template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
+			template, _ = ojson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
 		}
 	case "response.completed", "response.incomplete": // Handle response completion with usage metadata
 		response := rootResult.Get("response")
 		if responseID := response.Get("id").String(); responseID != "" {
 			params.ResponseID = responseID
-			template, _ = sjson.SetBytes(template, "responseId", responseID)
+			template, _ = ojson.SetBytes(template, "responseId", responseID)
 		}
 		var messages [][]byte
 		for _, event := range params.messages.MissingMessageDoneEvents(response.Get("output")) {
@@ -321,12 +320,12 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 		if usage := response.Get("usage"); usage.IsObject() {
 			template = applyCodexGeminiUsage(template, usage)
 		} else {
-			template, _ = sjson.DeleteBytes(template, "usageMetadata")
+			template, _ = ojson.DeleteBytes(template, "usageMetadata")
 		}
 		if typeStr == "response.incomplete" {
-			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", codexGeminiIncompleteFinishReason(rootResult.Get("response.incomplete_details.reason").String()))
+			template, _ = ojson.SetBytes(template, "candidates.0.finishReason", codexGeminiIncompleteFinishReason(rootResult.Get("response.incomplete_details.reason").String()))
 		} else {
-			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
+			template, _ = ojson.SetBytes(template, "candidates.0.finishReason", "STOP")
 		}
 		return append(messages, template)
 	default:
@@ -337,7 +336,7 @@ func ConvertCodexResponseToGemini(ctx context.Context, modelName string, origina
 }
 
 // Gemini createTime is a protobuf timestamp with a four-digit year starting at 0001.
-func codexGeminiCreationTime(createdAt gjson.Result) string {
+func codexGeminiCreationTime(createdAt ojson.Result) string {
 	seconds, err := strconv.ParseInt(createdAt.Raw, 10, 64)
 	if err != nil {
 		return ""
@@ -363,7 +362,7 @@ func codexGeminiCreationTime(createdAt gjson.Result) string {
 // Returns:
 //   - []byte: A Gemini-compatible JSON response containing all message content and metadata
 func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	rootResult := gjson.ParseBytes(rawJSON)
+	rootResult := ojson.ParseBytes(rawJSON)
 
 	// Verify this is a terminal response event.
 	responseType := rootResult.Get("type").String()
@@ -379,21 +378,21 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 	if modelName == "" {
 		modelName = responseData.Get("model").Str
 	}
-	template, _ = sjson.SetBytes(template, "modelVersion", modelName)
+	template, _ = ojson.SetBytes(template, "modelVersion", modelName)
 
 	// Set response metadata from the completed response
 	if responseData.Exists() {
 		if responseType == "response.incomplete" {
-			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", codexGeminiIncompleteFinishReason(responseData.Get("incomplete_details.reason").String()))
+			template, _ = ojson.SetBytes(template, "candidates.0.finishReason", codexGeminiIncompleteFinishReason(responseData.Get("incomplete_details.reason").String()))
 		}
 		// Set response ID
 		if responseId := responseData.Get("id"); responseId.Exists() {
-			template, _ = sjson.SetBytes(template, "responseId", responseId.String())
+			template, _ = ojson.SetBytes(template, "responseId", responseId.String())
 		}
 
 		// Set creation time
 		if createdAt := codexGeminiCreationTime(responseData.Get("created_at")); createdAt != "" {
-			template, _ = sjson.SetBytes(template, "createTime", createdAt)
+			template, _ = ojson.SetBytes(template, "createTime", createdAt)
 		}
 
 		// Set usage metadata
@@ -416,7 +415,7 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 		}
 
 		if output := responseData.Get("output"); output.Exists() && output.IsArray() {
-			output.ForEach(func(key, value gjson.Result) bool {
+			output.ForEach(func(key, value ojson.Result) bool {
 				itemType := value.Get("type").String()
 
 				switch itemType {
@@ -433,7 +432,7 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 					thoughtTexts := extractCodexGeminiReasoningTexts(value)
 					for i, thoughtText := range thoughtTexts {
 						part := []byte(`{"text":"","thought":true}`)
-						part, _ = sjson.SetBytes(part, "text", thoughtText)
+						part, _ = ojson.SetBytes(part, "text", thoughtText)
 						if i == len(thoughtTexts)-1 && signature != "" {
 							part = setGeminiThoughtSignature(part, signature)
 						}
@@ -450,10 +449,10 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 
 					// Add regular text content
 					if content := value.Get("content"); content.Exists() && content.IsArray() {
-						content.ForEach(func(_, contentItem gjson.Result) bool {
+						content.ForEach(func(_, contentItem ojson.Result) bool {
 							if text := translatorcommon.ResponsesMessagePartText(contentItem); text.Exists() {
 								part := []byte(`{"text":""}`)
-								part, _ = sjson.SetBytes(part, "text", text.String())
+								part, _ = ojson.SetBytes(part, "text", text.String())
 								parts = append(parts, part)
 							}
 							return true
@@ -470,8 +469,8 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 					mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
 
 					part := []byte(`{"inlineData":{"data":"","mimeType":""}}`)
-					part, _ = sjson.SetBytes(part, "inlineData.data", b64)
-					part, _ = sjson.SetBytes(part, "inlineData.mimeType", mimeType)
+					part, _ = ojson.SetBytes(part, "inlineData.data", b64)
+					part, _ = ojson.SetBytes(part, "inlineData.mimeType", mimeType)
 					parts = append(parts, part)
 
 				case "function_call":
@@ -483,7 +482,7 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 						if orig, ok := rev[n]; ok {
 							n = orig
 						}
-						functionCall, _ = sjson.SetBytes(functionCall, "functionCall.name", n)
+						functionCall, _ = ojson.SetBytes(functionCall, "functionCall.name", n)
 					}
 
 					functionCall = setGeminiFunctionCallArgs(functionCall, value.Get("arguments").String())
@@ -498,7 +497,7 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 			flushPendingFunctionCalls()
 
 			if len(parts) > 0 {
-				template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts", translatorcommon.JoinRawArray(parts))
+				template, _ = ojson.SetRawBytes(template, "candidates.0.content.parts", translatorcommon.JoinRawArray(parts))
 			}
 		}
 	}
@@ -508,7 +507,7 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 // buildReverseMapFromGeminiOriginal builds a map[short]original from original Gemini request tools.
 func buildReverseMapFromGeminiOriginal(original []byte) map[string]string {
 	rev := map[string]string{}
-	declarations := translatorcommon.GeminiFunctionDeclarations(gjson.ParseBytes(original))
+	declarations := translatorcommon.GeminiFunctionDeclarations(ojson.ParseBytes(original))
 	for fullName, shortName := range geminiToolShortNames(declarations) {
 		rev[shortName] = fullName
 	}
@@ -522,7 +521,7 @@ func buildReverseMapFromGeminiOriginal(original []byte) map[string]string {
 // string verbatim makes official SDK []byte decoding fail. The carrier therefore
 // stores magic+rawSignature as the byte payload and relies on standard base64
 // JSON encoding, which every Gemini client decodes and echoes losslessly.
-func extractCodexGeminiReasoningTexts(value gjson.Result) []string {
+func extractCodexGeminiReasoningTexts(value ojson.Result) []string {
 	var thoughtTexts []string
 	if summary := value.Get("summary"); summary.IsArray() {
 		for _, entry := range summary.Array() {
@@ -539,7 +538,7 @@ func extractCodexGeminiReasoningTexts(value gjson.Result) []string {
 				}
 			}
 		}
-	} else if content.Type == gjson.String && content.String() != "" {
+	} else if content.Type == ojson.String && content.String() != "" {
 		thoughtTexts = append(thoughtTexts, content.String())
 	}
 	return thoughtTexts
@@ -560,25 +559,25 @@ func setGeminiThoughtSignature(part []byte, rawSignature string) []byte {
 	if encoded == "" {
 		return part
 	}
-	part, _ = sjson.SetBytes(part, "thoughtSignature", encoded)
+	part, _ = ojson.SetBytes(part, "thoughtSignature", encoded)
 	return part
 }
 
 func setGeminiFunctionCallArgs(functionCall []byte, rawArgs string) []byte {
 	args := strings.TrimSpace(rawArgs)
-	if gjson.Valid(args) && gjson.Parse(args).IsObject() {
-		functionCall, _ = sjson.SetRawBytes(functionCall, "functionCall.args", []byte(args))
+	if ojson.Valid(args) && ojson.Parse(args).IsObject() {
+		functionCall, _ = ojson.SetRawBytes(functionCall, "functionCall.args", []byte(args))
 	}
 	return functionCall
 }
 
-func setGeminiFunctionCallID(functionCall []byte, item gjson.Result) []byte {
+func setGeminiFunctionCallID(functionCall []byte, item ojson.Result) []byte {
 	if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
-		functionCall, _ = sjson.SetBytes(functionCall, "functionCall.id", callID)
+		functionCall, _ = ojson.SetBytes(functionCall, "functionCall.id", callID)
 		return functionCall
 	}
 	if id := strings.TrimSpace(item.Get("id").String()); id != "" {
-		functionCall, _ = sjson.SetBytes(functionCall, "functionCall.id", id)
+		functionCall, _ = ojson.SetBytes(functionCall, "functionCall.id", id)
 	}
 	return functionCall
 }
@@ -595,10 +594,10 @@ func codexGeminiIncompleteFinishReason(reason string) string {
 }
 
 // applyCodexGeminiUsage preserves the template's traffic type with the usage counts.
-func applyCodexGeminiUsage(template []byte, usage gjson.Result) []byte {
-	base := []byte(gjson.GetBytes(template, "usageMetadata").Raw)
+func applyCodexGeminiUsage(template []byte, usage ojson.Result) []byte {
+	base := []byte(ojson.GetBytes(template, "usageMetadata").Raw)
 	metadata := translatorcommon.GeminiUsageMetadataFromOpenAI(usage, base)
-	out, _ := sjson.SetRawBytes(template, "usageMetadata", metadata)
+	out, _ := ojson.SetRawBytes(template, "usageMetadata", metadata)
 	return out
 }
 

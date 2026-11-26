@@ -4,8 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // SetGeminiFunctionCallArguments writes an object to functionCall.args.
@@ -14,9 +13,9 @@ func SetGeminiFunctionCallArguments(part []byte, rawArgs, fallbackField string) 
 	trimmed := strings.TrimSpace(rawArgs)
 	switch {
 	case trimmed == "" || trimmed == "null":
-		part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte("{}"))
-	case strings.HasPrefix(trimmed, "{") && gjson.Valid(trimmed):
-		part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte(trimmed))
+		part, _ = ojson.SetRawBytes(part, "functionCall.args", []byte("{}"))
+	case strings.HasPrefix(trimmed, "{") && ojson.Valid(trimmed):
+		part, _ = ojson.SetRawBytes(part, "functionCall.args", []byte(trimmed))
 	default:
 		part, _ = SetStringWithoutHTMLEscape(part, "functionCall.args."+fallbackField, rawArgs)
 	}
@@ -24,12 +23,12 @@ func SetGeminiFunctionCallArguments(part []byte, rawArgs, fallbackField string) 
 }
 
 // GeminiFunctionDeclarations returns the declared functions in request order.
-func GeminiFunctionDeclarations(root gjson.Result) []gjson.Result {
+func GeminiFunctionDeclarations(root ojson.Result) []ojson.Result {
 	tools := root.Get("tools")
 	if !tools.IsArray() {
 		return nil
 	}
-	var declarations []gjson.Result
+	var declarations []ojson.Result
 	for _, tool := range tools.Array() {
 		for _, key := range []string{"functionDeclarations", "function_declarations"} {
 			if functions := tool.Get(key); functions.IsArray() {
@@ -42,8 +41,8 @@ func GeminiFunctionDeclarations(root gjson.Result) []gjson.Result {
 }
 
 // GeminiFunctionCallingOptions resolves a nonempty ANY allowlist against original tool names.
-func GeminiFunctionCallingOptions(root gjson.Result, declarations []gjson.Result) (string, []string, error) {
-	var config gjson.Result
+func GeminiFunctionCallingOptions(root ojson.Result, declarations []ojson.Result) (string, []string, error) {
+	var config ojson.Result
 	var mode string
 	for _, path := range [...]string{
 		"toolConfig.functionCallingConfig",
@@ -63,7 +62,7 @@ func GeminiFunctionCallingOptions(root gjson.Result, declarations []gjson.Result
 	names := config.Get("allowedFunctionNames")
 	if !names.IsArray() {
 		snakeNames := config.Get("allowed_function_names")
-		if !snakeNames.IsArray() && (names.Type != gjson.Null || snakeNames.Type != gjson.Null) {
+		if !snakeNames.IsArray() && (names.Type != ojson.Null || snakeNames.Type != ojson.Null) {
 			return "", nil, errors.New("allowedFunctionNames must be an array")
 		}
 		names = snakeNames

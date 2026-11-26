@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 )
@@ -203,7 +202,9 @@ func TestServiceAuthorizationExchangeAndRefreshContracts(t *testing.T) {
 	query := parsed.Query()
 	if query.Get("access_type") != "offline" || query.Get("prompt") != "consent" || query.Get("state") != "state-1" ||
 		query.Get("client_id") != "client-test" || query.Get("redirect_uri") != service.RedirectURI ||
-		!strings.Contains(query.Get("scope"), "experimentsandconfigs") {
+		query.Get("scope") != "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email "+
+			"https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/aicode "+
+			"https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs" {
 		t.Fatalf("authorization query = %v", query)
 	}
 

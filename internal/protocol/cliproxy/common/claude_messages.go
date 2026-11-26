@@ -3,8 +3,9 @@ package common
 import (
 	"strings"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 // ClaudeMessageAccumulator groups consecutive Claude messages by role.
@@ -27,7 +28,7 @@ func (a *ClaudeMessageAccumulator) Append(message []byte) {
 	if len(message) == 0 {
 		return
 	}
-	root := gjson.ParseBytes(message)
+	root := util.ParseGJSONBytesNoCopy(message)
 	role := root.Get("role").String()
 	if role != "user" && role != "assistant" {
 		return
@@ -39,9 +40,9 @@ func (a *ClaudeMessageAccumulator) Append(message []byte) {
 	if a.role != "" && a.role != role {
 		a.Flush()
 	}
-	a.role = role
+	a.role = strings.Clone(role)
 	for _, part := range parts {
-		if role == "assistant" && gjson.GetBytes(part, "type").String() == "tool_use" {
+		if role == "assistant" && ojson.GetBytesNoCopy(part, "type").String() == "tool_use" {
 			a.toolUseParts = append(a.toolUseParts, part)
 			continue
 		}
@@ -62,10 +63,10 @@ func (a *ClaudeMessageAccumulator) Flush() {
 		parts = combined
 	}
 	if len(parts) > 0 {
-		message := []byte(`{"role":"","content":[]}`)
-		message, _ = sjson.SetBytes(message, "role", a.role)
-		message, _ = sjson.SetRawBytes(message, "content", JoinRawArray(parts))
-		a.messages = append(a.messages, message)
+		messageDoc := ojson.NewDoc([]byte(`{"role":"","content":[]}`))
+		_ = messageDoc.Set("role", a.role)
+		_ = messageDoc.SetRawBytes("content", JoinRawArray(parts))
+		a.messages = append(a.messages, messageDoc.Bytes())
 	}
 	a.role = ""
 	a.content = nil
@@ -81,13 +82,13 @@ func (a *ClaudeMessageAccumulator) Messages() [][]byte {
 // AlignClaudeToolResults orders tool_result blocks by the preceding tool_use IDs,
 // preserving non-result content blocks at their existing indexes. If a complete
 // one-to-one match is unavailable, the original content is returned.
-func AlignClaudeToolResults(content gjson.Result, toolUseIDs []string) gjson.Result {
+func AlignClaudeToolResults(content ojson.Result, toolUseIDs []string) ojson.Result {
 	if !content.IsArray() || len(toolUseIDs) == 0 {
 		return content
 	}
 
 	parts := content.Array()
-	toolResults := make([]gjson.Result, 0, len(toolUseIDs))
+	toolResults := make([]ojson.Result, 0, len(toolUseIDs))
 	toolResultIndices := make([]int, 0, len(toolUseIDs))
 	for i, part := range parts {
 		if part.Get("type").String() == "tool_result" {
@@ -99,7 +100,7 @@ func AlignClaudeToolResults(content gjson.Result, toolUseIDs []string) gjson.Res
 		return content
 	}
 
-	reorderedResults := make([]gjson.Result, 0, len(toolUseIDs))
+	reorderedResults := make([]ojson.Result, 0, len(toolUseIDs))
 	used := make([]bool, len(toolResults))
 	for _, toolUseID := range toolUseIDs {
 		matched := -1
@@ -123,26 +124,26 @@ func AlignClaudeToolResults(content gjson.Result, toolUseIDs []string) gjson.Res
 	for i, slotIndex := range toolResultIndices {
 		ordered[slotIndex] = []byte(reorderedResults[i].Raw)
 	}
-	return gjson.ParseBytes(JoinRawArray(ordered))
+	return util.ParseGJSONBytesNoCopy(JoinRawArray(ordered))
 }
 
-func claudeMessageContentParts(content gjson.Result) [][]byte {
-	if !content.Exists() || content.Type == gjson.Null {
+func claudeMessageContentParts(content ojson.Result) [][]byte {
+	if !content.Exists() || content.Type == ojson.Null {
 		return nil
 	}
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		if content.String() == "" {
 			return nil
 		}
 		part := []byte(`{"type":"text","text":""}`)
-		part, _ = sjson.SetBytes(part, "text", content.String())
+		part, _ = ojson.SetBytes(part, "text", content.String())
 		return [][]byte{part}
 	}
 	if !content.IsArray() {
 		return nil
 	}
 	parts := make([][]byte, 0, len(content.Array()))
-	content.ForEach(func(_, part gjson.Result) bool {
+	content.ForEach(func(_, part ojson.Result) bool {
 		if part.IsObject() {
 			parts = append(parts, []byte(part.Raw))
 		}
@@ -153,7 +154,7 @@ func claudeMessageContentParts(content gjson.Result) [][]byte {
 
 // ClaudeDocumentHeader returns a formatted metadata header for optional title
 // and context fields on a Claude document block, or "" when neither is set.
-func ClaudeDocumentHeader(part gjson.Result) string {
+func ClaudeDocumentHeader(part ojson.Result) string {
 	title := strings.TrimSpace(part.Get("title").String())
 	contextText := strings.TrimSpace(part.Get("context").String())
 	if title == "" && contextText == "" {
@@ -177,7 +178,7 @@ func ClaudeDocumentHeader(part gjson.Result) string {
 // ClaudeDocumentTextBlock formats a Claude plain-text document block
 // (source.type == "text") into text preserving optional title and context.
 // Returns ("", false) when the source is not a text source or carries no text.
-func ClaudeDocumentTextBlock(part gjson.Result) (string, bool) {
+func ClaudeDocumentTextBlock(part ojson.Result) (string, bool) {
 	source := part.Get("source")
 	if source.Get("type").String() != "text" {
 		return "", false
@@ -198,9 +199,9 @@ func ClaudeDocumentTextBlock(part gjson.Result) (string, bool) {
 // optional title/context header is emitted before the first converted item only
 // if at least one item succeeds. Returns true if any item was emitted.
 func ExpandClaudeContentDocument(
-	part gjson.Result,
+	part ojson.Result,
 	emitText func(string),
-	convertImage func(gjson.Result) ([]byte, bool),
+	convertImage func(ojson.Result) ([]byte, bool),
 	emitImage func([]byte),
 	onImageDrop func(),
 ) bool {
@@ -221,7 +222,7 @@ func ExpandClaudeContentDocument(
 		}
 	}
 	emitted := false
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		if text := content.String(); strings.TrimSpace(text) != "" {
 			emitHeader()
 			emitText(text)
@@ -232,8 +233,8 @@ func ExpandClaudeContentDocument(
 	if !content.IsArray() {
 		return false
 	}
-	content.ForEach(func(_, item gjson.Result) bool {
-		if item.Type == gjson.String {
+	content.ForEach(func(_, item ojson.Result) bool {
+		if item.Type == ojson.String {
 			if text := item.String(); strings.TrimSpace(text) != "" {
 				emitHeader()
 				emitText(text)

@@ -16,8 +16,7 @@ import (
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ConvertGeminiRequestToOpenAI parses and transforms a Gemini API request into OpenAI Chat Completions API format.
@@ -28,42 +27,42 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
 
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 
 	// Model mapping
-	out, _ = sjson.SetBytes(out, "model", modelName)
+	out, _ = ojson.SetBytes(out, "model", modelName)
 
 	genConfig := translatorcommon.GeminiConfigObject(root, "generationConfig", "generation_config")
 	format, outputInstruction, err := translatorcommon.GeminiResponseFormat(root, true)
 	if err != nil {
 		return nil, err
 	}
-	formatType := gjson.GetBytes(format, "type").Str
+	formatType := ojson.GetBytes(format, "type").Str
 	if format != nil {
 		responseFormat := format
 		if formatType == "json_schema" {
-			schemaFormat, _ := sjson.DeleteBytes(format, "type")
-			responseFormat, _ = sjson.SetRawBytes([]byte(`{"type":"json_schema"}`), "json_schema", schemaFormat)
+			schemaFormat, _ := ojson.DeleteBytes(format, "type")
+			responseFormat, _ = ojson.SetRawBytes([]byte(`{"type":"json_schema"}`), "json_schema", schemaFormat)
 		}
-		out, _ = sjson.SetRawBytes(out, "response_format", responseFormat)
+		out, _ = ojson.SetRawBytes(out, "response_format", responseFormat)
 	}
 	if temperature := translatorcommon.GeminiConfigNumber(genConfig, "temperature"); temperature.Exists() {
-		out, _ = sjson.SetBytes(out, "temperature", temperature.Float())
+		out, _ = ojson.SetBytes(out, "temperature", temperature.Float())
 	}
 	if maxTokens, ok := translatorcommon.GeminiConfigInt(genConfig, 1, "maxOutputTokens", "max_output_tokens"); ok {
-		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens)
+		out, _ = ojson.SetBytes(out, "max_tokens", maxTokens)
 	}
 	if topP := translatorcommon.GeminiConfigNumber(genConfig, "topP", "top_p"); topP.Exists() {
-		out, _ = sjson.SetBytes(out, "top_p", topP.Float())
+		out, _ = ojson.SetBytes(out, "top_p", topP.Float())
 	}
 	if topK, ok := translatorcommon.GeminiConfigInt(genConfig, 0, "topK", "top_k"); ok {
-		out, _ = sjson.SetBytes(out, "top_k", topK)
+		out, _ = ojson.SetBytes(out, "top_k", topK)
 	}
 	if stops := translatorcommon.GeminiConfigStrings(genConfig, "stopSequences", "stop_sequences"); len(stops) > 0 {
-		out, _ = sjson.SetBytes(out, "stop", stops)
+		out, _ = ojson.SetBytes(out, "stop", stops)
 	}
 	if candidates, ok := translatorcommon.GeminiConfigInt(genConfig, 1, "candidateCount", "candidate_count"); ok {
-		out, _ = sjson.SetBytes(out, "n", candidates)
+		out, _ = ojson.SetBytes(out, "n", candidates)
 	}
 	var modalities []string
 	for _, value := range translatorcommon.GeminiConfigStrings(genConfig, "responseModalities", "response_modalities") {
@@ -73,7 +72,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 	if len(modalities) > 0 {
-		out, _ = sjson.SetBytes(out, "modalities", modalities)
+		out, _ = ojson.SetBytes(out, "modalities", modalities)
 	}
 
 	effort, budget, hasBudget := translatorcommon.GeminiThinkingConfig(root)
@@ -81,13 +80,13 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		effort, _ = thinking.ConvertBudgetToModelLevel(int(budget), modelName, "openai")
 	}
 	if effort != "" && effort != string(thinking.LevelAuto) {
-		out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+		out, _ = ojson.SetBytes(out, "reasoning_effort", effort)
 	}
 
 	// Stream parameter
-	out, _ = sjson.SetBytes(out, "stream", stream)
-	if serviceTier := root.Get("service_tier"); serviceTier.Exists() && serviceTier.Type == gjson.String {
-		out, _ = sjson.SetBytes(out, "service_tier", serviceTier.String())
+	out, _ = ojson.SetBytes(out, "stream", stream)
+	if serviceTier := root.Get("service_tier"); serviceTier.Exists() && serviceTier.Type == ojson.String {
+		out, _ = ojson.SetBytes(out, "service_tier", serviceTier.String())
 	}
 
 	// Process contents (Gemini messages) -> OpenAI messages
@@ -102,7 +101,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		contentItems := make([][]byte, 0, 2)
 
 		if parts.Exists() && parts.IsArray() {
-			parts.ForEach(func(_, part gjson.Result) bool {
+			parts.ForEach(func(_, part ojson.Result) bool {
 				if translatorcommon.IsGeminiThoughtPart(part) {
 					return true
 				}
@@ -110,7 +109,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				// Handle text parts
 				if text := part.Get("text"); strings.TrimSpace(text.Str) != "" {
 					contentPart := []byte(`{"type":"text","text":""}`)
-					contentPart, _ = sjson.SetBytes(contentPart, "text", text.Str)
+					contentPart, _ = ojson.SetBytes(contentPart, "text", text.Str)
 					contentItems = append(contentItems, contentPart)
 				}
 
@@ -127,7 +126,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 		if len(contentItems) > 0 {
 			msg := []byte(`{"role":"system","content":[]}`)
-			msg, _ = sjson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(contentItems))
+			msg, _ = ojson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(contentItems))
 			messageItems = append(messageItems, msg)
 			break
 		}
@@ -137,7 +136,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	}
 	if outputInstruction != "" {
 		msg := []byte(`{"role":"system","content":""}`)
-		msg, _ = sjson.SetBytes(msg, "content", outputInstruction)
+		msg, _ = ojson.SetBytes(msg, "content", outputInstruction)
 		messageItems = append(messageItems, msg)
 	}
 
@@ -166,16 +165,16 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			case len(pendingToolRelayMedia) > 0:
 				relayItems := buildOpenAIGeminiToolRelayItems(pendingToolRelayMedia)
 				relayItems = append(relayItems, pendingUserContentItems...)
-				relayMsg, _ = sjson.SetRawBytes(relayMsg, "content", translatorcommon.JoinRawArray(relayItems))
+				relayMsg, _ = ojson.SetRawBytes(relayMsg, "content", translatorcommon.JoinRawArray(relayItems))
 			case pendingUserOnlyText:
-				relayMsg, _ = sjson.SetBytes(relayMsg, "content", pendingUserTextBuilder.String())
+				relayMsg, _ = ojson.SetBytes(relayMsg, "content", pendingUserTextBuilder.String())
 			default:
-				relayMsg, _ = sjson.SetRawBytes(relayMsg, "content", translatorcommon.JoinRawArray(pendingUserContentItems))
+				relayMsg, _ = ojson.SetRawBytes(relayMsg, "content", translatorcommon.JoinRawArray(pendingUserContentItems))
 			}
 			messageItems = append(messageItems, relayMsg)
 			resetPendingUser()
 		}
-		contents.ForEach(func(_, content gjson.Result) bool {
+		contents.ForEach(func(_, content ojson.Result) bool {
 			parts := content.Get("parts")
 			role := translatorcommon.GeminiMessageRole(content.Get("role").String(), parts)
 			hasTurnFR := translatorcommon.ContentHasGeminiFunctionResponse([]byte(content.Raw))
@@ -190,7 +189,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			}
 
 			msg := []byte(`{"role":"","content":""}`)
-			msg, _ = sjson.SetBytes(msg, "role", role)
+			msg, _ = ojson.SetBytes(msg, "role", role)
 
 			var textBuilder strings.Builder
 			contentItems := make([][]byte, 0, 4)
@@ -201,7 +200,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 			if parts.Exists() && parts.IsArray() {
 				partIdx := 0
-				parts.ForEach(func(_, part gjson.Result) bool {
+				parts.ForEach(func(_, part ojson.Result) bool {
 					currentPartIdx := partIdx
 					partIdx++
 
@@ -215,7 +214,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						formattedText := text.String()
 						textBuilder.WriteString(formattedText)
 						contentPart := []byte(`{"type":"text","text":""}`)
-						contentPart, _ = sjson.SetBytes(contentPart, "text", formattedText)
+						contentPart, _ = ojson.SetBytes(contentPart, "text", formattedText)
 						contentItems = append(contentItems, contentPart)
 					}
 
@@ -241,14 +240,14 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						toolCallIDsByName[funcName] = append(toolCallIDsByName[funcName], toolCallID)
 
 						toolCall := []byte(`{"id":"","type":"function","function":{"name":"","arguments":"{}"}}`)
-						toolCall, _ = sjson.SetBytes(toolCall, "id", toolCallID)
-						toolCall, _ = sjson.SetBytes(toolCall, "function.name", funcName)
+						toolCall, _ = ojson.SetBytes(toolCall, "id", toolCallID)
+						toolCall, _ = ojson.SetBytes(toolCall, "function.name", funcName)
 
 						if args.IsObject() {
-							toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", args.Raw)
+							toolCall, _ = ojson.SetBytes(toolCall, "function.arguments", args.Raw)
 						}
 						if thoughtSig := geminiFunctionCallThoughtSignature(part, functionCall); thoughtSig != "" {
-							toolCall, _ = sjson.SetBytes(toolCall, "extra_content.google.thought_signature", thoughtSig)
+							toolCall, _ = ojson.SetBytes(toolCall, "extra_content.google.thought_signature", thoughtSig)
 						}
 
 						toolCallItems = append(toolCallItems, toolCall)
@@ -279,7 +278,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 						var frTextParts []string
 						var thisResponseMedia [][]byte
-						functionResponse.Get("parts").ForEach(func(_, nested gjson.Result) bool {
+						functionResponse.Get("parts").ForEach(func(_, nested ojson.Result) bool {
 							if text := nested.Get("text"); text.Exists() {
 								if strings.TrimSpace(text.String()) != "" {
 									frTextParts = append(frTextParts, text.String())
@@ -307,11 +306,11 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							}
 						}
 						if toolContent != "" || functionResponse.Get("response").Exists() {
-							toolMsg, _ = sjson.SetBytes(toolMsg, "content", toolContent)
+							toolMsg, _ = ojson.SetBytes(toolMsg, "content", toolContent)
 						}
 
 						if toolCallID := explicitGeminiToolID(functionResponse); toolCallID != "" {
-							toolMsg, _ = sjson.SetBytes(toolMsg, "tool_call_id", toolCallID)
+							toolMsg, _ = ojson.SetBytes(toolMsg, "tool_call_id", toolCallID)
 							if queue := toolCallIDsByName[funcName]; len(queue) > 0 {
 								for i, id := range queue {
 									if id == toolCallID {
@@ -323,16 +322,16 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						} else if queue := toolCallIDsByName[funcName]; len(queue) > 0 {
 							toolCallID := queue[0]
 							toolCallIDsByName[funcName] = queue[1:]
-							toolMsg, _ = sjson.SetBytes(toolMsg, "tool_call_id", toolCallID)
+							toolMsg, _ = ojson.SetBytes(toolMsg, "tool_call_id", toolCallID)
 						} else {
 							fallbackID := deterministicToolCallID("response", msgIdx, currentPartIdx, funcName, responseRaw)
-							toolMsg, _ = sjson.SetBytes(toolMsg, "tool_call_id", fallbackID)
+							toolMsg, _ = ojson.SetBytes(toolMsg, "tool_call_id", fallbackID)
 						}
 
 						if len(thisResponseMedia) > 0 {
 							pendingToolRelayMedia = append(pendingToolRelayMedia, openAIGeminiToolRelayGroup{
 								toolName: funcName,
-								callID:   gjson.GetBytes(toolMsg, "tool_call_id").String(),
+								callID:   ojson.GetBytes(toolMsg, "tool_call_id").String(),
 								items:    thisResponseMedia,
 							})
 						}
@@ -381,15 +380,15 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			// Set content
 			if len(contentItems) > 0 {
 				if onlyTextContent {
-					msg, _ = sjson.SetBytes(msg, "content", textBuilder.String())
+					msg, _ = ojson.SetBytes(msg, "content", textBuilder.String())
 				} else {
-					msg, _ = sjson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(contentItems))
+					msg, _ = ojson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(contentItems))
 				}
 			}
 
 			// Set tool calls if any.
 			if len(toolCallItems) > 0 {
-				msg, _ = sjson.SetRawBytes(msg, "tool_calls", translatorcommon.JoinRawArray(toolCallItems))
+				msg, _ = ojson.SetRawBytes(msg, "tool_calls", translatorcommon.JoinRawArray(toolCallItems))
 			}
 
 			if (droppedThought || hasFunctionResponse) && len(contentItems) == 0 && len(toolCallItems) == 0 {
@@ -417,29 +416,29 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			continue
 		}
 		tool := []byte(`{"type":"function","function":{"name":"","description":""}}`)
-		tool, _ = sjson.SetBytes(tool, "function.name", name)
-		tool, _ = sjson.SetBytes(tool, "function.description", declaration.Get("description").String())
+		tool, _ = ojson.SetBytes(tool, "function.name", name)
+		tool, _ = ojson.SetBytes(tool, "function.description", declaration.Get("description").String())
 		if parameters := translatorcommon.GeminiConfigObject(declaration, "parameters", "parametersJsonSchema", "parameters_json_schema"); parameters.Exists() {
-			tool, _ = sjson.SetRawBytes(tool, "function.parameters", []byte(util.NormalizeGeminiToolSchema(parameters.Raw)))
+			tool, _ = ojson.SetRawBytes(tool, "function.parameters", []byte(util.NormalizeGeminiToolSchema(parameters.Raw)))
 		}
 		tools = append(tools, tool)
 	}
 	if len(tools) > 0 {
-		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(tools))
+		out, _ = ojson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(tools))
 	}
 
 	switch mode {
 	case "NONE":
-		out, _ = sjson.SetBytes(out, "tool_choice", "none")
+		out, _ = ojson.SetBytes(out, "tool_choice", "none")
 	case "AUTO":
-		out, _ = sjson.SetBytes(out, "tool_choice", "auto")
+		out, _ = ojson.SetBytes(out, "tool_choice", "auto")
 	case "ANY":
 		if len(allowedNames) == 1 {
 			choice := []byte(`{"type":"function","function":{"name":""}}`)
-			choice, _ = sjson.SetBytes(choice, "function.name", allowedNames[0])
-			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
+			choice, _ = ojson.SetBytes(choice, "function.name", allowedNames[0])
+			out, _ = ojson.SetRawBytes(out, "tool_choice", choice)
 		} else {
-			out, _ = sjson.SetBytes(out, "tool_choice", "required")
+			out, _ = ojson.SetBytes(out, "tool_choice", "required")
 		}
 	}
 
@@ -451,8 +450,8 @@ func deterministicToolCallID(kind string, msgIdx, partIdx int, name, payload str
 	return "call_" + hex.EncodeToString(sum[:12])
 }
 
-func geminiFunctionCallThoughtSignature(part, functionCall gjson.Result) string {
-	for _, sig := range []gjson.Result{
+func geminiFunctionCallThoughtSignature(part, functionCall ojson.Result) string {
+	for _, sig := range []ojson.Result{
 		part.Get("thoughtSignature"),
 		part.Get("thought_signature"),
 		functionCall.Get("thoughtSignature"),
@@ -466,7 +465,7 @@ func geminiFunctionCallThoughtSignature(part, functionCall gjson.Result) string 
 	return ""
 }
 
-func explicitGeminiToolID(node gjson.Result) string {
+func explicitGeminiToolID(node ojson.Result) string {
 	if id := strings.TrimSpace(node.Get("id").String()); id != "" {
 		return id
 	}
@@ -476,7 +475,7 @@ func explicitGeminiToolID(node gjson.Result) string {
 	return strings.TrimSpace(node.Get("callId").String())
 }
 
-func openAIContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
+func openAIContentPartFromGeminiInlineData(part ojson.Result) ([]byte, bool) {
 	inlineData := part.Get("inlineData")
 	if !inlineData.Exists() {
 		inlineData = part.Get("inline_data")
@@ -500,16 +499,16 @@ func openAIContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 	switch {
 	case strings.HasPrefix(lowerMimeType, "image/"):
 		contentPart := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "image_url.url", dataURL)
+		contentPart, _ = ojson.SetBytes(contentPart, "image_url.url", dataURL)
 		return contentPart, true
 	case strings.HasPrefix(lowerMimeType, "audio/"):
 		contentPart := []byte(`{"type":"input_audio","input_audio":{"data":"","format":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.data", data)
-		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", openAIInputAudioFormatFromMIME(mimeType))
+		contentPart, _ = ojson.SetBytes(contentPart, "input_audio.data", data)
+		contentPart, _ = ojson.SetBytes(contentPart, "input_audio.format", openAIInputAudioFormatFromMIME(mimeType))
 		return contentPart, true
 	case strings.HasPrefix(lowerMimeType, "video/"):
 		contentPart := []byte(`{"type":"video_url","video_url":{"url":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "video_url.url", dataURL)
+		contentPart, _ = ojson.SetBytes(contentPart, "video_url.url", dataURL)
 		return contentPart, true
 	default:
 		fileData := dataURL
@@ -517,13 +516,13 @@ func openAIContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 			fileData = data
 		}
 		contentPart := []byte(`{"type":"file","file":{"filename":"","file_data":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
-		contentPart, _ = sjson.SetBytes(contentPart, "file.file_data", fileData)
+		contentPart, _ = ojson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
+		contentPart, _ = ojson.SetBytes(contentPart, "file.file_data", fileData)
 		return contentPart, true
 	}
 }
 
-func openAIContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
+func openAIContentPartFromGeminiFileData(part ojson.Result) ([]byte, bool) {
 	fileData := part.Get("fileData")
 	if !fileData.Exists() {
 		fileData = part.Get("file_data")
@@ -545,18 +544,18 @@ func openAIContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 	lowerMimeType := strings.ToLower(mimeType)
 	if strings.HasPrefix(lowerMimeType, "image/") {
 		contentPart := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "image_url.url", fileURI)
+		contentPart, _ = ojson.SetBytes(contentPart, "image_url.url", fileURI)
 		return contentPart, true
 	}
 	if strings.HasPrefix(lowerMimeType, "video/") {
 		contentPart := []byte(`{"type":"video_url","video_url":{"url":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "video_url.url", fileURI)
+		contentPart, _ = ojson.SetBytes(contentPart, "video_url.url", fileURI)
 		return contentPart, true
 	}
 	if strings.HasPrefix(lowerMimeType, "application/") || strings.HasPrefix(lowerMimeType, "text/") {
 		contentPart := []byte(`{"type":"file","file":{"filename":"","file_url":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
-		contentPart, _ = sjson.SetBytes(contentPart, "file.file_url", fileURI)
+		contentPart, _ = ojson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
+		contentPart, _ = ojson.SetBytes(contentPart, "file.file_url", fileURI)
 		return contentPart, true
 	}
 	fileInfo := "File: " + fileURI
@@ -564,7 +563,7 @@ func openAIContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 		fileInfo += " (Type: " + mimeType + ")"
 	}
 	contentPart := []byte(`{"type":"text","text":""}`)
-	contentPart, _ = sjson.SetBytes(contentPart, "text", fileInfo)
+	contentPart, _ = ojson.SetBytes(contentPart, "text", fileInfo)
 	return contentPart, true
 }
 
@@ -611,7 +610,7 @@ func openAIFileNameFromMIME(mimeType string) string {
  */
 func classifyGeminiRelayedToolMedia(items [][]byte) (hasImage, hasFile bool) {
 	for _, item := range items {
-		switch gjson.GetBytes(item, "type").String() {
+		switch ojson.GetBytes(item, "type").String() {
 		case "image_url":
 			hasImage = true
 		case "file", "input_audio", "video_url":
@@ -643,13 +642,13 @@ func geminiToolResultRelayPlaceholder(items [][]byte) string {
  * @param v response 或 response.content 字段
  * @return 字段缺失、空对象或空白原文时返回 true
  */
-func isEmptyGeminiOpenAIResponseValue(v gjson.Result) bool {
+func isEmptyGeminiOpenAIResponseValue(v ojson.Result) bool {
 	if !v.Exists() {
 		return true
 	}
 	if v.IsObject() {
 		empty := true
-		v.ForEach(func(_, _ gjson.Result) bool {
+		v.ForEach(func(_, _ ojson.Result) bool {
 			empty = false
 			return false
 		})
@@ -675,7 +674,7 @@ type openAIGeminiToolRelayGroup struct {
 func buildOpenAIGeminiToolRelayItems(groups []openAIGeminiToolRelayGroup) [][]byte {
 	textPart := func(text string) []byte {
 		part := []byte(`{"type":"text","text":""}`)
-		part, _ = sjson.SetBytes(part, "text", text)
+		part, _ = ojson.SetBytes(part, "text", text)
 		return part
 	}
 	if len(groups) == 1 {

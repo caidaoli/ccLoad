@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
@@ -40,6 +41,16 @@ const (
 	StreamBufferSize = 32 * 1024 // 流式传输缓冲区（32KB，大文件传输）
 	SSEBufferSize    = 4 * 1024  // SSE流式传输缓冲区（4KB，优化实时响应）
 )
+
+/**
+ * @brief 零拷贝解析 JSON 字节为 gjson 结果。
+ * @param data JSON 字节；结果直接引用其底层内存。
+ * @return 解析结果；data 为空时返回零值结果。
+ * @note 使用结果期间不得修改 data，也不得在 data 失效后保留结果；gjson.ParseBytes 会整份复制，大响应事件开销过高。
+ */
+func parseJSONBytesNoCopy(data []byte) gjson.Result {
+	return gjson.Parse(unsafe.String(unsafe.SliceData(data), len(data)))
+}
 
 func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header, body []byte) {
 	disableResponseWriteTimeout(w, "最终响应")
@@ -873,30 +884,23 @@ func filterAndWriteResponseHeaders(w http.ResponseWriter, hdr http.Header) {
 // 模型和路径解析工具函数
 // ============================================================================
 
-// extractModelFromPath 从URL路径中提取模型名称
-// 支持格式：/models/{model}:method 或 /models/{model}
+/**
+ * @brief 从 URL 路径中提取模型名称。
+ * @param path 形如 /models/{model}:method 或 /models/{model} 的请求路径。
+ * @return 模型名；路径不含 /models/ 时为空串。
+ * @details 模型段按首个 / 截断后，按最后一个 : 拆出动作，支持 qwen3:32b 这类含冒号的模型 ID。
+ * 不带动作的 /models/qwen3:32b 仍会把末段当成动作。
+ */
 func extractModelFromPath(path string) string {
-	// 查找 "/models/" 子串
-	modelsPrefix := "/models/"
-	idx := strings.Index(path, modelsPrefix)
-	if idx == -1 {
+	_, remaining, found := strings.Cut(path, "/models/")
+	if !found {
 		return ""
 	}
-
-	// 提取 "/models/" 之后的部分
-	start := idx + len(modelsPrefix)
-	remaining := path[start:]
-
-	// 查找模型名称的结束位置（遇到 : 或 / 或字符串结尾）
-	end := len(remaining)
-	for i, ch := range remaining {
-		if ch == ':' || ch == '/' {
-			end = i
-			break
-		}
+	segment, _, _ := strings.Cut(remaining, "/")
+	if modelName, _, hasAction := strings.CutLast(segment, ":"); hasAction {
+		return modelName
 	}
-
-	return remaining[:end]
+	return segment
 }
 
 func replaceModelInPath(path string, originalModel string, actualModel string) string {

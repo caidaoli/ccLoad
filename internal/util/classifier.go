@@ -352,6 +352,109 @@ func isContextLengthErrorCode(code string) bool {
 }
 
 /**
+ * @brief 上游因请求内容拒绝生成时使用的错误码（OpenAI/Codex 内容策略拦截）。
+ */
+var contentPolicyErrorCodes = map[string]struct{}{
+	"cyber_policy":                   {},
+	"cyber_policy_violation":         {},
+	"bio_policy":                     {},
+	"misalignment_policy_violation":  {},
+	"content_policy_violation":       {},
+	"image_content_policy_violation": {},
+}
+
+/**
+ * @brief 允许按官方拦截文案改判的通用请求错误码与类型，空值表示未提供。
+ * @details 其他结构化错误码说明故障另有原因，文案可能只是回显的提示词。
+ */
+var genericRequestErrorMarkers = map[string]struct{}{
+	"":                      {},
+	"invalid_request":       {},
+	"invalid_request_error": {},
+	"bad_request_error":     {},
+	"invalid_prompt":        {},
+	"invalid_value":         {},
+	"unsupported_value":     {},
+}
+
+/**
+ * @brief 判断上游是否因请求内容本身拒绝生成：内容策略拦截或托管生图的请求参数错误。
+ * @param responseBody HTTP 错误正文或 SSE/WebSocket 错误帧。
+ * @return error、response.error、body.error 或顶层的 code 为策略拦截码、type 为
+ * image_generation_user_error，或 message 以 OpenAI 官方拦截文案开头时返回 true；
+ * 任一层带有其他结构化错误码或类型时文案不参与判定。
+ * @details 换 Key、模型或渠道都会被同样拒绝；Codex OAuth 没有独立 Key，误判为 Key 级会冷却整个账号池。
+ */
+func IsRequestContentRejection(responseBody []byte) bool {
+	var payload map[string]any
+	if json.Unmarshal(responseBody, &payload) != nil {
+		return false
+	}
+	response, _ := payload["response"].(map[string]any)
+	body, _ := payload["body"].(map[string]any)
+	details := [...]sseErrorDetail{
+		requestErrorDetail(payload["error"]),
+		requestErrorDetail(response["error"]),
+		requestErrorDetail(body["error"]),
+		requestErrorDetail(payload),
+	}
+	// 顶层 type 是事件类型而非错误类型。
+	if eventType := details[3].Type; eventType == "error" || eventType == "response.failed" || eventType == "response.error" {
+		details[3].Type = ""
+	}
+	for _, detail := range details {
+		if _, ok := contentPolicyErrorCodes[detail.Code]; ok || detail.Type == "image_generation_user_error" {
+			return true
+		}
+	}
+	policyMessage := false
+	for _, detail := range details {
+		_, genericCode := genericRequestErrorMarkers[detail.Code]
+		_, genericType := genericRequestErrorMarkers[detail.Type]
+		if !genericCode || !genericType {
+			return false
+		}
+		policyMessage = policyMessage || hasOpenAIPolicyBlockPrefix(detail.Message)
+	}
+	return policyMessage
+}
+
+/**
+ * @brief 把错误容器归一为小写的 code/type 与原始 message。
+ * @param container error 对象、字符串 error 或顶层载荷。
+ * @return 字符串容器只填 message；其他非对象容器返回零值。
+ */
+func requestErrorDetail(container any) sseErrorDetail {
+	switch value := container.(type) {
+	case map[string]any:
+		message, _ := value["message"].(string)
+		return sseErrorDetail{
+			Type:    strings.ToLower(strings.TrimSpace(structuredScalarString(value["type"]))),
+			Code:    strings.ToLower(strings.TrimSpace(structuredScalarString(value["code"]))),
+			Message: message,
+		}
+	case string:
+		return sseErrorDetail{Message: value}
+	default:
+		return sseErrorDetail{}
+	}
+}
+
+/**
+ * @brief 识别 OpenAI 官方的生物、网络安全与安全策略拦截文案。
+ * @param text 上游错误说明。
+ * @return 去空白后不区分大小写以已知文案开头时为 true；只做前缀匹配，避免回显的提示词误判。
+ */
+func hasOpenAIPolicyBlockPrefix(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(lower, "this content was flagged for possible biological risk.") ||
+		strings.HasPrefix(lower, "this content was flagged for possible cybersecurity risk.") ||
+		strings.HasPrefix(lower, "this request has been flagged for possible cybersecurity risk.") ||
+		strings.HasPrefix(lower, "this request was blocked due to a misalignment policy violation.") ||
+		strings.HasPrefix(lower, "invalid prompt: we've limited access to this content for safety reasons.")
+}
+
+/**
  * @brief 提供上游状态码的默认错误级别。
  */
 var statusCodeMetaMap = map[int]StatusCodeMeta{
@@ -471,7 +574,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
  * @param responseBody 上游错误正文。
  * @return 错误级别及已识别的冷却作用域与截止时间。
  * @details 1308 优先识别；401/403 在明确账户终态时影响整个渠道。400/413 默认只影响模型，
- * 上下文超限与图片无法处理原样直返。429 优先识别具体配额，普通限流按实际模型退避。
+ * 上下文超限、内容策略拦截、托管生图参数错误与图片无法处理原样直返。429 优先识别具体配额，普通限流按实际模型退避。
  */
 func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, responseBody []byte) HTTPResponseClassification {
 	return classifyHTTPResponseWithMetaAt(statusCode, headers, responseBody, time.Now())
@@ -577,6 +680,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// SSE 路径使用 597 承载 HTTP 200 中的错误事件；普通 Codex 错误使用 400/413。
 	if (statusCode == StatusSSEError || statusCode == http.StatusBadRequest || statusCode == http.StatusRequestEntityTooLarge) &&
 		IsContextLengthExceededError(responseBody) {
+		return HTTPResponseClassification{Level: ErrorLevelClient}
+	}
+	// 内容策略拦截与托管生图参数错误同样只取决于请求内容。
+	if (statusCode == StatusSSEError || statusCode == http.StatusBadRequest) && IsRequestContentRejection(responseBody) {
 		return HTTPResponseClassification{Level: ErrorLevelClient}
 	}
 

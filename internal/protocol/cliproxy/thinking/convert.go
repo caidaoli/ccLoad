@@ -17,9 +17,7 @@ var levelToBudgetMap = map[string]int{
 	"medium":  8192,
 	"high":    24576,
 	"xhigh":   32768,
-	// "max" is used by Claude adaptive thinking effort. We map it to a large budget
-	// and rely on per-model clamping when converting to budget-only providers.
-	"max": 128000,
+	"max":     128000,
 }
 
 // ConvertLevelToBudget converts a thinking level to a budget value.
@@ -56,7 +54,7 @@ const (
 	ThresholdMedium = 8192
 	// ThresholdHigh is the upper bound for "high" level (8193-24576)
 	ThresholdHigh = 24576
-	// ThresholdXHigh is the upper bound for "xhigh" level (24577-32768).
+	// ThresholdXHigh is the upper bound for "xhigh" level (24577-32768)
 	ThresholdXHigh = 32768
 )
 

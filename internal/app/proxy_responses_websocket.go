@@ -17,7 +17,6 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
-	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -1054,7 +1053,7 @@ func isResponsesWebsocketFailurePayload(payload []byte) bool {
 	if !json.Valid(payload) {
 		return false
 	}
-	event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+	event := parseJSONBytesNoCopy(payload)
 	eventType := strings.TrimSpace(event.Get("type").Str)
 	return eventType == "error" || responsesTerminalType(eventType, event) == "response.failed"
 }
@@ -1066,7 +1065,7 @@ func isResponsesWebsocketFailurePayload(payload []byte) bool {
  * @details 裸 error 缺少 HTTP 状态时客户端会继续等待终态，连接断开后才能重放。
  */
 func isResponsesWebsocketTerminalPayload(payload []byte) bool {
-	event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+	event := parseJSONBytesNoCopy(payload)
 	eventType := strings.TrimSpace(event.Get("type").Str)
 	if responsesTerminalType(eventType, event) == "response.failed" {
 		return true
@@ -1183,7 +1182,7 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 		if !json.Valid(payload) {
 			return 0, errors.New("invalid JSON in upstream SSE event")
 		}
-		event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+		event := parseJSONBytesNoCopy(payload)
 		payloadType := strings.TrimSpace(event.Get("type").Str)
 		eventType = cmp.Or(payloadType, eventType)
 		if payloadType == "" && eventType != "" {
@@ -1363,7 +1362,7 @@ func (w *responsesWebsocketBridgeWriter) reconcileCompletedOutput(output gjson.R
  * @return 按原顺序去重的独立 ID；没有完整工具调用时返回 nil。
  */
 func responsesWebsocketPendingToolCallIDs(output []byte) []string {
-	result := cliproxyutil.ParseGJSONBytesNoCopy(output)
+	result := parseJSONBytesNoCopy(output)
 	if !result.IsArray() {
 		return nil
 	}

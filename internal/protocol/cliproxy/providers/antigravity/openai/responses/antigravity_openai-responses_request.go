@@ -7,8 +7,7 @@ import (
 	coreresponses "ccLoad/internal/protocol/cliproxy/gemini/openai/responses"
 	antigravitygemini "ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ConvertOpenAIResponsesRequestToAntigravity converts a Responses request to the Antigravity Gemini envelope.
@@ -27,16 +26,16 @@ const antigravityWebSearchSystemInstruction = "You are a search engine bot. You 
 // WantsWebSearch selects the dedicated search request; mixed function tools and
 // explicit non-search tool choices keep the normal model and tool history.
 func WantsWebSearch(payload []byte) bool {
-	root := gjson.ParseBytes(payload)
+	root := ojson.ParseBytes(payload)
 	return coreresponses.HasOnlyResponsesWebSearchTools(root) && coreresponses.AllowsResponsesWebSearchToolChoice(root)
 }
 
 func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, stream bool) ([]byte, error) {
-	includedDomains := coreresponses.ExtractResponsesWebSearchAllowedDomains(gjson.ParseBytes(payload))
+	includedDomains := coreresponses.ExtractResponsesWebSearchAllowedDomains(ojson.ParseBytes(payload))
 	rawJSON, errConvert := coreresponses.ConvertOpenAIResponsesRequestToGeminiForAntigravity(model, payload)
 	rawJSON = stripAntigravityServerSideToolInvocations(rawJSON)
 	out, _ := antigravitygemini.ConvertGeminiRequestToAntigravity(model, rawJSON, stream)
-	out, _ = sjson.SetBytes(out, "requestType", "web_search")
+	out, _ = ojson.SetBytes(out, "requestType", "web_search")
 	out = ensureAntigravityResponsesWebSearchTool(out, includedDomains)
 	out = ensureAntigravityResponsesWebSearchSystemInstruction(out)
 	return out, errConvert
@@ -46,13 +45,13 @@ func ensureAntigravityResponsesWebSearchTool(payload []byte, includedDomains []s
 	googleSearchTool := []byte(`{"googleSearch":{"enhancedContent":{"imageSearch":{"maxResultCount":5}}}}`)
 	if len(includedDomains) > 0 {
 		if domainsJSON, errMarshal := json.Marshal(includedDomains); errMarshal == nil {
-			googleSearchTool, _ = sjson.SetRawBytes(googleSearchTool, "googleSearch.includedDomains", domainsJSON)
+			googleSearchTool, _ = ojson.SetRawBytes(googleSearchTool, "googleSearch.includedDomains", domainsJSON)
 		}
 	}
 
-	tools := gjson.GetBytes(payload, "request.tools")
+	tools := ojson.GetBytes(payload, "request.tools")
 	if !tools.IsArray() {
-		payload, _ = sjson.SetRawBytes(payload, "request.tools", translatorcommon.JoinRawArray([][]byte{googleSearchTool}))
+		payload, _ = ojson.SetRawBytes(payload, "request.tools", translatorcommon.JoinRawArray([][]byte{googleSearchTool}))
 		return payload
 	}
 
@@ -71,19 +70,19 @@ func ensureAntigravityResponsesWebSearchTool(payload []byte, includedDomains []s
 	if !replaced {
 		filtered = append([][]byte{googleSearchTool}, filtered...)
 	}
-	payload, _ = sjson.SetRawBytes(payload, "request.tools", translatorcommon.JoinRawArray(filtered))
+	payload, _ = ojson.SetRawBytes(payload, "request.tools", translatorcommon.JoinRawArray(filtered))
 	return payload
 }
 
 func ensureAntigravityResponsesWebSearchSystemInstruction(payload []byte) []byte {
 	searchPart := []byte(`{"text":""}`)
-	searchPart, _ = sjson.SetBytes(searchPart, "text", antigravityWebSearchSystemInstruction)
+	searchPart, _ = ojson.SetBytes(searchPart, "text", antigravityWebSearchSystemInstruction)
 
-	sys := gjson.GetBytes(payload, "request.systemInstruction")
+	sys := ojson.GetBytes(payload, "request.systemInstruction")
 	if !sys.Exists() {
 		instr := []byte(`{"role":"user","parts":[]}`)
-		instr, _ = sjson.SetRawBytes(instr, "parts", translatorcommon.JoinRawArray([][]byte{searchPart}))
-		payload, _ = sjson.SetRawBytes(payload, "request.systemInstruction", instr)
+		instr, _ = ojson.SetRawBytes(instr, "parts", translatorcommon.JoinRawArray([][]byte{searchPart}))
+		payload, _ = ojson.SetRawBytes(payload, "request.systemInstruction", instr)
 		return payload
 	}
 
@@ -100,13 +99,13 @@ func ensureAntigravityResponsesWebSearchSystemInstruction(payload []byte) []byte
 	if !alreadyPresent {
 		parts = append(parts, searchPart)
 	}
-	payload, _ = sjson.SetRawBytes(payload, "request.systemInstruction.parts", translatorcommon.JoinRawArray(parts))
+	payload, _ = ojson.SetRawBytes(payload, "request.systemInstruction.parts", translatorcommon.JoinRawArray(parts))
 	return payload
 }
 
 func stripAntigravityResponsesGoogleSearch(payload []byte) []byte {
 	for _, path := range []string{"tools", "request.tools"} {
-		tools := gjson.GetBytes(payload, path)
+		tools := ojson.GetBytes(payload, path)
 		if !tools.IsArray() {
 			continue
 		}
@@ -121,9 +120,9 @@ func stripAntigravityResponsesGoogleSearch(payload []byte) []byte {
 		}
 		if hasGoogleSearch {
 			if len(filtered) == 0 {
-				payload, _ = sjson.DeleteBytes(payload, path)
+				payload, _ = ojson.DeleteBytes(payload, path)
 			} else {
-				payload, _ = sjson.SetRawBytes(payload, path, translatorcommon.JoinRawArray(filtered))
+				payload, _ = ojson.SetRawBytes(payload, path, translatorcommon.JoinRawArray(filtered))
 			}
 		}
 	}
@@ -136,12 +135,12 @@ func stripAntigravityResponsesGoogleSearch(payload []byte) []byte {
 func stripAntigravityServerSideToolInvocations(payload []byte) []byte {
 	for _, toolConfigPath := range []string{"toolConfig", "request.toolConfig"} {
 		flagPath := toolConfigPath + ".includeServerSideToolInvocations"
-		if !gjson.GetBytes(payload, flagPath).Exists() {
+		if !ojson.GetBytes(payload, flagPath).Exists() {
 			continue
 		}
-		payload, _ = sjson.DeleteBytes(payload, flagPath)
-		if tc := gjson.GetBytes(payload, toolConfigPath); tc.IsObject() && len(tc.Map()) == 0 {
-			payload, _ = sjson.DeleteBytes(payload, toolConfigPath)
+		payload, _ = ojson.DeleteBytes(payload, flagPath)
+		if tc := ojson.GetBytes(payload, toolConfigPath); tc.IsObject() && len(tc.Map()) == 0 {
+			payload, _ = ojson.DeleteBytes(payload, toolConfigPath)
 		}
 	}
 	return payload

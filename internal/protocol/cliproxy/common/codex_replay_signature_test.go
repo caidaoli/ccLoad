@@ -1,9 +1,10 @@
 package common
 
 import (
-	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/MoeForge/moego/base64"
 )
 
 // testCodexReplayMetaSignature builds a shape-valid synthetic Meta envelope:

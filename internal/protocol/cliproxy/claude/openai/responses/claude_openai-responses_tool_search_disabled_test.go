@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // The dev golden was produced by running renderToolSearchGolden against the
@@ -141,7 +141,7 @@ func TestToolSearchCompatContextFollowsPin(t *testing.T) {
 		if errConvert != nil {
 			t.Fatalf("convert: %v", errConvert)
 		}
-		if got := gjson.GetBytes(out, `tools.#(name=="tool_search")`).Exists(); got != tc.pinned {
+		if got := ojson.GetBytes(out, `tools.#(name=="tool_search")`).Exists(); got != tc.pinned {
 			t.Fatalf("global=%v pinned=%v: tool_search declared = %v", tc.global, tc.pinned, got)
 		}
 	}

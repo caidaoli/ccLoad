@@ -7,7 +7,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const userTurnUpload = `{"type":"container_upload","file_id":"file-1"}`
@@ -49,7 +49,7 @@ func TestConvertClaudeRequestToCodex_RefusesAnyEmptiedUserTurn(t *testing.T) {
 			if got, want := err.Error(), "unsupported content part: "+tc.wantType; got != want {
 				t.Fatalf("error text = %q, want %q", got, want)
 			}
-			if !gjson.ValidBytes(body) {
+			if !ojson.ValidBytes(body) {
 				t.Fatalf("body is not JSON: %q", body)
 			}
 		})
@@ -62,7 +62,7 @@ func TestConvertClaudeRequestToCodex_KeepsTurnWithTextBesideAttachment(t *testin
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if got := gjson.GetBytes(body, "input.2.content.0.text").String(); got != "keep me" {
+	if got := ojson.GetBytes(body, "input.2.content.0.text").String(); got != "keep me" {
 		t.Fatalf("text was lost: %s", body)
 	}
 }
@@ -73,7 +73,7 @@ func TestConvertClaudeRequestToCodex_Base64DocumentAfterHistoryStaysAFile(t *tes
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	part := gjson.GetBytes(body, "input.2.content.0")
+	part := ojson.GetBytes(body, "input.2.content.0")
 	if part.Get("type").String() != "input_file" || part.Get("file_data").String() != "data:application/pdf;base64,JVBERi0xLjQK" {
 		t.Fatalf("part = %s, body = %s", part.Raw, body)
 	}
@@ -91,7 +91,7 @@ func TestConvertClaudeRequestToCodex_EmptyTextDoesNotHideAnEmptiedUserTurn(t *te
 			if !errors.As(err, &unsupported) || unsupported.Type != "container_upload" || unsupported.StatusCode() != 400 {
 				t.Fatalf("err = %v, want unsupported content part: container_upload; body = %s", err, body)
 			}
-			if !gjson.ValidBytes(body) {
+			if !ojson.ValidBytes(body) {
 				t.Fatalf("body is not JSON: %q", body)
 			}
 		})
@@ -104,7 +104,7 @@ func TestConvertClaudeRequestToCodex_NonEmptyTextBesideAttachmentStillSucceeds(t
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if got := gjson.GetBytes(body, "input.0.content.1.text").String(); got != "keep me" {
+	if got := ojson.GetBytes(body, "input.0.content.1.text").String(); got != "keep me" {
 		t.Fatalf("text was lost: %s", body)
 	}
 }
@@ -148,7 +148,7 @@ func TestClaudeToCodexImageOnlyTurnKeepsTheImage(t *testing.T) {
 			if envelope.Err != nil {
 				t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 			}
-			part := gjson.GetBytes(envelope.Body, "input.2.content.0")
+			part := ojson.GetBytes(envelope.Body, "input.2.content.0")
 			if part.Get("type").String() != "input_image" || part.Get(tc.field).String() != tc.want {
 				t.Fatalf("part = %s, body = %s", part.Raw, envelope.Body)
 			}
@@ -182,7 +182,7 @@ func TestClaudeToCodexUnrepresentableImageBesideTextStillSucceeds(t *testing.T) 
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 	}
-	if got := gjson.GetBytes(envelope.Body, "input.2.content.0.text").String(); got != "keep me" {
+	if got := ojson.GetBytes(envelope.Body, "input.2.content.0.text").String(); got != "keep me" {
 		t.Fatalf("text was lost: %s", envelope.Body)
 	}
 }
@@ -211,7 +211,7 @@ func TestClaudeToCodexDocumentTextContentAndURLSources(t *testing.T) {
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 	}
-	parts := gjson.GetBytes(envelope.Body, "input.2.content").Array()
+	parts := ojson.GetBytes(envelope.Body, "input.2.content").Array()
 	if len(parts) != 2 {
 		t.Fatalf("got %d parts, want 2: %s", len(parts), envelope.Body)
 	}
@@ -224,7 +224,7 @@ func TestClaudeToCodexDocumentTextContentAndURLSources(t *testing.T) {
 		t.Fatalf("content document err = %v, body = %s", contentEnv.Err, contentEnv.Body)
 	}
 	var sawText, sawImage bool
-	for _, p := range gjson.GetBytes(contentEnv.Body, "input.2.content").Array() {
+	for _, p := range ojson.GetBytes(contentEnv.Body, "input.2.content").Array() {
 		if strings.Contains(p.Get("text").String(), "inside doc") {
 			sawText = true
 		}
@@ -240,7 +240,7 @@ func TestClaudeToCodexDocumentTextContentAndURLSources(t *testing.T) {
 	if urlEnv.Err != nil {
 		t.Fatalf("url document err = %v, body = %s", urlEnv.Err, urlEnv.Body)
 	}
-	uPart := gjson.GetBytes(urlEnv.Body, "input.2.content.0")
+	uPart := ojson.GetBytes(urlEnv.Body, "input.2.content.0")
 	if uPart.Get("type").String() != "input_file" || uPart.Get("file_url").String() != "https://example.test/spec.pdf" {
 		t.Fatalf("url document part = %s, body = %s", uPart.Raw, urlEnv.Body)
 	}

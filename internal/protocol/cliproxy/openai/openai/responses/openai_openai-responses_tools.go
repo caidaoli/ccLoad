@@ -4,8 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 
 	applypatch "ccLoad/internal/protocol/cliproxy/applypatch"
 )
@@ -15,7 +14,7 @@ import (
 // their declared name and the owning namespace, so reverse translation can
 // restore the split identity.
 type responsesToolDeclaration struct {
-	tool      gjson.Result
+	tool      ojson.Result
 	chatName  string
 	localName string
 	namespace string
@@ -34,9 +33,9 @@ type responsesToolDeclaration struct {
 // onto the same name. Request conversion, reverse name resolution and freeform
 // tool classification all traverse through here, so they cannot disagree about
 // which declaration backs a given Chat Completions tool name.
-func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDeclaration) bool) {
+func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDeclaration) bool) {
 	var declarations []responsesToolDeclaration
-	emit := func(tool gjson.Result, namespaceName string) {
+	emit := func(tool ojson.Result, namespaceName string) {
 		var custom, shell bool
 		switch strings.TrimSpace(tool.Get("type").String()) {
 		case "", "function":
@@ -66,15 +65,15 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 			shell:     shell,
 		})
 	}
-	scan := func(tools gjson.Result) {
+	scan := func(tools ojson.Result) {
 		if !tools.Exists() || !tools.IsArray() {
 			return
 		}
-		tools.ForEach(func(_, tool gjson.Result) bool {
+		tools.ForEach(func(_, tool ojson.Result) bool {
 			if strings.TrimSpace(tool.Get("type").String()) == "namespace" {
 				if children := tool.Get("tools"); children.Exists() && children.IsArray() {
 					namespaceName := strings.TrimSpace(tool.Get("name").String())
-					children.ForEach(func(_, child gjson.Result) bool {
+					children.ForEach(func(_, child ojson.Result) bool {
 						emit(child, namespaceName)
 						return true
 					})
@@ -88,7 +87,7 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 
 	scan(root.Get("tools"))
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		input.ForEach(func(_, item gjson.Result) bool {
+		input.ForEach(func(_, item ojson.Result) bool {
 			switch item.Get("type").String() {
 			case "additional_tools":
 				scan(item.Get("tools"))
@@ -234,7 +233,7 @@ func disambiguateResponsesChatToolNames(declarations []responsesToolDeclaration)
 // wins, which keeps the top-level "tools" definition authoritative over the
 // "additional_tools" copy. Chat Completions requires tool names to be unique;
 // strict upstreams reject the whole request otherwise.
-func mergeResponsesRequestChatTools(root gjson.Result) [][]byte {
+func mergeResponsesRequestChatTools(root ojson.Result) [][]byte {
 	return responsesRequestChatTools(root, newResponsesToolIndex(root))
 }
 
@@ -244,7 +243,7 @@ func mergeResponsesRequestChatTools(root gjson.Result) [][]byte {
 // are translated back to Responses tool_search items by the response
 // converter. It leads the list so the request-level declaration keeps its
 // canonical position, and it wins the reserved name over ordinary tools.
-func responsesRequestChatTools(root gjson.Result, idx *responsesToolIndex) [][]byte {
+func responsesRequestChatTools(root ojson.Result, idx *responsesToolIndex) [][]byte {
 	var merged [][]byte
 	walkResponsesToolSearchDeclarations(root, func(declaration responsesToolSearchDeclaration) bool {
 		merged = append(merged, convertResponsesToolSearchToOpenAIChat(declaration.tool, responsesChatToolSearchFunctionName))
@@ -253,11 +252,11 @@ func responsesRequestChatTools(root gjson.Result, idx *responsesToolIndex) [][]b
 	if len(merged) == 0 && responsesRequestHasToolSearch(root) {
 		// A complete replay may omit the original search declaration. Keep
 		// the reserved function available for its paired search history.
-		merged = append(merged, convertResponsesToolSearchToOpenAIChat(gjson.Result{}, responsesChatToolSearchFunctionName))
+		merged = append(merged, convertResponsesToolSearchToOpenAIChat(ojson.Result{}, responsesChatToolSearchFunctionName))
 	}
 	hasSearch := len(merged) > 0
 	for _, chatTool := range idx.chatTools() {
-		if hasSearch && gjson.GetBytes(chatTool, "function.name").String() == responsesChatToolSearchFunctionName {
+		if hasSearch && ojson.GetBytes(chatTool, "function.name").String() == responsesChatToolSearchFunctionName {
 			continue
 		}
 		merged = append(merged, chatTool)
@@ -265,14 +264,14 @@ func responsesRequestChatTools(root gjson.Result, idx *responsesToolIndex) [][]b
 	return merged
 }
 
-func convertResponsesToolSearchToOpenAIChat(tool gjson.Result, overrideName string) []byte {
+func convertResponsesToolSearchToOpenAIChat(tool ojson.Result, overrideName string) []byte {
 	chatTool := []byte(`{"type":"function","function":{"name":"","description":"","parameters":{"type":"object"}}}`)
-	chatTool, _ = sjson.SetBytes(chatTool, "function.name", overrideName)
+	chatTool, _ = ojson.SetBytes(chatTool, "function.name", overrideName)
 	if description := responsesToolDescription(tool); description != "" {
-		chatTool, _ = sjson.SetBytes(chatTool, "function.description", description)
+		chatTool, _ = ojson.SetBytes(chatTool, "function.description", description)
 	}
 	if parameters := responsesToolParameters(tool); parameters.Exists() {
-		chatTool, _ = sjson.SetRawBytes(chatTool, "function.parameters", []byte(parameters.Raw))
+		chatTool, _ = ojson.SetRawBytes(chatTool, "function.parameters", []byte(parameters.Raw))
 	}
 	return chatTool
 }
@@ -280,7 +279,7 @@ func convertResponsesToolSearchToOpenAIChat(tool gjson.Result, overrideName stri
 // convertResponsesCustomToolToOpenAIChat maps a Responses freeform ("custom")
 // tool onto a Chat Completions function tool with a single freeform "input"
 // string, mirroring the function-based shape Codex uses for apply_patch.
-func convertResponsesCustomToolToOpenAIChat(tool gjson.Result, overrideName string) ([]byte, bool) {
+func convertResponsesCustomToolToOpenAIChat(tool ojson.Result, overrideName string) ([]byte, bool) {
 	name := strings.TrimSpace(overrideName)
 	if name == "" {
 		name = responsesToolName(tool)
@@ -289,13 +288,13 @@ func convertResponsesCustomToolToOpenAIChat(tool gjson.Result, overrideName stri
 		return nil, false
 	}
 	chatTool := []byte(`{"type":"function","function":{"name":"","description":"","parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}}}`)
-	chatTool, _ = sjson.SetBytes(chatTool, "function.name", name)
+	chatTool, _ = ojson.SetBytes(chatTool, "function.name", name)
 	if description := responsesToolDescription(tool); description != "" {
-		chatTool, _ = sjson.SetBytes(chatTool, "function.description", description)
+		chatTool, _ = ojson.SetBytes(chatTool, "function.description", description)
 	}
 	if applypatch.IsCustomTool(tool) {
-		chatTool, _ = sjson.SetBytes(chatTool, "function.description", applypatch.Description(tool))
-		chatTool, _ = sjson.SetRawBytes(chatTool, "function.parameters", applypatch.Parameters())
+		chatTool, _ = ojson.SetBytes(chatTool, "function.description", applypatch.Description(tool))
+		chatTool, _ = ojson.SetRawBytes(chatTool, "function.parameters", applypatch.Parameters())
 	}
 	return chatTool, true
 }
@@ -306,7 +305,7 @@ func (idx *responsesToolIndex) isApplyPatch(name string) bool {
 	return ok && d.custom && applypatch.IsCustomTool(d.tool)
 }
 
-func convertResponsesFunctionToolToOpenAIChat(tool gjson.Result, overrideName string) ([]byte, bool) {
+func convertResponsesFunctionToolToOpenAIChat(tool ojson.Result, overrideName string) ([]byte, bool) {
 	name := strings.TrimSpace(overrideName)
 	if name == "" {
 		name = responsesToolName(tool)
@@ -316,31 +315,31 @@ func convertResponsesFunctionToolToOpenAIChat(tool gjson.Result, overrideName st
 	}
 
 	chatTool := []byte(`{"type":"function","function":{"name":"","description":"","parameters":{}}}`)
-	chatTool, _ = sjson.SetBytes(chatTool, "function.name", name)
+	chatTool, _ = ojson.SetBytes(chatTool, "function.name", name)
 	if description := responsesToolDescription(tool); description != "" {
-		chatTool, _ = sjson.SetBytes(chatTool, "function.description", description)
+		chatTool, _ = ojson.SetBytes(chatTool, "function.description", description)
 	}
 	if parameters := responsesToolParameters(tool); parameters.Exists() {
-		chatTool, _ = sjson.SetRawBytes(chatTool, "function.parameters", []byte(parameters.Raw))
+		chatTool, _ = ojson.SetRawBytes(chatTool, "function.parameters", []byte(parameters.Raw))
 	}
 	return chatTool, true
 }
 
-func responsesToolName(tool gjson.Result) string {
+func responsesToolName(tool ojson.Result) string {
 	if name := strings.TrimSpace(tool.Get("name").String()); name != "" {
 		return name
 	}
 	return strings.TrimSpace(tool.Get("function.name").String())
 }
 
-func responsesToolDescription(tool gjson.Result) string {
+func responsesToolDescription(tool ojson.Result) string {
 	if description := tool.Get("description").String(); description != "" {
 		return description
 	}
 	return tool.Get("function.description").String()
 }
 
-func responsesToolParameters(tool gjson.Result) gjson.Result {
+func responsesToolParameters(tool ojson.Result) ojson.Result {
 	for _, path := range []string{
 		"parameters",
 		"parametersJsonSchema",
@@ -352,20 +351,20 @@ func responsesToolParameters(tool gjson.Result) gjson.Result {
 			return parameters
 		}
 	}
-	return gjson.Result{}
+	return ojson.Result{}
 }
 
 // responsesToolOutputText flattens a tool output value that may be a plain
 // string or an array of content parts ({"type":"input_text","text":...}) into
 // a single text payload for a Chat Completions tool message.
-func responsesToolOutputText(output gjson.Result) string {
-	if output.Type == gjson.String {
+func responsesToolOutputText(output ojson.Result) string {
+	if output.Type == ojson.String {
 		return output.String()
 	}
 	if output.IsArray() {
 		var b strings.Builder
-		output.ForEach(func(_, part gjson.Result) bool {
-			if part.Type == gjson.String {
+		output.ForEach(func(_, part ojson.Result) bool {
+			if part.Type == ojson.String {
 				b.WriteString(part.String())
 				return true
 			}
@@ -392,19 +391,19 @@ func responsesToolOutputText(output gjson.Result) string {
 // a discarded custom declaration must not turn a surviving ordinary function
 // into a custom_tool_call.
 func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
-	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).custom
+	return newResponsesToolIndex(ojson.ParseBytes(requestRawJSON)).custom
 }
 
 func responsesSingleCustomToolName(requestRawJSON []byte) (string, bool) {
-	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).singleCustomName()
+	return newResponsesToolIndex(ojson.ParseBytes(requestRawJSON)).singleCustomName()
 }
 
 // unwrapCustomToolInput extracts the freeform input from the {"input": "..."}
 // function-call arguments produced for a converted custom tool; it falls back
 // to the raw arguments when the wrapper is absent.
 func unwrapCustomToolInput(arguments string) string {
-	if v := gjson.Get(arguments, "input"); v.Exists() {
-		if v.Type == gjson.String {
+	if v := ojson.Get(arguments, "input"); v.Exists() {
+		if v.Type == ojson.String {
 			return v.String()
 		}
 		return v.Raw
@@ -467,7 +466,7 @@ func capResponsesChatToolName(name string) string {
 // reports the identity of the declaration that actually survived the merge. A
 // flat top-level tool named "editor__apply_patch" therefore stays flat even
 // when a later namespace declares a child qualifying to the same name.
-func resolveResponsesQualifiedToolIdentity(root gjson.Result, qualifiedName string) (name, namespace string, found bool) {
+func resolveResponsesQualifiedToolIdentity(root ojson.Result, qualifiedName string) (name, namespace string, found bool) {
 	d, found := newResponsesToolIndex(root).byChat[qualifiedName]
 	return d.localName, d.namespace, found
 }
@@ -482,7 +481,7 @@ func resolveResponsesQualifiedToolIdentity(root gjson.Result, qualifiedName stri
 // also another namespace's declared child. Ambiguous names remain unresolved
 // rather than being dispatched to another tool.
 func canonicalResponsesToolName(requestRawJSON []byte, name string) string {
-	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).canonicalName(name)
+	return newResponsesToolIndex(ojson.ParseBytes(requestRawJSON)).canonicalName(name)
 }
 
 func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
@@ -491,17 +490,17 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 		return "", ""
 	}
 
-	if resolvedName, resolvedNamespace, ok := resolveResponsesQualifiedToolIdentity(gjson.ParseBytes(requestRawJSON), qualifiedName); ok {
+	if resolvedName, resolvedNamespace, ok := resolveResponsesQualifiedToolIdentity(ojson.ParseBytes(requestRawJSON), qualifiedName); ok {
 		return resolvedName, resolvedNamespace
 	}
 	return qualifiedName, ""
 }
 
 func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
-	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
+	if len(originalRequestRawJSON) > 0 && ojson.ValidBytes(originalRequestRawJSON) {
 		return originalRequestRawJSON
 	}
-	if len(requestRawJSON) > 0 && gjson.ValidBytes(requestRawJSON) {
+	if len(requestRawJSON) > 0 && ojson.ValidBytes(requestRawJSON) {
 		return requestRawJSON
 	}
 	return nil

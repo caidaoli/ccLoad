@@ -17,8 +17,7 @@ import (
 	geminicommon "ccLoad/internal/protocol/cliproxy/gemini/common"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // Params holds parameters for response conversion.
@@ -52,7 +51,7 @@ func isGeminiMalformedFunctionCall(finishReason string, hasVisibleOutput bool) b
 	return strings.EqualFold(strings.TrimSpace(finishReason), "MALFORMED_FUNCTION_CALL") && !hasVisibleOutput
 }
 
-func isGeminiNonEmptyFunctionCall(fc gjson.Result) bool {
+func isGeminiNonEmptyFunctionCall(fc ojson.Result) bool {
 	if !fc.IsObject() {
 		return false
 	}
@@ -136,7 +135,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 	}
 	emitCarrierThinkingBlock := func(signature string) {
 		appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, p.ResponseIndex))
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, p.ResponseIndex)), "delta.signature", signature)
+		data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, p.ResponseIndex)), "delta.signature", signature)
 		appendEvent("content_block_delta", string(data))
 		appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, p.ResponseIndex))
 		p.ResponseIndex++
@@ -185,7 +184,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		stopReason := resolveGeminiClaudeStopReason(p.FinishReason, p.SawToolCall)
 		delta := []byte(fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"input_tokens":%d,"output_tokens":%d}}`, stopReason, p.Usage.ClaudeInputTokens(), p.Usage.ClaudeOutputTokens()))
 		if p.Usage.Cached > 0 {
-			delta, _ = sjson.SetBytes(delta, "usage.cache_read_input_tokens", p.Usage.Cached)
+			delta, _ = ojson.SetBytes(delta, "usage.cache_read_input_tokens", p.Usage.Cached)
 		}
 		appendEvent("message_delta", string(delta))
 		appendEvent("message_stop", `{"type":"message_stop"}`)
@@ -222,7 +221,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		if signature == "" || (*param).(*Params).ResponseType != 2 {
 			return
 		}
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, (*param).(*Params).ResponseIndex)), "delta.signature", signature)
+		data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, (*param).(*Params).ResponseIndex)), "delta.signature", signature)
 		appendEvent("content_block_delta", string(data))
 		(*param).(*Params).HasContent = true
 		p.LastThinkingSigned = true
@@ -257,14 +256,14 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		messageStartTemplate := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
 
 		// Override default values with actual response metadata if available
-		if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
+		if modelVersionResult := ojson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
+			messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
 		}
 		if modelName != "" {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelName)
+			messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.model", modelName)
 		}
-		messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id",
-			translatorcommon.GeminiClaudeMessageID(gjson.GetBytes(rawJSON, "responseId")))
+		messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.id",
+			translatorcommon.GeminiClaudeMessageID(ojson.GetBytes(rawJSON, "responseId")))
 		appendEvent("message_start", string(messageStartTemplate))
 
 		(*param).(*Params).HasFirstResponse = true
@@ -272,7 +271,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 
 	// Process the response parts array from the backend client
 	// Each part can contain text content, thinking content, or function calls
-	partsResult := gjson.GetBytes(rawJSON, "candidates.0.content.parts")
+	partsResult := ojson.GetBytes(rawJSON, "candidates.0.content.parts")
 	if partsResult.IsArray() {
 		partResults := partsResult.Array()
 		for i := 0; i < len(partResults); i++ {
@@ -323,14 +322,14 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 					closeCurrentBlock()
 				}
 				if (*param).(*Params).ResponseType == 2 {
-					data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, (*param).(*Params).ResponseIndex)), "delta.thinking", partText)
+					data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, (*param).(*Params).ResponseIndex)), "delta.thinking", partText)
 					appendEvent("content_block_delta", string(data))
 					(*param).(*Params).HasContent = true
 				} else {
 					closeCurrentBlock()
 
 					appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, (*param).(*Params).ResponseIndex))
-					data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, (*param).(*Params).ResponseIndex)), "delta.thinking", partText)
+					data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, (*param).(*Params).ResponseIndex)), "delta.thinking", partText)
 					appendEvent("content_block_delta", string(data))
 					(*param).(*Params).ResponseType = 2
 					(*param).(*Params).HasContent = true
@@ -408,8 +407,8 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 					p.CurrentToolName = clientToolName
 					p.CurrentToolIsParameterless = util.ClaudeToolIsParameterless(clientToolName, originalRequestRawJSON)
 					data := []byte(fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`, p.ResponseIndex))
-					data, _ = sjson.SetBytes(data, "content_block.id", toolID)
-					data, _ = sjson.SetBytes(data, "content_block.name", clientToolName)
+					data, _ = ojson.SetBytes(data, "content_block.id", toolID)
+					data, _ = ojson.SetBytes(data, "content_block.name", clientToolName)
 					appendEvent("content_block_start", string(data))
 					p.ResponseType = 3
 					p.HasContent = true
@@ -463,8 +462,8 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 				p.CurrentToolName = clientToolName
 				p.CurrentToolIsParameterless = util.ClaudeToolIsParameterless(clientToolName, originalRequestRawJSON)
 				data := []byte(fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`, p.ResponseIndex))
-				data, _ = sjson.SetBytes(data, "content_block.id", util.SanitizeClaudeToolID(fmt.Sprintf("%s-%d", upstreamToolName, atomic.AddUint64(&toolUseIDCounter, 1))))
-				data, _ = sjson.SetBytes(data, "content_block.name", clientToolName)
+				data, _ = ojson.SetBytes(data, "content_block.id", util.SanitizeClaudeToolID(fmt.Sprintf("%s-%d", upstreamToolName, atomic.AddUint64(&toolUseIDCounter, 1))))
+				data, _ = ojson.SetBytes(data, "content_block.name", clientToolName)
 				appendEvent("content_block_start", string(data))
 
 				if args := functionCallResult.Get("args"); args.Exists() {
@@ -487,13 +486,13 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 					appendCarrierThinkingBlock(partSig)
 				}
 				if (*param).(*Params).ResponseType == 1 {
-					data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, (*param).(*Params).ResponseIndex)), "delta.text", partText)
+					data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, (*param).(*Params).ResponseIndex)), "delta.text", partText)
 					appendEvent("content_block_delta", string(data))
 					(*param).(*Params).HasContent = true
 				} else {
 					closeCurrentBlock()
 					appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, (*param).(*Params).ResponseIndex))
-					data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, (*param).(*Params).ResponseIndex)), "delta.text", partText)
+					data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, (*param).(*Params).ResponseIndex)), "delta.text", partText)
 					appendEvent("content_block_delta", string(data))
 					(*param).(*Params).ResponseType = 1
 					(*param).(*Params).HasContent = true
@@ -514,12 +513,12 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 		}
 	}
 
-	finishReason := strings.ToUpper(strings.TrimSpace(gjson.GetBytes(rawJSON, "candidates.0.finishReason").Str))
+	finishReason := strings.ToUpper(strings.TrimSpace(ojson.GetBytes(rawJSON, "candidates.0.finishReason").Str))
 	if finishReason != "" {
 		p.FinishReason = finishReason
 	}
 
-	hasUsage := p.Usage.Merge(gjson.GetBytes(rawJSON, "usageMetadata"))
+	hasUsage := p.Usage.Merge(ojson.GetBytes(rawJSON, "usageMetadata"))
 
 	if isGeminiMalformedFunctionCall(p.FinishReason, p.HasVisibleOutput) {
 		closeCurrentBlock()
@@ -548,26 +547,26 @@ func ConvertGeminiResponseToClaude(_ context.Context, modelName string, original
 func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	_ = requestRawJSON
 
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 	toolNameMap := util.UnambiguousToolNameMapFromClaudeRequest(originalRequestRawJSON)
 	sanitizedNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
-	out, _ = sjson.SetBytes(out, "id", translatorcommon.GeminiClaudeMessageID(root.Get("responseId")))
-	out, _ = sjson.SetBytes(out, "model", root.Get("modelVersion").String())
+	out, _ = ojson.SetBytes(out, "id", translatorcommon.GeminiClaudeMessageID(root.Get("responseId")))
+	out, _ = ojson.SetBytes(out, "model", root.Get("modelVersion").String())
 	if modelName != "" {
-		out, _ = sjson.SetBytes(out, "model", modelName)
+		out, _ = ojson.SetBytes(out, "model", modelName)
 	}
 
 	var usage translatorcommon.GeminiUsageSnapshot
 	if usage.Merge(root.Get("usageMetadata")) {
-		out, _ = sjson.SetBytes(out, "usage.input_tokens", usage.ClaudeInputTokens())
-		out, _ = sjson.SetBytes(out, "usage.output_tokens", usage.ClaudeOutputTokens())
+		out, _ = ojson.SetBytes(out, "usage.input_tokens", usage.ClaudeInputTokens())
+		out, _ = ojson.SetBytes(out, "usage.output_tokens", usage.ClaudeOutputTokens())
 		if usage.Cached > 0 {
-			out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", usage.Cached)
+			out, _ = ojson.SetBytes(out, "usage.cache_read_input_tokens", usage.Cached)
 		}
 	} else {
-		out, _ = sjson.DeleteBytes(out, "usage")
+		out, _ = ojson.DeleteBytes(out, "usage")
 	}
 
 	parts := root.Get("candidates.0.content.parts")
@@ -585,7 +584,7 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 			return
 		}
 		block := []byte(`{"type":"text","text":""}`)
-		block, _ = sjson.SetBytes(block, "text", textBuilder.String())
+		block, _ = ojson.SetBytes(block, "text", textBuilder.String())
 		blocks = append(blocks, block)
 		textBuilder.Reset()
 	}
@@ -595,9 +594,9 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 			return
 		}
 		block := []byte(`{"type":"thinking","thinking":""}`)
-		block, _ = sjson.SetBytes(block, "thinking", thinkingBuilder.String())
+		block, _ = ojson.SetBytes(block, "thinking", thinkingBuilder.String())
 		if thinkingSignature != "" {
-			block, _ = sjson.SetBytes(block, "signature", thinkingSignature)
+			block, _ = ojson.SetBytes(block, "signature", thinkingSignature)
 		}
 		blocks = append(blocks, block)
 		thinkingBuilder.Reset()
@@ -610,7 +609,7 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 			return
 		}
 		carrier := []byte(`{"type":"thinking","thinking":"","signature":""}`)
-		carrier, _ = sjson.SetBytes(carrier, "signature", signature)
+		carrier, _ = ojson.SetBytes(carrier, "signature", signature)
 		blocks = append(blocks, carrier)
 	}
 
@@ -693,13 +692,13 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 				upstreamToolName = util.RestoreSanitizedToolName(sanitizedNameMap, upstreamToolName)
 				clientToolName := util.MapToolName(toolNameMap, upstreamToolName)
 				toolBlock := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
-				toolBlock, _ = sjson.SetBytes(toolBlock, "id", util.SanitizeClaudeToolID(fmt.Sprintf("%s-%d", upstreamToolName, atomic.AddUint64(&toolUseIDCounter, 1))))
-				toolBlock, _ = sjson.SetBytes(toolBlock, "name", clientToolName)
+				toolBlock, _ = ojson.SetBytes(toolBlock, "id", util.SanitizeClaudeToolID(fmt.Sprintf("%s-%d", upstreamToolName, atomic.AddUint64(&toolUseIDCounter, 1))))
+				toolBlock, _ = ojson.SetBytes(toolBlock, "name", clientToolName)
 				inputRaw := "{}"
-				if args := functionCall.Get("args"); args.Exists() && gjson.Valid(args.Raw) && args.IsObject() {
+				if args := functionCall.Get("args"); args.Exists() && ojson.Valid(args.Raw) && args.IsObject() {
 					inputRaw = util.CleanClaudeToolArgumentsWithTranslated(args.Raw, clientToolName, originalRequestRawJSON, requestRawJSON)
 				}
-				toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(inputRaw))
+				toolBlock, _ = ojson.SetRawBytes(toolBlock, "input", []byte(inputRaw))
 				blocks = append(blocks, toolBlock)
 				continue
 			}
@@ -733,14 +732,14 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, modelName string,
 	flushText()
 
 	if len(blocks) > 0 {
-		out, _ = sjson.SetRawBytes(out, "content", translatorcommon.JoinRawArray(blocks))
+		out, _ = ojson.SetRawBytes(out, "content", translatorcommon.JoinRawArray(blocks))
 	}
 
 	finishReason := strings.ToUpper(strings.TrimSpace(root.Get("candidates.0.finishReason").Str))
 	if isGeminiMalformedFunctionCall(finishReason, hasVisibleOutput) {
 		return []byte(geminiMalformedFunctionCallErrorPayload)
 	}
-	out, _ = sjson.SetBytes(out, "stop_reason", resolveGeminiClaudeStopReason(finishReason, hasToolCall))
+	out, _ = ojson.SetBytes(out, "stop_reason", resolveGeminiClaudeStopReason(finishReason, hasToolCall))
 
 	return out
 }

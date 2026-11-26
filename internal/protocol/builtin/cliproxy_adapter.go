@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
@@ -551,7 +552,7 @@ func cliproxyCodexTerminalResponse(raw []byte) ([]byte, error) {
  * @param response 终态事件内嵌的 Responses 对象。
  * @return 转换器使用的事件 JSON，保留输出、用量及失败详情。
  */
-func cliproxyNormalizeCodexDone(payload []byte, response gjson.Result) []byte {
+func cliproxyNormalizeCodexDone(payload []byte, response ojson.Result) []byte {
 	if !response.IsObject() {
 		return payload
 	}
@@ -649,7 +650,7 @@ func cliproxyNormalizeCodexSSEData(data []byte) []byte {
 	if gjson.GetBytes(payload, "type").String() != "response.done" {
 		return data
 	}
-	return append([]byte("data: "), cliproxyNormalizeCodexDone(payload, gjson.GetBytes(payload, "response"))...)
+	return append([]byte("data: "), cliproxyNormalizeCodexDone(payload, ojson.GetBytes(payload, "response"))...)
 }
 
 type cliproxyStreamFunc func(context.Context, string, []byte, []byte, []byte, *any) [][]byte

@@ -14,8 +14,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ConvertOpenAIResponseToGeminiParams holds state shared by one Chat response stream.
@@ -81,7 +80,7 @@ func ConvertOpenAIResponseToGemini(_ context.Context, modelName string, _, _ []b
 		return results
 	}
 
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 	if model := root.Get("model").String(); model != "" {
 		state.model = model
 	}
@@ -92,7 +91,7 @@ func ConvertOpenAIResponseToGemini(_ context.Context, modelName string, _, _ []b
 
 	var results [][]byte
 	if !state.done {
-		choices.ForEach(func(position, choice gjson.Result) bool {
+		choices.ForEach(func(position, choice ojson.Result) bool {
 			index := openAIChoiceIndex(position, choice)
 			candidate := state.choices[index]
 			if candidate == nil {
@@ -138,17 +137,17 @@ func ConvertOpenAIResponseToGemini(_ context.Context, modelName string, _, _ []b
 		}
 		chunk := []byte(`{"candidates":[]}`)
 		if state.model != "" {
-			chunk, _ = sjson.SetBytes(chunk, "model", state.model)
+			chunk, _ = ojson.SetBytes(chunk, "model", state.model)
 		}
 		results = append(results, chunk)
 	}
-	results[0], _ = sjson.SetRawBytes(results[0], "usageMetadata", metadata)
+	results[0], _ = ojson.SetRawBytes(results[0], "usageMetadata", metadata)
 	state.lastUsage = metadata
 	return results
 }
 
-func openAIChoiceIndex(position, choice gjson.Result) int {
-	if index := choice.Get("index"); index.Type == gjson.Number {
+func openAIChoiceIndex(position, choice ojson.Result) int {
+	if index := choice.Get("index"); index.Type == ojson.Number {
 		return int(index.Int())
 	}
 	return int(position.Int())
@@ -157,28 +156,28 @@ func openAIChoiceIndex(position, choice gjson.Result) int {
 func geminiCandidate(index int, parts [][]byte, finishReason string) []byte {
 	candidate := []byte(`{"content":{"parts":[],"role":"model"},"index":0}`)
 	if len(parts) > 0 {
-		candidate, _ = sjson.SetRawBytes(candidate, "content.parts", translatorcommon.JoinRawArray(parts))
+		candidate, _ = ojson.SetRawBytes(candidate, "content.parts", translatorcommon.JoinRawArray(parts))
 	}
-	candidate, _ = sjson.SetBytes(candidate, "index", index)
+	candidate, _ = ojson.SetBytes(candidate, "index", index)
 	if finishReason != "" {
-		candidate, _ = sjson.SetBytes(candidate, "finishReason", finishReason)
+		candidate, _ = ojson.SetBytes(candidate, "finishReason", finishReason)
 	}
 	return candidate
 }
 
 func geminiStreamChunk(model string, index int, parts [][]byte, finishReason string) []byte {
-	chunk, _ := sjson.SetRawBytes([]byte(`{"candidates":[]}`), "candidates.0", geminiCandidate(index, parts, finishReason))
+	chunk, _ := ojson.SetRawBytes([]byte(`{"candidates":[]}`), "candidates.0", geminiCandidate(index, parts, finishReason))
 	if model != "" {
-		chunk, _ = sjson.SetBytes(chunk, "model", model)
+		chunk, _ = ojson.SetBytes(chunk, "model", model)
 	}
 	return chunk
 }
 
-func (choice *openAIChoiceState) accumulateTools(toolCalls gjson.Result) {
+func (choice *openAIChoiceState) accumulateTools(toolCalls ojson.Result) {
 	if !toolCalls.IsArray() {
 		return
 	}
-	toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
+	toolCalls.ForEach(func(_, toolCall ojson.Result) bool {
 		if toolType := toolCall.Get("type").String(); toolType != "" && toolType != "function" {
 			return true
 		}
@@ -228,18 +227,18 @@ func appendAccumulatedToolCalls(parts [][]byte, tools map[int]*ToolCallAccumulat
 
 func geminiFunctionPart(id, name, args, thoughtSignature string) []byte {
 	part := []byte(`{"functionCall":{"name":"","args":{}}}`)
-	part, _ = sjson.SetBytes(part, "functionCall.name", name)
-	part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte(parseArgsToObjectRaw(args)))
+	part, _ = ojson.SetBytes(part, "functionCall.name", name)
+	part, _ = ojson.SetRawBytes(part, "functionCall.args", []byte(parseArgsToObjectRaw(args)))
 	if id != "" {
-		part, _ = sjson.SetBytes(part, "functionCall.id", id)
+		part, _ = ojson.SetBytes(part, "functionCall.id", id)
 	}
 	if thoughtSignature != "" {
-		part, _ = sjson.SetBytes(part, "thoughtSignature", thoughtSignature)
+		part, _ = ojson.SetBytes(part, "thoughtSignature", thoughtSignature)
 	}
 	return part
 }
 
-func openAIToolCallThoughtSignature(toolCall gjson.Result) string {
+func openAIToolCallThoughtSignature(toolCall ojson.Result) string {
 	for _, path := range []string{
 		"extra_content.google.thought_signature",
 		"function.extra_content.google.thought_signature",
@@ -280,8 +279,8 @@ func parseArgsToObjectRaw(argsStr string) string {
 	}
 
 	// First try strict JSON
-	if gjson.Valid(trimmed) {
-		strict := gjson.Parse(trimmed)
+	if ojson.Valid(trimmed) {
+		strict := ojson.Parse(trimmed)
 		if strict.IsObject() {
 			return strict.Raw
 		}
@@ -370,10 +369,10 @@ func tolerantParseJSONObjectRaw(s string) string {
 			valToken, ni := parseJSONStringRunes(runes, i)
 			if ni == -1 {
 				// Malformed; treat as empty string
-				result, _ = sjson.SetBytes(result, sjsonKey, "")
+				result, _ = ojson.SetBytes(result, sjsonKey, "")
 				i = n
 			} else {
-				result, _ = sjson.SetBytes(result, sjsonKey, jsonStringTokenToRawString(valToken))
+				result, _ = ojson.SetBytes(result, sjsonKey, jsonStringTokenToRawString(valToken))
 				i = ni
 			}
 		case '{', '[':
@@ -382,10 +381,10 @@ func tolerantParseJSONObjectRaw(s string) string {
 			if ni == -1 {
 				i = n
 			} else {
-				if gjson.Valid(seg) {
-					result, _ = sjson.SetRawBytes(result, sjsonKey, []byte(seg))
+				if ojson.Valid(seg) {
+					result, _ = ojson.SetRawBytes(result, sjsonKey, []byte(seg))
 				} else {
-					result, _ = sjson.SetBytes(result, sjsonKey, seg)
+					result, _ = ojson.SetBytes(result, sjsonKey, seg)
 				}
 				i = ni
 			}
@@ -398,15 +397,15 @@ func tolerantParseJSONObjectRaw(s string) string {
 			token := strings.TrimSpace(string(runes[i:j]))
 			// Interpret common JSON atoms and numbers; otherwise treat as string
 			if token == "true" {
-				result, _ = sjson.SetBytes(result, sjsonKey, true)
+				result, _ = ojson.SetBytes(result, sjsonKey, true)
 			} else if token == "false" {
-				result, _ = sjson.SetBytes(result, sjsonKey, false)
+				result, _ = ojson.SetBytes(result, sjsonKey, false)
 			} else if token == "null" {
-				result, _ = sjson.SetBytes(result, sjsonKey, nil)
+				result, _ = ojson.SetBytes(result, sjsonKey, nil)
 			} else if numVal, ok := tryParseNumber(token); ok {
-				result, _ = sjson.SetBytes(result, sjsonKey, numVal)
+				result, _ = ojson.SetBytes(result, sjsonKey, numVal)
 			} else {
-				result, _ = sjson.SetBytes(result, sjsonKey, token)
+				result, _ = ojson.SetBytes(result, sjsonKey, token)
 			}
 			i = j
 		}
@@ -448,8 +447,8 @@ func parseJSONStringRunes(runes []rune, start int) (string, int) {
 
 // jsonStringTokenToRawString converts a JSON string token (including quotes) to a raw Go string value.
 func jsonStringTokenToRawString(token string) string {
-	r := gjson.Parse(token)
-	if r.Type == gjson.String {
+	r := ojson.Parse(token)
+	if r.Type == ojson.String {
 		return r.String()
 	}
 	// Fallback: strip surrounding quotes if present
@@ -543,15 +542,15 @@ func tryParseNumber(s string) (interface{}, bool) {
 // Returns:
 //   - []byte: A Gemini-compatible JSON response.
 func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, _, _ []byte, rawJSON []byte, _ *any) []byte {
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 	out := []byte(`{"candidates":[{"content":{"parts":[],"role":"model"},"index":0}]}`)
 	if model := root.Get("model"); model.Exists() {
-		out, _ = sjson.SetBytes(out, "model", model.String())
+		out, _ = ojson.SetBytes(out, "model", model.String())
 	}
 
 	if choices := root.Get("choices"); choices.IsArray() {
 		var candidates [][]byte
-		choices.ForEach(func(position, choice gjson.Result) bool {
+		choices.ForEach(func(position, choice ojson.Result) bool {
 			message := choice.Get("message")
 			parts := openAIMessageGeminiParts(message)
 			if toolCalls := message.Get("tool_calls"); toolCalls.IsArray() {
@@ -570,12 +569,12 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, _, _ []
 			return true
 		})
 		if len(candidates) > 0 {
-			out, _ = sjson.SetRawBytes(out, "candidates", translatorcommon.JoinRawArray(candidates))
+			out, _ = ojson.SetRawBytes(out, "candidates", translatorcommon.JoinRawArray(candidates))
 		}
 	}
 	if usage := root.Get("usage"); usage.IsObject() {
 		if metadata := translatorcommon.GeminiUsageMetadataFromOpenAI(usage, nil); metadata != nil {
-			out, _ = sjson.SetRawBytes(out, "usageMetadata", metadata)
+			out, _ = ojson.SetRawBytes(out, "usageMetadata", metadata)
 		}
 	}
 	return out
@@ -586,15 +585,15 @@ func GeminiTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.GeminiTokenCountJSON(count)
 }
 
-func openAIMessageGeminiParts(message gjson.Result) [][]byte {
+func openAIMessageGeminiParts(message ojson.Result) [][]byte {
 	var parts [][]byte
 	appendText := func(text string, thought bool) {
 		if text == "" {
 			return
 		}
-		part, _ := sjson.SetBytes([]byte(`{}`), "text", text)
+		part, _ := ojson.SetBytes([]byte(`{}`), "text", text)
 		if thought {
-			part, _ = sjson.SetBytes(part, "thought", true)
+			part, _ = ojson.SetBytes(part, "thought", true)
 		}
 		parts = append(parts, part)
 	}
@@ -610,25 +609,25 @@ func openAIMessageGeminiParts(message gjson.Result) [][]byte {
 	}
 
 	content := message.Get("content")
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		appendText(content.String(), false)
 	} else if content.IsArray() {
-		content.ForEach(func(_, part gjson.Result) bool {
-			if part.Type == gjson.String {
+		content.ForEach(func(_, part ojson.Result) bool {
+			if part.Type == ojson.String {
 				appendText(part.String(), false)
 				return true
 			}
 			switch part.Get("type").String() {
 			case "text", "output_text":
-				if text := part.Get("text"); text.Type == gjson.String {
+				if text := part.Get("text"); text.Type == ojson.String {
 					appendText(text.String(), false)
 				}
 			case "refusal":
 				text := part.Get("refusal")
-				if text.Type != gjson.String || text.String() == "" {
+				if text.Type != ojson.String || text.String() == "" {
 					text = part.Get("text")
 				}
-				if text.Type == gjson.String {
+				if text.Type == ojson.String {
 					appendText(text.String(), false)
 				}
 			case "thinking", "thought", "reasoning", "reasoning.text", "reasoning_text", "reasoning.summary":
@@ -647,10 +646,10 @@ func openAIMessageGeminiParts(message gjson.Result) [][]byte {
 	return parts
 }
 
-func extractReasoningTexts(node gjson.Result) []string {
+func extractReasoningTexts(node ojson.Result) []string {
 	if node.IsArray() {
 		var texts []string
-		node.ForEach(func(_, value gjson.Result) bool {
+		node.ForEach(func(_, value ojson.Result) bool {
 			texts = append(texts, extractReasoningTexts(value)...)
 			return true
 		})
@@ -658,16 +657,16 @@ func extractReasoningTexts(node gjson.Result) []string {
 	}
 
 	switch node.Type {
-	case gjson.String:
+	case ojson.String:
 		if text := node.String(); text != "" {
 			return []string{text}
 		}
-	case gjson.JSON:
-		if text := node.Get("text"); text.Type == gjson.String && text.String() != "" {
+	case ojson.JSON:
+		if text := node.Get("text"); text.Type == ojson.String && text.String() != "" {
 			return []string{text.String()}
 		}
 		if node.Get("type").String() == "reasoning.summary" {
-			if summary := node.Get("summary"); summary.Type == gjson.String && summary.String() != "" {
+			if summary := node.Get("summary"); summary.Type == ojson.String && summary.String() != "" {
 				return []string{summary.String()}
 			}
 		}

@@ -69,14 +69,15 @@
 package signature
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 
-	"ccLoad/internal/protocol/cliproxy/util"
+	"github.com/MoeForge/moego/base64"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 const (
@@ -154,7 +155,7 @@ type geminiFunctionCallRef struct {
 }
 
 type geminiFunctionResponseRef struct {
-	part gjson.Result
+	part ojson.Result
 	path string
 }
 
@@ -257,7 +258,7 @@ func ValidateGeminiThoughtSignatures(inputRawJSON []byte, opts ...GeminiThoughtS
 		partResults := parts.Array()
 		for j := 0; j < len(partResults); j++ {
 			part := partResults[j]
-			hasFunctionCall := part.Get("functionCall").Exists()
+			hasFunctionCall := geminiPartHasFunctionCall(part)
 			isFirstFunctionCall := isModelTurn && hasFunctionCall && !firstFunctionCallSeen
 			if isModelTurn && (hasFunctionCall || !part.Get("thought").Bool()) {
 				firstFunctionCallSeen = hasFunctionCall
@@ -269,7 +270,7 @@ func ValidateGeminiThoughtSignatures(inputRawJSON []byte, opts ...GeminiThoughtS
 
 			partPath := fmt.Sprintf("%s[%d].parts[%d]", contentsPath, i, j)
 			rawSignature = strings.TrimSpace(rawSignature)
-			if part.Get("functionResponse").Exists() && hasSignature {
+			if geminiPartHasFunctionResponse(part) && hasSignature {
 				return fmt.Errorf("%s: functionResponse must not carry thoughtSignature", partPath)
 			}
 			if rawSignature == "" {
@@ -309,7 +310,7 @@ func ValidateGeminiFunctionCallPairing(inputRawJSON []byte) error {
 
 	var pending []geminiFunctionCallRef
 	var validationErr error
-	contents.ForEach(func(contentIndex, content gjson.Result) bool {
+	contents.ForEach(func(contentIndex, content ojson.Result) bool {
 		i := int(contentIndex.Int())
 		parts := content.Get("parts")
 		if !parts.IsArray() || parts.Raw == "[]" || !parts.Get("0").Exists() {
@@ -326,10 +327,10 @@ func ValidateGeminiFunctionCallPairing(inputRawJSON []byte) error {
 
 		var calls []geminiFunctionCallRef
 		var responses []geminiFunctionResponseRef
-		parts.ForEach(func(partIndex, part gjson.Result) bool {
+		parts.ForEach(func(partIndex, part ojson.Result) bool {
 			j := int(partIndex.Int())
 			partPath := fmt.Sprintf("%s[%d].parts[%d]", contentsPath, i, j)
-			if call := part.Get("functionCall"); call.Exists() {
+			if call := geminiPartFunctionCall(part); call.Exists() {
 				if call.Get("name").String() == "" {
 					validationErr = fmt.Errorf("%s: missing functionCall.name", partPath)
 					return false
@@ -340,7 +341,7 @@ func ValidateGeminiFunctionCallPairing(inputRawJSON []byte) error {
 					path: partPath,
 				})
 			}
-			if response := part.Get("functionResponse"); response.Exists() {
+			if response := geminiPartFunctionResponse(part); response.Exists() {
 				responses = append(responses, geminiFunctionResponseRef{
 					part: part,
 					path: partPath,
@@ -402,7 +403,7 @@ func ValidateGeminiFunctionCallPairing(inputRawJSON []byte) error {
 
 		for responseIndex, responseRef := range responses {
 			partPath := responseRef.path
-			response := responseRef.part.Get("functionResponse")
+			response := geminiPartFunctionResponse(responseRef.part)
 			call := pending[responseIndex]
 			responseID := response.Get("id").String()
 			responseName := response.Get("name").String()
@@ -672,7 +673,21 @@ func isASCIIUUIDBytes(decoded []byte) bool {
 	return true
 }
 
-func geminiContents(inputRawJSON []byte) (gjson.Result, string) {
+func geminiPartFunctionCall(part ojson.Result) ojson.Result {
+	if call := part.Get("functionCall"); call.Exists() {
+		return call
+	}
+	return part.Get("function_call")
+}
+
+func geminiPartFunctionResponse(part ojson.Result) ojson.Result {
+	if response := part.Get("functionResponse"); response.Exists() {
+		return response
+	}
+	return part.Get("function_response")
+}
+
+func geminiContents(inputRawJSON []byte) (ojson.Result, string) {
 	if contents := util.GetGJSONBytesNoCopy(inputRawJSON, "contents"); contents.Exists() {
 		return contents, "contents"
 	}

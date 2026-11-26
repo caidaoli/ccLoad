@@ -64,23 +64,26 @@ func TestIsClaudeModel(t *testing.T) {
 }
 
 func TestIsClaudeLegacySystemReminderModel(t *testing.T) {
-	for _, model := range []string{
-		"claude-3-5-haiku-20241022", "claude-3-5-haiku-latest",
-		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest",
-		"claude-haiku-4-5", "claude-haiku-4-5-20251001",
-		"claude-opus-4", "claude-opus-4-20250514", "claude-opus-4-1",
-		"claude-opus-4-1-20250805", "claude-opus-4-5", "claude-opus-4-5-20251101",
-		"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4",
-		"claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6",
-		" provider/Claude-Sonnet-4-5 ",
-	} {
-		if !IsClaudeLegacySystemReminderModel(model) {
-			t.Errorf("legacy model %q must retain its system reminder path", model)
-		}
+	tests := []struct {
+		name     string
+		model    string
+		expected bool
+	}{
+		{"listed model", "claude-sonnet-4-5", true},
+		{"listed snapshot", "claude-haiku-4-5-20251001", true},
+		{"mixed case and whitespace", "  Claude-Opus-4-6 ", true},
+		{"provider prefix", "anthropic/claude-sonnet-4-6", true},
+		{"supported model", "claude-opus-5-5", false},
+		{"unknown future model", "claude-sonnet-9", false},
+		{"unlisted suffix", "claude-sonnet-4-5-thinking", false},
+		{"empty string", "", false},
 	}
-	for _, model := range []string{"claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-fable-5-1", "provider/claude-opus-5", ""} {
-		if IsClaudeLegacySystemReminderModel(model) {
-			t.Errorf("model %q unexpectedly uses legacy system reminders", model)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsClaudeLegacySystemReminderModel(tt.model); got != tt.expected {
+				t.Errorf("IsClaudeLegacySystemReminderModel(%q) = %v, expected %v", tt.model, got, tt.expected)
+			}
+		})
 	}
 }

@@ -1,10 +1,12 @@
 package signature
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // MaxGPTReasoningSignatureLen caps opaque GPT reasoning signatures.
@@ -23,6 +25,25 @@ type GPTReasoningSignatureInfo struct {
 func IsValidGPTReasoningSignature(rawSignature string) bool {
 	_, err := InspectGPTReasoningSignature(rawSignature)
 	return err == nil
+}
+
+// IsDevinOpenAIReasoningSignature validates Devin's serialized list of GPT
+// reasoning items. The list itself is not a native GPT encrypted_content token.
+func IsDevinOpenAIReasoningSignature(raw string) bool {
+	if len(raw) > MaxGPTReasoningSignatureLen {
+		return false
+	}
+	s := strings.TrimSpace(raw)
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") || !ojson.Valid(s) {
+		return false
+	}
+	valid := false
+	ojson.Parse(s).ForEach(func(_, item ojson.Result) bool {
+		token := item.Get("encrypted_content")
+		valid = item.IsObject() && item.Get("type").String() == "reasoning" && token.Type == ojson.String && IsValidGPTReasoningSignature(token.String())
+		return valid
+	})
+	return valid
 }
 
 // InspectGPTReasoningSignature validates the Fernet-like outer format used

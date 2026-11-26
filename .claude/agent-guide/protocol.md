@@ -2,7 +2,7 @@
 
 修改 Registry、跨协议转换或同步 CLIProxyAPI 时读取。文中的 `protocol/` 指 `internal/protocol/`，`builtin/` 指其中的 `builtin/` 子目录。
 
-- 同步/审查转换核心与 provider 纯请求/响应适配器必须使用仓库 Skill:Codex 调 `$sync-cliproxy-core`,Claude Code 调 `/sync-cliproxy-core`;一次操作固定同一上游 commit 并原子完成全部登记范围,唯一 Skill 源码在 `.agents/skills/`,`.claude/skills/` 只放发现链接
+- 对照、移植或同步 CLIProxyAPI 上游版本必须使用仓库 Skill:Codex 调 `$sync-cliproxy-core`,Claude Code 调 `/sync-cliproxy-core`;一次操作固定同一上游 commit 区间,原子同步转换核心与全部已登记 provider adapter,并逐 commit 审查 executor/auth/handlers 的运行时修复;唯一 Skill 源码在 `.agents/skills/`,`.claude/skills/` 只放发现链接
 - `protocol/registry.go` 是唯一契约/调度边界:同协议原样透传;跨协议只走 `builtin/register.go` 注册的 12 个有向转换对
 - `system_one`(`RequestFamilySystemOne`,`/v1/systemone`)是第五种客户端协议,但只能同协议透传到 System One 渠道:不加入 `AllProtocols`/`IsValid`、转换对或 URL 协议声明
 - `builtin/cliproxy_adapter.go` 只处理 ccLoad 通用边界(输入验证、JSON/SSE 规范化、流帧封装);`protocol/cliproxy/` 只允许放从 CLIProxyAPI 同步的纯转换核心和 allowlist provider adapter,实际已导入状态以 `protocol/cliproxy/UPSTREAM.md` 为准

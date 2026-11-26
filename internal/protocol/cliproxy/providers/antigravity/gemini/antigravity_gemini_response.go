@@ -13,8 +13,7 @@ import (
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 type convertAntigravityGeminiParams struct {
@@ -29,11 +28,11 @@ type convertAntigravityGeminiParams struct {
 // when upstream never emits finishReason.
 func (p *convertAntigravityGeminiParams) observe(rawJSON []byte) {
 	if !p.SawResponse {
-		p.SawResponse = hasAntigravityResponsePayload(rawJSON)
+		p.SawResponse = translatorcommon.HasAntigravityResponsePayload(rawJSON)
 	}
 	if !p.SawFinishReason {
 		for _, path := range []string{"response.candidates", "candidates"} {
-			for _, candidate := range gjson.GetBytes(rawJSON, path).Array() {
+			for _, candidate := range ojson.GetBytes(rawJSON, path).Array() {
 				if candidate.Get("finishReason").String() != "" {
 					p.SawFinishReason = true
 					break
@@ -53,7 +52,7 @@ func (p *convertAntigravityGeminiParams) observe(rawJSON []byte) {
 	// Keep the latest usage snapshot. FilterSSEUsageMetadata renames non-terminal
 	// usage to cpaUsageMetadata, so both spellings must be tracked.
 	for _, path := range []string{"response.usageMetadata", "response.cpaUsageMetadata", "usageMetadata", "cpaUsageMetadata"} {
-		if usage := gjson.GetBytes(rawJSON, path); usage.Exists() {
+		if usage := ojson.GetBytes(rawJSON, path); usage.Exists() {
 			p.UsageMetadata = append(p.UsageMetadata[:0], usage.Raw...)
 			break
 		}
@@ -67,44 +66,20 @@ func (p *convertAntigravityGeminiParams) observe(rawJSON []byte) {
 func (p *convertAntigravityGeminiParams) syntheticTerminalChunk() []byte {
 	chunk := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}]}`)
 	if len(p.UsageMetadata) > 0 {
-		chunk, _ = sjson.SetRawBytes(chunk, "usageMetadata", p.UsageMetadata)
+		chunk, _ = ojson.SetRawBytes(chunk, "usageMetadata", p.UsageMetadata)
 	}
 	if p.ModelVersion != "" {
-		chunk, _ = sjson.SetBytes(chunk, "modelVersion", p.ModelVersion)
+		chunk, _ = ojson.SetBytes(chunk, "modelVersion", p.ModelVersion)
 	}
 	if p.ResponseID != "" {
-		chunk, _ = sjson.SetBytes(chunk, "responseId", p.ResponseID)
+		chunk, _ = ojson.SetBytes(chunk, "responseId", p.ResponseID)
 	}
 	return chunk
 }
 
-// hasAntigravityResponsePayload reports whether a chunk carries actual generated
-// content or token accounting. Presence alone is not enough: an envelope such as
-// `{}`, `{"response":{}}` or `{"response":{"candidates":[]}}` must not count as a
-// started stream, otherwise a keepalive or malformed event would be enough to
-// finalize a stream that produced nothing.
-func hasAntigravityResponsePayload(rawJSON []byte) bool {
-	for _, path := range []string{"response.candidates", "candidates"} {
-		if candidates := gjson.GetBytes(rawJSON, path); candidates.IsArray() && len(candidates.Array()) > 0 {
-			return true
-		}
-	}
-	// FilterSSEUsageMetadata renames non-terminal usage to cpaUsageMetadata before
-	// the translator sees it, so both spellings must be accepted.
-	for _, path := range []string{
-		"response.usageMetadata", "response.cpaUsageMetadata",
-		"usageMetadata", "cpaUsageMetadata",
-	} {
-		if usage := gjson.GetBytes(rawJSON, path); usage.IsObject() && len(usage.Map()) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func firstStringValue(rawJSON []byte, paths ...string) string {
 	for _, path := range paths {
-		if value := gjson.GetBytes(rawJSON, path).String(); value != "" {
+		if value := ojson.GetBytes(rawJSON, path).String(); value != "" {
 			return value
 		}
 	}
@@ -153,7 +128,7 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 		state.SawFinishReason = true
 		finalChunk := state.syntheticTerminalChunk()
 		if alt, ok := ctx.Value("alt").(string); ok && alt != "" {
-			finalChunk, _ = sjson.SetRawBytes([]byte("[]"), "-1", finalChunk)
+			finalChunk, _ = ojson.SetRawBytes([]byte("[]"), "-1", finalChunk)
 		}
 		return [][]byte{finalChunk}
 	}
@@ -173,17 +148,19 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 					chunk = []byte(responseResult.Raw)
 				}
 				chunk = restoreUsageMetadata(chunk)
-				chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
+				chunk = restoreGeminiFunctionNames(chunk, util.DisambiguatedToolNameMap(originalRequestRawJSON))
 			}
 		} else {
 			chunkTemplate := []byte("[]")
-			responseResult := gjson.ParseBytes(rawJSON)
+			responseResult := util.ParseGJSONBytesNoCopy(rawJSON)
+			nameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
 			if responseResult.IsArray() {
 				responseResultItems := responseResult.Array()
 				for i := 0; i < len(responseResultItems); i++ {
-					responseResultItem := responseResultItems[i]
-					if responseResultItem.Get("response").Exists() {
-						chunkTemplate, _ = sjson.SetRawBytes(chunkTemplate, "-1", []byte(responseResultItem.Get("response").Raw))
+					if response := responseResultItems[i].Get("response"); response.Exists() {
+						item := restoreUsageMetadata([]byte(response.Raw))
+						item = restoreGeminiFunctionNames(item, nameMap)
+						chunkTemplate, _ = ojson.SetRawBytes(chunkTemplate, "-1", item)
 					}
 				}
 			}
@@ -216,18 +193,18 @@ func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, or
 			chunk = []byte(responseResult.Raw)
 		}
 		chunk = restoreUsageMetadata(chunk)
-		chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
+		chunk = restoreGeminiFunctionNames(chunk, util.DisambiguatedToolNameMap(originalRequestRawJSON))
 	} else {
-		chunk = restoreGeminiFunctionNames(rawJSON, originalRequestRawJSON)
+		chunk = restoreGeminiFunctionNames(rawJSON, util.DisambiguatedToolNameMap(originalRequestRawJSON))
 	}
 	candidates := util.GetGJSONBytesNoCopy(chunk, "candidates")
 	if candidates.IsArray() {
 		// Default every candidate, not just the first one, so a multi-candidate
 		// response cannot leave some of them unterminated.
 		idx := 0
-		candidates.ForEach(func(_, candidate gjson.Result) bool {
+		candidates.ForEach(func(_, candidate ojson.Result) bool {
 			if candidate.Get("finishReason").String() == "" {
-				chunk, _ = sjson.SetBytes(chunk, fmt.Sprintf("candidates.%d.finishReason", idx), "STOP")
+				chunk, _ = ojson.SetBytes(chunk, fmt.Sprintf("candidates.%d.finishReason", idx), "STOP")
 			}
 			idx++
 			return true
@@ -236,12 +213,11 @@ func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, or
 	return chunk
 }
 
-func restoreGeminiFunctionNames(chunk, originalRequestRawJSON []byte) []byte {
-	nameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
+func restoreGeminiFunctionNames(chunk []byte, nameMap map[string]string) []byte {
 	if len(nameMap) == 0 {
 		return chunk
 	}
-	candidates := gjson.GetBytes(chunk, "candidates")
+	candidates := ojson.GetBytes(chunk, "candidates")
 	for candidateIndex, candidate := range candidates.Array() {
 		for partIndex, part := range candidate.Get("content.parts").Array() {
 			for _, field := range []string{"functionCall", "functionResponse", "function_call", "function_response"} {
@@ -251,11 +227,11 @@ func restoreGeminiFunctionNames(chunk, originalRequestRawJSON []byte) []byte {
 					continue
 				}
 				restoredName := util.RestoreSanitizedToolName(nameMap, name)
-				if nameResult.Type == gjson.String && restoredName == name {
+				if nameResult.Type == ojson.String && restoredName == name {
 					continue
 				}
 				path := fmt.Sprintf("candidates.%d.content.parts.%d.%s.name", candidateIndex, partIndex, field)
-				chunk, _ = sjson.SetBytes(chunk, path, restoredName)
+				chunk, _ = ojson.SetBytes(chunk, path, restoredName)
 			}
 		}
 	}
@@ -273,8 +249,8 @@ func GeminiTokenCount(ctx context.Context, count int64) []byte {
 // When returning standard Gemini API format, we must restore the original name.
 func restoreUsageMetadata(chunk []byte) []byte {
 	if cpaUsage := util.GetGJSONBytesNoCopy(chunk, "cpaUsageMetadata"); cpaUsage.Exists() {
-		chunk, _ = sjson.SetRawBytes(chunk, "usageMetadata", []byte(cpaUsage.Raw))
-		chunk, _ = sjson.DeleteBytes(chunk, "cpaUsageMetadata")
+		chunk, _ = ojson.SetRawBytes(chunk, "usageMetadata", []byte(cpaUsage.Raw))
+		chunk, _ = ojson.DeleteBytes(chunk, "cpaUsageMetadata")
 	}
 	return chunk
 }

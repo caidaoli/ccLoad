@@ -39,6 +39,7 @@ import (
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -612,7 +613,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	wireBodyRulesApplied bool,
 	callerProtocol protocol.Protocol,
 ) ([]byte, string, error) {
-	var geminiIncludeThoughts gjson.Type
+	var geminiIncludeThoughts ojson.Type
 	if !wireBodyRulesApplied && callerProtocol == protocol.Gemini && isAnthropicMessagesRequest(upstreamProtocol, requestPath) &&
 		!isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
 		// Model compatibility may turn an explicit zero budget into adaptive.
@@ -666,6 +667,10 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		}
 		if !wireBodyRulesApplied && !isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
 			body = normalizeAnthropicAdvisorToolModels(body)
+			// Claude 拒收不匹配 ^[a-zA-Z0-9_.-]{1,64}$ 的属性名；此类请求原样发出必然
+			// 400，且客户端每轮重发工具，退避重试删工具只会让工具永久不可用。先于 MCP
+			// 别名改写、CCH 重签与渠道 BodyRules 执行，保证规则可覆盖 description。
+			body = normalizeAnthropicToolPropertyNames(body)
 		}
 	}
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
@@ -993,6 +998,11 @@ func streamAndParseResponse(
 				}
 				offset = end
 				if parser.IsStreamEnded() {
+					if parser.GetLastError() == nil {
+						// 协议正常终止：响应处理返回后、关闭上游前排空剩余正文，让
+						// HTTP/1.1 连接回到空闲池。错误事件与取消不置位。
+						reqCtx.upstreamStreamTerminated = true
+					}
 					return &stopStreamAfterWriteError{writeBytes: offset}
 				}
 			}
@@ -1134,7 +1144,7 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 	case protocol.Anthropic:
 		return eventType == "message_stop" || ssePayloadType(data) == "message_stop"
 	case protocol.Codex:
-		event := cliproxyutil.ParseGJSONBytesNoCopy(data)
+		event := parseJSONBytesNoCopy(data)
 		eventType = cmp.Or(event.Get("type").Str, eventType)
 		return isSuccessfulResponsesTerminal(responsesTerminalType(eventType, event))
 	case protocol.OpenAI:
@@ -1914,7 +1924,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()
 
-	if upstreamProtocol == util.ProtocolCodex && isErrorPayload(string(responseBody)) {
+	if upstreamProtocol == util.ProtocolCodex && isErrorPayload(string(responseBody), true) {
 		result.Status = classifySSEErrorStatus(responseBody)
 		result.Body = responseBody
 		return result, reqCtx.Duration().Seconds(), nil
@@ -2061,7 +2071,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	recordTranslatedOutput := func(chunks [][]byte) {
 		for _, chunk := range chunks {
 			eventType, data := parseSSEEventChunk(chunk)
-			event := cliproxyutil.ParseGJSONBytesNoCopy(data)
+			event := parseJSONBytesNoCopy(data)
 			eventType = cmp.Or(event.Get("type").Str, eventType)
 			terminalType := responsesTerminalType(eventType, event)
 			if codexClient {
@@ -2074,7 +2084,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 					}
 				}
 			}
-			if terminalType == "response.failed" || eventType == "error" || isErrorPayload(string(data)) {
+			if terminalType == "response.failed" || eventType == "error" || isErrorPayload(string(data), upstreamProtocol == util.ProtocolCodex) {
 				translatedError = bytes.Clone(data)
 			}
 		}
@@ -2243,7 +2253,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				return true
 			}
 			terminalProtocol := parser.responsesSSE || reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
-			return terminalProtocol && parser.IsStreamEnded() && (translatedComplete || parser.GetLastError() != nil)
+			ended := terminalProtocol && parser.IsStreamEnded()
+			if ended && parser.GetLastError() == nil && translatedComplete {
+				// 协议正常终止：响应处理返回后、关闭上游前排空剩余正文，让 HTTP/1.1
+				// 连接回到空闲池。错误事件、截断与取消不置位。
+				reqCtx.upstreamStreamTerminated = true
+			}
+			return ended && (translatedComplete || parser.GetLastError() != nil)
 		},
 	)
 	streamErr = parser.geminiFilterBlockError(streamErr)
@@ -2599,8 +2615,8 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamP
  */
 func classifySSEErrorStatus(body []byte) int {
 	// 加密内容失效与 HTTP 400 同属请求语义错误：按 400 才能触发同渠道修复重试，
-	// 冷却也只限当前模型，而不是冷却整个 Key。
-	if util.IsContextLengthExceededError(body) || isInvalidEncryptedContentError(body) {
+	// 冷却也只限当前模型，而不是冷却整个 Key。内容拒绝按 400 才能让客户端看到请求错误。
+	if util.IsContextLengthExceededError(body) || util.IsRequestContentRejection(body) || isInvalidEncryptedContentError(body) {
 		return http.StatusBadRequest
 	}
 	if gjson.GetBytes(body, "error.code").String() == responsesWebsocketInterruptedCode {
@@ -2662,36 +2678,52 @@ func isRateLimitErrorType(value string) bool {
 	}
 }
 
+/**
+ * @brief 提取错误帧携带的 HTTP 状态与可转发响应头。
+ * @param body SSE 或原生 WebSocket 错误帧 JSON。
+ * @return 顶层 status/status_code 在 400–599 内的状态，否则为 0。
+ * @return 经白名单过滤的响应头；无可转发头或正文不是合法 JSON 时为 nil。
+ * @details 上游把 Retry-After、请求 ID、限流头放在不同层级，依次读 headers、body.headers、
+ * error.headers、body.error.headers、response.error.headers；外层一旦出现同名头（不区分大小写），
+ * 即使值为空也遮蔽内层。
+ */
 func websocketErrorStatusAndHeaders(body []byte) (int, http.Header) {
-	var payload struct {
-		Status     int            `json:"status"`
-		StatusCode int            `json:"status_code"`
-		Headers    map[string]any `json:"headers"`
-	}
-	if sonic.Unmarshal(body, &payload) != nil {
+	if !gjson.ValidBytes(body) {
 		return 0, nil
 	}
-	status := payload.Status
-	if status == 0 {
-		status = payload.StatusCode
+	status := 0
+	for _, path := range [...]string{"status", "status_code"} {
+		if value := gjson.GetBytes(body, path); value.Type == gjson.Number && value.Int() != 0 {
+			status = int(value.Int())
+			break
+		}
 	}
 	if status < 400 || status > 599 {
 		status = 0
 	}
 	headers := make(http.Header)
-	for name, raw := range payload.Headers {
-		name = strings.TrimSpace(name)
-		if !isForwardableWebsocketErrorHeader(name) {
-			continue
-		}
-		switch value := raw.(type) {
-		case string:
-			if value = strings.TrimSpace(value); value != "" {
-				headers.Set(name, value)
+	seen := make(map[string]struct{})
+	for _, path := range [...]string{"headers", "body.headers", "error.headers", "body.error.headers", "response.error.headers"} {
+		gjson.GetBytes(body, path).ForEach(func(key, value gjson.Result) bool {
+			name := strings.TrimSpace(key.String())
+			canonical := http.CanonicalHeaderKey(name)
+			if _, shadowed := seen[canonical]; shadowed || name == "" {
+				return true
 			}
-		case float64, bool:
-			headers.Set(name, fmt.Sprint(value))
-		}
+			seen[canonical] = struct{}{}
+			if !isForwardableWebsocketErrorHeader(name) {
+				return true
+			}
+			switch value.Type {
+			case gjson.String:
+				if v := strings.TrimSpace(value.Str); v != "" {
+					headers.Set(name, v)
+				}
+			case gjson.Number, gjson.True, gjson.False:
+				headers.Set(name, value.Raw)
+			}
+			return true
+		})
 	}
 	if len(headers) == 0 {
 		headers = nil
@@ -3143,10 +3175,14 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 
 	// 2.5 发送请求。原生 Codex WS 会在持锁后决定发送增量请求还是完整回放请求。
 	var resp *http.Response
+	var rawTransportBody io.ReadCloser
 	var sentBody []byte
 	var zaiRepairBody []byte
 	var wsReplayBody []byte
 	usedNativeWebsocket := false
+	// HTTP 上游请求在返回前跟随 reqCtx 取消；读到终止事件后摘离，后台排空不被随后的取消打断。
+	// 从 req.Context() 派生，保留构建阶段挂上的请求值（如 Z.ai 套餐标记）。
+	upstreamCtx, detachUpstream := newDetachableUpstreamContext(req.Context())
 	if native != nil && native.session != nil {
 		wsReplayBody = stripInjectedCodexOAuthInstructionsForWebsocket(
 			cfg, replaySourceBody, replayBody,
@@ -3209,14 +3245,14 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			}
 			log.Printf("[INFO] 渠道 %d WebSocket 握手失败 (%s)，同 Key/URL 回退 HTTP", cfg.ID, handshakeFailure)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
-			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
+			req = cloneRequestWithBody(httpReq.WithContext(upstreamCtx), sentBody)
 			resp, err = s.doUpstreamRequest(cfg, req)
 		} else {
 			usedNativeWebsocket = err == nil && resp != nil
 		}
 	} else {
 		sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
-		req = cloneRequestWithBody(req, sentBody)
+		req = cloneRequestWithBody(req.WithContext(upstreamCtx), sentBody)
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
 	// 后移的套餐最终化仍遵守隐私失败先于 Debug 与外发统计的契约。
@@ -3229,6 +3265,12 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		observer.OnUpstreamWebsocket(usedNativeWebsocket)
 	}
 	if resp != nil {
+		// 原始 transport body 须在任何包装（Codex 额度采样、解压、Debug 捕获）之前留档：
+		// 终止事件后排空的是 HTTP 分帧层剩余字节，经包装层读不到 chunked 结尾。只有 HTTP/1.x
+		// 提前关闭会丢连接；HTTP/2 关闭只重置单个 stream，无需排空。
+		if !usedNativeWebsocket && resp.ProtoMajor == 1 {
+			rawTransportBody = resp.Body
+		}
 		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp, gjson.GetBytes(sentBody, "model").String())
 		s.persistAnthropicPassiveUsage(cfg, resp)
 		// Claude Code 的 Accept-Encoding 声明了 br/zstd；请求显式带了该头时 Go transport
@@ -3302,8 +3344,15 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		body := &onceCloseReadCloser{ReadCloser: resp.Body}
 		resp.Body = body
 
-		// 正常返回时关闭（Close 幂等，允许与 AfterFunc 并发触发）
-		defer func() { _ = resp.Body.Close() }()
+		// 正常返回时关闭（Close 幂等，允许与 AfterFunc 并发触发）。此 defer 晚于 AfterFunc
+		// 注销执行；上游已终止且摘离成功时转后台排空，不推迟客户端收尾。
+		defer func() {
+			if reqCtx.upstreamStreamTerminated && rawTransportBody != nil && detachUpstream() {
+				go drainAndCloseTerminatedUpstreamBody(rawTransportBody, resp.Body)
+				return
+			}
+			_ = resp.Body.Close()
+		}()
 
 		// [INFO] 使用 context.AfterFunc 监听请求取消/超时（Go 1.21+，标准库保证无泄漏）
 		// 必须监听 reqCtx.ctx（而非父 ctx），否则 nonStreamTimeout/firstByteTimeout 触发时无法强制打断阻塞 Read。

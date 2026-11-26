@@ -7,8 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // pausedSearchChunks renders one Claude response: signed thinking, an optional
@@ -61,10 +60,10 @@ func continuationChunks(messageID, pausedID string, stopReason string) [][]byte 
 }
 
 // streamTerminal returns the terminal event name and its response object.
-func streamTerminal(t *testing.T, chunks [][]byte) (string, gjson.Result) {
+func streamTerminal(t *testing.T, chunks [][]byte) (string, ojson.Result) {
 	t.Helper()
 	var name string
-	var response gjson.Result
+	var response ojson.Result
 	for _, output := range translateClaudeResponsesStream(chunks) {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		switch event {
@@ -81,7 +80,7 @@ func streamTerminal(t *testing.T, chunks [][]byte) (string, gjson.Result) {
 // codexHistoryRequest builds the next Responses request exactly as a client
 // would: the user prompt followed by the output items it received, without
 // re-adding anything the translator dropped.
-func codexHistoryRequest(t *testing.T, responses ...gjson.Result) []byte {
+func codexHistoryRequest(t *testing.T, responses ...ojson.Result) []byte {
 	t.Helper()
 	request := []byte(`{"model":"claude-test","tools":[{"type":"web_search"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"research"}]}]}`)
 	for _, response := range responses {
@@ -90,18 +89,18 @@ func codexHistoryRequest(t *testing.T, responses ...gjson.Result) []byte {
 			// them later, so the history carries none.
 			raw := []byte(item.Raw)
 			if item.Get("type").String() == "web_search_call" {
-				raw, _ = sjson.DeleteBytes(raw, "results")
+				raw, _ = ojson.DeleteBytes(raw, "results")
 			}
-			request, _ = sjson.SetRawBytes(request, "input.-1", raw)
+			request, _ = ojson.SetRawBytes(request, "input.-1", raw)
 		}
 	}
 	return request
 }
 
-func claudeAssistantBlocks(t *testing.T, claudeRequest []byte) []gjson.Result {
+func claudeAssistantBlocks(t *testing.T, claudeRequest []byte) []ojson.Result {
 	t.Helper()
-	var blocks []gjson.Result
-	for _, message := range gjson.GetBytes(claudeRequest, "messages").Array() {
+	var blocks []ojson.Result
+	for _, message := range ojson.GetBytes(claudeRequest, "messages").Array() {
 		if message.Get("role").String() == "assistant" {
 			blocks = append(blocks, message.Get("content").Array()...)
 		}
@@ -109,7 +108,7 @@ func claudeAssistantBlocks(t *testing.T, claudeRequest []byte) []gjson.Result {
 	return blocks
 }
 
-func blockTypes(blocks []gjson.Result) string {
+func blockTypes(blocks []ojson.Result) string {
 	types := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		types = append(types, block.Get("type").String())
@@ -123,7 +122,7 @@ func TestPauseTurnRoundTripSendsPausedSearchBackWithoutResult(t *testing.T) {
 	if event != "response.completed" || response.Get("end_turn").Raw != "false" {
 		t.Fatalf("terminal = %s end_turn=%s", event, response.Get("end_turn").Raw)
 	}
-	var pausedItem gjson.Result
+	var pausedItem ojson.Result
 	for _, item := range response.Get("output").Array() {
 		if item.Get("id").String() == responsesWebSearchCallID("srvtoolu_paused") {
 			pausedItem = item
@@ -137,7 +136,7 @@ func TestPauseTurnRoundTripSendsPausedSearchBackWithoutResult(t *testing.T) {
 	if errTranslate != nil {
 		t.Fatal(errTranslate)
 	}
-	messages := gjson.GetBytes(claudeRequest, "messages").Array()
+	messages := ojson.GetBytes(claudeRequest, "messages").Array()
 	last := messages[len(messages)-1]
 	if last.Get("role").String() != "assistant" {
 		t.Fatalf("last message role = %q: %s", last.Get("role").String(), claudeRequest)
@@ -224,7 +223,7 @@ func TestPausedSearchFollowedByUserTurnKeepsLegacyPair(t *testing.T) {
 	signature := mustTestSignature(t)
 	_, paused := streamTerminal(t, pausedSearchChunks(t, "msg_p1", signature, "", "srvtoolu_paused", "paused query"))
 	request := codexHistoryRequest(t, paused)
-	request, _ = sjson.SetRawBytes(request, "input.-1", []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"never mind"}]}`))
+	request, _ = ojson.SetRawBytes(request, "input.-1", []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"never mind"}]}`))
 	claudeRequest, errTranslate := ConvertOpenAIResponsesRequestToClaude("claude-test", request, true)
 	if errTranslate != nil {
 		t.Fatal(errTranslate)
@@ -255,7 +254,7 @@ func TestRepeatedWebSearchIDsAcrossTurnsAreNotMerged(t *testing.T) {
 		}
 		items = append(items, boundary, second)
 		for _, item := range items {
-			request, _ = sjson.SetRawBytes(request, "input.-1", []byte(item))
+			request, _ = ojson.SetRawBytes(request, "input.-1", []byte(item))
 		}
 		claudeRequest, errTranslate := ConvertOpenAIResponsesRequestToClaude("claude-test", request, true)
 		if errTranslate != nil {
@@ -280,7 +279,7 @@ func TestPausedSearchContinuationRequiresSameAssistantRun(t *testing.T) {
 	later := `{"id":"` + responsesWebSearchCallID("srvtoolu_p") + `","type":"web_search_call","status":"completed","action":{"type":"search","query":""}}`
 	request := []byte(`{"model":"claude-test","tools":[{"type":"web_search"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]}]}`)
 	for _, item := range []string{paused, `{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}`, later} {
-		request, _ = sjson.SetRawBytes(request, "input.-1", []byte(item))
+		request, _ = ojson.SetRawBytes(request, "input.-1", []byte(item))
 	}
 	claudeRequest, errTranslate := ConvertOpenAIResponsesRequestToClaude("claude-test", request, true)
 	if errTranslate != nil {
@@ -315,7 +314,7 @@ func runStopReasonErrorsKeepOutput(t *testing.T) {
 				[]byte(`data: {"type":"message_stop"}`),
 			}
 			var order []string
-			var terminal gjson.Result
+			var terminal ojson.Result
 			for _, output := range translateClaudeResponsesStream(chunks) {
 				event, data := parseClaudeResponsesSSEEvent(t, output)
 				if event == "response.output_item.done" && data.Get("item.type").String() == "message" {
@@ -335,7 +334,7 @@ func runStopReasonErrorsKeepOutput(t *testing.T) {
 			if terminal.Get("status").String() != "incomplete" {
 				t.Fatalf("status = %q, want incomplete", terminal.Get("status").String())
 			}
-			if errNode := terminal.Get("error"); errNode.Exists() && errNode.Type != gjson.Null {
+			if errNode := terminal.Get("error"); errNode.Exists() && errNode.Type != ojson.Null {
 				t.Fatalf("unexpected error = %s", errNode.Raw)
 			}
 			if terminal.Get("usage.input_tokens").Int() != 10 || terminal.Get("usage.input_tokens_details.cached_tokens").Int() != 3 || terminal.Get("usage.output_tokens").Int() != 4 {
@@ -356,7 +355,7 @@ func TestResponsesParallelToolCallsFalseMapsToDisableParallelToolUse(t *testing.
 		{"auto", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":"auto","tools":` + tools + `,"input":"hi"}`, `{"type":"auto","disable_parallel_tool_use":true}`},
 		{"required", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":"required","tools":` + tools + `,"input":"hi"}`, `{"type":"any","disable_parallel_tool_use":true}`},
 		{"forced tool", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":{"type":"function","name":"shell"},"tools":` + tools + `,"input":"hi"}`, `{"name":"shell","type":"tool","disable_parallel_tool_use":true}`},
-		{"none", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":"none","tools":` + tools + `,"input":"hi"}`, ``},
+		{"none", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":"none","tools":` + tools + `,"input":"hi"}`, `{"type":"none"}`},
 		{"no tools", `{"model":"claude-test","parallel_tool_calls":false,"input":"hi"}`, ``},
 		{"forced tool filtered out", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":{"type":"function","name":"missing"},"tools":` + tools + `,"input":"hi"}`, ``},
 		{"builtin web_search present", `{"model":"claude-test","parallel_tool_calls":false,"tool_choice":{"type":"web_search"},"tools":[{"type":"web_search"}],"input":"hi"}`, `{"type":"auto","disable_parallel_tool_use":true}`},
@@ -370,7 +369,7 @@ func TestResponsesParallelToolCallsFalseMapsToDisableParallelToolUse(t *testing.
 			if errTranslate != nil {
 				t.Fatal(errTranslate)
 			}
-			if got := gjson.GetBytes(out, "tool_choice").Raw; got != tc.want {
+			if got := ojson.GetBytes(out, "tool_choice").Raw; got != tc.want {
 				t.Fatalf("tool_choice = %s, want %s", got, tc.want)
 			}
 		})
@@ -386,11 +385,11 @@ func TestContextWindowExceededNonStreamIsIncompleteMaxOutputTokens(t *testing.T)
 		[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"},"usage":{"output_tokens":2}}`),
 		[]byte(`data: {"type":"message_stop"}`),
 	}
-	output := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, bytes.Join(chunks, []byte("\n")), nil))
+	output := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, bytes.Join(chunks, []byte("\n")), nil))
 	if output.Get("status").String() != "incomplete" || output.Get("incomplete_details.reason").String() != "max_output_tokens" {
 		t.Fatalf("response = %s", output.Raw)
 	}
-	if errNode := output.Get("error"); errNode.Exists() && errNode.Type != gjson.Null {
+	if errNode := output.Get("error"); errNode.Exists() && errNode.Type != ojson.Null {
 		t.Fatalf("unexpected error = %s", errNode.Raw)
 	}
 	if output.Get("output.0.status").String() != "incomplete" || output.Get("output.0.content.0.text").String() != "cut" {
@@ -415,7 +414,7 @@ func TestPrefillRejectingModelStillDropsCompletedThinkingPlusTextTrailingAssista
 	if errTranslate != nil {
 		t.Fatal(errTranslate)
 	}
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	if len(messages) != 1 || messages[0].Get("role").String() != "user" {
 		t.Fatalf("expected trailing thinking+text assistant message to be stripped on claude-sonnet-4-6, got %d messages: %s", len(messages), out)
 	}
@@ -430,12 +429,12 @@ func TestPauseTurnAfterCompletedSearchPreservedOnPrefillRejectingModel(t *testin
 		t.Fatalf("terminal = %s end_turn=%s", event, response.Get("end_turn").Raw)
 	}
 	req := codexHistoryRequest(t, response)
-	req, _ = sjson.SetBytes(req, "model", "claude-opus-5-5")
+	req, _ = ojson.SetBytes(req, "model", "claude-opus-5-5")
 	claudeRequest, errTranslate := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", req, true)
 	if errTranslate != nil {
 		t.Fatal(errTranslate)
 	}
-	messages := gjson.GetBytes(claudeRequest, "messages").Array()
+	messages := ojson.GetBytes(claudeRequest, "messages").Array()
 	if len(messages) != 2 || messages[1].Get("role").String() != "assistant" {
 		t.Fatalf("expected paused assistant search turn to be preserved on claude-opus-5-5, got: %s", claudeRequest)
 	}
@@ -459,14 +458,14 @@ func deferredSearchChunks() [][]byte {
 	}
 }
 
-var execOutput = gjson.Parse(`{"output":[{"type":"function_call_output","call_id":"toolu_exec","output":"Linux"}]}`)
+var execOutput = ojson.Parse(`{"output":[{"type":"function_call_output","call_id":"toolu_exec","output":"Linux"}]}`)
 
 func TestDeferredSearchReplaysWithoutResultAlongsideToolOutput(t *testing.T) {
 	_, response := streamTerminal(t, deferredSearchChunks())
 	if search := response.Get("output.0"); search.Get("status").String() != "in_progress" || search.Get("results").Exists() {
 		t.Fatalf("deferred search item = %s", search.Raw)
 	}
-	nonStream := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(
+	nonStream := ojson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(
 		context.Background(), "claude-test", nil, nil, bytes.Join(deferredSearchChunks(), []byte("\n")), nil))
 	if search := nonStream.Get("output.0"); search.Get("status").String() != "in_progress" || search.Get("results").Exists() {
 		t.Fatalf("non-stream deferred search item = %s", search.Raw)
@@ -484,7 +483,7 @@ func TestDeferredSearchContinuationEmitsSinglePair(t *testing.T) {
 	_, deferred := streamTerminal(t, deferredSearchChunks())
 	_, continued := streamTerminal(t, continuationChunks("msg_d2", "srvtoolu_deferred", "end_turn"))
 	request := codexHistoryRequest(t, deferred, execOutput, continued)
-	request, _ = sjson.SetRawBytes(request, "input.-1", []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"thanks"}]}`))
+	request, _ = ojson.SetRawBytes(request, "input.-1", []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"thanks"}]}`))
 	claudeRequest, errTranslate := ConvertOpenAIResponsesRequestToClaude("claude-test", request, true)
 	if errTranslate != nil {
 		t.Fatal(errTranslate)

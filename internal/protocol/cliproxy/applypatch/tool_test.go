@@ -1,21 +1,21 @@
 package applypatch
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestApplyPatchToolContract(t *testing.T) {
-	tool := gjson.Parse(`{"type":"custom","name":"apply_patch","description":"This is a FREEFORM tool, so do not wrap the patch in JSON.","format":{"type":"grammar","syntax":"lark","definition":"start: begin_patch hunk+ end_patch"}}`)
+	tool := ojson.Parse(`{"type":"custom","name":"apply_patch","description":"This is a FREEFORM tool, so do not wrap the patch in JSON.","format":{"type":"grammar","syntax":"lark","definition":"start: begin_patch hunk+ end_patch"}}`)
 	if !IsCustomTool(tool) {
 		t.Fatal("custom apply_patch was not recognized")
 	}
-	params := gjson.ParseBytes(Parameters())
-	if params.Get("properties.input.type").String() != "string" || params.Get("additionalProperties").Bool() {
-		t.Fatalf("invalid schema: %s", Parameters())
+	params := Parameters()
+	if ojson.GetBytesNoCopy(params, "properties.input.type").String() != "string" || ojson.GetBytesNoCopy(params, "additionalProperties").Bool() {
+		t.Fatalf("invalid schema: %s", params)
 	}
 	description := Description(tool)
 	for _, token := range []string{"*** Begin Patch", "*** End Patch", "*** Add File:", "*** Delete File:", "*** Update File:", "@@", "input", "start: begin_patch hunk+ end_patch"} {
@@ -57,7 +57,7 @@ func TestApplyPatchToolRecognition(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := IsCustomTool(gjson.Parse(test.tool)); got != test.want {
+			if got := IsCustomTool(ojson.Parse(test.tool)); got != test.want {
 				t.Fatalf("IsCustomTool(%s) = %v, want %v", test.tool, got, test.want)
 			}
 		})
@@ -66,24 +66,73 @@ func TestApplyPatchToolRecognition(t *testing.T) {
 
 func TestApplyPatchToolParameters(t *testing.T) {
 	parameters := Parameters()
-	if !gjson.ValidBytes(parameters) {
+	if !ojson.ValidBytes(parameters) {
 		t.Fatalf("invalid JSON schema: %s", parameters)
 	}
-	schema := gjson.ParseBytes(parameters)
-	if schema.Get("type").String() != "object" {
+	if ojson.GetBytesNoCopy(parameters, "type").String() != "object" {
 		t.Fatalf("schema must describe an object: %s", parameters)
 	}
-	properties := schema.Get("properties").Map()
+	properties := ojson.GetBytesNoCopy(parameters, "properties").Map()
 	if len(properties) != 1 || properties["input"].Get("type").String() != "string" {
 		t.Fatalf("schema must expose only a string input: %s", parameters)
 	}
-	required := schema.Get("required").Array()
+	if properties["input"].Get("description").String() != "The complete apply_patch patch text." {
+		t.Fatalf("schema does not describe the complete patch input: %s", parameters)
+	}
+	required := ojson.GetBytesNoCopy(parameters, "required").Array()
 	if len(required) != 1 || required[0].String() != "input" {
 		t.Fatalf("input must be required: %s", parameters)
 	}
-	additional := schema.Get("additionalProperties")
-	if additional.Type != gjson.False {
+	additional := ojson.GetBytesNoCopy(parameters, "additionalProperties")
+	if additional.Type != ojson.False {
 		t.Fatalf("additional properties must be explicitly forbidden: %s", parameters)
+	}
+}
+
+func TestApplyPatchToolParametersAreIndependent(t *testing.T) {
+	first := Parameters()
+	second := Parameters()
+	first[0] = '['
+	if second[0] != '{' || !ojson.ValidBytes(second) {
+		t.Fatalf("mutating one schema changed another: %s", second)
+	}
+	third := Parameters()
+	if third[0] != '{' || !ojson.ValidBytes(third) {
+		t.Fatalf("mutating one schema changed later calls: %s", third)
+	}
+}
+
+func TestApplyPatchToolDescriptionRules(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+	}{
+		{name: "no_description_or_grammar", tool: `{"type":"custom","name":"apply_patch"}`},
+		{name: "empty_description_and_grammar", tool: `{"description":"","format":{"definition":""}}`},
+		{name: "format_without_definition", tool: `{"description":"Edit files.","format":{"type":"grammar","syntax":"lark"}}`},
+		{name: "grammar_without_environment", tool: `{"format":{"definition":"start: begin_patch hunk+ end_patch"}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			description := Description(ojson.Parse(test.tool))
+			for _, instruction := range []string{
+				"Call this function with a JSON object whose input field contains the complete patch text.",
+				"Use the Codex apply_patch format, not a conventional git unified diff.",
+				"Start with *** Begin Patch and end with *** End Patch.",
+				"Use *** Add File: path, *** Delete File: path, or *** Update File: path.",
+				"Every added-file content line starts with +.",
+				"For updates, use @@; context lines start with one space, removed lines with -, and added lines with +.",
+				"Use *** Move to: path for a rename and *** End of File when required by the patch grammar.",
+				"Example input:\n*** Begin Patch\n*** Update File: src/main.go\n@@\n-old\n+new\n*** End Patch",
+			} {
+				if !strings.Contains(description, instruction) {
+					t.Errorf("missing instruction %q in %q", instruction, description)
+				}
+			}
+			if strings.Contains(description, "*** Environment ID:") {
+				t.Fatalf("environment syntax invented without an environment grammar: %q", description)
+			}
+		})
 	}
 }
 
@@ -110,7 +159,7 @@ func TestApplyPatchToolDescriptionPreservesNonWrapperInstructions(t *testing.T) 
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			tool := gjson.Parse(test.tool)
+			tool := ojson.Parse(test.tool)
 			description := Description(tool)
 			if strings.Contains(description, "This is a FREEFORM tool") || strings.Contains(description, "do not wrap the patch in JSON") {
 				t.Fatalf("freeform wrapper instruction leaked: %q", description)
@@ -146,7 +195,7 @@ func TestApplyPatchToolDescriptionPreservesGrammar(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			description := Description(gjson.Parse(test.tool))
+			description := Description(ojson.Parse(test.tool))
 			if !strings.HasSuffix(description, test.wantGrammar) {
 				t.Fatalf("original grammar was not appended verbatim: %q", description)
 			}
@@ -159,7 +208,7 @@ func TestApplyPatchToolDescriptionPreservesGrammar(t *testing.T) {
 }
 
 func TestApplyPatchToolDescriptionEnvironmentGrammar(t *testing.T) {
-	tool := gjson.Parse(`{"format":{"definition":"start: begin_patch environment_id? hunk+ end_patch\nenvironment_id: \"*** Environment ID:\" /[^\\n]+/\n"}}`)
+	tool := ojson.Parse(`{"format":{"definition":"start: begin_patch environment_id? hunk+ end_patch\nenvironment_id: \"*** Environment ID:\" /[^\\n]+/\n"}}`)
 	description := Description(tool)
 	grammar := "start: begin_patch environment_id? hunk+ end_patch\nenvironment_id: \"*** Environment ID:\" /[^\\n]+/\n"
 	if !strings.HasSuffix(description, grammar) {
@@ -187,7 +236,7 @@ func TestApplyPatchToolInputEncoding(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			wrapped := WrapInput(test.input)
-			if !json.Valid([]byte(wrapped)) || gjson.Get(wrapped, "input").String() != test.input || len(gjson.Parse(wrapped).Map()) != 1 {
+			if !json.Valid([]byte(wrapped)) || ojson.Get(wrapped, "input").String() != test.input || len(ojson.Parse(wrapped).Map()) != 1 {
 				t.Errorf("WrapInput(%q) returned invalid input wrapper %q", test.input, wrapped)
 			}
 			var decoded string

@@ -108,6 +108,166 @@ func normalizeAnthropicAdvisorToolModels(body []byte) []byte {
 	return body
 }
 
+/**
+ * @brief Claude 工具 input_schema 属性名回退参数（参考 CLIProxyAPI f0c9c2d01）
+ */
+const (
+	anthropicToolPropertyKeyMaxLength  = 64                  ///< Claude 接受的属性名最大长度
+	anthropicToolSchemaMaxInspectDepth = 256                 ///< schema 递归检查深度上限，超过按需要回退处理
+	anthropicToolSchemaFallbackSchema  = `{"type":"object"}` ///< 回退后的开放对象 schema
+)
+
+/**
+ * @brief 回退时追加到工具描述的固定前缀，与上游逐字一致；模型据此按原属性名调用工具
+ */
+const anthropicToolSchemaFallbackPrefix = "The input object must conform to the following JSON Schema. Use its property names exactly as written, including any characters such as brackets:\n"
+
+/**
+ * @brief 判断 Claude 是否接受该 input_schema 属性名。
+ * @param name 属性名字面量。
+ * @return 名称匹配 ^[a-zA-Z0-9_.-]{1,64}$ 时返回 true。
+ */
+func anthropicPropertyKeyAccepted(name string) bool {
+	if len(name) == 0 || len(name) > anthropicToolPropertyKeyMaxLength {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+/**
+ * @brief 按 JSON Schema 关键字的模式位置递归检查属性名。
+ * @param schema 待检查的 schema 节点。
+ * @param depth 当前递归深度。
+ * @return schema 或其可达子 schema 声明了 Claude 拒收的属性名时返回 true；深度超过
+ * 上限时同样返回 true（按回退处理，正文仍完整保留在 description 中）。
+ * @details 关键字名只在 schema 位置解释：以关键字命名的 definition/property 按其角色
+ * 处理；const/default/enum/examples 等数据值与未知注解不检查。
+ */
+func anthropicSchemaHasRejectedPropertyKey(schema gjson.Result, depth int) bool {
+	if !schema.IsObject() {
+		return false
+	}
+	if depth > anthropicToolSchemaMaxInspectDepth {
+		return true
+	}
+	found := false
+	subschema := func(value gjson.Result) bool {
+		found = anthropicSchemaHasRejectedPropertyKey(value, depth+1)
+		return !found
+	}
+	subschemas := func(value gjson.Result) {
+		value.ForEach(func(_, item gjson.Result) bool { return subschema(item) })
+	}
+	schema.ForEach(func(key, value gjson.Result) bool {
+		switch key.String() {
+		case "properties":
+			if !value.IsObject() {
+				return true
+			}
+			value.ForEach(func(name, item gjson.Result) bool {
+				if !anthropicPropertyKeyAccepted(name.String()) {
+					found = true
+					return false
+				}
+				return subschema(item)
+			})
+		case "$defs", "definitions", "patternProperties", "dependentSchemas", "dependencies":
+			// 命名子 schema 的映射；dependencies 也可能是名称数组，非对象由 subschema 跳过。
+			if value.IsObject() {
+				subschemas(value)
+			}
+		case "allOf", "anyOf", "oneOf", "prefixItems":
+			if value.IsArray() {
+				subschemas(value)
+			}
+		case "items":
+			if value.IsArray() {
+				subschemas(value)
+			} else {
+				subschema(value)
+			}
+		case "additionalProperties", "unevaluatedProperties", "additionalItems", "unevaluatedItems",
+			"contains", "propertyNames", "not", "if", "then", "else", "contentSchema":
+			subschema(value)
+		}
+		return !found
+	})
+	return found
+}
+
+/**
+ * @brief 判断一个客户端工具声明的 input_schema 是否会被 Claude 拒收。
+ * @param tool 工具声明节点。
+ * @return 客户端工具的 schema 含拒收属性名时返回 true；服务端工具返回 false。
+ */
+func anthropicToolNeedsSchemaFallback(tool gjson.Result) bool {
+	if !isAnthropicClientToolDeclaration(tool) {
+		return false
+	}
+	schema := tool.Get("input_schema")
+	return schema.IsObject() && anthropicSchemaHasRejectedPropertyKey(schema, 0)
+}
+
+/**
+ * @brief 把 input_schema 含 Claude 拒收属性名的工具改写为开放对象描述形态。
+ * @param body 转换后的 Anthropic 请求正文。
+ * @return 需要回退的工具被保留并改写后的正文；无可回退工具时返回原正文。
+ * @details 遍历 tools[] 与 messages[].content[] 中 type=tool_addition、
+ * tool.type=tool_definition 的 tool.definition，跳过服务端工具。命中时 description
+ * 追加固定前缀与原 schema 原文，input_schema 置为 {"type":"object"}，并删除 strict：
+ * 模型仍能看到全部原始属性名与约束，按原名调用工具，历史 tool_use 与响应均无需改写。
+ * @note 在渠道 BodyRules 之前调用，用户规则可以覆盖 description。
+ */
+func normalizeAnthropicToolPropertyNames(body []byte) []byte {
+	var paths []string
+	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() {
+		for i, tool := range tools.Array() {
+			if anthropicToolNeedsSchemaFallback(tool) {
+				paths = append(paths, fmt.Sprintf("tools.%d", i))
+			}
+		}
+	}
+	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
+		for messageIndex, message := range messages.Array() {
+			content := message.Get("content")
+			if !content.IsArray() {
+				continue
+			}
+			for partIndex, part := range content.Array() {
+				if jsonStringValue(part.Get("type")) != "tool_addition" || jsonStringValue(part.Get("tool.type")) != "tool_definition" {
+					continue
+				}
+				if anthropicToolNeedsSchemaFallback(part.Get("tool.definition")) {
+					paths = append(paths, fmt.Sprintf("messages.%d.content.%d.tool.definition", messageIndex, partIndex))
+				}
+			}
+		}
+	}
+	for _, path := range paths {
+		tool := gjson.GetBytes(body, path)
+		var description strings.Builder
+		if existing := jsonStringValue(tool.Get("description")); strings.TrimSpace(existing) != "" {
+			description.WriteString(existing)
+			description.WriteString("\n\n")
+		}
+		description.WriteString(anthropicToolSchemaFallbackPrefix)
+		description.WriteString(tool.Get("input_schema").Raw)
+		body = setJSONValue(body, path+".description", description.String())
+		body = setJSONRaw(body, path+".input_schema", anthropicToolSchemaFallbackSchema)
+		if tool.Get("strict").Exists() {
+			body = deleteJSONPath(body, path+".strict")
+		}
+	}
+	return body
+}
+
 // encodeNormalizedAnthropicRequest 只收尾 Anthropic Messages 的通用 wire 形状。
 // 入口守卫由调用方（normalizeAnthropicMessagesBody / 最终化边界）负责，这里三步
 // 都不会失败，所以不返回 error。

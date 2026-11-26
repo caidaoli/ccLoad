@@ -595,10 +595,17 @@ func TestTranslatedApplyPatchStreamPreservesUpstreamError(t *testing.T) {
 	if err != nil || result == nil || !result.ResponseCommitted || gjson.GetBytes(result.SSEErrorEvent, "error.type").String() != "rate_limit_error" || result.InputTokens != 7 {
 		t.Fatalf("provider error or usage was replaced: error=%v result=%#v response=%s", err, result, rec.Body.String())
 	}
+	failed := 0
 	for _, event := range parseCodexResponseEventTypes(t, rec.Body.String()) {
-		if event == "response.failed" || event == "response.completed" {
-			t.Fatalf("provider failure gained a synthetic terminal: %s", rec.Body.String())
+		switch event {
+		case "response.completed":
+			t.Fatalf("provider failure completed the response: %s", rec.Body.String())
+		case "response.failed":
+			failed++
 		}
+	}
+	if failed != 1 || !strings.Contains(rec.Body.String(), `"code":"rate_limit_error"`) {
+		t.Fatalf("provider failure must end with one response.failed carrying the upstream error: %s", rec.Body.String())
 	}
 }
 
@@ -1645,6 +1652,146 @@ func TestClassifySSEErrorStatus_ContextLengthExceeded(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证内容策略拦截与托管生图参数错误的 SSE 事件按 400 返回客户端。
+ * @param t 测试上下文。
+ */
+func TestClassifySSEErrorStatus_RequestContentRejection(t *testing.T) {
+	for name, body := range map[string]string{
+		"bio_policy_error":            `{"type":"error","error":{"code":"bio_policy","type":"invalid_request","message":"blocked"},"sequence_number":3}`,
+		"cyber_policy_failed":         `{"type":"response.failed","response":{"status":"failed","error":{"code":"cyber_policy","message":"blocked"}}}`,
+		"typeless_top_level":          `{"code":"bio_policy","message":"blocked","sequence_number":7}`,
+		"image_generation_user_error": `{"type":"error","error":{"type":"image_generation_user_error","param":"complexity","message":"Complexity 'medium' is not supported for this image model."}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := classifySSEErrorStatus([]byte(body)); got != http.StatusBadRequest {
+				t.Fatalf("classifySSEErrorStatus()=%d, want %d", got, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证错误帧嵌套层级的响应头按外层优先提取，且仍只转发白名单头。
+ * @param t 测试上下文。
+ */
+func TestWebsocketErrorStatusAndHeaders_NestedHeaders(t *testing.T) {
+	t.Run("issue_7600_error_headers", func(t *testing.T) {
+		body := []byte(`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","headers":{"retry-after":"326","retry-after-ms":"326000"}},"sequence_number":3}`)
+		status, headers := websocketErrorStatusAndHeaders(body)
+		if status != 0 {
+			t.Fatalf("status=%d, want 0 without top-level status", status)
+		}
+		if got := headers.Get("Retry-After"); got != "326" {
+			t.Fatalf("Retry-After=%q, want 326", got)
+		}
+		if got := headers.Get("Retry-After-Ms"); got != "" {
+			t.Fatalf("Retry-After-Ms=%q, want non-allowlisted header dropped", got)
+		}
+	})
+	t.Run("outer_level_wins", func(t *testing.T) {
+		body := []byte(`{
+			"type":"error",
+			"status":429,
+			"headers":{"Retry-After":"","x-request-id":"req-outer"},
+			"body":{"headers":{"x-ratelimit-remaining-requests":0},"error":{"headers":{"X-Request-Id":"req-body-error","Set-Cookie":"unsafe=1"}}},
+			"error":{"headers":{"retry-after":"30","openai-request-id":"req-error"}},
+			"response":{"error":{"headers":{"x-ratelimit-reset-requests":"1s","openai-request-id":"req-response"}}}
+		}`)
+		status, headers := websocketErrorStatusAndHeaders(body)
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("status=%d, want 429", status)
+		}
+		want := http.Header{
+			"X-Request-Id":                   {"req-outer"},
+			"X-Ratelimit-Remaining-Requests": {"0"},
+			"Openai-Request-Id":              {"req-error"},
+			"X-Ratelimit-Reset-Requests":     {"1s"},
+		}
+		if !reflect.DeepEqual(headers, want) {
+			t.Fatalf("headers=%v, want %v (blank outer Retry-After shadows nested value)", headers, want)
+		}
+	})
+}
+
+/**
+ * @brief 验证内容拒绝的 SSE 错误以 400 返回客户端，不换渠道、不写任何冷却。
+ * @param t 测试上下文。
+ */
+func TestProxy_SSERequestContentRejectionReturns400WithoutRetryOrCooldown(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		event    string
+		codePath string
+		wantCode string
+	}{
+		"bio_policy_error": {
+			event:    `{"type":"error","error":{"code":"bio_policy","type":"invalid_request","message":"This content was flagged for possible biological risk."},"sequence_number":2}`,
+			codePath: "error.code", wantCode: "bio_policy",
+		},
+		"image_generation_failed": {
+			event:    `{"type":"response.failed","response":{"id":"resp-image","status":"failed","error":{"type":"image_generation_user_error","param":"complexity","message":"Complexity 'medium' is not supported for this image model."}},"sequence_number":4}`,
+			codePath: "response.error.type", wantCode: "image_generation_user_error",
+		},
+		"typeless_policy": {
+			event:    `{"error":{"code":"cyber_policy","message":"blocked"},"sequence_number":7}`,
+			codePath: "error.code", wantCode: "cyber_policy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var firstCalls, secondCalls atomic.Int32
+			upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				firstCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "data: "+`{"type":"response.created","response":{"id":"resp-blocked","status":"in_progress"}}`+"\n\n")
+				_, _ = fmt.Fprint(w, "data: "+tc.event+"\n\n")
+			}))
+			defer upstream1.Close()
+			upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				secondCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "data: "+`{"type":"response.completed","response":{"id":"resp-unexpected","status":"completed","output":[]}}`+"\n\n")
+			}))
+			defer upstream2.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "policy-blocked", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-first", priority: 100},
+				{name: "must-not-run", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-second", priority: 50},
+			}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
+
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model":  "gpt-test",
+				"stream": true,
+				"input":  "blocked prompt",
+			}, nil)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if got := gjson.GetBytes(w.Body.Bytes(), tc.codePath).String(); got != tc.wantCode {
+				t.Fatalf("%s=%q, want %q; body=%s", tc.codePath, got, tc.wantCode, w.Body.String())
+			}
+			if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
+				t.Fatalf("upstream calls first=%d second=%d, want 1/0", firstCalls.Load(), secondCalls.Load())
+			}
+			ctx := context.Background()
+			keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+			if err != nil || len(keyCooldowns) != 0 {
+				t.Fatalf("key cooldowns=%v err=%v, want none", keyCooldowns, err)
+			}
+			modelCooldowns, err := env.store.GetAllModelCooldowns(ctx)
+			if err != nil || len(modelCooldowns) != 0 {
+				t.Fatalf("model cooldowns=%v err=%v, want none", modelCooldowns, err)
+			}
+			channelCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+			if err != nil || len(channelCooldowns) != 0 {
+				t.Fatalf("channel cooldowns=%v err=%v, want none", channelCooldowns, err)
+			}
+		})
+	}
+}
+
 // 加密内容失效是请求语义错误：真实 SSE 事件不带 status，也必须按 400 分类，
 // 才能触发同渠道修复并只冷却当前模型。
 func TestClassifySSEErrorStatus_InvalidEncryptedContent(t *testing.T) {
@@ -2168,6 +2315,83 @@ func TestAnthropicRetryBodyFor400PreservesOrderWhileDowngradingThinking(t *testi
  * @brief 验证 API Key/OAuth 的 Messages 与计数出站保留各 advisor 基模型及渠道规则优先级。
  * @param t 测试上下文。
  */
+func TestAnthropicBuildProxyRequestFallsBackRejectedToolPropertyNames(t *testing.T) {
+	const (
+		bracketSchema = `{"type":"object","properties":{"a[b]":{"type":"string"}}}`
+		nestedSchema  = `{"type":"object","$defs":{"x":{"properties":{"bad key":{}}}}}`
+		validSchema   = `{"type":"object","properties":{"path":{"type":"string","enum":["a[b]"]}}}`
+		inlineSchema  = `{"type":"object","properties":{"q?":{}}}`
+	)
+	tools := `[
+		{"name":"bracket","description":"Pick","strict":true,"input_schema":` + bracketSchema + `},
+		{"name":"nested","input_schema":` + nestedSchema + `},
+		{"name":"valid","strict":true,"input_schema":` + validSchema + `},
+		{"type":"web_search_20250305","name":"web_search","input_schema":` + bracketSchema + `}
+	]`
+	messages := `[{"role":"user","content":[{"type":"text","text":"hi"},
+		{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"inline","input_schema":` + inlineSchema + `}}}]}]`
+	for _, mode := range []string{"messages", "count_tokens"} {
+		for _, override := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/override=%t", mode, override), func(t *testing.T) {
+				cfg := &model.Config{ID: 94, Name: "tool-schema", URLs: channelURLsForTest("https://api.anthropic.com")}
+				if override {
+					cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+						Action: model.RuleActionOverride, Path: "tools.0.description", Value: json.RawMessage(`"custom"`),
+					}}}
+				}
+				body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":` + messages + `,"tools":` + tools + `}`)
+				requestPath := "/v1/messages"
+				if mode == "count_tokens" {
+					requestPath += "/count_tokens"
+				}
+				requestContext := &requestContext{
+					ctx: context.Background(), startTime: time.Now(),
+					clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
+				}
+				request, err := (&Server{}).buildProxyRequest(requestContext, cfg, "tool-schema-key", http.MethodPost,
+					body, http.Header{"Content-Type": {"application/json"}}, "", requestPath, cfg.GetURLs()[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = request.Body.Close() }()
+				out, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantFallback := map[string]string{
+					"tools.0":                              "Pick\n\n" + anthropicToolSchemaFallbackPrefix + bracketSchema,
+					"tools.1":                              anthropicToolSchemaFallbackPrefix + nestedSchema,
+					"messages.0.content.1.tool.definition": anthropicToolSchemaFallbackPrefix + inlineSchema,
+				}
+				if override {
+					wantFallback["tools.0"] = "custom"
+				}
+				for path, wantDescription := range wantFallback {
+					tool := gjson.GetBytes(out, path)
+					if got := tool.Get("description").String(); got != wantDescription {
+						t.Fatalf("%s description=%q, want %q; body=%s", path, got, wantDescription, out)
+					}
+					if got := tool.Get("input_schema").Raw; got != `{"type":"object"}` {
+						t.Fatalf("%s input_schema=%s; body=%s", path, got, out)
+					}
+					if tool.Get("strict").Exists() {
+						t.Fatalf("%s kept strict: %s", path, out)
+					}
+				}
+				for path, wantSchema := range map[string]string{"tools.2": validSchema, "tools.3": bracketSchema} {
+					tool := gjson.GetBytes(out, path)
+					if got := tool.Get("input_schema").Raw; got != wantSchema || tool.Get("description").Exists() {
+						t.Fatalf("%s was rewritten: %s", path, out)
+					}
+				}
+				if !gjson.GetBytes(out, "tools.2.strict").Bool() {
+					t.Fatalf("valid tool lost strict: %s", out)
+				}
+			})
+		}
+	}
+}
+
 func TestAnthropicBuildProxyRequestNormalizesAdvisorToolModels(t *testing.T) {
 	credentialJSON := anthropicProxyTestCredential(t, "advisor-access")
 	const tools = `[

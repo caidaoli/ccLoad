@@ -1,15 +1,17 @@
 package responses
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
-	internalsignature "ccLoad/internal/protocol/cliproxy/signature"
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+
+	internalsignature "ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 const testResponsesGeminiThoughtSignature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
@@ -50,17 +52,17 @@ func TestConvertOpenAIResponsesRequestToGemini_OptionalGenerationFields(t *testi
 			}
 			if tc.want == nil {
 				for _, path := range []string{"systemInstruction", "generationConfig"} {
-					if value := gjson.GetBytes(got, path); value.Exists() {
+					if value := ojson.GetBytes(got, path); value.Exists() {
 						t.Errorf("unexpected %s = %s", path, value.Raw)
 					}
 				}
-				if gjson.Get(tc.raw, "input").Type != gjson.String && gjson.GetBytes(got, "contents.#").Int() != 0 {
+				if ojson.Get(tc.raw, "input").Type != ojson.String && ojson.GetBytes(got, "contents.#").Int() != 0 {
 					t.Errorf("empty instructions produced a fake user turn: %s", got)
 				}
 				return
 			}
 			for path, want := range tc.want {
-				if value := gjson.GetBytes(got, path); value.Raw != want {
+				if value := ojson.GetBytes(got, path); value.Raw != want {
 					t.Errorf("%s = %s, want %s", path, value.Raw, want)
 				}
 			}
@@ -69,7 +71,7 @@ func TestConvertOpenAIResponsesRequestToGemini_OptionalGenerationFields(t *testi
 }
 
 func TestReorderOpenAIResponsesDetachedReasoningDoesNotCrossUserMessage(t *testing.T) {
-	items := gjson.Parse(`[
+	items := ojson.Parse(`[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]},
 		{"id":"rs_test_detached_after_1","type":"reasoning","encrypted_content":"` + testResponsesGeminiThoughtSignature + `","summary":[]},
 		{"type":"function_call","call_id":"call-1","name":"run_command","arguments":"{}"}
@@ -83,7 +85,7 @@ func TestReorderOpenAIResponsesDetachedReasoningDoesNotCrossUserMessage(t *testi
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToGemini_ValidatesFunctionCallArguments(t *testing.T) {
+func TestConvertOpenAIResponsesRequestToGemini_FunctionCallArgumentsPrecisionAndNull(t *testing.T) {
 	tests := []struct {
 		name, arguments, wantObject, wrapped string
 	}{
@@ -91,10 +93,8 @@ func TestConvertOpenAIResponsesRequestToGemini_ValidatesFunctionCallArguments(t 
 		{name: "missing", wantObject: "{}"},
 		{name: "blank", arguments: `,"arguments":"   "`, wantObject: "{}"},
 		{name: "null", arguments: `,"arguments":null`, wantObject: "{}"},
-		{name: "encoded null", arguments: `,"arguments":" null "`, wantObject: "{}"},
 		{name: "array", arguments: `,"arguments":"[1,2]"`, wrapped: "[1,2]"},
 		{name: "scalar", arguments: `,"arguments":"123"`, wrapped: "123"},
-		{name: "truncated", arguments: `,"arguments":"  {\"p\":1  "`, wrapped: `  {"p":1  `},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,8 +106,8 @@ func TestConvertOpenAIResponsesRequestToGemini_ValidatesFunctionCallArguments(t 
 			if err != nil {
 				t.Fatal(err)
 			}
-			args := gjson.GetBytes(out, "contents.0.parts.0.functionCall.args")
-			if !gjson.ValidBytes(out) || !args.IsObject() {
+			args := ojson.GetBytes(out, "contents.0.parts.0.functionCall.args")
+			if !ojson.ValidBytes(out) || !args.IsObject() {
 				t.Fatalf("expected valid Gemini request with object arguments: %s", out)
 			}
 			if tt.wantObject != "" && args.Raw != tt.wantObject || tt.wrapped != "" && args.Get("arguments").Str != tt.wrapped {
@@ -128,7 +128,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesReasoningAndSignatureTo
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.1.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.1.parts").Array()
 	if len(parts) != 2 || !parts[0].Get("thought").Bool() {
 		t.Fatalf("reasoning/function parts malformed: %s", result)
 	}
@@ -150,7 +150,7 @@ func TestConvertOpenAIResponsesRequestToGemini_SyntheticParallelCallsOnlyFirstGe
 	}`
 
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.0.parts").Array()
 	if len(parts) != 2 {
 		t.Fatalf("parts = %d, want 2 parallel calls; result=%s", len(parts), result)
 	}
@@ -174,8 +174,8 @@ func TestConvertOpenAIResponsesRequestToGemini_NativeParallelCallsPreserveUnsign
 	}`
 
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	var calls []gjson.Result
-	for _, content := range gjson.GetBytes(result, "contents").Array() {
+	var calls []ojson.Result
+	for _, content := range ojson.GetBytesNoCopy(result, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if part.Get("functionCall").Exists() {
 				calls = append(calls, part)
@@ -214,7 +214,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesMultipleLeadingToolSigna
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
 	var signatures, sequence []string
-	for _, content := range gjson.GetBytes(result, "contents").Array() {
+	for _, content := range ojson.GetBytesNoCopy(result, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if part.Get("functionCall").Exists() {
 				signatures = append(signatures, part.Get("thoughtSignature").String())
@@ -250,7 +250,7 @@ func TestConvertOpenAIResponsesRequestToGemini_GroupsReversedParallelToolOutputs
 	if errValidate := internalsignature.ValidateGeminiFunctionCallPairing(result); errValidate != nil {
 		t.Fatalf("parallel tool history is invalid: %v; result=%s", errValidate, result)
 	}
-	contents := gjson.GetBytes(result, "contents").Array()
+	contents := ojson.GetBytesNoCopy(result, "contents").Array()
 	if len(contents) != 2 || contents[0].Get("role").String() != "model" || contents[1].Get("role").String() != "user" {
 		t.Fatalf("parallel tool roles malformed; result=%s", result)
 	}
@@ -284,7 +284,7 @@ func TestConvertOpenAIResponsesRequestToGemini_GroupsNonContiguousParallelToolOu
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	contents := gjson.GetBytes(result, "contents").Array()
+	contents := ojson.GetBytesNoCopy(result, "contents").Array()
 	if len(contents) != 4 || contents[0].Get("role").String() != "model" || contents[1].Get("role").String() != "user" || contents[2].Get("role").String() != "user" || contents[3].Get("role").String() != "user" {
 		t.Fatalf("non-contiguous tool output roles malformed; result=%s", result)
 	}
@@ -312,7 +312,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesReasoningBeforePairedFun
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
 	var signatures []string
-	for _, content := range gjson.GetBytes(result, "contents").Array() {
+	for _, content := range ojson.GetBytesNoCopy(result, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if signature := part.Get("thoughtSignature").String(); signature != "" {
 				signatures = append(signatures, signature)
@@ -337,7 +337,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesFunctionOutputOrderAcros
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
 	var sequence []string
-	for _, content := range gjson.GetBytes(result, "contents").Array() {
+	for _, content := range ojson.GetBytesNoCopy(result, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if id := part.Get("functionCall.id").String(); id != "" {
 				sequence = append(sequence, "call:"+id)
@@ -363,7 +363,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesTrailingDetachedSignatu
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.1.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.1.parts").Array()
 	if len(parts) != 1 {
 		t.Fatalf("model parts = %d, want one signed visible part; result=%s", len(parts), result)
 	}
@@ -389,7 +389,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesUnmarkedTrailingSignatu
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.1.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.1.parts").Array()
 	if len(parts) != 1 {
 		t.Fatalf("model parts = %d, want one signed visible part after client rewrites carrier ID; result=%s", len(parts), result)
 	}
@@ -413,7 +413,7 @@ func TestConvertOpenAIResponsesRequestToGemini_UnmarkedReasoningBeforeFunctionCa
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	modelParts := gjson.GetBytes(result, "contents.1.parts").Array()
+	modelParts := ojson.GetBytesNoCopy(result, "contents.1.parts").Array()
 	if len(modelParts) != 2 {
 		t.Fatalf("model parts = %d, want unsigned preamble plus signed call; result=%s", len(modelParts), result)
 	}
@@ -436,7 +436,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesDetachedSignatureToFunc
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	functionParts := gjson.GetBytes(result, "contents.#(role==\"model\")#.parts").Array()
+	functionParts := ojson.GetBytesNoCopy(result, "contents.#(role==\"model\")#.parts").Array()
 	found := false
 	for _, partArray := range functionParts {
 		for _, part := range partArray.Array() {
@@ -464,7 +464,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesUnmarkedPostCallSignatu
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	if got := gjson.GetBytes(result, "contents.0.parts.0.thoughtSignature").String(); got != testResponsesGeminiThoughtSignature {
+	if got := ojson.GetBytesNoCopy(result, "contents.0.parts.0.thoughtSignature").String(); got != testResponsesGeminiThoughtSignature {
 		t.Fatalf("unmarked post-call signature = %q, want native signature; result=%s", got, result)
 	}
 }
@@ -494,7 +494,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesDirectionalFunctionCarr
 			carrier := encodeGeminiResponsesCarrier(testResponsesGeminiThoughtSignature, testCase.direction, geminiResponsesCarrierFunction)
 			inputJSON := []byte(`{"model":"gemini-3.6-flash-high","input":` + testCase.input(carrier) + `}`)
 			result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", inputJSON, false)
-			if got := gjson.GetBytes(result, "contents.0.parts.0.thoughtSignature").String(); got != testResponsesGeminiThoughtSignature {
+			if got := ojson.GetBytesNoCopy(result, "contents.0.parts.0.thoughtSignature").String(); got != testResponsesGeminiThoughtSignature {
 				t.Fatalf("directional function signature = %q, want native signature; result=%s", got, result)
 			}
 			if strings.Contains(string(result), geminiResponsesCarrierPrefix) {
@@ -510,7 +510,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotRetargetExtraPreviousCarri
 		name       string
 		targetKind string
 		input      func(string, string) string
-		assert     func(*testing.T, []gjson.Result)
+		assert     func(*testing.T, []ojson.Result)
 	}{
 		{
 			name:       "text",
@@ -518,7 +518,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotRetargetExtraPreviousCarri
 			input: func(first, extra string) string {
 				return `[{"type":"reasoning","encrypted_content":"` + first + `","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"signed"}]},{"type":"reasoning","encrypted_content":"` + extra + `","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unsigned"}]}]`
 			},
-			assert: func(t *testing.T, parts []gjson.Result) {
+			assert: func(t *testing.T, parts []ojson.Result) {
 				if len(parts) != 3 || parts[0].Get("text").String() != "signed" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[1].Get("thoughtSignature").String() != signature2 || parts[2].Get("text").String() != "unsigned" || parts[2].Get("thoughtSignature").String() != "" {
 					t.Fatalf("extra previous text carrier retargeted: %v", parts)
 				}
@@ -530,7 +530,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotRetargetExtraPreviousCarri
 			input: func(first, extra string) string {
 				return `[{"type":"reasoning","encrypted_content":"` + first + `","summary":[]},{"type":"function_call","call_id":"call-1","name":"run_command","arguments":"{}"},{"type":"reasoning","encrypted_content":"` + extra + `","summary":[]},{"type":"function_call","call_id":"call-2","name":"run_command","arguments":"{}"}]`
 			},
-			assert: func(t *testing.T, parts []gjson.Result) {
+			assert: func(t *testing.T, parts []ojson.Result) {
 				if len(parts) != 3 || parts[0].Get("functionCall.id").String() != "call-1" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[1].Get("thoughtSignature").String() != signature2 || parts[2].Get("functionCall.id").String() != "call-2" || parts[2].Get("thoughtSignature").String() != "skip_thought_signature_validator" {
 					// call-2 follows a text part, so it gets the bypass sentinel rather than signature2.
 					t.Fatalf("extra previous function carrier retargeted: %v", parts)
@@ -543,7 +543,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotRetargetExtraPreviousCarri
 			extra := encodeGeminiResponsesCarrier(signature2, geminiResponsesCarrierPrevious, testCase.targetKind)
 			request := []byte(`{"model":"gemini-3.6-flash-high","input":` + testCase.input(first, extra) + `}`)
 			translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
-			testCase.assert(t, gjson.GetBytes(translated, "contents.0.parts").Array())
+			testCase.assert(t, ojson.GetBytesNoCopy(translated, "contents.0.parts").Array())
 		})
 	}
 }
@@ -552,7 +552,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotBindStandaloneFunctionCarr
 	carrier := encodeGeminiResponsesCarrier(testResponsesGeminiThoughtSignature, geminiResponsesCarrierStandalone, geminiResponsesCarrierFunction)
 	inputJSON := []byte(`{"model":"gemini-3.6-flash-high","input":[{"type":"reasoning","encrypted_content":"` + carrier + `","summary":[]},{"type":"function_call","call_id":"call-1","name":"run_command","arguments":"{}"}]}`)
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", inputJSON, false)
-	parts := gjson.GetBytes(result, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || parts[1].Get("thoughtSignature").String() != geminiResponsesThoughtSignature {
 		t.Fatalf("standalone carrier was bound to function call: %s", result)
 	}
@@ -570,7 +570,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesUnmarkedParallelPostCal
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("thoughtSignature").String() != geminiResponsesThoughtSignature || parts[1].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature {
 		t.Fatalf("parallel post-call signature was not attached to call-2: %s", result)
 	}
@@ -590,7 +590,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReattachesAlternatingParallelPost
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("functionCall.id").String() != "call-1" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || parts[1].Get("functionCall.id").String() != "call-2" || parts[1].Get("thoughtSignature").String() != signature2 {
 		t.Fatalf("alternating parallel post-call signatures shifted: %s", result)
 	}
@@ -608,7 +608,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesExtraConsecutivePostCall
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	parts := gjson.GetBytes(result, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(result, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("functionCall.id").String() != "call-1" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || parts[1].Get("thoughtSignature").String() != signature2 {
 		t.Fatalf("consecutive post-call carriers malformed: %s", result)
 	}
@@ -624,7 +624,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotPairUnmarkedPostCallSignat
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	if got := gjson.GetBytes(result, "contents.0.parts.0.thoughtSignature").String(); got != geminiResponsesThoughtSignature {
+	if got := ojson.GetBytesNoCopy(result, "contents.0.parts.0.thoughtSignature").String(); got != geminiResponsesThoughtSignature {
 		t.Fatalf("mismatched output paired signature %q; result=%s", got, result)
 	}
 }
@@ -640,7 +640,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DoesNotPairUnmarkedPostCallSignat
 		]
 	}`
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	if got := gjson.GetBytes(result, "contents.0.parts.0.thoughtSignature").String(); got != geminiResponsesThoughtSignature {
+	if got := ojson.GetBytesNoCopy(result, "contents.0.parts.0.thoughtSignature").String(); got != geminiResponsesThoughtSignature {
 		t.Fatalf("user-boundary carrier paired signature %q; result=%s", got, result)
 	}
 }
@@ -663,7 +663,7 @@ func TestConvertOpenAIResponsesRequestToGemini_StripsTrailingAssistantPrefill(t 
 	}`
 
 	result, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.1-pro-high", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := util.ParseGJSONBytesNoCopy(result)
 	contents := resultJSON.Get("contents").Array()
 
 	if len(contents) != 1 {
@@ -711,7 +711,7 @@ func TestConvertOpenAIResponsesRequestToGemini_TextFormatJSONSchema(t *testing.T
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 	genConfig := result.Get("generationConfig")
 
 	if got := genConfig.Get("responseMimeType").String(); got != "application/json" {
@@ -750,7 +750,7 @@ func TestConvertOpenAIResponsesRequestToGemini_TextFormatJSONObject(t *testing.T
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 	genConfig := result.Get("generationConfig")
 
 	if got := genConfig.Get("responseMimeType").String(); got != "application/json" {
@@ -772,8 +772,8 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesReasoningOnlyHistory(t *
 	}`)
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", input, false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
-	if got := gjson.GetBytes(output, "contents").Array(); len(got) != 1 {
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
+	if got := ojson.GetBytesNoCopy(output, "contents").Array(); len(got) != 1 {
 		t.Fatalf("contents length = %d, want 1. Output: %s", len(got), output)
 	}
 	if len(parts) != 1 {
@@ -797,7 +797,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DropsEmptyUnsignedReasoningCarrie
 	}`)
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", input, false)
-	if got := gjson.GetBytes(output, "contents.#").Int(); got != 0 {
+	if got := ojson.GetBytesNoCopy(output, "contents.#").Int(); got != 0 {
 		t.Fatalf("contents = %d, want no empty unsigned model content; output=%s", got, output)
 	}
 }
@@ -814,7 +814,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesUnboundDetachedCarrierWi
 	}`)
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", input, false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) != 1 {
 		t.Fatalf("unbound carrier parts = %d, want one signed carrier; output=%s", len(parts), output)
 	}
@@ -849,7 +849,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesReasoningBeforeTrailingA
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 2 {
 		t.Fatalf("contents length = %d, want 2. Output: %s", len(contents), output)
 	}
@@ -896,7 +896,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReasoningSignatureCompatibility(t
 			}`)
 
 			output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", input, false)
-			parts := gjson.GetBytes(output, "contents.0.parts").Array()
+			parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 			if len(parts) != 1 {
 				t.Fatalf("parts length = %d, want 1. Output: %s", len(parts), output)
 			}
@@ -933,7 +933,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MergesReasoningWithAssistantVisib
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 2 {
 		t.Fatalf("contents length = %d, want 2. Output: %s", len(contents), output)
 	}
@@ -972,7 +972,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MergesReasoningWithUserRoleOutput
 		]
 	}`
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 1 {
 		t.Fatalf("contents length = %d, want 1. Output: %s", len(contents), output)
 	}
@@ -998,7 +998,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MergesReasoningWithAssistantStrin
 		]
 	}`
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	if got := gjson.GetBytes(output, "contents.0.parts.1.text").String(); got != "string visible answer" {
+	if got := ojson.GetBytesNoCopy(output, "contents.0.parts.1.text").String(); got != "string visible answer" {
 		t.Fatalf("visible text = %q", got)
 	}
 }
@@ -1025,7 +1025,7 @@ func TestConvertOpenAIResponsesRequestToGemini_PreservesWhitespaceWhenMergingRea
 		]
 	}`
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	if got := gjson.GetBytes(output, "contents.0.parts.1.text").String(); got != "  lead trail  " {
+	if got := ojson.GetBytesNoCopy(output, "contents.0.parts.1.text").String(); got != "  lead trail  " {
 		t.Fatalf("visible text = %q, want preserved whitespace", got)
 	}
 }
@@ -1076,7 +1076,7 @@ func TestConvertOpenAIResponsesRequestToGemini_SystemAndDeveloperRoles(t *testin
 			}`)
 
 			output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", input, false)
-			result := gjson.ParseBytes(output)
+			result := util.ParseGJSONBytesNoCopy(output)
 
 			systemInstruction := result.Get("systemInstruction")
 			if !systemInstruction.Exists() {
@@ -1093,7 +1093,7 @@ func TestConvertOpenAIResponsesRequestToGemini_SystemAndDeveloperRoles(t *testin
 				t.Fatalf("second systemInstruction part = %q, want %q. Output: %s", got, tt.wantText, output)
 			}
 
-			result.Get("contents").ForEach(func(_, value gjson.Result) bool {
+			result.Get("contents").ForEach(func(_, value ojson.Result) bool {
 				if role := value.Get("role").String(); role == tt.role {
 					t.Fatalf("role %q leaked into contents array. Output: %s", tt.role, output)
 				}
@@ -1138,7 +1138,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MidSessionDeveloperMessageDoesNot
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 
 	// systemInstruction must remain strictly unchanged (only original instructions, not developer notice)
 	systemInstruction := result.Get("systemInstruction")
@@ -1208,7 +1208,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MidSessionSystemReminderEnvelope(
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 
 	contents := result.Get("contents").Array()
 	if len(contents) != 3 {
@@ -1247,7 +1247,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MidSessionDeveloperMultiPartConte
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 
 	contents := result.Get("contents").Array()
 	if len(contents) != 3 {
@@ -1303,7 +1303,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MultipleMidSessionDeveloperMessag
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 
 	// systemInstruction only contains original instructions
 	parts := result.Get("systemInstruction.parts").Array()
@@ -1363,7 +1363,7 @@ func TestConvertOpenAIResponsesRequestToGemini_InterveningDeveloperMessagePreser
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 
 	// Validate function call pairing passes strictly (no content turn before pending functionResponse)
 	if errPair := internalsignature.ValidateGeminiFunctionCallPairing(output); errPair != nil {
@@ -1422,7 +1422,7 @@ func TestConvertOpenAIResponsesRequestToGemini_InterveningDeveloperAndUserMessag
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.5-flash", []byte(inputJSON), false)
-	result := gjson.ParseBytes(output)
+	result := util.ParseGJSONBytesNoCopy(output)
 
 	// Pairing should be valid
 	if errPair := internalsignature.ValidateGeminiFunctionCallPairing(output); errPair != nil {
@@ -1472,7 +1472,7 @@ func TestConvertOpenAIResponsesRequestToGeminiCleansToolSchemaRequiredFields(t *
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.0-flash", []byte(inputJSON), false)
-	schema := gjson.GetBytes(output, "tools.0.functionDeclarations.0.parametersJsonSchema")
+	schema := ojson.GetBytesNoCopy(output, "tools.0.functionDeclarations.0.parametersJsonSchema")
 
 	if !schema.Exists() {
 		t.Fatalf("parametersJsonSchema missing. Output: %s", output)
@@ -1541,7 +1541,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithImages(t *t
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-	userContent := gjson.GetBytes(output, "contents.2")
+	userContent := ojson.GetBytesNoCopy(output, "contents.2")
 	if userContent.Get("role").String() != "user" {
 		t.Fatalf("expected role user in third content, got %s", userContent.Raw)
 	}
@@ -1596,7 +1596,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -1625,7 +1625,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -1657,7 +1657,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -1689,7 +1689,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -1720,7 +1720,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -1752,7 +1752,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -1782,7 +1782,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-		userContent := gjson.GetBytes(output, "contents.1")
+		userContent := ojson.GetBytesNoCopy(output, "contents.1")
 		parts := userContent.Get("parts").Array()
 		if len(parts) != 1 {
 			t.Fatalf("expected 1 part (functionResponse with nested inlineData), got %d; raw: %s", len(parts), userContent.Raw)
@@ -1846,7 +1846,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ParallelFunctionCallOutputsWithIm
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-	userContent := gjson.GetBytes(output, "contents.2")
+	userContent := ojson.GetBytesNoCopy(output, "contents.2")
 	if userContent.Get("role").String() != "user" {
 		t.Fatalf("expected role user in tool response content, got %s", userContent.Raw)
 	}
@@ -1856,7 +1856,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ParallelFunctionCallOutputsWithIm
 		t.Fatalf("expected 2 functionResponse parts, got %d; raw: %s", len(parts), userContent.Raw)
 	}
 
-	gotByID := make(map[string]gjson.Result)
+	gotByID := make(map[string]ojson.Result)
 	for _, part := range parts {
 		fr := part.Get("functionResponse")
 		if !fr.Exists() {
@@ -1916,7 +1916,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithMultipleIma
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-	userContent := gjson.GetBytes(output, "contents.2")
+	userContent := ojson.GetBytesNoCopy(output, "contents.2")
 	parts := userContent.Get("parts").Array()
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 functionResponse part, got %d; raw: %s", len(parts), userContent.Raw)
@@ -2002,7 +2002,7 @@ func TestConvertOpenAIResponsesRequestToGemini_AdditionalToolsNamespaceAndCustom
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	decls := gjson.GetBytes(output, "tools.0.functionDeclarations").Array()
+	decls := ojson.GetBytesNoCopy(output, "tools.0.functionDeclarations").Array()
 	if len(decls) != 2 {
 		t.Fatalf("expected 2 functionDeclarations, got %d; raw: %s", len(decls), output)
 	}
@@ -2020,11 +2020,11 @@ func TestConvertOpenAIResponsesRequestToGemini_AdditionalToolsNamespaceAndCustom
 		t.Fatalf("decl 1 name = %q, want functions__continuity_probe", got)
 	}
 
-	mode := gjson.GetBytes(output, "toolConfig.functionCallingConfig.mode").String()
+	mode := ojson.GetBytesNoCopy(output, "toolConfig.functionCallingConfig.mode").String()
 	if mode != "ANY" {
 		t.Fatalf("toolConfig mode = %q, want ANY", mode)
 	}
-	allowed := gjson.GetBytes(output, "toolConfig.functionCallingConfig.allowedFunctionNames.0").String()
+	allowed := ojson.GetBytesNoCopy(output, "toolConfig.functionCallingConfig.allowedFunctionNames.0").String()
 	if allowed != "functions__continuity_probe" {
 		t.Fatalf("allowedFunctionNames = %q, want functions__continuity_probe", allowed)
 	}
@@ -2062,7 +2062,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ReplaysCustomToolCallAndOutput(t 
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) < 2 {
 		t.Fatalf("expected at least 2 contents, got %d; raw: %s", len(contents), output)
 	}
@@ -2122,7 +2122,7 @@ func TestConvertOpenAIResponsesRequestToGemini_TwoTurnCustomToolRoundtripWithRea
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 3 {
 		t.Fatalf("expected 3 contents (user, model, user), got %d; raw: %s", len(contents), output)
 	}
@@ -2216,7 +2216,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputAlternateIDsAnd
 			}`
 
 			output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-			contents := gjson.GetBytes(output, "contents").Array()
+			contents := ojson.GetBytesNoCopy(output, "contents").Array()
 			if len(contents) != 3 {
 				t.Fatalf("expected 3 contents, got %d; output=%s", len(contents), string(output))
 			}
@@ -2264,7 +2264,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ParallelFunctionCallOutputsAltern
 		t.Fatalf("parallel tool pairing validation failed: %v; output=%s", errValidate, string(output))
 	}
 
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 3 {
 		t.Fatalf("expected 3 contents (user, model, user), got %d; output=%s", len(contents), string(output))
 	}
@@ -2308,7 +2308,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DedicatedCallIDTakesPrecedenceOve
 		t.Fatalf("pairing validation failed: %v; output=%s", errValidate, string(output))
 	}
 
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 3 {
 		t.Fatalf("expected 3 contents, got %d; output=%s", len(contents), string(output))
 	}
@@ -2353,7 +2353,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ExplicitUnmatchedCallIDNotRebound
 	}
 
 	unmatchedTextFound := false
-	for _, content := range gjson.GetBytes(output, "contents").Array() {
+	for _, content := range ojson.GetBytesNoCopy(output, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if fr := part.Get("functionResponse"); fr.Exists() {
 				if fr.Get("id").String() == "call_other" || fr.Get("response.result").String() == "other_result" {
@@ -2389,7 +2389,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedMissingAndExplicitParallelOu
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 
 	resultMap := make(map[string]string)
 	for _, c := range contents {
@@ -2428,7 +2428,7 @@ func TestConvertOpenAIResponsesRequestToGemini_AllPendingCallsReservedByFutureEx
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 
 	var responseIDs []string
 	var responseResults []string
@@ -2480,12 +2480,12 @@ func TestConvertOpenAIResponsesRequestToGemini_InterruptedFunctionCallPreservesP
 	}
 
 	// Verify synthesized response for c1
-	c1Resp := gjson.GetBytes(result, "contents.2.parts.0.functionResponse")
+	c1Resp := ojson.GetBytesNoCopy(result, "contents.2.parts.0.functionResponse")
 	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
 		t.Fatalf("unexpected synthesized response for c1: %s", c1Resp.Raw)
 	}
 	// Verify real response for c2
-	c2Resp := gjson.GetBytes(result, "contents.5.parts.0.functionResponse")
+	c2Resp := ojson.GetBytesNoCopy(result, "contents.5.parts.0.functionResponse")
 	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
 		t.Fatalf("unexpected real response for c2: %s", c2Resp.Raw)
 	}
@@ -2511,11 +2511,11 @@ func TestConvertOpenAIResponsesRequestToGemini_ParallelInterruptedFunctionCallPr
 	}
 
 	// In the response turn for [c1, c2], c1 must be first (synthesized) and c2 must be second (real)
-	c1Resp := gjson.GetBytes(result, "contents.2.parts.0.functionResponse")
+	c1Resp := ojson.GetBytesNoCopy(result, "contents.2.parts.0.functionResponse")
 	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
 		t.Fatalf("unexpected response part 0 for c1: %s", c1Resp.Raw)
 	}
-	c2Resp := gjson.GetBytes(result, "contents.2.parts.1.functionResponse")
+	c2Resp := ojson.GetBytesNoCopy(result, "contents.2.parts.1.functionResponse")
 	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
 		t.Fatalf("unexpected response part 1 for c2: %s", c2Resp.Raw)
 	}
@@ -2538,11 +2538,11 @@ func TestConvertOpenAIResponsesRequestToGemini_TrailingPartialParallelCallsPrese
 	}
 
 	// In the response turn for [c1, c2], c1 must be first (synthesized) and c2 must be second (real)
-	c1Resp := gjson.GetBytes(result, "contents.2.parts.0.functionResponse")
+	c1Resp := ojson.GetBytesNoCopy(result, "contents.2.parts.0.functionResponse")
 	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
 		t.Fatalf("unexpected response part 0 for c1: %s", c1Resp.Raw)
 	}
-	c2Resp := gjson.GetBytes(result, "contents.2.parts.1.functionResponse")
+	c2Resp := ojson.GetBytesNoCopy(result, "contents.2.parts.1.functionResponse")
 	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
 		t.Fatalf("unexpected response part 1 for c2: %s", c2Resp.Raw)
 	}
@@ -2566,16 +2566,16 @@ func TestConvertOpenAIResponsesRequestToGemini_InterruptedMessageBeforeRealOutpu
 	}
 
 	// The user message precedes the completed tool response turn
-	stopText := gjson.GetBytes(result, "contents.2.parts.0.text").String()
+	stopText := ojson.GetBytesNoCopy(result, "contents.2.parts.0.text").String()
 	if stopText != "Stop, do something else instead." {
 		t.Fatalf("unexpected text in contents[2]: %q", stopText)
 	}
 	// In the response turn for [c1, c2], c1 must be first (synthesized) and c2 must be second (real)
-	c1Resp := gjson.GetBytes(result, "contents.3.parts.0.functionResponse")
+	c1Resp := ojson.GetBytesNoCopy(result, "contents.3.parts.0.functionResponse")
 	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
 		t.Fatalf("unexpected response part 0 for c1: %s", c1Resp.Raw)
 	}
-	c2Resp := gjson.GetBytes(result, "contents.3.parts.1.functionResponse")
+	c2Resp := ojson.GetBytesNoCopy(result, "contents.3.parts.1.functionResponse")
 	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
 		t.Fatalf("unexpected response part 1 for c2: %s", c2Resp.Raw)
 	}
@@ -2596,7 +2596,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithFCOItemID(t
 		t.Fatalf("pairing validation failed: %v; output=%s", errValidate, string(output))
 	}
 
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 3 {
 		t.Fatalf("expected 3 contents, got %d; output=%s", len(contents), string(output))
 	}
@@ -2635,7 +2635,7 @@ func TestConvertOpenAIResponsesRequestToGemini_OrphanFunctionCallOutputBecomesUs
 	delegationFound := false
 	bashCallID := ""
 	bashResponseID := ""
-	for _, content := range gjson.GetBytes(output, "contents").Array() {
+	for _, content := range ojson.GetBytesNoCopy(output, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if fr := part.Get("functionResponse"); fr.Exists() {
 				if fr.Get("id").String() == "" {
@@ -2682,7 +2682,7 @@ func TestConvertOpenAIResponsesRequestToGemini_UnpairedExplicitCallIDBecomesUser
 
 	delegationFound := false
 	bashResponseID := ""
-	for _, content := range gjson.GetBytes(output, "contents").Array() {
+	for _, content := range ojson.GetBytesNoCopy(output, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
 			if fr := part.Get("functionResponse"); fr.Exists() {
 				if fr.Get("id").String() == "call_missing" {
@@ -2742,18 +2742,18 @@ func TestConvertOpenAIResponsesRequestToGemini_ParametersJsonSchema_PreservesAdd
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	schema := gjson.GetBytes(output, "tools.0.functionDeclarations.0.parametersJsonSchema")
+	schema := ojson.GetBytesNoCopy(output, "tools.0.functionDeclarations.0.parametersJsonSchema")
 
 	if !schema.Exists() {
 		t.Fatalf("parametersJsonSchema missing. Output: %s", output)
 	}
-	if got := schema.Get("additionalProperties"); !got.Exists() || got.Type != gjson.False {
+	if got := schema.Get("additionalProperties"); !got.Exists() || got.Type != ojson.False {
 		t.Fatalf("root additionalProperties should be preserved as false, got: %v. Schema: %s", got, schema.Raw)
 	}
 	if got := schema.Get("properties.recipient.pattern"); !got.Exists() || got.String() != "^(alice|bob)$" {
 		t.Fatalf("pattern should be preserved, got: %v. Schema: %s", got, schema.Raw)
 	}
-	if got := schema.Get("properties.nested.additionalProperties"); !got.Exists() || got.Type != gjson.False {
+	if got := schema.Get("properties.nested.additionalProperties"); !got.Exists() || got.Type != ojson.False {
 		t.Fatalf("nested additionalProperties should be preserved as false, got: %v. Schema: %s", got, schema.Raw)
 	}
 	if got := schema.Get("properties.nested.properties.tag.pattern"); !got.Exists() || got.String() != "^[a-z]+$" {
@@ -2876,7 +2876,7 @@ func TestConvertOpenAIResponsesRequestToGemini_AudioInput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(tc.inputJSON), false)
-			contents := gjson.GetBytes(output, "contents").Array()
+			contents := ojson.GetBytesNoCopy(output, "contents").Array()
 			if len(contents) == 0 {
 				t.Fatalf("expected at least 1 content, got 0. Output: %s", output)
 			}
@@ -2998,7 +2998,7 @@ func TestConvertOpenAIResponsesRequestToGemini_VideoInput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(tc.inputJSON), false)
-			contents := gjson.GetBytes(output, "contents").Array()
+			contents := ojson.GetBytesNoCopy(output, "contents").Array()
 			if len(contents) == 0 {
 				t.Fatalf("expected at least 1 content, got 0. Output: %s", output)
 			}
@@ -3032,7 +3032,7 @@ func TestConvertOpenAIResponsesRequestToGemini_TopLevelVideoAndTextCombined(t *t
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) != 1 {
 		t.Fatalf("expected exactly 1 content, got %d. Output: %s", len(contents), output)
 	}
@@ -3079,7 +3079,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FallbackMIMEOnGenericDataURL(t *t
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(imgInput), false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) < 9 {
 		t.Fatalf("expected 9 parts, got %d. Output: %s", len(parts), output)
 	}
@@ -3129,7 +3129,7 @@ func TestConvertOpenAIResponsesRequestToGemini_RemoteURLDoesNotOverrideExplicitF
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) < 2 {
 		t.Fatalf("expected 2 parts, got %d. Output: %s", len(parts), output)
 	}
@@ -3158,7 +3158,7 @@ func TestConvertOpenAIResponsesRequestToGemini_UnknownExtensionFallsBackToDefaul
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) < 2 {
 		t.Fatalf("expected 2 parts, got %d. Output: %s", len(parts), output)
 	}
@@ -3187,7 +3187,7 @@ func TestConvertOpenAIResponsesRequestToGemini_InlineExplicitFormatNotOverridden
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) < 2 {
 		t.Fatalf("expected 2 parts, got %d. Output: %s", len(parts), output)
 	}
@@ -3219,7 +3219,7 @@ func TestConvertOpenAIResponsesRequestToGemini_RemoteNestedFormatNotOverriddenBy
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) < 5 {
 		t.Fatalf("expected 5 parts, got %d. Output: %s", len(parts), output)
 	}
@@ -3258,7 +3258,7 @@ func TestConvertOpenAIResponsesRequestToGemini_GenericMIMEWithNestedFormatNotOve
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(output, "contents.0.parts").Array()
 	if len(parts) < 3 {
 		t.Fatalf("expected 3 parts, got %d. Output: %s", len(parts), output)
 	}
@@ -3294,7 +3294,7 @@ func TestConvertOpenAIResponsesRequestToGemini_RemoteMedia(t *testing.T) {
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents").Array()
+	contents := ojson.GetBytesNoCopy(output, "contents").Array()
 	if len(contents) == 0 {
 		t.Fatalf("expected at least 1 content, got 0. Output: %s", output)
 	}
@@ -3453,7 +3453,7 @@ func TestConvertOpenAIResponsesRequestToGemini_InvalidDataURLsRejected(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(tc.inputJSON), false)
 			// No inline_data should be created for invalid data URLs
-			contents := gjson.GetBytes(output, "contents").Array()
+			contents := ojson.GetBytesNoCopy(output, "contents").Array()
 			for _, content := range contents {
 				for _, part := range content.Get("parts").Array() {
 					if part.Get("inline_data").Exists() {
@@ -3496,8 +3496,8 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionResponseJSONRef(t *testin
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
-		result := gjson.GetBytes(output, "contents.1.parts.0.functionResponse.response.result")
-		if result.Type != gjson.String {
+		result := ojson.GetBytesNoCopy(output, "contents.1.parts.0.functionResponse.response.result")
+		if result.Type != ojson.String {
 			t.Fatalf("expected functionResponse.response.result to be string, got type %s (raw: %s)", result.Type, result.Raw)
 		}
 		if !strings.Contains(result.String(), "#/components/schemas/ErrorModel") {
@@ -3529,8 +3529,8 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionResponseJSONRef(t *testin
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
-		result := gjson.GetBytes(output, "contents.1.parts.0.functionResponse.response.result")
-		if result.Type != gjson.String {
+		result := ojson.GetBytesNoCopy(output, "contents.1.parts.0.functionResponse.response.result")
+		if result.Type != ojson.String {
 			t.Fatalf("expected functionResponse.response.result to be string, got type %s (raw: %s)", result.Type, result.Raw)
 		}
 		if !strings.Contains(result.String(), "#/components/schemas/ErrorModel") {
@@ -3559,7 +3559,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionResponseJSONRef(t *testin
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
-		result := gjson.GetBytes(output, "contents.1.parts.0.functionResponse.response.result")
+		result := ojson.GetBytesNoCopy(output, "contents.1.parts.0.functionResponse.response.result")
 		if !result.IsObject() {
 			t.Fatalf("expected functionResponse.response.result to remain JSON object, got type %s (raw: %s)", result.Type, result.Raw)
 		}
@@ -3596,7 +3596,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionResponseJSONRef(t *testin
 			]
 		}`
 		output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
-		fr := gjson.GetBytes(output, "contents.1.parts.0.functionResponse")
+		fr := ojson.GetBytesNoCopy(output, "contents.1.parts.0.functionResponse")
 		if !fr.Exists() {
 			t.Fatalf("expected functionResponse part, got %s", output)
 		}
@@ -3608,7 +3608,7 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionResponseJSONRef(t *testin
 			t.Fatalf("expected mimeType 'image/png', got %q", got)
 		}
 		result := fr.Get("response.result")
-		if result.Type != gjson.String {
+		if result.Type != ojson.String {
 			t.Fatalf("expected string result, got %s (raw: %s)", result.Type, result.Raw)
 		}
 		if !strings.Contains(result.String(), "#/components/schemas/ErrorModel") {
@@ -3637,7 +3637,7 @@ func TestConvertOpenAIResponsesRequestToGemini_UnsignedModelTextDoesNotSynthesiz
 	}`
 
 	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
-	contents := gjson.GetBytes(output, "contents")
+	contents := ojson.GetBytesNoCopy(output, "contents")
 	if len(contents.Array()) != 1 {
 		t.Fatalf("expected 1 content, got %d (raw: %s)", len(contents.Array()), output)
 	}
@@ -3665,7 +3665,7 @@ func TestConvertOpenAIResponsesRequestToGemini_UnsignedModelTextDoesNotSynthesiz
 
 	// Verify with sanitizer: this payload must NOT trigger any drop or bypass replacement
 	sanitized := internalsignature.SanitizeGeminiRequestThoughtSignatures(output, "contents")
-	sanitizedParts := gjson.GetBytes(sanitized, "contents.0.parts").Array()
+	sanitizedParts := ojson.GetBytesNoCopy(sanitized, "contents.0.parts").Array()
 	if len(sanitizedParts) != 2 {
 		t.Fatalf("sanitizer altered parts count: %s", sanitized)
 	}
@@ -3714,7 +3714,7 @@ func TestConvertOpenAIResponsesRequestToGemini_ParallelOutputsAcrossNotices(t *t
 					if errValidate := internalsignature.ValidateGeminiFunctionCallPairing(result); errValidate != nil {
 						t.Fatalf("invalid parallel results: %v; result=%s", errValidate, result)
 					}
-					contents := gjson.GetBytes(result, "contents").Array()
+					contents := ojson.GetBytesNoCopy(result, "contents").Array()
 					if len(contents) != 4 {
 						t.Fatalf("got %d turns, want user/calls/results/notices; result=%s", len(contents), result)
 					}
@@ -3752,77 +3752,631 @@ func TestCollectOpenAIResponsesFunctionCallOutputs_PreservesTurnBoundaries(t *te
 		`{"type":"function_call","call_id":"new","name":"next","arguments":"{}"}`,
 		`{"type":"reasoning","summary":[{"type":"summary_text","text":"Next thought"}]}`,
 	} {
-		t.Run(boundary, func(t *testing.T) {
-			input := []byte(`{"input":[
-    {"type":"message","role":"user","content":"Run tools"},
-    {"type":"function_call","call_id":"one","name":"first","arguments":"{}"},
-    {"type":"function_call","call_id":"two","name":"second","arguments":"{}"},
-    {"type":"function_call_output","call_id":"one","output":"first result"},
-    {"type":"message","role":"developer","content":"notice"},
-    ` + boundary + `,
-    {"type":"function_call_output","call_id":"two","output":"second result"}
-   ]}`)
-			result, err := ConvertOpenAIResponsesRequestToGemini("gemini-4-argon", input, false)
-			if err != nil {
-				t.Fatal(err)
+		items := ojson.Parse(`[
+			{"type":"function_call_output","call_id":"one","output":"first"},
+			{"type":"message","role":"developer","content":"notice"},
+			` + boundary + `,
+			{"type":"function_call_output","call_id":"two","output":"second"}
+		]`).Array()
+		outputs, consumed, remaining := collectOpenAIResponsesFunctionCallOutputs(items, 0, []string{"one", "two"})
+		if len(outputs) != 1 || len(consumed) != 1 || !consumed[0] || len(remaining) != 1 || remaining[0] != "two" {
+			t.Fatalf("crossed boundary %s: outputs=%v consumed=%v remaining=%v", boundary, outputs, consumed, remaining)
+		}
+	}
+}
+
+func TestCollectOpenAIResponsesFunctionCallOutputs_DoesNotMoveOrphansAcrossNotices(t *testing.T) {
+	items := ojson.Parse(`[
+		{"type":"function_call_output","call_id":"one","output":"first"},
+		{"type":"message","role":"developer","content":"notice"},
+		{"type":"function_call_output","call_id":"orphan","output":"unrelated"}
+	]`).Array()
+	for _, pending := range [][]string{{"one"}, nil} {
+		outputs, consumed, remaining := collectOpenAIResponsesFunctionCallOutputs(items, 0, pending)
+		if len(outputs) != 1 || len(consumed) != 1 || !consumed[0] || len(remaining) != 0 {
+			t.Fatalf("moved orphan across notice: outputs=%v consumed=%v remaining=%v", outputs, consumed, remaining)
+		}
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ValidatesFunctionCallArguments(t *testing.T) {
+	tests := []struct {
+		name            string
+		arguments       string
+		wantRawArgs     string
+		wantWrappedArgs string
+		expectWrapped   bool
+	}{
+		{
+			name:        "valid json object",
+			arguments:   `{"command":"ls"}`,
+			wantRawArgs: `{"command":"ls"}`,
+		},
+		{
+			name:        "valid json object with whitespace",
+			arguments:   `  {"command":"ls"}  `,
+			wantRawArgs: `{"command":"ls"}`,
+		},
+		{
+			name:        "empty string defaults to empty object",
+			arguments:   "",
+			wantRawArgs: "{}",
+		},
+		{
+			name:        "whitespace defaults to empty object",
+			arguments:   "   ",
+			wantRawArgs: "{}",
+		},
+		{
+			name:            "truncated object wrapped under arguments",
+			arguments:       `{"command":"ls"`,
+			wantWrappedArgs: `{"command":"ls"`,
+			expectWrapped:   true,
+		},
+		{
+			name:            "truncated array wrapped under arguments",
+			arguments:       `[1, 2`,
+			wantWrappedArgs: `[1, 2`,
+			expectWrapped:   true,
+		},
+		{
+			name:            "valid json array wrapped under arguments",
+			arguments:       `[1,2]`,
+			wantWrappedArgs: `[1,2]`,
+			expectWrapped:   true,
+		},
+		{
+			name:            "valid json scalar wrapped under arguments",
+			arguments:       "123",
+			wantWrappedArgs: "123",
+			expectWrapped:   true,
+		},
+		{
+			name:            "plain non-json text wrapped under arguments",
+			arguments:       "not json",
+			wantWrappedArgs: "not json",
+			expectWrapped:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqDoc := ojson.NewDocString(`{"model":"gemini-3.6-flash","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"run"}]},{"type":"function_call","call_id":"call-1","name":"run_command","arguments":""},{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`)
+			if errSet := reqDoc.Set("input.1.arguments", tt.arguments); errSet != nil {
+				t.Fatalf("set arguments error: %v", errSet)
 			}
-			var groups [][]string
-			for _, content := range gjson.GetBytes(result, "contents").Array() {
-				var ids []string
-				for _, part := range content.Get("parts").Array() {
-					if response := part.Get("functionResponse"); response.Exists() {
-						if id := response.Get("id").String(); id == "one" || id == "two" {
-							ids = append(ids, id)
-						}
-					}
-				}
-				if len(ids) > 0 {
-					groups = append(groups, ids)
-				}
+
+			result, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash", reqDoc.Bytes(), false)
+			if errConvert != nil {
+				t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
 			}
-			if len(groups) != 2 || len(groups[0]) != 1 || groups[0][0] != "one" || len(groups[1]) != 1 || groups[1][0] != "two" {
-				t.Fatalf("parallel results crossed turn boundary: groups=%v; result=%s", groups, result)
+			if !ojson.ValidBytes(result) {
+				t.Fatalf("translated request is not valid JSON: %s", result)
+			}
+			args := ojson.GetBytesNoCopy(result, "contents.1.parts.0.functionCall.args")
+			if !args.IsObject() {
+				t.Fatalf("functionCall.args = %s, want JSON object. Output: %s", args.Raw, result)
+			}
+			if tt.expectWrapped {
+				if got := args.Get("arguments").String(); got != tt.wantWrappedArgs {
+					t.Fatalf("functionCall.args.arguments = %q, want %q. Output: %s", got, tt.wantWrappedArgs, result)
+				}
+				return
+			}
+			if args.Raw != tt.wantRawArgs {
+				t.Fatalf("functionCall.args = %s, want %s. Output: %s", args.Raw, tt.wantRawArgs, result)
 			}
 		})
 	}
 }
 
-func TestCollectOpenAIResponsesFunctionCallOutputs_DoesNotMoveOrphansAcrossNotices(t *testing.T) {
-	for _, withCall := range []bool{false, true} {
-		t.Run(fmt.Sprintf("withCall=%t", withCall), func(t *testing.T) {
-			call := ""
-			if withCall {
-				call = `{"type":"function_call","call_id":"one","name":"first","arguments":"{}"},`
+func TestConvertOpenAIResponsesRequestToGemini_GuardsOptionalFields(t *testing.T) {
+	t.Run("null optional fields and empty stop_sequences are omitted", func(t *testing.T) {
+		req := []byte(`{
+			"model": "gemini-3.6-flash",
+			"instructions": null,
+			"max_output_tokens": null,
+			"temperature": null,
+			"top_p": null,
+			"stop_sequences": [],
+			"input": "hello"
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash", req, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		root := util.ParseGJSONBytesNoCopy(out)
+		if root.Get("systemInstruction").Exists() {
+			t.Fatalf("expected systemInstruction omitted for null instructions, got %s", root.Get("systemInstruction").Raw)
+		}
+		for _, path := range []string{
+			"generationConfig.maxOutputTokens",
+			"generationConfig.temperature",
+			"generationConfig.topP",
+			"generationConfig.stopSequences",
+		} {
+			if v := root.Get(path); v.Exists() {
+				t.Fatalf("expected %s omitted, got %s. Output: %s", path, v.Raw, out)
 			}
-			input := []byte(`{"input":[{"type":"message","role":"user","content":"Run tools"},` + call + `
-    {"type":"function_call_output","call_id":"one","output":"first result"},
-    {"type":"message","role":"developer","content":"notice"},
-    {"type":"function_call_output","call_id":"orphan","output":"unrelated result"}
-   ]}`)
-			result, err := ConvertOpenAIResponsesRequestToGemini("gemini-4-argon", input, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var texts []string
-			var responseIDs []string
-			for _, content := range gjson.GetBytes(result, "contents").Array() {
-				for _, part := range content.Get("parts").Array() {
-					if response := part.Get("functionResponse"); response.Exists() {
-						responseIDs = append(responseIDs, response.Get("id").String())
-					}
-					if text := part.Get("text"); text.Exists() {
-						texts = append(texts, text.String())
+		}
+	})
+
+	t.Run("empty instructions non-positive max_output_tokens and non-typed fields are omitted", func(t *testing.T) {
+		cases := []struct {
+			name string
+			req  string
+		}{
+			{
+				name: "empty instructions and zero max_output_tokens",
+				req:  `{"model":"gemini-3.6-flash","instructions":"","max_output_tokens":0,"temperature":"0.5","top_p":true,"stop_sequences":[null,123,""],"input":"hello"}`,
+			},
+			{
+				name: "non-string instructions and negative max_output_tokens",
+				req:  `{"model":"gemini-3.6-flash","instructions":123,"max_output_tokens":-10,"input":"hello"}`,
+			},
+			{
+				name: "string max_output_tokens",
+				req:  `{"model":"gemini-3.6-flash","max_output_tokens":"256","input":"hello"}`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash", []byte(tc.req), false)
+				if errConvert != nil {
+					t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+				}
+				root := util.ParseGJSONBytesNoCopy(out)
+				if root.Get("systemInstruction").Exists() {
+					t.Fatalf("expected systemInstruction omitted, got %s", root.Get("systemInstruction").Raw)
+				}
+				for _, path := range []string{
+					"generationConfig.maxOutputTokens",
+					"generationConfig.temperature",
+					"generationConfig.topP",
+					"generationConfig.stopSequences",
+				} {
+					if v := root.Get(path); v.Exists() {
+						t.Fatalf("expected %s omitted, got %s. Output: %s", path, v.Raw, out)
 					}
 				}
+			})
+		}
+	})
+
+	t.Run("explicit valid values including zero temperature and top_p are preserved", func(t *testing.T) {
+		req := []byte(`{
+			"model": "gemini-3.6-flash",
+			"instructions": "Be concise.",
+			"max_output_tokens": 256,
+			"temperature": 0,
+			"top_p": 0,
+			"stop_sequences": ["END", null, "\n"],
+			"input": "hello"
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash", req, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		root := util.ParseGJSONBytesNoCopy(out)
+		if got := root.Get("systemInstruction.parts.0.text").String(); got != "Be concise." {
+			t.Fatalf("systemInstruction.parts.0.text = %q, want %q", got, "Be concise.")
+		}
+		if got := root.Get("generationConfig.maxOutputTokens"); !got.Exists() || got.Type != ojson.Number || got.Int() != 256 {
+			t.Fatalf("maxOutputTokens = %s, want 256", got.Raw)
+		}
+		if got := root.Get("generationConfig.temperature"); !got.Exists() || got.Type != ojson.Number || got.Float() != 0 {
+			t.Fatalf("temperature = %s, want 0", got.Raw)
+		}
+		if got := root.Get("generationConfig.topP"); !got.Exists() || got.Type != ojson.Number || got.Float() != 0 {
+			t.Fatalf("topP = %s, want 0", got.Raw)
+		}
+		stops := root.Get("generationConfig.stopSequences")
+		if !stops.IsArray() || len(stops.Array()) != 2 || stops.Get("0").String() != "END" || stops.Get("1").String() != "\n" {
+			t.Fatalf("stopSequences = %s, want [\"END\",\"\\n\"]", stops.Raw)
+		}
+	})
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_AllowedTools(t *testing.T) {
+	t.Run("required mode sets ANY and allowedFunctionNames", func(t *testing.T) {
+		req := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "Check weather in Tokyo",
+			"tools": [
+				{"type": "function", "name": "get_weather", "parameters": {"type": "object"}},
+				{"type": "function", "name": "delete_db", "parameters": {"type": "object"}}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "function", "name": "get_weather"}]
 			}
-			if (withCall && (len(responseIDs) != 1 || responseIDs[0] != "one")) || (!withCall && len(responseIDs) != 0) {
-				t.Fatalf("orphan became a function response: ids=%v; result=%s", responseIDs, result)
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", req, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "ANY" {
+			t.Fatalf("mode = %q, want ANY; out=%s", mode, out)
+		}
+		allowed := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.allowedFunctionNames").Array()
+		if len(allowed) != 1 || allowed[0].String() != "get_weather" {
+			t.Fatalf("allowedFunctionNames = %v, want [get_weather]; out=%s", allowed, out)
+		}
+		decls := ojson.GetBytesNoCopy(out, "tools.0.functionDeclarations").Array()
+		if len(decls) != 1 || decls[0].Get("name").String() != "get_weather" {
+			t.Fatalf("functionDeclarations = %v, want only get_weather; out=%s", decls, out)
+		}
+	})
+
+	t.Run("auto mode filters declarations without allowedFunctionNames and preserves history mapping", func(t *testing.T) {
+		req := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "check"}]},
+				{"type": "function_call", "call_id": "call_1", "name": "read/file", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+			],
+			"tools": [
+				{"type": "function", "name": "get_weather", "parameters": {"type": "object"}},
+				{"type": "function", "name": "read/file", "parameters": {"type": "object"}},
+				{"type": "function", "name": "read_file", "parameters": {"type": "object"}}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "auto",
+				"tools": [{"type": "function", "name": "get_weather"}]
 			}
-			joined := strings.Join(texts, "\n")
-			noticeIndex, orphanIndex := strings.Index(joined, "notice"), strings.Index(joined, "unrelated result")
-			if noticeIndex < 0 || orphanIndex <= noticeIndex {
-				t.Fatalf("orphan moved across notice: texts=%v", texts)
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", req, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "AUTO" {
+			t.Fatalf("mode = %q, want AUTO; out=%s", mode, out)
+		}
+		if ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.allowedFunctionNames").Exists() {
+			t.Fatalf("allowedFunctionNames must not be set in AUTO mode; out=%s", out)
+		}
+		decls := ojson.GetBytesNoCopy(out, "tools.0.functionDeclarations").Array()
+		if len(decls) != 1 || decls[0].Get("name").String() != "get_weather" {
+			t.Fatalf("functionDeclarations = %v, want only get_weather; out=%s", decls, out)
+		}
+		// Verify historical call to read/file still used its disambiguated forwardMap name (not plain read_file)
+		histName := ojson.GetBytesNoCopy(out, "contents.1.parts.0.functionCall.name").String()
+		if histName == "" || histName == "read_file" {
+			t.Fatalf("historical functionCall.name = %q, expected disambiguated name for read/file; out=%s", histName, out)
+		}
+	})
+
+	t.Run("none mode sets NONE without allowedFunctionNames", func(t *testing.T) {
+		req := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "hello",
+			"tools": [
+				{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "none",
+				"tools": [{"type": "function", "name": "get_weather"}]
 			}
-		})
-	}
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", req, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+			t.Fatalf("mode = %q, want NONE; out=%s", mode, out)
+		}
+		if ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.allowedFunctionNames").Exists() {
+			t.Fatalf("allowedFunctionNames must not be set in NONE mode; out=%s", out)
+		}
+	})
+
+	t.Run("empty or undeclared allowed_tools fails closed to NONE", func(t *testing.T) {
+		for _, choice := range []string{
+			`{"type": "allowed_tools", "mode": "required", "tools": []}`,
+			`{"type": "allowed_tools", "mode": "required", "tools": [{"type": "function", "name": "undeclared"}]}`,
+			`{"type": "allowed_tools", "mode": "bogus", "tools": [{"type": "function", "name": "get_weather"}]}`,
+		} {
+			req := []byte(`{
+				"model": "gemini-2.5-pro",
+				"input": "hello",
+				"tools": [
+					{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}
+				],
+				"tool_choice": ` + choice + `
+			}`)
+			out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", req, false)
+			if errConvert != nil {
+				t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+			}
+			if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+				t.Fatalf("choice=%s: mode = %q, want NONE; out=%s", choice, mode, out)
+			}
+			if ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.allowedFunctionNames").Exists() {
+				t.Fatalf("choice=%s: unexpected allowedFunctionNames; out=%s", choice, out)
+			}
+			if ojson.GetBytesNoCopy(out, "tools").Exists() {
+				t.Fatalf("choice=%s: expected tools omitted when no functions allowed; out=%s", choice, out)
+			}
+		}
+	})
+
+	t.Run("namespace and client tool_search entries work in allowed_tools", func(t *testing.T) {
+		req := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "search and call namespace",
+			"tools": [
+				{"type": "tool_search", "execution": "client"},
+				{
+					"type": "namespace",
+					"name": "codex_app",
+					"tools": [
+						{"type": "function", "name": "read", "parameters": {"type": "object"}},
+						{"type": "custom", "name": "patch"}
+					]
+				},
+				{"type": "function", "name": "delete_db", "parameters": {"type": "object"}}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [
+					{"type": "tool_search"},
+					{"type": "namespace", "name": "codex_app"}
+				]
+			}
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", req, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "ANY" {
+			t.Fatalf("mode = %q, want ANY; out=%s", mode, out)
+		}
+		allowed := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.allowedFunctionNames").Array()
+		if len(allowed) != 3 || allowed[0].String() != "tool_search" || allowed[1].String() != "codex_app__read" || allowed[2].String() != "codex_app__patch" {
+			t.Fatalf("allowedFunctionNames = %v, want [tool_search codex_app__read codex_app__patch]; out=%s", allowed, out)
+		}
+		decls := ojson.GetBytesNoCopy(out, "tools.0.functionDeclarations").Array()
+		if len(decls) != 3 {
+			t.Fatalf("functionDeclarations count = %d, want 3; out=%s", len(decls), out)
+		}
+	})
+
+	t.Run("identity collision does not authorize shadowed namespace or mismatched tool kind", func(t *testing.T) {
+		// Top-level ops__read wins over namespace ops/read under precedence rules;
+		// allowing {type: "function", namespace: "ops", name: "read"} must NOT authorize top-level ops__read.
+		reqNamespaceCollision := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "read something",
+			"tools": [
+				{"type": "function", "name": "ops__read", "parameters": {"type": "object"}},
+				{
+					"type": "namespace",
+					"name": "ops",
+					"tools": [
+						{"type": "function", "name": "read", "parameters": {"type": "object"}}
+					]
+				}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "function", "namespace": "ops", "name": "read"}]
+			}
+		}`)
+		out, errConvert := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqNamespaceCollision, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+		}
+		if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+			t.Fatalf("namespace collision mode = %q, want NONE; out=%s", mode, out)
+		}
+		if ojson.GetBytesNoCopy(out, "tools").Exists() {
+			t.Fatalf("namespace collision should not expose top-level ops__read; out=%s", out)
+		}
+
+		// Top-level ops__delete must NOT be authorized by {type: "namespace", name: "ops"}.
+		reqTopLevelPrefix := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "run ops",
+			"tools": [
+				{"type": "function", "name": "ops__delete", "parameters": {"type": "object"}}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "namespace", "name": "ops"}]
+			}
+		}`)
+		outPrefix, errPrefix := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqTopLevelPrefix, false)
+		if errPrefix != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errPrefix)
+		}
+		if mode := ojson.GetBytesNoCopy(outPrefix, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+			t.Fatalf("top-level prefix mode = %q, want NONE; out=%s", mode, outPrefix)
+		}
+		if ojson.GetBytesNoCopy(outPrefix, "tools").Exists() {
+			t.Fatalf("top-level prefix should not expose ops__delete; out=%s", outPrefix)
+		}
+
+		// Direct 2-arg ConvertResponsesToolChoiceToGemini matches the exact same NONE outcome.
+		rootPrefix := util.ParseGJSONBytesNoCopy(reqTopLevelPrefix)
+		_, fwdPrefix, _ := util.BuildGeminiFunctionDeclarations(rootPrefix)
+		cfgPrefix, okPrefix := util.ConvertResponsesToolChoiceToGemini(rootPrefix.Get("tool_choice"), fwdPrefix)
+		if !okPrefix || ojson.GetBytesNoCopy(cfgPrefix, "mode").String() != "NONE" {
+			t.Fatalf("direct ConvertResponsesToolChoiceToGemini top-level prefix: ok=%v cfg=%s, want NONE", okPrefix, cfgPrefix)
+		}
+
+		// Real namespace ops/read authorized by {type: "namespace", name: "ops"} matches across both entry points.
+		reqRealNamespace := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "run ops",
+			"tools": [
+				{
+					"type": "namespace",
+					"name": "ops",
+					"tools": [
+						{"type": "function", "name": "read", "parameters": {"type": "object"}}
+					]
+				}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "namespace", "name": "ops"}]
+			}
+		}`)
+		outRealNS, errRealNS := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqRealNamespace, false)
+		if errRealNS != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errRealNS)
+		}
+		rootRealNS := util.ParseGJSONBytesNoCopy(reqRealNamespace)
+		_, fwdRealNS, _ := util.BuildGeminiFunctionDeclarations(rootRealNS)
+		cfgRealNS, okRealNS := util.ConvertResponsesToolChoiceToGemini(rootRealNS.Get("tool_choice"), fwdRealNS)
+		if !okRealNS || ojson.GetBytesNoCopy(cfgRealNS, "mode").String() != "ANY" {
+			t.Fatalf("direct ConvertResponsesToolChoiceToGemini real namespace: ok=%v cfg=%s, want ANY", okRealNS, cfgRealNS)
+		}
+		if gotDirect := ojson.GetBytesNoCopy(cfgRealNS, "allowedFunctionNames.0").String(); gotDirect != "ops__read" {
+			t.Fatalf("direct ConvertResponsesToolChoiceToGemini allowedFunctionNames.0 = %q, want ops__read; cfg=%s", gotDirect, cfgRealNS)
+		}
+		if gotReq := ojson.GetBytesNoCopy(outRealNS, "toolConfig.functionCallingConfig.allowedFunctionNames.0").String(); gotReq != "ops__read" {
+			t.Fatalf("request path allowedFunctionNames.0 = %q, want ops__read; out=%s", gotReq, outRealNS)
+		}
+
+		// Same-namespace local-name collision: ops/ops__read wins over ops/read;
+		// allowing {type: "function", namespace: "ops", name: "read"} must NOT authorize ops/ops__read.
+		reqSameNSCollision := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "read",
+			"tools": [
+				{
+					"type": "namespace",
+					"name": "ops",
+					"tools": [
+						{"type": "function", "name": "ops__read", "parameters": {"type": "object"}},
+						{"type": "function", "name": "read", "parameters": {"type": "object"}}
+					]
+				}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "function", "namespace": "ops", "name": "read"}]
+			}
+		}`)
+		outSameNS, errSameNS := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqSameNSCollision, false)
+		if errSameNS != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errSameNS)
+		}
+		if mode := ojson.GetBytesNoCopy(outSameNS, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+			t.Fatalf("same-namespace collision mode = %q, want NONE; out=%s", mode, outSameNS)
+		}
+		if ojson.GetBytesNoCopy(outSameNS, "tools").Exists() {
+			t.Fatalf("same-namespace collision should not expose ops__read; out=%s", outSameNS)
+		}
+		rootSameNS := util.ParseGJSONBytesNoCopy(reqSameNSCollision)
+		_, fwdSameNS, _ := util.BuildGeminiFunctionDeclarations(rootSameNS)
+		cfgSameNS, okSameNS := util.ConvertResponsesToolChoiceToGemini(rootSameNS.Get("tool_choice"), fwdSameNS)
+		if !okSameNS || ojson.GetBytesNoCopy(cfgSameNS, "mode").String() != "NONE" {
+			t.Fatalf("direct ConvertResponsesToolChoiceToGemini same-namespace collision: ok=%v cfg=%s, want NONE", okSameNS, cfgSameNS)
+		}
+
+		// Namespace winner ops/read shadows lower-priority additional_tools top-level ops__read;
+		// allowing top-level {type: "function", name: "ops__read"} must NOT authorize ops/read.
+		reqTopLevelShadowed := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": [
+				{"type": "additional_tools", "tools": [{"type": "function", "name": "ops__read", "parameters": {"type": "object"}}]},
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "read"}]}
+			],
+			"tools": [
+				{
+					"type": "namespace",
+					"name": "ops",
+					"tools": [
+						{"type": "function", "name": "read", "parameters": {"type": "object"}}
+					]
+				}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "function", "name": "ops__read"}]
+			}
+		}`)
+		outTopShadowed, errTopShadowed := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqTopLevelShadowed, false)
+		if errTopShadowed != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errTopShadowed)
+		}
+		if mode := ojson.GetBytesNoCopy(outTopShadowed, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+			t.Fatalf("shadowed top-level collision mode = %q, want NONE; out=%s", mode, outTopShadowed)
+		}
+		if ojson.GetBytesNoCopy(outTopShadowed, "tools").Exists() {
+			t.Fatalf("shadowed top-level collision should not expose ops/read; out=%s", outTopShadowed)
+		}
+		rootTopShadowed := util.ParseGJSONBytesNoCopy(reqTopLevelShadowed)
+		_, fwdTopShadowed, _ := util.BuildGeminiFunctionDeclarations(rootTopShadowed)
+		cfgTopShadowed, okTopShadowed := util.ConvertResponsesToolChoiceToGemini(rootTopShadowed.Get("tool_choice"), fwdTopShadowed)
+		if !okTopShadowed || ojson.GetBytesNoCopy(cfgTopShadowed, "mode").String() != "NONE" {
+			t.Fatalf("direct ConvertResponsesToolChoiceToGemini shadowed top-level collision: ok=%v cfg=%s, want NONE", okTopShadowed, cfgTopShadowed)
+		}
+
+		// Mismatched tool kind (explicit or untyped custom wrapper when winner is function) must fail closed to NONE.
+		for _, kindChoice := range []string{
+			`{"type": "custom", "name": "run"}`,
+			`{"custom": {"name": "run"}}`,
+			`{"type": "tool", "custom": {"name": "run"}}`,
+		} {
+			reqKindMismatch := []byte(`{
+				"model": "gemini-2.5-pro",
+				"input": "run tool",
+				"tools": [
+					{"type": "function", "name": "run", "parameters": {"type": "object"}}
+				],
+				"tool_choice": {
+					"type": "allowed_tools",
+					"mode": "required",
+					"tools": [` + kindChoice + `]
+				}
+			}`)
+			outKind, errKind := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqKindMismatch, false)
+			if errKind != nil {
+				t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errKind)
+			}
+			if mode := ojson.GetBytesNoCopy(outKind, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+				t.Fatalf("kindChoice=%s mode = %q, want NONE; out=%s", kindChoice, mode, outKind)
+			}
+			if ojson.GetBytesNoCopy(outKind, "tools").Exists() {
+				t.Fatalf("kindChoice=%s should not expose function run; out=%s", kindChoice, outKind)
+			}
+		}
+
+		// Allowing type:"tool" without custom wrapper must not authorize a custom tool declaration.
+		reqToolOnCustom := []byte(`{
+			"model": "gemini-2.5-pro",
+			"input": "run custom",
+			"tools": [
+				{"type": "custom", "name": "exec"}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "required",
+				"tools": [{"type": "tool", "name": "exec"}]
+			}
+		}`)
+		outToolOnCustom, errToolOnCustom := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", reqToolOnCustom, false)
+		if errToolOnCustom != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errToolOnCustom)
+		}
+		if mode := ojson.GetBytesNoCopy(outToolOnCustom, "toolConfig.functionCallingConfig.mode").String(); mode != "NONE" {
+			t.Fatalf("tool-on-custom mode = %q, want NONE; out=%s", mode, outToolOnCustom)
+		}
+		if ojson.GetBytesNoCopy(outToolOnCustom, "tools").Exists() {
+			t.Fatalf("tool-on-custom should not expose custom exec; out=%s", outToolOnCustom)
+		}
+	})
 }

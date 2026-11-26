@@ -15,8 +15,7 @@ import (
 	"ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ConvertGeminiRequestToAntigravity parses and transforms a Antigravity API request into Gemini API format.
@@ -41,10 +40,10 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// Keep the envelope in []byte form. Round-tripping through string copies the
 	// entire request, which dominates allocations for large inline data. Fill the
 	// small envelope fields first so the payload is only spliced in once.
-	envelope, _ := sjson.SetBytes([]byte(`{"project":"","request":{},"model":""}`), "model", modelName)
-	rawJSON, _ = sjson.SetRawBytes(envelope, "request", rawJSON)
+	envelope, _ := ojson.SetBytes([]byte(`{"project":"","request":{},"model":""}`), "model", modelName)
+	rawJSON, _ = ojson.SetRawBytes(envelope, "request", rawJSON)
 	if util.GetGJSONBytesNoCopy(rawJSON, "request.model").Exists() {
-		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.model")
+		rawJSON, _ = ojson.DeleteBytes(rawJSON, "request.model")
 	}
 
 	fixedJSON, errFixCLIToolResponse := fixCLIToolResponse(rawJSON)
@@ -57,9 +56,9 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	if systemInstructionResult := util.GetGJSONBytesNoCopy(rawJSON, "request.system_instruction"); systemInstructionResult.Exists() {
 		camel := util.GetGJSONBytesNoCopy(rawJSON, "request.systemInstruction")
 		if !hasAntigravitySystemInstruction(camel) && hasAntigravitySystemInstruction(systemInstructionResult) {
-			rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.systemInstruction", []byte(systemInstructionResult.Raw))
+			rawJSON, _ = ojson.SetRawBytes(rawJSON, "request.systemInstruction", []byte(systemInstructionResult.Raw))
 		}
-		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.system_instruction")
+		rawJSON, _ = ojson.DeleteBytes(rawJSON, "request.system_instruction")
 	}
 
 	rawJSON = normalizeAntigravityMedia(rawJSON)
@@ -72,7 +71,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	if contents.IsArray() && geminiContentRolesNeedNormalization(contents) {
 		contentItems := translatorcommon.NewRawArrayItems(contents.Get("#").Int())
 		previousRole := ""
-		contents.ForEach(func(_, value gjson.Result) bool {
+		contents.ForEach(func(_, value ojson.Result) bool {
 			role := value.Get("role").String()
 			content := []byte(value.Raw)
 			if role != "user" && role != "model" {
@@ -83,13 +82,13 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				} else {
 					role = "model"
 				}
-				content, _ = sjson.SetBytes(content, "role", role)
+				content, _ = ojson.SetBytes(content, "role", role)
 			}
 			previousRole = role
 			contentItems = append(contentItems, content)
 			return true
 		})
-		rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.contents", translatorcommon.JoinRawArray(contentItems))
+		rawJSON, _ = ojson.SetRawBytes(rawJSON, "request.contents", translatorcommon.JoinRawArray(contentItems))
 	}
 
 	toolsResult := util.GetGJSONBytesNoCopy(rawJSON, "request.tools")
@@ -97,7 +96,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		seenFunctionNames := make(map[string]struct{})
 		toolsChanged := false
 		var toolItems [][]byte
-		toolsResult.ForEach(func(toolIndex, tool gjson.Result) bool {
+		toolsResult.ForEach(func(toolIndex, tool ojson.Result) bool {
 			toolJSON := []byte(tool.Raw)
 			toolChanged := false
 			for _, key := range []string{"functionDeclarations", "function_declarations"} {
@@ -108,7 +107,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 				declarationsChanged := false
 				var declarationItems [][]byte
-				declarations.ForEach(func(_, declaration gjson.Result) bool {
+				declarations.ForEach(func(_, declaration ojson.Result) bool {
 					nameResult := declaration.Get("name")
 					originalName := nameResult.String()
 					mappedName := util.MapSanitizedFunctionName(functionNameMap, originalName)
@@ -121,8 +120,8 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					}
 
 					declarationJSON := []byte(declaration.Raw)
-					if nameResult.Type != gjson.String || mappedName != originalName {
-						declarationJSON, _ = sjson.SetBytes(declarationJSON, "name", mappedName)
+					if nameResult.Type != ojson.String || mappedName != originalName {
+						declarationJSON, _ = ojson.SetBytes(declarationJSON, "name", mappedName)
 						declarationsChanged = true
 					}
 					if normalized, changed := normalizeAntigravityParameterSchema(declaration, declarationJSON); changed {
@@ -134,7 +133,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				})
 				if declarationsChanged {
 					var errSet error
-					toolJSON, errSet = sjson.SetRawBytes(toolJSON, key, translatorcommon.JoinRawArray(declarationItems))
+					toolJSON, errSet = ojson.SetRawBytes(toolJSON, key, translatorcommon.JoinRawArray(declarationItems))
 					if errSet != nil {
 					} else {
 						toolChanged = true
@@ -146,7 +145,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			return true
 		})
 		if toolsChanged {
-			rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.tools", translatorcommon.JoinRawArray(toolItems))
+			rawJSON, _ = ojson.SetRawBytes(rawJSON, "request.tools", translatorcommon.JoinRawArray(toolItems))
 		}
 		rawJSON = removeEmptyGeminiFunctionTools(rawJSON)
 	}
@@ -163,8 +162,8 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 // hasAntigravitySystemInstruction treats empty aliases as absent while retaining
 // instructions carried by non-text parts.
-func hasAntigravitySystemInstruction(instruction gjson.Result) bool {
-	if instruction.Type == gjson.String {
+func hasAntigravitySystemInstruction(instruction ojson.Result) bool {
+	if instruction.Type == ojson.String {
 		return strings.TrimSpace(instruction.Str) != ""
 	}
 	parts := instruction.Get("parts")
@@ -176,7 +175,7 @@ func hasAntigravitySystemInstruction(instruction gjson.Result) bool {
 			continue
 		}
 		hasContent := false
-		part.ForEach(func(key, value gjson.Result) bool {
+		part.ForEach(func(key, value ojson.Result) bool {
 			hasContent = key.Str != "text" || strings.TrimSpace(value.Str) != ""
 			return !hasContent
 		})
@@ -187,26 +186,26 @@ func hasAntigravitySystemInstruction(instruction gjson.Result) bool {
 	return false
 }
 
-func normalizeAntigravityParameterSchema(declaration gjson.Result, raw []byte) ([]byte, bool) {
+func normalizeAntigravityParameterSchema(declaration ojson.Result, raw []byte) ([]byte, bool) {
 	for _, key := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema"} {
 		schema := declaration.Get(key)
 		if schema.IsObject() {
 			normalized := util.NormalizeJSONSchemaNumericConstraints(schema.Raw)
 			if key == "parameters" {
-				raw, _ = sjson.SetRawBytes(raw, "parametersJsonSchema", []byte(normalized))
-				raw, _ = sjson.DeleteBytes(raw, key)
+				raw, _ = ojson.SetRawBytes(raw, "parametersJsonSchema", []byte(normalized))
+				raw, _ = ojson.DeleteBytes(raw, key)
 			} else if normalized != schema.Raw {
-				raw, _ = sjson.SetRawBytes(raw, key, []byte(normalized))
+				raw, _ = ojson.SetRawBytes(raw, key, []byte(normalized))
 			} else {
 				return raw, false
 			}
 			return raw, true
 		}
 		// Only the JSON Schema carrier can hold a boolean schema.
-		if key != "parameters" && (schema.Type == gjson.True || schema.Type == gjson.False) {
-			raw, _ = sjson.SetRawBytes(raw, "parametersJsonSchema", []byte(schema.Raw))
-			raw, _ = sjson.DeleteBytes(raw, "parameters")
-			raw, _ = sjson.DeleteBytes(raw, "parameters_json_schema")
+		if key != "parameters" && (schema.Type == ojson.True || schema.Type == ojson.False) {
+			raw, _ = ojson.SetRawBytes(raw, "parametersJsonSchema", []byte(schema.Raw))
+			raw, _ = ojson.DeleteBytes(raw, "parameters")
+			raw, _ = ojson.DeleteBytes(raw, "parameters_json_schema")
 			return raw, true
 		}
 	}
@@ -216,20 +215,20 @@ func normalizeAntigravityParameterSchema(declaration gjson.Result, raw []byte) (
 func normalizeAntigravityMedia(payload []byte) []byte {
 	contents := util.GetGJSONBytesNoCopy(payload, "request.contents")
 	if normalized := rewriteAntigravityMediaArray(contents, normalizeAntigravityContentMedia); normalized != contents.Raw {
-		payload, _ = sjson.SetRawBytes(payload, "request.contents", []byte(normalized))
+		payload, _ = ojson.SetRawBytes(payload, "request.contents", []byte(normalized))
 	}
 	system := util.GetGJSONBytesNoCopy(payload, "request.systemInstruction")
 	if normalized := normalizeAntigravityContentMedia(system); normalized != system.Raw {
-		payload, _ = sjson.SetRawBytes(payload, "request.systemInstruction", []byte(normalized))
+		payload, _ = ojson.SetRawBytes(payload, "request.systemInstruction", []byte(normalized))
 	}
 	return payload
 }
 
-func normalizeAntigravityContentMedia(content gjson.Result) string {
+func normalizeAntigravityContentMedia(content ojson.Result) string {
 	return normalizeAntigravityNestedMedia(content.Raw, content.Get("parts"), "parts")
 }
 
-func normalizeAntigravityMediaPart(part gjson.Result) string {
+func normalizeAntigravityMediaPart(part ojson.Result) string {
 	raw := moveAntigravityMediaAlias(part.Raw, "inline_data", "inlineData")
 	raw = moveAntigravityMediaAlias(raw, "inlineData.mime_type", "inlineData.mimeType")
 	raw = moveAntigravityMediaAlias(raw, "file_data", "fileData")
@@ -241,16 +240,16 @@ func normalizeAntigravityMediaPart(part gjson.Result) string {
 	return raw
 }
 
-func normalizeAntigravityNestedMedia(raw string, parts gjson.Result, path string) string {
+func normalizeAntigravityNestedMedia(raw string, parts ojson.Result, path string) string {
 	if normalized := rewriteAntigravityMediaArray(parts, normalizeAntigravityMediaPart); normalized != parts.Raw {
-		raw, _ = sjson.SetRaw(raw, path, normalized)
+		raw, _ = ojson.SetRaw(raw, path, normalized)
 	}
 	return raw
 }
 
 // rewriteAntigravityMediaArray keeps unchanged raw elements and rebuilds an
 // array only when a child needs a rewrite, including for large inline payloads.
-func rewriteAntigravityMediaArray(array gjson.Result, rewrite func(gjson.Result) string) string {
+func rewriteAntigravityMediaArray(array ojson.Result, rewrite func(ojson.Result) string) string {
 	if !array.IsArray() {
 		return array.Raw
 	}
@@ -275,11 +274,11 @@ func rewriteAntigravityMediaArray(array gjson.Result, rewrite func(gjson.Result)
 }
 
 func moveAntigravityMediaAlias(raw, snake, camel string) string {
-	if alias := gjson.Get(raw, snake); alias.Exists() {
-		if !gjson.Get(raw, camel).Exists() {
-			raw, _ = sjson.SetRaw(raw, camel, alias.Raw)
+	if alias := ojson.Get(raw, snake); alias.Exists() {
+		if !ojson.Get(raw, camel).Exists() {
+			raw, _ = ojson.SetRaw(raw, camel, alias.Raw)
 		}
-		raw, _ = sjson.Delete(raw, snake)
+		raw, _ = ojson.Delete(raw, snake)
 	}
 	return raw
 }
@@ -295,10 +294,10 @@ func normalizeGeminiGenerationConfigResponseSchema(rawJSON []byte) []byte {
 			oldPath := container + "." + schemaKey
 			if schema := util.GetGJSONBytesNoCopy(rawJSON, oldPath); schema.Exists() {
 				targetPath := container + ".responseSchema"
-				if schema.IsObject() && !util.GetGJSONBytesNoCopy(rawJSON, targetPath).IsObject() {
-					rawJSON, _ = sjson.SetRawBytes(rawJSON, targetPath, []byte(schema.Raw))
+				if schema.IsObject() && !util.GetGJSONBytesNoCopy(rawJSON, targetPath).IsObject() && !util.GetGJSONBytesNoCopy(rawJSON, container+".response_schema").Exists() {
+					rawJSON, _ = ojson.SetRawBytes(rawJSON, targetPath, []byte(schema.Raw))
 				}
-				rawJSON, _ = sjson.DeleteBytes(rawJSON, oldPath)
+				rawJSON, _ = ojson.DeleteBytes(rawJSON, oldPath)
 			}
 		}
 	}
@@ -307,9 +306,9 @@ func normalizeGeminiGenerationConfigResponseSchema(rawJSON []byte) []byte {
 
 // geminiContentRolesNeedNormalization reports whether any content role is missing
 // or invalid and therefore requires rebuilding the contents array.
-func geminiContentRolesNeedNormalization(contents gjson.Result) bool {
+func geminiContentRolesNeedNormalization(contents ojson.Result) bool {
 	needsNormalization := false
-	contents.ForEach(func(_, value gjson.Result) bool {
+	contents.ForEach(func(_, value ojson.Result) bool {
 		role := value.Get("role").String()
 		if role != "user" && role != "model" {
 			needsNormalization = true
@@ -323,7 +322,7 @@ func geminiContentRolesNeedNormalization(contents gjson.Result) bool {
 func removeEmptyGeminiFunctionTools(rawJSON []byte) []byte {
 	tools := util.GetGJSONBytesNoCopy(rawJSON, "request.tools")
 	if tools.IsArray() && len(tools.Array()) == 0 {
-		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.tools")
+		rawJSON, _ = ojson.DeleteBytes(rawJSON, "request.tools")
 		return rawJSON
 	}
 	changed := false
@@ -333,7 +332,7 @@ func removeEmptyGeminiFunctionTools(rawJSON []byte) []byte {
 		if tool.IsObject() {
 			for _, key := range []string{"functionDeclarations", "function_declarations"} {
 				if declarations := tool.Get(key); declarations.IsArray() && len(declarations.Array()) == 0 {
-					toolJSON, _ = sjson.DeleteBytes(toolJSON, key)
+					toolJSON, _ = ojson.DeleteBytes(toolJSON, key)
 					changed = true
 				}
 			}
@@ -348,10 +347,10 @@ func removeEmptyGeminiFunctionTools(rawJSON []byte) []byte {
 		return rawJSON
 	}
 	if len(cleanedTools) == 0 {
-		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.tools")
+		rawJSON, _ = ojson.DeleteBytes(rawJSON, "request.tools")
 		return rawJSON
 	}
-	rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.tools", translatorcommon.JoinRawArray(cleanedTools))
+	rawJSON, _ = ojson.SetRawBytes(rawJSON, "request.tools", translatorcommon.JoinRawArray(cleanedTools))
 	return rawJSON
 }
 
@@ -360,17 +359,17 @@ var geminiFunctionNameFields = []string{"functionCall", "functionResponse", "fun
 
 // geminiFunctionNamesNeedRewrite reports whether any part carries a function name
 // that must be remapped or coerced to a string.
-func geminiFunctionNamesNeedRewrite(contents gjson.Result, functionNameMap map[string]string) bool {
+func geminiFunctionNamesNeedRewrite(contents ojson.Result, functionNameMap map[string]string) bool {
 	needsRewrite := false
-	contents.ForEach(func(_, content gjson.Result) bool {
-		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
+	contents.ForEach(func(_, content ojson.Result) bool {
+		content.Get("parts").ForEach(func(_, part ojson.Result) bool {
 			for _, field := range geminiFunctionNameFields {
 				nameResult := part.Get(field + ".name")
 				name := nameResult.String()
 				if name == "" {
 					continue
 				}
-				if nameResult.Type == gjson.String && util.MapSanitizedFunctionName(functionNameMap, name) == name {
+				if nameResult.Type == ojson.String && util.MapSanitizedFunctionName(functionNameMap, name) == name {
 					continue
 				}
 				needsRewrite = true
@@ -387,7 +386,7 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 	contents := util.GetGJSONBytesNoCopy(rawJSON, "request.contents")
 	canBatchContents := contents.IsArray()
 	if canBatchContents {
-		contents.ForEach(func(_, content gjson.Result) bool {
+		contents.ForEach(func(_, content ojson.Result) bool {
 			parts := content.Get("parts")
 			if parts.Exists() && !parts.IsArray() {
 				canBatchContents = false
@@ -400,11 +399,11 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 	// it once a name actually needs rewriting.
 	if canBatchContents && geminiFunctionNamesNeedRewrite(contents, functionNameMap) {
 		contentItems := translatorcommon.NewRawArrayItems(contents.Get("#").Int())
-		contents.ForEach(func(_, content gjson.Result) bool {
+		contents.ForEach(func(_, content ojson.Result) bool {
 			contentJSON := []byte(content.Raw)
 			partsChanged := false
 			partItems := make([][]byte, 0, 4)
-			content.Get("parts").ForEach(func(_, part gjson.Result) bool {
+			content.Get("parts").ForEach(func(_, part ojson.Result) bool {
 				partJSON := []byte(part.Raw)
 				for _, field := range geminiFunctionNameFields {
 					nameResult := part.Get(field + ".name")
@@ -413,22 +412,22 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 						continue
 					}
 					mappedName := util.MapSanitizedFunctionName(functionNameMap, name)
-					if nameResult.Type == gjson.String && mappedName == name {
+					if nameResult.Type == ojson.String && mappedName == name {
 						continue
 					}
-					partJSON, _ = sjson.SetBytes(partJSON, field+".name", mappedName)
+					partJSON, _ = ojson.SetBytes(partJSON, field+".name", mappedName)
 					partsChanged = true
 				}
 				partItems = append(partItems, partJSON)
 				return true
 			})
 			if partsChanged {
-				contentJSON, _ = sjson.SetRawBytes(contentJSON, "parts", translatorcommon.JoinRawArray(partItems))
+				contentJSON, _ = ojson.SetRawBytes(contentJSON, "parts", translatorcommon.JoinRawArray(partItems))
 			}
 			contentItems = append(contentItems, contentJSON)
 			return true
 		})
-		rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.contents", translatorcommon.JoinRawArray(contentItems))
+		rawJSON, _ = ojson.SetRawBytes(rawJSON, "request.contents", translatorcommon.JoinRawArray(contentItems))
 	} else if !canBatchContents {
 		for contentIndex, content := range contents.Array() {
 			for partIndex, part := range content.Get("parts").Array() {
@@ -439,11 +438,11 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 						continue
 					}
 					mappedName := util.MapSanitizedFunctionName(functionNameMap, name)
-					if nameResult.Type == gjson.String && mappedName == name {
+					if nameResult.Type == ojson.String && mappedName == name {
 						continue
 					}
 					path := fmt.Sprintf("request.contents.%d.parts.%d.%s.name", contentIndex, partIndex, field)
-					rawJSON, _ = sjson.SetBytes(rawJSON, path, mappedName)
+					rawJSON, _ = ojson.SetBytes(rawJSON, path, mappedName)
 				}
 			}
 		}
@@ -457,24 +456,24 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 		if allowedNames.IsArray() {
 			namesChanged := false
 			nameItems := make([][]byte, 0, 4)
-			allowedNames.ForEach(func(_, name gjson.Result) bool {
+			allowedNames.ForEach(func(_, name ojson.Result) bool {
 				mappedName := util.MapSanitizedFunctionName(functionNameMap, name.String())
-				namesChanged = namesChanged || name.Type != gjson.String || mappedName != name.String()
+				namesChanged = namesChanged || name.Type != ojson.String || mappedName != name.String()
 				mappedNameJSON, _ := json.Marshal(mappedName)
 				nameItems = append(nameItems, mappedNameJSON)
 				return true
 			})
 			if namesChanged {
-				rawJSON, _ = sjson.SetRawBytes(rawJSON, allowedPath, translatorcommon.JoinRawArray(nameItems))
+				rawJSON, _ = ojson.SetRawBytes(rawJSON, allowedPath, translatorcommon.JoinRawArray(nameItems))
 			}
 		} else {
 			for index, name := range allowedNames.Array() {
 				mappedName := util.MapSanitizedFunctionName(functionNameMap, name.String())
-				if name.Type == gjson.String && mappedName == name.String() {
+				if name.Type == ojson.String && mappedName == name.String() {
 					continue
 				}
 				path := fmt.Sprintf("%s.%d", allowedPath, index)
-				rawJSON, _ = sjson.SetBytes(rawJSON, path, mappedName)
+				rawJSON, _ = ojson.SetBytes(rawJSON, path, mappedName)
 			}
 		}
 	}
@@ -562,7 +561,7 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 				if isFirstFunctionCall {
 					logAntigravityClaudeGeminiSignatureSanitize(modelName, "replace_signature", "first functionCall requires Antigravity bypass signature", contentIndex, partIndex, rawSignature)
 					var setErr error
-					partBytes, setErr = sjson.SetBytes(partBytes, "thoughtSignature", signature.GeminiSkipThoughtSignatureValidator)
+					partBytes, setErr = ojson.SetBytes(partBytes, "thoughtSignature", signature.GeminiSkipThoughtSignatureValidator)
 					if setErr != nil {
 						return rawJSON
 					}
@@ -597,7 +596,7 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 				logAntigravityClaudeGeminiSignatureSanitize(modelName, "normalize_signature", "compatible_claude_signature", contentIndex, partIndex, rawSignature)
 				partBytes := deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part)
 				var setErr error
-				partBytes, setErr = sjson.SetBytes(partBytes, "thoughtSignature", normalized)
+				partBytes, setErr = ojson.SetBytes(partBytes, "thoughtSignature", normalized)
 				if setErr != nil {
 					return rawJSON
 				}
@@ -623,7 +622,7 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 		if contentChanged || len(rewrittenParts) != len(partsArray) {
 			contentBytes := []byte(content.Raw)
 			var setErr error
-			contentBytes, setErr = sjson.SetRawBytes(contentBytes, "parts", translatorcommon.JoinRawArray(rewrittenParts))
+			contentBytes, setErr = ojson.SetRawBytes(contentBytes, "parts", translatorcommon.JoinRawArray(rewrittenParts))
 			if setErr != nil {
 				return rawJSON
 			}
@@ -636,7 +635,7 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 	if !changed {
 		return rawJSON
 	}
-	out, errSet := sjson.SetRawBytes(rawJSON, "request.contents", translatorcommon.JoinRawArray(rewrittenContents))
+	out, errSet := ojson.SetRawBytes(rawJSON, "request.contents", translatorcommon.JoinRawArray(rewrittenContents))
 	if errSet != nil {
 		return rawJSON
 	}
@@ -659,8 +658,8 @@ var antigravityClaudeGeminiThoughtSignaturePaths = [][]string{
 
 // antigravityClaudeGeminiPartSignatureFields distinguishes a single canonical
 // key from alternate signatures. Inspect only the known paths, never tool data.
-func antigravityClaudeGeminiPartSignatureFields(part gjson.Result) (canonicalCount int, hasAlias bool) {
-	part.ForEach(func(key, value gjson.Result) bool {
+func antigravityClaudeGeminiPartSignatureFields(part ojson.Result) (canonicalCount int, hasAlias bool) {
+	part.ForEach(func(key, value ojson.Result) bool {
 		name := key.String()
 		if name == "thoughtSignature" {
 			canonicalCount++
@@ -678,7 +677,7 @@ func antigravityClaudeGeminiPartSignatureFields(part gjson.Result) (canonicalCou
 	return canonicalCount, hasAlias
 }
 
-func hasAntigravitySignaturePath(value gjson.Result, path []string) bool {
+func hasAntigravitySignaturePath(value ojson.Result, path []string) bool {
 	if !value.IsObject() {
 		return false
 	}
@@ -686,7 +685,7 @@ func hasAntigravitySignaturePath(value gjson.Result, path []string) bool {
 		return value.Get(path[0]).Exists()
 	}
 	found := false
-	value.ForEach(func(key, child gjson.Result) bool {
+	value.ForEach(func(key, child ojson.Result) bool {
 		if key.String() == path[0] && hasAntigravitySignaturePath(child, path[1:]) {
 			found = true
 		}
@@ -717,10 +716,24 @@ func deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part map[string]any
 		}
 		delete(current, path[len(path)-1])
 	}
+	pruneEmptyExtraContentGoogle(part)
 	// Reuse the UseNumber-decoded object: duplicate parent/signature keys collapse
 	// before filtering, and large numeric tool arguments retain their JSON value.
 	cleaned, _ := json.Marshal(part)
 	return cleaned
+}
+
+func pruneEmptyExtraContentGoogle(part map[string]any) {
+	extraContent, ok := part["extra_content"].(map[string]any)
+	if !ok {
+		return
+	}
+	if google, okGoogle := extraContent["google"].(map[string]any); okGoogle && len(google) == 0 {
+		delete(extraContent, "google")
+	}
+	if len(extraContent) == 0 {
+		delete(part, "extra_content")
+	}
 }
 
 func hasFunctionResponsePart(part map[string]any) bool {
@@ -766,7 +779,7 @@ type FunctionCallGroup struct {
 	CallNames       []string // ordered function call names for backfilling empty response names
 }
 
-func selectGroupResponses(collected []gjson.Result, group *FunctionCallGroup) ([]gjson.Result, []gjson.Result) {
+func selectGroupResponses(collected []ojson.Result, group *FunctionCallGroup) ([]ojson.Result, []ojson.Result) {
 	needed := group.ResponsesNeeded
 	if len(collected) == 1 {
 		return collected, nil
@@ -800,7 +813,7 @@ func selectGroupResponses(collected []gjson.Result, group *FunctionCallGroup) ([
 	}
 
 	used := make([]bool, len(collected))
-	selected := make([]gjson.Result, needed)
+	selected := make([]ojson.Result, needed)
 	matchedSlot := make([]bool, needed)
 	popUnused := func(queue []int) (int, []int, bool) {
 		for len(queue) > 0 {
@@ -867,7 +880,7 @@ func selectGroupResponses(collected []gjson.Result, group *FunctionCallGroup) ([
 		}
 	}
 
-	remaining := make([]gjson.Result, 0, len(collected)-needed)
+	remaining := make([]ojson.Result, 0, len(collected)-needed)
 	for idx, resp := range collected {
 		if !used[idx] {
 			remaining = append(remaining, resp)
@@ -876,7 +889,7 @@ func selectGroupResponses(collected []gjson.Result, group *FunctionCallGroup) ([
 	return selected, remaining
 }
 
-func normalizeAntigravityInlineDataPart(part gjson.Result) ([]byte, bool) {
+func normalizeAntigravityInlineDataPart(part ojson.Result) ([]byte, bool) {
 	inline := part.Get("inlineData")
 	if !inline.Exists() {
 		inline = part.Get("inline_data")
@@ -897,33 +910,33 @@ func normalizeAntigravityInlineDataPart(part gjson.Result) ([]byte, bool) {
 		mimeType = "image/png"
 	}
 	out := []byte(`{"inlineData":{"mimeType":"","data":""}}`)
-	out, _ = sjson.SetBytes(out, "inlineData.mimeType", mimeType)
-	out, _ = sjson.SetBytes(out, "inlineData.data", data)
+	out, _ = ojson.SetBytes(out, "inlineData.mimeType", mimeType)
+	out, _ = ojson.SetBytes(out, "inlineData.data", data)
 	return out, true
 }
 
-func attachInlineDataToFunctionResponse(response gjson.Result, images [][]byte) gjson.Result {
+func attachInlineDataToFunctionResponse(response ojson.Result, images [][]byte) ojson.Result {
 	if len(images) == 0 {
 		return response
 	}
 	target := []byte(response.Raw)
 	partsPath := geminiFunctionResponseField(response) + ".parts.-1"
 	for _, img := range images {
-		target, _ = sjson.SetRawBytes(target, partsPath, img)
+		target, _ = ojson.SetRawBytes(target, partsPath, img)
 	}
-	return gjson.ParseBytes(target)
+	return ojson.ParseBytes(target)
 }
 
 // collectFunctionResponsesWithSiblingInlineData keeps functionResponse parts and
 // moves sibling inline_data/inlineData onto the nearest preceding functionResponse.
 // Leading images before the first functionResponse attach to that first response.
 // Other parts remain ordinary user input.
-func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) ([]gjson.Result, []string) {
-	responses := make([]gjson.Result, 0)
+func collectFunctionResponsesWithSiblingInlineData(parts ojson.Result) ([]ojson.Result, []string) {
+	responses := make([]ojson.Result, 0)
 	var otherParts []string
 	leadingImages := make([][]byte, 0)
 	current := -1
-	parts.ForEach(func(_, part gjson.Result) bool {
+	parts.ForEach(func(_, part ojson.Result) bool {
 		if translatorcommon.GeminiPartFunctionResponse(part).Exists() {
 			responses = append(responses, part)
 			current = len(responses) - 1
@@ -948,7 +961,7 @@ func collectFunctionResponsesWithSiblingInlineData(parts gjson.Result) ([]gjson.
 	return responses, otherParts
 }
 
-func geminiFunctionResponseField(part gjson.Result) string {
+func geminiFunctionResponseField(part ojson.Result) string {
 	if part.Get("functionResponse").Exists() {
 		return "functionResponse"
 	}
@@ -958,13 +971,13 @@ func geminiFunctionResponseField(part gjson.Result) string {
 // parseFunctionResponseRaw attempts to normalize a function response part into a JSON object string.
 // Falls back to a minimal "functionResponse" object when parsing fails.
 // fallbackName is used when the response's own name is empty.
-func parseFunctionResponseRaw(response gjson.Result, fallbackName string) string {
+func parseFunctionResponseRaw(response ojson.Result, fallbackName string) string {
 	funcResp := translatorcommon.GeminiPartFunctionResponse(response)
-	if response.IsObject() && gjson.Valid(response.Raw) {
+	if response.IsObject() && ojson.Valid(response.Raw) {
 		raw := response.Raw
 		name := funcResp.Get("name").String()
 		if strings.TrimSpace(name) == "" && fallbackName != "" {
-			updated, _ := sjson.SetBytes([]byte(raw), geminiFunctionResponseField(response)+".name", fallbackName)
+			updated, _ := ojson.SetBytes([]byte(raw), geminiFunctionResponseField(response)+".name", fallbackName)
 			raw = string(updated)
 		}
 		return raw
@@ -976,10 +989,10 @@ func parseFunctionResponseRaw(response gjson.Result, fallbackName string) string
 		if strings.TrimSpace(name) == "" {
 			name = fallbackName
 		}
-		fr, _ = sjson.SetBytes(fr, "functionResponse.name", name)
-		fr, _ = sjson.SetBytes(fr, "functionResponse.response.result", funcResp.Get("response").String())
+		fr, _ = ojson.SetBytes(fr, "functionResponse.name", name)
+		fr, _ = ojson.SetBytes(fr, "functionResponse.response.result", funcResp.Get("response").String())
 		if id := funcResp.Get("id").String(); id != "" {
-			fr, _ = sjson.SetBytes(fr, "functionResponse.id", id)
+			fr, _ = ojson.SetBytes(fr, "functionResponse.id", id)
 		}
 		return string(fr)
 	}
@@ -989,8 +1002,8 @@ func parseFunctionResponseRaw(response gjson.Result, fallbackName string) string
 		useName = "unknown"
 	}
 	fr := []byte(`{"functionResponse":{"name":"","response":{"result":""}}}`)
-	fr, _ = sjson.SetBytes(fr, "functionResponse.name", useName)
-	fr, _ = sjson.SetBytes(fr, "functionResponse.response.result", response.String())
+	fr, _ = ojson.SetBytes(fr, "functionResponse.name", useName)
+	fr, _ = ojson.SetBytes(fr, "functionResponse.response.result", response.String())
 	return string(fr)
 }
 
@@ -1021,12 +1034,12 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 
 	needsGrouping := false
 	allContentsAreObjects := true
-	contents.ForEach(func(_, content gjson.Result) bool {
+	contents.ForEach(func(_, content ojson.Result) bool {
 		if !content.IsObject() {
 			allContentsAreObjects = false
 			return true
 		}
-		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
+		content.Get("parts").ForEach(func(_, part ojson.Result) bool {
 			if translatorcommon.GeminiPartFunctionResponse(part).Exists() {
 				needsGrouping = true
 				return false
@@ -1042,9 +1055,9 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 	// Initialize data structures for processing and grouping
 	contentItems := translatorcommon.NewRawArrayItems(contents.Get("#").Int())
 	var pendingGroups []*FunctionCallGroup // Groups awaiting completion with responses
-	var collectedResponses []gjson.Result  // Standalone responses to be matched
+	var collectedResponses []ojson.Result  // Standalone responses to be matched
 	var mixedTurnFollowups [][]byte
-	appendFunctionResponses := func(responses []gjson.Result, callNames []string) {
+	appendFunctionResponses := func(responses []ojson.Result, callNames []string) {
 		partItems := make([][]byte, 0, len(responses))
 		for responseIndex, response := range responses {
 			partRaw := parseFunctionResponseRaw(response, callNames[responseIndex])
@@ -1054,14 +1067,14 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 		}
 		if len(partItems) > 0 {
 			functionResponseContent := []byte(`{"parts":[],"role":"function"}`)
-			functionResponseContent, _ = sjson.SetRawBytes(functionResponseContent, "parts", translatorcommon.JoinRawArray(partItems))
+			functionResponseContent, _ = ojson.SetRawBytes(functionResponseContent, "parts", translatorcommon.JoinRawArray(partItems))
 			contentItems = append(contentItems, functionResponseContent)
 		}
 	}
 
 	// Process each content object in the conversation
 	// This iterates through messages and groups function calls with their responses
-	contents.ForEach(func(key, value gjson.Result) bool {
+	contents.ForEach(func(key, value ojson.Result) bool {
 		role := value.Get("role").String()
 		parts := value.Get("parts")
 
@@ -1072,8 +1085,8 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 		if len(responsePartsInThisContent) > 0 {
 			collectedResponses = append(collectedResponses, responsePartsInThisContent...)
 			if len(otherParts) > 0 {
-				followup, _ := sjson.SetBytes([]byte(value.Raw), "role", "user")
-				followup, _ = sjson.SetRawBytes(followup, "parts", []byte("["+strings.Join(otherParts, ",")+"]"))
+				followup, _ := ojson.SetBytes([]byte(value.Raw), "role", "user")
+				followup, _ = ojson.SetRawBytes(followup, "parts", []byte("["+strings.Join(otherParts, ",")+"]"))
 				mixedTurnFollowups = append(mixedTurnFollowups, followup)
 			}
 
@@ -1083,7 +1096,7 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 				pendingGroups = pendingGroups[1:]
 
 				// Take the needed responses for this group
-				var groupResponses []gjson.Result
+				var groupResponses []ojson.Result
 				groupResponses, collectedResponses = selectGroupResponses(collectedResponses, group)
 
 				appendFunctionResponses(groupResponses, group.CallNames)
@@ -1098,11 +1111,11 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 			return true // Mixed-turn user input follows the completed response group.
 		}
 
-		// If this is a model with function calls, create a new group
-		if role == "model" {
+		// If this is a model turn (or an untagged/non-user turn carrying function calls), create a new group
+		if role == "model" || (role != "user" && translatorcommon.GeminiPartsHaveFunctionCall(parts)) {
 			var callIDs []string
 			var callNames []string
-			parts.ForEach(func(_, part gjson.Result) bool {
+			parts.ForEach(func(_, part ojson.Result) bool {
 				if call := translatorcommon.GeminiPartFunctionCall(part); call.Exists() {
 					callIDs = append(callIDs, call.Get("id").String())
 					callNames = append(callNames, call.Get("name").String())
@@ -1145,8 +1158,8 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 	// Handle any remaining pending groups with remaining responses
 	for _, group := range pendingGroups {
 		if len(collectedResponses) >= group.ResponsesNeeded {
-			groupResponses := collectedResponses[:group.ResponsesNeeded]
-			collectedResponses = collectedResponses[group.ResponsesNeeded:]
+			groupResponses, remaining := selectGroupResponses(collectedResponses, group)
+			collectedResponses = remaining
 
 			appendFunctionResponses(groupResponses, group.CallNames)
 		}
@@ -1154,7 +1167,7 @@ func fixCLIToolResponse(input []byte) ([]byte, error) {
 	contentItems = append(contentItems, mixedTurnFollowups...)
 
 	// Update the original JSON with the new contents
-	result, _ := sjson.SetRawBytes(input, "request.contents", translatorcommon.JoinRawArray(contentItems))
+	result, _ := ojson.SetRawBytes(input, "request.contents", translatorcommon.JoinRawArray(contentItems))
 
 	return result, nil
 }

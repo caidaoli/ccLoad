@@ -1,27 +1,33 @@
 ---
 name: sync-cliproxy-core
-description: 同步或审计 ccLoad 的 CLIProxyAPI 核心与已登记 provider adapter 快照。适用于上游版本对齐，不用于普通渠道配置或独立业务修复。
+description: 把 ccLoad 对齐到 CLIProxyAPI 上游版本：同步转换核心与已登记 provider adapter 快照，并审查 executor、auth、handlers 的运行时修复、移植到 app 层。对照、移植或同步 CLIProxyAPI 新版本时使用；不用于普通渠道配置或独立业务修复。
 ---
 
-# 同步 CLIProxy 转换核心与渠道适配器
+# 同步 CLIProxyAPI 上游版本
 
-一次同步 CLIProxyAPI 的四协议纯转换核心、已登记 provider adapters 及其对应测试。保持 ccLoad Registry 和 provider wire 契约，不引入上游运行时系统。
+一次操作对齐上游的两个域：
 
-- 默认调用 `$sync-cliproxy-core` 时，自动固定上游最新稳定版本，并在同一次操作中完成 core 与全部已登记 provider adapters 的比较、集成、来源更新和验证；用户明确指定 commit/tag 时使用指定目标。
-- 仅审计时保持只读：固定比较目标、核对来源与 manifest、报告差异和验证结果，不进入集成变更或更新来源步骤；未指定比较目标时使用 `UPSTREAM.md` 已记录的 commit。
+- **快照域**：四协议纯转换核心、已登记 provider adapters 及其对应测试，按 manifest 逐文件同步；
+- **运行时域**：executor、auth conductor、handlers 等不搬进 ccLoad 的代码，逐 commit 审查其行为修复，移植到 ccLoad 的对应入口。
+
+保持 ccLoad Registry 和 provider wire 契约，不引入上游运行时系统。
+
+- 默认调用 `$sync-cliproxy-core` 时，自动固定上游最新稳定版本，并在同一次操作中完成两个域的比较、集成、来源更新和验证；用户明确指定 commit/tag 时使用指定目标。
+- 需要上游某个具体修复时，同步到包含它的稳定 tag，按完整流程处理该版本区间。
+- 仅审计时保持只读：固定比较目标、核对来源与 manifest、列出两个域的差异和验证结果，不进入集成变更或更新来源步骤；未指定比较目标时使用 `UPSTREAM.md` 已记录的 commit。
 - 阅读或编辑本技能本身不执行同步。
 
 ## 原子同步契约
 
-- core 与 provider adapters 必须来自同一 checkout 的同一不可变 commit；只生成一份变化清单，只更新一次来源 commit 和同步日期，只运行一套完成验证。
-- 任一同步域无法移植、缺少匹配测试或验证失败时，整个同步未完成。不提供隐式 core-only 降级；用户明确缩小范围时只能审计，不得把部分写入报告成完整同步。
+- core、provider adapters 和运行时审查使用同一 checkout 的同一不可变 commit 区间；只更新一次来源 commit 和同步日期，只运行一套完成验证。`UPSTREAM.md` 记录的 commit 同时表示快照已同步、运行时已审查到该版本。
+- 任一域无法移植、缺少匹配测试或验证失败时，整个同步未完成。不提供隐式 core-only 降级；用户明确缩小范围时只能审计，不得把部分写入报告成完整同步。
 
 ## 权威边界
 
-1. 按任务读取 [协议转换边界](../../../.claude/agent-guide/protocol.md)、`internal/protocol/cliproxy/UPSTREAM.md`、[core snapshot manifest](references/core-snapshot.manifest)、[provider adapter 语义边界](references/provider-adapters.md)和[provider manifest](references/provider-adapters.manifest)。`UPSTREAM.md` 是来源、固定提交和已落地状态的唯一事实源；core manifest 记录直接映射根、特殊映射、明确排除和最近一次 core/provider 原子差异的审查 blob，provider manifest 是 provider、逐文件映射、生产接线和契约测试的唯一 allowlist。
+1. 按任务读取 [协议转换边界](../../../.claude/agent-guide/protocol.md)、`internal/protocol/cliproxy/UPSTREAM.md`、[core snapshot manifest](references/core-snapshot.manifest)、[provider adapter 语义边界](references/provider-adapters.md)、[provider manifest](references/provider-adapters.manifest)和[运行时审查范围](references/runtime-scope.md)。`UPSTREAM.md` 是来源、固定提交和已落地状态的唯一事实源；core manifest 记录直接映射根、特殊映射、明确排除和最近一次 core/provider 原子差异的审查 blob，provider manifest 是 provider、逐文件映射、生产接线和契约测试的唯一 allowlist。
 2. `internal/protocol/registry.go` 定义四协议契约；`internal/protocol/builtin/cliproxy_adapter.go` 处理通用输入验证、JSON/SSE 规范化和流帧封装；`internal/protocol/cliproxy/providers/` 保存 provider-specific 纯转换。
 3. provider 选择留在 ccLoad 请求上下文边界，按实际 wire dialect/AuthType 决定；不要把 provider 注册成第五种通用客户端协议。
-4. 不引入 CLIProxyAPI 的认证、配置、路由、缓存服务、插件、动态 Registry、executor 或网络刷新代码。Interactions 只有在 ccLoad 正式支持其线协议后才可登记。
+4. 不引入 CLIProxyAPI 的认证、配置、路由、缓存服务、插件、动态 Registry、executor 或网络刷新代码；运行时域只移植行为，在 ccLoad 现有入口按本地架构重写。Interactions 只有在 ccLoad 正式支持其线协议后才可登记。
 5. 不添加 CLIProxyAPI 运行时 Go module 依赖或 `replace`。源码继续使用 `ccLoad/internal/protocol/cliproxy/...` 导入路径。
 6. Registry 与 provider 边界测试是 ccLoad 兼容性权威。上游行为与本地线协议冲突时，修正根因并保留本地契约，不盲目覆盖。
 
@@ -50,7 +56,7 @@ git -C "$upstream" rev-parse "$tag^{commit}"
 - 记录并同步解引用后的 commit，而不是 annotated tag object；报告目标和变化范围后直接继续，不等待确认。无法确定 tag 系列、找不到稳定 tag 或 tag 无法解析为 commit 时停止并说明原因，禁止退回到浮动分支 HEAD。
 - 若目标 SHA 与当前同步 SHA 相同，不改写 `UPSTREAM.md` 的同步日期；运行确定性审计和验证后报告已是最新版本。
 
-### 3. 比较范围
+### 3. 快照比较范围
 
 - 一次生成目标 commit 相对当前记录 commit 的联合差异：四协议 core、allowlist 中每个 provider 的生产源码及对应 `_test.go`，不要分两次比较。
 - 先生成目录级和文件级变化清单，再确认新增文件是纯转换语义。provider 的 `init.go`、动态 Registry 和 noop/分配实现测试按 allowlist 排除。
@@ -59,7 +65,18 @@ git -C "$upstream" rev-parse "$tag^{commit}"
 - 上游删除字段注入时，确认行为是否迁移到被排除的 runtime 层；若是，必须在本地转换边界保留，并用 Registry 契约测试验证。
 - 复查 `UPSTREAM.md` 已排除项的排除理由是否仍成立：上游重构可能使旧理由失效（该同步的补回来），也可能采纳了本地契约（删掉过期的本地差异注记）。
 
-### 4. 集成变更
+### 4. 运行时审查
+
+- 按[运行时审查范围](references/runtime-scope.md)列出 base..target 的运行时 commit，逐个读 diff，对照映射表中的 ccLoad 入口归入一类：
+  - `已覆盖`：ccLoad 已有等价行为，记下位置；
+  - `移植`：ccLoad 有对应功能但缺这个修复；
+  - `不适用`：ccLoad 没有对应渠道或功能，按 runtime-scope.md 的理由组计数；
+  - `拒绝`：与本地契约冲突，写明依据。
+- `移植` 项在 ccLoad 现有入口实现，补可观察行为的测试，并在对应专题文档写明参照的上游 commit。
+- 需要真实账号验证或属于独立新功能的 `移植` 项，经用户同意后在 `.scratch/cliproxy-<target tag>/issues/` 建任务，并在完成报告中列出。
+- 完成标准：范围内每个运行时 commit 都已归类，所有未转成任务的 `移植` 项已实现并通过测试。
+
+### 5. 快照集成
 
 - 以可审查的小批次应用源码，但把所有批次视为一个原子同步结果。
 - 将上游 import 改为本地 `ccLoad/internal/protocol/cliproxy/...`。
@@ -68,7 +85,7 @@ git -C "$upstream" rev-parse "$tag^{commit}"
 - 对工具调用 ID、reasoning/signature、usage/cache、JSON 字段形状、错误 envelope、SSE framing/终止事件和跨 chunk 状态逐项核对 core 与 provider 契约。
 - 无法表示的客户端请求继续返回 `RequestTranslationError`，由代理映射为 HTTP 400；不得触发渠道切换或冷却。
 
-### 5. 更新来源记录
+### 6. 更新来源记录
 
 - 只有 core 和全部已登记 provider 的生产源码、对应测试、生产接线都完成后，才一次性更新 `internal/protocol/cliproxy/UPSTREAM.md` 的完整 commit、标签说明和同步日期。
 - 逐文件审完差异后，用脚本重算 core manifest 的全部 blob 行，不要手算：
@@ -81,10 +98,11 @@ bash .agents/skills/sync-cliproxy-core/scripts/verify_core_scope.sh --refresh-ma
   它按 base..target 重建 review 块，刷新 `file`/`local` 行 blob，并删除差异范围外的旧 `delete`/`skip-test` 行。只要还有未归类的上游文件、未登记的上游删除或缺失的映射文件，就逐条输出 `TODO` 并拒绝写入。它只负责记账，不代替审查：`delete`、`skip-test`、`exclude` 行及其理由仍需人工填写，写入后检查 `git diff`。
 - 两次同步之间若修改了被 blob 固定的快照文件，用 manifest 中 `# Reviewed atomic delta: <base> -> <target>.` 记录的两个 commit 重跑同一命令。
 - 在 `UPSTREAM.md` 分别记录 core 与 provider 的上游源目录、本地目录和实际落地状态；逐文件事实和本次差异审查 blob 只保留在 manifest，二者共享同一个 commit/date。
+- `UPSTREAM.md` 只保留目标版本下仍成立的本地差异：被上游采纳或随本次同步失效的旧记录删除，仍成立的并入对应专题的说明，不按日期追加新段落。
 - 保留 `internal/protocol/cliproxy/LICENSE`。许可证或上游归属变化必须显式审查。
 - 不在 Skill 中复制 commit、日期或测试数量；这些易变事实只写入 `UPSTREAM.md`。
 
-### 6. 验证
+### 7. 验证
 
 先运行确定性审计：
 
@@ -114,6 +132,7 @@ git diff --check
 
 - 原同步 commit、目标 commit 和上游 checkout；
 - 同一次同步覆盖的 core、provider 目录/文件与明确排除的上游模块；
+- 运行时审查各类计数，`移植`、`拒绝` 逐条列出（commit、ccLoad 位置、依据），转成任务的项目给出路径；
 - 为维持 ccLoad Registry/provider wire contract 保留或新增的本地差异；
 - `UPSTREAM.md`、许可证和相关项目文档是否更新；
 - 每条验证命令的结果。

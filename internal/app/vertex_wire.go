@@ -51,7 +51,7 @@ func usesVertexWire(cfg *model.Config, upstreamProtocol protocol.Protocol, baseU
 	if !publisherModel || strings.Contains(modelAction, "/") {
 		return false
 	}
-	modelName, action, hasAction := strings.Cut(modelAction, ":")
+	modelName, action, hasAction := strings.CutLast(modelAction, ":")
 	return hasAction && modelName != "" && (action == "generateContent" || action == "streamGenerateContent" || action == "countTokens")
 }
 

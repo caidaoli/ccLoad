@@ -3,15 +3,16 @@ package chat_completions
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func assertCachedCreationTokens(t *testing.T, payload []byte, want int64) {
 	t.Helper()
 
-	got := gjson.GetBytes(payload, "usage.prompt_tokens_details.cached_creation_tokens")
+	got := ojson.GetBytes(payload, "usage.prompt_tokens_details.cached_creation_tokens")
 	if !got.Exists() {
 		t.Fatalf("expected cached_creation_tokens to exist, payload=%s", string(payload))
 	}
@@ -36,16 +37,16 @@ func TestConvertClaudeResponseToOpenAI_StreamUsageIncludesCachedTokens(t *testin
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
 
-	if gotPromptTokens := gjson.GetBytes(out[0], "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
+	if gotPromptTokens := ojson.GetBytes(out[0], "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
 		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
 	}
-	if gotCompletionTokens := gjson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
+	if gotCompletionTokens := ojson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
 		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
 	}
-	if gotTotalTokens := gjson.GetBytes(out[0], "usage.total_tokens").Int(); gotTotalTokens != 22048 {
+	if gotTotalTokens := ojson.GetBytes(out[0], "usage.total_tokens").Int(); gotTotalTokens != 22048 {
 		t.Fatalf("expected total_tokens %d, got %d", 22048, gotTotalTokens)
 	}
-	if gotCachedTokens := gjson.GetBytes(out[0], "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
+	if gotCachedTokens := ojson.GetBytes(out[0], "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
 	assertCachedCreationTokens(t, out[0], 31)
@@ -75,16 +76,16 @@ func TestConvertClaudeResponseToOpenAI_StreamUsageMergesMessageStartUsage(t *tes
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
 
-	if gotPromptTokens := gjson.GetBytes(out[0], "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
+	if gotPromptTokens := ojson.GetBytes(out[0], "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
 		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
 	}
-	if gotCompletionTokens := gjson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
+	if gotCompletionTokens := ojson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
 		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
 	}
-	if gotTotalTokens := gjson.GetBytes(out[0], "usage.total_tokens").Int(); gotTotalTokens != 22048 {
+	if gotTotalTokens := ojson.GetBytes(out[0], "usage.total_tokens").Int(); gotTotalTokens != 22048 {
 		t.Fatalf("expected total_tokens %d, got %d", 22048, gotTotalTokens)
 	}
-	if gotCachedTokens := gjson.GetBytes(out[0], "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
+	if gotCachedTokens := ojson.GetBytes(out[0], "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
 	assertCachedCreationTokens(t, out[0], 31)
@@ -95,16 +96,16 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesCachedTokens(t *tes
 
 	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
 
-	if gotPromptTokens := gjson.GetBytes(out, "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
+	if gotPromptTokens := ojson.GetBytes(out, "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
 		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
 	}
-	if gotCompletionTokens := gjson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
+	if gotCompletionTokens := ojson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
 		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
 	}
-	if gotTotalTokens := gjson.GetBytes(out, "usage.total_tokens").Int(); gotTotalTokens != 22048 {
+	if gotTotalTokens := ojson.GetBytes(out, "usage.total_tokens").Int(); gotTotalTokens != 22048 {
 		t.Fatalf("expected total_tokens %d, got %d", 22048, gotTotalTokens)
 	}
-	if gotCachedTokens := gjson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
+	if gotCachedTokens := ojson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
 	assertCachedCreationTokens(t, out, 31)
@@ -115,22 +116,22 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesCacheCreationAndRea
 
 	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
 
-	if gotPromptTokens := gjson.GetBytes(out, "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
+	if gotPromptTokens := ojson.GetBytes(out, "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
 		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
 	}
-	if gotCompletionTokens := gjson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
+	if gotCompletionTokens := ojson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
 		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
 	}
-	if gotTotalTokens := gjson.GetBytes(out, "usage.total_tokens").Int(); gotTotalTokens != 22048 {
+	if gotTotalTokens := ojson.GetBytes(out, "usage.total_tokens").Int(); gotTotalTokens != 22048 {
 		t.Fatalf("expected total_tokens %d, got %d", 22048, gotTotalTokens)
 	}
-	if gotCachedTokens := gjson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
+	if gotCachedTokens := ojson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
-	if gotCacheCreationTokens := gjson.GetBytes(out, "usage.cache_creation_input_tokens").Int(); gotCacheCreationTokens != 31 {
+	if gotCacheCreationTokens := ojson.GetBytes(out, "usage.cache_creation_input_tokens").Int(); gotCacheCreationTokens != 31 {
 		t.Fatalf("expected cache_creation_input_tokens %d, got %d", 31, gotCacheCreationTokens)
 	}
-	if gotReasoningTokens := gjson.GetBytes(out, "usage.completion_tokens_details.reasoning_tokens").Int(); gotReasoningTokens != 9 {
+	if gotReasoningTokens := ojson.GetBytes(out, "usage.completion_tokens_details.reasoning_tokens").Int(); gotReasoningTokens != 9 {
 		t.Fatalf("expected reasoning_tokens %d, got %d", 9, gotReasoningTokens)
 	}
 }
@@ -150,7 +151,7 @@ func TestConvertClaudeResponseToOpenAI_RefusalStopReason(t *testing.T) {
 			if len(out) != 1 {
 				t.Fatalf("expected 1 chunk, got %d", len(out))
 			}
-			if got := gjson.GetBytes(out[0], "choices.0.finish_reason").String(); got != "content_filter" {
+			if got := ojson.GetBytes(out[0], "choices.0.finish_reason").String(); got != "content_filter" {
 				t.Fatalf("finish_reason = %q, want content_filter; payload=%s", got, string(out[0]))
 			}
 		})
@@ -163,7 +164,7 @@ func TestConvertClaudeResponseToOpenAINonStream_RefusalStopReason(t *testing.T) 
 			rawJSON := []byte(`{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"blocked"}],"model":"claude-opus-4-6","stop_reason":"` + stopReason + `","usage":{"input_tokens":10,"output_tokens":20}}`)
 
 			out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
-			if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "content_filter" {
+			if got := ojson.GetBytes(out, "choices.0.finish_reason").String(); got != "content_filter" {
 				t.Fatalf("finish_reason = %q, want content_filter; payload=%s", got, string(out))
 			}
 		})
@@ -183,7 +184,7 @@ func TestConvertClaudeResponseToOpenAINonStream_ReasoningContent(t *testing.T) {
 
 	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
 
-	gotRC := gjson.GetBytes(out, "choices.0.message.reasoning_content")
+	gotRC := ojson.GetBytes(out, "choices.0.message.reasoning_content")
 	if !gotRC.Exists() {
 		t.Fatalf("expected choices.0.message.reasoning_content to exist, payload=%s", string(out))
 	}
@@ -192,11 +193,11 @@ func TestConvertClaudeResponseToOpenAINonStream_ReasoningContent(t *testing.T) {
 		t.Fatalf("reasoning_content = %q, want %q", gotRC.String(), wantRC)
 	}
 
-	if gotOldReasoning := gjson.GetBytes(out, "choices.0.message.reasoning"); gotOldReasoning.Exists() {
+	if gotOldReasoning := ojson.GetBytes(out, "choices.0.message.reasoning"); gotOldReasoning.Exists() {
 		t.Fatalf("choices.0.message.reasoning should not exist, got %q", gotOldReasoning.String())
 	}
 
-	gotContent := gjson.GetBytes(out, "choices.0.message.content").String()
+	gotContent := ojson.GetBytes(out, "choices.0.message.content").String()
 	wantContent := "Here is the solution."
 	if gotContent != wantContent {
 		t.Fatalf("content = %q, want %q", gotContent, wantContent)
@@ -212,13 +213,13 @@ func TestConvertClaudeResponseToOpenAINonStream_OmitsReasoningContentWhenAbsent(
 
 	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
 
-	if gotRC := gjson.GetBytes(out, "choices.0.message.reasoning_content"); gotRC.Exists() {
+	if gotRC := ojson.GetBytes(out, "choices.0.message.reasoning_content"); gotRC.Exists() {
 		t.Fatalf("choices.0.message.reasoning_content should be omitted when absent, got %q", gotRC.String())
 	}
-	if gotReasoning := gjson.GetBytes(out, "choices.0.message.reasoning"); gotReasoning.Exists() {
+	if gotReasoning := ojson.GetBytes(out, "choices.0.message.reasoning"); gotReasoning.Exists() {
 		t.Fatalf("choices.0.message.reasoning should not exist, got %q", gotReasoning.String())
 	}
-	if gotContent := gjson.GetBytes(out, "choices.0.message.content").String(); gotContent != "Just plain text." {
+	if gotContent := ojson.GetBytes(out, "choices.0.message.content").String(); gotContent != "Just plain text." {
 		t.Fatalf("content = %q, want %q", gotContent, "Just plain text.")
 	}
 }
@@ -248,13 +249,13 @@ func TestConvertClaudeResponseToOpenAI_StreamAndNonStreamParity(t *testing.T) {
 	for _, ev := range events {
 		chunks := ConvertClaudeResponseToOpenAI(ctx, "claude-opus-4-6", nil, nil, ev, &param)
 		for _, chunk := range chunks {
-			if rc := gjson.GetBytes(chunk, "choices.0.delta.reasoning_content"); rc.Exists() {
+			if rc := ojson.GetBytes(chunk, "choices.0.delta.reasoning_content"); rc.Exists() {
 				streamReasoning += rc.String()
 			}
-			if c := gjson.GetBytes(chunk, "choices.0.delta.content"); c.Exists() {
+			if c := ojson.GetBytes(chunk, "choices.0.delta.content"); c.Exists() {
 				streamContent += c.String()
 			}
-			if fr := gjson.GetBytes(chunk, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
+			if fr := ojson.GetBytes(chunk, "choices.0.finish_reason"); fr.Exists() && fr.String() != "" {
 				streamFinishReason = fr.String()
 			}
 		}
@@ -268,9 +269,9 @@ func TestConvertClaudeResponseToOpenAI_StreamAndNonStreamParity(t *testing.T) {
 	}
 
 	nonStreamOut := ConvertClaudeResponseToOpenAINonStream(ctx, "", nil, nil, rawBuffer, nil)
-	nonStreamRC := gjson.GetBytes(nonStreamOut, "choices.0.message.reasoning_content").String()
-	nonStreamContent := gjson.GetBytes(nonStreamOut, "choices.0.message.content").String()
-	nonStreamFinishReason := gjson.GetBytes(nonStreamOut, "choices.0.finish_reason").String()
+	nonStreamRC := ojson.GetBytes(nonStreamOut, "choices.0.message.reasoning_content").String()
+	nonStreamContent := ojson.GetBytes(nonStreamOut, "choices.0.message.content").String()
+	nonStreamFinishReason := ojson.GetBytes(nonStreamOut, "choices.0.finish_reason").String()
 
 	if streamReasoning != "First thought. Second thought." {
 		t.Fatalf("streamReasoning = %q, want %q", streamReasoning, "First thought. Second thought.")
@@ -311,13 +312,13 @@ func TestConvertClaudeResponseToOpenAI_RedactedThinkingIgnored(t *testing.T) {
 	}
 
 	outNonStream := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
-	if gotRC := gjson.GetBytes(outNonStream, "choices.0.message.reasoning_content"); gotRC.Exists() {
+	if gotRC := ojson.GetBytes(outNonStream, "choices.0.message.reasoning_content"); gotRC.Exists() {
 		t.Fatalf("redacted_thinking must never map to reasoning_content in non-stream, got %q", gotRC.String())
 	}
-	if gotReasoning := gjson.GetBytes(outNonStream, "choices.0.message.reasoning"); gotReasoning.Exists() {
+	if gotReasoning := ojson.GetBytes(outNonStream, "choices.0.message.reasoning"); gotReasoning.Exists() {
 		t.Fatalf("redacted_thinking must not produce reasoning field in non-stream, got %q", gotReasoning.String())
 	}
-	if gotContent := gjson.GetBytes(outNonStream, "choices.0.message.content").String(); gotContent != "Visible reply." {
+	if gotContent := ojson.GetBytes(outNonStream, "choices.0.message.content").String(); gotContent != "Visible reply." {
 		t.Fatalf("content = %q, want %q", gotContent, "Visible reply.")
 	}
 
@@ -328,13 +329,13 @@ func TestConvertClaudeResponseToOpenAI_RedactedThinkingIgnored(t *testing.T) {
 	for _, line := range events {
 		chunks := ConvertClaudeResponseToOpenAI(ctx, "claude-opus-4-6", nil, nil, line, &param)
 		for _, chunk := range chunks {
-			if gotRC := gjson.GetBytes(chunk, "choices.0.delta.reasoning_content"); gotRC.Exists() {
+			if gotRC := ojson.GetBytes(chunk, "choices.0.delta.reasoning_content"); gotRC.Exists() {
 				t.Fatalf("redacted_thinking must never map to reasoning_content in stream, got %q", gotRC.String())
 			}
-			if gotReasoning := gjson.GetBytes(chunk, "choices.0.delta.reasoning"); gotReasoning.Exists() {
+			if gotReasoning := ojson.GetBytes(chunk, "choices.0.delta.reasoning"); gotReasoning.Exists() {
 				t.Fatalf("redacted_thinking must not produce delta.reasoning field in stream, got %q", gotReasoning.String())
 			}
-			if c := gjson.GetBytes(chunk, "choices.0.delta.content"); c.Exists() {
+			if c := ojson.GetBytes(chunk, "choices.0.delta.content"); c.Exists() {
 				streamContent += c.String()
 			}
 		}
@@ -362,7 +363,7 @@ func TestConvertClaudeResponseToOpenAI_StreamToolCallIndexIsZeroBased(t *testing
 	var indices []int64
 	for _, event := range events {
 		for _, chunk := range ConvertClaudeResponseToOpenAI(context.Background(), "claude-opus-4-6", nil, nil, event, &param) {
-			if toolCall := gjson.GetBytes(chunk, "choices.0.delta.tool_calls.0"); toolCall.Exists() {
+			if toolCall := ojson.GetBytes(chunk, "choices.0.delta.tool_calls.0"); toolCall.Exists() {
 				indices = append(indices, toolCall.Get("index").Int())
 			}
 		}
@@ -400,11 +401,11 @@ func TestConvertClaudeResponseToOpenAI_StreamEmitsTrailingUsageChunkWithCacheDet
 	trailingUsageChunkCount := 0
 
 	for i, chunk := range allChunks {
-		if gjson.GetBytes(chunk, "choices.0.finish_reason").Exists() && gjson.GetBytes(chunk, "choices.0.finish_reason").String() != "" {
+		if ojson.GetBytes(chunk, "choices.0.finish_reason").Exists() && ojson.GetBytes(chunk, "choices.0.finish_reason").String() != "" {
 			finishReasonChunkIndex = i
 		}
-		choices := gjson.GetBytes(chunk, "choices")
-		if choices.Exists() && len(choices.Array()) == 0 && gjson.GetBytes(chunk, "usage").Exists() {
+		choices := ojson.GetBytes(chunk, "choices")
+		if choices.Exists() && len(choices.Array()) == 0 && ojson.GetBytes(chunk, "usage").Exists() {
 			trailingUsageChunk = chunk
 			trailingUsageChunkIndex = i
 			trailingUsageChunkCount++
@@ -419,22 +420,22 @@ func TestConvertClaudeResponseToOpenAI_StreamEmitsTrailingUsageChunkWithCacheDet
 		t.Fatalf("expected finish_reason chunk (index %d) before trailing usage chunk (index %d)", finishReasonChunkIndex, trailingUsageChunkIndex)
 	}
 
-	if gotPromptTokens := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens").Int(); gotPromptTokens != 170 {
+	if gotPromptTokens := ojson.GetBytes(trailingUsageChunk, "usage.prompt_tokens").Int(); gotPromptTokens != 170 {
 		t.Errorf("expected prompt_tokens 170, got %d", gotPromptTokens)
 	}
-	if gotCompletionTokens := gjson.GetBytes(trailingUsageChunk, "usage.completion_tokens").Int(); gotCompletionTokens != 15 {
+	if gotCompletionTokens := ojson.GetBytes(trailingUsageChunk, "usage.completion_tokens").Int(); gotCompletionTokens != 15 {
 		t.Errorf("expected completion_tokens 15, got %d", gotCompletionTokens)
 	}
-	if gotTotalTokens := gjson.GetBytes(trailingUsageChunk, "usage.total_tokens").Int(); gotTotalTokens != 185 {
+	if gotTotalTokens := ojson.GetBytes(trailingUsageChunk, "usage.total_tokens").Int(); gotTotalTokens != 185 {
 		t.Errorf("expected total_tokens 185, got %d", gotTotalTokens)
 	}
-	if gotCachedTokens := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 50 {
+	if gotCachedTokens := ojson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 50 {
 		t.Errorf("expected cached_tokens 50, got %d", gotCachedTokens)
 	}
-	if gotCacheWriteTokens := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cache_write_tokens").Int(); gotCacheWriteTokens != 20 {
+	if gotCacheWriteTokens := ojson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cache_write_tokens").Int(); gotCacheWriteTokens != 20 {
 		t.Errorf("expected cache_write_tokens 20, got %d", gotCacheWriteTokens)
 	}
-	if gotCachedCreationTokens := gjson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cached_creation_tokens").Int(); gotCachedCreationTokens != 20 {
+	if gotCachedCreationTokens := ojson.GetBytes(trailingUsageChunk, "usage.prompt_tokens_details.cached_creation_tokens").Int(); gotCachedCreationTokens != 20 {
 		t.Errorf("expected cached_creation_tokens 20, got %d", gotCachedCreationTokens)
 	}
 }
@@ -442,7 +443,7 @@ func TestConvertClaudeResponseToOpenAI_StreamEmitsTrailingUsageChunkWithCacheDet
 func assertReasoningTokens(t *testing.T, payload []byte, want int64) {
 	t.Helper()
 
-	got := gjson.GetBytes(payload, "usage.completion_tokens_details.reasoning_tokens")
+	got := ojson.GetBytes(payload, "usage.completion_tokens_details.reasoning_tokens")
 	if !got.Exists() {
 		t.Fatalf("expected reasoning_tokens to exist, payload=%s", string(payload))
 	}
@@ -466,7 +467,7 @@ func TestConvertClaudeResponseToOpenAI_StreamUsageIncludesReasoningTokens(t *tes
 	if len(out) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
-	if gotCompletionTokens := gjson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 38 {
+	if gotCompletionTokens := ojson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 38 {
 		t.Fatalf("expected completion_tokens %d, got %d", 38, gotCompletionTokens)
 	}
 	assertReasoningTokens(t, out[0], 23)
@@ -485,8 +486,8 @@ func TestConvertClaudeResponseToOpenAI_StreamTrailingUsageIncludesReasoningToken
 	var trailing [][]byte
 	for _, ev := range events {
 		for _, chunk := range ConvertClaudeResponseToOpenAI(ctx, "claude-sonnet-5", []byte(`{"stream_options":{"include_usage":true}}`), nil, ev, &param) {
-			choices := gjson.GetBytes(chunk, "choices")
-			if choices.Exists() && len(choices.Array()) == 0 && gjson.GetBytes(chunk, "usage").Exists() {
+			choices := ojson.GetBytes(chunk, "choices")
+			if choices.Exists() && len(choices.Array()) == 0 && ojson.GetBytes(chunk, "usage").Exists() {
 				trailing = append(trailing, chunk)
 			}
 		}
@@ -502,7 +503,7 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesReasoningTokens(t *
 
 	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
 
-	if gotCompletionTokens := gjson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 52 {
+	if gotCompletionTokens := ojson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 52 {
 		t.Fatalf("expected completion_tokens %d, got %d", 52, gotCompletionTokens)
 	}
 	assertReasoningTokens(t, out, 32)
@@ -523,12 +524,12 @@ func TestConvertClaudeResponseToOpenAI_OmitsReasoningTokensWhenNotReported(t *te
 	if len(out) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
-	if got := gjson.GetBytes(out[0], "usage.completion_tokens_details.reasoning_tokens"); got.Exists() {
+	if got := ojson.GetBytes(out[0], "usage.completion_tokens_details.reasoning_tokens"); got.Exists() {
 		t.Fatalf("expected reasoning_tokens to be omitted, got %s; payload=%s", got.Raw, string(out[0]))
 	}
 
 	nonStream := ConvertClaudeResponseToOpenAINonStream(ctx, "", nil, nil, []byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"model\":\"claude-sonnet-5\"}}\n"+"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":38}}\n"), nil)
-	if got := gjson.GetBytes(nonStream, "usage.completion_tokens_details.reasoning_tokens"); got.Exists() {
+	if got := ojson.GetBytes(nonStream, "usage.completion_tokens_details.reasoning_tokens"); got.Exists() {
 		t.Fatalf("expected reasoning_tokens to be omitted, got %s; payload=%s", got.Raw, string(nonStream))
 	}
 }
@@ -549,4 +550,136 @@ func TestConvertClaudeResponseToOpenAI_ReportsZeroReasoningTokensWhenThinkingIsZ
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
 	assertReasoningTokens(t, out[0], 0)
+}
+
+func TestConvertClaudeResponseToOpenAINonStream_UsageMergesMessageStartUsage(t *testing.T) {
+	rawJSON := []byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":13,\"output_tokens\":1,\"cache_read_input_tokens\":22000,\"cache_creation_input_tokens\":31}}}\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n")
+
+	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
+
+	if gotPromptTokens := ojson.GetBytesNoCopy(out, "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
+		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
+	}
+	if gotCompletionTokens := ojson.GetBytesNoCopy(out, "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
+		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
+	}
+	if gotTotalTokens := ojson.GetBytesNoCopy(out, "usage.total_tokens").Int(); gotTotalTokens != 22048 {
+		t.Fatalf("expected total_tokens %d, got %d", 22048, gotTotalTokens)
+	}
+	if gotCachedTokens := ojson.GetBytesNoCopy(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
+		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
+	}
+	assertCachedCreationTokens(t, out, 31)
+}
+
+func TestConvertClaudeResponseToOpenAI_RestoresSanitizedToolNames(t *testing.T) {
+	ctx := context.Background()
+	longName := "mcp_server_namespace_" + strings.Repeat("longtoolname", 5)
+	sanitizedLongName := longName[:64]
+	originalReq := []byte(`{"model":"claude-sonnet-4-6","tools":[{"type":"function","function":{"name":"mcp.github.search_code","parameters":{"type":"object"}}},{"type":"function","function":{"name":"` + longName + `","parameters":{"type":"object"}}}]}`)
+
+	events := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_tool_restore","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":0}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp_github_search_code","input":{}}}`),
+		[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"abc\"}"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_2","name":"` + sanitizedLongName + `","input":{}}}`),
+		[]byte(`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":1}`),
+		[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+
+	var param any
+	var streamNames []string
+	for _, ev := range events {
+		for _, chunk := range ConvertClaudeResponseToOpenAI(ctx, "claude-sonnet-4-6", originalReq, nil, ev, &param) {
+			if name := ojson.GetBytesNoCopy(chunk, "choices.0.delta.tool_calls.0.function.name"); name.Exists() {
+				streamNames = append(streamNames, name.String())
+			}
+		}
+	}
+	if len(streamNames) != 2 || streamNames[0] != "mcp.github.search_code" || streamNames[1] != longName {
+		t.Fatalf("stream restored tool names = %v, want [mcp.github.search_code %s]", streamNames, longName)
+	}
+
+	sseRaw := bytes.Join(events, []byte("\n"))
+	nonStreamOut := ConvertClaudeResponseToOpenAINonStream(ctx, "claude-sonnet-4-6", originalReq, nil, sseRaw, nil)
+	if got := ojson.GetBytesNoCopy(nonStreamOut, "choices.0.message.tool_calls.0.function.name").String(); got != "mcp.github.search_code" {
+		t.Fatalf("non-stream SSE tool_calls[0].function.name = %q, want mcp.github.search_code; output=%s", got, nonStreamOut)
+	}
+	if got := ojson.GetBytesNoCopy(nonStreamOut, "choices.0.message.tool_calls.1.function.name").String(); got != longName {
+		t.Fatalf("non-stream SSE tool_calls[1].function.name = %q, want %q; output=%s", got, longName, nonStreamOut)
+	}
+
+	nativeRaw := []byte(`{"id":"msg_tool_restore_native","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"toolu_1","name":"mcp_github_search_code","input":{"q":"abc"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`)
+	nativeOut := ConvertClaudeResponseToOpenAINonStream(ctx, "claude-sonnet-4-6", originalReq, nil, nativeRaw, nil)
+	if got := ojson.GetBytesNoCopy(nativeOut, "choices.0.message.tool_calls.0.function.name").String(); got != "mcp.github.search_code" {
+		t.Fatalf("non-stream native tool_calls[0].function.name = %q, want mcp.github.search_code; output=%s", got, nativeOut)
+	}
+
+	t.Run("ignores tools without explicit function type", func(t *testing.T) {
+		reqWithUntyped := []byte(`{"model":"claude-sonnet-4-6","tools":[{"function":{"name":"mcp.search","parameters":{"type":"object"}}},{"type":"function","function":{"name":"mcp_search","parameters":{"type":"object"}}}]}`)
+		untypedEvents := [][]byte{
+			[]byte(`data: {"type":"message_start","message":{"id":"msg_untyped","model":"claude-sonnet-4-6","usage":{"input_tokens":5,"output_tokens":0}}}`),
+			[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_u1","name":"mcp_search","input":{}}}`),
+			[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}`),
+			[]byte(`data: {"type":"content_block_stop","index":0}`),
+			[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}`),
+			[]byte(`data: {"type":"message_stop"}`),
+		}
+		var untypedParam any
+		var gotStreamName string
+		for _, ev := range untypedEvents {
+			for _, chunk := range ConvertClaudeResponseToOpenAI(ctx, "claude-sonnet-4-6", reqWithUntyped, nil, ev, &untypedParam) {
+				if name := ojson.GetBytesNoCopy(chunk, "choices.0.delta.tool_calls.0.function.name"); name.Exists() {
+					gotStreamName = name.String()
+				}
+			}
+		}
+		if gotStreamName != "mcp_search" {
+			t.Fatalf("stream tool name = %q, want mcp_search", gotStreamName)
+		}
+		gotNonStream := ConvertClaudeResponseToOpenAINonStream(ctx, "claude-sonnet-4-6", reqWithUntyped, nil, bytes.Join(untypedEvents, []byte("\n")), nil)
+		if got := ojson.GetBytesNoCopy(gotNonStream, "choices.0.message.tool_calls.0.function.name").String(); got != "mcp_search" {
+			t.Fatalf("non-stream tool name = %q, want mcp_search; output=%s", got, gotNonStream)
+		}
+	})
+}
+
+func TestConvertClaudeResponseToOpenAINonStream_HandlesErrorEvents(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{
+			name:  "single SSE error event",
+			input: []byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`),
+		},
+		{
+			name: "mid-stream SSE error event",
+			input: []byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4-6\"}}\n" +
+				"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n"),
+		},
+		{
+			name:  "native JSON error payload",
+			input: []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := ConvertClaudeResponseToOpenAINonStream(ctx, "claude-sonnet-4-6", nil, nil, tc.input, nil)
+			if got := ojson.GetBytesNoCopy(out, "error.message").String(); got != "Overloaded" {
+				t.Fatalf("error.message = %q, want Overloaded; output=%s", got, out)
+			}
+			if got := ojson.GetBytesNoCopy(out, "error.type").String(); got != "overloaded_error" {
+				t.Fatalf("error.type = %q, want overloaded_error; output=%s", got, out)
+			}
+			if ojson.GetBytesNoCopy(out, "choices").Exists() {
+				t.Fatalf("error response must not contain fabricated choices; output=%s", out)
+			}
+		})
+	}
 }

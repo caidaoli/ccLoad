@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestClaudeResponsesAdjacentCitedTextBlocksShareMessage(t *testing.T) {
@@ -29,7 +29,7 @@ func TestClaudeResponsesAdjacentCitedTextBlocksShareMessage(t *testing.T) {
 		[]byte(`data: {"type":"message_stop"}`),
 	}
 	wantText := "The store reopened in 2024, and Olga was named for Ohlert."
-	checkOutput := func(t *testing.T, items []gjson.Result) {
+	checkOutput := func(t *testing.T, items []ojson.Result) {
 		t.Helper()
 		if len(items) != 2 {
 			t.Fatalf("output items = %d, want 2 (web search and one message)", len(items))
@@ -55,7 +55,7 @@ func TestClaudeResponsesAdjacentCitedTextBlocksShareMessage(t *testing.T) {
 
 	t.Run("stream", func(t *testing.T) {
 		counts := make(map[string]int)
-		var completed gjson.Result
+		var completed ojson.Result
 		for _, output := range translateClaudeResponsesStream(chunks) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
 			counts[event]++
@@ -80,6 +80,6 @@ func TestClaudeResponsesAdjacentCitedTextBlocksShareMessage(t *testing.T) {
 			lines = append(lines, string(chunk))
 		}
 		out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, []byte(strings.Join(lines, "\n")), nil)
-		checkOutput(t, gjson.GetBytes(out, "output").Array())
+		checkOutput(t, ojson.GetBytes(out, "output").Array())
 	})
 }

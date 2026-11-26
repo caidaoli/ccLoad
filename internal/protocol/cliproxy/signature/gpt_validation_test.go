@@ -1,9 +1,10 @@
 package signature
 
 import (
-	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/MoeForge/moego/base64"
 )
 
 func testGPTReasoningSignature() string {
@@ -57,6 +58,19 @@ func TestInspectGPTReasoningSignature_RouterSuffixed(t *testing.T) {
 	for _, bad := range []string{native + ".", native + ".bad_char", native + ".a.b"} {
 		if _, err := InspectGPTReasoningSignature(bad); err == nil {
 			t.Fatalf("InspectGPTReasoningSignature(%q) unexpectedly succeeded", bad)
+		}
+	}
+}
+
+func TestDevinOpenAIReasoningSignature(t *testing.T) {
+	item := `{"type":"reasoning","encrypted_content":"` + testGPTReasoningSignature() + `"}`
+	good := "[" + item + "," + item + "]"
+	if !IsDevinOpenAIReasoningSignature(good) || IsRecognizedReasoningSignature(good) {
+		t.Fatal("array must be valid only for Devin, not native GPT")
+	}
+	for _, bad := range []string{"[]", item, "[" + item + ",{}]", "[" + item + ",]", `[{"type":"reasoning","encrypted_content":"not a signature"}]`, strings.Replace(good, "reasoning", "message", 1)} {
+		if IsDevinOpenAIReasoningSignature(bad) {
+			t.Errorf("accepted invalid Devin signature: %s", bad)
 		}
 	}
 }

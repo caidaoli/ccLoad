@@ -4,8 +4,9 @@ import (
 	"crypto/rand"
 	"strings"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 const tooluLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -47,46 +48,88 @@ func RequestModelName(originalRequestRawJSON, requestRawJSON []byte) string {
 }
 
 func requestModelName(rawJSON []byte) string {
-	if len(rawJSON) == 0 || !gjson.ValidBytes(rawJSON) {
+	if len(rawJSON) == 0 || !ojson.ValidBytes(rawJSON) {
 		return ""
 	}
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	for _, path := range []string{"model", "request.model"} {
 		model := root.Get(path)
-		if model.Type == gjson.String && strings.TrimSpace(model.String()) != "" {
-			return model.String()
+		if model.Type == ojson.String && strings.TrimSpace(model.String()) != "" {
+			return strings.Clone(model.String())
 		}
 	}
 	return ""
 }
 
-// ApplyClaudeGenerationConstraints copies Claude limits, stop sequences and a valid
-// structured-output schema to a Gemini generation config using its target schema field.
-func ApplyClaudeGenerationConstraints(out, source []byte, configPath, schemaKey string) []byte {
-	if value := gjson.GetBytes(source, "max_tokens"); value.Type == gjson.Number {
-		out, _ = sjson.SetRawBytes(out, configPath+".maxOutputTokens", []byte(value.Raw))
+// ClaudeMaxTokensRaw returns the raw JSON number token for a Claude max_tokens
+// field so translators preserve native values (including 0) without float
+// reformatting, silent truncation, or arbitrary clamping.
+func ClaudeMaxTokensRaw(v ojson.Result) (string, bool) {
+	if !v.Exists() || v.Type != ojson.Number || v.Raw == "" {
+		return "", false
 	}
+	return v.Raw, true
+}
 
-	if stops := gjson.GetBytes(source, "stop_sequences"); stops.IsArray() {
-		var sequences []string
-		stops.ForEach(func(_, stop gjson.Result) bool {
-			if stop.Type == gjson.String && stop.Str != "" {
-				sequences = append(sequences, stop.Str)
-			}
-			return true
-		})
-		if len(sequences) > 0 {
-			out, _ = sjson.SetBytes(out, configPath+".stopSequences", sequences)
-		}
+// ClaudeStopSequences extracts non-empty string entries from a Claude stop_sequences array.
+func ClaudeStopSequences(v ojson.Result) []string {
+	if !v.Exists() || !v.IsArray() {
+		return nil
 	}
+	var sequences []string
+	v.ForEach(func(_, item ojson.Result) bool {
+		if item.Type == ojson.String && item.String() != "" {
+			sequences = append(sequences, item.String())
+		}
+		return true
+	})
+	if len(sequences) == 0 {
+		return nil
+	}
+	return sequences
+}
 
-	if format := gjson.GetBytes(source, "output_config.format"); format.IsObject() &&
-		strings.EqualFold(strings.TrimSpace(format.Get("type").String()), "json_schema") {
-		if schema := format.Get("schema"); schema.IsObject() {
-			out, _ = sjson.SetBytes(out, configPath+".responseMimeType", "application/json")
-			out, _ = sjson.SetRawBytes(out, configPath+"."+schemaKey, []byte(schema.Raw))
-		}
+// OpenAIStopSequences extracts non-empty stop sequence strings from an OpenAI stop field
+// (either a single string or an array of strings).
+func OpenAIStopSequences(v ojson.Result) []string {
+	if !v.Exists() || v.Type == ojson.Null {
+		return nil
 	}
-	return out
+	if v.Type == ojson.String {
+		if s := v.String(); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+	if !v.IsArray() {
+		return nil
+	}
+	var sequences []string
+	v.ForEach(func(_, item ojson.Result) bool {
+		if item.Type == ojson.String && item.String() != "" {
+			sequences = append(sequences, item.String())
+		}
+		return true
+	})
+	if len(sequences) == 0 {
+		return nil
+	}
+	return sequences
+}
+
+// ClaudeOutputJSONSchema returns the schema object when output_config.format
+// specifies a valid json_schema format.
+func ClaudeOutputJSONSchema(format ojson.Result) (ojson.Result, bool) {
+	if !format.Exists() || !format.IsObject() {
+		return ojson.Result{}, false
+	}
+	if !strings.EqualFold(strings.TrimSpace(format.Get("type").String()), "json_schema") {
+		return ojson.Result{}, false
+	}
+	schema := format.Get("schema")
+	if !schema.Exists() || !schema.IsObject() {
+		return ojson.Result{}, false
+	}
+	return schema, true
 }

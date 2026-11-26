@@ -1,12 +1,13 @@
 package signature
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"ccLoad/internal/protocol/cliproxy/signature/signaturetest"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestSanitizeGeminiRequestThoughtSignaturesPreservesGeminiSignature(t *testing.T) {
@@ -15,7 +16,7 @@ func TestSanitizeGeminiRequestThoughtSignaturesPreservesGeminiSignature(t *testi
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != sig {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != sig {
 		t.Fatalf("thoughtSignature = %q, want %q. Output: %s", got, sig, string(out))
 	}
 	if &out[0] != &input[0] {
@@ -35,7 +36,7 @@ func TestSanitizeGeminiRequestThoughtSignatures_PromotesNonEmptyFallback(t *test
 				{"function_response":{"name":"first","thoughtSignature":"` + sig + `","response":{"thought_signature":"tool data"}},"thought_signature":""}
 			]}]}`)
 			out := SanitizeGeminiRequestThoughtSignatures(body, "contents")
-			if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != sig {
+			if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != sig {
 				t.Fatalf("thoughtSignature=%q, want %q; output=%s", got, sig, out)
 			}
 			for _, path := range []string{
@@ -46,11 +47,11 @@ func TestSanitizeGeminiRequestThoughtSignatures_PromotesNonEmptyFallback(t *test
 				"contents.1.parts.0.function_response.thoughtSignature",
 				"contents.1.parts.0.thought_signature",
 			} {
-				if gjson.GetBytes(out, path).Exists() {
+				if ojson.GetBytes(out, path).Exists() {
 					t.Errorf("unexpected signature at %s; output=%s", path, out)
 				}
 			}
-			if got := gjson.GetBytes(out, "contents.1.parts.0.function_response.response.thought_signature").String(); got != "tool data" {
+			if got := ojson.GetBytes(out, "contents.1.parts.0.function_response.response.thought_signature").String(); got != "tool data" {
 				t.Fatalf("tool data was changed: %s", out)
 			}
 		})
@@ -65,12 +66,12 @@ func TestSanitizeVertexSignaturesForNonVertex_SnakeCaseCalls(t *testing.T) {
 		{"text":"keep","thoughtSignature":"existing"}
 	]}]}`)
 	out := SanitizeVertexSignaturesForNonVertex(body, "contents")
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 		t.Errorf("first function_call did not gain its required signature: %s", out)
 	}
-	if gjson.GetBytes(out, "contents.0.parts.0.function_call.thought_signature").Exists() ||
-		gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature").Exists() ||
-		gjson.GetBytes(out, "contents.0.parts.2.thoughtSignature").String() != "existing" {
+	if ojson.GetBytes(out, "contents.0.parts.0.function_call.thought_signature").Exists() ||
+		ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature").Exists() ||
+		ojson.GetBytes(out, "contents.0.parts.2.thoughtSignature").String() != "existing" {
 		t.Fatalf("expected only incompatible Vertex signatures to change: %s", out)
 	}
 }
@@ -80,7 +81,7 @@ func TestSanitizeGeminiRequestThoughtSignaturesNormalizesDuplicateCanonicalField
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 		t.Fatalf("thoughtSignature = %q, want bypass sentinel. Output: %s", got, out)
 	}
 	if count := strings.Count(string(out), `"thoughtSignature"`); count != 1 {
@@ -93,10 +94,10 @@ func TestSanitizeGeminiRequestThoughtSignaturesParallelSyntheticOnlyFirstGetsByp
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 		t.Fatalf("first call signature = %q, want bypass sentinel; output=%s", got, out)
 	}
-	if signature := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
+	if signature := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
 		t.Fatalf("second parallel call should remain unsigned; output=%s", out)
 	}
 }
@@ -107,13 +108,13 @@ func TestSanitizeGeminiRequestThoughtSignaturesCallAfterTextGetsBypass(t *testin
 
 		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-		if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("first call signature = %q, want bypass sentinel; output=%s", got, out)
 		}
-		if signature := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
+		if signature := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
 			t.Fatalf("second parallel call should remain unsigned; output=%s", out)
 		}
-		if got := gjson.GetBytes(out, "contents.0.parts.3.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		if got := ojson.GetBytes(out, "contents.0.parts.3.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("call after text signature = %q, want bypass sentinel; output=%s", got, out)
 		}
 	})
@@ -127,13 +128,13 @@ func TestSanitizeGeminiRequestThoughtSignaturesCallAfterTextGetsBypass(t *testin
 
 		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-		if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("first call signature = %q, want bypass sentinel; output=%s", got, out)
 		}
-		if signature := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
+		if signature := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
 			t.Fatalf("second parallel call should have bypass stripped; output=%s", out)
 		}
-		if got := gjson.GetBytes(out, "contents.0.parts.3.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		if got := ojson.GetBytes(out, "contents.0.parts.3.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("call after text signature = %q, want bypass sentinel preserved; output=%s", got, out)
 		}
 	})
@@ -146,10 +147,10 @@ func TestSanitizeGeminiRequestThoughtSignaturesCallAfterTextGetsBypass(t *testin
 
 		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-		if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("first call signature = %q, want bypass sentinel; output=%s", got, out)
 		}
-		if signature := gjson.GetBytes(out, "contents.0.parts.2.thoughtSignature"); signature.Exists() {
+		if signature := ojson.GetBytes(out, "contents.0.parts.2.thoughtSignature"); signature.Exists() {
 			t.Fatalf("call after thought part should remain unsigned sibling; output=%s", out)
 		}
 	})
@@ -161,10 +162,10 @@ func TestSanitizeGeminiRequestThoughtSignaturesNativeParallelPreservesUnsignedSi
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != nativeSignature {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != nativeSignature {
 		t.Fatalf("first call signature = %q, want native signature; output=%s", got, out)
 	}
-	if signature := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
+	if signature := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
 		t.Fatalf("native unsigned sibling should remain unsigned; output=%s", out)
 	}
 	if &out[0] != &input[0] {
@@ -178,10 +179,10 @@ func TestSanitizeGeminiRequestThoughtSignaturesRemovesPollutedSiblingBypass(t *t
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != nativeSignature {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != nativeSignature {
 		t.Fatalf("first call signature = %q, want native signature; output=%s", got, out)
 	}
-	if signature := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
+	if signature := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
 		t.Fatalf("polluted sibling bypass should be removed; output=%s", out)
 	}
 }
@@ -194,7 +195,7 @@ func TestSanitizeGeminiRequestThoughtSignaturesRemovesPrefixedSiblingBypass(t *t
 
 			out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-			if signature := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
+			if signature := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature"); signature.Exists() {
 				t.Fatalf("prefixed sibling bypass should be removed; output=%s", out)
 			}
 		})
@@ -206,7 +207,7 @@ func TestSanitizeGeminiRequestThoughtSignaturesLeavesUnsignedThoughtUnsigned(t *
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if signature := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature"); signature.Exists() {
+	if signature := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature"); signature.Exists() {
 		t.Fatalf("unsigned thought should remain unsigned; output=%s", out)
 	}
 	if &out[0] != &input[0] {
@@ -233,10 +234,10 @@ func TestSanitizeGeminiRequestThoughtSignaturesReplacesBase64UUIDFunctionCall(t 
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 		t.Fatalf("thoughtSignature = %q, want bypass sentinel. Output: %s", got, string(out))
 	}
-	if gjson.GetBytes(out, "contents.0.parts.0.functionCall.thoughtSignature").Exists() {
+	if ojson.GetBytes(out, "contents.0.parts.0.functionCall.thoughtSignature").Exists() {
 		t.Fatalf("nested functionCall thoughtSignature should be removed. Output: %s", string(out))
 	}
 }
@@ -247,7 +248,7 @@ func TestSanitizeGeminiRequestThoughtSignaturesPreservesField2WrappedUUIDFunctio
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "request.contents")
 
-	if got := gjson.GetBytes(out, "request.contents.0.parts.0.thoughtSignature").String(); got != sig {
+	if got := ojson.GetBytes(out, "request.contents.0.parts.0.thoughtSignature").String(); got != sig {
 		t.Fatalf("thoughtSignature = %q, want wrapped UUID signature preserved. Output: %s", got, string(out))
 	}
 }
@@ -257,10 +258,10 @@ func TestSanitizeGeminiRequestThoughtSignaturesRemovesFunctionResponseSignature(
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").Exists() {
+	if ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").Exists() {
 		t.Fatalf("functionResponse top-level thoughtSignature should be removed. Output: %s", string(out))
 	}
-	if gjson.GetBytes(out, "contents.0.parts.0.functionResponse.thoughtSignature").Exists() {
+	if ojson.GetBytes(out, "contents.0.parts.0.functionResponse.thoughtSignature").Exists() {
 		t.Fatalf("functionResponse nested thoughtSignature should be removed. Output: %s", string(out))
 	}
 }
@@ -273,13 +274,13 @@ func TestSanitizeGeminiRequestThoughtSignatures_PreservesToolCallAndResponseSign
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.1.parts.0.thoughtSignature").String(); got != liveCapturedToolCallSig {
+	if got := ojson.GetBytes(out, "contents.1.parts.0.thoughtSignature").String(); got != liveCapturedToolCallSig {
 		t.Fatalf("toolCall thoughtSignature = %q, want %q. Output: %s", got, liveCapturedToolCallSig, string(out))
 	}
-	if got := gjson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != liveCapturedToolCallSig {
+	if got := ojson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != liveCapturedToolCallSig {
 		t.Fatalf("toolResponse thoughtSignature = %q, want %q. Output: %s", got, liveCapturedToolCallSig, string(out))
 	}
-	if got := gjson.GetBytes(out, "contents.1.parts.2.thoughtSignature").String(); got != sigModel {
+	if got := ojson.GetBytes(out, "contents.1.parts.2.thoughtSignature").String(); got != sigModel {
 		t.Fatalf("functionCall thoughtSignature = %q, want %q. Output: %s", got, sigModel, string(out))
 	}
 }
@@ -295,10 +296,10 @@ func TestSanitizeGeminiRequestThoughtSignatures_SkipsToolCallAndToolResponsePart
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != arbitrarySig {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != arbitrarySig {
 		t.Fatalf("toolCall thoughtSignature = %q, want preserved %q", got, arbitrarySig)
 	}
-	if got := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature").String(); got != arbitrarySig {
+	if got := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature").String(); got != arbitrarySig {
 		t.Fatalf("toolResponse thoughtSignature = %q, want preserved %q", got, arbitrarySig)
 	}
 }
@@ -313,10 +314,10 @@ func TestSanitizeGeminiRequestThoughtSignatures_SkipsSnakeCaseToolCallAndRespons
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thought_signature").String(); got != arbitrarySig {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thought_signature").String(); got != arbitrarySig {
 		t.Fatalf("tool_call thought_signature = %q, want preserved %q", got, arbitrarySig)
 	}
-	if got := gjson.GetBytes(out, "contents.0.parts.1.thought_signature").String(); got != arbitrarySig {
+	if got := ojson.GetBytes(out, "contents.0.parts.1.thought_signature").String(); got != arbitrarySig {
 		t.Fatalf("tool_response thought_signature = %q, want preserved %q", got, arbitrarySig)
 	}
 }
@@ -329,7 +330,7 @@ func TestSanitizeGeminiRequestThoughtSignatures_DropsForeignSignatureOnTextPart(
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").Exists() {
+	if ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").Exists() {
 		t.Fatalf("expected foreign signature on text part to be dropped, got %s", string(out))
 	}
 }
@@ -345,10 +346,10 @@ func TestSanitizeGeminiRequestThoughtSignatures_MixedToolCallAndUnsignedFunction
 
 	out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
 
-	if got := gjson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != toolSig {
+	if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != toolSig {
 		t.Fatalf("toolCall signature = %q, want preserved %q", got, toolSig)
 	}
-	if got := gjson.GetBytes(out, "contents.0.parts.1.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+	if got := ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 		t.Fatalf("functionCall signature = %q, want bypass %q. Output: %s", got, GeminiSkipThoughtSignatureValidator, string(out))
 	}
 }
@@ -367,10 +368,10 @@ func TestSanitizeGeminiRequestThoughtSignatures_PreservesVertexBareTink(t *testi
 	sig := testGeminiBareTinkSignature(405)
 	out := SanitizeGeminiRequestThoughtSignatures(bareTinkReplayPayload(sig), "contents")
 
-	if got := gjson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != sig {
+	if got := ojson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != sig {
 		t.Fatalf("functionCall signature = %q, want original bare-Tink value", got)
 	}
-	if got := gjson.GetBytes(out, "contents.3.parts.0.thoughtSignature").String(); got != sig {
+	if got := ojson.GetBytes(out, "contents.3.parts.0.thoughtSignature").String(); got != sig {
 		t.Fatalf("text signature = %q, want original bare-Tink value", got)
 	}
 }
@@ -379,13 +380,13 @@ func TestSanitizeNonVertexGeminiRequestThoughtSignatures_ReplacesVertexBareTink(
 	sig := testGeminiBareTinkSignature(405)
 	out := SanitizeNonVertexGeminiRequestThoughtSignatures(bareTinkReplayPayload(sig), "contents")
 
-	if got := gjson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+	if got := ojson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 		t.Fatalf("functionCall signature = %q, want bypass sentinel", got)
 	}
-	if gjson.GetBytes(out, "contents.3.parts.0.thoughtSignature").Exists() {
+	if ojson.GetBytes(out, "contents.3.parts.0.thoughtSignature").Exists() {
 		t.Fatalf("text signature should be dropped: %s", out)
 	}
-	if got := gjson.GetBytes(out, "contents.1.parts.0.thought").Bool(); !got {
+	if got := ojson.GetBytes(out, "contents.1.parts.0.thought").Bool(); !got {
 		t.Fatalf("thought part must stay untouched: %s", out)
 	}
 }
@@ -394,10 +395,10 @@ func TestSanitizeNonVertexGeminiRequestThoughtSignatures_PreservesWrappedEnvelop
 	sig := testGeminiThoughtSignatureEnvelope()
 	out := SanitizeNonVertexGeminiRequestThoughtSignatures(bareTinkReplayPayload(sig), "contents")
 
-	if got := gjson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != sig {
+	if got := ojson.GetBytes(out, "contents.1.parts.1.thoughtSignature").String(); got != sig {
 		t.Fatalf("functionCall signature = %q, want wrapped envelope preserved", got)
 	}
-	if got := gjson.GetBytes(out, "contents.3.parts.0.thoughtSignature").String(); got != sig {
+	if got := ojson.GetBytes(out, "contents.3.parts.0.thoughtSignature").String(); got != sig {
 		t.Fatalf("text signature = %q, want wrapped envelope preserved", got)
 	}
 }
@@ -418,11 +419,11 @@ func TestSanitizeVertexSignaturesForNonVertexOnlyChangesBareTink(t *testing.T) {
 		`]}, {"role":"user","parts":[{"functionResponse":{"name":"first","response":{}},"thoughtSignature":"` + sig + `"}]}]}}`)
 	out := SanitizeVertexSignaturesForNonVertex(input, "request.contents")
 	for _, index := range []int{0, 5} {
-		if got := gjson.GetBytes(out, "request.contents.0.parts").Array()[index].Get("thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		if got := ojson.GetBytes(out, "request.contents.0.parts").Array()[index].Get("thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("part %d signature = %q, want bypass: %s", index, got, out)
 		}
 	}
-	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
+	parts := ojson.GetBytes(out, "request.contents.0.parts").Array()
 	for _, index := range []int{1, 2, 8} {
 		if parts[index].Get("thoughtSignature").Exists() || parts[index].Get("thought_signature").Exists() {
 			t.Fatalf("part %d kept bare-Tink signature: %s", index, out)
@@ -431,13 +432,13 @@ func TestSanitizeVertexSignaturesForNonVertexOnlyChangesBareTink(t *testing.T) {
 	if parts[5].Get("functionCall.thought_signature").Exists() {
 		t.Fatalf("nested alias survived normalization: %s", out)
 	}
-	originalParts := gjson.GetBytes(input, "request.contents.0.parts").Array()
+	originalParts := ojson.GetBytes(input, "request.contents.0.parts").Array()
 	for _, index := range []int{3, 4, 6, 7} {
 		if parts[index].Raw != originalParts[index].Raw {
 			t.Fatalf("unrelated part %d changed: got %s, want %s", index, parts[index].Raw, originalParts[index].Raw)
 		}
 	}
-	if gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").Exists() {
+	if ojson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").Exists() {
 		t.Fatalf("functionResponse kept bare-Tink signature: %s", out)
 	}
 }
@@ -459,7 +460,7 @@ func TestSanitizeGeminiRequestThoughtSignatures_StripsEmptySystemInstructionPart
 	t.Run("drops_systemInstruction_when_all_parts_are_empty_objects", func(t *testing.T) {
 		input := []byte(`{"request":{"systemInstruction":{"parts":[{}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`)
 		out := SanitizeGeminiRequestThoughtSignatures(input, "request.contents")
-		if gjson.GetBytes(out, "request.systemInstruction").Exists() {
+		if ojson.GetBytes(out, "request.systemInstruction").Exists() {
 			t.Fatalf("expected request.systemInstruction to be removed, got %s", out)
 		}
 	})
@@ -467,7 +468,7 @@ func TestSanitizeGeminiRequestThoughtSignatures_StripsEmptySystemInstructionPart
 	t.Run("retains_non_empty_systemInstruction_parts", func(t *testing.T) {
 		input := []byte(`{"systemInstruction":{"parts":[{},{"text":"keep rule"},{}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
-		parts := gjson.GetBytes(out, "systemInstruction.parts").Array()
+		parts := ojson.GetBytes(out, "systemInstruction.parts").Array()
 		if len(parts) != 1 || parts[0].Get("text").String() != "keep rule" {
 			t.Fatalf("unexpected systemInstruction.parts: %s", out)
 		}
@@ -476,7 +477,7 @@ func TestSanitizeGeminiRequestThoughtSignatures_StripsEmptySystemInstructionPart
 	t.Run("handles_snake_case_without_contents", func(t *testing.T) {
 		input := []byte(`{"request":{"system_instruction":{"role":"system","parts":[{}, {"text":"keep"}, {}]}}}`)
 		out := SanitizeGeminiRequestThoughtSignatures(input, "request.contents")
-		sys := gjson.GetBytes(out, "request.system_instruction")
+		sys := ojson.GetBytes(out, "request.system_instruction")
 		parts := sys.Get("parts").Array()
 		if sys.Get("role").String() != "system" || len(parts) != 1 || parts[0].Get("text").String() != "keep" {
 			t.Fatalf("unexpected request.system_instruction: %s", out)
@@ -486,10 +487,280 @@ func TestSanitizeGeminiRequestThoughtSignatures_StripsEmptySystemInstructionPart
 	t.Run("keeps_empty_text_field_and_valid_part_order", func(t *testing.T) {
 		input := []byte(`{"systemInstruction":{"parts":[{"text":"first"},{},{"text":""},{},{"text":"last"}]}}`)
 		out := SanitizeGeminiRequestThoughtSignatures(input, "")
-		parts := gjson.GetBytes(out, "systemInstruction.parts").Array()
+		parts := ojson.GetBytes(out, "systemInstruction.parts").Array()
 		if len(parts) != 3 || parts[0].Get("text").String() != "first" || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[2].Get("text").String() != "last" {
 			t.Fatalf("non-empty Part objects changed or reordered: %s", out)
 		}
 	})
 
+}
+
+func TestSanitizeNonVertexGeminiRequestThoughtSignaturesDoc_ReplacesVertexBareTink(t *testing.T) {
+	sig := testGeminiBareTinkSignature(405)
+	doc := ojson.NewDoc(bareTinkReplayPayload(sig))
+	SanitizeNonVertexGeminiRequestThoughtSignaturesDoc(doc, "contents")
+
+	if got := doc.Get("contents.1.parts.1.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("functionCall signature = %q, want bypass sentinel", got)
+	}
+	if doc.Get("contents.3.parts.0.thoughtSignature").Exists() {
+		t.Fatalf("text signature should be dropped: %s", doc.String())
+	}
+}
+
+func TestSanitizeGeminiRequestThoughtSignaturesDoc_SnakeCaseFunctionCallAndResponse(t *testing.T) {
+	input := []byte(`{"contents":[` +
+		`{"role":"model","parts":[{"function_call":{"name":"get_weather"},"thoughtSignature":"` + GeminiSkipThoughtSignatureValidator + `"}]},` +
+		`{"role":"user","parts":[{"function_response":{"name":"get_weather","response":{}},"thoughtSignature":"abc"}]}` +
+		`]}`)
+	doc := ojson.NewDoc(input)
+	SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+
+	if got := doc.Get("contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("snake_case function_call sentinel = %q, want %q; out=%s", got, GeminiSkipThoughtSignatureValidator, doc.String())
+	}
+	if doc.Get("contents.1.parts.0.thoughtSignature").Exists() {
+		t.Fatalf("snake_case function_response thoughtSignature should be stripped; out=%s", doc.String())
+	}
+}
+
+func TestSanitizeGeminiRequestThoughtSignatures_SnakeCaseFunctionCallBypassAndParallel(t *testing.T) {
+	t.Run("unsigned_first_function_call_gets_bypass", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[{"function_call":{"name":"first","args":{}}},{"function_call":{"name":"second","args":{}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+			t.Fatalf("first snake_case function_call signature = %q, want bypass sentinel; out=%s", got, out)
+		}
+		if ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature").Exists() {
+			t.Fatalf("second parallel snake_case function_call should stay unsigned; out=%s", out)
+		}
+	})
+
+	t.Run("parallel_bypass_stripped_on_sibling_only", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[` +
+			`{"function_call":{"name":"first","args":{}},"thought_signature":"` + GeminiSkipThoughtSignatureValidator + `"},` +
+			`{"function_call":{"name":"second","args":{}},"thought_signature":"` + GeminiSkipThoughtSignatureValidator + `"}` +
+			`]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+			t.Fatalf("first snake_case function_call signature = %q, want bypass sentinel; out=%s", got, out)
+		}
+		if ojson.GetBytes(out, "contents.0.parts.0.thought_signature").Exists() {
+			t.Fatalf("first snake_case function_call should normalize thought_signature to thoughtSignature; out=%s", out)
+		}
+		if ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature").Exists() || ojson.GetBytes(out, "contents.0.parts.1.thought_signature").Exists() {
+			t.Fatalf("sibling snake_case function_call bypass should be stripped; out=%s", out)
+		}
+	})
+
+	t.Run("mixed_snake_and_camel_parallel_calls", func(t *testing.T) {
+		nativeSig := testGemini3ThoughtSignature([]byte{0x01, 0x0c, 0x39})
+		input := []byte(`{"contents":[{"role":"model","parts":[` +
+			`{"function_call":{"name":"first","args":{}},"thoughtSignature":"` + nativeSig + `"},` +
+			`{"functionCall":{"name":"second","args":{}}}` +
+			`]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != nativeSig {
+			t.Fatalf("first snake_case function_call signature = %q, want %q; out=%s", got, nativeSig, out)
+		}
+		if ojson.GetBytes(out, "contents.0.parts.1.thoughtSignature").Exists() {
+			t.Fatalf("camelCase sibling after snake_case function_call should stay unsigned; out=%s", out)
+		}
+	})
+}
+
+func TestSanitizeGeminiRequestThoughtSignatures_SnakeCaseNestedSignatures(t *testing.T) {
+	t.Run("replaces_nested_function_call_signature", func(t *testing.T) {
+		sig := testGeminiThoughtSignature([]byte("e24830a7-5cd6-42fe-998b-ee539e72b9c3"))
+		input := []byte(`{"contents":[{"role":"model","parts":[{"function_call":{"name":"f","args":{},"thought_signature":"` + sig + `","thoughtSignature":"` + sig + `"}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+			t.Fatalf("thoughtSignature = %q, want bypass sentinel; out=%s", got, out)
+		}
+		if ojson.GetBytes(out, "contents.0.parts.0.function_call.thought_signature").Exists() ||
+			ojson.GetBytes(out, "contents.0.parts.0.function_call.thoughtSignature").Exists() {
+			t.Fatalf("nested function_call signature fields should be removed; out=%s", out)
+		}
+	})
+
+	t.Run("strips_top_level_and_nested_function_response_signatures", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"user","parts":[{"function_response":{"name":"f","response":{"result":"ok"},"thoughtSignature":"bad1","thought_signature":"bad2"},"thought_signature":"bad3"}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		for _, path := range []string{
+			"contents.0.parts.0.thoughtSignature",
+			"contents.0.parts.0.thought_signature",
+			"contents.0.parts.0.function_response.thoughtSignature",
+			"contents.0.parts.0.function_response.thought_signature",
+		} {
+			if ojson.GetBytes(out, path).Exists() {
+				t.Fatalf("expected %s to be stripped; out=%s", path, out)
+			}
+		}
+	})
+
+	t.Run("reuses_unsigned_snake_case_function_response_payload", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"user","parts":[{"function_response":{"name":"f","response":{"result":"ok"}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if &out[0] != &input[0] {
+			t.Fatal("unsigned snake_case function_response payload was copied")
+		}
+	})
+}
+
+func TestSanitizeGeminiRequestThoughtSignaturesDoc_EmptyThoughtSignaturePromotesFallback(t *testing.T) {
+	sig := testGemini3ThoughtSignature([]byte{0x01, 0x0c, 0x39})
+
+	tests := []struct {
+		name           string
+		partJSON       string
+		fallbackRemove string
+	}{
+		{
+			name:           "empty_string_with_extra_content_fallback",
+			partJSON:       `{"functionCall":{"name":"get_weather","args":{}},"thoughtSignature":"","extra_content":{"google":{"thought_signature":"` + sig + `"}}}`,
+			fallbackRemove: "contents.0.parts.0.extra_content.google.thought_signature",
+		},
+		{
+			name:           "whitespace_with_extra_content_fallback",
+			partJSON:       `{"functionCall":{"name":"get_weather","args":{}},"thoughtSignature":"   ","extra_content":{"google":{"thought_signature":"` + sig + `"}}}`,
+			fallbackRemove: "contents.0.parts.0.extra_content.google.thought_signature",
+		},
+		{
+			name:           "null_with_extra_content_fallback",
+			partJSON:       `{"functionCall":{"name":"get_weather","args":{}},"thoughtSignature":null,"extra_content":{"google":{"thought_signature":"` + sig + `"}}}`,
+			fallbackRemove: "contents.0.parts.0.extra_content.google.thought_signature",
+		},
+		{
+			name:           "empty_string_with_snake_case_thought_signature_fallback",
+			partJSON:       `{"functionCall":{"name":"get_weather","args":{}},"thoughtSignature":"","thought_signature":"` + sig + `"}`,
+			fallbackRemove: "contents.0.parts.0.thought_signature",
+		},
+		{
+			name:           "empty_string_with_nested_functionCall_fallback",
+			partJSON:       `{"functionCall":{"name":"get_weather","args":{},"thoughtSignature":"` + sig + `"},"thoughtSignature":""}`,
+			fallbackRemove: "contents.0.parts.0.functionCall.thoughtSignature",
+		},
+		{
+			name:           "empty_string_on_text_part_with_extra_content_fallback",
+			partJSON:       `{"text":"previous answer","thoughtSignature":"","extra_content":{"google":{"thought_signature":"` + sig + `"}}}`,
+			fallbackRemove: "contents.0.parts.0.extra_content.google.thought_signature",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := ojson.NewDoc([]byte(`{"contents":[{"role":"model","parts":[` + tt.partJSON + `]}]}`))
+			SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+
+			if got := doc.Get("contents.0.parts.0.thoughtSignature").String(); got != sig {
+				t.Fatalf("thoughtSignature = %q, want %q; out=%s", got, sig, doc.String())
+			}
+			if doc.Get(tt.fallbackRemove).Exists() {
+				t.Fatalf("expected fallback field %s to be removed; out=%s", tt.fallbackRemove, doc.String())
+			}
+		})
+	}
+}
+
+func TestSanitizeGeminiRequestThoughtSignatures_AllEmptySignaturePaths(t *testing.T) {
+	t.Run("first_function_call_gets_bypass_and_clears_empty_fallback", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f","args":{}},"thoughtSignature":"","extra_content":{"google":{"thought_signature":"   "}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if got := ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").String(); got != GeminiSkipThoughtSignatureValidator {
+			t.Fatalf("thoughtSignature = %q, want bypass sentinel; out=%s", got, out)
+		}
+		if ojson.GetBytes(out, "contents.0.parts.0.extra_content.google.thought_signature").Exists() {
+			t.Fatalf("empty fallback field should be removed; out=%s", out)
+		}
+	})
+
+	t.Run("text_part_strips_all_empty_signature_fields", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[{"text":"answer","thoughtSignature":"","thought_signature":null}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").Exists() ||
+			ojson.GetBytes(out, "contents.0.parts.0.thought_signature").Exists() {
+			t.Fatalf("empty signature fields on text part should be stripped; out=%s", out)
+		}
+	})
+
+	t.Run("function_response_strips_all_empty_signature_fields", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"f","response":{"result":"ok"}},"thoughtSignature":"","extra_content":{"google":{"thought_signature":""}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		if ojson.GetBytes(out, "contents.0.parts.0.thoughtSignature").Exists() ||
+			ojson.GetBytes(out, "contents.0.parts.0.extra_content.google.thought_signature").Exists() {
+			t.Fatalf("empty signature fields on functionResponse should be stripped; out=%s", out)
+		}
+	})
+}
+
+func TestSanitizeGeminiRequestThoughtSignatures_PrunesEmptyExtraContentShell(t *testing.T) {
+	sig := testGemini3ThoughtSignature([]byte{0x01, 0x0c, 0x39})
+
+	t.Run("function_call_prunes_empty_extra_content_shell", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{}},"extra_content":{"google":{"thought_signature":"` + sig + `"}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+		part := ojson.GetBytesNoCopy(out, "contents.0.parts.0")
+		if got := part.Get("thoughtSignature").String(); got != sig {
+			t.Fatalf("thoughtSignature = %q, want %q; part=%s", got, sig, part.Raw)
+		}
+		if part.Get("extra_content").Exists() {
+			t.Fatalf("empty extra_content shell should be pruned; part=%s", part.Raw)
+		}
+	})
+
+	t.Run("function_response_prunes_empty_extra_content_shell", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"f","response":{"result":"ok"}},"extra_content":{"google":{"thought_signature":"` + sig + `"}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+		part := ojson.GetBytesNoCopy(out, "contents.0.parts.0")
+		if part.Get("extra_content").Exists() {
+			t.Fatalf("empty extra_content shell on functionResponse should be pruned; part=%s", part.Raw)
+		}
+	})
+
+	t.Run("preserves_non_empty_sibling_fields", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[{"text":"a","extra_content":{"google":{"thought_signature":"` + sig + `","keep":"yes"}}},{"text":"b","extra_content":{"google":{"thought_signature":"` + sig + `"},"keep":"yes"}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		p0 := ojson.GetBytesNoCopy(out, "contents.0.parts.0")
+		if p0.Get("extra_content.google.thought_signature").Exists() || p0.Get("extra_content.google.keep").String() != "yes" {
+			t.Fatalf("p0 should strip signature but preserve non-empty extra_content.google sibling: %s", p0.Raw)
+		}
+		p1 := ojson.GetBytesNoCopy(out, "contents.0.parts.1")
+		if p1.Get("extra_content.google").Exists() || p1.Get("extra_content.keep").String() != "yes" {
+			t.Fatalf("p1 should prune empty google but preserve extra_content sibling: %s", p1.Raw)
+		}
+	})
+
+	t.Run("duplicate_google_and_extra_content_wrappers_pruned_and_siblings_preserved", func(t *testing.T) {
+		input := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{}},"extra_content":{"google":{"thought_signature":"` + sig + `"},"google":{}}},{"text":"two-google-sigs","extra_content":{"google":{"thought_signature":"` + sig + `"},"google":{"thought_signature":"` + sig + `"}}},{"text":"google-keep-and-sig","extra_content":{"google":{"keep":"yes"},"google":{"thought_signature":"` + sig + `"}}},{"text":"two-extra-sigs","extra_content":{"google":{"thought_signature":"` + sig + `"}},"extra_content":{"google":{"thought_signature":"` + sig + `"}}},{"text":"extra-keep-and-sig","extra_content":{"google":{"thought_signature":"` + sig + `"},"keep":"yes"},"extra_content":{"google":{"thought_signature":"` + sig + `"}}}]}]}`)
+		out := SanitizeGeminiRequestThoughtSignatures(input, "contents")
+
+		p0 := ojson.GetBytesNoCopy(out, "contents.0.parts.0")
+		if p0.Get("thoughtSignature").String() != sig || p0.Get("extra_content").Exists() || strings.Contains(p0.Raw, "thought_signature") {
+			t.Fatalf("p0 should normalize signature and prune duplicate empty google wrapper: %s", p0.Raw)
+		}
+		for _, idx := range []int{1, 3} {
+			p := ojson.GetBytesNoCopy(out, fmt.Sprintf("contents.0.parts.%d", idx))
+			if p.Get("thoughtSignature").String() != sig || p.Get("extra_content").Exists() || strings.Contains(p.Raw, "thought_signature") {
+				t.Fatalf("p%d left extra_content or thought_signature: %s", idx, p.Raw)
+			}
+		}
+		p2 := ojson.GetBytesNoCopy(out, "contents.0.parts.2")
+		if p2.Get("thoughtSignature").String() != sig || strings.Contains(p2.Raw, "thought_signature") || p2.Get("extra_content.google.keep").String() != "yes" || strings.Count(p2.Raw, `"google"`) != 1 {
+			t.Fatalf("p2 should strip duplicate google sig and keep non-empty google sibling: %s", p2.Raw)
+		}
+		p4 := ojson.GetBytesNoCopy(out, "contents.0.parts.4")
+		if p4.Get("thoughtSignature").String() != sig || strings.Contains(p4.Raw, "thought_signature") || strings.Contains(p4.Raw, `"google"`) || p4.Get("extra_content.keep").String() != "yes" || strings.Count(p4.Raw, `"extra_content"`) != 1 {
+			t.Fatalf("p4 should prune empty duplicate extra_content and keep sibling: %s", p4.Raw)
+		}
+	})
 }

@@ -341,6 +341,45 @@ func closeReaderOnContextCancel(ctx context.Context, src io.Reader) func() {
 	}
 }
 
+/**
+ * @brief 终止事件后排空上游剩余正文的边界；超出即关闭连接放弃复用
+ */
+const (
+	upstreamStreamDrainLimit   = 64 << 10        ///< 允许排空的剩余正文上限（字节）；正常 chunked 结尾只有几字节
+	upstreamStreamDrainTimeout = 2 * time.Second ///< 上游终止事件后不结束响应时的等待上限
+)
+
+/**
+ * @brief 把终止事件后剩余的原始 transport body 读到 EOF 再关闭响应体，使 HTTP/1.1 连接回到空闲池（参考 CLIProxyAPI ce38c75c6）。
+ * @param raw 未经解压与 Debug 包装的原始上游响应体
+ * @param body 包装后的响应体，排空结束后关闭
+ * @note 阻塞至读到 EOF、读满 64 KiB 或等满 2 秒（超出则关闭连接放弃复用），调用方应在后台 goroutine 执行；
+ *       上游请求须已用 newDetachableUpstreamContext 摘离，否则请求 ctx 取消会让 transport 丢弃连接。
+ */
+func drainAndCloseTerminatedUpstreamBody(raw, body io.ReadCloser) {
+	timer := time.AfterFunc(upstreamStreamDrainTimeout, func() { _ = raw.Close() })
+	_, _ = io.Copy(io.Discard, io.LimitReader(raw, upstreamStreamDrainLimit))
+	timer.Stop()
+	_ = body.Close()
+}
+
+/**
+ * @brief 派生上游 HTTP 请求上下文：摘离前跟随 parent 取消，摘离后不再受其取消影响（参考 CLIProxyAPI ce38c75c6）。
+ * @param parent 已构建上游请求的上下文（派生自 reqCtx.ctx）
+ * @return 携带 parent 值的上游请求上下文；parent 已结束或带截止时间时原样返回 parent
+ * @return detach 停止转发 parent 的取消；parent 仍存活时返回 true，parent 已取消、已摘离过或无法摘离时返回 false
+ * @details 带截止时间的 parent 不摘离：转发的取消无法让 Err() 报告 DeadlineExceeded，会改变调用方看到的错误。
+ *          摘离后的上下文不再被取消，只用于读完并关闭已终止的响应体。
+ */
+func newDetachableUpstreamContext(parent context.Context) (context.Context, func() bool) {
+	if _, hasDeadline := parent.Deadline(); hasDeadline || parent.Err() != nil {
+		return parent, func() bool { return false }
+	}
+	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
+	stop := context.AfterFunc(parent, func() { cancel(context.Cause(parent)) })
+	return ctx, func() bool { return stop() && parent.Err() == nil }
+}
+
 // deferredResponseWriter 延迟提交响应头，允许在首个可见输出前中止本次流并切换到其他上游。
 type deferredResponseWriter struct {
 	target    http.ResponseWriter

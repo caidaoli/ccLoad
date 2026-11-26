@@ -4,14 +4,14 @@ import (
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const geminiClaudeUnsupportedSignatureTarget = "unsupported"
 
 // geminiClaudeCarrierSignatures binds assistant signature carriers to native
 // parts without allowing a signature to cross another semantic block or message.
-func geminiClaudeCarrierSignatures(blocks []gjson.Result) map[int]string {
+func geminiClaudeCarrierSignatures(blocks []ojson.Result) map[int]string {
 	kinds := make([]string, len(blocks))
 	transparent := make([]bool, len(blocks))
 	previous := make([]int, len(blocks))
@@ -94,8 +94,12 @@ func geminiClaudeCarrierSignatures(blocks []gjson.Result) map[int]string {
 			continue
 		}
 		if target != i && blocks[target].Get("type").String() == "thinking" {
-			ownSignature, ownCompatible := sigcompat.CompatibleSignatureForProviderBlock(sigcompat.SignatureProviderGemini, blocks[target].Get("signature").String(), sigcompat.SignatureBlockKindGeminiModelPart)
-			if ownCompatible && !sigcompat.IsGeminiThoughtSignatureBypass(ownSignature) {
+			if ownSig, ownCompatible := sigcompat.CompatibleSignatureForProviderBlock(
+				sigcompat.SignatureProviderGemini,
+				blocks[target].Get("signature").String(),
+				sigcompat.SignatureBlockKindGeminiModelPart,
+			); ownCompatible && !sigcompat.IsGeminiThoughtSignatureBypass(ownSig) {
+				// Preserve a detached carrier as its own part instead of overwriting a thinking block's own signature.
 				target = i
 			}
 		}

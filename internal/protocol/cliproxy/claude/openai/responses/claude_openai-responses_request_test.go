@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"ccLoad/internal/protocol/cliproxy/common"
@@ -34,7 +34,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SanitizesToolCallIDsForClaude(t *
 	}`
 
 	result, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := ojson.ParseBytes(result)
 	toolUseID := resultJSON.Get("messages.0.content.0.id").String()
 	toolResultID := resultJSON.Get("messages.1.content.0.tool_use_id").String()
 
@@ -53,7 +53,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FableMaxTokens(t *testing.T) {
 			[]byte(`{"model":"claude-fable-5-1","input":"hello"}`),
 			true,
 		)
-		if got := gjson.GetBytes(out, "max_tokens").Int(); got != 64000 {
+		if got := ojson.GetBytes(out, "max_tokens").Int(); got != 64000 {
 			t.Fatalf("max_tokens = %d, want %d; output=%s", got, 64000, out)
 		}
 	})
@@ -64,7 +64,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FableMaxTokens(t *testing.T) {
 			[]byte(`{"model":"claude-fable-5-1","max_output_tokens":128000,"input":"hello"}`),
 			true,
 		)
-		if got := gjson.GetBytes(out, "max_tokens").Int(); got != 128000 {
+		if got := ojson.GetBytes(out, "max_tokens").Int(); got != 128000 {
 			t.Fatalf("max_tokens = %d, want 128000; output=%s", got, out)
 		}
 	})
@@ -75,7 +75,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FableMaxTokens(t *testing.T) {
 			[]byte(`{"model":"claude-3-5-haiku-20241022","input":"hello"}`),
 			true,
 		)
-		if got := gjson.GetBytes(out, "max_tokens").Int(); got != 8192 {
+		if got := ojson.GetBytes(out, "max_tokens").Int(); got != 8192 {
 			t.Fatalf("max_tokens = %d, want 8192; output=%s", got, out)
 		}
 	})
@@ -86,7 +86,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FableMaxTokens(t *testing.T) {
 			[]byte(`{"model":"claude-3-5-haiku-20241022","max_output_tokens":128000,"input":"hello"}`),
 			true,
 		)
-		if got := gjson.GetBytes(out, "max_tokens").Int(); got != 8192 {
+		if got := ojson.GetBytes(out, "max_tokens").Int(); got != 8192 {
 			t.Fatalf("max_tokens = %d, want 8192; output=%s", got, out)
 		}
 	})
@@ -97,7 +97,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FableMaxTokens(t *testing.T) {
 			[]byte(`{"model":"claude-fable-5-1","max_output_tokens":null,"input":"hello"}`),
 			true,
 		)
-		if got := gjson.GetBytes(out, "max_tokens").Int(); got != 64000 {
+		if got := ojson.GetBytes(out, "max_tokens").Int(); got != 64000 {
 			t.Fatalf("max_tokens = %d, want 64000; output=%s", got, out)
 		}
 	})
@@ -136,7 +136,7 @@ func TestConvertOpenAIResponsesRequestToClaude_OmittedMaxOutputTokensUsesRegistr
 			if errConvert != nil {
 				t.Fatalf("convert: %v", errConvert)
 			}
-			if got := gjson.GetBytes(out, "max_tokens").Int(); got != tc.wantLimit {
+			if got := ojson.GetBytes(out, "max_tokens").Int(); got != tc.wantLimit {
 				t.Fatalf("max_tokens = %d, want %d; output=%s", got, tc.wantLimit, out)
 			}
 		})
@@ -167,7 +167,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ReasoningItemToThinkingBlock(t *t
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	assistant := root.Get("messages.0")
 	if got := assistant.Get("role").String(); got != "assistant" {
@@ -217,7 +217,7 @@ func TestConvertOpenAIResponsesRequestToClaude_RedactedReasoningItemRestoresReda
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	block := root.Get("messages.0.content.0")
 	if got := block.Get("type").String(); got != "redacted_thinking" {
@@ -252,7 +252,7 @@ func TestConvertOpenAIResponsesRequestToClaude_EmptyRedactedReasoningItemIsDropp
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("messages.#").Int(); got != 1 {
 		t.Fatalf("message count = %d, want only the user turn. Output: %s", got, string(out))
@@ -282,7 +282,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ReasoningContentTextRebuildsThink
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	thinking := root.Get("messages.0.content.0")
 	if got := thinking.Get("thinking").String(); got != "restored from content" {
@@ -313,7 +313,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SummaryWinsOverDuplicatedReasonin
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	if got := gjson.ParseBytes(out).Get("messages.0.content.0.thinking").String(); got != "chain of thought" {
+	if got := ojson.ParseBytes(out).Get("messages.0.content.0.thinking").String(); got != "chain of thought" {
 		t.Fatalf("thinking text = %q, want the summary text exactly once. Output: %s", got, string(out))
 	}
 }
@@ -337,7 +337,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SignatureOnlyReasoningFlushesBefo
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	thinking := root.Get("messages.0.content.0")
 	if got := thinking.Get("type").String(); got != "thinking" {
@@ -373,13 +373,13 @@ func TestConvertOpenAIResponsesRequestToClaude_DropsIncompatibleReasoningSignatu
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 
-	if gjson.GetBytes(out, "messages.0.content.0.type").String() == "thinking" {
+	if ojson.GetBytes(out, "messages.0.content.0.type").String() == "thinking" {
 		t.Fatalf("GPT encrypted_content should not become Claude thinking. Output: %s", string(out))
 	}
-	if gjson.GetBytes(out, "messages.0.content.0.signature").Exists() {
+	if ojson.GetBytes(out, "messages.0.content.0.signature").Exists() {
 		t.Fatalf("incompatible signature should not be forwarded. Output: %s", string(out))
 	}
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "user" {
+	if got := ojson.GetBytes(out, "messages.0.role").String(); got != "user" {
 		t.Fatalf("first message role = %q, want user. Output: %s", got, string(out))
 	}
 }
@@ -425,7 +425,7 @@ func TestConvertOpenAIResponsesRequestToClaude_GroupsAssistantAndToolResultTurns
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	if got := root.Get("messages.#").Int(); got != 2 {
 		t.Fatalf("message count = %d, want 2. Output: %s", got, string(out))
 	}
@@ -491,7 +491,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MergesConsecutiveUserMessagesAndP
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	if got := root.Get("messages.#").Int(); got != 1 {
 		t.Fatalf("message count = %d, want 1. Output: %s", got, string(out))
 	}
@@ -524,7 +524,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DoesNotMergeAcrossRoleChanges(t *
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	messages := root.Get("messages").Array()
 	if len(messages) != 3 {
 		t.Fatalf("message count = %d, want 3. Output: %s", len(messages), string(out))
@@ -547,7 +547,7 @@ func TestConvertOpenAIResponsesRequestToClaude_EmptyStringContentDoesNotBreakAss
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	messages := root.Get("messages").Array()
 	if len(messages) != 1 {
 		t.Fatalf("message count = %d, want 1. Output: %s", len(messages), string(out))
@@ -596,7 +596,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FunctionCallOutputPreservesInputI
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	toolResult := root.Get("messages.1.content.0")
 	if got := toolResult.Get("type").String(); got != "tool_result" {
@@ -638,10 +638,10 @@ func TestConvertOpenAIResponsesRequestToClaude_StandaloneToolOutputBecomesUserTe
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
-	root.Get("messages").ForEach(func(_, msg gjson.Result) bool {
-		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
+	root.Get("messages").ForEach(func(_, msg ojson.Result) bool {
+		msg.Get("content").ForEach(func(_, block ojson.Result) bool {
 			if block.Get("type").String() == "tool_result" {
 				t.Fatalf("unexpected tool_result for standalone output. Output: %s", string(out))
 			}
@@ -674,7 +674,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SynthesizesResultForDanglingToolU
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("messages.#").Int(); got != 3 {
 		t.Fatalf("message count = %d, want 3. Output: %s", got, string(out))
@@ -706,7 +706,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SynthesizesResultForTrailingToolU
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("messages.#").Int(); got != 3 {
 		t.Fatalf("message count = %d, want 3. Output: %s", got, string(out))
@@ -737,7 +737,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MovesToolResultsAheadOfInjectedTe
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("messages.#").Int(); got != 3 {
 		t.Fatalf("message count = %d, want 3. Output: %s", got, string(out))
@@ -773,7 +773,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SynthesizesResultForTrailingToolU
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-fable-5-1", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("messages.#").Int(); got != 3 {
 		t.Fatalf("message count = %d, want 3. Output: %s", got, string(out))
@@ -817,13 +817,13 @@ func TestConvertOpenAIResponsesRequestToClaude_HoistsToolOutputCacheControl(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			result := gjson.GetBytes(out, "messages.1.content.0")
+			result := ojson.GetBytes(out, "messages.1.content.0")
 			if result.Get("type").String() != "tool_result" || result.Get("cache_control.type").String() != "ephemeral" || result.Get("cache_control.ttl").String() != tt.wantTTL {
 				t.Fatalf("unexpected tool_result: %s", out)
 			}
 			content := result.Get("content")
 			if tt.wantText != "" {
-				if content.Type != gjson.String || content.String() != tt.wantText {
+				if content.Type != ojson.String || content.String() != tt.wantText {
 					t.Fatalf("unexpected tool_result text: %s", content.Raw)
 				}
 				return
@@ -855,7 +855,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StandaloneToolOutputCacheControl(
 	if err != nil {
 		t.Fatal(err)
 	}
-	parts := gjson.GetBytes(out, "messages.0.content").Array()
+	parts := ojson.GetBytes(out, "messages.0.content").Array()
 	if len(parts) != 2 {
 		t.Fatalf("unexpected content: %s", out)
 	}
@@ -883,7 +883,7 @@ func TestConvertOpenAIResponsesRequestToClaude_LateOrphanToolResultFoldsToText(t
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	// messages: user | assistant(tool_use call_a) | user | assistant(text) | user
 	if got := root.Get("messages.#").Int(); got != 5 {
@@ -906,7 +906,7 @@ func TestConvertOpenAIResponsesRequestToClaude_LateOrphanToolResultFoldsToText(t
 	if got := last.Get("role").String(); got != "user" {
 		t.Fatalf("messages.4.role = %q, want user. Output: %s", got, string(out))
 	}
-	last.Get("content").ForEach(func(_, block gjson.Result) bool {
+	last.Get("content").ForEach(func(_, block ojson.Result) bool {
 		if block.Get("type").String() == "tool_result" {
 			t.Fatalf("late output must not remain a tool_result. Output: %s", string(out))
 		}
@@ -934,7 +934,7 @@ func TestConvertOpenAIResponsesRequestToClaude_EmptyStandaloneToolOutputKeepsMar
 		}`)
 
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-		root := gjson.ParseBytes(out)
+		root := ojson.ParseBytes(out)
 
 		if got := root.Get("messages.#").Int(); got != 1 {
 			t.Fatalf("message count = %d, want 1 for output %s. Output: %s", got, output, string(out))
@@ -973,7 +973,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SanitizedIDCollisionKeepsOrphanAs
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	blocks := root.Get("messages.2.content").Array()
 	if len(blocks) != 2 {
@@ -1009,14 +1009,14 @@ func TestConvertOpenAIResponsesRequestToClaude_EmptyLateOrphanToolResultKeepsNon
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-fable-5-1", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
-	root.Get("messages").ForEach(func(_, msg gjson.Result) bool {
+	root.Get("messages").ForEach(func(_, msg ojson.Result) bool {
 		content := msg.Get("content")
 		if content.IsArray() && len(content.Array()) == 0 {
 			t.Fatalf("empty content array in message. Output: %s", string(out))
 		}
-		content.ForEach(func(_, block gjson.Result) bool {
+		content.ForEach(func(_, block ojson.Result) bool {
 			if block.Get("type").String() == "tool_result" && block.Get("tool_use_id").String() == "call_a" && !block.Get("is_error").Bool() {
 				t.Fatalf("late empty orphan must not remain a tool_result. Output: %s", string(out))
 			}
@@ -1048,10 +1048,10 @@ func TestConvertOpenAIResponsesRequestToClaude_LateOrphanToolResultArrayOfEmptyT
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-fable-5-1", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
-	root.Get("messages").ForEach(func(_, msg gjson.Result) bool {
-		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
+	root.Get("messages").ForEach(func(_, msg ojson.Result) bool {
+		msg.Get("content").ForEach(func(_, block ojson.Result) bool {
 			if block.Get("type").String() == "text" && strings.TrimSpace(block.Get("text").String()) == "" {
 				t.Fatalf("empty text block emitted. Output: %s", string(out))
 			}
@@ -1079,10 +1079,10 @@ func TestConvertOpenAIResponsesRequestToClaude_StandaloneToolOutputDropsEmptyTex
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
-	root.Get("messages").ForEach(func(_, msg gjson.Result) bool {
-		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
+	root.Get("messages").ForEach(func(_, msg ojson.Result) bool {
+		msg.Get("content").ForEach(func(_, block ojson.Result) bool {
 			if block.Get("type").String() == "text" && strings.TrimSpace(block.Get("text").String()) == "" {
 				t.Fatalf("empty text block emitted. Output: %s", string(out))
 			}
@@ -1122,7 +1122,7 @@ func TestConvertOpenAIResponsesRequestToClaude_KeepsToolUseAdjacentToToolResult(
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("messages.#").Int(); got != 2 {
 		t.Fatalf("message count = %d, want 2. Output: %s", got, string(out))
@@ -1168,7 +1168,7 @@ func TestConvertOpenAIResponsesRequestToClaude_KeepsApplyPatchCustomTool(t *test
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	if got := root.Get("tools.#").Int(); got != 2 {
 		t.Fatalf("tools count = %d, want 2. Output: %s", got, out)
@@ -1200,7 +1200,7 @@ func TestConvertOpenAIResponsesRequestToClaude_NormalizesRootToolSchemaUnion(t *
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	schema := gjson.GetBytes(out, "tools.0.input_schema")
+	schema := ojson.GetBytes(out, "tools.0.input_schema")
 
 	if got := schema.Get("type").String(); got != "object" {
 		t.Fatalf("input_schema.type = %q, want object. Output: %s", got, string(out))
@@ -1253,7 +1253,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MergesAdditionalToolsAndPrefersTo
 	if errConvert1 != nil {
 		t.Fatal(errConvert1)
 	}
-	root := gjson.ParseBytes(body1)
+	root := ojson.ParseBytes(body1)
 	if got := root.Get("tools.#").Int(); got != 4 {
 		t.Fatalf("tools count = %d, want 4; output=%s", got, root.Raw)
 	}
@@ -1289,7 +1289,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DeduplicatesExpandedToolNames(t *
 	if errConvert2 != nil {
 		t.Fatal(errConvert2)
 	}
-	root := gjson.ParseBytes(body2)
+	root := ojson.ParseBytes(body2)
 	if got := root.Get("tools.#").Int(); got != 2 {
 		t.Fatalf("tools count = %d, want 2; output=%s", got, root.Raw)
 	}
@@ -1323,7 +1323,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DirectToolWinsOverEarlierNamespac
 	if errConvert3 != nil {
 		t.Fatal(errConvert3)
 	}
-	root := gjson.ParseBytes(body3)
+	root := ojson.ParseBytes(body3)
 	if got := root.Get("tools.#").Int(); got != 1 {
 		t.Fatalf("tools count = %d, want 1; output=%s", got, root.Raw)
 	}
@@ -1354,7 +1354,7 @@ func TestConvertOpenAIResponsesRequestToClaude_PrefersDirectToolAcrossAdditional
 	if errConvert4 != nil {
 		t.Fatal(errConvert4)
 	}
-	root := gjson.ParseBytes(body4)
+	root := ojson.ParseBytes(body4)
 	if got := root.Get("tools.#").Int(); got != 1 {
 		t.Fatalf("tools count = %d, want 1; output=%s", got, root.Raw)
 	}
@@ -1387,7 +1387,7 @@ func TestConvertOpenAIResponsesRequestToClaude_PreservesToolDeclarationOrder(t *
 	if errConvert5 != nil {
 		t.Fatal(errConvert5)
 	}
-	root := gjson.ParseBytes(body5)
+	root := ojson.ParseBytes(body5)
 	want := []string{"first", "n__middle", "last"}
 	got := root.Get("tools.#.name").Array()
 	if len(got) != len(want) {
@@ -1413,7 +1413,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ReplaysCustomToolCallHistory(t *t
 	if errConvert6 != nil {
 		t.Fatal(errConvert6)
 	}
-	root := gjson.ParseBytes(body6)
+	root := ojson.ParseBytes(body6)
 	toolUse := root.Get("messages.0.content.0")
 	if got := toolUse.Get("type").String(); got != "tool_use" {
 		t.Fatalf("tool use type = %q, want tool_use; output=%s", got, root.Raw)
@@ -1450,7 +1450,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ReplaysNamespacedFunctionCallHist
 	if errConvert7 != nil {
 		t.Fatal(errConvert7)
 	}
-	root := gjson.ParseBytes(body7)
+	root := ojson.ParseBytes(body7)
 	if !root.Get(`tools.#(name=="mcp__node_repl__js")`).Exists() {
 		t.Fatal("missing qualified namespace tool declaration")
 	}
@@ -1505,7 +1505,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MapsCustomAndNamespacedToolChoice
 			if errConvert8 != nil {
 				t.Fatal(errConvert8)
 			}
-			root := gjson.ParseBytes(body8)
+			root := ojson.ParseBytes(body8)
 			if got := root.Get("tool_choice.type").String(); got != "tool" {
 				t.Fatalf("tool_choice.type = %q, want tool; output=%s", got, root.Raw)
 			}
@@ -1542,7 +1542,7 @@ func TestQualifyResponsesNamespaceToolNameAvoidsPrefixCollision(t *testing.T) {
 	if errConvert9 != nil {
 		t.Fatal(errConvert9)
 	}
-	root := gjson.ParseBytes(body9)
+	root := ojson.ParseBytes(body9)
 	if got := root.Get("tools.0.name").String(); got != "collab__collaboration" {
 		t.Fatalf("qualified tool declaration = %q, want collab__collaboration", got)
 	}
@@ -1621,7 +1621,7 @@ func TestConvertOpenAIResponsesRequestToClaude_PreservesContentPartCacheControl(
 	}`
 
 	result, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := ojson.ParseBytes(result)
 
 	content := resultJSON.Get("messages.0.content")
 	if !content.IsArray() {
@@ -1649,7 +1649,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SystemLevelInputsBecomeSeparateSy
 	}`
 
 	result, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
-	root := gjson.ParseBytes(result)
+	root := ojson.ParseBytes(result)
 
 	system := root.Get("system").Array()
 	if len(system) != 4 {
@@ -1688,7 +1688,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SystemOnlyInputBecomesUserPrompt(
 	inputJSON := `{"model": "gpt-4.1", "instructions": "I1"}`
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-opus-5", []byte(inputJSON), false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	if root.Get("system").Exists() {
 		t.Fatalf("system-only prompt must not leave a top-level system field: %s", root.Get("system").Raw)
 	}
@@ -1723,13 +1723,13 @@ func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemKeepsPromptPrefix
 	]`
 	for _, model := range []string{"claude-opus-5", "provider/claude-opus-5-5", "claude-sonnet-5"} {
 		t.Run(model, func(t *testing.T) {
-			convert := func(input string) gjson.Result {
+			convert := func(input string) ojson.Result {
 				t.Helper()
 				out, err := ConvertOpenAIResponsesRequestToClaude(model, []byte(`{"instructions":"top instructions","input":`+input+`}`), false)
 				if err != nil {
 					t.Fatal(err)
 				}
-				return gjson.ParseBytes(out)
+				return ojson.ParseBytes(out)
 			}
 			first, next := convert(firstInput), convert(nextInput)
 			if got := next.Get("system.#.text").Raw; got != `["top instructions","base instructions","leading context"]` {
@@ -1773,7 +1773,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemPreservesToolResu
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := gjson.ParseBytes(result)
+	root := ojson.ParseBytes(result)
 	if root.Get("system").Exists() {
 		t.Fatalf("mid-session instructions reached prefix: %s", root.Get("system").Raw)
 	}
@@ -1806,7 +1806,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MidSessionSystemFallbacksKeepSour
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	system := root.Get("system").Array()
 	if len(system) != 6 || root.Get("system.#.type").Raw != `["text","text","text","input_image","text","text"]` {
 		t.Fatalf("fallback system = %s", root.Get("system").Raw)
@@ -1837,7 +1837,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SystemNonTextPartKeptAsTypedMarke
 	if errConvert11 != nil {
 		t.Fatal(errConvert11)
 	}
-	root := gjson.ParseBytes(body11)
+	root := ojson.ParseBytes(body11)
 	system := root.Get("system").Array()
 	if len(system) != 2 {
 		t.Fatalf("system blocks = %d, want 2. system: %s", len(system), root.Get("system").Raw)
@@ -1869,7 +1869,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SystemItemCacheControlAppliesToLa
 	if errConvert12 != nil {
 		t.Fatal(errConvert12)
 	}
-	system := gjson.ParseBytes(body12).Get("system").Array()
+	system := ojson.ParseBytes(body12).Get("system").Array()
 	if len(system) != 2 {
 		t.Fatalf("system blocks = %d, want 2", len(system))
 	}
@@ -1944,7 +1944,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DeduplicatesToolOutputs(t *testin
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 
 	messages := root.Get("messages").Array()
 	if len(messages) < 5 {
@@ -2112,7 +2112,7 @@ func TestConvertOpenAIResponsesRequestToClaude_ServiceTierToSpeed(t *testing.T) 
 			raw += `}`
 
 			out, _ := ConvertOpenAIResponsesRequestToClaude("claude-3-7-sonnet-20250219", []byte(raw), false)
-			root := gjson.ParseBytes(out)
+			root := ojson.ParseBytes(out)
 
 			speedResult := root.Get("speed")
 			if speedResult.Exists() != tt.wantSpeedExist {
@@ -2151,10 +2151,10 @@ func TestConvertOpenAIResponsesRequestToClaude_PreservesCallerSuppliedMetadataUs
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", []byte(tc.rawJSON), false)
-			if !gjson.ValidBytes(out) {
+			if !ojson.ValidBytes(out) {
 				t.Fatalf("output is invalid json: %s", string(out))
 			}
-			got := gjson.GetBytes(out, "metadata.user_id").String()
+			got := ojson.GetBytes(out, "metadata.user_id").String()
 			if got != tc.expected {
 				t.Fatalf("metadata.user_id = %q, want %q", got, tc.expected)
 			}
@@ -2165,10 +2165,10 @@ func TestConvertOpenAIResponsesRequestToClaude_PreservesCallerSuppliedMetadataUs
 func TestConvertOpenAIResponsesRequestToClaude_PreservesUserField(t *testing.T) {
 	raw := []byte(`{"model":"claude-test","user":"openai-resp-user-456","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	if !gjson.ValidBytes(out) {
+	if !ojson.ValidBytes(out) {
 		t.Fatalf("output is invalid json: %s", string(out))
 	}
-	got := gjson.GetBytes(out, "metadata.user_id").String()
+	got := ojson.GetBytes(out, "metadata.user_id").String()
 	if got != "openai-resp-user-456" {
 		t.Fatalf("metadata.user_id = %q, want %q", got, "openai-resp-user-456")
 	}
@@ -2179,8 +2179,8 @@ func TestConvertOpenAIResponsesRequestToClaude_DifferentSessionsProduceDifferent
 	b := []byte(`{"model":"claude-test","prompt_cache_key":"resp-session-b","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	outA, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", a, false)
 	outB, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", b, false)
-	idA := gjson.GetBytes(outA, "metadata.user_id").String()
-	idB := gjson.GetBytes(outB, "metadata.user_id").String()
+	idA := ojson.GetBytes(outA, "metadata.user_id").String()
+	idB := ojson.GetBytes(outB, "metadata.user_id").String()
 	if idA == idB {
 		t.Fatalf("different prompt_cache_key produced identical metadata.user_id: %q", idA)
 	}
@@ -2205,8 +2205,8 @@ func TestConvertOpenAIResponsesRequestToClaude_DifferentUserContentWithSameSyste
 	}`)
 	outA, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", rawA, false)
 	outB, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", rawB, false)
-	idA := gjson.GetBytes(outA, "metadata.user_id").String()
-	idB := gjson.GetBytes(outB, "metadata.user_id").String()
+	idA := ojson.GetBytes(outA, "metadata.user_id").String()
+	idB := ojson.GetBytes(outB, "metadata.user_id").String()
 	if idA == "" || idB == "" || idA == "unknown" || idB == "unknown" {
 		t.Fatalf("expected valid derived user_id, got idA=%q idB=%q", idA, idB)
 	}
@@ -2218,7 +2218,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DifferentUserContentWithSameSyste
 func TestConvertOpenAIResponsesRequestToClaude_FableStripsTrailingAssistantPrefill(t *testing.T) {
 	raw := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"progress"}]}]}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false)
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	if len(messages) != 1 || messages[0].Get("role").String() != "user" || messages[0].Get("content").String() != "hello" {
 		t.Fatalf("messages = %v, want one user hello turn", messages)
 	}
@@ -2227,7 +2227,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FableStripsTrailingAssistantPrefi
 func TestConvertOpenAIResponsesRequestToClaude_FableOnlyAssistantMessageYieldsFallbackUser(t *testing.T) {
 	raw := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"progress"}]}]}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false)
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	if len(messages) != 1 || messages[0].Get("role").String() != "user" {
 		t.Fatalf("messages = %v, want one fallback user turn", messages)
 	}
@@ -2266,7 +2266,7 @@ func TestConvertOpenAIResponsesRequestToClaude_UnsupportedPrefillModelsStripTrai
 				]
 			}`, model))
 			out, _ := ConvertOpenAIResponsesRequestToClaude(model, raw, false)
-			messages := gjson.GetBytes(out, "messages").Array()
+			messages := ojson.GetBytes(out, "messages").Array()
 			if len(messages) != 1 {
 				t.Fatalf("expected 1 message after stripping trailing assistant prefill for model %s, got %d: %s", model, len(messages), string(out))
 			}
@@ -2311,7 +2311,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SupportedPrefillModelsPreserveAss
 				]
 			}`, model))
 			out, _ := ConvertOpenAIResponsesRequestToClaude(model, raw, false)
-			messages := gjson.GetBytes(out, "messages").Array()
+			messages := ojson.GetBytes(out, "messages").Array()
 			if len(messages) != 2 {
 				t.Fatalf("expected 2 messages preserving assistant prefill for model %s, got %d: %s", model, len(messages), string(out))
 			}
@@ -2328,7 +2328,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SupportedPrefillModelsPreserveAss
 func TestConvertOpenAIResponsesRequestToClaudeWithCompat_FablePreservesAssistantPrefill(t *testing.T) {
 	raw := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"prefill"}]}]}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaudeWithCompat("claude-fable-5", raw, false)
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	if len(messages) != 2 || messages[1].Get("role").String() != "assistant" {
 		t.Fatalf("messages = %v, want preserved compat prefill", messages)
 	}
@@ -2346,7 +2346,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StripsTrailingThinkingBlocksFromA
 			]
 		}`, rawSignature))
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-haiku-4-5-20251001", raw, false)
-		messages := gjson.GetBytes(out, "messages").Array()
+		messages := ojson.GetBytes(out, "messages").Array()
 		if len(messages) != 1 {
 			t.Fatalf("expected 1 message (user only) after stripping trailing thinking, got %d: %s", len(messages), string(out))
 		}
@@ -2368,7 +2368,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StripsTrailingThinkingBlocksFromA
 			]
 		}`, rawSignature))
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-haiku-4-5-20251001", raw, false)
-		messages := gjson.GetBytes(out, "messages").Array()
+		messages := ojson.GetBytes(out, "messages").Array()
 		if len(messages) != 2 {
 			t.Fatalf("expected 2 messages (user + assistant text), got %d: %s", len(messages), string(out))
 		}
@@ -2391,7 +2391,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StripsTrailingThinkingBlocksFromA
 			]
 		}`, rawSignature, ClaudeResponsesRedactedThinkingPrefix+"redacted-data"))
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-haiku-4-5-20251001", raw, false)
-		messages := gjson.GetBytes(out, "messages").Array()
+		messages := ojson.GetBytes(out, "messages").Array()
 		if len(messages) != 2 {
 			t.Fatalf("expected 2 messages (user + assistant text), got %d: %s", len(messages), string(out))
 		}
@@ -2408,7 +2408,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StripsTrailingThinkingBlocksFromA
 			]
 		}`, rawSignature))
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-haiku-4-5-20251001", raw, false)
-		messages := gjson.GetBytes(out, "messages").Array()
+		messages := ojson.GetBytes(out, "messages").Array()
 		if len(messages) != 1 {
 			t.Fatalf("expected 1 message (fallback user), got %d: %s", len(messages), string(out))
 		}
@@ -2426,7 +2426,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StripsTrailingThinkingBlocksFromA
 			]
 		}`, rawSignature))
 		out, _ := ConvertOpenAIResponsesRequestToClaudeWithCompat("claude-haiku-4-5-20251001", raw, false)
-		messages := gjson.GetBytes(out, "messages").Array()
+		messages := ojson.GetBytes(out, "messages").Array()
 		if len(messages) != 2 {
 			t.Fatalf("expected 2 messages in compat mode, got %d: %s", len(messages), string(out))
 		}
@@ -2451,7 +2451,7 @@ func TestConvertOpenAIResponsesRequestToClaudeKeepsAgentMessageText(t *testing.T
 			if errConvert != nil {
 				t.Fatal(errConvert)
 			}
-			root := gjson.ParseBytes(out)
+			root := ojson.ParseBytes(out)
 			messages := root.Get("messages").Array()
 			if len(messages) != 1 {
 				t.Fatalf("messages count = %d, want 1; output=%s", len(messages), string(out))
@@ -2480,7 +2480,7 @@ func TestConvertOpenAIResponsesRequestToClaudeKeepsAgentMessageText(t *testing.T
 			]}
 		]}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-fable-5-1", mixedIn, false)
-		root := gjson.ParseBytes(out)
+		root := ojson.ParseBytes(out)
 		parts := root.Get("messages.0.content").Array()
 		if len(parts) != 2 {
 			t.Fatalf("parts count = %d, want 2; output=%s", len(parts), string(out))
@@ -2517,17 +2517,17 @@ func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *tes
 			}
 		}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
-		if gjson.GetBytes(out, "output_config.format.type").String() != "json_schema" ||
-			gjson.GetBytes(out, "output_config.format.schema.required.0").String() != "facts" {
+		if ojson.GetBytes(out, "output_config.format.type").String() != "json_schema" ||
+			ojson.GetBytes(out, "output_config.format.schema.required.0").String() != "facts" {
 			t.Fatalf("expected native output_config.format. Output: %s", string(out))
 		}
-		if gjson.GetBytes(out, "system").Exists() {
+		if ojson.GetBytes(out, "system").Exists() {
 			t.Fatalf("schema without description must not add a system instruction. Output: %s", string(out))
 		}
 
 		legacy, _ := ConvertOpenAIResponsesRequestToClaude("claude-3-7-sonnet-20250219", input, false)
-		if gjson.GetBytes(legacy, "output_config.format").Exists() ||
-			!strings.Contains(gjson.GetBytes(legacy, "system.0.text").String(), `"facts"`) {
+		if ojson.GetBytes(legacy, "output_config.format").Exists() ||
+			!strings.Contains(ojson.GetBytes(legacy, "system.0.text").String(), `"facts"`) {
 			t.Fatalf("legacy model must keep the system prompt schema fallback. Output: %s", string(legacy))
 		}
 	})
@@ -2543,7 +2543,7 @@ func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *tes
 			}
 		}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
-		system := gjson.GetBytes(out, "system")
+		system := ojson.GetBytes(out, "system")
 		if !system.Exists() || len(system.Array()) == 0 {
 			t.Fatalf("system blocks missing. Output: %s", string(out))
 		}
@@ -2577,7 +2577,7 @@ func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *tes
 			}
 		}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
-		system := gjson.GetBytes(out, "system")
+		system := ojson.GetBytes(out, "system")
 		if !system.Exists() || len(system.Array()) < 2 {
 			t.Fatalf("expected at least 2 system blocks. Output: %s", string(out))
 		}
@@ -2596,7 +2596,7 @@ func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *tes
 				hasFallbackObject = true
 			}
 		}
-		if gjson.GetBytes(out, "output_config.format.schema.properties.item.type").String() != "string" {
+		if ojson.GetBytes(out, "output_config.format.schema.properties.item.type").String() != "string" {
 			t.Fatalf("expected winning schema in output_config.format. Output: %s", string(out))
 		}
 		if !hasInstructions || !hasWinningSchema || hasFallbackObject {
@@ -2656,7 +2656,7 @@ func TestConvertOpenAIResponsesRequestToClaude_FunctionCallOutputAlternateIDsAnd
 			}`)
 
 			out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", inputJSON, false)
-			messages := gjson.GetBytes(out, "messages").Array()
+			messages := ojson.GetBytes(out, "messages").Array()
 			if len(messages) != 3 {
 				t.Fatalf("expected 3 messages (user, assistant, user), got %d; output=%s", len(messages), string(out))
 			}
@@ -2702,7 +2702,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MixedMissingAndExplicitParallelOu
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", inputJSON, false)
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	if len(messages) != 3 {
 		t.Fatalf("expected 3 messages, got %d; output=%s", len(messages), string(out))
 	}
@@ -2743,7 +2743,7 @@ func TestConvertOpenAIResponsesRequestToClaude_MixedMissingAndExplicitParallelOu
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", inputJSON, false)
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	resultMap := make(map[string]string)
 	for _, m := range messages {
 		if m.Get("role").String() == "user" {
@@ -2772,7 +2772,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StringInput(t *testing.T) {
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", inputJSON, false)
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message in translated Claude request, got %d. Output: %s", len(messages), string(out))
 	}
@@ -2810,11 +2810,11 @@ func TestConvertOpenAIResponsesRequestToClaude_StringInput(t *testing.T) {
 		"stream": false
 	}`)
 	outWithInstr, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", withInstructions, false)
-	system := gjson.GetBytes(outWithInstr, "system").Array()
+	system := ojson.GetBytes(outWithInstr, "system").Array()
 	if len(system) != 1 || system[0].Get("text").String() != "Be concise." {
 		t.Fatalf("expected system block with instructions, got %s", string(outWithInstr))
 	}
-	messagesWithInstr := gjson.GetBytes(outWithInstr, "messages").Array()
+	messagesWithInstr := ojson.GetBytes(outWithInstr, "messages").Array()
 	if len(messagesWithInstr) != 1 {
 		t.Fatalf("expected 1 message in translated Claude request with instructions, got %d. Output: %s", len(messagesWithInstr), string(outWithInstr))
 	}
@@ -2830,7 +2830,7 @@ func TestConvertOpenAIResponsesRequestToClaude_StringInput(t *testing.T) {
 		"stream": false
 	}`)
 	outComplex, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", complexInput, false)
-	complexMsgs := gjson.GetBytes(outComplex, "messages").Array()
+	complexMsgs := ojson.GetBytes(outComplex, "messages").Array()
 	if len(complexMsgs) != 1 {
 		t.Fatalf("expected 1 message in translated Claude request with complex input, got %d. Output: %s", len(complexMsgs), string(outComplex))
 	}
@@ -2855,7 +2855,7 @@ func TestConvertOpenAIResponsesRequestToClaude_LongToolNamesUniqueAndReversible(
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", reqJSON, false)
-	tools := gjson.GetBytes(out, "tools").Array()
+	tools := ojson.GetBytes(out, "tools").Array()
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
@@ -2891,7 +2891,7 @@ func TestConvertOpenAIResponsesRequestToClaude_LongToolNamesUniqueAndReversible(
 		`data: {"type":"message_stop"}`,
 	}, "\n"))
 	translatedResp := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-sonnet-5-5", reqJSON, nil, claudeResp, nil)
-	outputItem := gjson.GetBytes(translatedResp, "output.0")
+	outputItem := ojson.GetBytes(translatedResp, "output.0")
 	if outputItem.Get("type").String() != "function_call" {
 		t.Fatalf("output.0.type = %q, want function_call", outputItem.Get("type").String())
 	}
@@ -2911,7 +2911,7 @@ func TestConvertOpenAIResponsesRequestToClaude_LongToolNamesUniqueAndReversible(
 		[]byte(`data: {"type":"message_stop"}`),
 	}
 	var param any
-	var streamAdded, streamDone, streamCompleted gjson.Result
+	var streamAdded, streamDone, streamCompleted ojson.Result
 	for _, chunk := range streamChunks {
 		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-sonnet-5-5", reqJSON, nil, chunk, &param) {
 			event, data := parseClaudeResponsesSSEEvent(t, output)
@@ -2952,7 +2952,7 @@ func TestConvertOpenAIResponsesRequestToClaude_SanitizationCollisions(t *testing
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", reqJSON, false)
-	tools := gjson.GetBytes(out, "tools").Array()
+	tools := ojson.GetBytes(out, "tools").Array()
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
@@ -3008,16 +3008,16 @@ func TestConvertOpenAIResponsesRequestToClaude_LongToolChoiceAndHistory(t *testi
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", reqJSON, false)
 
 	// Tool definition name for prices
-	declaredPricesName := gjson.GetBytes(out, "tools.0.name").String()
+	declaredPricesName := ojson.GetBytes(out, "tools.0.name").String()
 
 	// tool_choice should have the exact same Claude name as the declared tool
-	toolChoiceName := gjson.GetBytes(out, "tool_choice.name").String()
+	toolChoiceName := ojson.GetBytes(out, "tool_choice.name").String()
 	if toolChoiceName != declaredPricesName {
 		t.Fatalf("tool_choice.name = %q, want %q", toolChoiceName, declaredPricesName)
 	}
 
 	// In messages history, the assistant tool_use block should have the exact same Claude name
-	messages := gjson.GetBytes(out, "messages").Array()
+	messages := ojson.GetBytes(out, "messages").Array()
 	var foundHistoryToolUseName string
 	for _, msg := range messages {
 		if msg.Get("role").String() == "assistant" {
@@ -3039,7 +3039,7 @@ func TestApplyPatchClaudeRequestContractAndHistory(t *testing.T) {
 	if errConvert13 != nil {
 		t.Fatal(errConvert13)
 	}
-	result := gjson.ParseBytes(body13)
+	result := ojson.ParseBytes(body13)
 	tool := result.Get("tools.0")
 	description := tool.Get("description").String()
 	schema := tool.Get("input_schema")
@@ -3081,11 +3081,11 @@ func TestConvertOpenAIResponsesRequestToClaude_IncompleteToolOutputIsError(t *te
 	if err != nil {
 		t.Fatalf("ConvertOpenAIResponsesRequestToClaude error: %v", err)
 	}
-	resultJSON := gjson.ParseBytes(result)
-	var toolResult gjson.Result
+	resultJSON := ojson.ParseBytes(result)
+	var toolResult ojson.Result
 	found := false
-	resultJSON.Get("messages").ForEach(func(_, message gjson.Result) bool {
-		message.Get("content").ForEach(func(_, block gjson.Result) bool {
+	resultJSON.Get("messages").ForEach(func(_, message ojson.Result) bool {
+		message.Get("content").ForEach(func(_, block ojson.Result) bool {
 			if block.Get("type").String() == "tool_result" && block.Get("tool_use_id").String() == "call_err1" {
 				toolResult = block
 				found = true
@@ -3154,7 +3154,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DropsEmptyAndWhitespaceTextBlocks
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		root := gjson.ParseBytes(out)
+		root := ojson.ParseBytes(out)
 
 		system := root.Get("system").Array()
 		if len(system) != 1 {
@@ -3220,7 +3220,7 @@ func TestConvertOpenAIResponsesRequestToClaude_DropsEmptyAndWhitespaceTextBlocks
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		root := gjson.ParseBytes(out)
+		root := ojson.ParseBytes(out)
 
 		if got := root.Get("system.#").Int(); got != 3 {
 			t.Fatalf("system count = %d, want 3. system=%s", got, root.Get("system").Raw)
@@ -3271,7 +3271,7 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		part := gjson.GetBytes(out, "messages.0.content.1")
+		part := ojson.GetBytes(out, "messages.0.content.1")
 		if got := part.Get("type").String(); got != "document" {
 			t.Fatalf("type = %q, want document. out=%s", got, out)
 		}
@@ -3302,7 +3302,7 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		part := gjson.GetBytes(out, "messages.0.content.0")
+		part := ojson.GetBytes(out, "messages.0.content.0")
 		if got := part.Get("source.media_type").String(); got != "application/pdf" {
 			t.Fatalf("source.media_type = %q, want application/pdf. out=%s", got, out)
 		}
@@ -3324,7 +3324,7 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		part := gjson.GetBytes(out, "messages.0.content.0")
+		part := ojson.GetBytes(out, "messages.0.content.0")
 		if got := part.Get("type").String(); got != "document" || part.Get("source.type").String() != "url" || part.Get("source.url").String() != "https://example.test/sample.pdf" {
 			t.Fatalf("unexpected url document part: %s. out=%s", part.Raw, out)
 		}
@@ -3344,10 +3344,10 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if got := gjson.GetBytes(out, "messages.2.content.0.content").String(); got != "paired text" {
+		if got := ojson.GetBytes(out, "messages.2.content.0.content").String(); got != "paired text" {
 			t.Fatalf("paired tool_result content = %q, want %q. out=%s", got, "paired text", out)
 		}
-		if got := gjson.GetBytes(out, "messages.2.content.1.text").String(); got != "standalone text" {
+		if got := ojson.GetBytes(out, "messages.2.content.1.text").String(); got != "standalone text" {
 			t.Fatalf("standalone user text = %q, want %q. out=%s", got, "standalone text", out)
 		}
 	})
@@ -3367,11 +3367,11 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		imgBlock := gjson.GetBytes(out, "messages.2.content.0.content.0")
+		imgBlock := ojson.GetBytes(out, "messages.2.content.0.content.0")
 		if imgBlock.Get("type").String() != "image" || imgBlock.Get("source.media_type").String() != "image/png" || imgBlock.Get("source.data").String() != "AA==" {
 			t.Fatalf("unexpected image tool_result block: %s. out=%s", imgBlock.Raw, out)
 		}
-		pdfBlock := gjson.GetBytes(out, "messages.2.content.1.content.0")
+		pdfBlock := ojson.GetBytes(out, "messages.2.content.1.content.0")
 		if pdfBlock.Get("type").String() != "document" || pdfBlock.Get("source.media_type").String() != "application/pdf" || pdfBlock.Get("source.data").String() != "JVBERi0xLjQK" {
 			t.Fatalf("unexpected pdf tool_result block: %s. out=%s", pdfBlock.Raw, out)
 		}
@@ -3393,7 +3393,7 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		part := gjson.GetBytes(out, "messages.0.content.0")
+		part := ojson.GetBytes(out, "messages.0.content.0")
 		if part.Get("type").String() != "document" || part.Get("source.type").String() != "text" || part.Get("source.media_type").String() != "text/plain" || part.Get("source.data").String() != "Hello world" {
 			t.Fatalf("unexpected text document part: %s. out=%s", part.Raw, out)
 		}
@@ -3461,6 +3461,676 @@ func TestConvertOpenAIResponsesRequestToClaude_InputFileAndToolOutputMedia(t *te
 					t.Fatalf("err = %v, want UnsupportedPartError{Type:%q}", err, tc.wantType)
 				}
 			})
+		}
+	})
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_ToolOutputCacheControl(t *testing.T) {
+	findToolResult := func(t *testing.T, out []byte, callID string) ojson.Result {
+		t.Helper()
+		var found ojson.Result
+		ok := false
+		ojson.GetBytesNoCopy(out, "messages").ForEach(func(_, msg ojson.Result) bool {
+			msg.Get("content").ForEach(func(_, block ojson.Result) bool {
+				if block.Get("type").String() == "tool_result" && block.Get("tool_use_id").String() == callID {
+					found = block
+					ok = true
+					return false
+				}
+				return true
+			})
+			return !ok
+		})
+		if !ok {
+			t.Fatalf("expected tool_result for %q. Output: %s", callID, string(out))
+		}
+		return found
+	}
+
+	assertNoInnerCacheControl := func(t *testing.T, toolResult ojson.Result, out []byte) {
+		t.Helper()
+		content := toolResult.Get("content")
+		if !content.IsArray() {
+			return
+		}
+		for i, part := range content.Array() {
+			if part.Get("cache_control").Exists() {
+				t.Fatalf("tool_result.content[%d] must not carry cache_control. Output: %s", i, string(out))
+			}
+		}
+	}
+
+	t.Run("function_call_output item-level cache_control", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run lookup"}]},
+				{"type": "function_call", "call_id": "call_x", "name": "lookup", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_x", "output": "long tool output", "cache_control": {"type": "ephemeral"}}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_x")
+		if got := tr.Get("content").String(); got != "long tool output" {
+			t.Fatalf("content = %q, want %q. Output: %s", got, "long tool output", string(out))
+		}
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+	})
+
+	t.Run("custom_tool_call_output item-level cache_control with ttl", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Patch file"}]},
+				{"type": "custom_tool_call", "call_id": "call_c1", "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch"},
+				{"type": "custom_tool_call_output", "call_id": "call_c1", "output": "patched", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_c1")
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+		if got := tr.Get("cache_control.ttl").String(); got != "1h" {
+			t.Fatalf("tool_result cache_control.ttl = %q, want 1h. Output: %s", got, string(out))
+		}
+	})
+
+	t.Run("function_call_output single text part cache_control hoisted", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run lookup"}]},
+				{"type": "function_call", "call_id": "call_p1", "name": "lookup", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_p1", "output": [{"type": "input_text", "text": "part output", "cache_control": {"type": "ephemeral"}}]}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_p1")
+		if tr.Get("content").Type != ojson.String || tr.Get("content").String() != "part output" {
+			t.Fatalf("expected collapsed string content %q, got %s. Output: %s", "part output", tr.Get("content").Raw, string(out))
+		}
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+		assertNoInnerCacheControl(t, tr, out)
+	})
+
+	t.Run("function_call_output multi-part hoists last valid cache_control without inner markers", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run lookup"}]},
+				{"type": "function_call", "call_id": "call_m1", "name": "lookup", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_m1", "output": [
+					{"type": "input_text", "text": "part 1", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+					{"type": "input_text", "text": "part 2", "cache_control": {"type": "ephemeral"}}
+				]}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_m1")
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+		if tr.Get("cache_control.ttl").Exists() {
+			t.Fatalf("expected last part cache_control without ttl to win. Output: %s", string(out))
+		}
+		assertNoInnerCacheControl(t, tr, out)
+	})
+
+	t.Run("function_call_output image part cache_control hoisted", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Capture"}]},
+				{"type": "function_call", "call_id": "call_img", "name": "capture", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_img", "output": [
+					{"type": "input_text", "text": "screenshot"},
+					{"type": "input_image", "image_url": "https://example.com/pic.png", "cache_control": {"type": "ephemeral"}}
+				]}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_img")
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+		assertNoInnerCacheControl(t, tr, out)
+	})
+
+	t.Run("function_call_output single structured object cache_control hoisted", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run"}]},
+				{"type": "function_call", "call_id": "call_obj", "name": "run", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_obj", "output": {"type": "input_text", "text": "obj output", "cache_control": {"type": "ephemeral"}}}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_obj")
+		if got := tr.Get("content").String(); got != "obj output" {
+			t.Fatalf("content = %q, want %q. Output: %s", got, "obj output", string(out))
+		}
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+	})
+
+	t.Run("part-level cache_control takes precedence over item-level", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run"}]},
+				{"type": "function_call", "call_id": "call_prec", "name": "run", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_prec", "cache_control": {"type": "ephemeral", "ttl": "1h"}, "output": [
+					{"type": "input_text", "text": "result", "cache_control": {"type": "ephemeral"}}
+				]}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_prec")
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+		if tr.Get("cache_control.ttl").Exists() {
+			t.Fatalf("part-level cache_control should win over item-level ttl. Output: %s", string(out))
+		}
+	})
+
+	t.Run("invalid part-level cache_control falls back to valid item-level", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run"}]},
+				{"type": "function_call", "call_id": "call_fb", "name": "run", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_fb", "cache_control": {"type": "ephemeral", "ttl": "1h"}, "output": [
+					{"type": "input_text", "text": "result", "cache_control": {"type": "invalid"}}
+				]}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_fb")
+		if got := tr.Get("cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("tool_result cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+		if got := tr.Get("cache_control.ttl").String(); got != "1h" {
+			t.Fatalf("tool_result cache_control.ttl = %q, want 1h. Output: %s", got, string(out))
+		}
+	})
+
+	t.Run("invalid item-level cache_control is ignored", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Run"}]},
+				{"type": "function_call", "call_id": "call_inv", "name": "run", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_inv", "output": "ok", "cache_control": {"type": "invalid"}}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tr := findToolResult(t, out, "call_inv")
+		if tr.Get("cache_control").Exists() {
+			t.Fatalf("invalid cache_control must not be attached. Output: %s", string(out))
+		}
+	})
+
+	t.Run("standalone unpaired function_call_output preserves item and part cache_control", func(t *testing.T) {
+		rawItem := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "function_call_output", "call_id": "orphan_item", "output": "seed context", "cache_control": {"type": "ephemeral"}}
+			]
+		}`)
+		outItem, errItem := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", rawItem, false)
+		if errItem != nil {
+			t.Fatalf("unexpected error: %v", errItem)
+		}
+		if got := ojson.GetBytesNoCopy(outItem, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("standalone item cache_control.type = %q, want ephemeral. Output: %s", got, string(outItem))
+		}
+
+		rawPart := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "function_call_output", "call_id": "orphan_part", "output": [
+					{"type": "input_text", "text": "seed 1", "cache_control": {"type": "ephemeral"}},
+					{"type": "input_text", "text": "seed 2"}
+				]}
+			]
+		}`)
+		outPart, errPart := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", rawPart, false)
+		if errPart != nil {
+			t.Fatalf("unexpected error: %v", errPart)
+		}
+		if got := ojson.GetBytesNoCopy(outPart, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("standalone part[0] cache_control.type = %q, want ephemeral. Output: %s", got, string(outPart))
+		}
+		if ojson.GetBytesNoCopy(outPart, "messages.0.content.1.cache_control").Exists() {
+			t.Fatalf("standalone part[1] should not have cache_control. Output: %s", string(outPart))
+		}
+	})
+
+	t.Run("late orphan tool_result folded during repair preserves cache_control", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "start"}]},
+				{"type": "function_call", "call_id": "call_late", "name": "lookup", "arguments": "{}"},
+				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "interrupted"}]},
+				{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+				{"type": "function_call_output", "call_id": "call_late", "output": "delayed output", "cache_control": {"type": "ephemeral"}}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		msgs := ojson.GetBytesNoCopy(out, "messages").Array()
+		lastMsg := msgs[len(msgs)-1]
+		if got := lastMsg.Get("role").String(); got != "user" {
+			t.Fatalf("last message role = %q, want user. Output: %s", got, string(out))
+		}
+		if got := lastMsg.Get("content.0.type").String(); got != "text" {
+			t.Fatalf("expected folded text block, got %q. Output: %s", got, string(out))
+		}
+		if got := lastMsg.Get("content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("folded block cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+	})
+
+	t.Run("standalone empty trailing part cache_control moves to preceding block", func(t *testing.T) {
+		raw := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "function_call_output", "call_id": "orphan_blank", "output": [
+					{"type": "input_text", "text": "visible seed"},
+					{"type": "input_text", "text": "   ", "cache_control": {"type": "ephemeral"}}
+				]}
+			]
+		}`)
+		out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := ojson.GetBytesNoCopy(out, "messages.0.content.0.text").String(); got != "visible seed" {
+			t.Fatalf("content.0.text = %q, want %q. Output: %s", got, "visible seed", string(out))
+		}
+		if got := ojson.GetBytesNoCopy(out, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("content.0.cache_control.type = %q, want ephemeral. Output: %s", got, string(out))
+		}
+	})
+
+	t.Run("standalone all-empty output preserves last valid part cache_control on placeholder", func(t *testing.T) {
+		rawOnlyBlank := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "function_call_output", "call_id": "orphan_only_blank", "output": [
+					{"type": "input_text", "text": "   ", "cache_control": {"type": "ephemeral"}}
+				]}
+			]
+		}`)
+		outOnlyBlank, errOnlyBlank := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", rawOnlyBlank, false)
+		if errOnlyBlank != nil {
+			t.Fatalf("unexpected error: %v", errOnlyBlank)
+		}
+		if got := ojson.GetBytesNoCopy(outOnlyBlank, "messages.0.content.0.text").String(); got != "Tool result was empty." {
+			t.Fatalf("content.0.text = %q, want %q. Output: %s", got, "Tool result was empty.", string(outOnlyBlank))
+		}
+		if got := ojson.GetBytesNoCopy(outOnlyBlank, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("content.0.cache_control.type = %q, want ephemeral. Output: %s", got, string(outOnlyBlank))
+		}
+
+		rawPartWins := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "function_call_output", "call_id": "orphan_blank_prec", "cache_control": {"type": "ephemeral", "ttl": "1h"}, "output": [
+					{"type": "input_text", "text": "", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+					{"type": "input_text", "text": "   ", "cache_control": {"type": "ephemeral"}}
+				]}
+			]
+		}`)
+		outPartWins, errPartWins := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", rawPartWins, false)
+		if errPartWins != nil {
+			t.Fatalf("unexpected error: %v", errPartWins)
+		}
+		if got := ojson.GetBytesNoCopy(outPartWins, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+			t.Fatalf("content.0.cache_control.type = %q, want ephemeral. Output: %s", got, string(outPartWins))
+		}
+		if ojson.GetBytesNoCopy(outPartWins, "messages.0.content.0.cache_control.ttl").Exists() {
+			t.Fatalf("last valid blank part cache_control should win over item-level ttl. Output: %s", string(outPartWins))
+		}
+
+		rawInvalidPartFallback := []byte(`{
+			"model": "claude-sonnet-5-5",
+			"input": [
+				{"type": "function_call_output", "call_id": "orphan_blank_fb", "cache_control": {"type": "ephemeral", "ttl": "1h"}, "output": [
+					{"type": "input_text", "text": "   ", "cache_control": {"type": "invalid"}}
+				]}
+			]
+		}`)
+		outFallback, errFallback := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", rawInvalidPartFallback, false)
+		if errFallback != nil {
+			t.Fatalf("unexpected error: %v", errFallback)
+		}
+		if got := ojson.GetBytesNoCopy(outFallback, "messages.0.content.0.cache_control.ttl").String(); got != "1h" {
+			t.Fatalf("content.0.cache_control.ttl = %q, want 1h. Output: %s", got, string(outFallback))
+		}
+	})
+
+	t.Run("non-part JSON output does not hoist domain cache_control field", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			output string
+		}{
+			{
+				name:   "untyped JSON array element",
+				output: `[{"id": 1, "cache_control": {"type": "ephemeral"}}]`,
+			},
+			{
+				name:   "case-mismatched TEXT array element",
+				output: `[{"type": "TEXT", "text": "record", "cache_control": {"type": "ephemeral"}}]`,
+			},
+			{
+				name:   "case-mismatched TEXT object",
+				output: `{"type": "TEXT", "text": "record", "cache_control": {"type": "ephemeral"}}`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				raw := []byte(`{
+					"model": "claude-sonnet-5-5",
+					"input": [
+						{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Inspect"}]},
+						{"type": "function_call", "call_id": "call_raw", "name": "inspect", "arguments": "{}"},
+						{"type": "function_call_output", "call_id": "call_raw", "output": ` + tc.output + `}
+					]
+				}`)
+				out, err := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-5-5", raw, false)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				tr := findToolResult(t, out, "call_raw")
+				if tr.Get("cache_control").Exists() {
+					t.Fatalf("non-part JSON payload must not be hoisted as Claude cache_control. Output: %s", string(out))
+				}
+			})
+		}
+	})
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_ToolChoiceNone(t *testing.T) {
+	tools := `[{"type":"function","name":"ping","parameters":{"type":"object"}}]`
+	cases := []struct {
+		name           string
+		request        string
+		wantToolChoice string
+		wantToolsCount int
+	}{
+		{
+			name:           "string none with tools emits claude none",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","tools":` + tools + `,"tool_choice":"none"}`,
+			wantToolChoice: `{"type":"none"}`,
+			wantToolsCount: 1,
+		},
+		{
+			name:           "object none with tools emits claude none",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","tools":` + tools + `,"tool_choice":{"type":"none"}}`,
+			wantToolChoice: `{"type":"none"}`,
+			wantToolsCount: 1,
+		},
+		{
+			name:           "string none with parallel_tool_calls false omits disable_parallel_tool_use",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","parallel_tool_calls":false,"tools":` + tools + `,"tool_choice":"none"}`,
+			wantToolChoice: `{"type":"none"}`,
+			wantToolsCount: 1,
+		},
+		{
+			name:           "string none without tools omits tool_choice",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","tool_choice":"none"}`,
+			wantToolChoice: "",
+			wantToolsCount: 0,
+		},
+		{
+			name:           "string auto without tools omits tool_choice",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","tool_choice":"auto"}`,
+			wantToolChoice: "",
+			wantToolsCount: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, errTranslate := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", []byte(tc.request), false)
+			if errTranslate != nil {
+				t.Fatalf("unexpected translation error: %v", errTranslate)
+			}
+			if got := ojson.GetBytesNoCopy(out, "tool_choice").Raw; got != tc.wantToolChoice {
+				t.Fatalf("tool_choice = %q, want %q; out=%s", got, tc.wantToolChoice, string(out))
+			}
+			if got := len(ojson.GetBytesNoCopy(out, "tools").Array()); got != tc.wantToolsCount {
+				t.Fatalf("tools count = %d, want %d; out=%s", got, tc.wantToolsCount, string(out))
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_ToolChoiceAllowedTools(t *testing.T) {
+	declaredTools := `[
+		{"type":"function","name":"get_weather","parameters":{"type":"object"}},
+		{"type":"function","name":"delete_db","parameters":{"type":"object"}},
+		{"type":"custom","name":"exec","description":"Run shell"},
+		{"type":"namespace","name":"mcp__node_repl","tools":[{"type":"function","name":"js","parameters":{"type":"object"}}]},
+		{"type":"web_search"}
+	]`
+
+	cases := []struct {
+		name           string
+		request        string
+		toolSearch     bool
+		wantToolChoice string
+		wantTools      []string
+	}{
+		{
+			name:           "flat required filters tools and sets any",
+			request:        `{"model":"claude-sonnet-4-5","input":"Check weather","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"get_weather"}]}}`,
+			wantToolChoice: `{"type":"any"}`,
+			wantTools:      []string{"get_weather"},
+		},
+		{
+			name:           "flat auto filters tools and sets auto",
+			request:        `{"model":"claude-sonnet-4-5","input":"Check weather","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"get_weather"}]}}`,
+			wantToolChoice: `{"type":"auto"}`,
+			wantTools:      []string{"get_weather"},
+		},
+		{
+			name:           "flat omitted mode defaults to auto",
+			request:        `{"model":"claude-sonnet-4-5","input":"Check weather","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","tools":[{"type":"function","name":"get_weather"}]}}`,
+			wantToolChoice: `{"type":"auto"}`,
+			wantTools:      []string{"get_weather"},
+		},
+		{
+			name:           "flat any mode maps to any and honors parallel_tool_calls false",
+			request:        `{"model":"claude-sonnet-4-5","input":"Check weather","parallel_tool_calls":false,"tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"any","tools":[{"type":"function","name":"get_weather"}]}}`,
+			wantToolChoice: `{"type":"any","disable_parallel_tool_use":true}`,
+			wantTools:      []string{"get_weather"},
+		},
+		{
+			name:           "flat none mode emits claude none without disable_parallel_tool_use",
+			request:        `{"model":"claude-sonnet-4-5","input":"Check weather","parallel_tool_calls":false,"tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"none","tools":[{"type":"function","name":"get_weather"}]}}`,
+			wantToolChoice: `{"type":"none"}`,
+			wantTools:      []string{"get_weather"},
+		},
+		{
+			name:           "nested allowed_tools shape works",
+			request:        `{"model":"claude-sonnet-4-5","input":"Check weather","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"function","function":{"name":"get_weather"}}]}}}`,
+			wantToolChoice: `{"type":"any"}`,
+			wantTools:      []string{"get_weather"},
+		},
+		{
+			name:           "namespace custom and web_search entries match accurately",
+			request:        `{"model":"claude-sonnet-4-5","input":"Run","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"custom","name":"exec"},{"type":"function","name":"js","namespace":"mcp__node_repl"},{"type":"web_search"}]}}`,
+			wantToolChoice: `{"type":"auto"}`,
+			wantTools:      []string{"exec", "mcp__node_repl__js", "web_search"},
+		},
+		{
+			name:           "namespace type allows all tools in namespace",
+			request:        `{"model":"claude-sonnet-4-5","input":"Run","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"namespace","name":"mcp__node_repl"}]}}`,
+			wantToolChoice: `{"type":"auto"}`,
+			wantTools:      []string{"mcp__node_repl__js"},
+		},
+		{
+			name:           "empty allowed_tools fails closed",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","parallel_tool_calls":false,"tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"required","tools":[]}}`,
+			wantToolChoice: "",
+			wantTools:      nil,
+		},
+		{
+			name:           "undeclared allowed_tools fails closed",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","parallel_tool_calls":false,"tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"missing_tool"}]}}`,
+			wantToolChoice: "",
+			wantTools:      nil,
+		},
+		{
+			name:           "kind mismatch in allowed_tools fails closed",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"custom","name":"get_weather"}]}}`,
+			wantToolChoice: "",
+			wantTools:      nil,
+		},
+		{
+			name:           "unknown mode fails closed",
+			request:        `{"model":"claude-sonnet-4-5","input":"Hello","parallel_tool_calls":false,"tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"bogus","tools":[{"type":"function","name":"get_weather"}]}}`,
+			wantToolChoice: "",
+			wantTools:      nil,
+		},
+		{
+			name:           "client tool_search entry matches when enabled",
+			request:        `{"model":"claude-sonnet-4-5","input":"Search","tools":[{"type":"tool_search","execution":"client"},{"type":"function","name":"get_weather","parameters":{"type":"object"}}],"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"tool_search"}]}}`,
+			toolSearch:     true,
+			wantToolChoice: `{"type":"any"}`,
+			wantTools:      []string{"tool_search"},
+		},
+		{
+			name:           "known web_search_preview alias matches web_search",
+			request:        `{"model":"claude-sonnet-4-5","input":"Search","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"web_search_preview_2025_03_11"}]}}`,
+			wantToolChoice: `{"type":"auto"}`,
+			wantTools:      []string{"web_search"},
+		},
+		{
+			name:           "unknown web_search_preview typo fails closed",
+			request:        `{"model":"claude-sonnet-4-5","input":"Search","tools":` + declaredTools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"web_search_preview_typo"}]}}`,
+			wantToolChoice: "",
+			wantTools:      nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := WithClientToolSearch(context.Background(), tc.toolSearch)
+			out, errTranslate := ConvertOpenAIResponsesRequestToClaudeWithCompatContext(ctx, "claude-sonnet-4-5", []byte(tc.request), false)
+			if errTranslate != nil {
+				t.Fatalf("unexpected translation error: %v", errTranslate)
+			}
+			if got := ojson.GetBytesNoCopy(out, "tool_choice").Raw; got != tc.wantToolChoice {
+				t.Fatalf("tool_choice = %q, want %q; out=%s", got, tc.wantToolChoice, string(out))
+			}
+			var gotNames []string
+			for _, item := range ojson.GetBytesNoCopy(out, "tools").Array() {
+				gotNames = append(gotNames, item.Get("name").String())
+			}
+			if strings.Join(gotNames, ",") != strings.Join(tc.wantTools, ",") {
+				t.Fatalf("tools = %v, want %v; out=%s", gotNames, tc.wantTools, string(out))
+			}
+		})
+	}
+
+	t.Run("allowed_tools filters historical tool_search_output tool_references consistently with tools", func(t *testing.T) {
+		req := []byte(`{
+			"model": "claude-sonnet-4-5",
+			"tools": [
+				{"type": "tool_search", "execution": "client"},
+				{"type": "function", "name": "tool_a", "defer_loading": true, "parameters": {"type": "object"}},
+				{"type": "function", "name": "tool_b", "defer_loading": true, "parameters": {"type": "object"}}
+			],
+			"tool_choice": {
+				"type": "allowed_tools",
+				"mode": "auto",
+				"tools": [
+					{"type": "tool_search"},
+					{"type": "function", "name": "tool_a"}
+				]
+			},
+			"input": [
+				{"role": "user", "content": "Find tools"},
+				{"type": "tool_search_call", "call_id": "call_ts_1", "execution": "client", "arguments": {"query": "tool"}},
+				{
+					"type": "tool_search_output",
+					"call_id": "call_ts_1",
+					"execution": "client",
+					"tools": [
+						{"type": "function", "name": "tool_a", "parameters": {"type": "object"}},
+						{"type": "function", "name": "tool_b", "parameters": {"type": "object"}}
+					]
+				}
+			]
+		}`)
+		ctx := WithClientToolSearch(context.Background(), true)
+		out, errTranslate := ConvertOpenAIResponsesRequestToClaudeWithCompatContext(ctx, "claude-sonnet-4-5", req, false)
+		if errTranslate != nil {
+			t.Fatalf("unexpected translation error: %v", errTranslate)
+		}
+		var gotTools []string
+		for _, item := range ojson.GetBytesNoCopy(out, "tools").Array() {
+			gotTools = append(gotTools, item.Get("name").String())
+		}
+		if strings.Join(gotTools, ",") != "tool_search,tool_search_deferred_anchor,tool_a" {
+			t.Fatalf("tools = %v, want [tool_search tool_search_deferred_anchor tool_a]; out=%s", gotTools, string(out))
+		}
+		var tr ojson.Result
+		foundTR := false
+		for _, msg := range ojson.GetBytesNoCopy(out, "messages").Array() {
+			for _, blk := range msg.Get("content").Array() {
+				if blk.Get("type").String() == "tool_result" && blk.Get("tool_use_id").String() == "call_ts_1" {
+					tr = blk
+					foundTR = true
+				}
+			}
+		}
+		if !foundTR {
+			t.Fatalf("expected tool_result for call_ts_1; out=%s", string(out))
+		}
+		refs := tr.Get("content").Array()
+		if len(refs) != 1 || refs[0].Get("type").String() != "tool_reference" || refs[0].Get("tool_name").String() != "tool_a" {
+			t.Fatalf("tool_search_output tool_result content = %s, want single tool_reference for tool_a", tr.Get("content").Raw)
 		}
 	})
 }

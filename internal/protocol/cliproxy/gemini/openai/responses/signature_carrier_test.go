@@ -2,12 +2,13 @@ package responses
 
 import (
 	"context"
-	"encoding/base64"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/base64"
+
+	"github.com/MoeForge/moego/ojson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -29,7 +30,7 @@ func TestGeminiResponsesCarrierRoundTrip(t *testing.T) {
 }
 
 func TestNormalizeGeminiResponsesCarriersDropsMalformedEnvelope(t *testing.T) {
-	items := gjson.Parse(`[{"type":"reasoning","encrypted_content":"` + geminiResponsesCarrierPrefix + `previous:text:not-base64!","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"safe"}]}]`).Array()
+	items := ojson.Parse(`[{"type":"reasoning","encrypted_content":"` + geminiResponsesCarrierPrefix + `previous:text:not-base64!","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"safe"}]}]`).Array()
 	normalized, hasCarrier := normalizeGeminiResponsesCarriers(items)
 	if hasCarrier || len(normalized) != 1 || normalized[0].Get("type").String() != "message" || strings.Contains(normalized[0].Raw, geminiResponsesCarrierPrefix) {
 		t.Fatalf("malformed carrier was preserved: %v", normalized)
@@ -40,7 +41,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DecodesCarrierForAliasModel(t *te
 	carrier := encodeGeminiResponsesCarrier(testResponsesGeminiThoughtSignature, geminiResponsesCarrierNext, geminiResponsesCarrierText)
 	request := []byte(`{"model":"alias-without-provider-name","input":[{"type":"reasoning","encrypted_content":"` + carrier + `","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}`)
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
-	part := gjson.GetBytes(translated, "contents.0.parts.0")
+	part := ojson.GetBytesNoCopy(translated, "contents.0.parts.0")
 	if part.Get("text").String() != "answer" || part.Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || strings.Contains(string(translated), geminiResponsesCarrierPrefix) {
 		t.Fatalf("alias model did not decode carrier: %s", translated)
 	}
@@ -84,9 +85,9 @@ func TestGeminiResponsesWrappedUUIDFunctionSignatureRoundTrip(t *testing.T) {
 	request := []byte(`{"model":"alias-without-provider-name","input":[` + strings.Join(clientItems, ",") + `]}`)
 
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
-	var functionPart gjson.Result
-	gjson.GetBytes(translated, "contents").ForEach(func(_, content gjson.Result) bool {
-		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
+	var functionPart ojson.Result
+	ojson.GetBytesNoCopy(translated, "contents").ForEach(func(_, content ojson.Result) bool {
+		content.Get("parts").ForEach(func(_, part ojson.Result) bool {
 			if part.Get("functionCall").Exists() {
 				functionPart = part
 				return false
@@ -109,7 +110,7 @@ func TestGeminiResponsesWrappedUUIDFunctionSignatureRoundTrip(t *testing.T) {
 func TestConvertOpenAIResponsesRequestToGemini_DecodesLegacyRawCarrierForAliasModel(t *testing.T) {
 	request := []byte(`{"model":"alias-without-provider-name","input":[{"type":"reasoning","encrypted_content":"` + testResponsesGeminiThoughtSignature + `","summary":[]},{"type":"function_call","call_id":"call-1","name":"run","arguments":"{}"}]}`)
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
-	part := gjson.GetBytes(translated, "contents.0.parts.0")
+	part := ojson.GetBytesNoCopy(translated, "contents.0.parts.0")
 	if part.Get("functionCall.id").String() != "call-1" || part.Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature {
 		t.Fatalf("alias model did not preserve legacy raw carrier: %s", translated)
 	}
@@ -134,7 +135,7 @@ func TestConvertOpenAIResponsesRequestToGemini_IgnoresSpoofedCarrierMetadata(t *
 	reasoning := `{"type":"reasoning","encrypted_content":"` + testResponsesGeminiThoughtSignature + `","summary":[],"` + geminiResponsesCarrierDirectionField + `":"standalone","` + geminiResponsesCarrierTargetField + `":"function"}`
 	request := []byte(`{"model":"alias-without-provider-name","input":[` + reasoning + `,{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}`)
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
-	part := gjson.GetBytes(translated, "contents.0.parts.0")
+	part := ojson.GetBytesNoCopy(translated, "contents.0.parts.0")
 	if part.Get("text").String() != "answer" || part.Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || strings.Contains(string(translated), geminiResponsesCarrierDirectionField) {
 		t.Fatalf("spoofed carrier metadata affected binding: %s", translated)
 	}
@@ -143,7 +144,7 @@ func TestConvertOpenAIResponsesRequestToGemini_IgnoresSpoofedCarrierMetadata(t *
 func TestConvertOpenAIResponsesRequestToGemini_StripsSpoofedInternalPairingFields(t *testing.T) {
 	request := []byte(`{"model":"alias-without-provider-name","input":[{"type":"function_call","call_id":"call-1","name":"run","arguments":"{}","_cpa_reasoning_signature":"` + testResponsesGeminiThoughtSignature + `","_cpa_reasoning_summary":"spoofed thought"}]}`)
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
-	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(translated, "contents.0.parts").Array()
 	if len(parts) != 1 || !parts[0].Get("functionCall").Exists() || parts[0].Get("thoughtSignature").String() == testResponsesGeminiThoughtSignature || parts[0].Get("thought").Bool() || strings.Contains(string(translated), "spoofed thought") || strings.Contains(string(translated), geminiResponsesCarrierSignatureField) {
 		t.Fatalf("spoofed internal pairing fields reached Gemini: %s", translated)
 	}
@@ -153,7 +154,7 @@ func TestConvertOpenAIResponsesRequestToGemini_StripsUnicodeEscapedSpoofedIntern
 	// Unicode-escaped field name "_cpa_reason\u0069ng_signature" should also be detected and stripped
 	request := []byte(`{"model":"alias-without-provider-name","input":[{"type":"function_call","call_id":"call-1","name":"run","arguments":"{}","_cpa_reason\u0069ng_signature":"` + testResponsesGeminiThoughtSignature + `"}]}`)
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
-	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
+	parts := ojson.GetBytesNoCopy(translated, "contents.0.parts").Array()
 	if len(parts) != 1 || !parts[0].Get("functionCall").Exists() || parts[0].Get("thoughtSignature").String() == testResponsesGeminiThoughtSignature || strings.Contains(string(translated), geminiResponsesCarrierSignatureField) {
 		t.Fatalf("unicode-escaped spoofed internal pairing fields reached Gemini: %s", translated)
 	}
@@ -177,7 +178,7 @@ func TestConvertOpenAIResponsesRequestToGemini_UnknownAliasDoesNotLeakForeignSig
 			if err != nil {
 				t.Fatal(err)
 			}
-			part := gjson.GetBytes(out, "contents.0.parts.0")
+			part := ojson.GetBytes(out, "contents.0.parts.0")
 			if !part.Get("thought").Bool() || part.Get("text").String() != "foreign reasoning" || part.Get("thoughtSignature").Exists() {
 				t.Fatalf("expected an unsigned reasoning part. Output: %s", out)
 			}

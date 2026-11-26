@@ -1,8 +1,9 @@
 package common
 
 import (
-	"encoding/base64"
 	"strings"
+
+	"github.com/MoeForge/moego/base64"
 
 	"ccLoad/internal/protocol/cliproxy/signature"
 )

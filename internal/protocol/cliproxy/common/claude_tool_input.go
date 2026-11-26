@@ -3,7 +3,7 @@ package common
 import (
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ClaudeToolInput joins Gemini function-call argument objects into one Claude
@@ -27,7 +27,7 @@ func (input *ClaudeToolInput) Append(args string, parameterless bool) string {
 
 	trimmed := strings.TrimSpace(args)
 	body := ""
-	if gjson.Parse(trimmed).IsObject() {
+	if ojson.Parse(trimmed).IsObject() {
 		body = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "{"), "}"))
 	}
 	if body == "" {

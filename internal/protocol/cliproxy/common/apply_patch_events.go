@@ -1,6 +1,6 @@
 package common
 
-import "github.com/tidwall/sjson"
+import "github.com/MoeForge/moego/ojson"
 
 // ApplyPatchCallState owns the input decoder and identity of one tool call.
 type ApplyPatchCallState struct {
@@ -28,26 +28,25 @@ func (s *ApplyPatchCallState) FinishArguments(arguments string) (string, string,
 
 // ApplyPatchInputDelta builds a Responses custom-tool input delta without SSE framing.
 func ApplyPatchInputDelta(s *ApplyPatchCallState, delta string, sequence int) []byte {
-	payload := []byte(`{"type":"response.custom_tool_call_input.delta","item_id":"","call_id":"","output_index":0,"sequence_number":0,"delta":""}`)
-	payload = applyPatchEventIdentity(payload, s, sequence)
-	payload, _ = sjson.SetBytes(payload, "delta", delta)
-	return payload
+	doc := ojson.NewDoc([]byte(`{"type":"response.custom_tool_call_input.delta","item_id":"","call_id":"","output_index":0,"sequence_number":0,"delta":""}`))
+	applyPatchEventIdentityDoc(doc, s, sequence)
+	_ = doc.Set("delta", delta)
+	return doc.Bytes()
 }
 
 // ApplyPatchInputDone builds a Responses custom-tool input completion without SSE framing.
 func ApplyPatchInputDone(s *ApplyPatchCallState, input string, sequence int) []byte {
-	payload := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"","call_id":"","output_index":0,"sequence_number":0,"input":""}`)
-	payload = applyPatchEventIdentity(payload, s, sequence)
-	payload, _ = sjson.SetBytes(payload, "input", input)
-	return payload
+	doc := ojson.NewDoc([]byte(`{"type":"response.custom_tool_call_input.done","item_id":"","call_id":"","output_index":0,"sequence_number":0,"input":""}`))
+	applyPatchEventIdentityDoc(doc, s, sequence)
+	_ = doc.Set("input", input)
+	return doc.Bytes()
 }
 
-func applyPatchEventIdentity(payload []byte, s *ApplyPatchCallState, sequence int) []byte {
-	payload, _ = sjson.SetBytes(payload, "item_id", s.ItemID)
-	payload, _ = sjson.SetBytes(payload, "call_id", s.CallID)
-	payload, _ = sjson.SetBytes(payload, "output_index", s.OutputIndex)
-	payload, _ = sjson.SetBytes(payload, "sequence_number", sequence)
-	return payload
+func applyPatchEventIdentityDoc(doc *ojson.Doc, s *ApplyPatchCallState, sequence int) {
+	_ = doc.Set("item_id", s.ItemID)
+	_ = doc.Set("call_id", s.CallID)
+	_ = doc.Set("output_index", s.OutputIndex)
+	_ = doc.Set("sequence_number", sequence)
 }
 
 // ApplyPatchFailure builds a terminal Responses failure without exposing upstream arguments.
@@ -58,11 +57,11 @@ func ApplyPatchFailure(responseID string, sequence int) []byte {
 // ToolInputFailure builds a terminal failure using a caller-owned public message.
 // Callers must not include upstream arguments or provider error details.
 func ToolInputFailure(responseID string, sequence int, message string) []byte {
-	payload := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","status":"failed","error":{"type":"server_error","code":"invalid_tool_arguments","message":"","param":null}}}`)
-	payload, _ = sjson.SetBytes(payload, "response.id", responseID)
-	payload, _ = sjson.SetBytes(payload, "sequence_number", sequence)
-	payload, _ = sjson.SetBytes(payload, "response.error.message", message)
-	return payload
+	doc := ojson.NewDoc([]byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","status":"failed","error":{"type":"server_error","code":"invalid_tool_arguments","message":"","param":null}}}`))
+	_ = doc.Set("response.id", responseID)
+	_ = doc.Set("sequence_number", sequence)
+	_ = doc.Set("response.error.message", message)
+	return doc.Bytes()
 }
 
 // ApplyPatchErrorState retains a conversion error for the caller.

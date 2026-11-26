@@ -10254,10 +10254,81 @@ func TestResponsesWebsocketNativeInterruptFailureDoesNotPoisonTurns(t *testing.T
 }
 
 /**
- * @brief 验证原生 WebSocket 限流只报告错误码时也按恢复时间冷却当前 Key。
+ * @brief 验证原生 WebSocket 限流只报告错误码时也按恢复时间冷却当前 Key，Retry-After 可位于顶层或 error.headers。
  * @param t 测试上下文。
  */
 func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingKey(t *testing.T) {
+	for name, frame := range map[string]string{
+		"top_level_headers": `{"type":"error","error":{"code":"turn_rate_limit_exceeded"},"headers":{"retry-after":"7"}}`,
+		"error_headers":     `{"type":"error","error":{"code":"turn_rate_limit_exceeded","headers":{"retry-after":"7"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				if _, _, err := conn.ReadMessage(); err != nil {
+					t.Error(err)
+					return
+				}
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(frame))
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{name: "capacity-code-only", upstreamProtocol: "codex", websockets: true, models: "gpt-test,gpt-other"}}, map[int]string{0: upstream.URL})
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			before := time.Now()
+			if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "hello"}}}); err != nil {
+				t.Fatal(err)
+			}
+			var event map[string]any
+			if err := conn.ReadJSON(&event); err != nil {
+				t.Fatal(err)
+			}
+			if event["type"] != "error" {
+				t.Fatalf("capacity event=%#v", event)
+			}
+			if _, _, err := conn.ReadMessage(); !websocket.IsCloseError(err, websocket.CloseInternalServerErr) {
+				t.Fatalf("capacity close=%v", err)
+			}
+			entry := waitForProxyLog(t, env, "gpt-test")
+			if entry.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("capacity status=%d want=429", entry.StatusCode)
+			}
+			cooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%v err=%v", configs, err)
+			}
+			until := cooldowns[configs[0].ID][0]
+			if until.Before(before.Add(6*time.Second)) || until.After(time.Now().Add(8*time.Second)) {
+				t.Fatalf("capacity cooldown=%v", until)
+			}
+			modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil || len(modelCooldowns[configs[0].ID]) != 0 {
+				t.Fatalf("model cooldowns=%v err=%v, want none", modelCooldowns, err)
+			}
+			if got := configs[0].CooldownUntil; got != until.Unix() {
+				t.Fatalf("channel cooldown=%d, want deadline of its only Key (%d)", got, until.Unix())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证原生 WebSocket 缺少 type 的策略拦截帧立即结束回合，以 400 错误帧返回且不冷却、不换渠道。
+ * @param t 测试上下文。
+ */
+func TestResponsesWebsocketNativeUntypedPolicyErrorEndsTurn(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -10270,49 +10341,58 @@ func TestResponsesWebsocketNativeCodeOnlyCapacityCoolsReportingKey(t *testing.T)
 			t.Error(err)
 			return
 		}
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","error":{"code":"turn_rate_limit_exceeded"},"headers":{"retry-after":"7"}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp-blocked","status":"in_progress"}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"error":{"code":"bio_policy","message":"This content was flagged for possible biological risk."},"sequence_number":7}`))
+		// 不主动关闭：回合必须由错误帧本身结束。
+		_, _, _ = conn.ReadMessage()
 	}))
 	defer upstream.Close()
-	env := setupProxyTestEnv(t, []testChannel{{name: "capacity-code-only", upstreamProtocol: "codex", websockets: true, models: "gpt-test,gpt-other"}}, map[int]string{0: upstream.URL})
+	var fallbackCalls atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer fallback.Close()
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "policy-blocked", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "must-not-run", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 50},
+	}, map[int]string{0: upstream.URL, 1: fallback.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	before := time.Now()
-	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "hello"}}}); err != nil {
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "blocked"}}}); err != nil {
 		t.Fatal(err)
 	}
-	var event map[string]any
-	if err := conn.ReadJSON(&event); err != nil {
-		t.Fatal(err)
+	var event struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
-	if event["type"] != "error" {
-		t.Fatalf("capacity event=%#v", event)
+	for event.Type != "error" {
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, _, err := conn.ReadMessage(); !websocket.IsCloseError(err, websocket.CloseInternalServerErr) {
-		t.Fatalf("capacity close=%v", err)
+	if event.Status != http.StatusBadRequest || event.Error.Code != "bio_policy" {
+		t.Fatalf("error event=%+v, want status 400 with bio_policy", event)
 	}
-	entry := waitForProxyLog(t, env, "gpt-test")
-	if entry.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("capacity status=%d want=429", entry.StatusCode)
+	if got := fallbackCalls.Load(); got != 0 {
+		t.Fatalf("fallback calls=%d, want 0", got)
 	}
-	cooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	ctx := context.Background()
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil || len(keyCooldowns) != 0 {
+		t.Fatalf("key cooldowns=%v err=%v, want none", keyCooldowns, err)
 	}
-	configs, err := env.store.ListConfigs(context.Background())
-	if err != nil || len(configs) != 1 {
-		t.Fatalf("configs=%v err=%v", configs, err)
-	}
-	until := cooldowns[configs[0].ID][0]
-	if until.Before(before.Add(6*time.Second)) || until.After(time.Now().Add(8*time.Second)) {
-		t.Fatalf("capacity cooldown=%v", until)
-	}
-	modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
-	if err != nil || len(modelCooldowns[configs[0].ID]) != 0 {
+	modelCooldowns, err := env.store.GetAllModelCooldowns(ctx)
+	if err != nil || len(modelCooldowns) != 0 {
 		t.Fatalf("model cooldowns=%v err=%v, want none", modelCooldowns, err)
 	}
-	if got := configs[0].CooldownUntil; got != until.Unix() {
-		t.Fatalf("channel cooldown=%d, want deadline of its only Key (%d)", got, until.Unix())
+	channelCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil || len(channelCooldowns) != 0 {
+		t.Fatalf("channel cooldowns=%v err=%v, want none", channelCooldowns, err)
 	}
 }

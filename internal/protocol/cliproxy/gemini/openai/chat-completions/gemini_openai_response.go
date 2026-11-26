@@ -20,8 +20,7 @@ import (
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // convertGeminiResponseToOpenAIChatParams holds parameters for response conversion.
@@ -59,13 +58,13 @@ func geminiOpenAIToolThoughtSignature(raw string) string {
 // geminiOpenAISanitizedToolNameMap reverses tool names after the same allowed_tools
 // filtering as request translation. Ambiguous names cannot be restored.
 func geminiOpenAISanitizedToolNameMap(rawJSON []byte) map[string]string {
-	tools := gjson.GetBytes(rawJSON, "tools")
+	tools := ojson.GetBytes(rawJSON, "tools")
 	if !tools.IsArray() {
 		return nil
 	}
 	allowed, restricted, _ := parseGeminiOpenAIAllowedTools(rawJSON)
 	names := make(map[string]string)
-	tools.ForEach(func(_, tool gjson.Result) bool {
+	tools.ForEach(func(_, tool ojson.Result) bool {
 		var original string
 		switch tool.Get("type").String() {
 		case "function":
@@ -175,15 +174,15 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 		}
 		p.SawDone = true
 		template := []byte(`{"id":"chatcmpl-proxy","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{},"finish_reason":null,"native_finish_reason":null}]}`)
-		template, _ = sjson.SetBytes(template, "created", p.UnixTimestamp)
-		template, _ = sjson.SetBytes(template, "model", p.ModelVersion)
+		template, _ = ojson.SetBytes(template, "created", p.UnixTimestamp)
+		template, _ = ojson.SetBytes(template, "model", p.ModelVersion)
 		if p.ResponseID != "" {
-			template, _ = sjson.SetBytes(template, "id", p.ResponseID)
+			template, _ = ojson.SetBytes(template, "id", p.ResponseID)
 		}
 		doneChunks := p.appendTerminalChoices(nil, template)
 		if len(doneChunks) > 0 && len(p.PendingUsageMetadata) > 0 {
 			last := len(doneChunks) - 1
-			doneChunks[last] = applyGeminiOpenAIUsageMetadata(doneChunks[last], gjson.ParseBytes(p.PendingUsageMetadata))
+			doneChunks[last] = applyGeminiOpenAIUsageMetadata(doneChunks[last], ojson.ParseBytes(p.PendingUsageMetadata))
 		}
 		return append(doneChunks, []byte("[DONE]"))
 	}
@@ -191,49 +190,49 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 	// Initialize the OpenAI SSE base template.
 	// We use a base template and clone it for each candidate to support multiple candidates.
 	baseTemplate := []byte(`{"id":"chatcmpl-proxy","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}`)
-	baseTemplate, _ = sjson.SetBytes(baseTemplate, "model", modelName)
+	baseTemplate, _ = ojson.SetBytes(baseTemplate, "model", modelName)
 
 	// Extract and set the model version.
 	if modelName != "" {
 		p.ModelVersion = modelName
-	} else if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
+	} else if modelVersionResult := ojson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
 		p.ModelVersion = modelVersionResult.String()
 	}
-	baseTemplate, _ = sjson.SetBytes(baseTemplate, "model", p.ModelVersion)
+	baseTemplate, _ = ojson.SetBytes(baseTemplate, "model", p.ModelVersion)
 
 	// Extract and set the creation timestamp.
-	if createTimeResult := gjson.GetBytes(rawJSON, "createTime"); createTimeResult.Exists() {
+	if createTimeResult := ojson.GetBytes(rawJSON, "createTime"); createTimeResult.Exists() {
 		t, err := time.Parse(time.RFC3339Nano, createTimeResult.String())
 		if err == nil {
 			p.UnixTimestamp = t.Unix()
 		}
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "created", p.UnixTimestamp)
+		baseTemplate, _ = ojson.SetBytes(baseTemplate, "created", p.UnixTimestamp)
 	} else {
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "created", p.UnixTimestamp)
+		baseTemplate, _ = ojson.SetBytes(baseTemplate, "created", p.UnixTimestamp)
 	}
 
 	// Extract and set the response ID.
-	if responseIDResult := gjson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
+	if responseIDResult := ojson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
 		p.ResponseID = responseIDResult.String()
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "id", p.ResponseID)
+		baseTemplate, _ = ojson.SetBytes(baseTemplate, "id", p.ResponseID)
 	} else if p.ResponseID != "" {
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "id", p.ResponseID)
+		baseTemplate, _ = ojson.SetBytes(baseTemplate, "id", p.ResponseID)
 	}
 
-	usageResult := gjson.GetBytes(rawJSON, "usageMetadata")
+	usageResult := ojson.GetBytes(rawJSON, "usageMetadata")
 	hasUsage := usageResult.IsObject()
 	if hasUsage {
 		p.PendingUsageMetadata = nil
-	} else if pendingUsage := gjson.GetBytes(rawJSON, "cpaUsageMetadata"); pendingUsage.IsObject() {
+	} else if pendingUsage := ojson.GetBytes(rawJSON, "cpaUsageMetadata"); pendingUsage.IsObject() {
 		p.PendingUsageMetadata = append(p.PendingUsageMetadata[:0], pendingUsage.Raw...)
 	}
 
 	var responseStrings [][]byte
-	candidates := gjson.GetBytes(rawJSON, "candidates")
+	candidates := ojson.GetBytes(rawJSON, "candidates")
 
 	// Iterate over all candidates to support candidate_count > 1.
 	if candidates.IsArray() {
-		candidates.ForEach(func(_, candidate gjson.Result) bool {
+		candidates.ForEach(func(_, candidate ojson.Result) bool {
 			candidateIndex := int(candidate.Get("index").Int())
 			if p.SawFinishReason[candidateIndex] {
 				return true
@@ -241,9 +240,9 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 
 			// Clone the template for the current candidate.
 			template := append([]byte(nil), baseTemplate...)
-			template, _ = sjson.SetBytes(template, "choices.0.index", candidateIndex)
+			template, _ = ojson.SetBytes(template, "choices.0.index", candidateIndex)
 
-			if finishReason := candidate.Get("finishReason"); finishReason.Type == gjson.String {
+			if finishReason := candidate.Get("finishReason"); finishReason.Type == ojson.String {
 				if reason := strings.TrimSpace(finishReason.String()); reason != "" {
 					p.UpstreamFinishReason[candidateIndex] = strings.ToUpper(reason)
 				}
@@ -256,7 +255,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 				if assistantRoleSet {
 					return
 				}
-				template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+				template, _ = ojson.SetBytes(template, "choices.0.delta.role", "assistant")
 				assistantRoleSet = true
 			}
 			appendToolSignature := func(signature string) {
@@ -264,15 +263,15 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 				if signature == "" || !exists {
 					return
 				}
-				toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+				toolCallsResult := ojson.GetBytes(template, "choices.0.delta.tool_calls")
 				if !toolCallsResult.IsArray() {
-					template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+					template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 				}
 				call := []byte(`{"index":0}`)
-				call, _ = sjson.SetBytes(call, "index", index)
-				call, _ = sjson.SetBytes(call, "extra_content.google.thought_signature", signature)
+				call, _ = ojson.SetBytes(call, "index", index)
+				call, _ = ojson.SetBytes(call, "extra_content.google.thought_signature", signature)
 				setAssistantRole()
-				template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", call)
+				template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", call)
 			}
 
 			if partsResult.IsArray() {
@@ -283,7 +282,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 				hasReasoningContent := false
 				for i := 0; i < len(partResults); i++ {
 					partResult := partResults[i]
-					if geminicommon.HasUnsupportedPartPayload(partResult, "text", "functionCall", "inlineData", "inline_data", "audioTranscription") {
+					if geminicommon.HasUnsupportedPartPayload(partResult, "text", "functionCall", "inlineData", "inline_data", "audioTranscription", "audio_transcription") {
 						delete(p.LastToolCallIndex, candidateIndex)
 						if p.ActiveToolCall[candidateIndex] != nil {
 							p.HasIncompleteToolCall[candidateIndex] = true
@@ -306,6 +305,9 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 					// Speech-to-text models (gemini-3.5-transcribe) deliver the
 					// transcript in an audioTranscription part instead of text.
 					audioTranscriptionResult := partResult.Get("audioTranscription")
+					if !audioTranscriptionResult.Exists() {
+						audioTranscriptionResult = partResult.Get("audio_transcription")
+					}
 					if audioTranscriptionResult.Exists() && !partTextResult.Exists() {
 						partTextResult = audioTranscriptionResult.Get("text")
 					}
@@ -365,20 +367,20 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 								p.ActiveToolCall[candidateIndex] = nil
 							}
 							if delta != "" || thoughtSignature != "" {
-								toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+								toolCallsResult := ojson.GetBytes(template, "choices.0.delta.tool_calls")
 								if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
-									template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+									template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 								}
 								functionCallTemplate := []byte(`{"index":0}`)
-								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", active.Index)
+								functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "index", active.Index)
 								if delta != "" {
 									functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
 								}
 								if thoughtSignature != "" {
-									functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
+									functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
 								}
 								setAssistantRole()
-								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
+								template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 							} else {
 								sawNoopFunctionCall = true
 							}
@@ -411,21 +413,21 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 								p.ActiveToolCall[candidateIndex] = active
 							}
 
-							toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+							toolCallsResult := ojson.GetBytes(template, "choices.0.delta.tool_calls")
 							if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
-								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+								template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 							}
 
 							functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":""}}`)
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "id", fcID)
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
+							functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "id", fcID)
+							functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "index", functionCallIndex)
+							functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "function.name", fcName)
 							functionCallTemplate, _ = translatorcommon.SetStringWithoutHTMLEscape(functionCallTemplate, "function.arguments", delta)
 							if thoughtSignature != "" {
-								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
+								functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
 							}
 							setAssistantRole()
-							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
+							template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 						} else {
 							rawName := strings.TrimSpace(functionCallResult.Get("name").String())
 							args := functionCallResult.Get("args")
@@ -435,7 +437,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 								continue
 							}
 							p.SawToolCall[candidateIndex] = true
-							toolCallsResult := gjson.GetBytes(template, "choices.0.delta.tool_calls")
+							toolCallsResult := ojson.GetBytes(template, "choices.0.delta.tool_calls")
 
 							// Retrieve the function index for this specific candidate.
 							functionCallIndex := p.FunctionIndex[candidateIndex]
@@ -443,7 +445,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							p.LastToolCallIndex[candidateIndex] = functionCallIndex
 
 							if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
-								template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+								template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
 							}
 
 							functionCallTemplate := []byte(`{"id":"","index":0,"type":"function","function":{"name":"","arguments":"{}"}}`)
@@ -452,17 +454,17 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							if fcID == "" {
 								fcID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
 							}
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "id", fcID)
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "index", functionCallIndex)
-							functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.name", fcName)
+							functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "id", fcID)
+							functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "index", functionCallIndex)
+							functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "function.name", fcName)
 							if args.IsObject() {
-								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "function.arguments", args.Raw)
+								functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "function.arguments", args.Raw)
 							}
 							if thoughtSignature != "" {
-								functionCallTemplate, _ = sjson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
+								functionCallTemplate, _ = ojson.SetBytes(functionCallTemplate, "extra_content.google.thought_signature", thoughtSignature)
 							}
 							setAssistantRole()
-							template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
+							template, _ = ojson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallTemplate)
 						}
 					} else if inlineDataResult.Exists() {
 						delete(p.LastToolCallIndex, candidateIndex)
@@ -487,23 +489,23 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 							mimeType = "image/png"
 						}
 						imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, data)
-						imagesResult := gjson.GetBytes(template, "choices.0.delta.images")
+						imagesResult := ojson.GetBytes(template, "choices.0.delta.images")
 						if !imagesResult.Exists() || !imagesResult.IsArray() {
-							template, _ = sjson.SetRawBytes(template, "choices.0.delta.images", []byte(`[]`))
+							template, _ = ojson.SetRawBytes(template, "choices.0.delta.images", []byte(`[]`))
 						}
-						imageIndex := len(gjson.GetBytes(template, "choices.0.delta.images").Array())
+						imageIndex := len(ojson.GetBytes(template, "choices.0.delta.images").Array())
 						imagePayload := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-						imagePayload, _ = sjson.SetBytes(imagePayload, "index", imageIndex)
-						imagePayload, _ = sjson.SetBytes(imagePayload, "image_url.url", imageURL)
+						imagePayload, _ = ojson.SetBytes(imagePayload, "index", imageIndex)
+						imagePayload, _ = ojson.SetBytes(imagePayload, "image_url.url", imageURL)
 						setAssistantRole()
-						template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
+						template, _ = ojson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
 					}
 				}
 				if hasTextContent {
-					template, _ = sjson.SetBytes(template, "choices.0.delta.content", textContent.String())
+					template, _ = ojson.SetBytes(template, "choices.0.delta.content", textContent.String())
 				}
 				if hasReasoningContent {
-					template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", reasoningContent.String())
+					template, _ = ojson.SetBytes(template, "choices.0.delta.reasoning_content", reasoningContent.String())
 				}
 			}
 
@@ -515,7 +517,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 			}
 
 			if hasUsage && p.canFinishChoice(candidateIndex) {
-				delta := gjson.GetBytes(template, "choices.0.delta")
+				delta := ojson.GetBytes(template, "choices.0.delta")
 				if delta.Get("content").String() == "" && delta.Get("reasoning_content").String() == "" && !delta.Get("tool_calls").IsArray() && !delta.Get("images").IsArray() {
 					return true
 				}
@@ -531,7 +533,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, modelName string, original
 		responseStrings = p.appendTerminalChoices(responseStrings, baseTemplate)
 		if len(responseStrings) > 0 || usageResult.Raw != p.LastUsageMetadata {
 			if len(responseStrings) == 0 {
-				chunk, _ := sjson.SetRawBytes(baseTemplate, "choices", []byte(`[]`))
+				chunk, _ := ojson.SetRawBytes(baseTemplate, "choices", []byte(`[]`))
 				responseStrings = append(responseStrings, chunk)
 			}
 			last := len(responseStrings) - 1
@@ -568,10 +570,10 @@ func (p *convertGeminiResponseToOpenAIChatParams) appendTerminalChoices(chunks [
 	for _, index := range indices {
 		p.SawFinishReason[index] = true
 		finishReason, nativeFinishReason := resolveGeminiOpenAIFinishReason(p.UpstreamFinishReason[index], p.SawToolCall[index])
-		chunk, _ := sjson.SetBytes(template, "choices.0.index", index)
-		chunk, _ = sjson.SetRawBytes(chunk, "choices.0.delta", []byte(`{}`))
-		chunk, _ = sjson.SetBytes(chunk, "choices.0.finish_reason", finishReason)
-		chunk, _ = sjson.SetBytes(chunk, "choices.0.native_finish_reason", nativeFinishReason)
+		chunk, _ := ojson.SetBytes(template, "choices.0.index", index)
+		chunk, _ = ojson.SetRawBytes(chunk, "choices.0.delta", []byte(`{}`))
+		chunk, _ = ojson.SetBytes(chunk, "choices.0.finish_reason", finishReason)
+		chunk, _ = ojson.SetBytes(chunk, "choices.0.native_finish_reason", nativeFinishReason)
 		chunks = append(chunks, chunk)
 	}
 	return chunks
@@ -595,46 +597,46 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 	var unixTimestamp int64
 	// Initialize template with an empty choices array to support multiple candidates.
 	template := []byte(`{"id":"chatcmpl-proxy","object":"chat.completion","created":0,"model":"","choices":[]}`)
-	template, _ = sjson.SetBytes(template, "model", modelName)
+	template, _ = ojson.SetBytes(template, "model", modelName)
 
-	if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelName == "" && modelVersionResult.Exists() {
-		template, _ = sjson.SetBytes(template, "model", modelVersionResult.String())
+	if modelVersionResult := ojson.GetBytes(rawJSON, "modelVersion"); modelName == "" && modelVersionResult.Exists() {
+		template, _ = ojson.SetBytes(template, "model", modelVersionResult.String())
 	}
 
-	if createTimeResult := gjson.GetBytes(rawJSON, "createTime"); createTimeResult.Exists() {
+	if createTimeResult := ojson.GetBytes(rawJSON, "createTime"); createTimeResult.Exists() {
 		t, err := time.Parse(time.RFC3339Nano, createTimeResult.String())
 		if err == nil {
 			unixTimestamp = t.Unix()
 		}
-		template, _ = sjson.SetBytes(template, "created", unixTimestamp)
+		template, _ = ojson.SetBytes(template, "created", unixTimestamp)
 	} else {
-		template, _ = sjson.SetBytes(template, "created", unixTimestamp)
+		template, _ = ojson.SetBytes(template, "created", unixTimestamp)
 	}
 
-	if responseIDResult := gjson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
-		template, _ = sjson.SetBytes(template, "id", responseIDResult.String())
+	if responseIDResult := ojson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
+		template, _ = ojson.SetBytes(template, "id", responseIDResult.String())
 	}
 
-	if usageResult := gjson.GetBytes(rawJSON, "usageMetadata"); usageResult.IsObject() {
+	if usageResult := ojson.GetBytes(rawJSON, "usageMetadata"); usageResult.IsObject() {
 		template = applyGeminiOpenAIUsageMetadata(template, usageResult)
 	}
 
 	// Process the main content part of the response for all candidates.
-	candidates := gjson.GetBytes(rawJSON, "candidates")
+	candidates := ojson.GetBytes(rawJSON, "candidates")
 	if candidates.IsArray() {
 		var choicesList [][]byte
-		candidates.ForEach(func(_, candidate gjson.Result) bool {
+		candidates.ForEach(func(_, candidate ojson.Result) bool {
 			// Construct a single Choice object.
 			choiceTemplate := []byte(`{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}`)
 
 			// Set the index for this choice.
-			choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "index", candidate.Get("index").Int())
+			choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "index", candidate.Get("index").Int())
 
 			// Set finish reason.
 			if reason := strings.TrimSpace(candidate.Get("finishReason").Str); reason != "" {
 				finishReason, nativeFinishReason := resolveGeminiOpenAIFinishReason(strings.ToUpper(reason), false)
-				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "finish_reason", finishReason)
-				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "native_finish_reason", nativeFinishReason)
+				choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "finish_reason", finishReason)
+				choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "native_finish_reason", nativeFinishReason)
 			}
 
 			partsResult := candidate.Get("content.parts")
@@ -651,7 +653,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 
 				for i := 0; i < len(partsResults); i++ {
 					partResult := partsResults[i]
-					if geminicommon.HasUnsupportedPartPayload(partResult, "text", "functionCall", "inlineData", "inline_data", "audioTranscription") {
+					if geminicommon.HasUnsupportedPartPayload(partResult, "text", "functionCall", "inlineData", "inline_data", "audioTranscription", "audio_transcription") {
 						lastToolCall = -1
 						continue
 					}
@@ -669,6 +671,9 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 					// Speech-to-text models (gemini-3.5-transcribe) deliver the
 					// transcript in an audioTranscription part instead of text.
 					audioTranscriptionResult := partResult.Get("audioTranscription")
+					if !audioTranscriptionResult.Exists() {
+						audioTranscriptionResult = partResult.Get("audio_transcription")
+					}
 					if audioTranscriptionResult.Exists() && !partTextResult.Exists() {
 						partTextResult = audioTranscriptionResult.Get("text")
 					}
@@ -684,7 +689,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 					// Keep a detached signature on its preceding tool, not across text or images.
 					if hasThoughtSignature && !hasContentPayload {
 						if signature := geminiOpenAIToolThoughtSignature(thoughtSignatureResult.String()); signature != "" && lastToolCall >= 0 {
-							toolCalls[lastToolCall], _ = sjson.SetBytes(toolCalls[lastToolCall], "extra_content.google.thought_signature", signature)
+							toolCalls[lastToolCall], _ = ojson.SetBytes(toolCalls[lastToolCall], "extra_content.google.thought_signature", signature)
 						}
 						continue
 					}
@@ -710,13 +715,13 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 						if functionCallID == "" {
 							functionCallID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1))
 						}
-						functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "id", functionCallID)
-						functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.name", fcName)
+						functionCallItemTemplate, _ = ojson.SetBytes(functionCallItemTemplate, "id", functionCallID)
+						functionCallItemTemplate, _ = ojson.SetBytes(functionCallItemTemplate, "function.name", fcName)
 						if args.IsObject() {
-							functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", args.Raw)
+							functionCallItemTemplate, _ = ojson.SetBytes(functionCallItemTemplate, "function.arguments", args.Raw)
 						}
 						if signature := geminiOpenAIToolThoughtSignature(thoughtSignatureResult.String()); signature != "" {
-							functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "extra_content.google.thought_signature", signature)
+							functionCallItemTemplate, _ = ojson.SetBytes(functionCallItemTemplate, "extra_content.google.thought_signature", signature)
 						}
 						toolCalls = append(toolCalls, functionCallItemTemplate)
 						lastToolCall = len(toolCalls) - 1
@@ -736,30 +741,30 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 							}
 							imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, data)
 							imagePayload := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-							imagePayload, _ = sjson.SetBytes(imagePayload, "index", len(images))
-							imagePayload, _ = sjson.SetBytes(imagePayload, "image_url.url", imageURL)
+							imagePayload, _ = ojson.SetBytes(imagePayload, "index", len(images))
+							imagePayload, _ = ojson.SetBytes(imagePayload, "image_url.url", imageURL)
 							images = append(images, imagePayload)
 						}
 					}
 				}
 
 				if hasTextContent {
-					choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.content", textContent.String())
+					choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "message.content", textContent.String())
 				}
 				if hasReasoningContent {
-					choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.reasoning_content", reasoningContent.String())
+					choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "message.reasoning_content", reasoningContent.String())
 				}
 				if len(toolCalls) > 0 {
-					choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.tool_calls", translatorcommon.JoinRawArray(toolCalls))
+					choiceTemplate, _ = ojson.SetRawBytes(choiceTemplate, "message.tool_calls", translatorcommon.JoinRawArray(toolCalls))
 				}
 				if len(images) > 0 {
-					choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.images", translatorcommon.JoinRawArray(images))
+					choiceTemplate, _ = ojson.SetRawBytes(choiceTemplate, "message.images", translatorcommon.JoinRawArray(images))
 				}
 			}
 
 			if hasFunctionCall {
-				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "finish_reason", "tool_calls")
-				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "native_finish_reason", "tool_calls")
+				choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "finish_reason", "tool_calls")
+				choiceTemplate, _ = ojson.SetBytes(choiceTemplate, "native_finish_reason", "tool_calls")
 			}
 
 			// Append the constructed choice to the main choices array.
@@ -792,21 +797,21 @@ func resolveGeminiOpenAIFinishReason(upstreamFinishReason string, sawToolCall bo
 	return finishReason, nativeFinishReason
 }
 
-func applyGeminiOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {
+func applyGeminiOpenAIUsageMetadata(template []byte, usageResult ojson.Result) []byte {
 	cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
-	template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
-	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Type != gjson.Null {
-		template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
+	template, _ = ojson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
+	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Type != ojson.Null {
+		template, _ = ojson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 	}
 	promptTokenCount := usageResult.Get("promptTokenCount").Int()
 	thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
-	template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
+	template, _ = ojson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
 	if thoughtsTokenCount > 0 {
-		template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
+		template, _ = ojson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
 	}
 	if cachedTokenCount > 0 {
 		var err error
-		template, err = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokenCount)
+		template, err = ojson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokenCount)
 		if err != nil {
 			log.Printf("gemini openai response: failed to set cached_tokens: %v", err)
 		}

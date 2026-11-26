@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+	"ccLoad/internal/util"
 )
 
 func TestXAIResponsesReasoningStreamContract(t *testing.T) {
@@ -978,5 +981,77 @@ func TestStreamTransformSSEEventsUntil_ClosesReaderOnContextCancel(t *testing.T)
 	case <-time.After(200 * time.Millisecond):
 		_ = reader.Close()
 		t.Fatal("stream transform did not unblock Read after context cancellation")
+	}
+}
+
+/**
+ * @brief 记录每次上游请求是否复用了已有物理连接的 RoundTripper。
+ */
+type connReuseRecorder struct {
+	base   http.RoundTripper ///< 实际发送请求的 transport
+	mu     sync.Mutex        ///< 保护 reused
+	reused []bool            ///< 按请求顺序记录 GotConnInfo.Reused
+}
+
+/**
+ * @brief 附加 httptrace 后转发请求。
+ * @param req 上游请求
+ * @return 上游响应
+ * @return 底层 transport 错误
+ */
+func (r *connReuseRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		r.mu.Lock()
+		r.reused = append(r.reused, info.Reused)
+		r.mu.Unlock()
+	}}
+	return r.base.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+}
+
+func TestProxy_TerminatedAnthropicStreamReusesUpstreamConnection(t *testing.T) {
+	t.Parallel()
+	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-reuse\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	// 终止事件先 flush，HTTP/1.1 chunked 结尾稍后才到，网关停止读取时连接上仍有未读正文。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+		w.(http.Flusher).Flush()
+		time.Sleep(20 * time.Millisecond)
+	}))
+	t.Cleanup(upstream.Close)
+	for _, tc := range []struct {
+		path string
+		body map[string]any
+	}{
+		{path: "/v1/messages", body: map[string]any{"max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": "hi"}}}},
+		{path: "/v1/chat/completions", body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "reuse", upstreamProtocol: util.ProtocolAnthropic, models: "claude-reuse", apiKey: "sk-reuse",
+			}}, map[int]string{0: upstream.URL})
+			// 单连接上限让第二个请求等待第一条连接归还或关闭，结果与后台排空的调度时机无关。
+			transport := &http.Transport{MaxConnsPerHost: 1}
+			t.Cleanup(transport.CloseIdleConnections)
+			recorder := &connReuseRecorder{base: transport}
+			env.server.client = &http.Client{Transport: recorder}
+			tc.body["model"], tc.body["stream"] = "claude-reuse", true
+			for range 2 {
+				if response := doProxyRequest(t, env.engine, tc.path, tc.body, nil); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "hi") {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			recorder.mu.Lock()
+			defer recorder.mu.Unlock()
+			if len(recorder.reused) != 2 || !recorder.reused[1] {
+				t.Fatalf("second upstream request reused=%v, want the terminated stream's connection", recorder.reused)
+			}
+		})
 	}
 }

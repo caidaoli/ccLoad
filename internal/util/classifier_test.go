@@ -1383,6 +1383,65 @@ func TestClassifyHTTPResponseContextLengthMessageDoesNotHideServerError(t *testi
 	}
 }
 
+/**
+ * @brief 验证内容策略拦截与托管生图参数错误在 SSE 与 HTTP 400 下都直接返回客户端。
+ * @param t 测试上下文。
+ */
+func TestClassifyHTTPResponseRequestContentRejectionIsClientError(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"bio_policy_error_event", `{"type":"error","error":{"code":"bio_policy","type":"invalid_request","message":"This content was flagged for possible biological risk."},"sequence_number":3}`},
+		{"bio_policy_response_failed", `{"type":"response.failed","response":{"status":"failed","error":{"code":"bio_policy","message":"blocked"}}}`},
+		{"cyber_policy_http", `{"error":{"code":"cyber_policy","type":"invalid_request_error","message":"blocked"}}`},
+		{"typeless_body_error", `{"body":{"error":{"code":"misalignment_policy_violation"}},"sequence_number":7}`},
+		{"typeless_top_level", `{"code":"content_policy_violation","message":"blocked","sequence_number":7}`},
+		{"image_content_policy", `{"type":"error","error":{"code":"image_content_policy_violation","message":"blocked"}}`},
+		{"message_prefix_only", `{"error":{"message":"This content was flagged for possible biological risk. Learn more."}}`},
+		{"string_error_prefix", `{"type":"error","error":"  this request has been flagged for possible cybersecurity risk."}`},
+		{"invalid_prompt_prefix", `{"error":{"code":"invalid_prompt","type":"invalid_request_error","message":"Invalid prompt: we've limited access to this content for safety reasons."}}`},
+		{"image_generation_response_failed", `{"type":"response.failed","response":{"status":"failed","error":{"type":"image_generation_user_error","code":"invalid_value","param":"complexity","message":"Complexity 'medium' is not supported for this image model."}}}`},
+		{"image_generation_error_event", `{"type":"error","error":{"type":"image_generation_user_error","param":"complexity","message":"Complexity 'medium' is not supported for this image model."},"sequence_number":9}`},
+	}
+	for _, tt := range tests {
+		for _, status := range []int{StatusSSEError, http.StatusBadRequest} {
+			t.Run(fmt.Sprintf("%s/%d", tt.name, status), func(t *testing.T) {
+				classification := ClassifyHTTPResponseWithMeta(status, nil, []byte(tt.body))
+				if classification.Level != ErrorLevelClient || classification.ModelScoped {
+					t.Fatalf("classification=%+v, want client-level without model scope", classification)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证只是提到拦截文案或带其他错误码的失败保持原有冷却分类。
+ * @param t 测试上下文。
+ */
+func TestClassifyHTTPResponseRequestContentRejectionKeepsOtherFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"server_error_with_prefix", StatusSSEError, `{"type":"error","error":{"type":"server_error","message":"This content was flagged for possible biological risk."}}`},
+		{"message_contains_phrase", http.StatusBadRequest, `{"error":{"message":"upstream failed: This content was flagged for possible biological risk."}}`},
+		{"generic_invalid_request", http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"Unsupported parameter: foo"}}`},
+		{"generic_invalid_request_sse", StatusSSEError, `{"type":"error","error":{"type":"invalid_request_error","message":"Unsupported parameter: foo"}}`},
+		{"policy_code_on_server_status", http.StatusInternalServerError, `{"error":{"code":"bio_policy"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(tt.status, nil, []byte(tt.body))
+			if classification.Level == ErrorLevelClient {
+				t.Fatalf("classification=%+v, want cooldown path", classification)
+			}
+		})
+	}
+}
+
 func TestClassifyHTTPResponseUnprocessableImageIsClientError(t *testing.T) {
 	tests := []struct {
 		name string

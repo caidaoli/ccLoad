@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	connectrpc.com/connect v1.21.1
+	github.com/MoeForge/moego v0.1.0-alpha.5
 	github.com/andybalholm/brotli v1.3.0
 	github.com/bytedance/sonic v1.15.5
 	github.com/gin-gonic/gin v1.12.0

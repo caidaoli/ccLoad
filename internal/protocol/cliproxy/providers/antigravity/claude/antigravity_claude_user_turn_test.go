@@ -10,7 +10,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const userTurnUpload = `{"type":"container_upload","file_id":"file-1"}`
@@ -40,10 +40,10 @@ func TestConvertAntigravityResponseToClaude_FinishReasons(t *testing.T) {
 			candidate := fmt.Sprintf(`[{"content":{"role":"model","parts":%s},"finishReason":%q}]`, tt.parts, tt.reason)
 			raw := []byte(fmt.Sprintf(`{"response":{"candidates":%s,"usageMetadata":%s}}`, candidate, usage))
 			response := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", request, request, raw, nil)
-			if got := gjson.GetBytes(response, "stop_reason").String(); got != tt.want {
+			if got := ojson.GetBytes(response, "stop_reason").String(); got != tt.want {
 				t.Fatalf("non-stream stop_reason = %q, want %q: %s", got, tt.want, response)
 			}
-			if got := gjson.GetBytes(response, "usage"); got.Get("input_tokens").Int() != 10 || got.Get("output_tokens").Int() != 10 || got.Get("cache_read_input_tokens").Int() != 90 {
+			if got := ojson.GetBytes(response, "usage"); got.Get("input_tokens").Int() != 10 || got.Get("output_tokens").Int() != 10 || got.Get("cache_read_input_tokens").Int() != 90 {
 				t.Fatalf("non-stream usage changed: %s", got.Raw)
 			}
 
@@ -60,7 +60,7 @@ func TestConvertAntigravityResponseToClaude_FinishReasons(t *testing.T) {
 					if len(events) < 2 || events[0].Get("type").String() != "message_start" || events[len(events)-2].Get("type").String() != "message_delta" || events[len(events)-1].Get("type").String() != "message_stop" {
 						t.Fatalf("stream did not close in order: %s", output)
 					}
-					var delta gjson.Result
+					var delta ojson.Result
 					deltaCount, stopCount := 0, 0
 					for _, event := range events {
 						switch event.Get("type").String() {
@@ -96,10 +96,10 @@ func TestConvertAntigravityResponseToClaudeNonStream_WebSearchFinishReasons(t *t
 		t.Run(tt.reason, func(t *testing.T) {
 			raw := []byte(fmt.Sprintf(`{"response":{"candidates":[{"content":{"parts":[{"text":"Partial grounded answer."}]},"groundingMetadata":{"webSearchQueries":["query"],"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example"}}]},"finishReason":%q}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4,"totalTokenCount":14}}}`, tt.reason))
 			response := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3.8-flash-high", request, translated, raw, nil)
-			if got := gjson.GetBytes(response, "stop_reason").String(); got != tt.want {
+			if got := ojson.GetBytes(response, "stop_reason").String(); got != tt.want {
 				t.Fatalf("grounded stop_reason = %q, want %q: %s", got, tt.want, response)
 			}
-			if got := gjson.GetBytes(response, "usage.server_tool_use.web_search_requests").Int(); got != 1 {
+			if got := ojson.GetBytes(response, "usage.server_tool_use.web_search_requests").Int(); got != 1 {
 				t.Fatalf("web_search_requests = %d, want 1: %s", got, response)
 			}
 		})
@@ -171,7 +171,7 @@ func TestAntigravityClaudeTextFinishesOnTrailingUsage(t *testing.T) {
 	}
 	delta := events[1]
 	if delta.Get("delta.stop_reason").String() != "max_tokens" || delta.Get("usage.input_tokens").Int() != 6 ||
-		delta.Get("usage.output_tokens").Type != gjson.Number || delta.Get("usage.output_tokens").Int() != 0 ||
+		delta.Get("usage.output_tokens").Type != ojson.Number || delta.Get("usage.output_tokens").Int() != 0 ||
 		delta.Get("usage.cache_read_input_tokens").Int() != 4 {
 		t.Fatalf("trailing usage did not retain the stop reason and accumulated counts: %s", delta.Raw)
 	}
@@ -245,7 +245,7 @@ func TestAntigravityClaudeDefersContinuationSignatureUntilToolCloses(t *testing.
 				t.Fatalf("expected one tool block followed by its signature carrier: %s", output)
 			}
 			args := input.String()
-			if !gjson.Valid(args) || gjson.Get(args, "query").String() != "go" || gjson.Get(args, "page").Int() != 2 || gjson.Get(args, "limit").Int() != 10 {
+			if !ojson.Valid(args) || ojson.Get(args, "query").String() != "go" || ojson.Get(args, "page").Int() != 2 || ojson.Get(args, "limit").Int() != 10 {
 				t.Fatalf("invalid merged tool input: %q", args)
 			}
 		})
@@ -294,17 +294,17 @@ func TestAntigravityClaudeAcceptsLateToolSignatureAfterUsage(t *testing.T) {
 
 	for _, tc := range []struct {
 		usage string
-		want  gjson.Type
+		want  ojson.Type
 	}{
-		{`"usageMetadata":null`, gjson.Null},
-		{`"usageMetadata":null,"cpaUsageMetadata":{"promptTokenCount":0}`, gjson.Number},
+		{`"usageMetadata":null`, ojson.Null},
+		{`"usageMetadata":null,"cpaUsageMetadata":{"promptTokenCount":0}`, ojson.Number},
 	} {
 		raw := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}},{"thoughtSignature":"","thought_signature":"` + signature + `"}]},"finishReason":"STOP"}],` + tc.usage + `}}`)
 		out := ConvertAntigravityResponseToClaudeNonStream(t.Context(), "gemini-3.8-flash-high", request, request, raw, nil)
-		if got := gjson.GetBytes(out, "usage.input_tokens"); got.Type != tc.want || got.Int() != 0 {
+		if got := ojson.GetBytes(out, "usage.input_tokens"); got.Type != tc.want || got.Int() != 0 {
 			t.Errorf("usage input_tokens = %s for upstream usage %s", got.Raw, tc.usage)
 		}
-		if got := gjson.GetBytes(out, "content.1.signature").Str; got != gotSignature {
+		if got := ojson.GetBytes(out, "content.1.signature").Str; got != gotSignature {
 			t.Errorf("expected the same tool signature carrier in JSON: %s", out)
 		}
 	}
@@ -369,8 +369,8 @@ func TestConvertAntigravityResponseToClaude_WebSearchPreservesUncitedText(t *tes
 	t.Run("non-stream", func(t *testing.T) {
 		output := ConvertAntigravityResponseToClaudeNonStream(t.Context(), model, request, translated, raw, nil)
 		var text strings.Builder
-		var citations []gjson.Result
-		for _, block := range gjson.GetBytes(output, "content").Array() {
+		var citations []ojson.Result
+		for _, block := range ojson.GetBytes(output, "content").Array() {
 			if block.Get("type").String() == "text" {
 				text.WriteString(block.Get("text").String())
 				citations = append(citations, block.Get("citations").Array()...)
@@ -384,7 +384,7 @@ func TestConvertAntigravityResponseToClaude_WebSearchPreservesUncitedText(t *tes
 		var state any
 		output := bytes.Join(ConvertAntigravityResponseToClaude(t.Context(), model, request, translated, raw, &state), nil)
 		var text strings.Builder
-		var citations []gjson.Result
+		var citations []ojson.Result
 		for _, event := range antigravityClaudeStreamEvents(t, output) {
 			switch event.Get("delta.type").String() {
 			case "text_delta":
@@ -399,19 +399,19 @@ func TestConvertAntigravityResponseToClaude_WebSearchPreservesUncitedText(t *tes
 	})
 }
 
-func antigravityClaudeStreamEvents(t *testing.T, output []byte) []gjson.Result {
+func antigravityClaudeStreamEvents(t *testing.T, output []byte) []ojson.Result {
 	t.Helper()
-	var events []gjson.Result
+	var events []ojson.Result
 	for _, frame := range bytes.Split(output, []byte("\n\n")) {
 		for _, line := range bytes.Split(frame, []byte("\n")) {
 			if !bytes.HasPrefix(line, []byte("data: ")) {
 				continue
 			}
 			payload := bytes.TrimPrefix(line, []byte("data: "))
-			if !gjson.ValidBytes(payload) {
+			if !ojson.ValidBytes(payload) {
 				t.Fatalf("invalid SSE JSON: %s", payload)
 			}
-			events = append(events, gjson.ParseBytes(payload))
+			events = append(events, ojson.ParseBytes(payload))
 		}
 	}
 	return events
@@ -454,7 +454,7 @@ func TestConvertClaudeRequestToAntigravity_RefusesAnyEmptiedUserTurn(t *testing.
 			if got, want := err.Error(), "unsupported content part: "+tc.wantType; got != want {
 				t.Fatalf("error text = %q, want %q", got, want)
 			}
-			if !gjson.ValidBytes(body) {
+			if !ojson.ValidBytes(body) {
 				t.Fatalf("body is not JSON: %q", body)
 			}
 		})
@@ -467,7 +467,7 @@ func TestConvertClaudeRequestToAntigravity_KeepsTurnWithTextBesideAttachment(t *
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if got := gjson.GetBytes(body, "request.contents.2.parts.0.text").String(); got != "keep me" {
+	if got := ojson.GetBytes(body, "request.contents.2.parts.0.text").String(); got != "keep me" {
 		t.Fatalf("text was lost: %s", body)
 	}
 }
@@ -478,7 +478,7 @@ func TestConvertClaudeRequestToAntigravity_Base64DocumentBecomesInlineData(t *te
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	inlineData := gjson.GetBytes(body, "request.contents.2.parts.0.inlineData")
+	inlineData := ojson.GetBytes(body, "request.contents.2.parts.0.inlineData")
 	if inlineData.Get("mimeType").String() != "application/pdf" || inlineData.Get("data").String() != "JVBERi0xLjQK" {
 		t.Fatalf("inlineData = %s, body = %s", inlineData.Raw, body)
 	}
@@ -486,7 +486,7 @@ func TestConvertClaudeRequestToAntigravity_Base64DocumentBecomesInlineData(t *te
 
 func TestConvertClaudeRequestToAntigravity_ExportedWrapperKeepsAJSONBody(t *testing.T) {
 	input := []byte(`{"model":"m","messages":[{"role":"user","content":[` + userTurnUpload + `]}]}`)
-	if body, _ := ConvertClaudeRequestToAntigravity("m", input, false); !gjson.ValidBytes(body) {
+	if body, _ := ConvertClaudeRequestToAntigravity("m", input, false); !ojson.ValidBytes(body) {
 		t.Fatalf("body is not JSON: %q", body)
 	}
 }
@@ -538,7 +538,7 @@ func TestClaudeToAntigravityUnrepresentableImageBesideTextStillSucceeds(t *testi
 		if envelope.Err != nil {
 			t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 		}
-		parts := gjson.GetBytes(envelope.Body, "request.contents.2.parts").Array()
+		parts := ojson.GetBytes(envelope.Body, "request.contents.2.parts").Array()
 		if len(parts) != 1 || parts[0].Get("text").String() != "keep me" {
 			t.Fatalf("text was lost or an image leaked: %s", envelope.Body)
 		}
@@ -563,7 +563,7 @@ func TestClaudeToAntigravitySkipsEmptySystemAndMessages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := gjson.GetBytes(body, "request")
+		request := ojson.GetBytes(body, "request")
 		if request.Get("systemInstruction.parts.#").Int() != tc.count || request.Get("systemInstruction.parts.0.text").String() != tc.text {
 			t.Fatalf("system %s produced %s", tc.system, body)
 		}
@@ -578,7 +578,7 @@ func TestClaudeToAntigravityBase64ImageOnlyTurnStaysInlineData(t *testing.T) {
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 	}
-	inlineData := gjson.GetBytes(envelope.Body, "request.contents.2.parts.0.inlineData")
+	inlineData := ojson.GetBytes(envelope.Body, "request.contents.2.parts.0.inlineData")
 	if inlineData.Get("mimeType").String() != "image/png" || inlineData.Get("data").String() != "aGVsbG8=" {
 		t.Fatalf("inlineData = %s, body = %s", inlineData.Raw, envelope.Body)
 	}
@@ -597,7 +597,7 @@ func TestClaudeToAntigravityRealTextBesideWhitespaceAndAnImageStillSucceeds(t *t
 		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 	}
 	found := false
-	for _, part := range gjson.GetBytes(envelope.Body, "request.contents.2.parts").Array() {
+	for _, part := range ojson.GetBytes(envelope.Body, "request.contents.2.parts").Array() {
 		if part.Get("text").String() == "keep me" {
 			found = true
 		}
@@ -628,8 +628,8 @@ func TestConvertClaudeRequestToAntigravity_PreservesParameterlessToolResultPair(
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := gjson.GetBytes(output, "request.contents.1.parts.0.functionCall")
-	result := gjson.GetBytes(output, "request.contents.2.parts.0.functionResponse")
+	call := ojson.GetBytes(output, "request.contents.1.parts.0.functionCall")
+	result := ojson.GetBytes(output, "request.contents.2.parts.0.functionResponse")
 	if args := call.Get("args"); !args.IsObject() || len(args.Map()) != 0 {
 		t.Fatalf("expected empty function arguments: %s", output)
 	}
@@ -732,10 +732,10 @@ func TestConvertClaudeRequestToAntigravity_PreservesToolResultErrors(t *testing.
 				if errTranslate != nil {
 					t.Fatal(errTranslate)
 				}
-				if !gjson.ValidBytes(output) {
+				if !ojson.ValidBytes(output) {
 					t.Fatalf("invalid translated JSON: %s", output)
 				}
-				response := gjson.GetBytes(output, "request.contents.1.parts.0.functionResponse")
+				response := ojson.GetBytes(output, "request.contents.1.parts.0.functionResponse")
 				if response.Get("id").String() != "call_1" || response.Get("name").String() != "Read" {
 					t.Fatalf("tool result lost its call identity: %s", response.Raw)
 				}
@@ -773,10 +773,10 @@ func TestConvertAntigravityResponseToClaudeStream_MalformedFunctionCallEmitsAPIE
 				raw := []byte(`{"response":{"candidates":[{"content":{"parts":[` + tc.part + `]},"finishReason":" malformed_function_call "}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":7,"thoughtsTokenCount":3,"totalTokenCount":110}}}`)
 				response := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", request, request, raw, nil)
 				if tc.want == "error" {
-					if gjson.GetBytes(response, "error.type").String() != "api_error" {
+					if ojson.GetBytes(response, "error.type").String() != "api_error" {
 						t.Fatalf("expected api_error: %s", response)
 					}
-				} else if gjson.GetBytes(response, "stop_reason").String() != tc.want {
+				} else if ojson.GetBytes(response, "stop_reason").String() != tc.want {
 					t.Fatalf("unexpected response: %s", response)
 				}
 				var state any
@@ -828,7 +828,7 @@ func TestClaudeToAntigravityDocumentTextAndContentSources(t *testing.T) {
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v, body = %s", envelope.Err, envelope.Body)
 	}
-	parts := gjson.GetBytes(envelope.Body, "request.contents.2.parts").Array()
+	parts := ojson.GetBytes(envelope.Body, "request.contents.2.parts").Array()
 	if len(parts) != 2 {
 		t.Fatalf("got %d parts, want 2: %s", len(parts), envelope.Body)
 	}
@@ -842,7 +842,7 @@ func TestClaudeToAntigravityDocumentTextAndContentSources(t *testing.T) {
 		t.Fatalf("content document err = %v, body = %s", contentEnv.Err, contentEnv.Body)
 	}
 	var sawText, sawImage bool
-	for _, p := range gjson.GetBytes(contentEnv.Body, "request.contents.2.parts").Array() {
+	for _, p := range ojson.GetBytes(contentEnv.Body, "request.contents.2.parts").Array() {
 		if strings.Contains(p.Get("text").String(), "inside doc") {
 			sawText = true
 		}
@@ -901,7 +901,7 @@ func TestConvertClaudeRequestToAntigravity_ToolResultDocumentExtractedToParts(t 
 			if err != nil {
 				t.Fatalf("ConvertClaudeRequestToAntigravity failed: %v", err)
 			}
-			fr := gjson.GetBytes(output, "request.contents.1.parts.0.functionResponse")
+			fr := ojson.GetBytes(output, "request.contents.1.parts.0.functionResponse")
 			if !fr.Exists() {
 				t.Fatalf("functionResponse missing: %s", output)
 			}
@@ -921,4 +921,118 @@ func TestConvertClaudeRequestToAntigravity_ToolResultDocumentExtractedToParts(t 
 			}
 		})
 	}
+}
+
+func TestConvertAntigravityResponseToClaudeStream_MessageStartExcludesCachedTokens(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-4-6"}`)
+	for name, chunk := range map[string]string{
+		"terminal usageMetadata": `{"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":5,"totalTokenCount":105},"responseId":"r1"}}`,
+		"cpaUsageMetadata":       `{"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"cpaUsageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":90,"candidatesTokenCount":5,"totalTokenCount":105},"responseId":"r1"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var param any
+			out := bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", request, request, []byte(chunk), &param), nil)
+			start := sseEventPayloads(t, out, "message_start")
+			if len(start) != 1 {
+				t.Fatalf("message_start events = %d, want 1: %s", len(start), out)
+			}
+			usage := start[0].Get("message.usage")
+			if usage.Get("input_tokens").Int() != 10 || usage.Get("cache_read_input_tokens").Int() != 90 || usage.Get("output_tokens").Int() != 5 {
+				t.Fatalf("message_start usage = %s, want input 10, cache_read 90, output 5", usage.Raw)
+			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToClaude_ToolUseIDs(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-4-6"}`)
+	response := func(id string) []byte {
+		return []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{` + id + `"name":"read_file","args":{"path":"a.go"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"responseId":"r1"}}`)
+	}
+	nonStreamID := func(raw []byte) string {
+		return ojson.GetBytes(ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", request, request, raw, nil), "content.0.id").String()
+	}
+
+	if got := nonStreamID(response(`"id":"toolu_vrtx_01AAA",`)); got != "toolu_vrtx_01AAA" {
+		t.Fatalf("non-stream tool_use id = %q, want upstream id", got)
+	}
+	var param any
+	stream := bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", request, request, response(`"id":"toolu_vrtx_01AAA",`), &param), nil)
+	if starts := sseEventPayloads(t, stream, "content_block_start"); len(starts) != 1 || starts[0].Get("content_block.id").String() != "toolu_vrtx_01AAA" {
+		t.Fatalf("stream tool_use start = %v, want upstream id: %s", starts, stream)
+	}
+	if got := nonStreamID(response(`"id":"toolu.vrtx:01/CCC",`)); !strings.HasPrefix(got, "toolu_vrtx_01_CCC-") {
+		t.Fatalf("sanitized tool_use id = %q, want disambiguated toolu_vrtx_01_CCC- prefix", got)
+	}
+	first, second := nonStreamID(response("")), nonStreamID(response(""))
+	if !strings.HasPrefix(first, "read_file-") || first == second {
+		t.Fatalf("fallback tool_use ids = (%q, %q), want unique read_file- ids", first, second)
+	}
+}
+
+func TestConvertAntigravityResponseToClaudeNonStream_WebSearchGroundingValidity(t *testing.T) {
+	request := []byte(`{"model":"gemini-3.1-flash-lite","tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
+	translated := []byte(`{"model":"gemini-3.1-flash-lite","request":{"tools":[{"googleSearch":{}}]}}`)
+	parts := `[{"text":"Internal reasoning.","thought":true},{"text":"Plain answer."}]`
+
+	for name, grounding := range map[string]string{
+		"empty object":           `{}`,
+		"null":                   `null`,
+		"blank query, empty uri": `{"webSearchQueries":[" "],"groundingChunks":[{"web":{"uri":""}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(`{"response":{"candidates":[{"content":{"parts":` + parts + `},"groundingMetadata":` + grounding + `,"finishReason":"STOP"}],"responseId":"r1"}}`)
+			out := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3.1-flash-lite", request, translated, raw, nil)
+			if ojson.GetBytes(out, "usage.server_tool_use").Exists() || !strings.Contains(string(out), `"text":"Plain answer."`) {
+				t.Fatalf("invalid grounding must fall back to normal parts: %s", out)
+			}
+		})
+	}
+
+	raw := []byte(`{"response":{"candidates":[{"content":{"parts":` + parts + `},"groundingMetadata":{"webSearchQueries":["go"],"groundingChunks":[{"web":{"uri":"https://go.dev","title":"Go"}}]},"finishReason":"STOP"}],"responseId":"r1"}}`)
+	out := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-3.1-flash-lite", request, translated, raw, nil)
+	if ojson.GetBytes(out, "usage.server_tool_use.web_search_requests").Int() != 1 {
+		t.Fatalf("valid grounding must synthesize web search blocks: %s", out)
+	}
+	if strings.Contains(string(out), "Internal reasoning.") || !strings.Contains(string(out), "Plain answer.") {
+		t.Fatalf("web search text must skip thought parts: %s", out)
+	}
+}
+
+func TestConvertAntigravityResponseToClaude_EmptyFunctionCallPreservesThoughtSignature(t *testing.T) {
+	request := []byte(`{"model":"gemini-3.6-flash-high"}`)
+	signature := testGeminiEPrefixSignature(t)
+	carrier := encodeGeminiClaudeCarrierSignature(signature, geminiClaudeCarrierNext, geminiClaudeCarrierAny)
+	emptyCall := []byte(`{"response":{"candidates":[{"content":{"parts":[{"thoughtSignature":"` + signature + `","functionCall":{}}]},"finishReason":"STOP"}],"responseId":"r1"}}`)
+
+	for name, chunks := range map[string][][]byte{
+		"first part":         {emptyCall},
+		"after visible text": {[]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"visible answer"}]}}],"responseId":"r1"}}`), emptyCall},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var param any
+			var out []byte
+			for _, chunk := range chunks {
+				out = append(out, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "gemini-3.6-flash-high", request, request, chunk, &param), nil)...)
+			}
+			if !strings.Contains(string(out), `"type":"signature_delta","signature":"`+carrier+`"`) {
+				t.Fatalf("empty function call must keep its signature as a next/any carrier: %s", out)
+			}
+			if strings.Contains(string(out), `"type":"tool_use"`) {
+				t.Fatalf("empty function call must not emit tool_use: %s", out)
+			}
+		})
+	}
+}
+
+func sseEventPayloads(t *testing.T, stream []byte, event string) []ojson.Result {
+	t.Helper()
+	var payloads []ojson.Result
+	lines := strings.Split(string(stream), "\n")
+	for i, line := range lines {
+		if line == "event: "+event && i+1 < len(lines) {
+			payloads = append(payloads, ojson.Parse(strings.TrimPrefix(lines[i+1], "data: ")))
+		}
+	}
+	return payloads
 }

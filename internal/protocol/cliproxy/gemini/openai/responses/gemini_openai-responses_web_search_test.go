@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
-func collectResponsesStreamEvents(events [][]byte) (eventTypes []string, byType map[string][]gjson.Result) {
-	byType = make(map[string][]gjson.Result)
+func collectResponsesStreamEvents(events [][]byte) (eventTypes []string, byType map[string][]ojson.Result) {
+	byType = make(map[string][]ojson.Result)
 	for _, ev := range events {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -20,29 +21,29 @@ func collectResponsesStreamEvents(events [][]byte) (eventTypes []string, byType 
 				eventTypes = append(eventTypes, currentType)
 			}
 			if strings.HasPrefix(line, "data: ") && currentType != "" {
-				byType[currentType] = append(byType[currentType], gjson.Parse(strings.TrimPrefix(line, "data: ")))
+				byType[currentType] = append(byType[currentType], ojson.Parse(strings.TrimPrefix(line, "data: ")))
 			}
 		}
 	}
 	return eventTypes, byType
 }
 
-func findWebSearchCallDone(payloads []gjson.Result) gjson.Result {
+func findWebSearchCallDone(payloads []ojson.Result) ojson.Result {
 	for _, p := range payloads {
 		if p.Get("item.type").String() == "web_search_call" {
 			return p
 		}
 	}
-	return gjson.Result{}
+	return ojson.Result{}
 }
 
-func findMessageOutputItemDone(payloads []gjson.Result) gjson.Result {
+func findMessageOutputItemDone(payloads []ojson.Result) ojson.Result {
 	for _, p := range payloads {
 		if p.Get("item.type").String() == "message" {
 			return p
 		}
 	}
-	return gjson.Result{}
+	return ojson.Result{}
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testing.T) {
@@ -57,7 +58,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testin
 
 	// Capable model should receive googleSearch tool
 	capableOut, _ := ConvertOpenAIResponsesRequestToGemini(capableModel, req, false)
-	toolsCapable := gjson.GetBytes(capableOut, "tools").Array()
+	toolsCapable := ojson.GetBytesNoCopy(capableOut, "tools").Array()
 	foundGoogleSearch := false
 	for _, tool := range toolsCapable {
 		if tool.Get("googleSearch").Exists() {
@@ -71,7 +72,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testin
 
 	// Incapable model must NOT receive googleSearch tool
 	incapableOut, _ := ConvertOpenAIResponsesRequestToGemini(incapableModel, req, false)
-	toolsIncapable := gjson.GetBytes(incapableOut, "tools")
+	toolsIncapable := ojson.GetBytesNoCopy(incapableOut, "tools")
 	if toolsIncapable.Exists() {
 		for _, tool := range toolsIncapable.Array() {
 			if tool.Get("googleSearch").Exists() {
@@ -96,7 +97,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchAllowedDomains(t *testin
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
-	domains := gjson.GetBytes(out, "tools.0.googleSearch.includedDomains").Array()
+	domains := ojson.GetBytesNoCopy(out, "tools.0.googleSearch.includedDomains").Array()
 	if len(domains) != 2 {
 		t.Fatalf("expected 2 includedDomains, got %d: %s", len(domains), out)
 	}
@@ -116,7 +117,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchToolChoice(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := gjson.GetBytes(out, "tools.#.googleSearch").Array(); (len(got) > 0) != tc.search {
+			if got := ojson.GetBytes(out, "tools.#.googleSearch").Array(); (len(got) > 0) != tc.search {
 				t.Fatalf("tool_choice=%s: want googleSearch=%t, got %s", tc.choice, tc.search, out)
 			}
 		})
@@ -156,7 +157,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_GroundingMetadata(t *te
 	}`)
 
 	out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, geminiResp, nil)
-	parsed := gjson.ParseBytes(out)
+	parsed := util.ParseGJSONBytesNoCopy(out)
 
 	// Check output array has 2 items: web_search_call and message
 	outputs := parsed.Get("output").Array()
@@ -346,14 +347,14 @@ func TestBuildResponsesURLCitations_RuneOffsetConversion(t *testing.T) {
 			}
 		]
 	}`
-	gm := gjson.Parse(rawJSON)
+	gm := ojson.Parse(rawJSON)
 
 	citations := BuildResponsesURLCitations(gm, fullText)
 	if len(citations) != 1 {
 		t.Fatalf("expected exactly 1 citation (inverted one dropped), got %d", len(citations))
 	}
 
-	cite := gjson.ParseBytes(citations[0])
+	cite := util.ParseGJSONBytesNoCopy(citations[0])
 	startRune := cite.Get("start_index").Int()
 	endRune := cite.Get("end_index").Int()
 
@@ -376,7 +377,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchOnlyToolChoiceRequiredNo
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
-	parsed := gjson.ParseBytes(out)
+	parsed := util.ParseGJSONBytesNoCopy(out)
 
 	// googleSearch should be present
 	if !parsed.Get("tools.0.googleSearch").Exists() {
@@ -389,22 +390,22 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchOnlyToolChoiceRequiredNo
 }
 
 func TestHasValidWebGrounding(t *testing.T) {
-	empty := gjson.Parse(`{}`)
+	empty := ojson.Parse(`{}`)
 	if HasValidWebGrounding(empty) {
 		t.Fatal("empty metadata should not be valid web grounding")
 	}
 
-	noWeb := gjson.Parse(`{"groundingChunks": [{"other": "something"}]}`)
+	noWeb := ojson.Parse(`{"groundingChunks": [{"other": "something"}]}`)
 	if HasValidWebGrounding(noWeb) {
 		t.Fatal("metadata without web uri should not be valid web grounding")
 	}
 
-	supportsOnly := gjson.Parse(`{"groundingSupports": [{"groundingChunkIndices": [0]}]}`)
+	supportsOnly := ojson.Parse(`{"groundingSupports": [{"groundingChunkIndices": [0]}]}`)
 	if HasValidWebGrounding(supportsOnly) {
 		t.Fatal("metadata with only groundingSupports should not be valid web grounding")
 	}
 
-	ragRetrieval := gjson.Parse(`{
+	ragRetrieval := ojson.Parse(`{
 		"groundingChunks": [{"retrievedContext": {"uri": "rag-doc-1", "title": "Internal Doc"}}],
 		"groundingSupports": [{"groundingChunkIndices": [0], "segment": {"startIndex": 0, "endIndex": 10}}]
 	}`)
@@ -412,7 +413,7 @@ func TestHasValidWebGrounding(t *testing.T) {
 		t.Fatal("metadata with only retrievedContext chunks and supports should not be valid web grounding")
 	}
 
-	emptyWebURI := gjson.Parse(`{
+	emptyWebURI := ojson.Parse(`{
 		"groundingChunks": [{"web": {"uri": ""}}],
 		"groundingSupports": [{"groundingChunkIndices": [0]}]
 	}`)
@@ -420,17 +421,17 @@ func TestHasValidWebGrounding(t *testing.T) {
 		t.Fatal("metadata with empty web uri should not be valid web grounding")
 	}
 
-	withQuery := gjson.Parse(`{"webSearchQueries": ["query"]}`)
+	withQuery := ojson.Parse(`{"webSearchQueries": ["query"]}`)
 	if !HasValidWebGrounding(withQuery) {
 		t.Fatal("metadata with webSearchQueries should be valid web grounding")
 	}
 
-	withChunk := gjson.Parse(`{"groundingChunks": [{"web": {"uri": "https://example.com"}}]}`)
+	withChunk := ojson.Parse(`{"groundingChunks": [{"web": {"uri": "https://example.com"}}]}`)
 	if !HasValidWebGrounding(withChunk) {
 		t.Fatal("metadata with web chunk should be valid web grounding")
 	}
 
-	ragWithWebQuery := gjson.Parse(`{
+	ragWithWebQuery := ojson.Parse(`{
 		"groundingChunks": [{"retrievedContext": {"uri": "rag-doc-1"}}],
 		"webSearchQueries": ["actual query"]
 	}`)
@@ -495,9 +496,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateGroundingMetadataAndCJ
 	allEvents := append(events1, events2...)
 
 	var eventTypes []string
-	var completedJSON gjson.Result
-	var partDoneJSON gjson.Result
-	var itemDoneJSON gjson.Result
+	var completedJSON ojson.Result
+	var partDoneJSON ojson.Result
+	var itemDoneJSON ojson.Result
 
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
@@ -509,7 +510,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateGroundingMetadataAndCJ
 			}
 			if strings.HasPrefix(line, "data: ") {
 				evBody := strings.TrimPrefix(line, "data: ")
-				parsed := gjson.Parse(evBody)
+				parsed := ojson.Parse(evBody)
 				if currentType == "response.completed" {
 					completedJSON = parsed
 				}
@@ -604,9 +605,35 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateGroundingMetadataAndCJ
 	}
 }
 
+func TestAllowsResponsesWebSearchToolChoice_Null(t *testing.T) {
+	if !AllowsResponsesWebSearchToolChoice(ojson.Parse(`{"tool_choice": null}`)) {
+		t.Fatalf("expected tool_choice null to allow web search")
+	}
+
+	modelID := "gpt-6.1-terra"
+	req := []byte(`{
+		"model": "gpt-6.1-terra",
+		"input": "latest news",
+		"tools": [{"type": "web_search"}],
+		"tool_choice": null
+	}`)
+
+	out, errConvert := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
+	if errConvert != nil {
+		t.Fatalf("ConvertOpenAIResponsesRequestToGemini error: %v", errConvert)
+	}
+	if !ojson.GetBytesNoCopy(out, "tools.0.googleSearch").Exists() {
+		t.Fatalf("expected googleSearch tool when tool_choice is null, got: %s", out)
+	}
+
+	if !determineWebSearchStreamMode(modelID, modelID, req, out, req) {
+		t.Fatalf("expected determineWebSearchStreamMode to return true when tool_choice is null")
+	}
+}
+
 func TestAllowsResponsesWebSearchToolChoice_AllowedTools(t *testing.T) {
 	// 1. allowed_tools containing web_search should permit search
-	withSearch := gjson.Parse(`{
+	withSearch := ojson.Parse(`{
 		"tool_choice": {
 			"type": "allowed_tools",
 			"mode": "auto",
@@ -618,7 +645,7 @@ func TestAllowsResponsesWebSearchToolChoice_AllowedTools(t *testing.T) {
 	}
 
 	// 2. allowed_tools without web_search should NOT permit search
-	withoutSearch := gjson.Parse(`{
+	withoutSearch := ojson.Parse(`{
 		"tool_choice": {
 			"type": "allowed_tools",
 			"mode": "auto",
@@ -630,7 +657,7 @@ func TestAllowsResponsesWebSearchToolChoice_AllowedTools(t *testing.T) {
 	}
 
 	// 3. allowed_tools containing the versioned preview alias should permit search
-	withPreview := gjson.Parse(`{
+	withPreview := ojson.Parse(`{
 		"tool_choice": {
 			"type": "allowed_tools",
 			"mode": "auto",
@@ -639,6 +666,20 @@ func TestAllowsResponsesWebSearchToolChoice_AllowedTools(t *testing.T) {
 	}`)
 	if !AllowsResponsesWebSearchToolChoice(withPreview) {
 		t.Fatalf("expected allowed_tools containing web_search_preview_2025_03_11 to allow search")
+	}
+}
+
+func TestResponsesWebSearchToolTypeAliases(t *testing.T) {
+	aliases := []string{"web_search", "web_search_2025_08_26", "web_search_preview", "web_search_preview_2025_03_11"}
+	for _, toolType := range aliases {
+		decl := ojson.Parse(`{"tools":[{"type":"` + toolType + `"}]}`)
+		if !HasResponsesWebSearchTool(decl) {
+			t.Fatalf("HasResponsesWebSearchTool(%q) = false, want true", toolType)
+		}
+		choice := ojson.Parse(`{"tool_choice":{"type":"` + toolType + `"}}`)
+		if !AllowsResponsesWebSearchToolChoice(choice) {
+			t.Fatalf("AllowsResponsesWebSearchToolChoice(%q) = false, want true", toolType)
+		}
 	}
 }
 
@@ -653,14 +694,14 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchPreview20250311(t *testi
 	}`)
 
 	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
-	if !gjson.GetBytes(out, "tools.0.googleSearch").Exists() {
+	if !ojson.GetBytesNoCopy(out, "tools.0.googleSearch").Exists() {
 		t.Fatalf("expected googleSearch tool for web_search_preview_2025_03_11 declaration and tool_choice, got: %s", out)
 	}
 }
 
 func TestExtractResponsesWebSearchQuery_MultipleTextParts(t *testing.T) {
 	// 1. Array of input_text parts
-	flatInput := gjson.Parse(`{
+	flatInput := ojson.Parse(`{
 		"input": [
 			{"type": "input_text", "text": "Who is"},
 			{"type": "input_text", "text": "the current Go release lead?"}
@@ -673,7 +714,7 @@ func TestExtractResponsesWebSearchQuery_MultipleTextParts(t *testing.T) {
 	}
 
 	// 2. Message with multiple content parts
-	nestedInput := gjson.Parse(`{
+	nestedInput := ojson.Parse(`{
 		"input": [
 			{
 				"role": "user",
@@ -741,7 +782,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ModelAliasUsesEffectiveReq
 
 	allEvents := append(events1, events2...)
 	allEvents = append(allEvents, ConvertGeminiResponseToOpenAIResponses(context.Background(), resolvedModel, originalReq, effectiveReq, []byte("[DONE]"), &param)...)
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -750,7 +791,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ModelAliasUsesEffectiveReq
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
@@ -825,7 +866,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndFunction
 	allEvents := append(append(append(e1, e2...), e3...), e4...)
 
 	var textBDeltas []string
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -836,13 +877,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndFunction
 			if strings.HasPrefix(line, "data: ") {
 				dataStr := strings.TrimPrefix(line, "data: ")
 				if currentType == "response.output_text.delta" {
-					delta := gjson.Get(dataStr, "delta").String()
+					delta := ojson.Get(dataStr, "delta").String()
 					if strings.Contains(delta, "Text B") {
 						textBDeltas = append(textBDeltas, delta)
 					}
 				}
 				if currentType == "response.completed" {
-					completedJSON = gjson.Parse(dataStr)
+					completedJSON = ojson.Parse(dataStr)
 				}
 			}
 		}
@@ -942,7 +983,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_OutputIndexMatchesComplete
 		itemID      string
 	}
 	var addedItems []itemAddedInfo
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
@@ -954,13 +995,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_OutputIndexMatchesComplete
 			if strings.HasPrefix(line, "data: ") {
 				dataStr := strings.TrimPrefix(line, "data: ")
 				if currentType == "response.output_item.added" {
-					idx := int(gjson.Get(dataStr, "output_index").Int())
-					typ := gjson.Get(dataStr, "item.type").String()
-					id := gjson.Get(dataStr, "item.id").String()
+					idx := int(ojson.Get(dataStr, "output_index").Int())
+					typ := ojson.Get(dataStr, "item.type").String()
+					id := ojson.Get(dataStr, "item.id").String()
 					addedItems = append(addedItems, itemAddedInfo{outputIndex: idx, itemType: typ, itemID: id})
 				}
 				if currentType == "response.completed" {
-					completedJSON = gjson.Parse(dataStr)
+					completedJSON = ojson.Parse(dataStr)
 				}
 			}
 		}
@@ -1014,7 +1055,7 @@ func TestConvertGeminiResponseToOpenAIResponses_CitationsRespectPartIndexAndMess
 		}`)
 
 		out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, geminiResp, nil)
-		parsed := gjson.ParseBytes(out)
+		parsed := util.ParseGJSONBytesNoCopy(out)
 
 		msg := parsed.Get("response.output.#(type=message)")
 		if !msg.Exists() {
@@ -1068,11 +1109,11 @@ func TestConvertGeminiResponseToOpenAIResponses_CitationsRespectPartIndexAndMess
 		}`)
 
 		out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, geminiResp, nil)
-		parsed := gjson.ParseBytes(out)
+		parsed := util.ParseGJSONBytesNoCopy(out)
 
 		outputs := parsed.Get("output").Array()
 		// outputs: [web_search_call, message_0, function_call, message_1]
-		var firstMsg, secondMsg gjson.Result
+		var firstMsg, secondMsg ojson.Result
 		for _, item := range outputs {
 			if item.Get("type").String() == "message" {
 				if !firstMsg.Exists() {
@@ -1133,7 +1174,7 @@ func TestConvertGeminiResponseToOpenAIResponses_CitationsRespectPartIndexAndMess
 		}`)
 
 		out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, geminiResp, nil)
-		parsed := gjson.ParseBytes(out)
+		parsed := util.ParseGJSONBytesNoCopy(out)
 
 		msg := parsed.Get("output.#(type=message)")
 		citations := msg.Get("content.0.annotations").Array()
@@ -1180,10 +1221,10 @@ func TestConvertGeminiResponseToOpenAIResponses_CitationsRespectPartIndexAndMess
 		}`)
 
 		out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, geminiResp, nil)
-		parsed := gjson.ParseBytes(out)
+		parsed := util.ParseGJSONBytesNoCopy(out)
 
 		outputs := parsed.Get("output").Array()
-		var firstMsg, secondMsg gjson.Result
+		var firstMsg, secondMsg ojson.Result
 		for _, item := range outputs {
 			if item.Get("type").String() == "message" {
 				if !firstMsg.Exists() {
@@ -1224,7 +1265,7 @@ func TestConvertGeminiResponseToOpenAIResponses_CitationsRespectPartIndexAndMess
 
 func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 	t.Run("citation span covering two messages", func(t *testing.T) {
-		gm := gjson.Parse(`{
+		gm := ojson.Parse(`{
 			"groundingChunks": [
 				{"web": {"uri": "https://example.com/span", "title": "Span Title"}}
 			],
@@ -1260,7 +1301,7 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 		if len(c0) != 1 {
 			t.Fatalf("expected 1 citation in message 0, got %d", len(c0))
 		}
-		if gjson.GetBytes(c0[0], "start_index").Int() != 0 || gjson.GetBytes(c0[0], "end_index").Int() != 6 {
+		if ojson.GetBytesNoCopy(c0[0], "start_index").Int() != 0 || ojson.GetBytesNoCopy(c0[0], "end_index").Int() != 6 {
 			t.Fatalf("expected [0, 6) in message 0, got: %s", string(c0[0]))
 		}
 
@@ -1268,13 +1309,13 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 		if len(c1) != 1 {
 			t.Fatalf("expected 1 citation in message 1, got %d", len(c1))
 		}
-		if gjson.GetBytes(c1[0], "start_index").Int() != 0 || gjson.GetBytes(c1[0], "end_index").Int() != 5 {
+		if ojson.GetBytesNoCopy(c1[0], "start_index").Int() != 0 || ojson.GetBytesNoCopy(c1[0], "end_index").Int() != 5 {
 			t.Fatalf("expected [0, 5) in message 1, got: %s", string(c1[0]))
 		}
 	})
 
 	t.Run("citation partial overlap across two messages", func(t *testing.T) {
-		gm := gjson.Parse(`{
+		gm := ojson.Parse(`{
 			"groundingChunks": [
 				{"web": {"uri": "https://example.com/span", "title": "Span Title"}}
 			],
@@ -1310,7 +1351,7 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 		if len(c0) != 1 {
 			t.Fatalf("expected 1 citation in message 0, got %d", len(c0))
 		}
-		if gjson.GetBytes(c0[0], "start_index").Int() != 2 || gjson.GetBytes(c0[0], "end_index").Int() != 6 {
+		if ojson.GetBytesNoCopy(c0[0], "start_index").Int() != 2 || ojson.GetBytesNoCopy(c0[0], "end_index").Int() != 6 {
 			t.Fatalf("expected [2, 6) in message 0, got: %s", string(c0[0]))
 		}
 
@@ -1318,13 +1359,13 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 		if len(c1) != 1 {
 			t.Fatalf("expected 1 citation in message 1, got %d", len(c1))
 		}
-		if gjson.GetBytes(c1[0], "start_index").Int() != 0 || gjson.GetBytes(c1[0], "end_index").Int() != 3 {
+		if ojson.GetBytesNoCopy(c1[0], "start_index").Int() != 0 || ojson.GetBytesNoCopy(c1[0], "end_index").Int() != 3 {
 			t.Fatalf("expected [0, 3) in message 1, got: %s", string(c1[0]))
 		}
 	})
 
 	t.Run("citation span with non-ASCII CJK runes across two messages", func(t *testing.T) {
-		gm := gjson.Parse(`{
+		gm := ojson.Parse(`{
 			"groundingChunks": [
 				{"web": {"uri": "https://example.com/cjk", "title": "CJK Title"}}
 			],
@@ -1360,7 +1401,7 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 		if len(c0) != 1 {
 			t.Fatalf("expected 1 citation in message 0, got %d", len(c0))
 		}
-		if gjson.GetBytes(c0[0], "start_index").Int() != 0 || gjson.GetBytes(c0[0], "end_index").Int() != 3 {
+		if ojson.GetBytesNoCopy(c0[0], "start_index").Int() != 0 || ojson.GetBytesNoCopy(c0[0], "end_index").Int() != 3 {
 			t.Fatalf("expected [0, 3) in message 0, got: %s", string(c0[0]))
 		}
 
@@ -1368,7 +1409,7 @@ func TestBuildResponsesURLCitationsForMessages_MultiMessageSpan(t *testing.T) {
 		if len(c1) != 1 {
 			t.Fatalf("expected 1 citation in message 1, got %d", len(c1))
 		}
-		if gjson.GetBytes(c1[0], "start_index").Int() != 0 || gjson.GetBytes(c1[0], "end_index").Int() != 2 {
+		if ojson.GetBytesNoCopy(c1[0], "start_index").Int() != 0 || ojson.GetBytesNoCopy(c1[0], "end_index").Int() != 2 {
 			t.Fatalf("expected [0, 2) in message 1, got: %s", string(c1[0]))
 		}
 	})
@@ -1522,7 +1563,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -1531,7 +1572,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -1616,7 +1657,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -1625,7 +1666,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -1708,7 +1749,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -1717,7 +1758,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -1796,7 +1837,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -1805,7 +1846,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -1910,7 +1951,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 
 		allEvents := append(append(append(append(e1, e2...), e3...), e4...), e5...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -1919,7 +1960,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -2004,7 +2045,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 			itemType    string
 		}
 		var addedItems []itemAddedInfo
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
@@ -2016,12 +2057,12 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 				if strings.HasPrefix(line, "data: ") {
 					dataStr := strings.TrimPrefix(line, "data: ")
 					if currentType == "response.output_item.added" {
-						idx := int(gjson.Get(dataStr, "output_index").Int())
-						typ := gjson.Get(dataStr, "item.type").String()
+						idx := int(ojson.Get(dataStr, "output_index").Int())
+						typ := ojson.Get(dataStr, "item.type").String()
 						addedItems = append(addedItems, itemAddedInfo{outputIndex: idx, itemType: typ})
 					}
 					if currentType == "response.completed" {
-						completedJSON = gjson.Parse(dataStr)
+						completedJSON = ojson.Parse(dataStr)
 					}
 				}
 			}
@@ -2141,7 +2182,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 			itemType    string
 		}
 		var addedItems []itemAddedInfo
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
@@ -2153,12 +2194,12 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 				if strings.HasPrefix(line, "data: ") {
 					dataStr := strings.TrimPrefix(line, "data: ")
 					if currentType == "response.output_item.added" {
-						idx := int(gjson.Get(dataStr, "output_index").Int())
-						typ := gjson.Get(dataStr, "item.type").String()
+						idx := int(ojson.Get(dataStr, "output_index").Int())
+						typ := ojson.Get(dataStr, "item.type").String()
 						addedItems = append(addedItems, itemAddedInfo{outputIndex: idx, itemType: typ})
 					}
 					if currentType == "response.completed" {
-						completedJSON = gjson.Parse(dataStr)
+						completedJSON = ojson.Parse(dataStr)
 					}
 				}
 			}
@@ -2313,7 +2354,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 
 		allEvents := append(append(append(append(append(e1, e2...), e3...), e4...), e5...), e6...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -2322,7 +2363,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -2450,7 +2491,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 
 		allEvents := append(append(append(append(append(e1, e2...), e3...), e4...), e5...), e6...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			lines := strings.Split(string(ev), "\n")
 			var currentType string
@@ -2459,7 +2500,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -2576,7 +2617,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveFunctionCallsAd
 
 	allEvents := append(append(append(append(e1, e2...), e3...), e4...), e5...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -2585,7 +2626,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveFunctionCallsAd
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
@@ -2595,7 +2636,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveFunctionCallsAd
 		t.Fatalf("expected outputs in completed response, got none: %s", completedJSON.Raw)
 	}
 
-	var trailingMsg gjson.Result
+	var trailingMsg ojson.Result
 	foundTrailing := false
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" && out.Get("content.0.text").String() == "Trailing citation text." {
@@ -2702,8 +2743,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultipleGroundingUpdates(t
 	completedJSON := byType["response.completed"][0]
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
-	var wsItem gjson.Result
+	var msgItem ojson.Result
+	var wsItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -2800,7 +2841,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalSupportsWithout
 
 	allEvents := append(e1, e2...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -2809,13 +2850,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalSupportsWithout
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
+	var msgItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -2914,8 +2955,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalGroundingQuerie
 	completedJSON := byType["response.completed"][0]
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
-	var wsItem gjson.Result
+	var msgItem ojson.Result
+	var wsItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -3047,7 +3088,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateSourcesAfterInterleave
 	}
 	completedJSON := byType["response.completed"][0]
 
-	var wsItem gjson.Result
+	var wsItem ojson.Result
 	for _, out := range completedJSON.Get("response.output").Array() {
 		if out.Get("type").String() == "web_search_call" {
 			wsItem = out
@@ -3152,7 +3193,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationsSpanAcrossMessage
 
 	allEvents := append(append(append(e1, e2...), e3...), e4...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3161,13 +3202,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationsSpanAcrossMessage
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var messages []gjson.Result
+	var messages []ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			messages = append(messages, out)
@@ -3258,7 +3299,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SupportsArriveFirstThenDup
 
 	allEvents := append(append(e1, e2...), e3...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3267,13 +3308,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SupportsArriveFirstThenDup
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
+	var msgItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -3368,7 +3409,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SignatureBoundaryContinuat
 
 	allEvents := append(append(append(e1, e2...), e3...), e4...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3377,13 +3418,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SignatureBoundaryContinuat
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var messages []gjson.Result
+	var messages []ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			messages = append(messages, out)
@@ -3474,7 +3515,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_Frame2DuplicateChunksThenF
 
 	allEvents := append(append(e1, e2...), e3...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3483,13 +3524,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_Frame2DuplicateChunksThenF
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
+	var msgItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -3565,7 +3606,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_PendingSupportResolvesToCu
 
 	allEvents := append(e1, e2...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3574,13 +3615,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_PendingSupportResolvesToCu
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
+	var msgItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -3657,7 +3698,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedChunksResolveF
 
 	allEvents := append(e1, e2...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3666,13 +3707,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedChunksResolveF
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
+	var msgItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -3750,7 +3791,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedFrame1ChunksFr
 
 	allEvents := append(e1, e2...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -3759,13 +3800,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedFrame1ChunksFr
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var msgItem gjson.Result
+	var msgItem ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			msgItem = out
@@ -3851,7 +3892,7 @@ func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallO
 
 		allEvents := append(append(e1, e2...), e3...)
 
-		var completedJSON gjson.Result
+		var completedJSON ojson.Result
 		for _, ev := range allEvents {
 			evStr := string(ev)
 			if strings.Contains(evStr, "web_search_call") {
@@ -3864,7 +3905,7 @@ func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallO
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-					completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+					completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 				}
 			}
 		}
@@ -3921,7 +3962,7 @@ func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallO
 
 		var param any
 		outBytes := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), respJSON, &param)
-		outParsed := gjson.ParseBytes(outBytes)
+		outParsed := ojson.ParseBytes(outBytes)
 
 		if outParsed.Get("tool_usage.web_search").Exists() {
 			t.Fatalf("did not expect tool_usage.web_search in non-stream response for non-web grounding: %s", string(outBytes))
@@ -4005,7 +4046,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 					currentType = strings.TrimPrefix(line, "event: ")
 				}
 				if strings.HasPrefix(line, "data: ") && currentType == "response.content_part.done" {
-					partDone := gjson.Parse(strings.TrimPrefix(line, "data: "))
+					partDone := ojson.Parse(strings.TrimPrefix(line, "data: "))
 					if len(partDone.Get("part.annotations").Array()) == 0 {
 						foundMsgDoneWithoutCitations = true
 					}
@@ -4019,8 +4060,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 		allEvents := append(append(e1, e2...), e3...)
 
-		var annotationAddedEvents []gjson.Result
-		var completedJSON gjson.Result
+		var annotationAddedEvents []ojson.Result
+		var completedJSON ojson.Result
 		var eventSequence []string
 
 		for _, ev := range allEvents {
@@ -4034,10 +4075,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 				if strings.HasPrefix(line, "data: ") {
 					dataStr := strings.TrimPrefix(line, "data: ")
 					if currentType == "response.output_text.annotation.added" {
-						annotationAddedEvents = append(annotationAddedEvents, gjson.Parse(dataStr))
+						annotationAddedEvents = append(annotationAddedEvents, ojson.Parse(dataStr))
 					}
 					if currentType == "response.completed" {
-						completedJSON = gjson.Parse(dataStr)
+						completedJSON = ojson.Parse(dataStr)
 					}
 				}
 			}
@@ -4185,8 +4226,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 
 		allEvents := append(append(e1, e2...), e3...)
 
-		var annotationAddedEvents []gjson.Result
-		var completedJSON gjson.Result
+		var annotationAddedEvents []ojson.Result
+		var completedJSON ojson.Result
 		var eventSequence []string
 
 		for _, ev := range allEvents {
@@ -4200,10 +4241,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 				if strings.HasPrefix(line, "data: ") {
 					dataStr := strings.TrimPrefix(line, "data: ")
 					if currentType == "response.output_text.annotation.added" {
-						annotationAddedEvents = append(annotationAddedEvents, gjson.Parse(dataStr))
+						annotationAddedEvents = append(annotationAddedEvents, ojson.Parse(dataStr))
 					}
 					if currentType == "response.completed" {
-						completedJSON = gjson.Parse(dataStr)
+						completedJSON = ojson.Parse(dataStr)
 					}
 				}
 			}
@@ -4239,7 +4280,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 
 		// Verify output in completed JSON matches the two annotations
 		outputs := completedJSON.Get("response.output").Array()
-		var msgOutput gjson.Result
+		var msgOutput ojson.Result
 		for _, out := range outputs {
 			if out.Get("type").String() == "message" {
 				msgOutput = out
@@ -4328,7 +4369,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 
 	allEvents := append(append(e1, e2...), e3...)
 
-	var completedJSON gjson.Result
+	var completedJSON ojson.Result
 	for _, ev := range allEvents {
 		lines := strings.Split(string(ev), "\n")
 		var currentType string
@@ -4337,13 +4378,13 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 				currentType = strings.TrimPrefix(line, "event: ")
 			}
 			if strings.HasPrefix(line, "data: ") && currentType == "response.completed" {
-				completedJSON = gjson.Parse(strings.TrimPrefix(line, "data: "))
+				completedJSON = ojson.Parse(strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}
 
 	outputs := completedJSON.Get("response.output").Array()
-	var messages []gjson.Result
+	var messages []ojson.Result
 	for _, out := range outputs {
 		if out.Get("type").String() == "message" {
 			messages = append(messages, out)
@@ -4364,11 +4405,11 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 	// Verify that chunk A message has the thought signature, and chunk B message does not.
 	// Translate the completed response outputs back to Gemini request to verify signature binding.
 	replayReq := []byte(`{"model":"gemini-search-sig-boundary-buffering","input":[]}`)
-	replayReq, _ = sjson.SetRawBytes(replayReq, "input", []byte(completedJSON.Get("response.output").Raw))
+	replayReq, _ = ojson.SetRawBytes(replayReq, "input", []byte(completedJSON.Get("response.output").Raw))
 	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-search-sig-boundary-buffering", replayReq, false)
 
-	var visibleParts []gjson.Result
-	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
+	var visibleParts []ojson.Result
+	for _, part := range ojson.GetBytesNoCopy(translated, "contents.0.parts").Array() {
 		if !part.Get("thought").Bool() && part.Get("text").String() != "" {
 			visibleParts = append(visibleParts, part)
 		}
@@ -4388,7 +4429,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 func TestConvertGeminiResponseToOpenAIResponsesStream_CitationAnnotationAddedTimings(t *testing.T) {
 	modelID := "gpt-6.1-terra"
 
-	assertAnnotationMatches := func(t *testing.T, eventTypes []string, byType map[string][]gjson.Result, wantURL, wantTitle string, wantStart, wantEnd int64, late bool) {
+	assertAnnotationMatches := func(t *testing.T, eventTypes []string, byType map[string][]ojson.Result, wantURL, wantTitle string, wantStart, wantEnd int64, late bool) {
 		t.Helper()
 		annEvents := byType["response.output_text.annotation.added"]
 		if len(annEvents) != 1 {
@@ -4445,7 +4486,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationAnnotationAddedTim
 			t.Fatal("expected response.completed")
 		}
 		completedJSON := byType["response.completed"][0]
-		var completedMsg gjson.Result
+		var completedMsg ojson.Result
 		for _, out := range completedJSON.Get("response.output").Array() {
 			if out.Get("type").String() == "message" {
 				completedMsg = out
@@ -4650,16 +4691,16 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *tes
 	if err != nil {
 		t.Fatalf("convert error: %v", err)
 	}
-	if !gjson.GetBytes(out, "toolConfig.includeServerSideToolInvocations").Bool() {
+	if !ojson.GetBytesNoCopy(out, "toolConfig.includeServerSideToolInvocations").Bool() {
 		t.Fatalf("expected includeServerSideToolInvocations for mixed tools, got: %s", out)
 	}
-	if mode := gjson.GetBytes(out, "toolConfig.functionCallingConfig.mode").String(); mode != "AUTO" {
+	if mode := ojson.GetBytesNoCopy(out, "toolConfig.functionCallingConfig.mode").String(); mode != "AUTO" {
 		t.Fatalf("functionCallingConfig.mode = %q, want AUTO, got: %s", mode, out)
 	}
-	if !gjson.GetBytes(out, "tools.0.googleSearch").Exists() {
+	if !ojson.GetBytesNoCopy(out, "tools.0.googleSearch").Exists() {
 		t.Fatalf("expected googleSearch tool, got: %s", out)
 	}
-	if !gjson.GetBytes(out, "tools.1.functionDeclarations.0.name").Exists() {
+	if !ojson.GetBytesNoCopy(out, "tools.1.functionDeclarations.0.name").Exists() {
 		t.Fatalf("expected functionDeclarations, got: %s", out)
 	}
 
@@ -4672,7 +4713,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *tes
 	if err != nil {
 		t.Fatalf("convert error: %v", err)
 	}
-	if gjson.GetBytes(searchOnlyOut, "toolConfig.includeServerSideToolInvocations").Exists() {
+	if ojson.GetBytesNoCopy(searchOnlyOut, "toolConfig.includeServerSideToolInvocations").Exists() {
 		t.Fatalf("includeServerSideToolInvocations must only be set for mixed tools, got: %s", searchOnlyOut)
 	}
 
@@ -4687,7 +4728,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *tes
 	if err != nil {
 		t.Fatalf("convert error: %v", err)
 	}
-	if gjson.GetBytes(functionsOnlyOut, "toolConfig.includeServerSideToolInvocations").Exists() {
+	if ojson.GetBytesNoCopy(functionsOnlyOut, "toolConfig.includeServerSideToolInvocations").Exists() {
 		t.Fatalf("includeServerSideToolInvocations must only be set for mixed tools, got: %s", functionsOnlyOut)
 	}
 
@@ -4704,7 +4745,7 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *tes
 	if err != nil {
 		t.Fatalf("convert error: %v", err)
 	}
-	if gjson.GetBytes(choiceNoneOut, "toolConfig.includeServerSideToolInvocations").Exists() {
+	if ojson.GetBytesNoCopy(choiceNoneOut, "toolConfig.includeServerSideToolInvocations").Exists() {
 		t.Fatalf("includeServerSideToolInvocations must not be set when googleSearch is suppressed by tool_choice=none, got: %s", choiceNoneOut)
 	}
 }

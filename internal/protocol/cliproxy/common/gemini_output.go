@@ -6,8 +6,7 @@ import (
 
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // GeminiJSONObjectInstruction supplies the JSON context required by JSON object mode.
@@ -15,9 +14,9 @@ const GeminiJSONObjectInstruction = "Return your response as a valid JSON object
 
 // GeminiResponseFormat returns JSON constraints in the text.format shape or
 // a plain-text instruction for Gemini enum output.
-func GeminiResponseFormat(root gjson.Result, requireObjectRoot bool) ([]byte, string, error) {
+func GeminiResponseFormat(root ojson.Result, requireObjectRoot bool) ([]byte, string, error) {
 	var mime string
-	var schema gjson.Result
+	var schema ojson.Result
 	var schemaKey string
 	for _, generationKey := range [...]string{"generationConfig", "generation_config"} {
 		config := root.Get(generationKey)
@@ -32,11 +31,11 @@ func GeminiResponseFormat(root gjson.Result, requireObjectRoot bool) ([]byte, st
 		}
 		for _, key := range [...]string{"responseJsonSchema", "response_json_schema", "responseSchema", "response_schema"} {
 			value := config.Get(key)
-			if value.IsObject() || ((key == "responseJsonSchema" || key == "response_json_schema") && (value.Type == gjson.True || value.Type == gjson.False)) {
+			if value.IsObject() || ((key == "responseJsonSchema" || key == "response_json_schema") && (value.Type == ojson.True || value.Type == ojson.False)) {
 				schema, schemaKey = value, key
 				break
 			}
-			if value.Type != gjson.Null && schemaKey == "" {
+			if value.Type != ojson.Null && schemaKey == "" {
 				schemaKey = key
 			}
 		}
@@ -62,29 +61,29 @@ func GeminiResponseFormat(root gjson.Result, requireObjectRoot bool) ([]byte, st
 	if requireObjectRoot && !schema.IsObject() {
 		return nil, "", fmt.Errorf("%s uses a boolean schema that the target output format cannot represent", schemaKey)
 	}
-	if schema.Type == gjson.False {
+	if schema.Type == ojson.False {
 		return nil, "", fmt.Errorf("%s is false and matches no JSON value", schemaKey)
 	}
 	raw := schema.Raw
 	if schemaKey == "responseSchema" || schemaKey == "response_schema" {
-		if requireObjectRoot && schema.Get("nullable").Type == gjson.True {
+		if requireObjectRoot && schema.Get("nullable").Type == ojson.True {
 			return nil, "", fmt.Errorf("%s permits null at the root, which the target output format cannot represent", schemaKey)
 		}
 		raw = util.NormalizeGeminiToolSchema(raw)
-		schema = gjson.Parse(raw)
+		schema = ojson.Parse(raw)
 		raw = normalizeGeminiProtoOutputNullable(schema)
 	}
 	if schemaType := schema.Get("type"); requireObjectRoot && schemaType.Exists() && schemaType.Str != "object" {
 		return nil, "", fmt.Errorf("%s uses a root type that the target output format cannot represent", schemaKey)
 	}
-	format, err := sjson.SetRawBytes([]byte(`{"type":"json_schema","name":"gemini_response","strict":false}`), "schema", []byte(raw))
+	format, err := ojson.SetRawBytes([]byte(`{"type":"json_schema","name":"gemini_response","strict":false}`), "schema", []byte(raw))
 	return format, "", err
 }
 
-func geminiEnumOutputInstruction(schema gjson.Result, schemaKey string) (string, error) {
+func geminiEnumOutputInstruction(schema ojson.Result, schemaKey string) (string, error) {
 	protobuf := schemaKey == "responseSchema" || schemaKey == "response_schema"
 	if protobuf {
-		schema = gjson.Parse(util.NormalizeGeminiToolSchema(schema.Raw))
+		schema = ojson.Parse(util.NormalizeGeminiToolSchema(schema.Raw))
 	}
 	schemaType := schema.Get("type")
 	enum := schema.Get("enum")
@@ -93,17 +92,17 @@ func geminiEnumOutputInstruction(schema gjson.Result, schemaKey string) (string,
 		return "", fmt.Errorf("text/x.enum requires a Gemini response schema with a non-empty string enum")
 	}
 	for _, value := range values {
-		if value.Type != gjson.String {
+		if value.Type != ojson.String {
 			return "", fmt.Errorf("text/x.enum requires string enum values")
 		}
 	}
 	return "Return exactly one of these values as plain text, without adding quotation marks or explanations: " + enum.Raw, nil
 }
 
-func normalizeGeminiProtoOutputNullable(schema gjson.Result) string {
+func normalizeGeminiProtoOutputNullable(schema ojson.Result) string {
 	var updated strings.Builder
 	cursor := 0
-	rewrite := func(node gjson.Result) {
+	rewrite := func(node ojson.Result) {
 		if !node.IsObject() {
 			return
 		}
@@ -114,11 +113,11 @@ func normalizeGeminiProtoOutputNullable(schema gjson.Result) string {
 			cursor = offset + len(node.Raw)
 		}
 	}
-	schema.ForEach(func(key, value gjson.Result) bool {
+	schema.ForEach(func(key, value ojson.Result) bool {
 		switch key.Str {
 		case "properties", "$defs", "definitions":
 			if value.IsObject() {
-				value.ForEach(func(_, node gjson.Result) bool {
+				value.ForEach(func(_, node ojson.Result) bool {
 					rewrite(node)
 					return true
 				})
@@ -127,7 +126,7 @@ func normalizeGeminiProtoOutputNullable(schema gjson.Result) string {
 			rewrite(value)
 		case "anyOf", "oneOf", "allOf":
 			if value.IsArray() {
-				value.ForEach(func(_, node gjson.Result) bool {
+				value.ForEach(func(_, node ojson.Result) bool {
 					rewrite(node)
 					return true
 				})
@@ -141,12 +140,12 @@ func normalizeGeminiProtoOutputNullable(schema gjson.Result) string {
 		raw = updated.String()
 	}
 	switch schema.Get("nullable").Type {
-	case gjson.True:
-		raw, _ = sjson.Delete(raw, "nullable")
+	case ojson.True:
+		raw, _ = ojson.Delete(raw, "nullable")
 		// An outer union preserves every constraint on the non-null branch, including enum.
 		return `{"anyOf":[` + raw + `,{"type":"null"}]}`
-	case gjson.False:
-		raw, _ = sjson.Delete(raw, "nullable")
+	case ojson.False:
+		raw, _ = ojson.Delete(raw, "nullable")
 	}
 	return raw
 }

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 )
@@ -25,7 +25,7 @@ type responsesToolIndex struct {
 	custom       map[string]struct{}
 }
 
-func newResponsesToolIndex(root gjson.Result) *responsesToolIndex {
+func newResponsesToolIndex(root ojson.Result) *responsesToolIndex {
 	idx := &responsesToolIndex{
 		byChat:     make(map[string]responsesToolDeclaration),
 		byIdentity: make(map[responsesToolIdentity]string),

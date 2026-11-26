@@ -6,7 +6,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -56,7 +56,7 @@ func TestConvertOpenAIRequestToGemini_RealTextBesideAnUnsendableAttachmentStillS
 			t.Fatalf("parts %s: err = %v, body = %s", parts, err, body)
 		}
 		found := false
-		for _, part := range gjson.GetBytes(body, "contents.2.parts").Array() {
+		for _, part := range ojson.GetBytes(body, "contents.2.parts").Array() {
 			if part.Get("text").String() == "keep me" {
 				found = true
 			}
@@ -72,7 +72,7 @@ func TestConvertOpenAIRequestToGemini_DataURLImageStillConverts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, body = %s", err, body)
 	}
-	part := gjson.GetBytes(body, "contents.2.parts.0.inlineData")
+	part := ojson.GetBytes(body, "contents.2.parts.0.inlineData")
 	if part.Get("mime_type").String() != "image/png" || part.Get("data").String() != "iVBORw0KGgo=" {
 		t.Fatalf("data URL image was not inlined: %s", body)
 	}
@@ -84,7 +84,7 @@ func TestConvertOpenAIRequestToGemini_RemoteImageURLBecomesFileData(t *testing.T
 	if err != nil {
 		t.Fatalf("err = %v, body = %s", err, body)
 	}
-	part := gjson.GetBytes(body, "contents.2.parts.0.fileData")
+	part := ojson.GetBytes(body, "contents.2.parts.0.fileData")
 	if part.Get("fileUri").String() != "https://x.test/a.png" || part.Get("mimeType").String() != "image/*" {
 		t.Fatalf("remote image was not sent as fileData: %s", body)
 	}

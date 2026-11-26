@@ -2,10 +2,11 @@ package signature
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/MoeForge/moego/base64"
 )
 
 // MaxMetaReasoningSignatureLen bounds the raw base64url text accepted by

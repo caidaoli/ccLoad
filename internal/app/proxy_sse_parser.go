@@ -631,7 +631,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		if isHeartbeatEventType(eventType) {
 			return nil
 		}
-		if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
+		if eventType == "error" || eventType == "response.failed" || isErrorPayload(data, p.upstreamProtocol == util.ProtocolCodex) {
 			log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 			p.geminiFilterNotice = ""
 			p.recordError([]byte(data))
@@ -691,7 +691,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// - Anthropic/聚合站：event: error 或 data 顶层 type=error / error 对象
 	// - OpenAI Responses：event/type=response.failed，error 嵌在 response.error
 	// 兼容不带 event 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
-	if effectiveType == "error" || terminalType == "response.failed" || isErrorPayload(data) {
+	if effectiveType == "error" || terminalType == "response.failed" || isErrorPayload(data, p.upstreamProtocol == util.ProtocolCodex) {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 		p.geminiFilterNotice = ""
 		errorData := []byte(data)
@@ -892,9 +892,9 @@ func (p *sseUsageParser) recordError(data []byte) {
 }
 
 // sseErrorHasDetail 判断错误事件是否带有可分类的错误详情：顶层 error/code/message，
-// 或 response.error（OpenAI Responses 的 response.failed）。
+// response.error（OpenAI Responses 的 response.failed）或中转包装的 body.error。
 func sseErrorHasDetail(data []byte) bool {
-	for _, path := range []string{"error", "response.error"} {
+	for _, path := range []string{"error", "response.error", "body.error"} {
 		v := gjson.GetBytes(data, path)
 		if (v.IsObject() && len(v.Map()) > 0) || (v.Type == gjson.String && v.String() != "") {
 			return true
@@ -1292,7 +1292,7 @@ func geminiPayloadOutput(payload map[string]any) (bool, bool) {
 /**
  * @brief 检查 Gemini part 中实际生成的结构化内容，兼容官方两种字段拼写。
  * @param part 上游 part 对象。
- * @return 有工具身份/参数、媒体、可执行代码或执行结果时为 true。
+ * @return 有工具身份/参数、媒体、可执行代码、执行结果或音频转录文本时为 true。
  */
 func geminiPartHasStructuredOutput(part map[string]any) bool {
 	for _, key := range []string{"functionCall", "function_call"} {
@@ -1318,6 +1318,7 @@ func geminiPartHasStructuredOutput(part map[string]any) bool {
 		{"executableCode", "code"}, {"executable_code", "code"},
 		{"codeExecutionResult", "output"}, {"codeExecutionResult", "outcome"},
 		{"code_execution_result", "output"}, {"code_execution_result", "outcome"},
+		{"audioTranscription", "text"}, {"audio_transcription", "text"},
 	} {
 		value, _ := part[fields[0]].(map[string]any)
 		if text, _ := value[fields[1]].(string); strings.TrimSpace(text) != "" {
@@ -1428,15 +1429,20 @@ func isHeartbeatEventType(eventType string) bool {
 //  2. 顶层 type=="response.failed"（OpenAI Responses 失败终态）
 //  3. 顶层 error 字段为非空对象（聚合站风格）
 //  4. response.error 为非空对象，或 response.status=="failed"
-func isErrorPayload(data string) bool {
+//  5. 缺少 type 的错误帧（见 codexResponseEventType；code+message 兜底仅在 codexUpstream 时启用）
+func isErrorPayload(data string, codexUpstream bool) bool {
 	if data == "" {
 		return false
 	}
-	// 快速过滤：常见错误帧至少包含 error / failed 关键字之一
+	// 快速过滤：常见错误帧至少包含 error / failed / code 关键字之一
 	if !strings.Contains(data, `"error"`) &&
 		!strings.Contains(data, `"response.failed"`) &&
-		!strings.Contains(data, `"failed"`) {
+		!strings.Contains(data, `"failed"`) &&
+		!strings.Contains(data, `"code"`) {
 		return false
+	}
+	if codexResponseEventType([]byte(data), codexUpstream) == "error" {
+		return true
 	}
 	var event struct {
 		Type     string          `json:"type"`

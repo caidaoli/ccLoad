@@ -3,18 +3,18 @@ package responses
 import (
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func claudeAssistantBlockTypes(t *testing.T, claudeReq []byte) []string {
 	t.Helper()
 	var kinds []string
-	gjson.GetBytes(claudeReq, "messages").ForEach(func(_, message gjson.Result) bool {
+	ojson.GetBytes(claudeReq, "messages").ForEach(func(_, message ojson.Result) bool {
 		if message.Get("role").String() != "assistant" {
 			return true
 		}
 		kinds = kinds[:0]
-		message.Get("content").ForEach(func(_, block gjson.Result) bool {
+		message.Get("content").ForEach(func(_, block ojson.Result) bool {
 			kinds = append(kinds, block.Get("type").String())
 			return true
 		})

@@ -403,7 +403,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 	if payloadType == "" {
 		payloadType = strings.TrimSpace(eventType)
 	}
-	if eventType == "error" || payloadType == "error" || payloadType == "response.failed" || isErrorPayload(string(data)) {
+	if eventType == "error" || payloadType == "error" || payloadType == "response.failed" || isErrorPayload(string(data), false) {
 		rawError := event.Error
 		if len(rawError) == 0 || string(rawError) == "null" {
 			rawError = event.Response.Error

@@ -1,9 +1,10 @@
 package signature
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
+
+	"github.com/MoeForge/moego/base64"
 )
 
 // InspectAntigravityClaudeCAQSSignature validates the double-base64 CAQS

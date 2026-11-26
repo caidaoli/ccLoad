@@ -6,7 +6,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -56,7 +56,7 @@ func TestConvertOpenAIRequestToAntigravity_RealTextBesideAnUnsendableAttachmentS
 			t.Fatalf("parts %s: err = %v, body = %s", parts, err, body)
 		}
 		found := false
-		for _, part := range gjson.GetBytes(body, "request.contents.2.parts").Array() {
+		for _, part := range ojson.GetBytes(body, "request.contents.2.parts").Array() {
 			if part.Get("text").String() == "keep me" {
 				found = true
 			}
@@ -72,7 +72,7 @@ func TestConvertOpenAIRequestToAntigravity_DataURLImageStillConverts(t *testing.
 	if err != nil {
 		t.Fatalf("err = %v, body = %s", err, body)
 	}
-	part := gjson.GetBytes(body, "request.contents.2.parts.0.inlineData")
+	part := ojson.GetBytes(body, "request.contents.2.parts.0.inlineData")
 	if part.Get("mimeType").String() != "image/png" || part.Get("data").String() != "iVBORw0KGgo=" {
 		t.Fatalf("data URL image was not inlined: %s", body)
 	}

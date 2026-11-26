@@ -45,6 +45,7 @@ type requestContext struct {
 	anthropicToolAliases          anthropicMCPToolAliases
 	advisor                       *anthropicAdvisorAttempt ///< 当前 Messages 尝试的 advisor 历史归属。
 	anthropicThinkingOmitStrategy string                   // 本次发送前删除历史 thinking 的策略，写入日志
+	upstreamStreamTerminated      bool                     ///< 上游 SSE 已在无错误事件时读到终止事件并停止读取；关闭前排空剩余正文以复用连接。
 	executionIdentity             string
 	firstByteTimer                *time.Timer
 	streamTimer                   *time.Timer

@@ -9,15 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestConvertClaudeRequestToCodex_ToolSearchDeferredLoadingPreservesPromptCachePrefix(t *testing.T) {
 	before := []byte(`{"system":"You are Claude Code.","tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":"DeferredToolPlaceholder","defer_loading":true,"input_schema":{"type":"object"}},{"name":"Read","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"Find tools"},{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]}]}`)
-	after, _ := sjson.SetRawBytes(before, "tools.1", []byte(`{"name":"WebSearch","defer_loading":true,"input_schema":{"type":"object"}}`))
-	after, _ = sjson.SetRawBytes(after, "tools.-1", []byte(`{"name":"WebFetch","defer_loading":true,"input_schema":{"type":"object"}}`))
-	after, _ = sjson.SetRawBytes(after, "messages.-1", []byte(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":"WebSearch"},{"type":"tool_reference","name":"WebFetch"},{"type":"tool_reference","tool_name":"WebSearch"}]}]}`))
+	after, _ := ojson.SetRawBytes(before, "tools.1", []byte(`{"name":"WebSearch","defer_loading":true,"input_schema":{"type":"object"}}`))
+	after, _ = ojson.SetRawBytes(after, "tools.-1", []byte(`{"name":"WebFetch","defer_loading":true,"input_schema":{"type":"object"}}`))
+	after, _ = ojson.SetRawBytes(after, "messages.-1", []byte(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":"WebSearch"},{"type":"tool_reference","name":"WebFetch"},{"type":"tool_reference","tool_name":"WebSearch"}]}]}`))
 	for _, stream := range []bool{false, true} {
 		beforeOut, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", before, stream)
 		if err != nil {
@@ -27,10 +26,10 @@ func TestConvertClaudeRequestToCodex_ToolSearchDeferredLoadingPreservesPromptCac
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, want := gjson.GetBytes(afterOut, "tools").Raw, gjson.GetBytes(beforeOut, "tools").Raw; got != want || gjson.GetBytes(afterOut, "tools.#").Int() != 2 {
+		if got, want := ojson.GetBytes(afterOut, "tools").Raw, ojson.GetBytes(beforeOut, "tools").Raw; got != want || ojson.GetBytes(afterOut, "tools.#").Int() != 2 {
 			t.Fatalf("tool discovery changed the top-level cache prefix: before=%s after=%s", beforeOut, afterOut)
 		}
-		beforeInputs, afterInputs := gjson.GetBytes(beforeOut, "input").Array(), gjson.GetBytes(afterOut, "input").Array()
+		beforeInputs, afterInputs := ojson.GetBytes(beforeOut, "input").Array(), ojson.GetBytes(afterOut, "input").Array()
 		if len(beforeInputs) != 2 || len(afterInputs) != 4 {
 			t.Fatalf("unexpected discovery history: before=%s after=%s", beforeOut, afterOut)
 		}
@@ -46,7 +45,7 @@ func TestConvertClaudeRequestToCodex_ToolSearchDeferredLoadingPreservesPromptCac
 		if len(tools) != 2 || tools[0].Get("name").String() != "WebSearch" || tools[1].Get("name").String() != "WebFetch" || tools[0].Get("defer_loading").Exists() {
 			t.Fatalf("discovered definitions lost order or deduplication: %s", afterOut)
 		}
-		refs := gjson.Parse(afterInputs[2].Get("output").String()).Array()
+		refs := ojson.Parse(afterInputs[2].Get("output").String()).Array()
 		if len(refs) != 3 || refs[1].Get("name").String() != "WebFetch" {
 			t.Fatalf("search result references were lost: %s", afterOut)
 		}
@@ -58,13 +57,13 @@ func TestConvertClaudeRequestToCodex_RepeatedToolSearchAndLongMCPToolMapping(t *
 	first := "mcp__first_server_with_a_long_name_for_testing__deliver_final_subagent_handback_report"
 	second := "mcp__second_server_with_a_long_name_for_testing__deliver_final_subagent_handback_report"
 	before := []byte(fmt.Sprintf(`{"tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":%q,"input_schema":{"type":"object"}},{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"start"},{"role":"assistant","content":[{"type":"tool_use","id":"search_1","name":"ToolSearch","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":%q}]}]}]}`, eager, first, first))
-	after, _ := sjson.SetRawBytes(before, "tools", []byte(fmt.Sprintf(`[{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}},{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}},{"name":%q,"input_schema":{"type":"object"}}]`, second, first, eager)))
+	after, _ := ojson.SetRawBytes(before, "tools", []byte(fmt.Sprintf(`[{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}},{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":%q,"defer_loading":true,"input_schema":{"type":"object"}},{"name":%q,"input_schema":{"type":"object"}}]`, second, first, eager)))
 	for _, message := range []string{
 		`{"role":"assistant","content":[{"type":"tool_use","id":"search_2","name":"ToolSearch","input":{}}]}`,
 		fmt.Sprintf(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_2","content":[{"type":"tool_reference","name":%q},{"type":"tool_reference","tool_name":%q}]}]}`, second, first),
 		fmt.Sprintf(`{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_reference","name":%q}}]}`, first),
 	} {
-		after, _ = sjson.SetRawBytes(after, "messages.-1", []byte(message))
+		after, _ = ojson.SetRawBytes(after, "messages.-1", []byte(message))
 	}
 	beforeOut, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", before, false)
 	if err != nil {
@@ -74,10 +73,10 @@ func TestConvertClaudeRequestToCodex_RepeatedToolSearchAndLongMCPToolMapping(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(beforeOut, "tools").Raw != gjson.GetBytes(afterOut, "tools").Raw {
+	if ojson.GetBytes(beforeOut, "tools").Raw != ojson.GetBytes(afterOut, "tools").Raw {
 		t.Fatalf("new deferred collision changed eager tools: before=%s after=%s", beforeOut, afterOut)
 	}
-	beforeInputs, afterInputs := gjson.GetBytes(beforeOut, "input").Array(), gjson.GetBytes(afterOut, "input").Array()
+	beforeInputs, afterInputs := ojson.GetBytes(beforeOut, "input").Array(), ojson.GetBytes(afterOut, "input").Array()
 	for i, item := range beforeInputs {
 		if i >= len(afterInputs) || item.Raw != afterInputs[i].Raw {
 			t.Fatalf("new deferred collision changed input prefix: before=%s after=%s", beforeOut, afterOut)
@@ -94,13 +93,13 @@ func TestConvertClaudeRequestToCodex_RepeatedToolSearchAndLongMCPToolMapping(t *
 	if len(discovered) != 2 || discovered[0] == discovered[1] || len(discovered[0]) > 64 || len(discovered[1]) > 64 {
 		t.Fatalf("repeated references or colliding names changed discovery: %s", afterOut)
 	}
-	refs := gjson.Parse(afterInputs[5].Get("output").String()).Array()
+	refs := ojson.Parse(afterInputs[5].Get("output").String()).Array()
 	if len(refs) != 2 || refs[0].Get("name").String() != discovered[1] || refs[1].Get("tool_name").String() != discovered[0] {
 		t.Fatalf("tool references did not use declaration short names: %s", afterOut)
 	}
 	reply := []byte(fmt.Sprintf(`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","name":%q,"call_id":"call_1","arguments":"{}"},{"type":"function_call","name":%q,"call_id":"call_2","arguments":"{}"}]}}`, discovered[0], discovered[1]))
 	out := ConvertCodexResponseToClaudeNonStream(context.Background(), "gpt-6.1-sol", after, afterOut, reply, nil)
-	if gjson.GetBytes(out, "content.0.name").String() != first || gjson.GetBytes(out, "content.1.name").String() != second {
+	if ojson.GetBytes(out, "content.0.name").String() != first || ojson.GetBytes(out, "content.1.name").String() != second {
 		t.Fatalf("deferred tool names did not round-trip: %s", out)
 	}
 }
@@ -111,7 +110,7 @@ func TestConvertClaudeRequestToCodex_StandaloneToolReferenceAndSearchResultOrder
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := gjson.GetBytes(out, "input").Array()
+	items := ojson.GetBytes(out, "input").Array()
 	wantTypes := []string{"message", "additional_tools", "message", "additional_tools", "message", "function_call", "function_call_output", "additional_tools", "message"}
 	if len(items) != len(wantTypes) {
 		t.Fatalf("discovery changed mixed content history: %s", out)
@@ -127,7 +126,7 @@ func TestConvertClaudeRequestToCodex_StandaloneToolReferenceAndSearchResultOrder
 		}
 	}
 	result := items[6].Get("output").Array()
-	if len(result) != 3 || result[0].Get("type").String() != "input_image" || result[1].Get("text").String() != "found" || gjson.Parse(result[2].Get("text").String()).Get("tool_name").String() != "Lookup" {
+	if len(result) != 3 || result[0].Get("type").String() != "input_image" || result[1].Get("text").String() != "found" || ojson.Parse(result[2].Get("text").String()).Get("tool_name").String() != "Lookup" {
 		t.Fatalf("mixed tool result lost image, text or reference: %s", out)
 	}
 	if items[1].Get("tools.0.name").String() != "WebSearch" || items[3].Get("tools.0.name").String() != "WebFetch" || items[7].Get("tools.0.name").String() != "Lookup" {
@@ -141,7 +140,7 @@ func TestConvertClaudeRequestToCodex_ForcedDeferredTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(out, "tools.0.name").String() != "Lookup" || gjson.GetBytes(out, "tool_choice.name").String() != "Lookup" {
+	if ojson.GetBytes(out, "tools.0.name").String() != "Lookup" || ojson.GetBytes(out, "tool_choice.name").String() != "Lookup" {
 		t.Fatalf("explicit choice must make the deferred tool available: %s", out)
 	}
 }
@@ -157,14 +156,14 @@ func TestConvertClaudeRequestToCodex_ToolResultPreservesUnresolvedReferences(t *
 		if err != nil {
 			t.Fatal(err)
 		}
-		items := gjson.GetBytes(out, "input").Array()
+		items := ojson.GetBytes(out, "input").Array()
 		if len(items) != 2 || items[1].Get("type").String() != "function_call_output" {
 			t.Fatalf("unresolved result generated a tool declaration: %s", out)
 		}
 		output := items[1].Get("output")
-		parts := gjson.Parse(content).Array()
+		parts := ojson.Parse(content).Array()
 		if len(parts) == 1 {
-			if output.Type != gjson.String || output.String() != content {
+			if output.Type != ojson.String || output.String() != content {
 				t.Fatalf("reference-only result changed: %s", out)
 			}
 		} else if output.Get("0.text").String() != "found" || output.Get("1.type").String() != "input_text" || output.Get("1.text").String() != parts[1].Raw {
@@ -179,7 +178,7 @@ func TestConvertClaudeRequestToCodex_RepeatedStandaloneReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := gjson.GetBytes(out, "input").Array()
+	items := ojson.GetBytes(out, "input").Array()
 	if len(items) != 2 || items[0].Get("type").String() != "additional_tools" || items[1].Get("content.0.text").String() != "ready" {
 		t.Fatalf("repeated standalone references must not duplicate declarations: %s", out)
 	}
@@ -191,7 +190,7 @@ func TestConvertClaudeRequestToCodex_ParallelToolResultsDeferDiscovery(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := gjson.GetBytes(out, "input").Array()
+	items := ojson.GetBytes(out, "input").Array()
 	if len(items) != 6 || items[2].Get("type").String() != "function_call_output" || items[3].Get("content.0.text").String() != "between results" || items[4].Get("type").String() != "function_call_output" || items[5].Get("type").String() != "additional_tools" {
 		t.Fatalf("discovered definitions must follow all parallel tool results: %s", out)
 	}
@@ -216,12 +215,12 @@ func TestConvertClaudeRequestToCodex_MaxOutputTokens(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := gjson.GetBytes(out, "max_output_tokens")
+			got := ojson.GetBytes(out, "max_output_tokens")
 			if tt.want < 0 {
 				if got.Exists() {
 					t.Fatalf("unexpected max_output_tokens: %s", out)
 				}
-			} else if got.Type != gjson.Number || got.Int() != tt.want {
+			} else if got.Type != ojson.Number || got.Int() != tt.want {
 				t.Fatalf("max_output_tokens = %s, want %d; output=%s", got.Raw, tt.want, out)
 			}
 		})
@@ -286,7 +285,7 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
-			resultJSON := gjson.ParseBytes(result)
+			resultJSON := ojson.ParseBytes(result)
 			if got := resultJSON.Get("instructions").String(); got != tt.wantInstructions {
 				t.Fatalf("instructions = %q, want %q. Output: %s", got, tt.wantInstructions, string(result))
 			}
@@ -312,12 +311,12 @@ func TestConvertClaudeRequestToCodex_MessageSystemRoleWrapsAsUserReminder(t *tes
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-	inputs := gjson.GetBytes(result, "input").Array()
-	if got := gjson.GetBytes(result, "instructions").String(); got != "Top-level rules" {
+	inputs := ojson.GetBytes(result, "input").Array()
+	if got := ojson.GetBytes(result, "instructions").String(); got != "Top-level rules" {
 		t.Fatalf("top-level instructions = %q, want %q", got, "Top-level rules")
 	}
 	if len(inputs) != 4 {
-		t.Fatalf("got %d input items, want 4: %s", len(inputs), gjson.GetBytes(result, "input").Raw)
+		t.Fatalf("got %d input items, want 4: %s", len(inputs), ojson.GetBytes(result, "input").Raw)
 	}
 	if got := inputs[1].Get("role").String(); got != "user" {
 		t.Fatalf("message-level system role = %q, want user", got)
@@ -358,7 +357,7 @@ func TestConvertClaudeRequestToCodex_PreservesToolAdjacencyWithInterveningSystem
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("gpt-5.4", []byte(inputJSON), false)
-	inputs := gjson.GetBytes(result, "input").Array()
+	inputs := ojson.GetBytes(result, "input").Array()
 
 	// Expected item types:
 	// 0: message (role: user, "Execute tools")
@@ -397,12 +396,12 @@ func TestConvertClaudeRequestToCodex_ParameterlessToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := gjson.GetBytes(out, "input.0")
+	call := ojson.GetBytes(out, "input.0")
 	args := call.Get("arguments")
-	if call.Get("type").String() != "function_call" || args.Type != gjson.String || args.String() != "{}" {
+	if call.Get("type").String() != "function_call" || args.Type != ojson.String || args.String() != "{}" {
 		t.Fatalf("expected a function call with an empty argument object string, got %s", call.Raw)
 	}
-	result := gjson.GetBytes(out, "input.1")
+	result := ojson.GetBytes(out, "input.1")
 	if result.Get("type").String() != "function_call_output" || result.Get("call_id").String() != call.Get("call_id").String() {
 		t.Fatalf("expected matching tool output, call=%s result=%s", call.Raw, result.Raw)
 	}
@@ -445,7 +444,7 @@ func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
-			resultJSON := gjson.ParseBytes(result)
+			resultJSON := ojson.ParseBytes(result)
 
 			if got := resultJSON.Get("parallel_tool_calls").Bool(); got != tt.wantParallelToolCalls {
 				t.Fatalf("parallel_tool_calls = %v, want %v. Output: %s", got, tt.wantParallelToolCalls, string(result))
@@ -512,14 +511,14 @@ func TestConvertClaudeRequestToCodex_ServiceTier(t *testing.T) {
 				"messages": [{"role": "user", "content": "Reply with OK"}]
 			}`)
 			if tt.serviceTierJSON != "" {
-				inputJSON, _ = sjson.SetRawBytes(inputJSON, "service_tier", []byte(tt.serviceTierJSON))
+				inputJSON, _ = ojson.SetRawBytes(inputJSON, "service_tier", []byte(tt.serviceTierJSON))
 			}
 			if tt.speedJSON != "" {
-				inputJSON, _ = sjson.SetRawBytes(inputJSON, "speed", []byte(tt.speedJSON))
+				inputJSON, _ = ojson.SetRawBytes(inputJSON, "speed", []byte(tt.speedJSON))
 			}
 
 			result, _ := ConvertClaudeRequestToCodex("gpt-5.4", inputJSON, false)
-			serviceTierResult := gjson.GetBytes(result, "service_tier")
+			serviceTierResult := ojson.GetBytes(result, "service_tier")
 			if serviceTierResult.Exists() != tt.wantExists {
 				t.Fatalf("service_tier exists = %v, want %v. Output: %s", serviceTierResult.Exists(), tt.wantExists, string(result))
 			}
@@ -553,7 +552,7 @@ func TestConvertClaudeRequestToCodex_ShortenLongToolUseIDs(t *testing.T) {
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-	inputs := gjson.GetBytes(result, "input").Array()
+	inputs := ojson.GetBytes(result, "input").Array()
 
 	var callID string
 	var outputCallID string
@@ -618,7 +617,7 @@ func TestConvertClaudeRequestToCodex_ToolChoiceModeMapping(t *testing.T) {
 			}`
 
 			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-			resultJSON := gjson.ParseBytes(result)
+			resultJSON := ojson.ParseBytes(result)
 
 			if got := resultJSON.Get("tool_choice").String(); got != tt.wantCodexToolChoice {
 				t.Fatalf("tool_choice = %q, want %q. Output: %s", got, tt.wantCodexToolChoice, string(result))
@@ -639,7 +638,7 @@ func TestConvertClaudeRequestToCodex_ToolChoiceSpecificFunctionUsesConvertedName
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := ojson.ParseBytes(result)
 
 	if got := resultJSON.Get("tool_choice.type").String(); got != "function" {
 		t.Fatalf("tool_choice.type = %q, want function. Output: %s", got, string(result))
@@ -684,7 +683,7 @@ func TestConvertClaudeRequestToCodex_WebSearchSourcesInclude(t *testing.T) {
 				if tt.wantSources {
 					wantInclude = `["reasoning.encrypted_content","web_search_call.action.sources"]`
 				}
-				if got := gjson.GetBytes(result, "include").Raw; got != wantInclude {
+				if got := ojson.GetBytes(result, "include").Raw; got != wantInclude {
 					t.Errorf("stream=%v: include = %s, want %s", stream, got, wantInclude)
 				}
 			}
@@ -714,7 +713,7 @@ func TestConvertClaudeRequestToCodex_WebSearchToolMapping(t *testing.T) {
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := ojson.ParseBytes(result)
 
 	if got := resultJSON.Get("tools.0.type").String(); got != "web_search" {
 		t.Fatalf("tools.0.type = %q, want web_search. Output: %s", got, string(result))
@@ -745,7 +744,7 @@ func TestConvertClaudeRequestToCodex_WebSearchToolChoiceUsesDeclaredTypedToolNam
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := ojson.ParseBytes(result)
 
 	if got := resultJSON.Get("tool_choice.type").String(); got != "function" {
 		t.Fatalf("tool_choice.type = %q, want function. Output: %s", got, string(result))
@@ -782,7 +781,7 @@ func TestConvertClaudeRequestToCodex_AssistantThinkingSignatureToReasoningItem(t
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
+	resultJSON := ojson.ParseBytes(result)
 	inputs := resultJSON.Get("input").Array()
 	if len(inputs) != 3 {
 		t.Fatalf("got %d input items, want 3. Output: %s", len(inputs), string(result))
@@ -830,7 +829,7 @@ func TestConvertClaudeRequestToCodex_PreservesBase64PDFDocumentContent(t *testin
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("gpt-5.6-sol", []byte(inputJSON), false)
-	content := gjson.GetBytes(result, "input.0.content").Array()
+	content := ojson.GetBytes(result, "input.0.content").Array()
 	if len(content) != 3 {
 		t.Fatalf("got %d content items, want 3. Output: %s", len(content), result)
 	}
@@ -879,10 +878,10 @@ func TestConvertClaudeRequestToCodex_PreservesContentOrderAcrossToolAndReasoning
 	}`
 
 	result, _ := ConvertClaudeRequestToCodex("gpt-5.4", []byte(inputJSON), false)
-	if got := gjson.GetBytes(result, "instructions").String(); got != "system rules" {
+	if got := ojson.GetBytes(result, "instructions").String(); got != "system rules" {
 		t.Fatalf("instructions = %q, want system rules. Output: %s", got, result)
 	}
-	inputs := gjson.GetBytes(result, "input").Array()
+	inputs := ojson.GetBytes(result, "input").Array()
 	if len(inputs) != 7 {
 		t.Fatalf("got %d input items, want 7. Output: %s", len(inputs), result)
 	}
@@ -917,10 +916,10 @@ func TestConvertClaudeRequestToCodex_PreservesContentOrderAcrossToolAndReasoning
 func TestConvertClaudeRequestToCodex_AssistantGrokSignatureToReasoningItem(t *testing.T) {
 	signature := "HmlYdr2aCAqCYP/m9mr8PS6KOsdMs72FGDigmydR+Jsmuv8KX97yWPlbOwmXJgWn0CbHaCacdQD3+n5EvpgLfPNmafS3kdICBjRuDf4bzHy7uBiUhNVhqPtp/ee1y9q4imPE4LYgD1VZ4J+bp9mTeqA1+nC9Oue58CiNEMV9SVaGenCD+aBnVuSTzQhD32Y+68i6HLJW0Dx6ifaRfb8hxYtA/sPM+/FTvAMW11nRho5a2BBSkpnzfqqAz/e/vGJ77/bygpXM823QA9wL9i0X"
 	payload := []byte(`{"model":"grok-4.5","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
-	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+	payload, _ = ojson.SetBytes(payload, "messages.0.content.0.signature", signature)
 
 	out, _ := ConvertClaudeRequestToCodex("grok-4.5", payload, false)
-	reasoning := gjson.GetBytes(out, "input.0")
+	reasoning := ojson.GetBytes(out, "input.0")
 	if reasoning.Get("type").String() != "reasoning" {
 		t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
 	}
@@ -941,10 +940,10 @@ func testMetaClaudeSignature() string {
 func TestConvertClaudeRequestToCodex_AssistantMetaSignatureToReasoningItem(t *testing.T) {
 	signature := testMetaClaudeSignature()
 	payload := []byte(`{"model":"muse-spark-1.3","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
-	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+	payload, _ = ojson.SetBytes(payload, "messages.0.content.0.signature", signature)
 
 	out, _ := ConvertClaudeRequestToCodex("muse-spark-1.3", payload, false)
-	reasoning := gjson.GetBytes(out, "input.0")
+	reasoning := ojson.GetBytes(out, "input.0")
 	if reasoning.Get("type").String() != "reasoning" {
 		t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
 	}
@@ -956,7 +955,7 @@ func TestConvertClaudeRequestToCodex_AssistantMetaSignatureToReasoningItem(t *te
 func TestConvertClaudeRequestToCodex_IgnoresMetaSignatureForNonMetaTargets(t *testing.T) {
 	signature := testMetaClaudeSignature()
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
-	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+	payload, _ = ojson.SetBytes(payload, "messages.0.content.0.signature", signature)
 
 	for _, modelName := range []string{"gpt-5.4", "claude-sonnet-4-6", "grok-4.5"} {
 		t.Run(modelName, func(t *testing.T) {
@@ -974,10 +973,10 @@ func TestConvertClaudeRequestToCodex_AssistantRoutedMetaSignatureToReasoningItem
 	// verbatim.
 	signature := testMetaClaudeSignature() + "." + strings.Repeat("Ab3", 23)[:67]
 	payload := []byte(`{"model":"meta/muse-wonder","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
-	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+	payload, _ = ojson.SetBytes(payload, "messages.0.content.0.signature", signature)
 
 	out, _ := ConvertClaudeRequestToCodex("meta/muse-wonder", payload, false)
-	reasoning := gjson.GetBytes(out, "input.0")
+	reasoning := ojson.GetBytes(out, "input.0")
 	if reasoning.Get("type").String() != "reasoning" {
 		t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
 	}
@@ -992,7 +991,7 @@ func TestConvertClaudeRequestToCodex_AssistantRoutedMetaSignatureToReasoningItem
 
 	// A foreign GPT signature must not be replayed when the target is a Meta Muse model.
 	gptPayload := []byte(`{"model":"muse-spark-1.3","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
-	gptPayload, _ = sjson.SetBytes(gptPayload, "messages.0.content.0.signature", validCodexReasoningSignature())
+	gptPayload, _ = ojson.SetBytes(gptPayload, "messages.0.content.0.signature", validCodexReasoningSignature())
 	out, _ = ConvertClaudeRequestToCodex("muse-spark-1.3", gptPayload, false)
 	if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
 		t.Fatalf("got %d reasoning items for GPT signature on Meta target, want 0; output=%s", got, out)
@@ -1009,7 +1008,7 @@ func TestConvertClaudeRequestToCodex_AssistantRoutedMetaSignatureToReasoningItem
 func TestConvertClaudeRequestToCodex_IgnoresGrokSignatureForNonGrokTargets(t *testing.T) {
 	signature := "HmlYdr2aCAqCYP/m9mr8PS6KOsdMs72FGDigmydR+Jsmuv8KX97yWPlbOwmXJgWn0CbHaCacdQD3+n5EvpgLfPNmafS3kdICBjRuDf4bzHy7uBiUhNVhqPtp/ee1y9q4imPE4LYgD1VZ4J+bp9mTeqA1+nC9Oue58CiNEMV9SVaGenCD+aBnVuSTzQhD32Y+68i6HLJW0Dx6ifaRfb8hxYtA/sPM+/FTvAMW11nRho5a2BBSkpnzfqqAz/e/vGJ77/bygpXM823QA9wL9i0X"
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
-	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
+	payload, _ = ojson.SetBytes(payload, "messages.0.content.0.signature", signature)
 
 	for _, modelName := range []string{"gpt-5.4", "claude-sonnet-4-6"} {
 		t.Run(modelName, func(t *testing.T) {
@@ -1084,7 +1083,7 @@ func TestConvertClaudeRequestToCodex_IgnoresNonCodexThinkingSignatures(t *testin
 
 func countRequestInputItemsByType(result []byte, itemType string) int {
 	count := 0
-	gjson.GetBytes(result, "input").ForEach(func(_, item gjson.Result) bool {
+	ojson.GetBytes(result, "input").ForEach(func(_, item ojson.Result) bool {
 		if item.Get("type").String() == itemType {
 			count++
 		}
@@ -1124,7 +1123,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 		}`)
 
 		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-		root := gjson.ParseBytes(translated)
+		root := ojson.ParseBytes(translated)
 
 		if !root.Get("text.format").Exists() {
 			t.Fatalf("expected text.format in translated payload, got: %s", translated)
@@ -1162,7 +1161,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 		}`)
 
 		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-		root := gjson.ParseBytes(translated)
+		root := ojson.ParseBytes(translated)
 
 		if got := root.Get("text.format.name").String(); got != "custom_schema" {
 			t.Errorf("expected text.format.name to be 'custom_schema', got %q", got)
@@ -1181,7 +1180,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 		}`)
 
 		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-		root := gjson.ParseBytes(translated)
+		root := ojson.ParseBytes(translated)
 		if root.Get("text.format").Exists() {
 			t.Fatalf("expected no text.format in translated payload, got: %s", translated)
 		}
@@ -1197,7 +1196,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 		}`)
 
 		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-		root := gjson.ParseBytes(translated)
+		root := ojson.ParseBytes(translated)
 		if root.Get("text.format").Exists() {
 			t.Fatalf("expected no text.format in translated payload, got: %s", translated)
 		}
@@ -1231,7 +1230,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 		}`)
 
 		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-		root := gjson.ParseBytes(translated)
+		root := ojson.ParseBytes(translated)
 		if got := root.Get("text.format.strict").Bool(); got != false {
 			t.Errorf("expected text.format.strict to be false for non-strict-compatible schema, got %v (%s)", got, translated)
 		}
@@ -1262,7 +1261,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 		}`)
 
 		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
-		root := gjson.ParseBytes(translated)
+		root := ojson.ParseBytes(translated)
 		if got := root.Get("text.format.strict").Bool(); !got {
 			t.Errorf("expected text.format.strict to stay true for strict-compatible schema, got %v (%s)", got, translated)
 		}
@@ -1301,7 +1300,7 @@ func TestNormalizeToolParameters_StripsNestedSchemaAndId(t *testing.T) {
 	}`
 
 	got := normalizeToolParameters(input)
-	parsed := gjson.Parse(got)
+	parsed := ojson.Parse(got)
 
 	if parsed.Get("$schema").Exists() {
 		t.Errorf("expected root $schema to be removed, got %v", parsed.Get("$schema").Raw)
@@ -1354,7 +1353,7 @@ func TestNormalizeToolParameters_PreservesPropertyNamesAndLiteralData(t *testing
 	}`
 
 	got := normalizeToolParameters(input)
-	parsed := gjson.Parse(got)
+	parsed := ojson.Parse(got)
 
 	if !parsed.Get("properties.$schema").Exists() {
 		t.Errorf("expected property named '$schema' to be preserved")
@@ -1383,7 +1382,7 @@ func TestNormalizeToolParameters_PreservesPropertyNamesAndLiteralData(t *testing
 	// Test array union type preservation (e.g. ["object", "null"])
 	unionInput := `{"type": ["object", "null"]}`
 	unionGot := normalizeToolParameters(unionInput)
-	unionParsed := gjson.Parse(unionGot)
+	unionParsed := ojson.Parse(unionGot)
 	typeArr := unionParsed.Get("type").Array()
 	if len(typeArr) != 2 || typeArr[0].String() != "object" || typeArr[1].String() != "null" {
 		t.Errorf("expected union type array to be preserved, got %s", unionParsed.Get("type").Raw)
@@ -1429,7 +1428,7 @@ func TestConvertClaudeRequestToCodex_StripsNestedToolSchemaMeta(t *testing.T) {
 	}`
 
 	translated, _ := ConvertClaudeRequestToCodex("gpt-5", []byte(inputJSON), false)
-	tools := gjson.GetBytes(translated, "tools").Array()
+	tools := ojson.GetBytes(translated, "tools").Array()
 	if len(tools) == 0 {
 		t.Fatalf("expected tools in translated payload, got: %s", translated)
 	}
@@ -1508,7 +1507,7 @@ func TestConvertClaudeRequestToCodex_StripsUnsupportedUnicodePropertyEscapePatte
 	}`
 
 	translated, _ := ConvertClaudeRequestToCodex("gpt-5.6", []byte(inputJSON), false)
-	tools := gjson.GetBytes(translated, "tools").Array()
+	tools := ojson.GetBytes(translated, "tools").Array()
 	if len(tools) == 0 {
 		t.Fatalf("expected tools in translated payload, got: %s", translated)
 	}
@@ -1577,7 +1576,7 @@ func TestConvertClaudeRequestToCodex_StripsPatternPropertiesIncompatibleKeys(t *
 	}`
 
 	translated, _ := ConvertClaudeRequestToCodex("gpt-5.6", []byte(inputJSON), false)
-	tools := gjson.GetBytes(translated, "tools").Array()
+	tools := ojson.GetBytes(translated, "tools").Array()
 	if len(tools) == 0 {
 		t.Fatalf("expected tools in translated payload, got: %s", translated)
 	}
@@ -1679,9 +1678,9 @@ func TestConvertClaudeRequestToCodex_MidConversationToolAdditions(t *testing.T) 
 	}
 
 	// Deferred declarations are emitted only at their discovery point.
-	topTools := gjson.GetBytes(translated, "tools").Array()
+	topTools := ojson.GetBytes(translated, "tools").Array()
 	if len(topTools) != 1 || topTools[0].Get("name").String() != "Read" {
-		t.Fatalf("expected only Read in top-level tools: %s", gjson.GetBytes(translated, "tools").Raw)
+		t.Fatalf("expected only Read in top-level tools: %s", ojson.GetBytes(translated, "tools").Raw)
 	}
 
 	// Expected input items:
@@ -1692,9 +1691,9 @@ func TestConvertClaudeRequestToCodex_MidConversationToolAdditions(t *testing.T) 
 	// 4: function_call_output (call_1)
 	// 5: additional_tools (developer: shortened longMCPTool, deferred after function_call_output)
 	// 6: message (user: "Finish up")
-	inputs := gjson.GetBytes(translated, "input").Array()
+	inputs := ojson.GetBytes(translated, "input").Array()
 	if len(inputs) != 7 {
-		t.Fatalf("expected 7 input items, got %d: %s", len(inputs), gjson.GetBytes(translated, "input").Raw)
+		t.Fatalf("expected 7 input items, got %d: %s", len(inputs), ojson.GetBytes(translated, "input").Raw)
 	}
 
 	addTools1 := inputs[2]
@@ -1711,7 +1710,7 @@ func TestConvertClaudeRequestToCodex_MidConversationToolAdditions(t *testing.T) 
 	if addTools1List[0].Get("type").String() != "function" || addTools1List[0].Get("name").String() != "SubagentHandback" {
 		t.Fatalf("unexpected first additional tool: %s", addTools1List[0].Raw)
 	}
-	if addTools1List[0].Get("strict").Type != gjson.False {
+	if addTools1List[0].Get("strict").Type != ojson.False {
 		t.Fatalf("expected strict=false on SubagentHandback, got: %s", addTools1List[0].Raw)
 	}
 	if addTools1List[0].Get("input_schema").Exists() || addTools1List[0].Get("parameters.$schema").Exists() {
@@ -1770,7 +1769,7 @@ func TestBuildShortNameMapKeepsGatewayToolNamesDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := gjson.GetBytes(out, "tools").Array()
+	got := ojson.GetBytes(out, "tools").Array()
 	if len(got) != len(want) {
 		t.Fatalf("tool count=%d, want %d; body=%s", len(got), len(want), out)
 	}
@@ -1789,8 +1788,8 @@ func TestBuildShortNameMapDisambiguatesSameToolOnTwoServers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := gjson.GetBytes(out, "tools.0.name").String()
-	second := gjson.GetBytes(out, "tools.1.name").String()
+	first := ojson.GetBytes(out, "tools.0.name").String()
+	second := ojson.GetBytes(out, "tools.1.name").String()
 	if first != "mcp__github_create-branch" {
 		t.Fatalf("first tool name=%q", first)
 	}
@@ -1807,15 +1806,15 @@ func TestReverseMapRestoresReadableGatewayNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	const shortened = "mcp__github_add-issue-comment"
-	if got := gjson.GetBytes(translated, "tools.0.name").String(); got != shortened {
+	if got := ojson.GetBytes(translated, "tools.0.name").String(); got != shortened {
 		t.Fatalf("tool name=%q, want %q", got, shortened)
 	}
-	if got := gjson.GetBytes(translated, "tool_choice.name").String(); got != shortened {
+	if got := ojson.GetBytes(translated, "tool_choice.name").String(); got != shortened {
 		t.Fatalf("tool_choice name=%q, want %q", got, shortened)
 	}
 	response := []byte(`{"type":"response.completed","response":{"id":"resp_test","model":"test-model","output":[{"type":"function_call","call_id":"call_test","name":"mcp__github_add-issue-comment","arguments":"{}"}],"usage":{"input_tokens":1,"output_tokens":1}}}`)
 	out := ConvertCodexResponseToClaudeNonStream(context.Background(), "test-model", req, translated, response, nil)
-	if got := gjson.GetBytes(out, "content.0.name").String(); got != original {
+	if got := ojson.GetBytes(out, "content.0.name").String(); got != original {
 		t.Fatalf("restored tool name=%q, want %q; body=%s", got, original, out)
 	}
 }
@@ -1827,7 +1826,7 @@ func TestShortenNameIfNeededFallsBackForUnknownLongNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "mcp__"+strings.Repeat("x", 59) {
+	if got := ojson.GetBytes(out, "tools.0.name").String(); got != "mcp__"+strings.Repeat("x", 59) {
 		t.Fatalf("fallback tool name=%q", got)
 	}
 }
@@ -1864,7 +1863,7 @@ func TestConvertClaudeRequestToCodex_ToolResultMediaDocumentAndURLImage(t *testi
 			if err != nil {
 				t.Fatalf("ConvertClaudeRequestToCodex error: %v", err)
 			}
-			output := gjson.GetBytes(out, `input.#(type=="function_call_output").output`)
+			output := ojson.GetBytes(out, `input.#(type=="function_call_output").output`)
 			arr := output.Array()
 			if !output.IsArray() || len(arr) != len(tt.want) {
 				t.Fatalf("output = %s, want %d items", output.Raw, len(tt.want))
@@ -1882,5 +1881,77 @@ func TestConvertClaudeRequestToCodex_ToolResultMediaDocumentAndURLImage(t *testi
 				}
 			}
 		})
+	}
+}
+
+func TestConvertClaudeRequestToCodex_DefaultsMissingToolInputToEmptyObject(t *testing.T) {
+	input := []byte(`{"model":"test-model","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"get_time"}]}]}`)
+
+	out, errConvert := ConvertClaudeRequestToCodex("test-model", input, false)
+	if errConvert != nil {
+		t.Fatalf("ConvertClaudeRequestToCodex() error = %v", errConvert)
+	}
+
+	functionCall := ojson.GetBytesNoCopy(out, `input.#(type=="function_call")`)
+	arguments := functionCall.Get("arguments")
+	if arguments.Type != ojson.String {
+		t.Fatalf("function_call.arguments type = %v, want string; item=%s", arguments.Type, functionCall.Raw)
+	}
+	if got := arguments.String(); got != "{}" {
+		t.Fatalf("function_call.arguments = %q, want %q; item=%s", got, "{}", functionCall.Raw)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_ToolResultMixedContentAndUnknownToolReference(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-6-astra",
+		"tools": [
+			{"name": "ToolSearch", "input_schema": {"type": "object"}},
+			{"name": "WebSearch", "defer_loading": true, "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}}
+		],
+		"messages": [
+			{"role": "user", "content": "Find tools"},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "tool_use", "id": "call_1", "name": "ToolSearch", "input": {"query": "web"}}
+				]
+			},
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "tool_result",
+						"tool_use_id": "call_1",
+						"content": [
+							{"type": "text", "text": "Matched tools:"},
+							{"type": "tool_reference", "tool_name": "WebSearch"},
+							{"type": "tool_reference", "tool_name": "NonExistentTool"}
+						]
+					}
+				]
+			}
+		]
+	}`
+
+	out, err := ConvertClaudeRequestToCodex("gpt-6-astra", []byte(inputJSON), false)
+	if err != nil {
+		t.Fatalf("ConvertClaudeRequestToCodex error: %v", err)
+	}
+
+	outputParts := ojson.GetBytesNoCopy(out, `input.#(type=="function_call_output").output`).Array()
+	if len(outputParts) != 3 {
+		t.Fatalf("expected 3 output parts in mixed tool_result, got %d: %s", len(outputParts), ojson.GetBytesNoCopy(out, `input.#(call_id=="call_1").output`).Raw)
+	}
+	if outputParts[0].Get("text").String() != "Matched tools:" {
+		t.Fatalf("unexpected outputParts[0]: %s", outputParts[0].Raw)
+	}
+	if !strings.Contains(outputParts[1].Get("text").String(), "WebSearch") {
+		t.Fatalf("expected WebSearch tool_reference in outputParts[1], got: %s", outputParts[1].Raw)
+	}
+
+	addTools := ojson.GetBytesNoCopy(out, `input.#(type=="additional_tools").tools`).Array()
+	if len(addTools) != 1 || addTools[0].Get("name").String() != "WebSearch" {
+		t.Fatalf("expected only known WebSearch in additional_tools, got: %s", ojson.GetBytesNoCopy(out, `input.#(type=="additional_tools")`).Raw)
 	}
 }

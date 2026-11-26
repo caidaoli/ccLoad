@@ -31,6 +31,7 @@ import (
 	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -57,6 +58,11 @@ This information may or may not be relevant to the coding task, it is up for you
  * @brief Antigravity 历史 thinking 签名拒绝所使用的一次性修复标记。
  */
 const stripAntigravityInvalidThinkingSignatureStrategy = "strip_antigravity_invalid_thinking_signature"
+
+/**
+ * @brief Claude 接受的最小思考预算（token），更小的预算会被上游拒绝。
+ */
+const antigravityClaudeMinThinkingBudget = 1024
 
 /**
  * @brief 按已复现的客户端开场白限定身份中和范围，不匹配正文中的产品名称。
@@ -458,6 +464,7 @@ func prepareAntigravityRequestBody(
 		request = cliproxysignature.SanitizeVertexSignaturesForNonVertex(request, "contents")
 		if gjson.GetBytes(request, "generationConfig").IsObject() {
 			request = deleteJSONPath(request, "generationConfig.maxOutputTokens")
+			request = deleteJSONPath(request, "generationConfig.max_output_tokens")
 		}
 	}
 
@@ -513,7 +520,9 @@ func prepareAntigravityRequestBody(
  * @brief 归一 Claude 的输出上限别名，按有效上限限制思考预算。
  * @param request 已合并 generationConfig 别名的 Antigravity 请求体。
  * @param modelID 已归一为小写的实际上游模型 ID。
- * @return 保留缺省或零输出上限，已有正上限按模型目录收紧后的请求体。
+ * @return 保留缺省或零输出上限，已有正上限按模型目录收紧后的请求体；思考预算低于
+ *         Claude 最小值 1024 时整个思考配置（含 includeThoughts）被删除。
+ * @note 调用前思考配置别名已合并到 generationConfig 下的单个容器。
  */
 func normalizeAntigravityClaudeOutputLimit(request []byte, modelID string) []byte {
 	const canonicalPath = "generationConfig.maxOutputTokens"
@@ -528,6 +537,7 @@ func normalizeAntigravityClaudeOutputLimit(request []byte, modelID string) []byt
 		}
 		request = deleteJSONPath(request, aliasPath)
 	}
+	request = dropAntigravityClaudeUndersizedThinkingBudget(request)
 	if !ok || maxOut <= 0 {
 		return request
 	}
@@ -543,7 +553,33 @@ func normalizeAntigravityClaudeOutputLimit(request []byte, modelID string) []byt
 		"generationConfig.thinking_config.thinking_budget",
 	} {
 		if budget, ok := jsonIntegerValue(gjson.GetBytes(request, path)); ok && budget >= maxOut {
+			if maxOut-1 < antigravityClaudeMinThinkingBudget {
+				request = deleteJSONPath(request, "generationConfig.thinkingConfig")
+				return deleteJSONPath(request, "generationConfig.thinking_config")
+			}
 			request = setJSONValue(request, path, maxOut-1)
+		}
+	}
+	return request
+}
+
+/**
+ * @brief 删除预算低于 Claude 最小值的思考配置。
+ * @param request 已合并思考配置别名的 Antigravity 请求体。
+ * @return 预算在 [0, 1024) 时删除整个思考配置（含 includeThoughts，不回写可见性开关）后的
+ *         请求体；无预算或预算不低于 1024（含负数动态预算）时原样返回。
+ */
+func dropAntigravityClaudeUndersizedThinkingBudget(request []byte) []byte {
+	for _, path := range []string{
+		"generationConfig.thinkingConfig.thinkingBudget",
+		"generationConfig.thinkingConfig.thinking_budget",
+		"generationConfig.thinking_config.thinkingBudget",
+		"generationConfig.thinking_config.thinking_budget",
+	} {
+		if budget, ok := jsonIntegerValue(gjson.GetBytes(request, path)); ok && budget >= 0 &&
+			budget < antigravityClaudeMinThinkingBudget {
+			request = deleteJSONPath(request, "generationConfig.thinkingConfig")
+			return deleteJSONPath(request, "generationConfig.thinking_config")
 		}
 	}
 	return request
@@ -574,7 +610,7 @@ func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) (
 		return request, ""
 	}
 	schemaJSON := cliproxyutil.NormalizeJSONSchemaNumericConstraints(schema.Raw)
-	prompt := cliproxycommon.BuildClaudeStructuredOutputInstruction(gjson.Parse(`{"type":"json_schema","schema":` + schemaJSON + `}`))
+	prompt := cliproxycommon.BuildClaudeStructuredOutputInstruction(ojson.Parse(`{"type":"json_schema","schema":` + schemaJSON + `}`))
 	for _, configKey := range configKeys {
 		for _, key := range append(schemaKeys, "responseMimeType", "response_mime_type") {
 			request = deleteJSONPath(request, configKey+"."+key)
@@ -587,7 +623,8 @@ func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) (
  * @brief 合并思考配置别名，按实际模型能力输出一个等级或预算。
  * @param request 信封内 Gemini 请求体。
  * @param modelName 实际发送到 Antigravity 的模型名。
- * @return 清理冲突的思考字段并保留摘要开关和其他选项后的请求体。
+ * @return 清理冲突的思考字段并保留摘要开关和其他选项后的请求体；等级按官方 protojson
+ *         枚举名大写发送（LOW/MEDIUM/HIGH/XHIGH）。
  */
 func normalizeAntigravityThinkingConfig(request []byte, modelName string) []byte {
 	paths := [...]string{"generationConfig.thinkingConfig", "generationConfig.thinking_config", "generation_config.thinking_config", "generation_config.thinkingConfig"}
@@ -606,7 +643,7 @@ func normalizeAntigravityThinkingConfig(request []byte, modelName string) []byte
 			continue
 		}
 		path, merged = paths[0], true
-		value.ForEach(func(key, value gjson.Result) bool {
+		value.ForEach(func(key, value ojson.Result) bool {
 			if !gjson.GetBytes(config, sjsonPathEscape(key.String())).Exists() {
 				config = setJSONRaw(config, sjsonObjectPathJoin("", key.String()), value.Raw)
 			}
@@ -630,14 +667,6 @@ func normalizeAntigravityThinkingConfig(request []byte, modelName string) []byte
 		if info == nil || info.Thinking == nil || !slices.Contains(info.Thinking.Levels, "xhigh") {
 			level = "high"
 		}
-	case "", "low", "medium", "high":
-	default:
-		for _, key := range [...]string{geminiThinkingLevelKey, "thinking_level"} {
-			if original := jsonStringValue(data.Get(key)); strings.EqualFold(strings.TrimSpace(original), level) {
-				level = original
-				break
-			}
-		}
 	}
 	levelKey, budgetKey, summaryKey := geminiThinkingLevelKey, geminiThinkingBudgetKey, "includeThoughts"
 	if !merged {
@@ -654,11 +683,11 @@ func normalizeAntigravityThinkingConfig(request []byte, modelName string) []byte
 	for _, key := range [...]string{geminiThinkingLevelKey, "thinking_level", geminiThinkingBudgetKey, "thinking_budget", "includeThoughts", "include_thoughts"} {
 		switch {
 		case key == levelKey && level != "":
-			config = setJSONValue(config, key, level)
+			config = setJSONValue(config, key, strings.ToUpper(level))
 		case key == budgetKey && level == "" && hasBudget:
 			config = setJSONValue(config, key, budget)
-		case key == summaryKey && includeThoughts != gjson.Null:
-			config = setJSONValue(config, key, includeThoughts == gjson.True)
+		case key == summaryKey && includeThoughts != ojson.Null:
+			config = setJSONValue(config, key, includeThoughts == ojson.True)
 		default:
 			config = deleteJSONPath(config, key)
 		}
@@ -1010,7 +1039,7 @@ func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema, isClaud
  */
 func normalizeAntigravityJSONSchemaTypes(schema string) string {
 	var paths []string
-	cliproxyutil.WalkSchema(gjson.Parse(schema), "", "type", &paths)
+	cliproxyutil.WalkSchema(ojson.Parse(schema), "", "type", &paths)
 	for _, path := range paths {
 		typeName := gjson.Get(schema, path).String()
 		switch typeName {
@@ -1039,28 +1068,96 @@ func cleanAntigravityToolSchemaRaw(raw string, clean func(string) string) string
  * @brief 保留显式禁用工具的选择，并为 Claude 设置适用的调用模式。
  * @param request Antigravity 信封内的请求。
  * @param promptStructuredOutput 是否已改用提示词实现结构化输出，此时强制工具选择降为 AUTO。
- * @return 带最终工具调用模式的请求。
+ * @return 工具配置只剩 camelCase 容器且带最终调用模式的请求；任一别名声明 NONE 时保持 NONE。
  */
 func normalizeAntigravityClaudeToolMode(request []byte, promptStructuredOutput bool) []byte {
+	const path = "toolConfig.functionCallingConfig"
+	disabled := false
 	for _, toolKey := range []string{"toolConfig", "tool_config"} {
 		for _, callingKey := range []string{"functionCallingConfig", "function_calling_config"} {
-			path := toolKey + "." + callingKey
-			switch strings.ToUpper(strings.TrimSpace(jsonStringValue(gjson.GetBytes(request, path+".mode")))) {
-			case "NONE":
-				return setJSONValue(request, path+".mode", "NONE")
-			case "ANY", "VALIDATED":
-				if promptStructuredOutput {
-					request = setJSONValue(request, path+".mode", "AUTO")
-					request = deleteJSONPath(request, path+".allowedFunctionNames")
-					request = deleteJSONPath(request, path+".allowed_function_names")
-				}
+			mode := jsonStringValue(gjson.GetBytes(request, toolKey+"."+callingKey+".mode"))
+			disabled = disabled || strings.EqualFold(strings.TrimSpace(mode), "NONE")
+		}
+	}
+	request = canonicalizeAntigravityToolConfig(request)
+	if disabled {
+		return setJSONValue(request, path+".mode", "NONE")
+	}
+	if !promptStructuredOutput {
+		return setJSONValue(request, path+".mode", "VALIDATED")
+	}
+	switch strings.ToUpper(strings.TrimSpace(jsonStringValue(gjson.GetBytes(request, path+".mode")))) {
+	case "ANY", "VALIDATED":
+		request = setJSONValue(request, path+".mode", "AUTO")
+		request = deleteJSONPath(request, path+".allowedFunctionNames")
+		request = deleteJSONPath(request, path+".allowed_function_names")
+	}
+	return request
+}
+
+/**
+ * @brief 将 tool_config 与 function_calling_config 别名合并进 toolConfig.functionCallingConfig。
+ * @param request Antigravity 信封内的请求。
+ * @return 不含 snake_case 工具配置容器的请求；同一 proto 字段以 camelCase 容器中已有的值为准。
+ * @details 上游按 proto JSON 解析，同一字段的两种拼写同时出现会被拒绝，因此成员按 proto 字段名去重。
+ */
+func canonicalizeAntigravityToolConfig(request []byte) []byte {
+	if !gjson.GetBytes(request, "tool_config").Exists() && !gjson.GetBytes(request, "toolConfig.function_calling_config").Exists() {
+		return request
+	}
+	var toolConfig, callingConfig []byte
+	for _, toolKey := range [...]string{"toolConfig", "tool_config"} {
+		value := gjson.GetBytes(request, toolKey)
+		if !value.IsObject() {
+			continue
+		}
+		toolConfig = mergeAntigravityProtoObject(toolConfig, value, "functionCallingConfig")
+		for _, callingKey := range [...]string{"functionCallingConfig", "function_calling_config"} {
+			if calling := value.Get(callingKey); calling.IsObject() {
+				callingConfig = mergeAntigravityProtoObject(callingConfig, calling)
 			}
 		}
 	}
-	if promptStructuredOutput {
+	request = deleteJSONPath(request, "tool_config")
+	if toolConfig == nil {
 		return request
 	}
-	return setJSONValue(request, "toolConfig.functionCallingConfig.mode", "VALIDATED")
+	if callingConfig != nil {
+		toolConfig = setJSONRaw(toolConfig, "functionCallingConfig", string(callingConfig))
+	}
+	return setJSONRaw(request, "toolConfig", string(toolConfig))
+}
+
+/**
+ * @brief 把 src 中 dst 尚未声明的 proto 字段追加到 dst。
+ * @param dst 目标 JSON 对象；nil 视为空对象。
+ * @param src 来源 JSON 对象。
+ * @param skip 不从 src 复制的字段名，任意拼写。
+ * @return 合并后的 JSON 对象。
+ * @details 字段名忽略大小写与下划线比较，camelCase 与 snake_case 拼写视为同一字段，先出现者胜出。
+ */
+func mergeAntigravityProtoObject(dst []byte, src gjson.Result, skip ...string) []byte {
+	if dst == nil {
+		dst = []byte("{}")
+	}
+	protoName := func(key string) string { return strings.ToLower(strings.ReplaceAll(key, "_", "")) }
+	seen := make(map[string]struct{}, len(skip))
+	for _, key := range skip {
+		seen[protoName(key)] = struct{}{}
+	}
+	gjson.ParseBytes(dst).ForEach(func(key, _ gjson.Result) bool {
+		seen[protoName(key.String())] = struct{}{}
+		return true
+	})
+	src.ForEach(func(key, value gjson.Result) bool {
+		name := protoName(key.String())
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			dst = setJSONRaw(dst, sjsonObjectPathJoin("", key.String()), value.Raw)
+		}
+		return true
+	})
+	return dst
 }
 
 /**
@@ -1069,7 +1166,7 @@ func normalizeAntigravityClaudeToolMode(request []byte, promptStructuredOutput b
  * @return 按 Claude 目标调整后的请求体。
  */
 func normalizeAntigravityClaudeToolResultOrder(request []byte) []byte {
-	for index, content := range gjson.GetBytes(request, "contents").Array() {
+	for index, content := range ojson.GetBytes(request, "contents").Array() {
 		if content.Get("role").String() != "user" {
 			continue
 		}
@@ -1095,8 +1192,8 @@ func normalizeAntigravityClaudeToolResultOrder(request []byte) []byte {
  * @param cfg 实际用于出站的 Antigravity 凭证配置。
  * @param headers 客户端会话及线程请求头。
  * @param sourceBody 客户端原始请求。
- * @param body 转换后的请求，用于在缺少会话线索时取首条用户文本。
- * @return Antigravity 接受的负十进制会话 ID。
+ * @param body 转换后的请求，缺少会话线索时取首个含文本的用户轮中的首个非空文本 part。
+ * @return 有符号 int64 十进制会话 ID，与官方 Hub 格式一致，正负各约一半。
  */
 func antigravitySessionID(cfg *model.Config, headers http.Header, sourceBody, body []byte) string {
 	seed := ""
@@ -1123,8 +1220,13 @@ func antigravitySessionID(cfg *model.Config, headers http.Header, sourceBody, bo
 				if content.Get("role").String() != "user" {
 					continue
 				}
-				if text := content.Get("parts.0.text").String(); text != "" {
-					seed = text
+				for _, part := range content.Get("parts").Array() {
+					if text := part.Get("text").String(); text != "" {
+						seed = text
+						break
+					}
+				}
+				if seed != "" {
 					break
 				}
 			}
@@ -1146,8 +1248,7 @@ func antigravitySessionID(cfg *model.Config, headers http.Header, sourceBody, bo
 		account = antigravityCredentialPoolScope(cfg)
 	}
 	digest := sha256.Sum256([]byte("antigravity-session\x00" + account + "\x00" + strings.TrimSpace(seed)))
-	value := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
-	return "-" + strconv.FormatInt(value, 10)
+	return strconv.FormatInt(int64(binary.BigEndian.Uint64(digest[:8])), 10)
 }
 
 /**

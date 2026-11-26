@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func claudeWebSearchStreamChunks() [][]byte {
@@ -23,7 +23,7 @@ func claudeWebSearchStreamChunks() [][]byte {
 
 func TestClaudeWebSearchBlocksBecomeWebSearchCallItem(t *testing.T) {
 	outputs := translateClaudeResponsesStream(claudeWebSearchStreamChunks())
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" {
 			completed = data
@@ -51,9 +51,9 @@ func TestClaudeWebSearchBlocksBecomeWebSearchCallItemNonStream(t *testing.T) {
 	}
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(
 		context.Background(), "claude-test", nil, nil, []byte(strings.Join(lines, "\n")), nil)
-	items := gjson.GetBytes(out, "output").Array()
+	items := ojson.GetBytes(out, "output").Array()
 	if len(items) != 1 || items[0].Get("type").String() != "web_search_call" {
-		t.Fatalf("output = %s", gjson.GetBytes(out, "output").Raw)
+		t.Fatalf("output = %s", ojson.GetBytes(out, "output").Raw)
 	}
 	if got := items[0].Get("action.query").String(); got != "lindorm vector" {
 		t.Fatalf("action.query = %q", got)
@@ -73,7 +73,7 @@ func TestWebSearchCallItemReplaysAsClaudeServerToolBlocks(t *testing.T) {
 	if got := claudeAssistantBlockTypes(t, out); strings.Join(got, ",") != "server_tool_use,web_search_tool_result" {
 		t.Fatalf("assistant blocks = %v", got)
 	}
-	blocks := gjson.GetBytes(out, "messages.0.content")
+	blocks := ojson.GetBytes(out, "messages.0.content")
 	if got := blocks.Get("0.id").String(); got != "srvtoolu_1" {
 		t.Fatalf("server_tool_use id = %q", got)
 	}
@@ -92,7 +92,7 @@ func TestWebSearchCallWithoutEncryptedContentReplaysEmptyResults(t *testing.T) {
 		"results":[{"title":"T","url":"https://example.com/a"}]
 	}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	if got := gjson.GetBytes(out, "messages.0.content.1.content.#").Int(); got != 0 {
+	if got := ojson.GetBytes(out, "messages.0.content.1.content.#").Int(); got != 0 {
 		t.Fatalf("result content entries = %d, want 0", got)
 	}
 }
@@ -105,7 +105,7 @@ func TestOutputTextAnnotationsReplayAsClaudeCitations(t *testing.T) {
 		]}]
 	}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	block := gjson.GetBytes(out, "messages.0.content.0")
+	block := ojson.GetBytes(out, "messages.0.content.0")
 	if got := block.Get("citations.0.encrypted_index").String(); got != "IDX_A" {
 		t.Fatalf("encrypted_index = %q", got)
 	}
@@ -119,7 +119,7 @@ func TestAnnotationsWithoutEncryptedIndexAreNotReplayedAsCitations(t *testing.T)
 		]}]
 	}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	if gjson.GetBytes(out, "messages.0.content.0.citations").Exists() {
+	if ojson.GetBytes(out, "messages.0.content.0.citations").Exists() {
 		t.Fatal("citation without encrypted_index must not be replayed")
 	}
 }
@@ -130,9 +130,9 @@ func TestRefusalPartReplaysAsClaudeText(t *testing.T) {
 		"content":[{"type":"refusal","refusal":"I cannot help with that."}]
 	}`)
 	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-	content := gjson.GetBytes(out, "messages.0.content")
+	content := ojson.GetBytes(out, "messages.0.content")
 	text := content.Get("0.text").String()
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		text = content.String()
 	}
 	if text != "I cannot help with that." {
@@ -148,7 +148,7 @@ func TestWebSearchCallIDNormalisedToClaudeServerToolPattern(t *testing.T) {
 	} {
 		raw := responsesRequestFromItems(`{"type":"web_search_call","id":"` + tc.responsesID + `","action":{"type":"search","query":"q"}}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-		if got := gjson.GetBytes(out, "messages.0.content.0.id").String(); got != tc.want {
+		if got := ojson.GetBytes(out, "messages.0.content.0.id").String(); got != tc.want {
 			t.Fatalf("id %q became %q, want %q", tc.responsesID, got, tc.want)
 		}
 	}
@@ -159,7 +159,7 @@ func TestClaudeWebSearchWithoutResultBlockStillEmitsItem(t *testing.T) {
 	chunks = append(chunks, []byte(`data: {"type":"message_stop"}`))
 	outputs := translateClaudeResponsesStream(chunks)
 	done := 0
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		event, data := parseClaudeResponsesSSEEvent(t, output)
 		if event == "response.output_item.done" && data.Get("item.type").String() == "web_search_call" {
@@ -201,7 +201,7 @@ func TestWebSearchResultWithoutMatchingUseKeepsContinuationResult(t *testing.T) 
 		[]byte(`data: {"type":"content_block_stop","index":0}`),
 		[]byte(`data: {"type":"message_stop"}`),
 	}
-	check := func(t *testing.T, response gjson.Result) {
+	check := func(t *testing.T, response ojson.Result) {
 		t.Helper()
 		if got := response.Get("output.#").Int(); got != 1 {
 			t.Fatalf("output items = %d, want 1: %s", got, response.Get("output").Raw)
@@ -229,7 +229,7 @@ func TestWebSearchResultWithoutMatchingUseKeepsContinuationResult(t *testing.T) 
 	}
 	output := ConvertClaudeResponseToOpenAIResponsesNonStream(
 		context.Background(), "claude-test", nil, nil, bytes.Join(chunks, []byte("\n")), nil)
-	check(t, gjson.ParseBytes(output))
+	check(t, ojson.ParseBytes(output))
 }
 
 func TestWebSearchCallQueryAcceptsNativeOpenAIActionShapes(t *testing.T) {
@@ -240,7 +240,7 @@ func TestWebSearchCallQueryAcceptsNativeOpenAIActionShapes(t *testing.T) {
 	} {
 		raw := responsesRequestFromItems(`{"type":"web_search_call","id":"ws_srvtoolu_1","action":` + tc.action + `}`)
 		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
-		if got := gjson.GetBytes(out, "messages.0.content.0.input.query").String(); got != tc.want {
+		if got := ojson.GetBytes(out, "messages.0.content.0.input.query").String(); got != tc.want {
 			t.Fatalf("input.query = %q, want %q", got, tc.want)
 		}
 	}
@@ -249,7 +249,7 @@ func TestWebSearchCallQueryAcceptsNativeOpenAIActionShapes(t *testing.T) {
 func TestClaudeWebSearchErrorResultSurvivesRoundTrip(t *testing.T) {
 	chunks := claudeWebSearchStreamChunks()
 	chunks[4] = []byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_tool_result_error","error_code":"rate_limited"}]}}`)
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range translateClaudeResponsesStream(chunks) {
 		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" {
 			completed = data
@@ -260,7 +260,7 @@ func TestClaudeWebSearchErrorResultSurvivesRoundTrip(t *testing.T) {
 		t.Fatalf("web search error was not preserved: %s", item.Raw)
 	}
 	replayed, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item.Raw), false)
-	if got := gjson.GetBytes(replayed, "messages.0.content.1.content.0.type").String(); got != "web_search_tool_result_error" {
+	if got := ojson.GetBytes(replayed, "messages.0.content.1.content.0.type").String(); got != "web_search_tool_result_error" {
 		t.Fatalf("replayed error type = %q", got)
 	}
 }
@@ -268,7 +268,7 @@ func TestClaudeWebSearchErrorResultSurvivesRoundTrip(t *testing.T) {
 func TestClaudeWebSearchWithEmptyResultsKeepsEmptyList(t *testing.T) {
 	chunks := claudeWebSearchStreamChunks()
 	chunks[4] = []byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[]}}`)
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range translateClaudeResponsesStream(chunks) {
 		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" {
 			completed = data
@@ -283,7 +283,7 @@ func TestClaudeWebSearchWithEmptyResultsKeepsEmptyList(t *testing.T) {
 func TestRoundTripPreservesReachableClaudeBlocks(t *testing.T) {
 	chunks := claudeWebSearchStreamChunks()
 	outputs := translateClaudeResponsesStream(chunks)
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" {
 			completed = data
@@ -309,7 +309,7 @@ func TestWebSearchCallWithoutIDProducesNoBlocks(t *testing.T) {
 func TestTextSearchTextOrderPreservedInStreamingAndReplay(t *testing.T) {
 	chunks := claudeWebSearchStreamChunks()
 	outputs := translateClaudeResponsesStream(chunks)
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, output := range outputs {
 		if event, data := parseClaudeResponsesSSEEvent(t, output); event == "response.completed" {
 			completed = data
@@ -352,7 +352,7 @@ func TestWebSearchReplayDropsUnbackedCitations(t *testing.T) {
 			}
 			var webCitations, documentCitations, useCount, emptyResults int
 			var text, encryptedResult string
-			for _, block := range gjson.GetBytes(out, "messages.1.content").Array() {
+			for _, block := range ojson.GetBytes(out, "messages.1.content").Array() {
 				switch block.Get("type").String() {
 				case "server_tool_use":
 					useCount++
@@ -404,7 +404,7 @@ func TestWebSearchReplayCitationStateFollowsAssistantTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := gjson.GetBytes(out, "messages.3.content")
+	first := ojson.GetBytes(out, "messages.3.content")
 	text := first.String()
 	if first.IsArray() {
 		text = first.Get("0.text").String()
@@ -412,7 +412,119 @@ func TestWebSearchReplayCitationStateFollowsAssistantTurn(t *testing.T) {
 	if text != "Answer." || first.Get("0.citations").Exists() {
 		t.Fatalf("interleaved tool result lost empty-search state: %s", out)
 	}
-	if got := gjson.GetBytes(out, "messages.5.content.2.citations.0.encrypted_index").String(); got != "IDX_A" {
+	if got := ojson.GetBytes(out, "messages.5.content.2.citations.0.encrypted_index").String(); got != "IDX_A" {
 		t.Fatalf("next user turn inherited empty-search state: %s", out)
 	}
+}
+
+func TestWebSearchCallWithoutResultsDropsAssistantCitations(t *testing.T) {
+	sig := mustTestSignature(t)
+	t.Run("codex replay without results drops citations and keeps text", func(t *testing.T) {
+		raw := responsesRequestFromItems(
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"earlier context"}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"search question"}]}`,
+			`{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking 1"}],"encrypted_content":"`+sig+`"}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","action":{"type":"search","query":"q"}}`,
+			`{"type":"reasoning","id":"rs_2","summary":[{"type":"summary_text","text":"thinking 2"}],"encrypted_content":"`+sig+`"}`,
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Cited answer.","annotations":[{"type":"web_search_result_location","url":"https://example.com/a","title":"A","cited_text":"Cited answer.","encrypted_index":"IDX_A"}]}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply with OK"}]}`,
+		)
+		out, errConvert := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", raw, false)
+		if errConvert != nil {
+			t.Fatalf("ConvertOpenAIResponsesRequestToClaude() error = %v", errConvert)
+		}
+		assistant := ojson.GetBytesNoCopy(out, "messages.1.content")
+		if got := assistant.Get("2.type").String(); got != "web_search_tool_result" {
+			t.Fatalf("messages.1.content.2.type = %q, want web_search_tool_result: %s", got, assistant.Raw)
+		}
+		if got := assistant.Get("2.content.#").Int(); got != 0 {
+			t.Fatalf("messages.1.content.2.content.# = %d, want 0", got)
+		}
+		textBlock := assistant.Get("4")
+		if got := textBlock.Get("type").String(); got != "text" {
+			t.Fatalf("messages.1.content.4.type = %q, want text: %s", got, assistant.Raw)
+		}
+		if got := textBlock.Get("text").String(); got != "Cited answer." {
+			t.Fatalf("messages.1.content.4.text = %q, want %q", got, "Cited answer.")
+		}
+		if citations := textBlock.Get("citations"); citations.Exists() {
+			t.Fatalf("expected citations to be dropped when web_search_tool_result has no results, got: %s", citations.Raw)
+		}
+	})
+
+	t.Run("results without encrypted_content also drop citations", func(t *testing.T) {
+		raw := responsesRequestFromItems(
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","action":{"type":"search","query":"q"},"results":[{"title":"T","url":"https://example.com/a"}]}`,
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Cited answer.","annotations":[{"type":"web_search_result_location","url":"https://example.com/a","title":"A","cited_text":"Cited answer.","encrypted_index":"IDX_A"}]}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"follow up"}]}`,
+		)
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", raw, false)
+		textBlock := ojson.GetBytesNoCopy(out, "messages.1.content.2")
+		if got := textBlock.Get("text").String(); got != "Cited answer." {
+			t.Fatalf("messages.1.content.2.text = %q, want %q", got, "Cited answer.")
+		}
+		if citations := textBlock.Get("citations"); citations.Exists() {
+			t.Fatalf("expected citations to be dropped when results degrade to empty, got: %s", citations.Raw)
+		}
+	})
+
+	t.Run("interleaved client tool call within same assistant turn drops unbacked citations", func(t *testing.T) {
+		raw := responsesRequestFromItems(
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","action":{"type":"search","query":"q"}}`,
+			`{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"}`,
+			`{"type":"function_call_output","call_id":"call_1","output":"ok"}`,
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"After tool.","annotations":[{"type":"web_search_result_location","url":"https://example.com/a","title":"A","cited_text":"After tool.","encrypted_index":"IDX_A"}]}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"follow up"}]}`,
+		)
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", raw, false)
+		msg3Content := ojson.GetBytesNoCopy(out, "messages.3.content")
+		text := msg3Content.String()
+		if msg3Content.IsArray() {
+			text = msg3Content.Get("0.text").String()
+		}
+		if text != "After tool." {
+			t.Fatalf("messages.3 text = %q, want %q: %s", text, "After tool.", ojson.GetBytesNoCopy(out, "messages.3").Raw)
+		}
+		if citations := msg3Content.Get("0.citations"); citations.Exists() {
+			t.Fatalf("expected citations after interleaved tool_result to be dropped, got: %s", citations.Raw)
+		}
+	})
+
+	t.Run("later turn with results keeps its citations after earlier turn dropped theirs", func(t *testing.T) {
+		raw := responsesRequestFromItems(
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"q1"}]}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","action":{"type":"search","query":"q1"}}`,
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Turn 1 answer.","annotations":[{"type":"web_search_result_location","url":"https://example.com/1","title":"1","cited_text":"Turn 1 answer.","encrypted_index":"IDX_1"}]}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"q2"}]}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_2","status":"completed","action":{"type":"search","query":"q2"},"results":[{"title":"2","url":"https://example.com/2","encrypted_content":"ENC_2"}]}`,
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Turn 2 answer.","annotations":[{"type":"web_search_result_location","url":"https://example.com/2","title":"2","cited_text":"Turn 2 answer.","encrypted_index":"IDX_2"}]}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"q3"}]}`,
+		)
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", raw, false)
+		if citations := ojson.GetBytesNoCopy(out, "messages.1.content.2.citations"); citations.Exists() {
+			t.Fatalf("turn 1 citations must be dropped, got: %s", citations.Raw)
+		}
+		if got := ojson.GetBytesNoCopy(out, "messages.3.content.2.citations.0.encrypted_index").String(); got != "IDX_2" {
+			t.Fatalf("turn 2 citation encrypted_index = %q, want IDX_2: %s", got, ojson.GetBytesNoCopy(out, "messages.3").Raw)
+		}
+	})
+
+	t.Run("multiple searches in one turn drop citations when any search lacks results", func(t *testing.T) {
+		raw := responsesRequestFromItems(
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","action":{"type":"search","query":"q1"},"results":[{"title":"1","url":"https://example.com/1","encrypted_content":"ENC_1"}]}`,
+			`{"type":"web_search_call","id":"ws_srvtoolu_2","status":"completed","action":{"type":"search","query":"q2"}}`,
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Combined answer.","annotations":[{"type":"web_search_result_location","url":"https://example.com/2","title":"2","cited_text":"Combined answer.","encrypted_index":"IDX_2"}]}]}`,
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}`,
+		)
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-opus-5-5", raw, false)
+		if citations := ojson.GetBytesNoCopy(out, "messages.1.content.4.citations"); citations.Exists() {
+			t.Fatalf("expected citations to be dropped when one search in turn has no results, got: %s", citations.Raw)
+		}
+		if got := ojson.GetBytesNoCopy(out, "messages.1.content.4.text").String(); got != "Combined answer." {
+			t.Fatalf("expected text to be preserved, got %q", got)
+		}
+	})
 }

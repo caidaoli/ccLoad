@@ -14,8 +14,7 @@ import (
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ConvertClaudeRequestToOpenAI parses and transforms an Anthropic API request into OpenAI Chat Completions API format.
@@ -40,43 +39,43 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
 
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 
 	// Model mapping
-	out, _ = sjson.SetBytes(out, "model", modelName)
+	out, _ = ojson.SetBytes(out, "model", modelName)
 
 	// Max tokens
 	if maxTokens := root.Get("max_tokens"); maxTokens.Exists() {
-		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
+		out, _ = ojson.SetBytes(out, "max_tokens", maxTokens.Int())
 	}
 
 	// Temperature
 	if temp := root.Get("temperature"); temp.Exists() {
-		out, _ = sjson.SetBytes(out, "temperature", temp.Float())
+		out, _ = ojson.SetBytes(out, "temperature", temp.Float())
 	} else if topP := root.Get("top_p"); topP.Exists() { // Top P
-		out, _ = sjson.SetBytes(out, "top_p", topP.Float())
+		out, _ = ojson.SetBytes(out, "top_p", topP.Float())
 	}
 
 	// Stop sequences -> stop
 	if stopSequences := root.Get("stop_sequences"); stopSequences.Exists() {
 		if stopSequences.IsArray() {
 			var stops []string
-			stopSequences.ForEach(func(_, value gjson.Result) bool {
+			stopSequences.ForEach(func(_, value ojson.Result) bool {
 				stops = append(stops, value.String())
 				return true
 			})
 			if len(stops) > 0 {
-				out, _ = sjson.SetBytes(out, "stop", stops)
+				out, _ = ojson.SetBytes(out, "stop", stops)
 			}
 		}
 	}
 
 	// Stream
-	out, _ = sjson.SetBytes(out, "stream", stream)
+	out, _ = ojson.SetBytes(out, "stream", stream)
 
 	// Thinking: Convert Claude thinking.budget_tokens and output_config.effort to OpenAI reasoning_effort
 	effort := ""
-	if v := root.Get("output_config.effort"); v.Exists() && v.Type == gjson.String {
+	if v := root.Get("output_config.effort"); v.Exists() && v.Type == ojson.String {
 		effort = strings.ToLower(strings.TrimSpace(v.String()))
 	}
 	if thinkingConfig := root.Get("thinking"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
@@ -86,35 +85,37 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				if budgetTokens := thinkingConfig.Get("budget_tokens"); budgetTokens.Exists() {
 					budget := int(budgetTokens.Int())
 					if mappedEffort, ok := thinking.ConvertBudgetToModelLevel(budget, modelName, "openai"); ok {
-						out, _ = sjson.SetBytes(out, "reasoning_effort", mappedEffort)
+						out, _ = ojson.SetBytes(out, "reasoning_effort", mappedEffort)
 					}
 				} else if effort != "" {
 					// Some Claude-compatible clients pair manual thinking with output_config.effort.
 					// Preserve that explicit level when there is no legacy token budget to map.
-					out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+					out, _ = ojson.SetBytes(out, "reasoning_effort", effort)
 				} else {
 					// No budget_tokens or explicit effort specified; preserve the enabled-thinking default.
 					if mappedEffort, ok := thinking.ConvertBudgetToLevel(-1); ok && mappedEffort != "" {
-						out, _ = sjson.SetBytes(out, "reasoning_effort", mappedEffort)
+						out, _ = ojson.SetBytes(out, "reasoning_effort", mappedEffort)
 					}
 				}
 			case "adaptive", "auto":
 				// Adaptive thinking can carry an explicit effort in output_config.effort (Claude 4.6).
 				// Pass through directly; ApplyThinking handles clamping to target model's levels.
 				if effort != "" {
-					out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+					out, _ = ojson.SetBytes(out, "reasoning_effort", effort)
 				} else {
-					out, _ = sjson.SetBytes(out, "reasoning_effort", string(thinking.LevelXHigh))
+					out, _ = ojson.SetBytes(out, "reasoning_effort", string(thinking.LevelXHigh))
 				}
 			case "disabled":
 				if mappedEffort, ok := thinking.ConvertBudgetToLevel(0); ok && mappedEffort != "" {
-					out, _ = sjson.SetBytes(out, "reasoning_effort", mappedEffort)
+					out, _ = ojson.SetBytes(out, "reasoning_effort", mappedEffort)
 				}
 			}
 		}
 	} else if !thinkingConfig.Exists() && effort != "" {
-		out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+		out, _ = ojson.SetBytes(out, "reasoning_effort", effort)
 	}
+
+	reasoningActive := isClaudeRequestReasoningActive(ojson.GetBytes(out, "reasoning_effort"), modelName, root.Get("model").String())
 
 	// Process messages and system.
 	messageCapacity := root.Get("messages.#").Int()
@@ -125,21 +126,21 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	// Handle system message first.
 	systemContentItems := make([][]byte, 0, 2)
-	appendSystemContent := func(content gjson.Result) {
+	appendSystemContent := func(content ojson.Result) {
 		if !content.Exists() {
 			return
 		}
-		if content.Type == gjson.String {
+		if content.Type == ojson.String {
 			if content.String() == "" || util.IsClaudeCodeAttributionSystemText(content.String()) {
 				return
 			}
 			oldSystem := []byte(`{"type":"text","text":""}`)
-			oldSystem, _ = sjson.SetBytes(oldSystem, "text", content.String())
+			oldSystem, _ = ojson.SetBytes(oldSystem, "text", content.String())
 			systemContentItems = append(systemContentItems, oldSystem)
 			return
 		}
 		if content.IsArray() {
-			content.ForEach(func(_, item gjson.Result) bool {
+			content.ForEach(func(_, item ojson.Result) bool {
 				systemContentItems = append(systemContentItems, convertClaudeContentParts(item, nil)...)
 				return true
 			})
@@ -152,24 +153,24 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Only add system message if it has content.
 	if len(systemContentItems) > 0 {
 		systemMessage := []byte(`{"role":"system","content":[]}`)
-		systemMessage, _ = sjson.SetRawBytes(systemMessage, "content", translatorcommon.JoinRawArray(systemContentItems))
+		systemMessage, _ = ojson.SetRawBytes(systemMessage, "content", translatorcommon.JoinRawArray(systemContentItems))
 		messageItems = append(messageItems, systemMessage)
 	}
 
 	// Process Anthropic messages
-	var midConversationToolDefs []gjson.Result
+	var midConversationToolDefs []ojson.Result
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
 		var pendingToolUseIDs []string
 		var pendingSystemReminders [][]byte
 		toolNameByID := make(map[string]string)
 
-		messages.ForEach(func(_, message gjson.Result) bool {
+		messages.ForEach(func(_, message ojson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
 			if role == "system" {
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(contentResult); ok {
 					msgJSON := []byte(`{"role":"user","content":[{"type":"text","text":""}]}`)
-					msgJSON, _ = sjson.SetBytes(msgJSON, "content.0.text", reminderText)
+					msgJSON, _ = ojson.SetBytes(msgJSON, "content.0.text", reminderText)
 					if len(pendingToolUseIDs) > 0 {
 						pendingSystemReminders = append(pendingSystemReminders, msgJSON)
 					} else {
@@ -177,7 +178,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					}
 				}
 				if contentResult.IsArray() {
-					contentResult.ForEach(func(_, part gjson.Result) bool {
+					contentResult.ForEach(func(_, part ojson.Result) bool {
 						if part.Get("type").String() != "tool_addition" {
 							return true
 						}
@@ -205,7 +206,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				var toolCalls []interface{}
 				toolResults := make([][]byte, 0) // Collect tool_result messages to emit after the main message
 
-				contentResult.ForEach(func(_, part gjson.Result) bool {
+				contentResult.ForEach(func(_, part ojson.Result) bool {
 					partType := part.Get("type").String()
 
 					switch partType {
@@ -245,32 +246,32 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 								}
 							}
 							toolCallJSON := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
-							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "id", toolUseID)
-							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.name", toolName)
+							toolCallJSON, _ = ojson.SetBytes(toolCallJSON, "id", toolUseID)
+							toolCallJSON, _ = ojson.SetBytes(toolCallJSON, "function.name", toolName)
 
 							// Convert input to arguments JSON string
 							if input := part.Get("input"); input.Exists() {
-								toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.arguments", input.Raw)
+								toolCallJSON, _ = ojson.SetBytes(toolCallJSON, "function.arguments", input.Raw)
 							} else {
-								toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.arguments", "{}")
+								toolCallJSON, _ = ojson.SetBytes(toolCallJSON, "function.arguments", "{}")
 							}
 
-							toolCalls = append(toolCalls, gjson.ParseBytes(toolCallJSON).Value())
+							toolCalls = append(toolCalls, ojson.ParseBytes(toolCallJSON).Value())
 						}
 
 					case "tool_result":
 						// Collect tool_result to emit after the main message (ensures tool results follow tool_calls)
 						toolUseID := part.Get("tool_use_id").String()
 						toolResultJSON := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
-						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "tool_call_id", toolUseID)
+						toolResultJSON, _ = ojson.SetBytes(toolResultJSON, "tool_call_id", toolUseID)
 						toolResultContent, toolResultContentRaw := convertClaudeToolResultContent(part.Get("content"))
 						if toolResultContentRaw {
-							toolResultJSON, _ = sjson.SetRawBytes(toolResultJSON, "content", []byte(toolResultContent))
+							toolResultJSON, _ = ojson.SetRawBytes(toolResultJSON, "content", []byte(toolResultContent))
 						} else {
-							toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "content", toolResultContent)
+							toolResultJSON, _ = ojson.SetBytes(toolResultJSON, "content", toolResultContent)
 						}
 						if toolName := toolNameByID[toolUseID]; toolName != "" {
-							toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "name", toolName)
+							toolResultJSON, _ = ojson.SetBytes(toolResultJSON, "name", toolName)
 						}
 						toolResults = append(toolResults, toolResultJSON)
 					}
@@ -308,20 +309,25 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 						// Add content (as array if we have items, empty string if reasoning-only)
 						if hasContent {
-							msgJSON, _ = sjson.SetRawBytes(msgJSON, "content", translatorcommon.JoinRawArray(contentItems))
+							msgJSON, _ = ojson.SetRawBytes(msgJSON, "content", translatorcommon.JoinRawArray(contentItems))
 						} else {
 							// Ensure content field exists for OpenAI compatibility
-							msgJSON, _ = sjson.SetBytes(msgJSON, "content", "")
+							msgJSON, _ = ojson.SetBytes(msgJSON, "content", "")
 						}
 
 						// Add reasoning_content if present
 						if hasReasoning {
-							msgJSON, _ = sjson.SetBytes(msgJSON, "reasoning_content", reasoningContent)
+							msgJSON, _ = ojson.SetBytes(msgJSON, "reasoning_content", reasoningContent)
+						} else if hasToolCalls && preserveThinkingBlocks && reasoningActive {
+							// Assistant turn with tool_calls but no replayable thinking text.
+							// Compat thinking upstreams (DeepSeek, Moonshot/Kimi) require
+							// reasoning_content to be present on such messages when reasoning is active.
+							msgJSON, _ = ojson.SetBytes(msgJSON, "reasoning_content", " ")
 						}
 
 						// Add tool_calls if present (in same message as content)
 						if hasToolCalls {
-							msgJSON, _ = sjson.SetBytes(msgJSON, "tool_calls", toolCalls)
+							msgJSON, _ = ojson.SetBytes(msgJSON, "tool_calls", toolCalls)
 						}
 
 						messageItems = append(messageItems, msgJSON)
@@ -331,18 +337,18 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					// If the message only contains tool_results (no text/image), we still processed them above
 					if hasContent {
 						msgJSON := []byte(`{"role":""}`)
-						msgJSON, _ = sjson.SetBytes(msgJSON, "role", role)
+						msgJSON, _ = ojson.SetBytes(msgJSON, "role", role)
 
-						msgJSON, _ = sjson.SetRawBytes(msgJSON, "content", translatorcommon.JoinRawArray(contentItems))
+						msgJSON, _ = ojson.SetRawBytes(msgJSON, "content", translatorcommon.JoinRawArray(contentItems))
 						messageItems = append(messageItems, msgJSON)
 					}
 				}
 
-			} else if contentResult.Exists() && contentResult.Type == gjson.String {
+			} else if contentResult.Exists() && contentResult.Type == ojson.String {
 				// Simple string content
 				msgJSON := []byte(`{"role":"","content":""}`)
-				msgJSON, _ = sjson.SetBytes(msgJSON, "role", role)
-				msgJSON, _ = sjson.SetBytes(msgJSON, "content", contentResult.String())
+				msgJSON, _ = ojson.SetBytes(msgJSON, "role", role)
+				msgJSON, _ = ojson.SetBytes(msgJSON, "content", contentResult.String())
 				messageItems = append(messageItems, msgJSON)
 			}
 
@@ -366,7 +372,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		toolIndexByName = make(map[string]int)
 	}
 	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
-		tools.ForEach(func(_, tool gjson.Result) bool {
+		tools.ForEach(func(_, tool ojson.Result) bool {
 			openAIToolJSON := convertClaudeToolToOpenAI(tool)
 			if toolIndexByName != nil {
 				if name := tool.Get("name").String(); name != "" {
@@ -388,60 +394,60 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 	if len(toolItems) > 0 {
-		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(toolItems))
+		out, _ = ojson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(toolItems))
 	}
 
 	// Tool choice mapping - convert Anthropic tool_choice to OpenAI format
-	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() && toolChoice.Type != gjson.Null {
+	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() && toolChoice.Type != ojson.Null {
 		choiceType := toolChoice.Get("type").String()
-		if choiceType == "" && toolChoice.Type == gjson.String {
+		if choiceType == "" && toolChoice.Type == ojson.String {
 			choiceType = toolChoice.String()
 		}
 		switch choiceType {
 		case "auto":
-			out, _ = sjson.SetBytes(out, "tool_choice", "auto")
+			out, _ = ojson.SetBytes(out, "tool_choice", "auto")
 		case "any":
-			out, _ = sjson.SetBytes(out, "tool_choice", "required")
+			out, _ = ojson.SetBytes(out, "tool_choice", "required")
 		case "none":
-			out, _ = sjson.SetBytes(out, "tool_choice", "none")
+			out, _ = ojson.SetBytes(out, "tool_choice", "none")
 		case "tool":
 			// Specific tool choice
 			toolName := toolChoice.Get("name").String()
 			if toolName != "" {
 				toolChoiceJSON := []byte(`{"type":"function","function":{"name":""}}`)
-				toolChoiceJSON, _ = sjson.SetBytes(toolChoiceJSON, "function.name", toolName)
-				out, _ = sjson.SetRawBytes(out, "tool_choice", toolChoiceJSON)
+				toolChoiceJSON, _ = ojson.SetBytes(toolChoiceJSON, "function.name", toolName)
+				out, _ = ojson.SetRawBytes(out, "tool_choice", toolChoiceJSON)
 			} else {
-				out, _ = sjson.SetBytes(out, "tool_choice", "none")
+				out, _ = ojson.SetBytes(out, "tool_choice", "none")
 			}
 		default:
 			// Fail closed: unrecognized tool_choice values must not turn into permission
-			out, _ = sjson.SetBytes(out, "tool_choice", "none")
+			out, _ = ojson.SetBytes(out, "tool_choice", "none")
 		}
 
-		if disableParallel := toolChoice.Get("disable_parallel_tool_use"); disableParallel.Type == gjson.True {
-			out, _ = sjson.SetBytes(out, "parallel_tool_calls", false)
+		if disableParallel := toolChoice.Get("disable_parallel_tool_use"); disableParallel.Type == ojson.True {
+			out, _ = ojson.SetBytes(out, "parallel_tool_calls", false)
 		}
 	}
 
 	// Handle user parameter (for tracking)
 	if user := root.Get("user"); user.Exists() {
-		out, _ = sjson.SetBytes(out, "user", user.String())
+		out, _ = ojson.SetBytes(out, "user", user.String())
 	}
 
 	return out, drops.Err()
 }
 
-func convertClaudeToolToOpenAI(tool gjson.Result) []byte {
+func convertClaudeToolToOpenAI(tool ojson.Result) []byte {
 	openAIToolJSON := []byte(`{"type":"function","function":{"name":"","description":""}}`)
-	openAIToolJSON, _ = sjson.SetBytes(openAIToolJSON, "function.name", tool.Get("name").String())
-	openAIToolJSON, _ = sjson.SetBytes(openAIToolJSON, "function.description", tool.Get("description").String())
+	openAIToolJSON, _ = ojson.SetBytes(openAIToolJSON, "function.name", tool.Get("name").String())
+	openAIToolJSON, _ = ojson.SetBytes(openAIToolJSON, "function.description", tool.Get("description").String())
 
 	// Convert Anthropic input_schema to OpenAI function parameters
-	if inputSchema := tool.Get("input_schema"); inputSchema.Exists() && inputSchema.Type != gjson.Null {
-		openAIToolJSON, _ = sjson.SetBytes(openAIToolJSON, "function.parameters", normalizeObjectSchemaProperties(inputSchema.Value()))
+	if inputSchema := tool.Get("input_schema"); inputSchema.Exists() && inputSchema.Type != ojson.Null {
+		openAIToolJSON, _ = ojson.SetBytes(openAIToolJSON, "function.parameters", normalizeObjectSchemaProperties(inputSchema.Value()))
 	} else {
-		openAIToolJSON, _ = sjson.SetRawBytes(openAIToolJSON, "function.parameters", []byte(`{"type":"object","properties":{}}`))
+		openAIToolJSON, _ = ojson.SetRawBytes(openAIToolJSON, "function.parameters", []byte(`{"type":"object","properties":{}}`))
 	}
 	return openAIToolJSON
 }
@@ -518,7 +524,38 @@ func normalizeObjectSchemaProperties(schema any) any {
 	}
 }
 
-func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result, preserveThinkingBlocks ...bool) bool {
+func isClaudeRequestReasoningActive(effortRes ojson.Result, modelName, payloadModel string) bool {
+	if active, ok := isThinkingSuffixActive(modelName); ok {
+		return active
+	}
+	if active, ok := isThinkingSuffixActive(payloadModel); ok {
+		return active
+	}
+	if !effortRes.Exists() {
+		return false
+	}
+	resolvedEffort := strings.ToLower(strings.TrimSpace(effortRes.String()))
+	return resolvedEffort != "" && resolvedEffort != string(thinking.LevelNone) && resolvedEffort != "0" && resolvedEffort != "false"
+}
+
+func isThinkingSuffixActive(model string) (bool, bool) {
+	suffix := thinking.ParseSuffix(strings.TrimSpace(model))
+	if !suffix.HasSuffix {
+		return false, false
+	}
+	if mode, ok := thinking.ParseSpecialSuffix(suffix.RawSuffix); ok {
+		return mode != thinking.ModeNone, true
+	}
+	if budget, ok := thinking.ParseNumericSuffix(suffix.RawSuffix); ok {
+		return budget > 0, true
+	}
+	if level, ok := thinking.ParseLevelSuffix(suffix.RawSuffix); ok {
+		return level != "" && level != thinking.LevelNone, true
+	}
+	return false, false
+}
+
+func shouldMapClaudeThinkingToGPTReasoning(part ojson.Result, preserveThinkingBlocks ...bool) bool {
 	preserveThinking := len(preserveThinkingBlocks) > 0 && preserveThinkingBlocks[0]
 	if preserveThinking {
 		return true
@@ -532,7 +569,7 @@ func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result, preserveThinkingBl
 	return ok
 }
 
-func convertClaudeContentPart(part gjson.Result) (string, bool) {
+func convertClaudeContentPart(part ojson.Result) (string, bool) {
 	partType := part.Get("type").String()
 
 	switch partType {
@@ -542,7 +579,7 @@ func convertClaudeContentPart(part gjson.Result) (string, bool) {
 			return "", false
 		}
 		textContent := []byte(`{"type":"text","text":""}`)
-		textContent, _ = sjson.SetBytes(textContent, "text", text)
+		textContent, _ = ojson.SetBytes(textContent, "text", text)
 		return string(textContent), true
 
 	case "image":
@@ -574,7 +611,7 @@ func convertClaudeContentPart(part gjson.Result) (string, bool) {
 		}
 
 		imageContent := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-		imageContent, _ = sjson.SetBytes(imageContent, "image_url.url", imageURL)
+		imageContent, _ = ojson.SetBytes(imageContent, "image_url.url", imageURL)
 
 		return string(imageContent), true
 
@@ -589,7 +626,7 @@ func convertClaudeContentPart(part gjson.Result) (string, bool) {
 // convertClaudeContentParts converts a Claude content block into OpenAI parts.
 // Text-source and content-source documents expand into text and image parts.
 // onDrop, when set, reports the block (or a nested image) that cannot be sent.
-func convertClaudeContentParts(part gjson.Result, onDrop func(string)) [][]byte {
+func convertClaudeContentParts(part ojson.Result, onDrop func(string)) [][]byte {
 	if part.Get("type").String() == "document" {
 		if docText, ok := translatorcommon.ClaudeDocumentTextBlock(part); ok {
 			return [][]byte{openAITextPart(docText)}
@@ -602,7 +639,7 @@ func convertClaudeContentParts(part gjson.Result, onDrop func(string)) [][]byte 
 		if translatorcommon.ExpandClaudeContentDocument(
 			part,
 			func(text string) { items = append(items, openAITextPart(text)) },
-			func(img gjson.Result) ([]byte, bool) {
+			func(img ojson.Result) ([]byte, bool) {
 				contentItem, ok := convertClaudeContentPart(img)
 				return []byte(contentItem), ok
 			},
@@ -623,7 +660,7 @@ func convertClaudeContentParts(part gjson.Result, onDrop func(string)) [][]byte 
 
 func openAITextPart(text string) []byte {
 	textContent := []byte(`{"type":"text","text":""}`)
-	textContent, _ = sjson.SetBytes(textContent, "text", text)
+	textContent, _ = ojson.SetBytes(textContent, "text", text)
 	return textContent
 }
 
@@ -634,7 +671,7 @@ const toolResultUnsupportedDocumentPlaceholder = "[Unsupported document content]
 // convertClaudeFilePartToOpenAI emits an OpenAI file part. Inline base64 bytes
 // become a data URL; ccLoad also forwards a url as file_url and a file id as
 // file_id. Anything else stays unconverted and the caller reports it.
-func convertClaudeFilePartToOpenAI(part gjson.Result) (string, bool) {
+func convertClaudeFilePartToOpenAI(part ojson.Result) (string, bool) {
 	source := part.Get("source")
 	fileContent := []byte(`{"type":"file","file":{}}`)
 	switch source.Get("type").String() {
@@ -647,19 +684,19 @@ func convertClaudeFilePartToOpenAI(part gjson.Result) (string, bool) {
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		fileContent, _ = sjson.SetBytes(fileContent, "file.file_data", "data:"+mimeType+";base64,"+base64.StdEncoding.EncodeToString(data))
+		fileContent, _ = ojson.SetBytes(fileContent, "file.file_data", "data:"+mimeType+";base64,"+base64.StdEncoding.EncodeToString(data))
 	case "url":
 		url := source.Get("url").String()
 		if url == "" {
 			return "", false
 		}
-		fileContent, _ = sjson.SetBytes(fileContent, "file.file_url", url)
+		fileContent, _ = ojson.SetBytes(fileContent, "file.file_url", url)
 	case "file":
 		fileID := source.Get("file_id").String()
 		if fileID == "" {
 			return "", false
 		}
-		fileContent, _ = sjson.SetBytes(fileContent, "file.file_id", fileID)
+		fileContent, _ = ojson.SetBytes(fileContent, "file.file_id", fileID)
 	default:
 		return "", false
 	}
@@ -668,17 +705,17 @@ func convertClaudeFilePartToOpenAI(part gjson.Result) (string, bool) {
 		filename = part.Get("filename").String()
 	}
 	if filename != "" {
-		fileContent, _ = sjson.SetBytes(fileContent, "file.filename", filename)
+		fileContent, _ = ojson.SetBytes(fileContent, "file.filename", filename)
 	}
 	return string(fileContent), true
 }
 
-func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
+func convertClaudeToolResultContent(content ojson.Result) (string, bool) {
 	if !content.Exists() {
 		return "", false
 	}
 
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		return content.String(), false
 	}
 
@@ -686,9 +723,9 @@ func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
 		var parts []string
 		contentItems := make([][]byte, 0, 4)
 		hasStructuredPart := false
-		content.ForEach(func(_, item gjson.Result) bool {
+		content.ForEach(func(_, item ojson.Result) bool {
 			switch {
-			case item.Type == gjson.String:
+			case item.Type == ojson.String:
 				text := item.String()
 				parts = append(parts, text)
 				contentItems = append(contentItems, openAITextPart(text))
@@ -702,8 +739,8 @@ func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
 					docItems = [][]byte{openAITextPart(toolResultUnsupportedDocumentPlaceholder)}
 				}
 				for _, docItem := range docItems {
-					if gjson.GetBytes(docItem, "type").String() == "text" {
-						parts = append(parts, gjson.GetBytes(docItem, "text").String())
+					if ojson.GetBytes(docItem, "type").String() == "text" {
+						parts = append(parts, ojson.GetBytes(docItem, "text").String())
 					} else {
 						hasStructuredPart = true
 					}
@@ -717,7 +754,7 @@ func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
 				} else {
 					parts = append(parts, item.Raw)
 				}
-			case item.IsObject() && item.Get("text").Exists() && item.Get("text").Type == gjson.String:
+			case item.IsObject() && item.Get("text").Exists() && item.Get("text").Type == ojson.String:
 				parts = append(parts, item.Get("text").String())
 			default:
 				parts = append(parts, item.Raw)
@@ -738,9 +775,9 @@ func convertClaudeToolResultContent(content gjson.Result) (string, bool) {
 
 	if content.IsObject() {
 		if blockType := content.Get("type").String(); blockType == "image" || blockType == "document" {
-			return convertClaudeToolResultContent(gjson.Parse("[" + content.Raw + "]"))
+			return convertClaudeToolResultContent(ojson.Parse("[" + content.Raw + "]"))
 		}
-		if text := content.Get("text"); text.Exists() && text.Type == gjson.String {
+		if text := content.Get("text"); text.Exists() && text.Type == ojson.String {
 			return text.String(), false
 		}
 		return content.Raw, false

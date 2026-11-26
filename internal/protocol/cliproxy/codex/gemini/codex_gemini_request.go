@@ -15,8 +15,7 @@ import (
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // ConvertGeminiRequestToCodex parses and transforms a Gemini API request into Codex API format.
@@ -41,7 +40,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	// Base template
 	out := []byte(`{"model":"","instructions":"","input":[]}`)
 
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 	inputItems := translatorcommon.NewRawArrayItems(root.Get("contents.#").Int())
 
 	declarations := translatorcommon.GeminiFunctionDeclarations(root)
@@ -60,7 +59,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	emittedThoughtSignatures := map[string]bool{}
 	signatureTargetModel := translatorcommon.ResolveCodexReplayTargetModel(modelName, inputRawJSON)
 
-	getGeminiCallID := func(value gjson.Result) string {
+	getGeminiCallID := func(value ojson.Result) string {
 		if callID := strings.TrimSpace(value.Get("id").String()); callID != "" {
 			return callID
 		}
@@ -80,9 +79,9 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	}
 
 	// Model
-	out, _ = sjson.SetBytes(out, "model", modelName)
+	out, _ = ojson.SetBytes(out, "model", modelName)
 	if serviceTier := normalizeGeminiCodexServiceTier(root.Get("service_tier")); serviceTier != "" {
-		out, _ = sjson.SetBytes(out, "service_tier", serviceTier)
+		out, _ = ojson.SetBytes(out, "service_tier", serviceTier)
 	}
 
 	format, outputInstruction, err := translatorcommon.GeminiResponseFormat(root, true)
@@ -90,11 +89,11 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		return nil, err
 	}
 	if format != nil {
-		out, _ = sjson.SetRawBytes(out, "text.format", format)
+		out, _ = ojson.SetRawBytes(out, "text.format", format)
 	}
 	// System instruction maps to the native Responses instructions field.
 	instructions := translatorcommon.GeminiSystemInstructionText(root, "system_instruction", "systemInstruction")
-	if gjson.GetBytes(format, "type").Str == "json_object" {
+	if ojson.GetBytes(format, "type").Str == "json_object" {
 		outputInstruction = translatorcommon.GeminiJSONObjectInstruction
 	}
 	if outputInstruction != "" {
@@ -104,7 +103,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		instructions += outputInstruction
 	}
 	if instructions != "" {
-		out, _ = sjson.SetBytes(out, "instructions", instructions)
+		out, _ = ojson.SetBytes(out, "instructions", instructions)
 	}
 
 	// Contents -> messages and function calls/results
@@ -120,7 +119,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				return
 			}
 			msg := []byte(`{"type":"message","role":"user","content":[]}`)
-			msg, _ = sjson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(buildCodexGeminiToolAudioRelayItems(pendingToolAudioRelay)))
+			msg, _ = ojson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(buildCodexGeminiToolAudioRelayItems(pendingToolAudioRelay)))
 			inputItems = append(inputItems, msg)
 			pendingToolAudioRelay = nil
 		}
@@ -150,18 +149,18 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					if rawSignature := geminiPartThoughtSignature(p); rawSignature != "" {
 						if normalizedSignature, ok := normalizedGeminiThoughtSignatureForCodexTarget(signatureTargetModel, rawSignature); ok && !emittedThoughtSignatures[normalizedSignature] {
 							reasoningItem := []byte(`{"type":"reasoning","encrypted_content":"","summary":[]}`)
-							reasoningItem, _ = sjson.SetBytes(reasoningItem, "encrypted_content", normalizedSignature)
+							reasoningItem, _ = ojson.SetBytes(reasoningItem, "encrypted_content", normalizedSignature)
 							summaryParts := pendingThoughtSummaryParts
 							pendingThoughtSummaryParts = nil
 							if translatorcommon.IsGeminiThoughtPart(p) {
 								if thoughtText := p.Get("text").String(); thoughtText != "" {
 									summaryPart := []byte(`{"type":"summary_text","text":""}`)
-									summaryPart, _ = sjson.SetBytes(summaryPart, "text", thoughtText)
+									summaryPart, _ = ojson.SetBytes(summaryPart, "text", thoughtText)
 									summaryParts = append(summaryParts, summaryPart)
 								}
 							}
 							if len(summaryParts) > 0 {
-								reasoningItem, _ = sjson.SetRawBytes(reasoningItem, "summary", translatorcommon.JoinRawArray(summaryParts))
+								reasoningItem, _ = ojson.SetRawBytes(reasoningItem, "summary", translatorcommon.JoinRawArray(summaryParts))
 							}
 							inputItems = append(inputItems, reasoningItem)
 							emittedThoughtSignatures[normalizedSignature] = true
@@ -171,7 +170,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					} else if translatorcommon.IsGeminiThoughtPart(p) {
 						if thoughtText := p.Get("text").String(); thoughtText != "" {
 							summaryPart := []byte(`{"type":"summary_text","text":""}`)
-							summaryPart, _ = sjson.SetBytes(summaryPart, "text", thoughtText)
+							summaryPart, _ = ojson.SetBytes(summaryPart, "text", thoughtText)
 							pendingThoughtSummaryParts = append(pendingThoughtSummaryParts, summaryPart)
 						}
 					} else {
@@ -190,8 +189,8 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 						partType = "output_text"
 					}
 					part := []byte(`{}`)
-					part, _ = sjson.SetBytes(part, "type", partType)
-					part, _ = sjson.SetBytes(part, "text", t.String())
+					part, _ = ojson.SetBytes(part, "type", partType)
+					part, _ = ojson.SetBytes(part, "text", t.String())
 					inputItems = append(inputItems, codexMessageWithPart(role, part))
 					continue
 				}
@@ -210,10 +209,10 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				if fc := translatorcommon.GeminiPartFunctionCall(p); fc.Exists() {
 					fn := []byte(`{"type":"function_call","arguments":"{}"}`)
 					if name := fc.Get("name"); name.Exists() {
-						fn, _ = sjson.SetBytes(fn, "name", resolveGeminiToolName(shortMap, name.String()))
+						fn, _ = ojson.SetBytes(fn, "name", resolveGeminiToolName(shortMap, name.String()))
 					}
 					if args := fc.Get("args"); args.IsObject() {
-						fn, _ = sjson.SetBytes(fn, "arguments", args.Raw)
+						fn, _ = ojson.SetBytes(fn, "arguments", args.Raw)
 					}
 					// Reuse gateway-provided IDs when present, otherwise generate one for pairing.
 					id := getGeminiCallID(fc)
@@ -221,7 +220,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 						callCounter++
 						id = fmt.Sprintf("call_gemini_%016d", callCounter)
 					}
-					fn, _ = sjson.SetBytes(fn, "call_id", id)
+					fn, _ = ojson.SetBytes(fn, "call_id", id)
 					pendingCallIDs = append(pendingCallIDs, id)
 					inputItems = append(inputItems, fn)
 					pendingTurnCallCount++
@@ -255,7 +254,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 							items:    audioItems,
 						})
 					}
-					fno, _ = sjson.SetBytes(fno, "call_id", id)
+					fno, _ = ojson.SetBytes(fno, "call_id", id)
 					inputItems = append(inputItems, fno)
 					continue
 				}
@@ -274,23 +273,23 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		for _, declaration := range declarations {
 			tool := []byte(`{"type":"function"}`)
 			if name := declaration.Get("name"); name.Exists() {
-				tool, _ = sjson.SetBytes(tool, "name", resolveGeminiToolName(shortMap, name.String()))
+				tool, _ = ojson.SetBytes(tool, "name", resolveGeminiToolName(shortMap, name.String()))
 			}
 			if description := declaration.Get("description"); description.Exists() {
-				tool, _ = sjson.SetBytes(tool, "description", description.String())
+				tool, _ = ojson.SetBytes(tool, "description", description.String())
 			}
 			if parameters := translatorcommon.GeminiConfigObject(declaration, "parameters", "parametersJsonSchema", "parameters_json_schema"); parameters.Exists() {
-				tool, _ = sjson.SetRawBytes(tool, "parameters", cleanGeminiCodexToolParameters(parameters))
+				tool, _ = ojson.SetRawBytes(tool, "parameters", cleanGeminiCodexToolParameters(parameters))
 			}
-			tool, _ = sjson.SetBytes(tool, "strict", false)
+			tool, _ = ojson.SetBytes(tool, "strict", false)
 			tools = append(tools, tool)
 		}
-		out, _ = sjson.SetBytes(out, "tool_choice", "auto")
-		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(tools))
+		out, _ = ojson.SetBytes(out, "tool_choice", "auto")
+		out, _ = ojson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(tools))
 	}
 
 	// Fixed flags aligning with Codex expectations
-	out, _ = sjson.SetBytes(out, "parallel_tool_calls", true)
+	out, _ = ojson.SetBytes(out, "parallel_tool_calls", true)
 	out = setCodexToolChoiceFromGeminiToolConfig(out, mode, allowedNames, shortMap)
 	genConfig := translatorcommon.GeminiConfigObject(root, "generationConfig", "generation_config")
 	maxTokens, hasMaxTokens := translatorcommon.GeminiConfigInt(genConfig, 0, "maxOutputTokens", "max_output_tokens")
@@ -298,7 +297,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		maxTokens, hasMaxTokens = translatorcommon.GeminiConfigInt(root, 0, "maxOutputTokens", "max_output_tokens", "max_tokens")
 	}
 	if hasMaxTokens {
-		out, _ = sjson.SetBytes(out, "max_output_tokens", maxTokens)
+		out, _ = ojson.SetBytes(out, "max_output_tokens", maxTokens)
 	}
 
 	level, budget, hasBudget := translatorcommon.GeminiThinkingConfig(root)
@@ -313,25 +312,25 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		effort = "medium"
 	}
 	if effort != string(thinking.LevelAuto) {
-		out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
+		out, _ = ojson.SetBytes(out, "reasoning.effort", effort)
 	}
 	// Preserve ccLoad's default reasoning summaries unless Gemini opted out.
-	if translatorcommon.GeminiIncludeThoughts(root) != gjson.False {
-		out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
+	if translatorcommon.GeminiIncludeThoughts(root) != ojson.False {
+		out, _ = ojson.SetBytes(out, "reasoning.summary", "auto")
 	}
-	out, _ = sjson.SetBytes(out, "stream", stream)
-	out, _ = sjson.SetBytes(out, "store", false)
-	out, _ = sjson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})
+	out, _ = ojson.SetBytes(out, "stream", stream)
+	out, _ = ojson.SetBytes(out, "store", false)
+	out, _ = ojson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})
 
-	if input := gjson.GetBytes(out, "input"); input.IsArray() && len(input.Array()) == 0 {
-		out, _ = sjson.DeleteBytes(out, "input")
+	if input := ojson.GetBytes(out, "input"); input.IsArray() && len(input.Array()) == 0 {
+		out, _ = ojson.DeleteBytes(out, "input")
 	}
 	return out, nil
 }
 
 // geminiPartThoughtSignature extracts a part's thought signature under either
 // the camelCase or snake_case field spelling.
-func geminiPartThoughtSignature(part gjson.Result) string {
+func geminiPartThoughtSignature(part ojson.Result) string {
 	if signature := strings.TrimSpace(part.Get("thoughtSignature").String()); signature != "" {
 		return signature
 	}
@@ -363,33 +362,33 @@ func normalizedGeminiThoughtSignatureForCodexTarget(modelName, rawSignature stri
 func setCodexToolChoiceFromGeminiToolConfig(out []byte, mode string, allowedNames []string, shortMap map[string]string) []byte {
 	switch mode {
 	case "NONE":
-		out, _ = sjson.SetBytes(out, "tool_choice", "none")
+		out, _ = ojson.SetBytes(out, "tool_choice", "none")
 	case "AUTO":
-		out, _ = sjson.SetBytes(out, "tool_choice", "auto")
+		out, _ = ojson.SetBytes(out, "tool_choice", "auto")
 	case "ANY":
 		switch len(allowedNames) {
 		case 0:
-			out, _ = sjson.SetBytes(out, "tool_choice", "required")
+			out, _ = ojson.SetBytes(out, "tool_choice", "required")
 		case 1:
 			choice := []byte(`{"type":"function","name":""}`)
-			choice, _ = sjson.SetBytes(choice, "name", shortMap[allowedNames[0]])
-			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
+			choice, _ = ojson.SetBytes(choice, "name", shortMap[allowedNames[0]])
+			out, _ = ojson.SetRawBytes(out, "tool_choice", choice)
 		default:
 			choice := []byte(`{"type":"allowed_tools","mode":"required","tools":[]}`)
 			var tools [][]byte
 			for _, name := range allowedNames {
 				tool := []byte(`{"type":"function","name":""}`)
-				tool, _ = sjson.SetBytes(tool, "name", shortMap[name])
+				tool, _ = ojson.SetBytes(tool, "name", shortMap[name])
 				tools = append(tools, tool)
 			}
-			choice, _ = sjson.SetRawBytes(choice, "tools", translatorcommon.JoinRawArray(tools))
-			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
+			choice, _ = ojson.SetRawBytes(choice, "tools", translatorcommon.JoinRawArray(tools))
+			out, _ = ojson.SetRawBytes(out, "tool_choice", choice)
 		}
 	}
 	return out
 }
 
-func geminiToolShortNames(declarations []gjson.Result) map[string]string {
+func geminiToolShortNames(declarations []ojson.Result) map[string]string {
 	var names []string
 	for _, declaration := range declarations {
 		if name := declaration.Get("name"); name.Exists() {
@@ -406,26 +405,26 @@ func resolveGeminiToolName(shortMap map[string]string, name string) string {
 	return shortenNameIfNeeded(name)
 }
 
-func cleanGeminiCodexToolParameters(parameters gjson.Result) []byte {
+func cleanGeminiCodexToolParameters(parameters ojson.Result) []byte {
 	cleaned := []byte(util.NormalizeGeminiToolSchema(parameters.Raw))
 	if parameters.Get("$schema").Exists() {
-		cleaned, _ = sjson.DeleteBytes(cleaned, "$schema")
+		cleaned, _ = ojson.DeleteBytes(cleaned, "$schema")
 	}
-	if additionalProperties := parameters.Get("additionalProperties"); additionalProperties.Type != gjson.False {
-		cleaned, _ = sjson.SetBytes(cleaned, "additionalProperties", false)
+	if additionalProperties := parameters.Get("additionalProperties"); additionalProperties.Type != ojson.False {
+		cleaned, _ = ojson.SetBytes(cleaned, "additionalProperties", false)
 	}
 	return cleaned
 }
 
 func codexMessageWithPart(role string, part []byte) []byte {
 	msg := []byte(`{"type":"message","role":"","content":[]}`)
-	msg, _ = sjson.SetBytes(msg, "role", role)
-	msg, _ = sjson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray([][]byte{part}))
+	msg, _ = ojson.SetBytes(msg, "role", role)
+	msg, _ = ojson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray([][]byte{part}))
 	return msg
 }
 
-func normalizeGeminiCodexServiceTier(serviceTier gjson.Result) string {
-	if !serviceTier.Exists() || serviceTier.Type != gjson.String {
+func normalizeGeminiCodexServiceTier(serviceTier ojson.Result) string {
+	if !serviceTier.Exists() || serviceTier.Type != ojson.String {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(serviceTier.String())) {
@@ -451,7 +450,7 @@ type codexGeminiToolAudioGroup struct {
  */
 func codexInputTextPart(text string) []byte {
 	part := []byte(`{"type":"input_text","text":""}`)
-	part, _ = sjson.SetBytes(part, "text", text)
+	part, _ = ojson.SetBytes(part, "text", text)
 	return part
 }
 
@@ -502,13 +501,13 @@ func buildCodexGeminiToolAudioRelayItems(groups []codexGeminiToolAudioGroup) [][
  * @param v response 字段
  * @return 字段缺失、空对象或空白原文时返回 true
  */
-func isEmptyGeminiCodexResponseObject(v gjson.Result) bool {
+func isEmptyGeminiCodexResponseObject(v ojson.Result) bool {
 	if !v.Exists() {
 		return true
 	}
 	if v.IsObject() {
 		empty := true
-		v.ForEach(func(_, _ gjson.Result) bool {
+		v.ForEach(func(_, _ ojson.Result) bool {
 			empty = false
 			return false
 		})
@@ -522,13 +521,13 @@ func isEmptyGeminiCodexResponseObject(v gjson.Result) bool {
  * @param responseField functionResponse.response 字段
  * @return 仅含 result 时返回 true；带 error 等兄弟字段时返回 false，以便整体转发不丢信息
  */
-func geminiCodexResponseHasOnlyResultKey(responseField gjson.Result) bool {
+func geminiCodexResponseHasOnlyResultKey(responseField ojson.Result) bool {
 	if !responseField.IsObject() {
 		return false
 	}
 	hasResult := false
 	onlyResult := true
-	responseField.ForEach(func(key, _ gjson.Result) bool {
+	responseField.ForEach(func(key, _ ojson.Result) bool {
 		if key.String() == "result" {
 			hasResult = true
 			return true
@@ -546,7 +545,7 @@ func geminiCodexResponseHasOnlyResultKey(responseField gjson.Result) bool {
  * @return 需在本批工具输出之后以用户消息转发的 input_audio 块；function_call_output.output
  *         只接受 input_text/input_image/input_file
  */
-func codexFunctionCallOutputFromGemini(fr gjson.Result) ([]byte, [][]byte) {
+func codexFunctionCallOutputFromGemini(fr ojson.Result) ([]byte, [][]byte) {
 	fno := []byte(`{"type":"function_call_output"}`)
 	res := fr.Get("response.result")
 	resp := fr.Get("response")
@@ -562,7 +561,7 @@ func codexFunctionCallOutputFromGemini(fr gjson.Result) ([]byte, [][]byte) {
 	}
 
 	var nestedItems, relayedAudioItems [][]byte
-	fr.Get("parts").ForEach(func(_, nested gjson.Result) bool {
+	fr.Get("parts").ForEach(func(_, nested ojson.Result) bool {
 		if t := nested.Get("text"); t.Exists() {
 			if strings.TrimSpace(t.String()) != "" {
 				nestedItems = append(nestedItems, codexInputTextPart(t.String()))
@@ -570,7 +569,7 @@ func codexFunctionCallOutputFromGemini(fr gjson.Result) ([]byte, [][]byte) {
 			return true
 		}
 		if contentPart, ok := codexContentPartFromGeminiInlineData(nested); ok {
-			if gjson.GetBytes(contentPart, "type").String() == "input_audio" {
+			if ojson.GetBytes(contentPart, "type").String() == "input_audio" {
 				relayedAudioItems = append(relayedAudioItems, contentPart)
 			} else {
 				nestedItems = append(nestedItems, contentPart)
@@ -589,24 +588,24 @@ func codexFunctionCallOutputFromGemini(fr gjson.Result) ([]byte, [][]byte) {
 			outputItems = append(outputItems, codexInputTextPart(baseText))
 		}
 		outputItems = append(outputItems, nestedItems...)
-		fno, _ = sjson.SetRawBytes(fno, "output", translatorcommon.JoinRawArray(outputItems))
+		fno, _ = ojson.SetRawBytes(fno, "output", translatorcommon.JoinRawArray(outputItems))
 		return fno, relayedAudioItems
 	}
 
 	switch {
 	case resultOnly:
-		fno, _ = sjson.SetBytes(fno, "output", res.String())
+		fno, _ = ojson.SetBytes(fno, "output", res.String())
 	case !isEmptyGeminiCodexResponseObject(resp):
-		fno, _ = sjson.SetBytes(fno, "output", resp.Raw)
+		fno, _ = ojson.SetBytes(fno, "output", resp.Raw)
 	case len(relayedAudioItems) > 0:
-		fno, _ = sjson.SetBytes(fno, "output", "[Tool returned audio content; the audio follows in the next user message.]")
+		fno, _ = ojson.SetBytes(fno, "output", "[Tool returned audio content; the audio follows in the next user message.]")
 	case resp.Exists():
-		fno, _ = sjson.SetBytes(fno, "output", resp.Raw)
+		fno, _ = ojson.SetBytes(fno, "output", resp.Raw)
 	}
 	return fno, relayedAudioItems
 }
 
-func codexContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
+func codexContentPartFromGeminiInlineData(part ojson.Result) ([]byte, bool) {
 	inlineData := part.Get("inlineData")
 	if !inlineData.Exists() {
 		inlineData = part.Get("inline_data")
@@ -626,12 +625,12 @@ func codexContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 	switch {
 	case strings.HasPrefix(lowerMimeType, "image/"):
 		contentPart := []byte(`{"type":"input_image","image_url":""}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "image_url", fmt.Sprintf("data:%s;base64,%s", mimeType, data))
+		contentPart, _ = ojson.SetBytes(contentPart, "image_url", fmt.Sprintf("data:%s;base64,%s", mimeType, data))
 		return contentPart, true
 	case strings.HasPrefix(lowerMimeType, "audio/"):
 		contentPart := []byte(`{"type":"input_audio","input_audio":{"data":"","format":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.data", data)
-		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", codexInputAudioFormatFromMIME(mimeType))
+		contentPart, _ = ojson.SetBytes(contentPart, "input_audio.data", data)
+		contentPart, _ = ojson.SetBytes(contentPart, "input_audio.format", codexInputAudioFormatFromMIME(mimeType))
 		return contentPart, true
 	default:
 		fileData := data
@@ -639,13 +638,13 @@ func codexContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 			fileData = fmt.Sprintf("data:%s;base64,%s", mimeType, data)
 		}
 		contentPart := []byte(`{"type":"input_file","file_data":"","filename":""}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file_data", fileData)
-		contentPart, _ = sjson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
+		contentPart, _ = ojson.SetBytes(contentPart, "file_data", fileData)
+		contentPart, _ = ojson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
 		return contentPart, true
 	}
 }
 
-func codexContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
+func codexContentPartFromGeminiFileData(part ojson.Result) ([]byte, bool) {
 	fileData := part.Get("fileData")
 	if !fileData.Exists() {
 		fileData = part.Get("file_data")
@@ -667,13 +666,13 @@ func codexContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 	lowerMimeType := strings.ToLower(mimeType)
 	if strings.HasPrefix(lowerMimeType, "image/") {
 		contentPart := []byte(`{"type":"input_image","image_url":""}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "image_url", fileURI)
+		contentPart, _ = ojson.SetBytes(contentPart, "image_url", fileURI)
 		return contentPart, true
 	}
 	if strings.HasPrefix(lowerMimeType, "video/") || strings.HasPrefix(lowerMimeType, "application/") || strings.HasPrefix(lowerMimeType, "text/") {
 		contentPart := []byte(`{"type":"input_file","file_url":"","filename":""}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file_url", fileURI)
-		contentPart, _ = sjson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
+		contentPart, _ = ojson.SetBytes(contentPart, "file_url", fileURI)
+		contentPart, _ = ojson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
 		return contentPart, true
 	}
 	fileInfo := "File: " + fileURI
@@ -681,7 +680,7 @@ func codexContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 		fileInfo += " (Type: " + mimeType + ")"
 	}
 	contentPart := []byte(`{"type":"input_text","text":""}`)
-	contentPart, _ = sjson.SetBytes(contentPart, "text", fileInfo)
+	contentPart, _ = ojson.SetBytes(contentPart, "text", fileInfo)
 	return contentPart, true
 }
 

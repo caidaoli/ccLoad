@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func convertGeminiImageStream(t *testing.T, lines ...string) [][]byte {
@@ -25,8 +25,8 @@ func TestConvertGeminiInlineDataImageStream(t *testing.T) {
 		`data: {"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/webp","data":"RklOQUw="}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1120,"totalTokenCount":1123},"responseId":"resp_img"}`,
 	)
 
-	var added, done []gjson.Result
-	var completed gjson.Result
+	var added, done []ojson.Result
+	var completed ojson.Result
 	for _, ev := range events {
 		event, data := parseSSEEvent(t, ev)
 		switch {
@@ -67,7 +67,7 @@ func TestConvertGeminiInlineDataImageStreamPreservesSignature(t *testing.T) {
 	events := convertGeminiImageStream(t,
 		`data: {"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/jpeg","data":"Ymll"},"thoughtSignature":"EjQKDg=="}]},"finishReason":"STOP"}],"responseId":"resp_img_sig"}`,
 	)
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, ev := range events {
 		if event, data := parseSSEEvent(t, ev); event == "response.completed" {
 			completed = data.Get("response")
@@ -89,9 +89,9 @@ func TestConvertGeminiInlineDataImageStreamPreservesSignature(t *testing.T) {
 func TestConvertGeminiInlineDataImageNonStream(t *testing.T) {
 	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"inlineData":{"mimeType":"image/png","data":"RFJBRlQ="}},{"text":"Here it is"},{"inline_data":{"mime_type":"image/png","data":"RklOQUw="}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1120,"totalTokenCount":1123},"responseId":"resp_img"}`)
 	result := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3.1-flash-image", nil, nil, raw, nil)
-	output := gjson.GetBytes(result, "output").Array()
+	output := ojson.GetBytes(result, "output").Array()
 	if len(output) != 2 || output[0].Get("type").String() != "message" || output[1].Get("type").String() != "image_generation_call" {
-		t.Fatalf("output = %s, want message then image_generation_call", gjson.GetBytes(result, "output").Raw)
+		t.Fatalf("output = %s, want message then image_generation_call", ojson.GetBytes(result, "output").Raw)
 	}
 	image := output[1]
 	if image.Get("result").String() != "RklOQUw=" || image.Get("output_format").String() != "png" || image.Get("status").String() != "completed" {
@@ -102,9 +102,9 @@ func TestConvertGeminiInlineDataImageNonStream(t *testing.T) {
 func TestConvertGeminiInlineDataImageNonStreamPreservesSignature(t *testing.T) {
 	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Here it is"},{"inlineData":{"mimeType":"image/jpeg","data":"Ymll"},"thoughtSignature":"EjQKDg=="}]},"finishReason":"STOP"}],"responseId":"resp_img_sig"}`)
 	result := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3-pro-image", nil, nil, raw, nil)
-	output := gjson.GetBytes(result, "output").Array()
+	output := ojson.GetBytes(result, "output").Array()
 	if len(output) != 3 || output[0].Get("type").String() != "message" || output[1].Get("type").String() != "reasoning" || output[2].Get("type").String() != "image_generation_call" {
-		t.Fatalf("output = %s, want message, signature carrier, image", gjson.GetBytes(result, "output").Raw)
+		t.Fatalf("output = %s, want message, signature carrier, image", ojson.GetBytes(result, "output").Raw)
 	}
 	if output[0].Get("content.0.encrypted_content").Exists() || output[0].Get("encrypted_content").Exists() {
 		t.Fatalf("image signature must not bind to the preceding message: %s", output[0].Raw)
@@ -120,7 +120,7 @@ func TestConvertGeminiInlineDataImageNonStreamPreservesSignature(t *testing.T) {
 func TestConvertGeminiInlineDataNonImageIsNotReportedAsImage(t *testing.T) {
 	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"audio/pcm","data":"AAAA"}}]},"finishReason":"STOP"}],"responseId":"resp_audio"}`)
 	result := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-test", nil, nil, raw, nil)
-	if image := gjson.GetBytes(result, `output.#(type=="image_generation_call")`); image.Exists() {
+	if image := ojson.GetBytes(result, `output.#(type=="image_generation_call")`); image.Exists() {
 		t.Fatalf("audio/pcm must not be emitted as image_generation_call: %s", result)
 	}
 

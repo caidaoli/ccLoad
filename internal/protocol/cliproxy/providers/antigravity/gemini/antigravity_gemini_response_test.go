@@ -8,13 +8,13 @@ import (
 
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
-func antigravityAltContext() context.Context {
+func antigravityAltContext(alt string) context.Context {
 	// The converter's public context contract uses this legacy string key.
 	//nolint:staticcheck // keep the test aligned with that contract
-	return context.WithValue(context.Background(), "alt", "")
+	return context.WithValue(context.Background(), "alt", alt)
 }
 
 func TestRestoreUsageMetadata(t *testing.T) {
@@ -86,13 +86,13 @@ func TestConvertAntigravityResponseToGeminiNonStreamRestoresDisambiguatedName(t 
 	raw := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + mapped + `","args":{}}}]}}]}}`)
 
 	out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", original, nil, raw, nil)
-	if got := gjson.GetBytes(out, "candidates.0.content.parts.0.functionCall.name").String(); got != second {
+	if got := ojson.GetBytes(out, "candidates.0.content.parts.0.functionCall.name").String(); got != second {
 		t.Fatalf("functionCall.name = %q, want %q. Output: %s", got, second, out)
 	}
 }
 
 func TestConvertAntigravityResponseToGeminiStream_SynthesizesFinishReasonOnDoneWhenOmitted(t *testing.T) {
-	ctx := antigravityAltContext()
+	ctx := antigravityAltContext("")
 	var param any
 
 	// Pure thinking chunk with 0 output tokens and NO finishReason (reproducing real upstream Antigravity logs)
@@ -101,7 +101,7 @@ func TestConvertAntigravityResponseToGeminiStream_SynthesizesFinishReasonOnDoneW
 	if len(results1) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(results1))
 	}
-	if fr := gjson.GetBytes(results1[0], "candidates.0.finishReason").String(); fr != "" {
+	if fr := ojson.GetBytes(results1[0], "candidates.0.finishReason").String(); fr != "" {
 		t.Fatalf("chunk1 should not have finishReason yet, got %q", fr)
 	}
 
@@ -111,28 +111,28 @@ func TestConvertAntigravityResponseToGeminiStream_SynthesizesFinishReasonOnDoneW
 		t.Fatalf("expected synthetic terminal chunk on [DONE], got %d results", len(doneResults))
 	}
 	synthetic := doneResults[0]
-	if fr := gjson.GetBytes(synthetic, "candidates.0.finishReason").String(); fr != "STOP" {
+	if fr := ojson.GetBytes(synthetic, "candidates.0.finishReason").String(); fr != "STOP" {
 		t.Fatalf("synthetic chunk finishReason = %q, want STOP", fr)
 	}
 	// Upstream terminal chunks always carry a model-role candidate with an empty
 	// text part, so the synthetic chunk mirrors that shape for client compatibility.
-	if role := gjson.GetBytes(synthetic, "candidates.0.content.role").String(); role != "model" {
+	if role := ojson.GetBytes(synthetic, "candidates.0.content.role").String(); role != "model" {
 		t.Fatalf("synthetic chunk content role = %q, want model", role)
 	}
-	if parts := gjson.GetBytes(synthetic, "candidates.0.content.parts"); parts.String() != `[{"text":""}]` {
+	if parts := ojson.GetBytes(synthetic, "candidates.0.content.parts"); parts.String() != `[{"text":""}]` {
 		t.Fatalf("synthetic chunk parts = %s, want [{\"text\":\"\"}]", parts.Raw)
 	}
 	// The last real chunk carries usage, so the synthetic terminal chunk must keep it.
-	if got := gjson.GetBytes(synthetic, "usageMetadata.promptTokenCount").Int(); got != 100 {
+	if got := ojson.GetBytes(synthetic, "usageMetadata.promptTokenCount").Int(); got != 100 {
 		t.Fatalf("synthetic chunk promptTokenCount = %d, want 100", got)
 	}
-	if got := gjson.GetBytes(synthetic, "usageMetadata.totalTokenCount").Int(); got != 150 {
+	if got := ojson.GetBytes(synthetic, "usageMetadata.totalTokenCount").Int(); got != 150 {
 		t.Fatalf("synthetic chunk totalTokenCount = %d, want 150", got)
 	}
-	if mv := gjson.GetBytes(synthetic, "modelVersion").String(); mv != "gemini-3.7-flash" {
+	if mv := ojson.GetBytes(synthetic, "modelVersion").String(); mv != "gemini-3.7-flash" {
 		t.Fatalf("synthetic chunk modelVersion = %q, want gemini-3.7-flash", mv)
 	}
-	if rid := gjson.GetBytes(synthetic, "responseId").String(); rid != "resp-123" {
+	if rid := ojson.GetBytes(synthetic, "responseId").String(); rid != "resp-123" {
 		t.Fatalf("synthetic chunk responseId = %q, want resp-123", rid)
 	}
 
@@ -144,7 +144,7 @@ func TestConvertAntigravityResponseToGeminiStream_SynthesizesFinishReasonOnDoneW
 }
 
 func TestConvertAntigravityResponseToGeminiStream_DoesNotDuplicateFinishReasonWhenPresent(t *testing.T) {
-	ctx := antigravityAltContext()
+	ctx := antigravityAltContext("")
 	var param any
 
 	// Chunk with explicit STOP finishReason
@@ -153,7 +153,7 @@ func TestConvertAntigravityResponseToGeminiStream_DoesNotDuplicateFinishReasonWh
 	if len(results1) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(results1))
 	}
-	if fr := gjson.GetBytes(results1[0], "candidates.0.finishReason").String(); fr != "STOP" {
+	if fr := ojson.GetBytes(results1[0], "candidates.0.finishReason").String(); fr != "STOP" {
 		t.Fatalf("chunk1 finishReason = %q, want STOP", fr)
 	}
 
@@ -165,7 +165,7 @@ func TestConvertAntigravityResponseToGeminiStream_DoesNotDuplicateFinishReasonWh
 }
 
 func TestConvertAntigravityResponseToGeminiStream_CarriesFilteredUsageIntoSyntheticTerminal(t *testing.T) {
-	ctx := antigravityAltContext()
+	ctx := antigravityAltContext("")
 	var param any
 
 	// Real streams reach the translator after FilterSSEUsageMetadata, which renames
@@ -177,7 +177,7 @@ func TestConvertAntigravityResponseToGeminiStream_CarriesFilteredUsageIntoSynthe
 	if len(results) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(results))
 	}
-	if got := gjson.GetBytes(results[0], "usageMetadata.totalTokenCount").Int(); got != 49 {
+	if got := ojson.GetBytes(results[0], "usageMetadata.totalTokenCount").Int(); got != 49 {
 		t.Fatalf("restored chunk totalTokenCount = %d, want 49", got)
 	}
 
@@ -185,19 +185,19 @@ func TestConvertAntigravityResponseToGeminiStream_CarriesFilteredUsageIntoSynthe
 	if len(doneResults) != 1 {
 		t.Fatalf("expected synthetic terminal chunk, got %d results", len(doneResults))
 	}
-	if fr := gjson.GetBytes(doneResults[0], "candidates.0.finishReason").String(); fr != "STOP" {
+	if fr := ojson.GetBytes(doneResults[0], "candidates.0.finishReason").String(); fr != "STOP" {
 		t.Fatalf("synthetic finishReason = %q, want STOP", fr)
 	}
-	if got := gjson.GetBytes(doneResults[0], "usageMetadata.totalTokenCount").Int(); got != 49 {
+	if got := ojson.GetBytes(doneResults[0], "usageMetadata.totalTokenCount").Int(); got != 49 {
 		t.Fatalf("synthetic totalTokenCount = %d, want 49", got)
 	}
-	if got := gjson.GetBytes(doneResults[0], "usageMetadata.candidatesTokenCount").Int(); got != 7 {
+	if got := ojson.GetBytes(doneResults[0], "usageMetadata.candidatesTokenCount").Int(); got != 7 {
 		t.Fatalf("synthetic candidatesTokenCount = %d, want 7", got)
 	}
 }
 
 func TestConvertAntigravityResponseToGeminiStream_DoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
-	ctx := antigravityAltContext()
+	ctx := antigravityAltContext("")
 	var param any
 
 	// A 200 response whose body carried no response chunk must not be reported as
@@ -209,7 +209,7 @@ func TestConvertAntigravityResponseToGeminiStream_DoesNotFinalizeEmptyUpstreamSt
 }
 
 func TestConvertAntigravityResponseToGeminiStream_ResponseFreeEventDoesNotStartStream(t *testing.T) {
-	ctx := antigravityAltContext()
+	ctx := antigravityAltContext("")
 	var param any
 
 	// A JSON keepalive or malformed envelope carries no candidates and no usage,
@@ -233,7 +233,7 @@ func TestConvertAntigravityResponseToGeminiNonStream_DefaultsEveryCandidate(t *t
 	out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", nil, nil, input, nil)
 	want := []string{"STOP", "MAX_TOKENS", "STOP"}
 	for i, expected := range want {
-		got := gjson.GetBytes(out, fmt.Sprintf("candidates.%d.finishReason", i)).String()
+		got := ojson.GetBytes(out, fmt.Sprintf("candidates.%d.finishReason", i)).String()
 		if got != expected {
 			t.Fatalf("candidates.%d.finishReason = %q, want %q", i, got, expected)
 		}
@@ -243,7 +243,7 @@ func TestConvertAntigravityResponseToGeminiNonStream_DefaultsEveryCandidate(t *t
 func TestConvertAntigravityResponseToGeminiNonStream_DefaultsMissingFinishReason(t *testing.T) {
 	input := []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"}}]}}`)
 	out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", nil, nil, input, nil)
-	if fr := gjson.GetBytes(out, "candidates.0.finishReason").String(); fr != "STOP" {
+	if fr := ojson.GetBytes(out, "candidates.0.finishReason").String(); fr != "STOP" {
 		t.Fatalf("ConvertAntigravityResponseToGeminiNonStream finishReason = %q, want STOP", fr)
 	}
 }
@@ -254,7 +254,7 @@ func TestAntigravityGeminiResponseAllowsWhitespace(t *testing.T) {
 		t.Run(fmt.Sprintf("separator=%q", separator), func(t *testing.T) {
 			raw := []byte(`{"response":` + separator + body + `}`)
 			out := ConvertAntigravityResponseToGeminiNonStream(context.Background(), "", nil, nil, raw, nil)
-			if !gjson.ValidBytes(out) || string(out) != body {
+			if !ojson.ValidBytes(out) || string(out) != body {
 				t.Fatalf("incorrect response slice: %s", out)
 			}
 		})
@@ -279,6 +279,63 @@ func TestConvertAntigravityResponseToGeminiNonStream_RestoresUsageAliases(t *tes
 		}
 		if response.UsageMetadata.PromptTokenCount != 2 || len(response.CPAUsageMetadata) != 0 {
 			t.Fatalf("usage alias lost or shadowed: %s", out)
+		}
+	}
+}
+
+func TestGeminiStreamTerminalRequiresGeneratedOutput(t *testing.T) {
+	ctx := antigravityAltContext("")
+	for _, tt := range []struct {
+		name     string
+		response string
+		wantStop bool
+	}{
+		{"signature only", `{"candidates":[{"content":{"parts":[{"thoughtSignature":"sig","text":""}]}}]}`, false},
+		{"prompt tokens only", `{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":0,"thoughtsTokenCount":0}}`, false},
+		{"signature and filtered prompt usage", `{"candidates":[{"content":{"parts":[{"thoughtSignature":"sig","text":""}]}}],"cpaUsageMetadata":{"promptTokenCount":120}}`, false},
+		{"thought tokens only", `{"usageMetadata":{"thoughtsTokenCount":2}}`, true},
+		{"filtered candidate tokens only", `{"cpaUsageMetadata":{"candidatesTokenCount":1}}`, true},
+		{"grounding only", `{"candidates":[{"groundingMetadata":{"groundingChunks":[{"web":{"title":"source"}}]}}]}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var param any
+			ConvertAntigravityResponseToGemini(ctx, "", nil, nil, []byte(`{"response":`+tt.response+`}`), &param)
+			tail := ConvertAntigravityResponseToGemini(ctx, "", nil, nil, []byte("[DONE]"), &param)
+			if !tt.wantStop {
+				if len(tail) != 0 {
+					t.Fatalf("zero-output stream produced a terminal chunk: %s", tail)
+				}
+			} else if len(tail) != 1 || ojson.GetBytesNoCopy(tail[0], "candidates.0.finishReason").String() != "STOP" {
+				t.Fatalf("expected a single STOP chunk, got %s", tail)
+			}
+		})
+	}
+}
+
+func TestGeminiStreamJSONArrayRestoresResponseFields(t *testing.T) {
+	ctx := antigravityAltContext("json")
+	first := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build"
+	second := first + "_logs"
+	original := []byte(`{"tools":[{"functionDeclarations":[{"name":"` + first + `"},{"name":"` + second + `"}]}]}`)
+	mapped := util.SanitizedFunctionNameMap(original)[second]
+	raw := []byte(`[{},
+		{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + mapped + `"}}]}}],"cpaUsageMetadata":{"promptTokenCount":120}}},
+		{"response":{"candidates":[{"content":{"parts":[{"functionResponse":{"name":"` + mapped + `"}}]}}],"cpaUsageMetadata":{"promptTokenCount":121}}}]`)
+
+	out := ConvertAntigravityResponseToGemini(ctx, "", original, nil, raw, nil)
+	if len(out) != 1 {
+		t.Fatalf("expected one array chunk, got %d", len(out))
+	}
+	items := ojson.ParseBytes(out[0]).Array()
+	if len(items) != 2 {
+		t.Fatalf("expected two responses, got %s", out[0])
+	}
+	for i, field := range []string{"functionCall", "functionResponse"} {
+		if got := items[i].Get("candidates.0.content.parts.0." + field + ".name").String(); got != second {
+			t.Errorf("response %d: %s.name = %q, want %q", i, field, got, second)
+		}
+		if items[i].Get("cpaUsageMetadata").Exists() || items[i].Get("usageMetadata.promptTokenCount").Int() != int64(120+i) {
+			t.Errorf("response %d: usage metadata not restored: %s", i, items[i].Raw)
 		}
 	}
 }

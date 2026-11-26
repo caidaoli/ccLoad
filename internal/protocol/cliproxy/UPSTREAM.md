@@ -2,10 +2,10 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc` (official `v8.0.51`)
+- Last synchronized commit: `0aaf6d1c3a9eb28979145d13c831637254319c92` (official `v8.1.6`)
 - Snapshot target repository: `https://github.com/router-for-me/CLIProxyAPI`
 - Stable fork tag series: `fork/v` (no new fork release is claimed)
-- Synchronized at: `2026-11-02`
+- Synchronized at: `2026-11-27`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -23,6 +23,52 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-11-27)
+
+The four-protocol core and all allowlisted Antigravity adapters were reviewed
+atomically from official `v8.0.51` (`7cad1cb7`) to official `v8.1.6`, using the
+local CLIProxyAPI checkout. Every ccLoad-owned adaptation recorded below and in
+the earlier sections was kept; upstream hunks were ported onto it rather than
+replacing it. The maintained fork and its stable tag series remain unchanged.
+
+- The snapshot follows upstream's move from tidwall gjson/sjson to
+  `github.com/MoeForge/moego/ojson`. `util/gjson.go` aliases ojson, so snapshot
+  APIs now return ojson types; the app layer keeps tidwall and parses event
+  JSON without copying through its own helper.
+- Claude to Responses: Claude SSE `error` events close the open item as
+  `incomplete` and end with one `response.failed` carrying the Claude error
+  type and message, in stream and non-stream (`7075ec9ee`). The app therefore
+  no longer synthesizes `upstream_stream_interrupted` for this path.
+  `tool_choice: none` and `allowed_tools` are honored.
+- Claude to Chat validates optional fields, restores tool names and handles
+  non-stream errors (`36c837c64`). Codex to Chat trims string-only reasoning
+  effort and maps `response.failed`/`error` to OpenAI errors (`6065b82d0`).
+  Codex to Claude maps policy blocks to `invalid_request_error` (`1f76e479c`).
+  Claude generation-constraint helpers are split as upstream (`ac415c083`).
+  OpenAI compat Claude tool calls receive placeholder `reasoning_content`
+  (`0e0cab0de`); Gemini audio transcription counts as visible output
+  (`3e7faea98`).
+- Antigravity: snake_case `response_schema` survives normalization
+  (`9b7bbcc50`); empty `extra_content` shells are pruned (`4f1ab038d`);
+  snake_case tool calls and responses group correctly (`3d1069ebf`); Gemini
+  JSON-array streams restore usage and tool names per item (`a3e754213`);
+  Claude `message_start` excludes cached input (`4c6c90a5f`), keeps tool_use
+  IDs (`5d2835c30`), requires real web grounding (`1745d0396`, `79b61a054`)
+  and keeps signatures on empty function calls (`f663935d2`); media uses
+  canonical camelCase fields (`08098d246`); Chat tool responses merge with
+  following non-assistant turns (`9ac1cd7d8`).
+- Not adopted: the Antigravity outbound wire rewrite and its request
+  normalizer (`38067a299`, `0d8d8d08c`, `b8e3bc664`) need real-account
+  validation together with ccLoad's agent envelope, so function responses keep
+  `response.result`. Grouped-model routing (`2f86992c9`), Copilot (`7ae771fcb`)
+  and server-side Claude fallback (`fa11a573b`) are runtime features ccLoad
+  does not have. `MALFORMED_FUNCTION_CALL` is not mapped to a refusal
+  (`24b045481`), because partial text keeps ending with `end_turn`.
+- Upstream tests were merged into existing suites. Tests that assert the
+  non-adopted behavior above, ccLoad's tool_search and streaming tool-call
+  contracts, or runtime-only thinking application are listed as `exclude` or
+  `skip-test` rows in the manifests.
 
 ## Post-snapshot compatibility fixes (2026-11-26)
 
@@ -1309,31 +1355,8 @@ documented adaptations:
 
 ## Updating from CLIProxyAPI
 
-Run this procedure through the repository skill: use `$sync-cliproxy-core` in
-Codex or `/sync-cliproxy-core` in Claude Code. Both entry points resolve to the
-canonical skill under `.agents/skills/sync-cliproxy-core`.
-
-1. Fetch the ccLoad CLIProxyAPI fork and choose one immutable commit or tag.
-2. Generate one combined diff for the four-protocol core and every provider in
-   the canonical allowlist. All production sources and tests must come from that commit.
-3. Copy changed pure conversion files and matching tests only; do not add a Go
-   module import, `replace`, authentication, configuration, routing, cache services,
-   plugins, SDK registries, executors, or network update code.
-4. Port provider-specific pure request/response semantics into `providers/<provider>`
-   and connect request, non-stream response, and stream response paths. Keep
-   Interactions excluded until ccLoad supports that public wire protocol.
-5. Resolve the combined diff against Registry and provider wire contracts. If any
-   domain cannot be integrated or tested, leave the whole synchronization incomplete.
-6. After core, all providers, production wiring, and tests pass, update the single
-   shared commit and date above once.
-7. Run the core scope verifier self-test, then run the atomic verifier with the
-   previous synchronized commit as `--base-commit`.
-8. Run `go test -tags sonic ./internal/protocol/cliproxy/...`,
-   `go test -tags sonic ./internal/protocol`, and the repository verification
-   commands from `CLAUDE.md`.
-
-The upstream core/provider tests prove the snapshot was synchronized without
-losing conversion behavior. Registry and provider boundary tests remain ccLoad's
-compatibility authority. A future upstream sync is incomplete if either layer
-fails, any of the 12 core request/non-stream/stream directions regresses, or an
-allowlisted provider is omitted.
+Run every upstream alignment through the repository skill: `$sync-cliproxy-core`
+in Codex or `/sync-cliproxy-core` in Claude Code. Its canonical procedure lives in
+`.agents/skills/sync-cliproxy-core/SKILL.md`. The last synchronized commit above
+means both that the snapshot matches it and that every upstream runtime commit up
+to it has been reviewed for fixes to port into ccLoad.

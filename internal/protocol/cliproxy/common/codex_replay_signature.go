@@ -3,7 +3,7 @@ package common
 import (
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/thinking"
@@ -18,10 +18,10 @@ func ResolveCodexReplayTargetModel(modelName string, rawPayload []byte) string {
 		return modelName
 	}
 	if len(rawPayload) > 0 {
-		if rawModel := strings.TrimSpace(gjson.GetBytes(rawPayload, "model").String()); rawModel != "" {
+		if rawModel := strings.TrimSpace(ojson.GetBytesNoCopy(rawPayload, "model").String()); rawModel != "" {
 			switch sigcompat.SignatureProviderFromModelName(thinking.ParseSuffix(rawModel).ModelName) {
 			case sigcompat.SignatureProviderMeta, sigcompat.SignatureProviderGrok, sigcompat.SignatureProviderGPT:
-				return rawModel
+				return strings.Clone(rawModel)
 			}
 		}
 	}

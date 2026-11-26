@@ -5,18 +5,17 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
+
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/util"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type geminiDetachedReasoningItem struct {
@@ -57,13 +56,13 @@ type geminiFunctionCallEvidence struct {
 }
 
 func geminiResponsesUsageJSON(usage translatorcommon.GeminiUsageSnapshot) []byte {
-	out := []byte(`{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`)
-	out, _ = sjson.SetBytes(out, "input_tokens", usage.Prompt)
-	out, _ = sjson.SetBytes(out, "input_tokens_details.cached_tokens", usage.Cached)
-	out, _ = sjson.SetBytes(out, "output_tokens", usage.Candidates+usage.Thoughts)
-	out, _ = sjson.SetBytes(out, "output_tokens_details.reasoning_tokens", usage.Thoughts)
-	out, _ = sjson.SetBytes(out, "total_tokens", usage.Total)
-	return out
+	outDoc := ojson.NewDocString(`{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`)
+	_ = outDoc.Set("input_tokens", usage.Prompt)
+	_ = outDoc.Set("input_tokens_details.cached_tokens", usage.Cached)
+	_ = outDoc.Set("output_tokens", usage.Candidates+usage.Thoughts)
+	_ = outDoc.Set("output_tokens_details.reasoning_tokens", usage.Thoughts)
+	_ = outDoc.Set("total_tokens", usage.Total)
+	return outDoc.Bytes()
 }
 
 func geminiResponsesTerminalState(finishReason string) (eventType, status string, incompleteDetails []byte) {
@@ -94,25 +93,6 @@ func imageOutputFormat(mimeType string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// geminiInlineImage returns the inlineData payload and Responses output format
-// of a non-empty Gemini image part. Non-image and empty inlineData are rejected.
-func geminiInlineImage(part gjson.Result) (data, outputFormat string, ok bool) {
-	inline := part.Get("inlineData")
-	if !inline.Exists() {
-		inline = part.Get("inline_data")
-	}
-	data = inline.Get("data").String()
-	if data == "" {
-		return "", "", false
-	}
-	mimeType := inline.Get("mimeType").String()
-	if mimeType == "" {
-		mimeType = inline.Get("mime_type").String()
-	}
-	outputFormat, ok = imageOutputFormat(mimeType)
-	return data, outputFormat, ok
 }
 
 type geminiToResponsesState struct {
@@ -186,7 +166,7 @@ type geminiToResponsesState struct {
 	WebSearchAnnotationsAttached bool
 	WebSearchBufferedDeltas      []string
 	WebSearchBufferedParts       []geminiStreamBufferedPart
-	RawGroundingMetadata         gjson.Result
+	RawGroundingMetadata         ojson.Result
 	PartMappings                 []GeminiPartMapping
 	StreamPartIndex              int
 	CurrentLogicalPartIndex      int
@@ -209,16 +189,16 @@ var responseIDCounter uint64
 var funcCallIDCounter uint64
 
 func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
-	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
+	if len(originalRequestRawJSON) > 0 && ojson.ValidBytes(originalRequestRawJSON) {
 		return originalRequestRawJSON
 	}
-	if len(requestRawJSON) > 0 && gjson.ValidBytes(requestRawJSON) {
+	if len(requestRawJSON) > 0 && ojson.ValidBytes(requestRawJSON) {
 		return requestRawJSON
 	}
 	return nil
 }
 
-func unwrapRequestRoot(root gjson.Result) gjson.Result {
+func unwrapRequestRoot(root ojson.Result) ojson.Result {
 	req := root.Get("request")
 	if !req.Exists() {
 		return root
@@ -229,57 +209,132 @@ func unwrapRequestRoot(root gjson.Result) gjson.Result {
 	return root
 }
 
-func echoOpenAIResponsesRequestFields(out []byte, prefix string, req gjson.Result) []byte {
-	for _, key := range [...]string{
-		"instructions", "max_output_tokens", "max_tool_calls",
-		"parallel_tool_calls", "previous_response_id", "prompt_cache_key", "reasoning",
-		"safety_identifier", "service_tier", "store", "temperature", "text",
-		"tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user", "metadata",
-	} {
-		value := req.Get(key)
-		var echo any
-		switch key {
-		case "max_output_tokens", "max_tool_calls", "top_logprobs":
-			if value.Type != gjson.Number {
-				continue
-			}
-			echo = value.Int()
-		case "temperature", "top_p":
-			if value.Type != gjson.Number {
-				continue
-			}
-			echo = value.Num
-		case "parallel_tool_calls", "store":
-			if value.Type != gjson.True && value.Type != gjson.False {
-				continue
-			}
-			echo = value.Bool()
-		case "reasoning", "text", "tool_choice", "tools", "user", "metadata":
-			if value.Type == gjson.Null {
-				continue
-			}
-			echo = json.RawMessage(value.Raw)
-		default:
-			if value.Type != gjson.String {
-				continue
-			}
-			echo = value.Str
-		}
-		out, _ = sjson.SetBytes(out, prefix+key, echo)
+func echoOpenAIResponsesRequestFieldsDoc(doc *ojson.Doc, prefix string, req ojson.Result) {
+	if v := req.Get("instructions"); v.Exists() && v.Type == ojson.String {
+		_ = doc.Set(prefix+"instructions", v.String())
 	}
-	return out
+	if v := req.Get("max_output_tokens"); v.Exists() && v.Type == ojson.Number {
+		_ = doc.Set(prefix+"max_output_tokens", v.Int())
+	}
+	if v := req.Get("max_tool_calls"); v.Exists() && v.Type == ojson.Number {
+		_ = doc.Set(prefix+"max_tool_calls", v.Int())
+	}
+	if v := req.Get("parallel_tool_calls"); v.Exists() && (v.Type == ojson.True || v.Type == ojson.False) {
+		_ = doc.Set(prefix+"parallel_tool_calls", v.Bool())
+	}
+	if v := req.Get("previous_response_id"); v.Exists() && v.Type == ojson.String {
+		_ = doc.Set(prefix+"previous_response_id", v.String())
+	}
+	if v := req.Get("prompt_cache_key"); v.Exists() && v.Type == ojson.String {
+		_ = doc.Set(prefix+"prompt_cache_key", v.String())
+	}
+	if v := req.Get("reasoning"); v.Exists() && v.Type != ojson.Null {
+		_ = doc.SetRaw(prefix+"reasoning", v.Raw)
+	}
+	if v := req.Get("safety_identifier"); v.Exists() && v.Type == ojson.String {
+		_ = doc.Set(prefix+"safety_identifier", v.String())
+	}
+	if v := req.Get("service_tier"); v.Exists() && v.Type == ojson.String {
+		_ = doc.Set(prefix+"service_tier", v.String())
+	}
+	if v := req.Get("store"); v.Exists() && (v.Type == ojson.True || v.Type == ojson.False) {
+		_ = doc.Set(prefix+"store", v.Bool())
+	}
+	if v := req.Get("temperature"); v.Exists() && v.Type == ojson.Number {
+		_ = doc.Set(prefix+"temperature", v.Float())
+	}
+	if v := req.Get("text"); v.Exists() && v.Type != ojson.Null {
+		_ = doc.SetRaw(prefix+"text", v.Raw)
+	}
+	if v := req.Get("tool_choice"); v.Exists() && v.Type != ojson.Null {
+		_ = doc.SetRaw(prefix+"tool_choice", v.Raw)
+	}
+	if v := req.Get("tools"); v.Exists() && v.Type != ojson.Null {
+		_ = doc.SetRaw(prefix+"tools", v.Raw)
+	}
+	if v := req.Get("top_logprobs"); v.Exists() && v.Type == ojson.Number {
+		_ = doc.Set(prefix+"top_logprobs", v.Int())
+	}
+	if v := req.Get("top_p"); v.Exists() && v.Type == ojson.Number {
+		_ = doc.Set(prefix+"top_p", v.Float())
+	}
+	if v := req.Get("truncation"); v.Exists() && v.Type == ojson.String {
+		_ = doc.Set(prefix+"truncation", v.String())
+	}
+	if v := req.Get("user"); v.Exists() && v.Type != ojson.Null {
+		_ = doc.SetRaw(prefix+"user", v.Raw)
+	}
+	if v := req.Get("metadata"); v.Exists() && v.Type != ojson.Null {
+		_ = doc.SetRaw(prefix+"metadata", v.Raw)
+	}
 }
 
-func unwrapGeminiResponseRoot(root gjson.Result) gjson.Result {
+func unwrapGeminiResponseRoot(root ojson.Result) ojson.Result {
 	resp := root.Get("response")
-	if !resp.Exists() {
-		return root
+	if resp.Exists() {
+		// Vertex-style Gemini responses wrap the actual payload in a "response" object.
+		if resp.Get("candidates").Exists() || resp.Get("responseId").Exists() || resp.Get("usageMetadata").Exists() || resp.Get("cpaUsageMetadata").Exists() {
+			return resp
+		}
 	}
-	// Vertex-style Gemini responses wrap the actual payload in a "response" object.
-	if resp.Get("candidates").Exists() || resp.Get("responseId").Exists() || resp.Get("usageMetadata").Exists() || resp.Get("cpaUsageMetadata").Exists() {
-		return resp
+	if !root.Get("candidates.0.content.parts").Exists() && !ojson.Valid(root.Raw) {
+		if repaired := closeTruncatedJSON(root.Raw); repaired != "" {
+			if repairedRoot := ojson.Parse(repaired); repairedRoot.Get("candidates.0.content.parts").Exists() {
+				return repairedRoot
+			}
+		}
 	}
 	return root
+}
+
+func closeTruncatedJSON(raw string) string {
+	var stack []byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) > 0 && stack[len(stack)-1] == c {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	if !inString && len(stack) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(raw) + len(stack) + 2)
+	b.WriteString(raw)
+	if inString {
+		if escaped {
+			b.WriteByte('\\')
+		}
+		b.WriteByte('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		b.WriteByte(stack[i])
+	}
+	return b.String()
 }
 
 func emitEvent(event string, payload []byte) []byte {
@@ -296,11 +351,11 @@ func hasEffectiveGoogleSearchTool(rawJSON []byte) bool {
 	if len(rawJSON) == 0 {
 		return false
 	}
-	if gjson.GetBytes(rawJSON, "requestType").String() == "web_search" {
+	if ojson.GetBytesNoCopy(rawJSON, "requestType").String() == "web_search" {
 		return true
 	}
 	for _, path := range []string{"request.tools", "tools"} {
-		tools := gjson.GetBytes(rawJSON, path)
+		tools := ojson.GetBytesNoCopy(rawJSON, path)
 		if !tools.IsArray() {
 			continue
 		}
@@ -317,11 +372,11 @@ func isUpstreamGeminiRequest(rawJSON []byte) bool {
 	if len(rawJSON) == 0 {
 		return false
 	}
-	if gjson.GetBytes(rawJSON, "requestType").Exists() {
+	if ojson.GetBytesNoCopy(rawJSON, "requestType").Exists() {
 		return true
 	}
 	for _, path := range []string{"contents", "request.contents"} {
-		if gjson.GetBytes(rawJSON, path).Exists() {
+		if ojson.GetBytesNoCopy(rawJSON, path).Exists() {
 			return true
 		}
 	}
@@ -330,13 +385,13 @@ func isUpstreamGeminiRequest(rawJSON []byte) bool {
 
 func determineWebSearchStreamMode(modelName, requestModelName string, originalRequestRawJSON, requestRawJSON, reqJSON []byte) bool {
 	if len(originalRequestRawJSON) > 0 {
-		origRoot := unwrapRequestRoot(gjson.ParseBytes(originalRequestRawJSON))
+		origRoot := unwrapRequestRoot(util.ParseGJSONBytesNoCopy(originalRequestRawJSON))
 		if !AllowsResponsesWebSearchToolChoice(origRoot) {
 			return false
 		}
 	}
 	if len(requestRawJSON) > 0 {
-		reqRoot := unwrapRequestRoot(gjson.ParseBytes(requestRawJSON))
+		reqRoot := unwrapRequestRoot(util.ParseGJSONBytesNoCopy(requestRawJSON))
 		if reqRoot.Get("tool_choice").Exists() && !AllowsResponsesWebSearchToolChoice(reqRoot) {
 			return false
 		}
@@ -350,7 +405,7 @@ func determineWebSearchStreamMode(modelName, requestModelName string, originalRe
 // ConvertGeminiResponseToOpenAIResponses converts Gemini SSE chunks into OpenAI Responses SSE events.
 func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
-		reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+		reqJSON := bytes.Clone(pickRequestJSON(originalRequestRawJSON, requestRawJSON))
 		*param = &geminiToResponsesState{
 			FuncArgsBuf:             make(map[int]*strings.Builder),
 			FuncInputBuf:            make(map[int]string),
@@ -376,7 +431,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 	st := (*param).(*geminiToResponsesState)
 	if !st.RequestResolved {
-		st.RequestJSON = pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+		st.RequestJSON = bytes.Clone(pickRequestJSON(originalRequestRawJSON, requestRawJSON))
 		st.RequestResolved = true
 	}
 	reqJSON := st.RequestJSON
@@ -454,7 +509,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		rawJSON = []byte(`{}`)
 	}
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	if !root.Exists() {
 		return [][]byte{}
 	}
@@ -466,7 +521,9 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	if !st.Started {
 		requestModel = translatorcommon.RequestModelName(originalRequestRawJSON, requestRawJSON)
 	}
-	st.Model = cmp.Or(st.Model, modelName, requestModel, root.Get("modelVersion").Str)
+	if st.Model == "" {
+		st.Model = strings.Clone(cmp.Or(modelName, requestModel, root.Get("modelVersion").Str))
+	}
 
 	var out [][]byte
 	nextSeq := func() int { st.Seq++; return st.Seq }
@@ -485,23 +542,23 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			st.WebSearchQuery = st.WebSearchQueries[0]
 		}
 		if st.WebSearchQuery == "" && len(reqJSON) > 0 {
-			reqRoot := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
-			st.WebSearchQuery = ExtractResponsesWebSearchQuery(reqRoot)
+			reqRoot := unwrapRequestRoot(util.ParseGJSONBytesNoCopy(reqJSON))
+			st.WebSearchQuery = strings.Clone(ExtractResponsesWebSearchQuery(reqRoot))
 		}
 
-		completed := []byte(`{"type":"response.web_search_call.completed","sequence_number":0,"output_index":0,"item_id":""}`)
-		completed, _ = sjson.SetBytes(completed, "sequence_number", nextSeq())
-		completed, _ = sjson.SetBytes(completed, "output_index", st.WebSearchIndex)
-		completed, _ = sjson.SetBytes(completed, "item_id", st.WebSearchItemID)
-		out = append(out, emitEvent("response.web_search_call.completed", completed))
+		completedDoc := ojson.NewDocString(`{"type":"response.web_search_call.completed","sequence_number":0,"output_index":0,"item_id":""}`)
+		_ = completedDoc.Set("sequence_number", nextSeq())
+		_ = completedDoc.Set("output_index", st.WebSearchIndex)
+		_ = completedDoc.Set("item_id", st.WebSearchItemID)
+		out = append(out, emitEvent("response.web_search_call.completed", completedDoc.Bytes()))
 
 		doneItem := BuildResponsesWebSearchCallItem(st.WebSearchItemID, st.WebSearchQuery, st.WebSearchQueries, st.WebSearchSources)
 		st.WebSearchDoneItem = doneItem
-		doneEvent := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0}`)
-		doneEvent, _ = sjson.SetBytes(doneEvent, "sequence_number", nextSeq())
-		doneEvent, _ = sjson.SetBytes(doneEvent, "output_index", st.WebSearchIndex)
-		doneEvent, _ = sjson.SetRawBytes(doneEvent, "item", doneItem)
-		out = append(out, emitEvent("response.output_item.done", doneEvent))
+		doneEventDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0}`)
+		_ = doneEventDoc.Set("sequence_number", nextSeq())
+		_ = doneEventDoc.Set("output_index", st.WebSearchIndex)
+		_ = doneEventDoc.SetRawBytes("item", doneItem)
+		out = append(out, emitEvent("response.output_item.done", doneEventDoc.Bytes()))
 		st.WebSearchDone = true
 	}
 	openReasoning := func() {
@@ -513,24 +570,24 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		st.ReasoningIndex = st.NextIndex
 		st.NextIndex++
 		st.ReasoningItemID = fmt.Sprintf("rs_%s_%d", st.ResponseID, st.ReasoningIndex)
-		item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","status":"in_progress","encrypted_content":"","summary":[]}}`)
-		item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-		item, _ = sjson.SetBytes(item, "output_index", st.ReasoningIndex)
-		item, _ = sjson.SetBytes(item, "item.id", st.ReasoningItemID)
-		item, _ = sjson.SetBytes(item, "item.encrypted_content", reasoningEncryptedContent())
-		out = append(out, emitEvent("response.output_item.added", item))
-		partAdded := []byte(`{"type":"response.reasoning_summary_part.added","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`)
-		partAdded, _ = sjson.SetBytes(partAdded, "sequence_number", nextSeq())
-		partAdded, _ = sjson.SetBytes(partAdded, "item_id", st.ReasoningItemID)
-		partAdded, _ = sjson.SetBytes(partAdded, "output_index", st.ReasoningIndex)
-		out = append(out, emitEvent("response.reasoning_summary_part.added", partAdded))
+		itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","status":"in_progress","encrypted_content":"","summary":[]}}`)
+		_ = itemDoc.Set("sequence_number", nextSeq())
+		_ = itemDoc.Set("output_index", st.ReasoningIndex)
+		_ = itemDoc.Set("item.id", st.ReasoningItemID)
+		_ = itemDoc.Set("item.encrypted_content", reasoningEncryptedContent())
+		out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
+		partAddedDoc := ojson.NewDocString(`{"type":"response.reasoning_summary_part.added","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`)
+		_ = partAddedDoc.Set("sequence_number", nextSeq())
+		_ = partAddedDoc.Set("item_id", st.ReasoningItemID)
+		_ = partAddedDoc.Set("output_index", st.ReasoningIndex)
+		out = append(out, emitEvent("response.reasoning_summary_part.added", partAddedDoc.Bytes()))
 		for _, delta := range st.ReasoningPendingDeltas {
-			msg := []byte(`{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`)
-			msg, _ = sjson.SetBytes(msg, "sequence_number", nextSeq())
-			msg, _ = sjson.SetBytes(msg, "item_id", st.ReasoningItemID)
-			msg, _ = sjson.SetBytes(msg, "output_index", st.ReasoningIndex)
-			msg, _ = sjson.SetBytes(msg, "delta", delta)
-			out = append(out, emitEvent("response.reasoning_summary_text.delta", msg))
+			msgDoc := ojson.NewDocString(`{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`)
+			_ = msgDoc.Set("sequence_number", nextSeq())
+			_ = msgDoc.Set("item_id", st.ReasoningItemID)
+			_ = msgDoc.Set("output_index", st.ReasoningIndex)
+			_ = msgDoc.Set("delta", delta)
+			out = append(out, emitEvent("response.reasoning_summary_text.delta", msgDoc.Bytes()))
 		}
 		st.ReasoningPendingDeltas = nil
 	}
@@ -544,27 +601,27 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			return
 		}
 		full := st.ReasoningBuf.String()
-		textDone := []byte(`{"type":"response.reasoning_summary_text.done","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"text":""}`)
-		textDone, _ = sjson.SetBytes(textDone, "sequence_number", nextSeq())
-		textDone, _ = sjson.SetBytes(textDone, "item_id", st.ReasoningItemID)
-		textDone, _ = sjson.SetBytes(textDone, "output_index", st.ReasoningIndex)
-		textDone, _ = sjson.SetBytes(textDone, "text", full)
-		out = append(out, emitEvent("response.reasoning_summary_text.done", textDone))
+		textDoneDoc := ojson.NewDocString(`{"type":"response.reasoning_summary_text.done","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"text":""}`)
+		_ = textDoneDoc.Set("sequence_number", nextSeq())
+		_ = textDoneDoc.Set("item_id", st.ReasoningItemID)
+		_ = textDoneDoc.Set("output_index", st.ReasoningIndex)
+		_ = textDoneDoc.Set("text", full)
+		out = append(out, emitEvent("response.reasoning_summary_text.done", textDoneDoc.Bytes()))
 
-		partDone := []byte(`{"type":"response.reasoning_summary_part.done","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`)
-		partDone, _ = sjson.SetBytes(partDone, "sequence_number", nextSeq())
-		partDone, _ = sjson.SetBytes(partDone, "item_id", st.ReasoningItemID)
-		partDone, _ = sjson.SetBytes(partDone, "output_index", st.ReasoningIndex)
-		partDone, _ = sjson.SetBytes(partDone, "part.text", full)
-		out = append(out, emitEvent("response.reasoning_summary_part.done", partDone))
+		partDoneDoc := ojson.NewDocString(`{"type":"response.reasoning_summary_part.done","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`)
+		_ = partDoneDoc.Set("sequence_number", nextSeq())
+		_ = partDoneDoc.Set("item_id", st.ReasoningItemID)
+		_ = partDoneDoc.Set("output_index", st.ReasoningIndex)
+		_ = partDoneDoc.Set("part.text", full)
+		out = append(out, emitEvent("response.reasoning_summary_part.done", partDoneDoc.Bytes()))
 
-		itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":""}]}}`)
-		itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-		itemDone, _ = sjson.SetBytes(itemDone, "item.id", st.ReasoningItemID)
-		itemDone, _ = sjson.SetBytes(itemDone, "output_index", st.ReasoningIndex)
-		itemDone, _ = sjson.SetBytes(itemDone, "item.encrypted_content", reasoningEncryptedContent())
-		itemDone, _ = sjson.SetBytes(itemDone, "item.summary.0.text", full)
-		out = append(out, emitEvent("response.output_item.done", itemDone))
+		itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":""}]}}`)
+		_ = itemDoneDoc.Set("sequence_number", nextSeq())
+		_ = itemDoneDoc.Set("item.id", st.ReasoningItemID)
+		_ = itemDoneDoc.Set("output_index", st.ReasoningIndex)
+		_ = itemDoneDoc.Set("item.encrypted_content", reasoningEncryptedContent())
+		_ = itemDoneDoc.Set("item.summary.0.text", full)
+		out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 
 		st.CompletedReasoning[st.ReasoningIndex] = geminiCompletedReasoningItem{
 			ID:        st.ReasoningItemID,
@@ -599,22 +656,22 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			st.WebSearchQuery = st.WebSearchQueries[0]
 		}
 		if st.WebSearchQuery == "" && len(reqJSON) > 0 {
-			reqRoot := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
-			st.WebSearchQuery = ExtractResponsesWebSearchQuery(reqRoot)
+			reqRoot := unwrapRequestRoot(util.ParseGJSONBytesNoCopy(reqJSON))
+			st.WebSearchQuery = strings.Clone(ExtractResponsesWebSearchQuery(reqRoot))
 		}
 
-		added := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"web_search_call","status":"in_progress","action":{"type":"search","query":""}}}`)
-		added, _ = sjson.SetBytes(added, "sequence_number", nextSeq())
-		added, _ = sjson.SetBytes(added, "output_index", st.WebSearchIndex)
-		added, _ = sjson.SetBytes(added, "item.id", st.WebSearchItemID)
-		added, _ = sjson.SetBytes(added, "item.action.query", st.WebSearchQuery)
-		out = append(out, emitEvent("response.output_item.added", added))
+		addedDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"web_search_call","status":"in_progress","action":{"type":"search","query":""}}}`)
+		_ = addedDoc.Set("sequence_number", nextSeq())
+		_ = addedDoc.Set("output_index", st.WebSearchIndex)
+		_ = addedDoc.Set("item.id", st.WebSearchItemID)
+		_ = addedDoc.Set("item.action.query", st.WebSearchQuery)
+		out = append(out, emitEvent("response.output_item.added", addedDoc.Bytes()))
 
-		searching := []byte(`{"type":"response.web_search_call.searching","sequence_number":0,"output_index":0,"item_id":""}`)
-		searching, _ = sjson.SetBytes(searching, "sequence_number", nextSeq())
-		searching, _ = sjson.SetBytes(searching, "output_index", st.WebSearchIndex)
-		searching, _ = sjson.SetBytes(searching, "item_id", st.WebSearchItemID)
-		out = append(out, emitEvent("response.web_search_call.searching", searching))
+		searchingDoc := ojson.NewDocString(`{"type":"response.web_search_call.searching","sequence_number":0,"output_index":0,"item_id":""}`)
+		_ = searchingDoc.Set("sequence_number", nextSeq())
+		_ = searchingDoc.Set("output_index", st.WebSearchIndex)
+		_ = searchingDoc.Set("item_id", st.WebSearchItemID)
+		out = append(out, emitEvent("response.web_search_call.searching", searchingDoc.Bytes()))
 	}
 
 	flushWebSearchBufferedText := func() {
@@ -633,27 +690,27 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			st.MsgIndex = st.NextIndex
 			st.NextIndex++
 			st.CurrentMsgID = fmt.Sprintf("msg_%s_%d", st.ResponseID, st.MsgIndex)
-			item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`)
-			item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-			item, _ = sjson.SetBytes(item, "output_index", st.MsgIndex)
-			item, _ = sjson.SetBytes(item, "item.id", st.CurrentMsgID)
-			out = append(out, emitEvent("response.output_item.added", item))
-			partAdded := []byte(`{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
-			partAdded, _ = sjson.SetBytes(partAdded, "sequence_number", nextSeq())
-			partAdded, _ = sjson.SetBytes(partAdded, "item_id", st.CurrentMsgID)
-			partAdded, _ = sjson.SetBytes(partAdded, "output_index", st.MsgIndex)
-			out = append(out, emitEvent("response.content_part.added", partAdded))
+			itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`)
+			_ = itemDoc.Set("sequence_number", nextSeq())
+			_ = itemDoc.Set("output_index", st.MsgIndex)
+			_ = itemDoc.Set("item.id", st.CurrentMsgID)
+			out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
+			partAddedDoc := ojson.NewDocString(`{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
+			_ = partAddedDoc.Set("sequence_number", nextSeq())
+			_ = partAddedDoc.Set("item_id", st.CurrentMsgID)
+			_ = partAddedDoc.Set("output_index", st.MsgIndex)
+			out = append(out, emitEvent("response.content_part.added", partAddedDoc.Bytes()))
 			st.ItemTextBuf.Reset()
 			st.CurrentMsgRuneOffset = 0
 		}
 		for _, delta := range st.WebSearchBufferedDeltas {
 			st.ItemTextBuf.WriteString(delta)
-			msg := []byte(`{"type":"response.output_text.delta","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"delta":"","logprobs":[]}`)
-			msg, _ = sjson.SetBytes(msg, "sequence_number", nextSeq())
-			msg, _ = sjson.SetBytes(msg, "item_id", st.CurrentMsgID)
-			msg, _ = sjson.SetBytes(msg, "output_index", st.MsgIndex)
-			msg, _ = sjson.SetBytes(msg, "delta", delta)
-			out = append(out, emitEvent("response.output_text.delta", msg))
+			msgDoc := ojson.NewDocString(`{"type":"response.output_text.delta","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"delta":"","logprobs":[]}`)
+			_ = msgDoc.Set("sequence_number", nextSeq())
+			_ = msgDoc.Set("item_id", st.CurrentMsgID)
+			_ = msgDoc.Set("output_index", st.MsgIndex)
+			_ = msgDoc.Set("delta", delta)
+			out = append(out, emitEvent("response.output_text.delta", msgDoc.Bytes()))
 		}
 		for _, bp := range st.WebSearchBufferedParts {
 			n := len(st.PartMappings)
@@ -676,15 +733,15 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	emitNewCitationAnnotations := func(msgIndex int, itemID string, annotations [][]byte) {
 		emitted := st.EmittedAnnotationCount[msgIndex]
 		for annIdx := emitted; annIdx < len(annotations); annIdx++ {
-			annEvent := []byte(`{"type":"response.output_text.annotation.added","sequence_number":0,"response_id":"","item_id":"","output_index":0,"content_index":0,"annotation_index":0}`)
-			annEvent, _ = sjson.SetBytes(annEvent, "sequence_number", nextSeq())
-			annEvent, _ = sjson.SetBytes(annEvent, "response_id", st.ResponseID)
-			annEvent, _ = sjson.SetBytes(annEvent, "item_id", itemID)
-			annEvent, _ = sjson.SetBytes(annEvent, "output_index", msgIndex)
-			annEvent, _ = sjson.SetBytes(annEvent, "content_index", 0)
-			annEvent, _ = sjson.SetBytes(annEvent, "annotation_index", annIdx)
-			annEvent, _ = sjson.SetRawBytes(annEvent, "annotation", annotations[annIdx])
-			out = append(out, emitEvent("response.output_text.annotation.added", annEvent))
+			annEventDoc := ojson.NewDocString(`{"type":"response.output_text.annotation.added","sequence_number":0,"response_id":"","item_id":"","output_index":0,"content_index":0,"annotation_index":0}`)
+			_ = annEventDoc.Set("sequence_number", nextSeq())
+			_ = annEventDoc.Set("response_id", st.ResponseID)
+			_ = annEventDoc.Set("item_id", itemID)
+			_ = annEventDoc.Set("output_index", msgIndex)
+			_ = annEventDoc.Set("content_index", 0)
+			_ = annEventDoc.Set("annotation_index", annIdx)
+			_ = annEventDoc.SetRawBytes("annotation", annotations[annIdx])
+			out = append(out, emitEvent("response.output_text.annotation.added", annEventDoc.Bytes()))
 		}
 		if len(annotations) > emitted {
 			st.EmittedAnnotationCount[msgIndex] = len(annotations)
@@ -714,32 +771,32 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			st.WebSearchAnnotations = msgCitations
 		}
 		emitNewCitationAnnotations(st.MsgIndex, st.CurrentMsgID, msgCitations)
-		done := []byte(`{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`)
-		done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
-		done, _ = sjson.SetBytes(done, "item_id", st.CurrentMsgID)
-		done, _ = sjson.SetBytes(done, "output_index", st.MsgIndex)
-		done, _ = sjson.SetBytes(done, "text", fullText)
-		out = append(out, emitEvent("response.output_text.done", done))
-		partDone := []byte(`{"type":"response.content_part.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
-		partDone, _ = sjson.SetBytes(partDone, "sequence_number", nextSeq())
-		partDone, _ = sjson.SetBytes(partDone, "item_id", st.CurrentMsgID)
-		partDone, _ = sjson.SetBytes(partDone, "output_index", st.MsgIndex)
-		partDone, _ = sjson.SetBytes(partDone, "part.text", fullText)
+		doneDoc := ojson.NewDocString(`{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`)
+		_ = doneDoc.Set("sequence_number", nextSeq())
+		_ = doneDoc.Set("item_id", st.CurrentMsgID)
+		_ = doneDoc.Set("output_index", st.MsgIndex)
+		_ = doneDoc.Set("text", fullText)
+		out = append(out, emitEvent("response.output_text.done", doneDoc.Bytes()))
+		partDoneDoc := ojson.NewDocString(`{"type":"response.content_part.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
+		_ = partDoneDoc.Set("sequence_number", nextSeq())
+		_ = partDoneDoc.Set("item_id", st.CurrentMsgID)
+		_ = partDoneDoc.Set("output_index", st.MsgIndex)
+		_ = partDoneDoc.Set("part.text", fullText)
 		if len(msgCitations) > 0 {
-			partDone, _ = sjson.SetRawBytes(partDone, "part.annotations", translatorcommon.JoinRawArray(msgCitations))
+			_ = partDoneDoc.SetRawBytes("part.annotations", translatorcommon.JoinRawArray(msgCitations))
 		}
-		out = append(out, emitEvent("response.content_part.done", partDone))
-		final := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}}`)
-		final, _ = sjson.SetBytes(final, "sequence_number", nextSeq())
-		final, _ = sjson.SetBytes(final, "output_index", st.MsgIndex)
-		final, _ = sjson.SetBytes(final, "item.id", st.CurrentMsgID)
-		final, _ = sjson.SetBytes(final, "item.status", messageStatus)
-		final, _ = sjson.SetBytes(final, "item.content.0.text", fullText)
+		out = append(out, emitEvent("response.content_part.done", partDoneDoc.Bytes()))
+		finalDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}}`)
+		_ = finalDoc.Set("sequence_number", nextSeq())
+		_ = finalDoc.Set("output_index", st.MsgIndex)
+		_ = finalDoc.Set("item.id", st.CurrentMsgID)
+		_ = finalDoc.Set("item.status", messageStatus)
+		_ = finalDoc.Set("item.content.0.text", fullText)
 		if len(msgCitations) > 0 {
-			final, _ = sjson.SetRawBytes(final, "item.content.0.annotations", translatorcommon.JoinRawArray(msgCitations))
+			_ = finalDoc.SetRawBytes("item.content.0.annotations", translatorcommon.JoinRawArray(msgCitations))
 			st.WebSearchAnnotationsAttached = true
 		}
-		out = append(out, emitEvent("response.output_item.done", final))
+		out = append(out, emitEvent("response.output_item.done", finalDoc.Bytes()))
 
 		st.CompletedMessages[st.MsgIndex] = geminiCompletedMessageItem{
 			ID:          st.CurrentMsgID,
@@ -799,19 +856,19 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		itemID := fmt.Sprintf("rs_%s_detached_%s_%d", st.ResponseID, placement, idx)
 		carrierSignature := encodeGeminiResponsesCarrier(signature, direction, targetKind)
 
-		added := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","status":"in_progress","encrypted_content":"","summary":[]}}`)
-		added, _ = sjson.SetBytes(added, "sequence_number", nextSeq())
-		added, _ = sjson.SetBytes(added, "output_index", idx)
-		added, _ = sjson.SetBytes(added, "item.id", itemID)
-		added, _ = sjson.SetBytes(added, "item.encrypted_content", carrierSignature)
-		out = append(out, emitEvent("response.output_item.added", added))
+		addedDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","status":"in_progress","encrypted_content":"","summary":[]}}`)
+		_ = addedDoc.Set("sequence_number", nextSeq())
+		_ = addedDoc.Set("output_index", idx)
+		_ = addedDoc.Set("item.id", itemID)
+		_ = addedDoc.Set("item.encrypted_content", carrierSignature)
+		out = append(out, emitEvent("response.output_item.added", addedDoc.Bytes()))
 
-		done := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","encrypted_content":"","summary":[]}}`)
-		done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
-		done, _ = sjson.SetBytes(done, "output_index", idx)
-		done, _ = sjson.SetBytes(done, "item.id", itemID)
-		done, _ = sjson.SetBytes(done, "item.encrypted_content", carrierSignature)
-		out = append(out, emitEvent("response.output_item.done", done))
+		doneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"reasoning","encrypted_content":"","summary":[]}}`)
+		_ = doneDoc.Set("sequence_number", nextSeq())
+		_ = doneDoc.Set("output_index", idx)
+		_ = doneDoc.Set("item.id", itemID)
+		_ = doneDoc.Set("item.encrypted_content", carrierSignature)
+		out = append(out, emitEvent("response.output_item.done", doneDoc.Bytes()))
 
 		st.DetachedReasoning[idx] = geminiDetachedReasoningItem{Index: idx, ID: itemID, Signature: carrierSignature}
 		st.SeenReasoningSignatures[signature] = true
@@ -842,7 +899,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 	// Initialize per-response fields and emit created/in_progress once
 	if !st.Started {
-		st.ResponseID = root.Get("responseId").String()
+		st.ResponseID = strings.Clone(root.Get("responseId").String())
 		if st.ResponseID == "" {
 			st.ResponseID = fmt.Sprintf("resp_%x_%d", time.Now().UnixNano(), atomic.AddUint64(&responseIDCounter, 1))
 		}
@@ -858,23 +915,23 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			st.CreatedAt = time.Now().Unix()
 		}
 
-		created := []byte(`{"type":"response.created","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","background":false,"error":null,"output":[]}}`)
-		created, _ = sjson.SetBytes(created, "sequence_number", nextSeq())
-		created, _ = sjson.SetBytes(created, "response.id", st.ResponseID)
-		created, _ = sjson.SetBytes(created, "response.created_at", st.CreatedAt)
+		createdDoc := ojson.NewDocString(`{"type":"response.created","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","background":false,"error":null,"output":[]}}`)
+		_ = createdDoc.Set("sequence_number", nextSeq())
+		_ = createdDoc.Set("response.id", st.ResponseID)
+		_ = createdDoc.Set("response.created_at", st.CreatedAt)
 		if st.Model != "" {
-			created, _ = sjson.SetBytes(created, "response.model", st.Model)
+			_ = createdDoc.Set("response.model", st.Model)
 		}
-		out = append(out, emitEvent("response.created", created))
+		out = append(out, emitEvent("response.created", createdDoc.Bytes()))
 
-		inprog := []byte(`{"type":"response.in_progress","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","output":[]}}`)
-		inprog, _ = sjson.SetBytes(inprog, "sequence_number", nextSeq())
-		inprog, _ = sjson.SetBytes(inprog, "response.id", st.ResponseID)
-		inprog, _ = sjson.SetBytes(inprog, "response.created_at", st.CreatedAt)
+		inprogDoc := ojson.NewDocString(`{"type":"response.in_progress","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","output":[]}}`)
+		_ = inprogDoc.Set("sequence_number", nextSeq())
+		_ = inprogDoc.Set("response.id", st.ResponseID)
+		_ = inprogDoc.Set("response.created_at", st.CreatedAt)
 		if st.Model != "" {
-			inprog, _ = sjson.SetBytes(inprog, "response.model", st.Model)
+			_ = inprogDoc.Set("response.model", st.Model)
 		}
-		out = append(out, emitEvent("response.in_progress", inprog))
+		out = append(out, emitEvent("response.in_progress", inprogDoc.Bytes()))
 
 		st.Started = true
 		st.NextIndex = 0
@@ -886,7 +943,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		if st.RawGroundingMetadata.Exists() {
 			st.RawGroundingMetadata = MergeGroundingMetadata(st.RawGroundingMetadata, gm)
 		} else {
-			st.RawGroundingMetadata = MergeGroundingMetadata(gjson.Result{}, gm)
+			st.RawGroundingMetadata = MergeGroundingMetadata(ojson.Result{}, gm)
 		}
 		mergedGM := st.RawGroundingMetadata
 		queries := ExtractGroundingQueries(mergedGM)
@@ -913,9 +970,9 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		emitLateCitations()
 	}
 
-	// Handle parts (text/thought/functionCall)
+	// Handle parts (text/thought/functionCall/inlineData)
 	if parts := root.Get("candidates.0.content.parts"); parts.Exists() && parts.IsArray() {
-		parts.ForEach(func(partIdxInChunk, part gjson.Result) bool {
+		parts.ForEach(func(partIdxInChunk, part ojson.Result) bool {
 			explicitPartIndex := -1
 			if p := part.Get("partIndex"); p.Exists() {
 				explicitPartIndex = int(p.Int())
@@ -923,9 +980,9 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				explicitPartIndex = int(p.Int())
 			}
 
-			signature := strings.TrimSpace(part.Get("thoughtSignature").String())
+			signature := strings.Clone(strings.TrimSpace(part.Get("thoughtSignature").String()))
 			if signature == "" {
-				signature = strings.TrimSpace(part.Get("thought_signature").String())
+				signature = strings.Clone(strings.TrimSpace(part.Get("thought_signature").String()))
 			}
 			functionCall := part.Get("functionCall")
 			text := part.Get("text")
@@ -1108,14 +1165,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					st.LastSemanticKind = geminiResponsesCarrierText
 					st.ReasoningBuf.WriteString(t.String())
 					if st.ReasoningOpened {
-						msg := []byte(`{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`)
-						msg, _ = sjson.SetBytes(msg, "sequence_number", nextSeq())
-						msg, _ = sjson.SetBytes(msg, "item_id", st.ReasoningItemID)
-						msg, _ = sjson.SetBytes(msg, "output_index", st.ReasoningIndex)
-						msg, _ = sjson.SetBytes(msg, "delta", t.String())
-						out = append(out, emitEvent("response.reasoning_summary_text.delta", msg))
+						msgDoc := ojson.NewDocString(`{"type":"response.reasoning_summary_text.delta","sequence_number":0,"item_id":"","output_index":0,"summary_index":0,"delta":""}`)
+						_ = msgDoc.Set("sequence_number", nextSeq())
+						_ = msgDoc.Set("item_id", st.ReasoningItemID)
+						_ = msgDoc.Set("output_index", st.ReasoningIndex)
+						_ = msgDoc.Set("delta", t.String())
+						out = append(out, emitEvent("response.reasoning_summary_text.delta", msgDoc.Bytes()))
 					} else {
-						st.ReasoningPendingDeltas = append(st.ReasoningPendingDeltas, t.String())
+						st.ReasoningPendingDeltas = append(st.ReasoningPendingDeltas, strings.Clone(t.String()))
 					}
 				}
 				if !st.ReasoningOpened && st.ReasoningEnc != "" {
@@ -1146,15 +1203,16 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				// (stream end / a later output item) so the completed search item includes
 				// incremental sources and strictly precedes the message.
 				if st.WebSearchStreamMode && !st.WebSearchDone {
+					textStr := strings.Clone(t.String())
 					st.LastSemanticKind = geminiResponsesCarrierText
-					st.WebSearchBufferedDeltas = append(st.WebSearchBufferedDeltas, t.String())
+					st.WebSearchBufferedDeltas = append(st.WebSearchBufferedDeltas, textStr)
 					n := len(st.WebSearchBufferedParts)
 					if n > 0 && st.WebSearchBufferedParts[n-1].PartIndex == currentPartIndex {
-						st.WebSearchBufferedParts[n-1].Text += t.String()
+						st.WebSearchBufferedParts[n-1].Text += textStr
 					} else {
 						st.WebSearchBufferedParts = append(st.WebSearchBufferedParts, geminiStreamBufferedPart{
 							PartIndex: currentPartIndex,
-							Text:      t.String(),
+							Text:      textStr,
 						})
 					}
 					st.TextPartRunActive = true
@@ -1166,16 +1224,16 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					st.MsgIndex = st.NextIndex
 					st.NextIndex++
 					st.CurrentMsgID = fmt.Sprintf("msg_%s_%d", st.ResponseID, st.MsgIndex)
-					item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`)
-					item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-					item, _ = sjson.SetBytes(item, "output_index", st.MsgIndex)
-					item, _ = sjson.SetBytes(item, "item.id", st.CurrentMsgID)
-					out = append(out, emitEvent("response.output_item.added", item))
-					partAdded := []byte(`{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
-					partAdded, _ = sjson.SetBytes(partAdded, "sequence_number", nextSeq())
-					partAdded, _ = sjson.SetBytes(partAdded, "item_id", st.CurrentMsgID)
-					partAdded, _ = sjson.SetBytes(partAdded, "output_index", st.MsgIndex)
-					out = append(out, emitEvent("response.content_part.added", partAdded))
+					itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`)
+					_ = itemDoc.Set("sequence_number", nextSeq())
+					_ = itemDoc.Set("output_index", st.MsgIndex)
+					_ = itemDoc.Set("item.id", st.CurrentMsgID)
+					out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
+					partAddedDoc := ojson.NewDocString(`{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
+					_ = partAddedDoc.Set("sequence_number", nextSeq())
+					_ = partAddedDoc.Set("item_id", st.CurrentMsgID)
+					_ = partAddedDoc.Set("output_index", st.MsgIndex)
+					out = append(out, emitEvent("response.content_part.added", partAddedDoc.Bytes()))
 					st.ItemTextBuf.Reset()
 					st.CurrentMsgRuneOffset = 0
 				}
@@ -1189,30 +1247,52 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						PartIndex:      currentPartIndex,
 						MessageIndex:   st.MsgIndex,
 						StartRuneInMsg: st.CurrentMsgRuneOffset,
-						PartText:       t.String(),
+						PartText:       strings.Clone(t.String()),
 					})
 				}
 				st.CurrentMsgRuneOffset += int64(utf8.RuneCountInString(t.String()))
-				msg := []byte(`{"type":"response.output_text.delta","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"delta":"","logprobs":[]}`)
-				msg, _ = sjson.SetBytes(msg, "sequence_number", nextSeq())
-				msg, _ = sjson.SetBytes(msg, "item_id", st.CurrentMsgID)
-				msg, _ = sjson.SetBytes(msg, "output_index", st.MsgIndex)
-				msg, _ = sjson.SetBytes(msg, "delta", t.String())
-				out = append(out, emitEvent("response.output_text.delta", msg))
+				msgDoc := ojson.NewDocString(`{"type":"response.output_text.delta","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"delta":"","logprobs":[]}`)
+				_ = msgDoc.Set("sequence_number", nextSeq())
+				_ = msgDoc.Set("item_id", st.CurrentMsgID)
+				_ = msgDoc.Set("output_index", st.MsgIndex)
+				_ = msgDoc.Set("delta", t.String())
+				out = append(out, emitEvent("response.output_text.delta", msgDoc.Bytes()))
 				st.TextPartRunActive = true
 				return true
 			}
 
-			// Image part (gemini-3-pro-image etc.): surface as an
-			// image_generation_call output item. Thought draft images are excluded.
-			if part.Get("inlineData").Exists() || part.Get("inline_data").Exists() {
-				data, outFormat, isImage := geminiInlineImage(part)
+			// Image part (gemini-3-pro-image / nano-banana etc.): surface as an
+			// image_generation_call output item (#7569). Thought images are
+			// excluded, mirroring the chat-completions path (#7566).
+			if inlineData := part.Get("inlineData"); inlineData.Exists() || part.Get("inline_data").Exists() {
+				inline := inlineData
+				if !inline.Exists() {
+					inline = part.Get("inline_data")
+				}
+				if isThought {
+					return true
+				}
+				data := inline.Get("data").String()
+				if data == "" {
+					return true
+				}
+				mimeType := inline.Get("mimeType").String()
+				if mimeType == "" {
+					mimeType = inline.Get("mime_type").String()
+				}
+				if mimeType == "" {
+					mimeType = "image/png"
+				}
+				outFormat, isImage := imageOutputFormat(mimeType)
 				if !isImage {
 					return true
 				}
 				hash := sha256.Sum256([]byte(data))
 				if last, ok := st.LastImageHashByPart[currentPartIndex]; ok && last == hash {
 					return true
+				}
+				if st.LastImageHashByPart == nil {
+					st.LastImageHashByPart = make(map[int][32]byte)
 				}
 				st.LastImageHashByPart[currentPartIndex] = hash
 				finalizeReasoning()
@@ -1229,23 +1309,25 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				idx := st.NextIndex
 				st.NextIndex++
 				itemID := fmt.Sprintf("ig_%s_%d", st.ResponseID, idx)
-				added := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"in_progress","output_format":"png","result":""}}`)
-				added, _ = sjson.SetBytes(added, "sequence_number", nextSeq())
-				added, _ = sjson.SetBytes(added, "output_index", idx)
-				added, _ = sjson.SetBytes(added, "item.id", itemID)
-				added, _ = sjson.SetBytes(added, "item.output_format", outFormat)
-				out = append(out, emitEvent("response.output_item.added", added))
-				done := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}}`)
-				done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
-				done, _ = sjson.SetBytes(done, "output_index", idx)
-				done, _ = sjson.SetBytes(done, "item.id", itemID)
-				done, _ = sjson.SetBytes(done, "item.output_format", outFormat)
-				done, _ = sjson.SetBytes(done, "item.result", data)
-				out = append(out, emitEvent("response.output_item.done", done))
-				st.CompletedImages[idx] = geminiCompletedImageItem{ID: itemID, OutputFormat: outFormat, Result: data}
+				addedDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"in_progress","output_format":"png","result":""}}`)
+				_ = addedDoc.Set("sequence_number", nextSeq())
+				_ = addedDoc.Set("output_index", idx)
+				_ = addedDoc.Set("item.id", itemID)
+				_ = addedDoc.Set("item.output_format", outFormat)
+				out = append(out, emitEvent("response.output_item.added", addedDoc.Bytes()))
+				doneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}}`)
+				_ = doneDoc.Set("sequence_number", nextSeq())
+				_ = doneDoc.Set("output_index", idx)
+				_ = doneDoc.Set("item.id", itemID)
+				_ = doneDoc.Set("item.output_format", outFormat)
+				_ = doneDoc.Set("item.result", data)
+				out = append(out, emitEvent("response.output_item.done", doneDoc.Bytes()))
+				if st.CompletedImages == nil {
+					st.CompletedImages = make(map[int]geminiCompletedImageItem)
+				}
+				st.CompletedImages[idx] = geminiCompletedImageItem{ID: itemID, OutputFormat: outFormat, Result: strings.Clone(data)}
 				return true
 			}
-
 			// Function call
 			if fc := part.Get("functionCall"); fc.Exists() {
 				// Before emitting function-call outputs, finalize reasoning, web search, and the message (if open).
@@ -1260,18 +1342,18 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 				if isStreamingFuncContinuation || translatorcommon.IsVertexStreamingFunctionCall(fc) {
 					if !isStreamingFuncContinuation {
-						rawName := strings.TrimSpace(fc.Get("name").String())
+						rawName := strings.Clone(strings.TrimSpace(fc.Get("name").String()))
 						if rawName == "" {
 							st.HasFailedStreamingFunc = true
 							return true
 						}
 						identity, hasIdentity := st.ToolIdentityMap[rawName]
 						if !hasIdentity {
-							restored := util.RestoreSanitizedToolName(st.SanitizedNameMap, rawName)
+							restored := strings.Clone(util.RestoreSanitizedToolName(st.SanitizedNameMap, rawName))
 							identity = util.ResponsesToolIdentity{Name: restored}
 						}
-						name := identity.Name
-						namespace := identity.Namespace
+						name := strings.Clone(identity.Name)
+						namespace := strings.Clone(identity.Namespace)
 						isCustom := identity.Custom
 						isToolSearch := identity.ToolSearch
 
@@ -1280,8 +1362,8 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						if st.FuncArgsBuf[idx] == nil {
 							st.FuncArgsBuf[idx] = &strings.Builder{}
 						}
-						upstreamID := translatorcommon.VertexFunctionCallID(fc)
-						callID := strings.TrimSpace(fc.Get("id").String())
+						upstreamID := strings.Clone(translatorcommon.VertexFunctionCallID(fc))
+						callID := strings.Clone(strings.TrimSpace(fc.Get("id").String()))
 						if callID == "" {
 							callID = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), atomic.AddUint64(&funcCallIDCounter, 1))
 						}
@@ -1294,30 +1376,30 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 						if isToolSearch {
 							itemID := openAIResponsesToolSearchCallItemID(callID)
-							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{}}`)
-							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-							item, _ = sjson.SetBytes(item, "output_index", idx)
-							item, _ = sjson.SetRawBytes(item, "item", buildOpenAIResponsesToolSearchCallItem(itemID, callID, "in_progress", "{}"))
-							out = append(out, emitEvent("response.output_item.added", item))
+							itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{}}`)
+							_ = itemDoc.Set("sequence_number", nextSeq())
+							_ = itemDoc.Set("output_index", idx)
+							_ = itemDoc.SetRawBytes("item", buildOpenAIResponsesToolSearchCallItem(itemID, callID, "in_progress", "{}"))
+							out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 						} else if isCustom {
 							if identity.ApplyPatch {
 								st.ActiveStreamingPatch = &translatorcommon.ApplyPatchCallState{ItemID: fmt.Sprintf("ctc_%s", callID), CallID: callID, Name: name, Namespace: namespace, OutputIndex: idx}
 							}
-							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`)
-							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-							item, _ = sjson.SetBytes(item, "output_index", idx)
-							item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("ctc_%s", callID))
-							item, _ = sjson.SetBytes(item, "item.call_id", callID)
-							item = translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, "item")
-							out = append(out, emitEvent("response.output_item.added", item))
+							itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`)
+							_ = itemDoc.Set("sequence_number", nextSeq())
+							_ = itemDoc.Set("output_index", idx)
+							_ = itemDoc.Set("item.id", fmt.Sprintf("ctc_%s", callID))
+							_ = itemDoc.Set("item.call_id", callID)
+							translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, name, namespace, "item")
+							out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 						} else {
-							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
-							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-							item, _ = sjson.SetBytes(item, "output_index", idx)
-							item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("fc_%s", callID))
-							item, _ = sjson.SetBytes(item, "item.call_id", callID)
-							item = translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, "item")
-							out = append(out, emitEvent("response.output_item.added", item))
+							itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
+							_ = itemDoc.Set("sequence_number", nextSeq())
+							_ = itemDoc.Set("output_index", idx)
+							_ = itemDoc.Set("item.id", fmt.Sprintf("fc_%s", callID))
+							_ = itemDoc.Set("item.call_id", callID)
+							translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, name, namespace, "item")
+							out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 						}
 					}
 
@@ -1348,12 +1430,12 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 								}
 							}
 						} else if !st.FuncToolSearch[idx] {
-							ad := []byte(`{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`)
-							ad, _ = sjson.SetBytes(ad, "sequence_number", nextSeq())
-							ad, _ = sjson.SetBytes(ad, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-							ad, _ = sjson.SetBytes(ad, "output_index", idx)
-							ad, _ = translatorcommon.SetStringWithoutHTMLEscape(ad, "delta", delta)
-							out = append(out, emitEvent("response.function_call_arguments.delta", ad))
+							adDoc := ojson.NewDocString(`{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`)
+							_ = adDoc.Set("sequence_number", nextSeq())
+							_ = adDoc.Set("item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+							_ = adDoc.Set("output_index", idx)
+							_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(adDoc, "delta", delta)
+							out = append(out, emitEvent("response.function_call_arguments.delta", adDoc.Bytes()))
 						}
 					}
 
@@ -1363,11 +1445,11 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						if st.FuncToolSearch[idx] {
 							_, itemStatus, _ := geminiResponsesTerminalState(cmp.Or(finishReason, st.FinishReason))
 							itemID := openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx])
-							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
-							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-							itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-							itemDone, _ = sjson.SetRawBytes(itemDone, "item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], itemStatus, fullArgs))
-							out = append(out, emitEvent("response.output_item.done", itemDone))
+							itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
+							_ = itemDoneDoc.Set("sequence_number", nextSeq())
+							_ = itemDoneDoc.Set("output_index", idx)
+							_ = itemDoneDoc.SetRawBytes("item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], itemStatus, fullArgs))
+							out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 						} else if st.FuncCustom[idx] {
 							var inputStr string
 							if st.ActiveStreamingPatch != nil {
@@ -1383,44 +1465,47 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 								}
 								inputStr = fullInput
 							} else {
-								inputStr = util.UnwrapResponsesCustomToolInput(fullArgs)
+								inputStr = strings.Clone(util.UnwrapResponsesCustomToolInput(fullArgs))
 							}
-							st.FuncInputBuf[idx] = inputStr
-							inputDone := []byte(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
-							inputDone, _ = sjson.SetBytes(inputDone, "sequence_number", nextSeq())
-							inputDone, _ = sjson.SetBytes(inputDone, "item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-							inputDone, _ = sjson.SetBytes(inputDone, "output_index", idx)
-							inputDone, _ = sjson.SetBytes(inputDone, "input", inputStr)
+							st.FuncInputBuf[idx] = strings.Clone(inputStr)
+							var inputDone []byte
 							if st.ActiveStreamingPatch != nil {
-								inputDone = translatorcommon.ApplyPatchInputDone(st.ActiveStreamingPatch, inputStr, st.Seq)
+								inputDone = translatorcommon.ApplyPatchInputDone(st.ActiveStreamingPatch, inputStr, nextSeq())
 								st.ActiveStreamingPatch = nil
+							} else {
+								inputDoneDoc := ojson.NewDocString(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
+								_ = inputDoneDoc.Set("sequence_number", nextSeq())
+								_ = inputDoneDoc.Set("item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+								_ = inputDoneDoc.Set("output_index", idx)
+								_ = inputDoneDoc.Set("input", inputStr)
+								inputDone = inputDoneDoc.Bytes()
 							}
 							out = append(out, emitEvent("response.custom_tool_call_input.done", inputDone))
 
-							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
-							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-							itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-							itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-							itemDone, _ = sjson.SetBytes(itemDone, "item.input", inputStr)
-							itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
-							itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
-							out = append(out, emitEvent("response.output_item.done", itemDone))
+							itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
+							_ = itemDoneDoc.Set("sequence_number", nextSeq())
+							_ = itemDoneDoc.Set("output_index", idx)
+							_ = itemDoneDoc.Set("item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+							_ = itemDoneDoc.Set("item.input", inputStr)
+							_ = itemDoneDoc.Set("item.call_id", st.FuncCallIDs[idx])
+							translatorcommon.SetResponsesToolCallIdentityDoc(itemDoneDoc, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
+							out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 						} else {
-							fcDoneEvent := []byte(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
-							fcDoneEvent, _ = sjson.SetBytes(fcDoneEvent, "sequence_number", nextSeq())
-							fcDoneEvent, _ = sjson.SetBytes(fcDoneEvent, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-							fcDoneEvent, _ = sjson.SetBytes(fcDoneEvent, "output_index", idx)
-							fcDoneEvent, _ = translatorcommon.SetStringWithoutHTMLEscape(fcDoneEvent, "arguments", fullArgs)
-							out = append(out, emitEvent("response.function_call_arguments.done", fcDoneEvent))
+							fcDoneEventDoc := ojson.NewDocString(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
+							_ = fcDoneEventDoc.Set("sequence_number", nextSeq())
+							_ = fcDoneEventDoc.Set("item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+							_ = fcDoneEventDoc.Set("output_index", idx)
+							_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(fcDoneEventDoc, "arguments", fullArgs)
+							out = append(out, emitEvent("response.function_call_arguments.done", fcDoneEventDoc.Bytes()))
 
-							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
-							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-							itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-							itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-							itemDone, _ = translatorcommon.SetStringWithoutHTMLEscape(itemDone, "item.arguments", fullArgs)
-							itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
-							itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
-							out = append(out, emitEvent("response.output_item.done", itemDone))
+							itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
+							_ = itemDoneDoc.Set("sequence_number", nextSeq())
+							_ = itemDoneDoc.Set("output_index", idx)
+							_ = itemDoneDoc.Set("item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+							_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(itemDoneDoc, "item.arguments", fullArgs)
+							_ = itemDoneDoc.Set("item.call_id", st.FuncCallIDs[idx])
+							translatorcommon.SetResponsesToolCallIdentityDoc(itemDoneDoc, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
+							out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 						}
 						st.FuncDone[idx] = true
 						if st.PendingReasoningSignature != "" {
@@ -1431,7 +1516,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					return true
 				}
 
-				evidence := geminiRecordFunctionEvidence(st, fc, explicitPartIndex, gjson.ValidBytes(rawJSON))
+				evidence := geminiRecordFunctionEvidence(st, fc, explicitPartIndex, ojson.ValidBytes(rawJSON))
 				if evidence.ApplyPatch && evidence.Err != nil {
 					st.SetToolInputError(evidence.Err)
 					st.Completed = true
@@ -1441,17 +1526,17 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				if evidence.RawName == "" {
 					return true
 				}
-				rawName := fc.Get("name").String()
+				rawName := strings.Clone(fc.Get("name").String())
 				if evidence.ApplyPatch {
 					rawName = evidence.RawName
 				}
 				identity, hasIdentity := st.ToolIdentityMap[rawName]
 				if !hasIdentity {
-					restored := util.RestoreSanitizedToolName(st.SanitizedNameMap, rawName)
+					restored := strings.Clone(util.RestoreSanitizedToolName(st.SanitizedNameMap, rawName))
 					identity = util.ResponsesToolIdentity{Name: restored}
 				}
-				name := identity.Name
-				namespace := identity.Namespace
+				name := strings.Clone(identity.Name)
+				namespace := strings.Clone(identity.Namespace)
 				isCustom := identity.Custom
 				isToolSearch := identity.ToolSearch
 				if evidence.ApplyPatch && evidence.PatchCall != nil {
@@ -1471,7 +1556,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					st.FuncArgsBuf[idx] = &strings.Builder{}
 				}
 				if identity.ApplyPatch || isToolSearch {
-					st.FuncCallIDs[idx] = evidence.UpstreamID
+					st.FuncCallIDs[idx] = strings.Clone(evidence.UpstreamID)
 				}
 				if st.FuncCallIDs[idx] == "" {
 					st.FuncCallIDs[idx] = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), atomic.AddUint64(&funcCallIDCounter, 1))
@@ -1489,28 +1574,28 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				if isToolSearch {
 					_, itemStatus, _ := geminiResponsesTerminalState(cmp.Or(finishReason, st.FinishReason))
 					itemID := openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx])
-					item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{}}`)
-					item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-					item, _ = sjson.SetBytes(item, "output_index", idx)
-					item, _ = sjson.SetRawBytes(item, "item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], "in_progress", argsJSON))
-					out = append(out, emitEvent("response.output_item.added", item))
+					itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{}}`)
+					_ = itemDoc.Set("sequence_number", nextSeq())
+					_ = itemDoc.Set("output_index", idx)
+					_ = itemDoc.SetRawBytes("item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], "in_progress", argsJSON))
+					out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 
 					if !st.FuncDone[idx] {
-						itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
-						itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-						itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-						itemDone, _ = sjson.SetRawBytes(itemDone, "item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], itemStatus, argsJSON))
-						out = append(out, emitEvent("response.output_item.done", itemDone))
+						itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
+						_ = itemDoneDoc.Set("sequence_number", nextSeq())
+						_ = itemDoneDoc.Set("output_index", idx)
+						_ = itemDoneDoc.SetRawBytes("item", buildOpenAIResponsesToolSearchCallItem(itemID, st.FuncCallIDs[idx], itemStatus, argsJSON))
+						out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 
 						st.FuncDone[idx] = true
 					}
 				} else if isCustom {
-					inputStr := util.UnwrapResponsesCustomToolInput(argsJSON)
+					inputStr := strings.Clone(util.UnwrapResponsesCustomToolInput(argsJSON))
 					var patchCall *translatorcommon.ApplyPatchCallState
 					if identity.ApplyPatch {
 						patchCall = &translatorcommon.ApplyPatchCallState{ItemID: fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]), CallID: st.FuncCallIDs[idx], Name: name, Namespace: namespace, OutputIndex: idx}
 						_, input, errFinishArguments := patchCall.FinishArguments(argsJSON)
-						if !gjson.ValidBytes(rawJSON) {
+						if !ojson.ValidBytes(rawJSON) {
 							errFinishArguments = fmt.Errorf("invalid Gemini apply_patch response JSON")
 						}
 						if errFinishArguments != nil {
@@ -1519,19 +1604,19 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 							out = append(out, emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, nextSeq())))
 							return false
 						}
-						inputStr = input
+						inputStr = strings.Clone(input)
 						evidence.PatchCall = patchCall
 					}
-					st.FuncInputBuf[idx] = inputStr
+					st.FuncInputBuf[idx] = strings.Clone(inputStr)
 
 					// Emit item.added for custom tool call
-					item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`)
-					item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-					item, _ = sjson.SetBytes(item, "output_index", idx)
-					item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-					item, _ = sjson.SetBytes(item, "item.call_id", st.FuncCallIDs[idx])
-					item = translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, "item")
-					out = append(out, emitEvent("response.output_item.added", item))
+					itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`)
+					_ = itemDoc.Set("sequence_number", nextSeq())
+					_ = itemDoc.Set("output_index", idx)
+					_ = itemDoc.Set("item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+					_ = itemDoc.Set("item.call_id", st.FuncCallIDs[idx])
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, name, namespace, "item")
+					out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 
 					// Gemini delivers complete arguments; this delta is not an early preview.
 					if patchCall != nil && inputStr != "" {
@@ -1539,65 +1624,68 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					}
 					// Emit custom tool call input.done
 					if !st.FuncDone[idx] {
-						inputDone := []byte(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
-						inputDone, _ = sjson.SetBytes(inputDone, "sequence_number", nextSeq())
-						inputDone, _ = sjson.SetBytes(inputDone, "item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-						inputDone, _ = sjson.SetBytes(inputDone, "output_index", idx)
-						inputDone, _ = sjson.SetBytes(inputDone, "input", inputStr)
+						var inputDone []byte
 						if patchCall != nil {
-							inputDone = translatorcommon.ApplyPatchInputDone(patchCall, inputStr, st.Seq)
+							inputDone = translatorcommon.ApplyPatchInputDone(patchCall, inputStr, nextSeq())
+						} else {
+							inputDoneDoc := ojson.NewDocString(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
+							_ = inputDoneDoc.Set("sequence_number", nextSeq())
+							_ = inputDoneDoc.Set("item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+							_ = inputDoneDoc.Set("output_index", idx)
+							_ = inputDoneDoc.Set("input", inputStr)
+							inputDone = inputDoneDoc.Bytes()
 						}
 						out = append(out, emitEvent("response.custom_tool_call_input.done", inputDone))
 
-						itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
-						itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-						itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-						itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-						itemDone, _ = sjson.SetBytes(itemDone, "item.input", inputStr)
-						itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
-						itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, name, namespace, "item")
-						out = append(out, emitEvent("response.output_item.done", itemDone))
+						itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
+						_ = itemDoneDoc.Set("sequence_number", nextSeq())
+						_ = itemDoneDoc.Set("output_index", idx)
+						_ = itemDoneDoc.Set("item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+						_ = itemDoneDoc.Set("item.input", inputStr)
+						_ = itemDoneDoc.Set("item.call_id", st.FuncCallIDs[idx])
+						translatorcommon.SetResponsesToolCallIdentityDoc(itemDoneDoc, name, namespace, "item")
+						out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 
 						st.FuncDone[idx] = true
 					}
 				} else {
 					// Emit item.added for function call
-					item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
-					item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-					item, _ = sjson.SetBytes(item, "output_index", idx)
-					item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-					item, _ = sjson.SetBytes(item, "item.call_id", st.FuncCallIDs[idx])
-					item = translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, "item")
-					out = append(out, emitEvent("response.output_item.added", item))
+					itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
+					_ = itemDoc.Set("sequence_number", nextSeq())
+					_ = itemDoc.Set("output_index", idx)
+					_ = itemDoc.Set("item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+					_ = itemDoc.Set("item.call_id", st.FuncCallIDs[idx])
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, name, namespace, "item")
+					out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 
 					// Emit arguments delta (full args in one chunk).
 					// When Gemini omits args, emit "{}" to keep Responses streaming event order consistent.
 					if argsJSON != "" {
-						ad := []byte(`{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`)
-						ad, _ = sjson.SetBytes(ad, "sequence_number", nextSeq())
-						ad, _ = sjson.SetBytes(ad, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-						ad, _ = sjson.SetBytes(ad, "output_index", idx)
-						ad, _ = translatorcommon.SetStringWithoutHTMLEscape(ad, "delta", argsJSON)
-						out = append(out, emitEvent("response.function_call_arguments.delta", ad))
+						adDoc := ojson.NewDocString(`{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`)
+						_ = adDoc.Set("sequence_number", nextSeq())
+						_ = adDoc.Set("item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+						_ = adDoc.Set("output_index", idx)
+						_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(adDoc, "delta", argsJSON)
+						out = append(out, emitEvent("response.function_call_arguments.delta", adDoc.Bytes()))
 					}
 
 					// Gemini emits the full function call payload at once, so we can finalize it immediately.
 					if !st.FuncDone[idx] {
-						fcDone := []byte(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
-						fcDone, _ = sjson.SetBytes(fcDone, "sequence_number", nextSeq())
-						fcDone, _ = sjson.SetBytes(fcDone, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-						fcDone, _ = sjson.SetBytes(fcDone, "output_index", idx)
-						fcDone, _ = translatorcommon.SetStringWithoutHTMLEscape(fcDone, "arguments", argsJSON)
-						out = append(out, emitEvent("response.function_call_arguments.done", fcDone))
+						fcDoneDoc := ojson.NewDocString(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
+						_ = fcDoneDoc.Set("sequence_number", nextSeq())
+						_ = fcDoneDoc.Set("item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+						_ = fcDoneDoc.Set("output_index", idx)
+						_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(fcDoneDoc, "arguments", argsJSON)
+						out = append(out, emitEvent("response.function_call_arguments.done", fcDoneDoc.Bytes()))
 
-						itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
-						itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-						itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-						itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-						itemDone, _ = translatorcommon.SetStringWithoutHTMLEscape(itemDone, "item.arguments", argsJSON)
-						itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
-						itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, name, namespace, "item")
-						out = append(out, emitEvent("response.output_item.done", itemDone))
+						itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
+						_ = itemDoneDoc.Set("sequence_number", nextSeq())
+						_ = itemDoneDoc.Set("output_index", idx)
+						_ = itemDoneDoc.Set("item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+						_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(itemDoneDoc, "item.arguments", argsJSON)
+						_ = itemDoneDoc.Set("item.call_id", st.FuncCallIDs[idx])
+						translatorcommon.SetResponsesToolCallIdentityDoc(itemDoneDoc, name, namespace, "item")
+						out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 
 						st.FuncDone[idx] = true
 					}
@@ -1615,7 +1703,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 
 	// Preserve the first source finish, including across a usage-only tail or [DONE].
-	st.FinishReason = cmp.Or(st.FinishReason, finishReason)
+	st.FinishReason = cmp.Or(st.FinishReason, strings.Clone(finishReason))
 	if st.FinishReason != "" && st.ActiveStreamingFunc == nil && !st.HasFailedStreamingFunc {
 		if errIdentity := geminiPendingIdentityError(st); errIdentity != nil {
 			st.SetToolInputError(errIdentity)
@@ -1660,48 +1748,48 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					if b := st.FuncArgsBuf[idx]; b != nil && b.Len() > 0 {
 						args = b.String()
 					}
-					itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
-					itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-					itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-					itemDone, _ = sjson.SetRawBytes(itemDone, "item", buildOpenAIResponsesToolSearchCallItem(openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx]), st.FuncCallIDs[idx], status, args))
-					out = append(out, emitEvent("response.output_item.done", itemDone))
+					itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
+					_ = itemDoneDoc.Set("sequence_number", nextSeq())
+					_ = itemDoneDoc.Set("output_index", idx)
+					_ = itemDoneDoc.SetRawBytes("item", buildOpenAIResponsesToolSearchCallItem(openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx]), st.FuncCallIDs[idx], status, args))
+					out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 				} else if st.FuncCustom[idx] {
 					inputStr := st.FuncInputBuf[idx]
-					inputDone := []byte(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
-					inputDone, _ = sjson.SetBytes(inputDone, "sequence_number", nextSeq())
-					inputDone, _ = sjson.SetBytes(inputDone, "item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-					inputDone, _ = sjson.SetBytes(inputDone, "output_index", idx)
-					inputDone, _ = sjson.SetBytes(inputDone, "input", inputStr)
-					out = append(out, emitEvent("response.custom_tool_call_input.done", inputDone))
+					inputDoneDoc := ojson.NewDocString(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
+					_ = inputDoneDoc.Set("sequence_number", nextSeq())
+					_ = inputDoneDoc.Set("item_id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+					_ = inputDoneDoc.Set("output_index", idx)
+					_ = inputDoneDoc.Set("input", inputStr)
+					out = append(out, emitEvent("response.custom_tool_call_input.done", inputDoneDoc.Bytes()))
 
-					itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
-					itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-					itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-					itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
-					itemDone, _ = sjson.SetBytes(itemDone, "item.input", inputStr)
-					itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
-					itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
-					out = append(out, emitEvent("response.output_item.done", itemDone))
+					itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`)
+					_ = itemDoneDoc.Set("sequence_number", nextSeq())
+					_ = itemDoneDoc.Set("output_index", idx)
+					_ = itemDoneDoc.Set("item.id", fmt.Sprintf("ctc_%s", st.FuncCallIDs[idx]))
+					_ = itemDoneDoc.Set("item.input", inputStr)
+					_ = itemDoneDoc.Set("item.call_id", st.FuncCallIDs[idx])
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoneDoc, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
+					out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 				} else {
 					args := "{}"
 					if b := st.FuncArgsBuf[idx]; b != nil && b.Len() > 0 {
 						args = b.String()
 					}
-					fcDone := []byte(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
-					fcDone, _ = sjson.SetBytes(fcDone, "sequence_number", nextSeq())
-					fcDone, _ = sjson.SetBytes(fcDone, "item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-					fcDone, _ = sjson.SetBytes(fcDone, "output_index", idx)
-					fcDone, _ = translatorcommon.SetStringWithoutHTMLEscape(fcDone, "arguments", args)
-					out = append(out, emitEvent("response.function_call_arguments.done", fcDone))
+					fcDoneDoc := ojson.NewDocString(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
+					_ = fcDoneDoc.Set("sequence_number", nextSeq())
+					_ = fcDoneDoc.Set("item_id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+					_ = fcDoneDoc.Set("output_index", idx)
+					_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(fcDoneDoc, "arguments", args)
+					out = append(out, emitEvent("response.function_call_arguments.done", fcDoneDoc.Bytes()))
 
-					itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
-					itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
-					itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-					itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
-					itemDone, _ = translatorcommon.SetStringWithoutHTMLEscape(itemDone, "item.arguments", args)
-					itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.FuncCallIDs[idx])
-					itemDone = translatorcommon.SetResponsesToolCallIdentity(itemDone, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
-					out = append(out, emitEvent("response.output_item.done", itemDone))
+					itemDoneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
+					_ = itemDoneDoc.Set("sequence_number", nextSeq())
+					_ = itemDoneDoc.Set("output_index", idx)
+					_ = itemDoneDoc.Set("item.id", fmt.Sprintf("fc_%s", st.FuncCallIDs[idx]))
+					_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(itemDoneDoc, "item.arguments", args)
+					_ = itemDoneDoc.Set("item.call_id", st.FuncCallIDs[idx])
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoneDoc, st.FuncNames[idx], st.FuncNamespaces[idx], "item")
+					out = append(out, emitEvent("response.output_item.done", itemDoneDoc.Bytes()))
 				}
 				st.FuncDone[idx] = true
 			}
@@ -1710,21 +1798,22 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		// Reasoning already finalized above if present
 
 		// Build the terminal response with aggregated outputs and request echo fields
-		completed := []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null}}`)
-		completed, _ = sjson.SetBytes(completed, "type", eventType)
-		completed, _ = sjson.SetBytes(completed, "response.status", status)
+		completedDoc := ojson.NewDocString(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null}}`)
+		_ = completedDoc.Set("type", eventType)
+		_ = completedDoc.Set("response.status", status)
 		if incompleteDetails != nil {
-			completed, _ = sjson.SetRawBytes(completed, "response.incomplete_details", incompleteDetails)
+			_ = completedDoc.SetRawBytes("response.incomplete_details", incompleteDetails)
 		}
-		completed, _ = sjson.SetBytes(completed, "sequence_number", nextSeq())
-		completed, _ = sjson.SetBytes(completed, "response.id", st.ResponseID)
-		completed, _ = sjson.SetBytes(completed, "response.created_at", st.CreatedAt)
+		_ = completedDoc.Set("sequence_number", nextSeq())
+		_ = completedDoc.Set("response.id", st.ResponseID)
+		_ = completedDoc.Set("response.created_at", st.CreatedAt)
 		if st.Model != "" {
-			completed, _ = sjson.SetBytes(completed, "response.model", st.Model)
+			_ = completedDoc.Set("response.model", st.Model)
 		}
 
 		if len(reqJSON) > 0 {
-			completed = echoOpenAIResponsesRequestFields(completed, "response.", unwrapRequestRoot(gjson.ParseBytes(reqJSON)))
+			req := unwrapRequestRoot(util.ParseGJSONBytesNoCopy(reqJSON))
+			echoOpenAIResponsesRequestFieldsDoc(completedDoc, "response.", req)
 		}
 
 		emitLateCitations()
@@ -1737,37 +1826,37 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				continue
 			}
 			if completedReasoning, ok := st.CompletedReasoning[idx]; ok {
-				item := []byte(`{"id":"","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":""}]}`)
-				item, _ = sjson.SetBytes(item, "id", completedReasoning.ID)
-				item, _ = sjson.SetBytes(item, "encrypted_content", completedReasoning.Signature)
-				item, _ = sjson.SetBytes(item, "summary.0.text", completedReasoning.Text)
-				outputs = append(outputs, item)
+				itemDoc := ojson.NewDocString(`{"id":"","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":""}]}`)
+				_ = itemDoc.Set("id", completedReasoning.ID)
+				_ = itemDoc.Set("encrypted_content", completedReasoning.Signature)
+				_ = itemDoc.Set("summary.0.text", completedReasoning.Text)
+				outputs = append(outputs, itemDoc.Bytes())
 				continue
 			}
 			if completedMessage, ok := st.CompletedMessages[idx]; ok {
-				item := []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
-				item, _ = sjson.SetBytes(item, "id", completedMessage.ID)
-				item, _ = sjson.SetBytes(item, "status", completedMessage.Status)
-				item, _ = sjson.SetBytes(item, "content.0.text", completedMessage.Text)
+				itemDoc := ojson.NewDocString(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
+				_ = itemDoc.Set("id", completedMessage.ID)
+				_ = itemDoc.Set("status", completedMessage.Status)
+				_ = itemDoc.Set("content.0.text", completedMessage.Text)
 				if len(completedMessage.Annotations) > 0 {
-					item, _ = sjson.SetRawBytes(item, "content.0.annotations", translatorcommon.JoinRawArray(completedMessage.Annotations))
+					_ = itemDoc.SetRawBytes("content.0.annotations", translatorcommon.JoinRawArray(completedMessage.Annotations))
 				}
-				outputs = append(outputs, item)
+				outputs = append(outputs, itemDoc.Bytes())
 				continue
 			}
 			if detached, ok := st.DetachedReasoning[idx]; ok {
-				item := []byte(`{"id":"","type":"reasoning","encrypted_content":"","summary":[]}`)
-				item, _ = sjson.SetBytes(item, "id", detached.ID)
-				item, _ = sjson.SetBytes(item, "encrypted_content", detached.Signature)
-				outputs = append(outputs, item)
+				itemDoc := ojson.NewDocString(`{"id":"","type":"reasoning","encrypted_content":"","summary":[]}`)
+				_ = itemDoc.Set("id", detached.ID)
+				_ = itemDoc.Set("encrypted_content", detached.Signature)
+				outputs = append(outputs, itemDoc.Bytes())
 				continue
 			}
 			if completedImage, ok := st.CompletedImages[idx]; ok {
-				item := []byte(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
-				item, _ = sjson.SetBytes(item, "id", completedImage.ID)
-				item, _ = sjson.SetBytes(item, "output_format", completedImage.OutputFormat)
-				item, _ = sjson.SetBytes(item, "result", completedImage.Result)
-				outputs = append(outputs, item)
+				itemDoc := ojson.NewDocString(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
+				_ = itemDoc.Set("id", completedImage.ID)
+				_ = itemDoc.Set("output_format", completedImage.OutputFormat)
+				_ = itemDoc.Set("result", completedImage.Result)
+				outputs = append(outputs, itemDoc.Bytes())
 				continue
 			}
 
@@ -1780,38 +1869,38 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					outputs = append(outputs, buildOpenAIResponsesToolSearchCallItem(openAIResponsesToolSearchCallItemID(callID), callID, status, args))
 				} else if st.FuncCustom[idx] {
 					inputStr := st.FuncInputBuf[idx]
-					item := []byte(`{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`)
-					item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("ctc_%s", callID))
-					item, _ = sjson.SetBytes(item, "input", inputStr)
-					item, _ = sjson.SetBytes(item, "call_id", callID)
-					item = translatorcommon.SetResponsesToolCallIdentity(item, st.FuncNames[idx], st.FuncNamespaces[idx], "")
-					outputs = append(outputs, item)
+					itemDoc := ojson.NewDocString(`{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`)
+					_ = itemDoc.Set("id", fmt.Sprintf("ctc_%s", callID))
+					_ = itemDoc.Set("input", inputStr)
+					_ = itemDoc.Set("call_id", callID)
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, st.FuncNames[idx], st.FuncNamespaces[idx], "")
+					outputs = append(outputs, itemDoc.Bytes())
 				} else {
 					args := "{}"
 					if b := st.FuncArgsBuf[idx]; b != nil && b.Len() > 0 {
 						args = b.String()
 					}
-					item := []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
-					item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", callID))
-					item, _ = translatorcommon.SetStringWithoutHTMLEscape(item, "arguments", args)
-					item, _ = sjson.SetBytes(item, "call_id", callID)
-					item = translatorcommon.SetResponsesToolCallIdentity(item, st.FuncNames[idx], st.FuncNamespaces[idx], "")
-					outputs = append(outputs, item)
+					itemDoc := ojson.NewDocString(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
+					_ = itemDoc.Set("id", fmt.Sprintf("fc_%s", callID))
+					_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(itemDoc, "arguments", args)
+					_ = itemDoc.Set("call_id", callID)
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, st.FuncNames[idx], st.FuncNamespaces[idx], "")
+					outputs = append(outputs, itemDoc.Bytes())
 				}
 			}
 		}
 		if len(outputs) > 0 {
-			completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
+			_ = completedDoc.SetRawBytes("response.output", translatorcommon.JoinRawArray(outputs))
 		}
 		if st.WebSearchDone {
-			completed, _ = sjson.SetBytes(completed, "response.tool_usage.web_search.num_requests", 1)
+			_ = completedDoc.Set("response.tool_usage.web_search.num_requests", 1)
 		}
 
 		if st.Usage.Present {
-			completed, _ = sjson.SetRawBytes(completed, "response.usage", geminiResponsesUsageJSON(st.Usage))
+			_ = completedDoc.SetRawBytes("response.usage", geminiResponsesUsageJSON(st.Usage))
 		}
 
-		out = append(out, emitEvent(eventType, completed))
+		out = append(out, emitEvent(eventType, completedDoc.Bytes()))
 		st.Completed = true
 	}
 
@@ -1820,18 +1909,18 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 // ConvertGeminiResponseToOpenAIResponsesNonStream aggregates Gemini response JSON into a single OpenAI Responses JSON object.
 func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	root = unwrapGeminiResponseRoot(root)
 	reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	sanitizedNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
 	toolIdentityMap := util.ResponsesToolReverseIdentityMap(reqJSON)
 
 	// Base response scaffold
-	resp := []byte(`{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"incomplete_details":null}`)
-	_, status, incompleteDetails := geminiResponsesTerminalState(root.Get("candidates.0.finishReason").Str)
-	resp, _ = sjson.SetBytes(resp, "status", status)
+	respDoc := ojson.NewDocString(`{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"incomplete_details":null}`)
+	_, status, incompleteDetails := geminiResponsesTerminalState(root.Get("candidates.0.finishReason").String())
+	_ = respDoc.Set("status", status)
 	if incompleteDetails != nil {
-		resp, _ = sjson.SetRawBytes(resp, "incomplete_details", incompleteDetails)
+		_ = respDoc.SetRawBytes("incomplete_details", incompleteDetails)
 	}
 
 	// id: prefer provider responseId, otherwise synthesize
@@ -1843,7 +1932,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 	if !strings.HasPrefix(id, "resp_") {
 		id = fmt.Sprintf("resp_%s", id)
 	}
-	resp, _ = sjson.SetBytes(resp, "id", id)
+	_ = respDoc.Set("id", id)
 
 	// created_at: map from createTime if available
 	createdAt := time.Now().Unix()
@@ -1852,14 +1941,13 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			createdAt = t.Unix()
 		}
 	}
-	resp, _ = sjson.SetBytes(resp, "created_at", createdAt)
+	_ = respDoc.Set("created_at", createdAt)
 
 	// Use the externally resolved model consistently with the streaming response.
-	req := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
-	resp = echoOpenAIResponsesRequestFields(resp, "", req)
+	echoOpenAIResponsesRequestFieldsDoc(respDoc, "", unwrapRequestRoot(util.ParseGJSONBytesNoCopy(reqJSON)))
 	requestModel := translatorcommon.RequestModelName(originalRequestRawJSON, requestRawJSON)
 	if responseModel := cmp.Or(modelName, requestModel, root.Get("modelVersion").Str); responseModel != "" {
-		resp, _ = sjson.SetBytes(resp, "model", responseModel)
+		_ = respDoc.Set("model", responseModel)
 	}
 
 	// Build outputs from candidates[0].content.parts
@@ -1890,10 +1978,13 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 		text       string
 		signatures []string
 	}
+	type nonStreamImageOutput struct {
+		item []byte
+	}
 	var reasoningOutputs []nonStreamReasoningOutput
 	var functionOutputs []nonStreamFunctionOutput
 	var messageOutputs []nonStreamMessageOutput
-	var imageOutputs [][]byte
+	var imageOutputs []nonStreamImageOutput
 	var outputOrder []nonStreamOutputOrder
 	reasoningOutputSignatures := make(map[string]bool)
 	flushReasoningOutput := func() {
@@ -1945,11 +2036,11 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 		if direction == geminiResponsesCarrierPrevious {
 			placement = "after"
 		}
-		itemJSON := []byte(`{"id":"","type":"reasoning","encrypted_content":"","summary":[]}`)
-		itemJSON, _ = sjson.SetBytes(itemJSON, "id", fmt.Sprintf("rs_%s_detached_%s_%d", strings.TrimPrefix(id, "resp_"), placement, detachedOutputIndex))
-		itemJSON, _ = sjson.SetBytes(itemJSON, "encrypted_content", encodeGeminiResponsesCarrier(signature, direction, targetKind))
+		itemDoc := ojson.NewDocString(`{"id":"","type":"reasoning","encrypted_content":"","summary":[]}`)
+		_ = itemDoc.Set("id", fmt.Sprintf("rs_%s_detached_%s_%d", strings.TrimPrefix(id, "resp_"), placement, detachedOutputIndex))
+		_ = itemDoc.Set("encrypted_content", encodeGeminiResponsesCarrier(signature, direction, targetKind))
 		detachedOutputIndex++
-		appendOutput(itemJSON)
+		appendOutput(itemDoc.Bytes())
 	}
 
 	// recordPartSignature keeps a thought signature carried by a part that is
@@ -1992,7 +2083,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 	}
 
 	if parts := root.Get("candidates.0.content.parts"); parts.Exists() && parts.IsArray() {
-		parts.ForEach(func(key, p gjson.Result) bool {
+		parts.ForEach(func(key, p ojson.Result) bool {
 			partIdx := int(key.Int())
 			if pIdx := p.Get("partIndex"); pIdx.Exists() {
 				partIdx = int(pIdx.Int())
@@ -2049,30 +2140,51 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 				}
 				return true
 			}
-			if p.Get("inlineData").Exists() || p.Get("inline_data").Exists() {
-				if data, outFormat, isImage := geminiInlineImage(p); isImage {
-					// Open reasoning absorbs the signature; otherwise it stays standalone
-					// because the image item itself is not replayed to Gemini.
-					reasoningOpen := reasoningText.Len() > 0
-					if reasoningOpen {
-						recordPartSignature(signature)
-					}
-					flushReasoningOutput()
-					flushMessageOutput()
-					if !reasoningOpen && signature != "" {
-						detachedIndex := len(detachedReasoningOutputs)
-						detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierStandalone, targetKind: geminiResponsesCarrierAny})
-						outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
-					}
-					itemJSON := []byte(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
-					itemJSON, _ = sjson.SetBytes(itemJSON, "id", fmt.Sprintf("ig_%s_%d", strings.TrimPrefix(id, "resp_"), len(imageOutputs)))
-					itemJSON, _ = sjson.SetBytes(itemJSON, "output_format", outFormat)
-					itemJSON, _ = sjson.SetBytes(itemJSON, "result", data)
-					imageIndex := len(imageOutputs)
-					imageOutputs = append(imageOutputs, itemJSON)
-					outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "image", index: imageIndex})
+			if inlineData := p.Get("inlineData"); inlineData.Exists() || p.Get("inline_data").Exists() {
+				inline := inlineData
+				if !inline.Exists() {
+					inline = p.Get("inline_data")
+				}
+				if p.Get("thought").Bool() {
 					return true
 				}
+				data := inline.Get("data").String()
+				if data == "" {
+					return true
+				}
+				mimeType := inline.Get("mimeType").String()
+				if mimeType == "" {
+					mimeType = inline.Get("mime_type").String()
+				}
+				if mimeType == "" {
+					mimeType = "image/png"
+				}
+				outFormat, isImage := imageOutputFormat(mimeType)
+				if !isImage {
+					recordPartSignature(signature)
+					return true
+				}
+				// Open reasoning absorbs the signature; otherwise it stays standalone
+				// because the image item itself is not replayed to Gemini.
+				reasoningOpen := reasoningText.Len() > 0
+				if reasoningOpen {
+					recordPartSignature(signature)
+				}
+				flushReasoningOutput()
+				flushMessageOutput()
+				if !reasoningOpen && signature != "" {
+					detachedIndex := len(detachedReasoningOutputs)
+					detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierStandalone, targetKind: geminiResponsesCarrierAny})
+					outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+				}
+				itemDoc := ojson.NewDocString(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
+				_ = itemDoc.Set("id", fmt.Sprintf("ig_%s_%d", strings.TrimPrefix(id, "resp_"), len(imageOutputs)))
+				_ = itemDoc.Set("output_format", outFormat)
+				_ = itemDoc.Set("result", data)
+				imageIndex := len(imageOutputs)
+				imageOutputs = append(imageOutputs, nonStreamImageOutput{item: itemDoc.Bytes()})
+				outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "image", index: imageIndex})
+				return true
 			}
 			if fc := p.Get("functionCall"); fc.Exists() {
 				if reasoningText.Len() > 0 && reasoningEncrypted == "" && signature != "" {
@@ -2091,7 +2203,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 				} else if p.Get("index").Exists() {
 					explicitIndex = int(p.Get("index").Int())
 				}
-				evidence := geminiRecordFunctionEvidence(evidenceState, fc, explicitIndex, gjson.ValidBytes(rawJSON))
+				evidence := geminiRecordFunctionEvidence(evidenceState, fc, explicitIndex, ojson.ValidBytes(rawJSON))
 				if evidence.ApplyPatch && evidence.Err != nil {
 					toolInputError = evidence.Err
 					return false
@@ -2133,7 +2245,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 					if identity.ApplyPatch {
 						var patchCall translatorcommon.ApplyPatchCallState
 						_, input, errFinishArguments := patchCall.FinishArguments(argsStr)
-						if !gjson.ValidBytes(rawJSON) {
+						if !ojson.ValidBytes(rawJSON) {
 							errFinishArguments = fmt.Errorf("invalid Gemini apply_patch response JSON")
 						}
 						if errFinishArguments != nil {
@@ -2143,17 +2255,19 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 						inputStr = input
 						evidence.PatchCall = &patchCall
 					}
-					itemJSON = []byte(`{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`)
-					itemJSON, _ = sjson.SetBytes(itemJSON, "id", fmt.Sprintf("ctc_%s", callID))
-					itemJSON, _ = sjson.SetBytes(itemJSON, "call_id", callID)
-					itemJSON, _ = sjson.SetBytes(itemJSON, "input", inputStr)
-					itemJSON = translatorcommon.SetResponsesToolCallIdentity(itemJSON, name, namespace, "")
+					itemDoc := ojson.NewDocString(`{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`)
+					_ = itemDoc.Set("id", fmt.Sprintf("ctc_%s", callID))
+					_ = itemDoc.Set("call_id", callID)
+					_ = itemDoc.Set("input", inputStr)
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, name, namespace, "")
+					itemJSON = itemDoc.Bytes()
 				} else {
-					itemJSON = []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
-					itemJSON, _ = sjson.SetBytes(itemJSON, "id", fmt.Sprintf("fc_%s", callID))
-					itemJSON, _ = sjson.SetBytes(itemJSON, "call_id", callID)
-					itemJSON, _ = translatorcommon.SetStringWithoutHTMLEscape(itemJSON, "arguments", argsStr)
-					itemJSON = translatorcommon.SetResponsesToolCallIdentity(itemJSON, name, namespace, "")
+					itemDoc := ojson.NewDocString(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
+					_ = itemDoc.Set("id", fmt.Sprintf("fc_%s", callID))
+					_ = itemDoc.Set("call_id", callID)
+					_ = translatorcommon.SetStringWithoutHTMLEscapeDoc(itemDoc, "arguments", argsStr)
+					translatorcommon.SetResponsesToolCallIdentityDoc(itemDoc, name, namespace, "")
+					itemJSON = itemDoc.Bytes()
 				}
 				functionIndex := len(functionOutputs)
 				functionOutputs = append(functionOutputs, nonStreamFunctionOutput{item: itemJSON, signature: signature})
@@ -2195,7 +2309,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			query = queries[0]
 		}
 		if query == "" && len(reqJSON) > 0 {
-			query = ExtractResponsesWebSearchQuery(unwrapRequestRoot(gjson.ParseBytes(reqJSON)))
+			query = ExtractResponsesWebSearchQuery(unwrapRequestRoot(util.ParseGJSONBytesNoCopy(reqJSON)))
 		}
 		sources := ExtractGroundingSources(groundingMetadata)
 		wsID := fmt.Sprintf("ws_%s", strings.TrimPrefix(id, "resp_"))
@@ -2229,19 +2343,19 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			if len(reasoningOutputs) > 1 {
 				reasoningID = fmt.Sprintf("rs_%s_%d", rid, outputItem.index)
 			}
-			itemJSON := []byte(`{"id":"","type":"reasoning","encrypted_content":""}`)
-			itemJSON, _ = sjson.SetBytes(itemJSON, "id", reasoningID)
+			itemDoc := ojson.NewDocString(`{"id":"","type":"reasoning","encrypted_content":""}`)
+			_ = itemDoc.Set("id", reasoningID)
 			encryptedContent := reasoningOutput.signature
 			if encryptedContent != "" && reasoningOutput.direction != "" {
 				encryptedContent = encodeGeminiResponsesCarrier(encryptedContent, reasoningOutput.direction, reasoningOutput.targetKind)
 			}
-			itemJSON, _ = sjson.SetBytes(itemJSON, "encrypted_content", encryptedContent)
+			_ = itemDoc.Set("encrypted_content", encryptedContent)
 			if reasoningOutput.text != "" {
 				summaryJSON := []byte(`{"type":"summary_text","text":""}`)
-				summaryJSON, _ = sjson.SetBytes(summaryJSON, "text", reasoningOutput.text)
-				itemJSON, _ = sjson.SetRawBytes(itemJSON, "summary", translatorcommon.JoinRawArray([][]byte{summaryJSON}))
+				summaryJSON, _ = ojson.SetBytes(summaryJSON, "text", reasoningOutput.text)
+				_ = itemDoc.SetRawBytes("summary", translatorcommon.JoinRawArray([][]byte{summaryJSON}))
 			}
-			appendOutput(itemJSON)
+			appendOutput(itemDoc.Bytes())
 		case "message":
 			if hasGrounding && !wsAppended {
 				appendOutput(wsItem)
@@ -2256,16 +2370,16 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 					appendDetachedOutput(signature, geminiResponsesCarrierNext, geminiResponsesCarrierText)
 				}
 			}
-			itemJSON := []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
-			itemJSON, _ = sjson.SetBytes(itemJSON, "id", fmt.Sprintf("msg_%s_%d", strings.TrimPrefix(id, "resp_"), outputItem.index))
-			itemJSON, _ = sjson.SetBytes(itemJSON, "content.0.text", messageOutput.text)
+			itemDoc := ojson.NewDocString(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
+			_ = itemDoc.Set("id", fmt.Sprintf("msg_%s_%d", strings.TrimPrefix(id, "resp_"), outputItem.index))
+			_ = itemDoc.Set("content.0.text", messageOutput.text)
 			if outputItem.index == activeMessageIndex {
-				itemJSON, _ = sjson.SetBytes(itemJSON, "status", status)
+				_ = itemDoc.Set("status", status)
 			}
 			if c := messageCitations[outputItem.index]; len(c) > 0 {
-				itemJSON, _ = sjson.SetRawBytes(itemJSON, "content.0.annotations", translatorcommon.JoinRawArray(c))
+				_ = itemDoc.SetRawBytes("content.0.annotations", translatorcommon.JoinRawArray(c))
 			}
-			appendOutput(itemJSON)
+			appendOutput(itemDoc.Bytes())
 		case "function":
 			if outputItem.index < 0 || outputItem.index >= len(functionOutputs) {
 				continue
@@ -2274,7 +2388,10 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			appendDetachedOutput(functionOutput.signature, geminiResponsesCarrierNext, geminiResponsesCarrierFunction)
 			appendOutput(functionOutput.item)
 		case "image":
-			appendOutput(imageOutputs[outputItem.index])
+			if outputItem.index < 0 || outputItem.index >= len(imageOutputs) {
+				continue
+			}
+			appendOutput(imageOutputs[outputItem.index].item)
 		}
 	}
 
@@ -2284,23 +2401,23 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 	}
 
 	if len(outputs) > 0 {
-		resp, _ = sjson.SetRawBytes(resp, "output", translatorcommon.JoinRawArray(outputs))
+		_ = respDoc.SetRawBytes("output", translatorcommon.JoinRawArray(outputs))
 	}
 
 	if hasGrounding {
-		resp, _ = sjson.SetBytes(resp, "tool_usage.web_search.num_requests", 1)
+		_ = respDoc.Set("tool_usage.web_search.num_requests", 1)
 	}
 
 	var usage translatorcommon.GeminiUsageSnapshot
 	if usage.Merge(root.Get("usageMetadata")) || usage.Merge(root.Get("cpaUsageMetadata")) {
-		resp, _ = sjson.SetRawBytes(resp, "usage", geminiResponsesUsageJSON(usage))
+		_ = respDoc.SetRawBytes("usage", geminiResponsesUsageJSON(usage))
 	}
 
-	return resp
+	return respDoc.Bytes()
 }
 
-func geminiResponsesFunctionArguments(args gjson.Result, identity util.ResponsesToolIdentity) string {
-	if !identity.ApplyPatch && (args.Type == gjson.Null ||
+func geminiResponsesFunctionArguments(args ojson.Result, identity util.ResponsesToolIdentity) string {
+	if !identity.ApplyPatch && (args.Type == ojson.Null ||
 		(!identity.Custom && !identity.ToolSearch && !args.IsObject())) {
 		return "{}"
 	}
@@ -2309,7 +2426,7 @@ func geminiResponsesFunctionArguments(args gjson.Result, identity util.Responses
 
 // Full snapshots are evidence, never source prefixes. Stable IDs and explicit
 // part indexes identify repeated snapshots without merging distinct unkeyed calls.
-func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc gjson.Result, partIndex int, validJSON bool) *geminiFunctionCallEvidence {
+func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc ojson.Result, partIndex int, validJSON bool) *geminiFunctionCallEvidence {
 	if st.FunctionEvidence == nil {
 		st.FunctionEvidence = make(map[string]*geminiFunctionCallEvidence)
 	}
@@ -2372,14 +2489,14 @@ func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc gjson.Result, p
 		if evidence.RawName != "" && evidence.RawName != name {
 			recordError(fmt.Errorf("conflicting apply_patch call name"))
 		} else {
-			evidence.RawName = name
+			evidence.RawName = strings.Clone(name)
 		}
 	}
 	if id := fc.Get("id").String(); id != "" {
 		if evidence.UpstreamID != "" && evidence.UpstreamID != id {
 			recordError(fmt.Errorf("conflicting apply_patch call ID"))
 		} else {
-			evidence.UpstreamID = id
+			evidence.UpstreamID = strings.Clone(id)
 		}
 	}
 	var snapshot translatorcommon.ApplyPatchCallState
@@ -2394,7 +2511,7 @@ func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc gjson.Result, p
 			recordError(fmt.Errorf("conflicting apply_patch complete snapshots"))
 		}
 		evidence.HasInput = true
-		evidence.Input = input
+		evidence.Input = strings.Clone(input)
 	}
 	return evidence
 }

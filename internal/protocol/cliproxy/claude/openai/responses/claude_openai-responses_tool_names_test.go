@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func claudeWireToolNames(t *testing.T, request []byte) []string {
 	t.Helper()
 	translated, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", request, false)
 	var names []string
-	for _, tool := range gjson.GetBytes(translated, "tools").Array() {
+	for _, tool := range ojson.GetBytes(translated, "tools").Array() {
 		name := tool.Get("name").String()
 		if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(name) {
 			t.Fatalf("invalid Claude tool name %q in %s", name, translated)
@@ -28,7 +28,7 @@ func assertClaudeToolNameRestored(t *testing.T, request []byte, wireName, expect
 	t.Helper()
 	response := []byte(fmt.Sprintf(`{"type":"message","id":"msg_names","content":[{"type":"tool_use","id":"call_names","name":%q,"input":{"input":"payload"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`, wireName))
 	converted := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-sonnet-4-5", request, nil, response, nil)
-	item := gjson.GetBytes(converted, "output.0")
+	item := ojson.GetBytes(converted, "output.0")
 	if item.Get("name").String() != expectedName || item.Get("namespace").String() != namespace || item.Get("type").String() != kind {
 		t.Fatalf("tool identity was not restored: %s", converted)
 	}
@@ -103,7 +103,7 @@ func TestBuildClaudeToolNames_DeclaredToolsPrecedeHistory(t *testing.T) {
 	}
 	translated, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", request, false)
 	var historyName string
-	for _, message := range gjson.GetBytes(translated, "messages").Array() {
+	for _, message := range ojson.GetBytes(translated, "messages").Array() {
 		for _, block := range message.Get("content").Array() {
 			if block.Get("type").String() == "tool_use" {
 				historyName = block.Get("name").String()

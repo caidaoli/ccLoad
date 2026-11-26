@@ -61,7 +61,7 @@ HTTP 200 responses that are actually errors trigger the same failover path as re
   - `protocol/builtin/register.go`: Registers all 12 directed cross-protocol pairs
   - `protocol/builtin/cliproxy_adapter.go`: ccLoad-owned request validation, JSON/SSE normalization, and stream framing
   - `protocol/cliproxy/`: In-tree snapshot boundary for the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) four-protocol core and allowlisted provider request/response adapters; [`UPSTREAM.md`](../../internal/protocol/cliproxy/UPSTREAM.md) records provenance, synchronization rules, and which provider adapters are actually present
-  - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; one atomic operation pins one commit and synchronizes both the core and every registered provider adapter
+  - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; one atomic operation pins one commit range, synchronizes both the core and every registered provider adapter, and reviews each upstream runtime (executor/auth/handler) commit for fixes to port
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
   - Automatic detection translates only after an uncommitted HTTP 400, a non-model 404/405, a structured `convert_request_failed` + `not implemented` 500, or a Cloudflare 403 block page returned before the API origin; exact URLs without declarations translate directly across protocols
 - **Cooldown Manager** (DRY):

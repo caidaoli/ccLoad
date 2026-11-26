@@ -3,10 +3,10 @@ package common
 import (
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
+
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
-
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -23,7 +23,7 @@ func SystemReminderText(text string) string {
 
 // ClaudeMessageSystemReminderText converts a Claude message-level system value
 // into ordinary user-visible reminder text for non-Claude upstream formats.
-func ClaudeMessageSystemReminderText(content gjson.Result) (string, bool) {
+func ClaudeMessageSystemReminderText(content ojson.Result) (string, bool) {
 	parts := claudeSystemTextParts(content)
 	if len(parts) == 0 {
 		return "", false
@@ -35,11 +35,11 @@ func ClaudeMessageSystemReminderText(content gjson.Result) (string, bool) {
 	return SystemReminderText(text), true
 }
 
-func claudeSystemTextParts(content gjson.Result) []string {
+func claudeSystemTextParts(content ojson.Result) []string {
 	if !content.Exists() {
 		return nil
 	}
-	if content.Type == gjson.String {
+	if content.Type == ojson.String {
 		text := content.String()
 		if text == "" || util.IsClaudeCodeAttributionSystemText(text) {
 			return nil
@@ -50,7 +50,7 @@ func claudeSystemTextParts(content gjson.Result) []string {
 		return nil
 	}
 	parts := make([]string, 0)
-	content.ForEach(func(_, item gjson.Result) bool {
+	content.ForEach(func(_, item ojson.Result) bool {
 		if item.Get("type").String() != "text" {
 			return true
 		}
@@ -62,54 +62,6 @@ func claudeSystemTextParts(content gjson.Result) []string {
 		return true
 	})
 	return parts
-}
-
-// BuildClaudeStructuredOutputInstruction formats structured output settings
-// (from Chat Completions response_format or Responses text.format) as explicit
-// instructions to inject into Claude's system prompt.
-func BuildClaudeStructuredOutputInstruction(format gjson.Result) string {
-	if !format.Exists() {
-		return ""
-	}
-
-	formatType := strings.ToLower(strings.TrimSpace(format.Get("type").String()))
-	switch formatType {
-	case "json_object":
-		return "You must format your entire response as a valid JSON object. Do not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object."
-	case "json_schema":
-		schema := format.Get("json_schema.schema")
-		if !schema.Exists() {
-			schema = format.Get("schema")
-		}
-		if !schema.Exists() {
-			return "You must format your entire response as a valid JSON object. Do not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object."
-		}
-
-		var builder strings.Builder
-		builder.WriteString("You must format your entire response as valid JSON that conforms strictly to the following JSON schema:\n")
-		name, desc := claudeStructuredOutputNameAndDescription(format)
-		if name != "" {
-			builder.WriteString("Schema Name: ")
-			builder.WriteString(name)
-			builder.WriteString("\n")
-		}
-		if desc != "" {
-			builder.WriteString("Schema Description: ")
-			builder.WriteString(desc)
-			builder.WriteString("\n")
-		}
-		builder.WriteString("JSON Schema:\n")
-		builder.WriteString(schema.Raw)
-		builder.WriteString("\nDo not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON ")
-		if schema.Get("type").Str == "object" {
-			builder.WriteString("object.")
-		} else {
-			builder.WriteString("value.")
-		}
-		return builder.String()
-	default:
-		return ""
-	}
 }
 
 var claudeStructuredOutputLegacyPrefixes = []string{"claude-3", "claude-2", "claude-instant"}
@@ -160,24 +112,24 @@ func claudeModelLacksNativeStructuredOutputs(modelName string) bool {
 
 // ClaudeOutputFormatSchema returns the schema object of a json_schema
 // structured output setting (from Chat Completions response_format or
-// Responses text.format) so the caller can set Claude's output_config.format.
-// It returns false for non-json_schema formats, missing/non-object schemas,
-// non-Claude models served over Anthropic-compatible endpoints, and legacy
-// Claude models without native structured outputs; those keep the system
-// prompt instruction fallback.
-func ClaudeOutputFormatSchema(modelName string, format gjson.Result) (gjson.Result, bool) {
+// Responses text.format) so the caller can set Claude's output_config.format
+// directly on its *ojson.Doc. It returns false for non-json_schema formats,
+// missing/non-object schemas, non-Claude models served over Anthropic-compatible
+// endpoints, and legacy Claude models without native structured outputs; those
+// keep the system prompt instruction fallback.
+func ClaudeOutputFormatSchema(modelName string, format ojson.Result) (ojson.Result, bool) {
 	if !strings.EqualFold(strings.TrimSpace(format.Get("type").String()), "json_schema") {
-		return gjson.Result{}, false
+		return ojson.Result{}, false
 	}
 	if !util.IsClaudeModel(modelName) || claudeModelLacksNativeStructuredOutputs(modelName) {
-		return gjson.Result{}, false
+		return ojson.Result{}, false
 	}
 	schema := format.Get("json_schema.schema")
 	if !schema.Exists() {
 		schema = format.Get("schema")
 	}
 	if !schema.IsObject() {
-		return gjson.Result{}, false
+		return ojson.Result{}, false
 	}
 	return schema, true
 }
@@ -185,7 +137,7 @@ func ClaudeOutputFormatSchema(modelName string, format gjson.Result) (gjson.Resu
 // BuildClaudeOutputFormatDescription builds a short system prompt instruction
 // preserving the schema name and description when output_config.format carries
 // the JSON schema natively. It returns "" when no description is present.
-func BuildClaudeOutputFormatDescription(format gjson.Result) string {
+func BuildClaudeOutputFormatDescription(format ojson.Result) string {
 	name, desc := claudeStructuredOutputNameAndDescription(format)
 	if desc == "" {
 		return ""
@@ -202,7 +154,7 @@ func BuildClaudeOutputFormatDescription(format gjson.Result) string {
 	return builder.String()
 }
 
-func claudeStructuredOutputNameAndDescription(format gjson.Result) (string, string) {
+func claudeStructuredOutputNameAndDescription(format ojson.Result) (string, string) {
 	jsonSchema := format.Get("json_schema")
 	name := strings.TrimSpace(jsonSchema.Get("name").String())
 	if name == "" {
@@ -213,4 +165,53 @@ func claudeStructuredOutputNameAndDescription(format gjson.Result) (string, stri
 		desc = strings.TrimSpace(format.Get("description").String())
 	}
 	return name, desc
+}
+
+// BuildClaudeStructuredOutputInstruction formats structured output settings
+// (from Chat Completions response_format or Responses text.format) as explicit
+// instructions to inject into Claude's system prompt.
+func BuildClaudeStructuredOutputInstruction(format ojson.Result) string {
+	if !format.Exists() {
+		return ""
+	}
+
+	formatType := strings.ToLower(strings.TrimSpace(format.Get("type").String()))
+	switch formatType {
+	case "json_object":
+		return "You must format your entire response as a valid JSON object. Do not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object."
+	case "json_schema":
+		jsonSchema := format.Get("json_schema")
+		schema := jsonSchema.Get("schema")
+		if !schema.Exists() {
+			schema = format.Get("schema")
+		}
+		if !schema.Exists() {
+			return "You must format your entire response as a valid JSON object. Do not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object."
+		}
+
+		var builder strings.Builder
+		builder.WriteString("You must format your entire response as valid JSON that conforms strictly to the following JSON schema:\n")
+		name, desc := claudeStructuredOutputNameAndDescription(format)
+		if name != "" {
+			builder.WriteString("Schema Name: ")
+			builder.WriteString(name)
+			builder.WriteString("\n")
+		}
+		if desc != "" {
+			builder.WriteString("Schema Description: ")
+			builder.WriteString(desc)
+			builder.WriteString("\n")
+		}
+		builder.WriteString("JSON Schema:\n")
+		builder.WriteString(schema.Raw)
+		builder.WriteString("\nDo not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON ")
+		if schema.Get("type").Str == "object" {
+			builder.WriteString("object.")
+		} else {
+			builder.WriteString("value.")
+		}
+		return builder.String()
+	default:
+		return ""
+	}
 }

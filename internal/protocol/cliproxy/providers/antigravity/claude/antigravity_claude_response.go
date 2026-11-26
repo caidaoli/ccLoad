@@ -20,8 +20,7 @@ import (
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/util"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // decodeSignature decodes R... (2-layer Base64) to E... (1-layer Base64, Anthropic format).
@@ -106,7 +105,7 @@ func isAntigravityMalformedFunctionCall(finishReason string, hasVisibleOutput bo
 	return strings.EqualFold(strings.TrimSpace(finishReason), "MALFORMED_FUNCTION_CALL") && !hasVisibleOutput
 }
 
-func isAntigravityNonEmptyFunctionCall(fc gjson.Result) bool {
+func isAntigravityNonEmptyFunctionCall(fc ojson.Result) bool {
 	if !fc.IsObject() {
 		return false
 	}
@@ -119,13 +118,32 @@ func isAntigravityNonEmptyFunctionCall(fc gjson.Result) bool {
 	return false
 }
 
-func antigravityClaudeToolUseID(modelName string, functionCall gjson.Result, fallback string) string {
+func antigravityClaudeToolUseID(modelName string, functionCall ojson.Result, fallback string) string {
 	if sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini {
 		if stableID := util.GeminiClaudeToolUseID(functionCall.Get("id").String(), functionCall.Get("name").String(), functionCall.Get("args").Raw); stableID != "" {
 			return stableID
 		}
+		return util.SanitizeClaudeToolID(fallback)
+	}
+	rawID := functionCall.Get("id").String()
+	if trimmed := strings.TrimSpace(rawID); trimmed != "" {
+		sanitized := util.SanitizeClaudeToolID(trimmed)
+		if !util.IsGeminiClaudeToolUseID(sanitized) {
+			if sanitized == rawID {
+				return sanitized
+			}
+			return nextAntigravityClaudeFallbackToolUseID(sanitized)
+		}
 	}
 	return util.SanitizeClaudeToolID(fallback)
+}
+
+func nextAntigravityClaudeFallbackToolUseID(toolName string) string {
+	prefix := strings.TrimSpace(toolName)
+	if prefix == "" {
+		prefix = "tool"
+	}
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), atomic.AddUint64(&toolUseIDCounter, 1))
 }
 
 // ConvertAntigravityResponseToClaude performs sophisticated streaming response format conversion.
@@ -157,7 +175,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 	// Request metadata is resolved once per stream; callers pass the same
 	// request bytes for the stream's lifetime.
 	if !params.RequestMetadataResolved {
-		params.ModelName = gjson.GetBytes(requestRawJSON, "model").String()
+		params.ModelName = ojson.GetBytes(requestRawJSON, "model").String()
 		params.WebSearchStreamMode = shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON)
 		params.RequestMetadataResolved = true
 	}
@@ -199,7 +217,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		}
 		params.CurrentThinkingText.Reset()
 		sigValue := formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind)
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
+		data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
 		appendEvent("content_block_delta", string(data))
 		params.CurrentThinkingSigned = true
 		params.HasContent = true
@@ -218,7 +236,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 			return
 		}
 		sigValue := formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind)
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
+		data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
 		appendEvent("content_block_delta", string(data))
 		params.CurrentThinkingSigned = true
 		params.HasContent = true
@@ -244,20 +262,24 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		// This follows the Claude Code API specification for streaming message initialization
 		messageStartTemplate := []byte(`{"type": "message_start", "message": {"id": "", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`)
 
-		// Use cpaUsageMetadata within the message_start event for Claude.
-		if promptTokenCount := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata.promptTokenCount"); promptTokenCount.Type == gjson.Number {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.usage.input_tokens", promptTokenCount.Int())
-		}
-		if candidatesTokenCount := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata.candidatesTokenCount"); candidatesTokenCount.Type == gjson.Number && !webSearchStreamMode {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.usage.output_tokens", candidatesTokenCount.Int())
+		// Populate initial usage from usageMetadata (single-chunk terminal) or cpaUsageMetadata (non-terminal).
+		var startUsage translatorcommon.GeminiUsageSnapshot
+		if startUsage.Merge(ojson.GetBytes(rawJSON, "response.usageMetadata")) || startUsage.Merge(ojson.GetBytes(rawJSON, "response.cpaUsageMetadata")) {
+			messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.usage.input_tokens", startUsage.ClaudeInputTokens())
+			if !webSearchStreamMode {
+				messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.usage.output_tokens", startUsage.ClaudeOutputTokens())
+			}
+			if startUsage.Cached > 0 {
+				messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.usage.cache_read_input_tokens", startUsage.Cached)
+			}
 		}
 
 		// Override default values with actual response metadata if available from the Antigravity response
-		if modelVersionResult := gjson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
+		if modelVersionResult := ojson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
+			messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
 		}
-		messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id",
-			translatorcommon.GeminiClaudeMessageID(gjson.GetBytes(rawJSON, "response.responseId")))
+		messageStartTemplate, _ = ojson.SetBytes(messageStartTemplate, "message.id",
+			translatorcommon.GeminiClaudeMessageID(ojson.GetBytes(rawJSON, "response.responseId")))
 		appendEvent("message_start", string(messageStartTemplate))
 
 		params.HasFirstResponse = true
@@ -265,8 +287,8 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	handledWebSearchGrounding := false
 	if webSearchStreamMode && !params.HasWebSearchTool {
-		root := gjson.ParseBytes(rawJSON)
-		if groundingMetadata := antigravityGroundingMetadata(root); groundingMetadata.Exists() {
+		root := ojson.ParseBytes(rawJSON)
+		if groundingMetadata := antigravityGroundingMetadata(root); hasValidAntigravityWebGrounding(groundingMetadata) {
 			toolUseID := newClaudeWebSearchToolUseID()
 			textContent := params.WebSearchTextBuffer.String() + antigravityTextContent(root)
 			params.WebSearchTextBuffer.Reset()
@@ -282,7 +304,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	// Process the response parts array from the backend client
 	// Each part can contain text content, thinking content, or function calls
-	partsResult := gjson.GetBytes(rawJSON, "response.candidates.0.content.parts")
+	partsResult := ojson.GetBytes(rawJSON, "response.candidates.0.content.parts")
 	if partsResult.IsArray() && webSearchStreamMode && !params.HasWebSearchTool && !handledWebSearchGrounding {
 		appendWebSearchBufferedText(partsResult, &params.WebSearchTextBuffer)
 	} else if partsResult.IsArray() && !handledWebSearchGrounding {
@@ -323,14 +345,14 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 						}
 						if params.ResponseType == 2 {
 							params.CurrentThinkingText.WriteString(partText)
-							data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partText)
+							data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partText)
 							appendEvent("content_block_delta", string(data))
 							params.HasContent = true
 						} else {
 							closeCurrentBlock()
 							appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
 							params.CurrentThinkingSigned = false
-							data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partText)
+							data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partText)
 							appendEvent("content_block_delta", string(data))
 							params.ResponseType = 2
 							params.HasContent = true
@@ -347,13 +369,13 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 						signatureTargetsVisibleText = appendPartSignature(signature, geminiClaudeCarrierNext, geminiClaudeCarrierText)
 					}
 					if params.ResponseType == 1 {
-						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+						data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
 						appendEvent("content_block_delta", string(data))
 						params.HasContent = true
 					} else if partText != "" {
 						closeCurrentBlock()
 						appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
-						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+						data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
 						appendEvent("content_block_delta", string(data))
 						params.ResponseType = 1
 						params.HasContent = true
@@ -375,7 +397,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				isContinuation := params.ResponseType == 3 && fcName == "" && params.CurrentToolName != ""
 				if !isContinuation && !isAntigravityNonEmptyFunctionCall(functionCallResult) {
 					if toolSignature != "" {
-						appendPartSignature(toolSignature, geminiClaudeCarrierPrevious, params.LastSemanticKind)
+						appendPartSignature(toolSignature, geminiClaudeCarrierNext, geminiClaudeCarrierAny)
 					}
 					continue
 				}
@@ -406,11 +428,11 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				// This creates the structure for a function call in Claude Code format
 				// Create the tool use block with unique ID and function details
 				data := []byte(fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`, params.ResponseIndex))
-				fallbackID := fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&toolUseIDCounter, 1))
-				data, _ = sjson.SetBytes(data, "content_block.id", antigravityClaudeToolUseID(modelName, functionCallResult, fallbackID))
-				data, _ = sjson.SetBytes(data, "content_block.name", fcName)
+				fallbackID := nextAntigravityClaudeFallbackToolUseID(fcName)
+				data, _ = ojson.SetBytes(data, "content_block.id", antigravityClaudeToolUseID(modelName, functionCallResult, fallbackID))
+				data, _ = ojson.SetBytes(data, "content_block.name", fcName)
 				if antigravityModelGroup(modelName) == "claude" && toolSignature != "" {
-					data, _ = sjson.SetBytes(data, "content_block.signature", formatClaudeSignatureValue(modelName, toolSignature))
+					data, _ = ojson.SetBytes(data, "content_block.signature", formatClaudeSignatureValue(modelName, toolSignature))
 				}
 				appendEvent("content_block_start", string(data))
 
@@ -426,16 +448,16 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		}
 	}
 
-	finishReason := strings.TrimSpace(gjson.GetBytes(rawJSON, "response.candidates.0.finishReason").Str)
+	finishReason := strings.TrimSpace(ojson.GetBytes(rawJSON, "response.candidates.0.finishReason").Str)
 	if finishReason != "" {
 		params.FinishReason = finishReason
 	}
 
-	hasUsage := params.Usage.Merge(gjson.GetBytes(rawJSON, "response.usageMetadata"))
+	hasUsage := params.Usage.Merge(ojson.GetBytes(rawJSON, "response.usageMetadata"))
 	if hasUsage {
 		params.HasUsageMetadata = true
 	} else {
-		params.Usage.Merge(gjson.GetBytes(rawJSON, "response.cpaUsageMetadata"))
+		params.Usage.Merge(ojson.GetBytes(rawJSON, "response.cpaUsageMetadata"))
 	}
 
 	if webSearchStreamMode && !params.HasWebSearchTool && params.FinishReason != "" && params.WebSearchTextBuffer.Len() > 0 {
@@ -464,7 +486,7 @@ func (params *Params) emitToolInput(appendEvent func(string, string), partialJSO
 	if partialJSON == "" {
 		return
 	}
-	data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", partialJSON)
+	data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, params.ResponseIndex)), "delta.partial_json", partialJSON)
 	appendEvent("content_block_delta", string(data))
 }
 
@@ -482,7 +504,7 @@ func (params *Params) closeCurrentBlock(appendEvent func(string, string)) {
 	for _, signature := range params.PendingToolThoughtSignatures {
 		appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
 		sigValue := formatGeminiClaudeCarrierValue(params.ModelName, signature, geminiClaudeCarrierPrevious, geminiClaudeCarrierFunction)
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
+		data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
 		appendEvent("content_block_delta", string(data))
 		appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
 		params.ResponseIndex++
@@ -490,7 +512,7 @@ func (params *Params) closeCurrentBlock(appendEvent func(string, string)) {
 	params.PendingToolThoughtSignatures = nil
 }
 
-func appendWebSearchBufferedText(partsResult gjson.Result, buffer *strings.Builder) {
+func appendWebSearchBufferedText(partsResult ojson.Result, buffer *strings.Builder) {
 	for _, partResult := range partsResult.Array() {
 		if partResult.Get("thought").Bool() || partResult.Get("functionCall").Exists() {
 			continue
@@ -508,7 +530,7 @@ func appendBufferedWebSearchTextBlock(params *Params, appendEvent func(string, s
 		return
 	}
 	appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
-	data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", text)
+	data, _ := ojson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", text)
 	appendEvent("content_block_delta", string(data))
 	params.ResponseType = 1
 	params.HasContent = true
@@ -539,11 +561,11 @@ func appendFinalEvents(params *Params, output *[]byte) {
 
 	delta := []byte(fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"input_tokens":%d,"output_tokens":%d}}`, stopReason, params.Usage.ClaudeInputTokens(), usageOutputTokens))
 	if params.WebSearchRequests > 0 {
-		delta, _ = sjson.SetBytes(delta, "usage.server_tool_use.web_search_requests", params.WebSearchRequests)
+		delta, _ = ojson.SetBytes(delta, "usage.server_tool_use.web_search_requests", params.WebSearchRequests)
 	}
 	// Add cache_read_input_tokens if cached tokens are present (indicates prompt caching is working)
 	if params.Usage.Cached > 0 {
-		delta, _ = sjson.SetBytes(delta, "usage.cache_read_input_tokens", params.Usage.Cached)
+		delta, _ = ojson.SetBytes(delta, "usage.cache_read_input_tokens", params.Usage.Cached)
 	}
 	*output = translatorcommon.AppendSSEEventString(*output, "message_delta", string(delta), 3)
 	*output = translatorcommon.AppendSSEEventString(*output, "message_stop", `{"type":"message_stop"}`, 3)
@@ -578,29 +600,29 @@ func resolveStopReason(finishReason string, hasToolUse bool) string {
 //   - []byte: A Claude-compatible JSON response.
 func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	toolNameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
-	modelName := gjson.GetBytes(requestRawJSON, "model").String()
+	modelName := ojson.GetBytes(requestRawJSON, "model").String()
 
-	root := gjson.ParseBytes(rawJSON)
+	root := ojson.ParseBytes(rawJSON)
 	var usage translatorcommon.GeminiUsageSnapshot
 	hasUsage := usage.Merge(root.Get("response.usageMetadata")) || usage.Merge(root.Get("response.cpaUsageMetadata"))
 
 	responseJSON := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
-	responseJSON, _ = sjson.SetBytes(responseJSON, "id", translatorcommon.GeminiClaudeMessageID(root.Get("response.responseId")))
-	responseJSON, _ = sjson.SetBytes(responseJSON, "model", root.Get("response.modelVersion").String())
+	responseJSON, _ = ojson.SetBytes(responseJSON, "id", translatorcommon.GeminiClaudeMessageID(root.Get("response.responseId")))
+	responseJSON, _ = ojson.SetBytes(responseJSON, "model", root.Get("response.modelVersion").String())
 	if hasUsage {
-		responseJSON, _ = sjson.SetBytes(responseJSON, "usage.input_tokens", usage.ClaudeInputTokens())
-		responseJSON, _ = sjson.SetBytes(responseJSON, "usage.output_tokens", usage.ClaudeOutputTokens())
+		responseJSON, _ = ojson.SetBytes(responseJSON, "usage.input_tokens", usage.ClaudeInputTokens())
+		responseJSON, _ = ojson.SetBytes(responseJSON, "usage.output_tokens", usage.ClaudeOutputTokens())
 		if usage.Cached > 0 {
-			responseJSON, _ = sjson.SetBytes(responseJSON, "usage.cache_read_input_tokens", usage.Cached)
+			responseJSON, _ = ojson.SetBytes(responseJSON, "usage.cache_read_input_tokens", usage.Cached)
 		}
 	}
 
 	if shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON) {
-		if groundingMetadata := antigravityGroundingMetadata(root); groundingMetadata.Exists() {
+		if groundingMetadata := antigravityGroundingMetadata(root); hasValidAntigravityWebGrounding(groundingMetadata) {
 			toolUseID := newClaudeWebSearchToolUseID()
-			responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", buildClaudeWebSearchContent(toolUseID, antigravityTextContent(root), groundingMetadata))
-			responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", resolveStopReason(root.Get("response.candidates.0.finishReason").String(), false))
-			responseJSON, _ = sjson.SetBytes(responseJSON, "usage.server_tool_use.web_search_requests", 1)
+			responseJSON, _ = ojson.SetRawBytes(responseJSON, "content", buildClaudeWebSearchContent(toolUseID, antigravityTextContent(root), groundingMetadata))
+			responseJSON, _ = ojson.SetBytes(responseJSON, "stop_reason", resolveStopReason(root.Get("response.candidates.0.finishReason").String(), false))
+			responseJSON, _ = ojson.SetBytes(responseJSON, "usage.server_tool_use.web_search_requests", 1)
 			return responseJSON
 		}
 	}
@@ -613,7 +635,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	thinkingSignature := ""
 	thinkingSignatureDirection := geminiClaudeCarrierStandalone
 	thinkingSignatureTargetKind := geminiClaudeCarrierText
-	toolIDCounter := 0
 	hasToolCall := false
 	hasVisibleOutput := false
 	hasSemanticContent := false
@@ -624,7 +645,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			return
 		}
 		block := []byte(`{"type":"text","text":""}`)
-		block, _ = sjson.SetBytes(block, "text", textBuilder.String())
+		block, _ = ojson.SetBytes(block, "text", textBuilder.String())
 		blocks = append(blocks, block)
 		textBuilder.Reset()
 	}
@@ -634,10 +655,10 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			return
 		}
 		block := []byte(`{"type":"thinking","thinking":""}`)
-		block, _ = sjson.SetBytes(block, "thinking", thinkingBuilder.String())
+		block, _ = ojson.SetBytes(block, "thinking", thinkingBuilder.String())
 		if thinkingSignature != "" {
 			sigValue := formatGeminiClaudeCarrierValue(modelName, thinkingSignature, thinkingSignatureDirection, thinkingSignatureTargetKind)
-			block, _ = sjson.SetBytes(block, "signature", sigValue)
+			block, _ = ojson.SetBytes(block, "signature", sigValue)
 		}
 		blocks = append(blocks, block)
 		thinkingBuilder.Reset()
@@ -651,7 +672,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			return
 		}
 		carrier := []byte(`{"type":"thinking","thinking":"","signature":""}`)
-		carrier, _ = sjson.SetBytes(carrier, "signature", formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind))
+		carrier, _ = ojson.SetBytes(carrier, "signature", formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind))
 		blocks = append(blocks, carrier)
 	}
 
@@ -662,7 +683,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			if functionCall := part.Get("functionCall"); functionCall.Exists() {
 				if !isAntigravityNonEmptyFunctionCall(functionCall) {
 					if signature != "" {
-						appendSignatureCarrier(signature, geminiClaudeCarrierPrevious, lastSemanticKind)
+						appendSignatureCarrier(signature, geminiClaudeCarrierNext, geminiClaudeCarrierAny)
 					}
 					continue
 				}
@@ -680,20 +701,19 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				hasVisibleOutput = true
 
 				name := util.RestoreSanitizedToolName(toolNameMap, functionCall.Get("name").String())
-				toolIDCounter++
 				if !isClaudeTarget && signature != "" && !signatureAttachedToThought {
 					appendSignatureCarrier(signature, geminiClaudeCarrierNext, geminiClaudeCarrierFunction)
 				}
 				toolBlock := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
-				toolBlock, _ = sjson.SetBytes(toolBlock, "id", antigravityClaudeToolUseID(modelName, functionCall, fmt.Sprintf("tool_%d", toolIDCounter)))
-				toolBlock, _ = sjson.SetBytes(toolBlock, "name", name)
+				toolBlock, _ = ojson.SetBytes(toolBlock, "id", antigravityClaudeToolUseID(modelName, functionCall, nextAntigravityClaudeFallbackToolUseID(name)))
+				toolBlock, _ = ojson.SetBytes(toolBlock, "name", name)
 				if isClaudeTarget && signature != "" {
-					toolBlock, _ = sjson.SetBytes(toolBlock, "signature", formatClaudeSignatureValue(modelName, signature))
+					toolBlock, _ = ojson.SetBytes(toolBlock, "signature", formatClaudeSignatureValue(modelName, signature))
 				}
 
-				if args := functionCall.Get("args"); args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {
+				if args := functionCall.Get("args"); args.Exists() && args.Raw != "" && ojson.Valid(args.Raw) && args.IsObject() {
 					cleanArgs := util.CleanClaudeToolArgumentsWithTranslated(args.Raw, name, originalRequestRawJSON, requestRawJSON)
-					toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(cleanArgs))
+					toolBlock, _ = ojson.SetRawBytes(toolBlock, "input", []byte(cleanArgs))
 				}
 
 				blocks = append(blocks, toolBlock)
@@ -768,7 +788,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	flushText()
 
 	if len(blocks) > 0 {
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
+		responseJSON, _ = ojson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
 	}
 
 	finishReason := root.Get("response.candidates.0.finishReason").Str
@@ -776,10 +796,10 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		return []byte(antigravityMalformedFunctionCallErrorPayload)
 	}
 	stopReason := resolveStopReason(finishReason, hasToolCall)
-	responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", stopReason)
+	responseJSON, _ = ojson.SetBytes(responseJSON, "stop_reason", stopReason)
 
 	if !hasUsage {
-		responseJSON, _ = sjson.DeleteBytes(responseJSON, "usage")
+		responseJSON, _ = ojson.DeleteBytes(responseJSON, "usage")
 	}
 
 	return responseJSON

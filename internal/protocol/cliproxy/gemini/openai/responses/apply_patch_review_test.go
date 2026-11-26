@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 const geminiMixedPatchReviewRequest = `{"tools":[{"type":"custom","name":"apply_patch"},{"type":"function","name":"lookup"}]}`
@@ -23,9 +25,9 @@ func geminiPatchReviewFrame(parts []string, terminal bool) []byte {
 	return []byte(`{"candidates":[{"content":{"parts":[` + strings.Join(parts, ",") + `]}` + finish + `}]}`)
 }
 
-func geminiPatchReviewEvents(t *testing.T, chunks [][]byte) []gjson.Result {
+func geminiPatchReviewEvents(t *testing.T, chunks [][]byte) []ojson.Result {
 	t.Helper()
-	var events []gjson.Result
+	var events []ojson.Result
 	for _, chunk := range chunks {
 		_, event := parseSSEEvent(t, chunk)
 		events = append(events, event)
@@ -68,10 +70,10 @@ func TestGeminiApplyPatchCrossKeyEvidenceConflict(t *testing.T) {
 								}
 								return
 							}
-							send := func(raw []byte) []gjson.Result {
+							send := func(raw []byte) []ojson.Result {
 								return geminiPatchReviewEvents(t, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", request, nil, raw, &param))
 							}
-							var events []gjson.Result
+							var events []ojson.Result
 							if mode == "stream single frame" {
 								events = send(geminiPatchReviewFrame(parts, true))
 							} else {
@@ -138,13 +140,13 @@ func TestGeminiApplyPatchCrossKeyOrdinaryLegacy(t *testing.T) {
 						names = append(names, name)
 						arguments = append(arguments, `{"x":3}`)
 						var param any
-						var events []gjson.Result
+						var events []ojson.Result
 						for i, part := range parts {
 							events = append(events, geminiPatchReviewEvents(t, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(request.request), nil, geminiPatchReviewFrame([]string{part}, i == len(parts)-1), &param))...)
 						}
 						events = append(events, geminiPatchReviewEvents(t, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(request.request), nil, []byte("[DONE]"), &param))...)
 						counts := map[string]int{}
-						var final gjson.Result
+						var final ojson.Result
 						for _, event := range events {
 							counts[event.Get("type").String()]++
 							if event.Get("type").String() == "response.completed" {
@@ -156,7 +158,7 @@ func TestGeminiApplyPatchCrossKeyOrdinaryLegacy(t *testing.T) {
 						}
 						var nonStream any
 						out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini", []byte(request.request), nil, geminiPatchReviewFrame(parts, true), &nonStream)
-						for _, output := range []gjson.Result{final, gjson.ParseBytes(out)} {
+						for _, output := range []ojson.Result{final, util.ParseGJSONBytesNoCopy(out)} {
 							if output.Get("output.#").Int() != 3 {
 								t.Fatalf("ordinary calls consolidated or rejected: %s", output.Raw)
 							}

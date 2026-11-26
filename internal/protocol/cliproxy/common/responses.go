@@ -8,12 +8,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+
+	"ccLoad/internal/protocol/cliproxy/util"
 )
 
 // ResponsesMessagePartText returns the visible value of a Responses message part.
-func ResponsesMessagePartText(part gjson.Result) gjson.Result {
+func ResponsesMessagePartText(part ojson.Result) ojson.Result {
 	switch part.Get("type").String() {
 	case "output_text":
 		return part.Get("text")
@@ -23,7 +24,7 @@ func ResponsesMessagePartText(part gjson.Result) gjson.Result {
 		}
 		return part.Get("text")
 	default:
-		return gjson.Result{}
+		return ojson.Result{}
 	}
 }
 
@@ -52,7 +53,7 @@ type responsesStreamedMessage struct {
 // ResponsesFinishedPart carries visible text recovered at item completion.
 type ResponsesFinishedPart struct {
 	Text        string
-	Annotations gjson.Result
+	Annotations ojson.Result
 }
 
 func (s *ResponsesMessageStream) find(id string, index int64, indexed bool) *responsesStreamedMessage {
@@ -67,8 +68,8 @@ func (s *ResponsesMessageStream) find(id string, index int64, indexed bool) *res
 	return nil
 }
 
-func (s *ResponsesMessageStream) message(id string, index gjson.Result) *responsesStreamedMessage {
-	indexed := index.Type == gjson.Number
+func (s *ResponsesMessageStream) message(id string, index ojson.Result) *responsesStreamedMessage {
+	indexed := index.Type == ojson.Number
 	outputIndex := index.Int()
 	message := s.find(id, outputIndex, indexed)
 	if message == nil && s.current != nil && ((id == "" && !indexed) || !s.current.indexed && s.current.id == "") {
@@ -104,7 +105,7 @@ func (s *ResponsesMessageStream) forgetCurrent() {
 
 // ObserveEvent tracks message identity and the content positions that can be
 // passed over without waiting for visible output.
-func (s *ResponsesMessageStream) ObserveEvent(eventType string, event gjson.Result) {
+func (s *ResponsesMessageStream) ObserveEvent(eventType string, event ojson.Result) {
 	switch eventType {
 	case "response.content_part.added", "response.content_part.done":
 		part := event.Get("part")
@@ -116,7 +117,7 @@ func (s *ResponsesMessageStream) ObserveEvent(eventType string, event gjson.Resu
 		case "":
 			return
 		}
-		if index := event.Get("content_index"); index.Type == gjson.Number {
+		if index := event.Get("content_index"); index.Type == ojson.Number {
 			message := s.message(event.Get("item_id").String(), event.Get("output_index"))
 			if (message.indexed || message.id != "") && message.pending[index.Int()] == nil {
 				message.markPart(index.Int())
@@ -139,7 +140,7 @@ func (s *ResponsesMessageStream) ObserveEvent(eventType string, event gjson.Resu
 		}
 	case "":
 	default:
-		if index.Type == gjson.Number {
+		if index.Type == ojson.Number {
 			if s.nonMessageTypes == nil {
 				s.nonMessageTypes = make(map[int64]string)
 			}
@@ -150,13 +151,13 @@ func (s *ResponsesMessageStream) ObserveEvent(eventType string, event gjson.Resu
 
 // ObserveDelta returns whether to emit this delta immediately. Deltas after an
 // unresolved content index wait for the message snapshot to fill the gap.
-func (s *ResponsesMessageStream) ObserveDelta(event gjson.Result, text string) bool {
+func (s *ResponsesMessageStream) ObserveDelta(event ojson.Result, text string) bool {
 	if text == "" {
 		return true
 	}
 	message := s.message(event.Get("item_id").String(), event.Get("output_index"))
 	s.current = message
-	if part := event.Get("content_index"); part.Type == gjson.Number {
+	if part := event.Get("content_index"); part.Type == ojson.Number {
 		index := part.Int()
 		if (index > message.nextContentIndex && (message.indexed || message.id != "")) || message.pending[index] != nil {
 			if message.pending == nil {
@@ -198,7 +199,7 @@ func (m *responsesStreamedMessage) markPart(index int64) {
 	m.parts[index] = true
 }
 
-func (m *responsesStreamedMessage) sawPart(index int64, part gjson.Result) bool {
+func (m *responsesStreamedMessage) sawPart(index int64, part ojson.Result) bool {
 	if m == nil {
 		return false
 	}
@@ -212,7 +213,7 @@ func (m *responsesStreamedMessage) sawPart(index int64, part gjson.Result) bool 
 }
 
 // FinishMessage returns visible parts that still need to be emitted at item completion.
-func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []ResponsesFinishedPart {
+func (s *ResponsesMessageStream) FinishMessage(event ojson.Result) []ResponsesFinishedPart {
 	item := event.Get("item")
 	id := cmp.Or(item.Get("id").String(), event.Get("item_id").String())
 	message := s.message(id, event.Get("output_index"))
@@ -253,7 +254,7 @@ func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []ResponsesFi
 
 // MissingMessageDoneEvents builds completion events for message parts found in
 // the terminal response or deferred after a missing content index.
-func (s *ResponsesMessageStream) MissingMessageDoneEvents(output gjson.Result) [][]byte {
+func (s *ResponsesMessageStream) MissingMessageDoneEvents(output ojson.Result) [][]byte {
 	s.forgetCurrent()
 	if s.unkeyedOutput && len(s.deferred) == 0 {
 		return nil
@@ -299,10 +300,10 @@ func (s *ResponsesMessageStream) MissingMessageDoneEvents(output gjson.Result) [
 		}
 		item := `{"type":"message"}`
 		if message.id != "" {
-			item, _ = sjson.Set(item, "id", message.id)
+			item, _ = ojson.Set(item, "id", message.id)
 		}
 		if message.phase != "" {
-			item, _ = sjson.Set(item, "phase", message.phase)
+			item, _ = ojson.Set(item, "phase", message.phase)
 		}
 		events = append(events, responsesMessageDoneEvent(item, message.outputIndex, message.indexed))
 	}
@@ -321,27 +322,36 @@ func responsesMessageDoneEvent(item string, index int64, indexed bool) []byte {
 	return append(event, '}')
 }
 
-// SetResponsesToolCallIdentity writes a resolved Responses tool name and namespace.
-func SetResponsesToolCallIdentity(item []byte, name, namespace, itemPath string) []byte {
+// SetResponsesToolCallIdentityDoc writes a resolved Responses tool name and namespace into doc.
+func SetResponsesToolCallIdentityDoc(doc *ojson.Doc, name, namespace, itemPath string) {
+	if doc == nil {
+		return
+	}
 	namePath := "name"
 	namespacePath := "namespace"
 	if itemPath != "" {
 		namePath = itemPath + ".name"
 		namespacePath = itemPath + ".namespace"
 	}
-	item, _ = sjson.SetBytes(item, namePath, name)
+	_ = doc.Set(namePath, name)
 	if namespace != "" {
-		item, _ = sjson.SetBytes(item, namespacePath, namespace)
+		_ = doc.Set(namespacePath, namespace)
 	} else {
-		item, _ = sjson.DeleteBytes(item, namespacePath)
+		_ = doc.Delete(namespacePath)
 	}
-	return item
+}
+
+// SetResponsesToolCallIdentity writes a resolved Responses tool name and namespace.
+func SetResponsesToolCallIdentity(item []byte, name, namespace, itemPath string) []byte {
+	doc := ojson.NewDoc(item)
+	SetResponsesToolCallIdentityDoc(doc, name, namespace, itemPath)
+	return doc.Bytes()
 }
 
 // ExtractResponsesCallID extracts the tool call ID from a Responses API item,
 // prioritizing dedicated tool call references over generic item IDs:
 // call_id -> tool_call_id -> callId -> id (excluding fco_ output item IDs)
-func ExtractResponsesCallID(node gjson.Result) string {
+func ExtractResponsesCallID(node ojson.Result) string {
 	if callID := strings.TrimSpace(node.Get("call_id").String()); callID != "" {
 		return callID
 	}
@@ -366,12 +376,12 @@ func ExtractResponsesCallID(node gjson.Result) string {
 // 3. FIFO queue fallback for remaining outputs that omit a call ID (skipping pending calls reserved by future explicit outputs).
 // Outputs that already carry an explicit call ID that does not match any pending call
 // are never rewritten or stolen.
-func NormalizeResponsesToolCallOutputs(items []gjson.Result) []gjson.Result {
+func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
 	if len(items) == 0 {
 		return items
 	}
 
-	normalized := make([]gjson.Result, len(items))
+	normalized := make([]ojson.Result, len(items))
 	copy(normalized, items)
 
 	explicitOutputCounts := make(map[string]int)
@@ -478,8 +488,8 @@ func NormalizeResponsesToolCallOutputs(items []gjson.Result) []gjson.Result {
 					matchedOut := outputs[outIdx]
 					if matchedOut.Get("call_id").String() != pendingID {
 						raw := []byte(matchedOut.Raw)
-						raw, _ = sjson.SetBytes(raw, "call_id", pendingID)
-						normalized[start+outIdx] = gjson.ParseBytes(raw)
+						raw, _ = ojson.SetBytes(raw, "call_id", pendingID)
+						normalized[start+outIdx] = util.ParseGJSONBytesNoCopy(raw)
 					}
 				}
 				pendingCallIDs = remainingPending
@@ -493,19 +503,43 @@ func NormalizeResponsesToolCallOutputs(items []gjson.Result) []gjson.Result {
 	return normalized
 }
 
-// SanitizeOrphanResponsesToolOutputs pairs outputs missing call_id with pending
-// calls and rewrites remaining standalone outputs as user messages. Codex Desktop
-// Companion Page context uses this shape, which strict Responses upstreams reject.
-// Explicit call references remain valid without local history for continuations.
-func SanitizeOrphanResponsesToolOutputs(rawJSON []byte) []byte {
-	input := gjson.GetBytes(rawJSON, "input")
-	if !input.IsArray() {
-		return rawJSON
+// SanitizeOrphanResponsesToolOutputsDoc rewrites standalone function_call_output
+// and custom_tool_call_output items that carry no call_id into user message
+// items. Codex Desktop Companion Page context is injected as function_call_output
+// items without call_id, which strict Responses upstreams reject with HTTP 400
+// ("responses function_call_output call_id is required").
+func SanitizeOrphanResponsesToolOutputsDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
 	}
-	items := input.Array()
-	normalized := NormalizeResponsesToolCallOutputs(items)
+	return SanitizeOrphanResponsesToolOutputsInputDoc(doc.Get("input"), func() *ojson.Doc {
+		return doc
+	})
+}
+
+// SanitizeOrphanResponsesToolOutputsInputDoc pairs tool outputs missing call_id
+// with preceding unmatched tool calls when possible, and rewrites remaining
+// standalone function_call_output and custom_tool_call_output items without
+// call_id into user message items in-place on the document returned by ensureDoc.
+func SanitizeOrphanResponsesToolOutputsInputDoc(inputResult ojson.Result, ensureDoc func() *ojson.Doc) bool {
+	if !inputResult.IsArray() || ensureDoc == nil {
+		return false
+	}
+	inputItems := inputResult.Array()
+	if len(inputItems) == 0 {
+		return false
+	}
+
+	normalizedItems := NormalizeResponsesToolCallOutputs(inputItems)
+
+	changed := false
 	pendingMissingCallIDOutputType := ""
-	for i, item := range normalized {
+	for i := 0; i < len(inputItems); i++ {
+		item := normalizedItems[i]
+		if !item.IsObject() {
+			pendingMissingCallIDOutputType = ""
+			continue
+		}
 		itemType := strings.TrimSpace(item.Get("type").String())
 		if itemType == "function_call" || itemType == "custom_tool_call" {
 			if ExtractResponsesCallID(item) == "" {
@@ -515,14 +549,22 @@ func SanitizeOrphanResponsesToolOutputs(rawJSON []byte) []byte {
 			}
 			continue
 		}
-		if itemType != "function_call_output" && itemType != "custom_tool_call_output" || isCodexDelegationToolOutput(item) {
+		if itemType != "function_call_output" && itemType != "custom_tool_call_output" {
 			pendingMissingCallIDOutputType = ""
 			continue
 		}
-		if callID := responsesToolOutputExplicitCallID(item); callID != "" {
+		if isCodexDelegationToolOutput(item) {
 			pendingMissingCallIDOutputType = ""
-			if strings.TrimSpace(items[i].Get("call_id").String()) != callID {
-				rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("input.%d.call_id", i), callID)
+			continue
+		}
+		if resolvedCallID := responsesToolOutputExplicitCallID(item); resolvedCallID != "" {
+			pendingMissingCallIDOutputType = ""
+			origCallID := strings.TrimSpace(inputItems[i].Get("call_id").String())
+			if origCallID != resolvedCallID {
+				itemPath := fmt.Sprintf("input.%d.call_id", i)
+				if errSet := ensureDoc().Set(itemPath, resolvedCallID); errSet == nil {
+					changed = true
+				}
 			}
 			continue
 		}
@@ -533,26 +575,32 @@ func SanitizeOrphanResponsesToolOutputs(rawJSON []byte) []byte {
 			continue
 		}
 		pendingMissingCallIDOutputType = ""
-		rawJSON, _ = sjson.SetRawBytes(rawJSON, fmt.Sprintf("input.%d", i), orphanResponsesToolOutputMessage(item))
+
+		itemPath := fmt.Sprintf("input.%d", i)
+		if setOrphanResponsesToolOutputMessageDoc(ensureDoc(), itemPath, item) {
+			changed = true
+		}
 	}
-	return rawJSON
+	return changed
 }
 
-func responsesToolOutputExplicitCallID(item gjson.Result) string {
+func responsesToolOutputExplicitCallID(item ojson.Result) string {
 	for _, key := range []string{"call_id", "tool_call_id", "callId"} {
-		value := item.Get(key)
-		if value.Type == gjson.String {
-			if callID := strings.TrimSpace(value.String()); callID != "" {
-				return callID
+		val := item.Get(key)
+		if val.Type == ojson.String {
+			if s := strings.TrimSpace(val.String()); s != "" {
+				return s
 			}
 		}
 	}
 	return ""
 }
 
-func isCodexDelegationToolOutput(item gjson.Result) bool {
-	if strings.TrimSpace(item.Get("type").String()) != "function_call_output" ||
-		strings.TrimSpace(item.Get("namespace").String()) != "codex_app" {
+func isCodexDelegationToolOutput(item ojson.Result) bool {
+	if strings.TrimSpace(item.Get("type").String()) != "function_call_output" {
+		return false
+	}
+	if strings.TrimSpace(item.Get("namespace").String()) != "codex_app" {
 		return false
 	}
 	switch strings.TrimSpace(item.Get("name").String()) {
@@ -563,37 +611,54 @@ func isCodexDelegationToolOutput(item gjson.Result) bool {
 	}
 }
 
-func orphanResponsesToolOutputMessage(item gjson.Result) []byte {
+func setOrphanResponsesToolOutputMessageDoc(targetDoc *ojson.Doc, itemPath string, item ojson.Result) bool {
+	if targetDoc == nil {
+		return false
+	}
+	fullText, extraParts := buildOrphanResponsesToolOutputContent(item)
+	if errSet := targetDoc.SetRawBytes(itemPath, []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`)); errSet != nil {
+		return false
+	}
+	if errSet := targetDoc.Set(itemPath+".content.0.text", fullText); errSet != nil {
+		return false
+	}
+	for idx, partRaw := range extraParts {
+		partPath := fmt.Sprintf("%s.content.%d", itemPath, idx+1)
+		if errSet := targetDoc.SetRawBytes(partPath, partRaw); errSet != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func buildOrphanResponsesToolOutputContent(item ojson.Result) (string, [][]byte) {
 	name := strings.TrimSpace(item.Get("name").String())
 	if name == "" {
 		name = "tool"
 	}
-	text, extraParts := orphanResponsesToolOutputParts(item.Get("output"))
-	if text == "" {
-		text = "(empty)"
+	outputText, extraParts := extractOrphanResponsesToolOutputParts(item.Get("output"))
+	if outputText == "" {
+		outputText = "(empty)"
 	}
-	message := []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`)
-	message, _ = sjson.SetBytes(message, "content.0.text", "Tool output from "+name+":\n"+text)
-	for _, part := range extraParts {
-		message, _ = sjson.SetRawBytes(message, "content.-1", part)
-	}
-	return message
+	return "Tool output from " + name + ":\n" + outputText, extraParts
 }
 
-func orphanResponsesToolOutputParts(output gjson.Result) (string, [][]byte) {
-	if !output.Exists() || output.Type == gjson.Null {
+func extractOrphanResponsesToolOutputParts(output ojson.Result) (string, [][]byte) {
+	if !output.Exists() || output.Type == ojson.Null {
 		return "", nil
 	}
-	if output.Type == gjson.String {
+	if output.Type == ojson.String {
 		return strings.TrimSpace(output.String()), nil
 	}
 	if output.IsArray() {
-		var texts []string
+		items := output.Array()
+		parts := make([]string, 0, len(items))
 		var extraParts [][]byte
-		for _, part := range output.Array() {
-			if part.Type == gjson.String {
-				if text := strings.TrimSpace(part.String()); text != "" {
-					texts = append(texts, text)
+		for i := 0; i < len(items); i++ {
+			part := items[i]
+			if part.Type == ojson.String {
+				if s := strings.TrimSpace(part.String()); s != "" {
+					parts = append(parts, s)
 				}
 				continue
 			}
@@ -602,20 +667,23 @@ func orphanResponsesToolOutputParts(output gjson.Result) (string, [][]byte) {
 			}
 			matchedText := false
 			for _, key := range []string{"text", "input_text", "output_text"} {
-				if value := part.Get(key); value.Type == gjson.String {
+				val := part.Get(key)
+				if val.Type == ojson.String {
 					matchedText = true
-					if text := strings.TrimSpace(value.String()); text != "" {
-						texts = append(texts, text)
+					if s := strings.TrimSpace(val.String()); s != "" {
+						parts = append(parts, s)
 					}
 					break
 				}
 			}
 			if !matchedText {
-				extraParts = append(extraParts, []byte(part.Raw))
+				if raw := strings.TrimSpace(part.Raw); raw != "" {
+					extraParts = append(extraParts, []byte(raw))
+				}
 			}
 		}
-		if len(texts) > 0 || len(extraParts) > 0 {
-			return strings.Join(texts, "\n"), extraParts
+		if len(parts) > 0 || len(extraParts) > 0 {
+			return strings.Join(parts, "\n"), extraParts
 		}
 	}
 	return strings.TrimSpace(output.Raw), nil

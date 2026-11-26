@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestConvertCodexResponseToGemini_StreamKeepsResponseCreationTime(t *testing.T) {
@@ -30,10 +30,10 @@ func TestConvertCodexResponseToGemini_StreamKeepsResponseCreationTime(t *testing
 			if len(out) != 1 {
 				t.Fatalf("expected one chunk, got %q", out)
 			}
-			if model := gjson.GetBytes(out[0], "modelVersion").Str; model != "gemini" {
+			if model := ojson.GetBytes(out[0], "modelVersion").Str; model != "gemini" {
 				t.Errorf("modelVersion = %q, want the client model gemini", model)
 			}
-			createTime := gjson.GetBytes(out[0], "createTime")
+			createTime := ojson.GetBytes(out[0], "createTime")
 			if createTime.Exists() != (tc.want != "") || createTime.Str != tc.want {
 				t.Errorf("createTime = %s, want %q: %s", createTime.Raw, tc.want, out[0])
 			}
@@ -66,10 +66,10 @@ func TestConvertCodexResponseToGemini_TerminalMetadata(t *testing.T) {
 			}
 			full := ConvertCodexResponseToGeminiNonStream(t.Context(), "alias", nil, nil, []byte(event), nil)
 			for _, output := range [][]byte{stream[0], full} {
-				if got := gjson.GetBytes(output, "createTime"); got.Exists() != (tc.want != "") || got.Str != tc.want {
+				if got := ojson.GetBytes(output, "createTime"); got.Exists() != (tc.want != "") || got.Str != tc.want {
 					t.Errorf("createTime = %s, want %q in %s", got.Raw, tc.want, output)
 				}
-				if got := gjson.GetBytes(output, "modelVersion").Str; got != "alias" {
+				if got := ojson.GetBytes(output, "modelVersion").Str; got != "alias" {
 					t.Errorf("modelVersion = %q, want alias", got)
 				}
 			}
@@ -84,7 +84,7 @@ func TestConvertCodexResponseToGemini_IncompleteTerminal(t *testing.T) {
 	var param any
 	tool := []byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}}`)
 	toolOut := ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, tool, &param)
-	if len(toolOut) != 1 || gjson.GetBytes(toolOut[0], "candidates.0.finishReason").Exists() {
+	if len(toolOut) != 1 || ojson.GetBytes(toolOut[0], "candidates.0.finishReason").Exists() {
 		t.Fatalf("expected tool chunk without finishReason, got %q", toolOut)
 	}
 
@@ -92,12 +92,12 @@ func TestConvertCodexResponseToGemini_IncompleteTerminal(t *testing.T) {
 	if len(streamOut) != 1 {
 		t.Fatalf("expected 1 streaming terminal chunk, got %d", len(streamOut))
 	}
-	if got := gjson.GetBytes(streamOut[0], "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
+	if got := ojson.GetBytes(streamOut[0], "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
 		t.Fatalf("stream finishReason = %q, want MAX_TOKENS; payload=%s", got, streamOut[0])
 	}
 
 	nonStreamOut := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, terminal, nil)
-	if got := gjson.GetBytes(nonStreamOut, "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
+	if got := ojson.GetBytes(nonStreamOut, "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
 		t.Fatalf("non-stream finishReason = %q, want MAX_TOKENS; payload=%s", got, nonStreamOut)
 	}
 }
@@ -130,7 +130,7 @@ func TestConvertCodexResponseToGemini_ValidatesFunctionCallArguments(t *testing.
 					t.Errorf("invalid Gemini JSON: %s", out)
 					continue
 				}
-				args := gjson.GetBytes(out, "candidates.0.content.parts.0.functionCall.args")
+				args := ojson.GetBytes(out, "candidates.0.content.parts.0.functionCall.args")
 				if !args.IsObject() || args.Get("query").String() != tt.wantQuery || (tt.wantQuery == "" && len(args.Map()) != 0) {
 					t.Errorf("unexpected args %s for query %q; payload=%s", args.Raw, tt.wantQuery, out)
 				}
@@ -156,7 +156,7 @@ func TestConvertCodexResponseToGemini_StreamEmptyOutputUsesOutputItemDoneMessage
 
 	found := false
 	for _, out := range outputs {
-		if gjson.GetBytes(out, "candidates.0.content.parts.0.text").String() == "ok" {
+		if ojson.GetBytes(out, "candidates.0.content.parts.0.text").String() == "ok" {
 			found = true
 			break
 		}
@@ -177,12 +177,12 @@ func TestConvertCodexResponseToGemini_StreamPartialImageEmitsInlineData(t *testi
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
 
-	got := gjson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.data").String()
+	got := ojson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.data").String()
 	if got != "aGVsbG8=" {
 		t.Fatalf("expected inlineData.data %q, got %q; chunk=%s", "aGVsbG8=", got, string(out[0]))
 	}
 
-	gotMime := gjson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.mimeType").String()
+	gotMime := ojson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.mimeType").String()
 	if gotMime != "image/png" {
 		t.Fatalf("expected inlineData.mimeType %q, got %q; chunk=%s", "image/png", gotMime, string(out[0]))
 	}
@@ -213,12 +213,12 @@ func TestConvertCodexResponseToGemini_StreamImageGenerationCallDoneEmitsInlineDa
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
 
-	got := gjson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.data").String()
+	got := ojson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.data").String()
 	if got != "Ymll" {
 		t.Fatalf("expected inlineData.data %q, got %q; chunk=%s", "Ymll", got, string(out[0]))
 	}
 
-	gotMime := gjson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.mimeType").String()
+	gotMime := ojson.GetBytes(out[0], "candidates.0.content.parts.0.inlineData.mimeType").String()
 	if gotMime != "image/jpeg" {
 		t.Fatalf("expected inlineData.mimeType %q, got %q; chunk=%s", "image/jpeg", gotMime, string(out[0]))
 	}
@@ -231,12 +231,12 @@ func TestConvertCodexResponseToGemini_NonStreamImageGenerationCallAddsInlineData
 	raw := []byte(`{"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]},{"type":"image_generation_call","output_format":"png","result":"aGVsbG8="}]}}`)
 	out := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", originalRequest, nil, raw, nil)
 
-	got := gjson.GetBytes(out, "candidates.0.content.parts.1.inlineData.data").String()
+	got := ojson.GetBytes(out, "candidates.0.content.parts.1.inlineData.data").String()
 	if got != "aGVsbG8=" {
 		t.Fatalf("expected inlineData.data %q, got %q; chunk=%s", "aGVsbG8=", got, string(out))
 	}
 
-	gotMime := gjson.GetBytes(out, "candidates.0.content.parts.1.inlineData.mimeType").String()
+	gotMime := ojson.GetBytes(out, "candidates.0.content.parts.1.inlineData.mimeType").String()
 	if gotMime != "image/png" {
 		t.Fatalf("expected inlineData.mimeType %q, got %q; chunk=%s", "image/png", gotMime, string(out))
 	}
@@ -252,7 +252,7 @@ func TestConvertCodexResponseToGemini_StreamPreservesFunctionCallID(t *testing.T
 		t.Fatalf("expected function call output to emit immediately, got %d chunks", len(out))
 	}
 
-	got := gjson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.id").String()
+	got := ojson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.id").String()
 	if got != "call_gateway" {
 		t.Fatalf("expected functionCall.id %q, got %q; chunks=%q", "call_gateway", got, out)
 	}
@@ -261,7 +261,7 @@ func TestConvertCodexResponseToGemini_StreamPreservesFunctionCallID(t *testing.T
 	if len(terminal) != 1 {
 		t.Fatalf("expected one terminal chunk, got %d", len(terminal))
 	}
-	if gjson.GetBytes(terminal[0], "candidates.0.content.parts.0.functionCall").Exists() {
+	if ojson.GetBytes(terminal[0], "candidates.0.content.parts.0.functionCall").Exists() {
 		t.Fatalf("terminal chunk duplicated the function call: %s", terminal[0])
 	}
 }
@@ -273,7 +273,7 @@ func TestConvertCodexResponseToGemini_ReasoningThoughtSignature(t *testing.T) {
 	t.Run("non-stream summary carries signature", func(t *testing.T) {
 		raw := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"muse-spark-1.3","created_at":1,"usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"reasoning","encrypted_content":"` + signature + `","summary":[{"type":"summary_text","text":"thinking summary"}]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}}`)
 		out := ConvertCodexResponseToGeminiNonStream(ctx, "muse-spark-1.3", nil, nil, raw, nil)
-		part := gjson.GetBytes(out, "candidates.0.content.parts.0")
+		part := ojson.GetBytes(out, "candidates.0.content.parts.0")
 		if !part.Get("thought").Bool() || part.Get("text").String() != "thinking summary" {
 			t.Fatalf("part.0 = %s, want thought summary part; payload=%s", part.Raw, out)
 		}
@@ -291,7 +291,7 @@ func TestConvertCodexResponseToGemini_ReasoningThoughtSignature(t *testing.T) {
 		if got := decodeGeminiCodexThoughtSignature(part.Get("thoughtSignature").String()); got != signature {
 			t.Fatalf("carrier round-trip = %q, want raw Meta signature", got)
 		}
-		if got := gjson.GetBytes(out, "candidates.0.content.parts.1.text").String(); got != "answer" {
+		if got := ojson.GetBytes(out, "candidates.0.content.parts.1.text").String(); got != "answer" {
 			t.Fatalf("part.1 text = %q, want answer; payload=%s", got, out)
 		}
 	})
@@ -299,7 +299,7 @@ func TestConvertCodexResponseToGemini_ReasoningThoughtSignature(t *testing.T) {
 	t.Run("non-stream empty summary still carries signature", func(t *testing.T) {
 		raw := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"muse-spark-1.3","created_at":1,"usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"reasoning","encrypted_content":"` + signature + `","summary":[]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}}`)
 		out := ConvertCodexResponseToGeminiNonStream(ctx, "muse-spark-1.3", nil, nil, raw, nil)
-		part := gjson.GetBytes(out, "candidates.0.content.parts.0")
+		part := ojson.GetBytes(out, "candidates.0.content.parts.0")
 		if !part.Get("thought").Bool() || part.Get("thoughtSignature").String() != encodeGeminiCodexThoughtSignature(signature) {
 			t.Fatalf("part.0 = %s, want empty thought carrier with signature; payload=%s", part.Raw, out)
 		}
@@ -315,7 +315,7 @@ func TestConvertCodexResponseToGemini_ReasoningThoughtSignature(t *testing.T) {
 		if len(out) != 1 {
 			t.Fatalf("text delta emitted %d chunks, want 1", len(out))
 		}
-		part := gjson.GetBytes(out[0], "candidates.0.content.parts.0")
+		part := ojson.GetBytes(out[0], "candidates.0.content.parts.0")
 		if part.Get("text").String() != "answer" || part.Get("thoughtSignature").String() != encodeGeminiCodexThoughtSignature(signature) {
 			t.Fatalf("text part = %s, want answer with Meta thoughtSignature", part.Raw)
 		}
@@ -340,17 +340,17 @@ func TestConvertCodexResponseToGemini_StreamMultipleFunctionCallsKeepSignatureAn
 		t.Fatalf("expected two tool chunks and one terminal chunk, got %q", outputs)
 	}
 	for _, chunk := range outputs[:2] {
-		if gjson.GetBytes(chunk, "candidates.0.finishReason").Exists() {
+		if ojson.GetBytes(chunk, "candidates.0.finishReason").Exists() {
 			t.Errorf("tool chunk set finishReason early: %s", chunk)
 		}
 	}
-	if got := gjson.GetBytes(outputs[2], "candidates.0.finishReason").String(); got != "STOP" {
+	if got := ojson.GetBytes(outputs[2], "candidates.0.finishReason").String(); got != "STOP" {
 		t.Errorf("terminal finishReason = %q, want STOP", got)
 	}
 	var names []string
 	signatureOnAlpha := false
 	for _, chunk := range outputs {
-		for _, part := range gjson.GetBytes(chunk, "candidates.0.content.parts").Array() {
+		for _, part := range ojson.GetBytes(chunk, "candidates.0.content.parts").Array() {
 			name := part.Get("functionCall.name").String()
 			if name == "" {
 				continue
@@ -375,11 +375,11 @@ func TestConvertCodexResponseToGeminiNonStream_MultiSummaryRoundTrip(t *testing.
 	raw := []byte(`{"type":"response.completed","response":{"id":"resp_multi","model":"muse-spark-1.3","created_at":1,"usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"reasoning","encrypted_content":"` + signature + `","summary":[{"type":"summary_text","text":"step A"},{"type":"summary_text","text":"step B"}]},{"type":"message","content":[{"type":"output_text","text":"final answer"}]}]}}`)
 	geminiOut := ConvertCodexResponseToGeminiNonStream(ctx, "muse-spark-1.3", nil, nil, raw, nil)
 
-	partsRaw := gjson.GetBytes(geminiOut, "candidates.0.content.parts").Raw
+	partsRaw := ojson.GetBytes(geminiOut, "candidates.0.content.parts").Raw
 	reqPayload := []byte(`{"model":"muse-spark-1.3","contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"model","parts":` + partsRaw + `},{"role":"user","parts":[{"text":"next"}]}]}`)
 	codexIn, _ := ConvertGeminiRequestToCodex("deployment-alias", reqPayload, false)
 
-	reasoning := gjson.GetBytes(codexIn, "input.1")
+	reasoning := ojson.GetBytes(codexIn, "input.1")
 	if reasoning.Get("type").String() != "reasoning" || reasoning.Get("encrypted_content").String() != signature {
 		t.Fatalf("round-trip reasoning item = %s, want Meta signature", reasoning.Raw)
 	}
@@ -393,11 +393,11 @@ func TestConvertCodexResponseToGeminiNonStream_MultiSummaryRoundTrip(t *testing.
 	var streamParam any
 	doneOnly := []byte(`data: {"type":"response.output_item.done","item":{"id":"rs_done_only","type":"reasoning","encrypted_content":"` + signature + `","summary":[{"type":"summary_text","text":"done-only thought"}]}}`)
 	doneChunks := ConvertCodexResponseToGemini(ctx, "muse-spark-1.3", nil, nil, doneOnly, &streamParam)
-	if len(doneChunks) != 1 || !gjson.GetBytes(doneChunks[0], "candidates.0.content.parts.0.thought").Bool() || gjson.GetBytes(doneChunks[0], "candidates.0.content.parts.0.text").String() != "done-only thought" {
+	if len(doneChunks) != 1 || !ojson.GetBytes(doneChunks[0], "candidates.0.content.parts.0.thought").Bool() || ojson.GetBytes(doneChunks[0], "candidates.0.content.parts.0.text").String() != "done-only thought" {
 		t.Fatalf("done-only reasoning chunks = %q, want thought summary chunk", doneChunks)
 	}
 	textChunks := ConvertCodexResponseToGemini(ctx, "muse-spark-1.3", nil, nil, []byte(`data: {"type":"response.output_text.delta","delta":"visible"}`), &streamParam)
-	if len(textChunks) != 1 || decodeGeminiCodexThoughtSignature(gjson.GetBytes(textChunks[0], "candidates.0.content.parts.0.thoughtSignature").String()) != signature {
+	if len(textChunks) != 1 || decodeGeminiCodexThoughtSignature(ojson.GetBytes(textChunks[0], "candidates.0.content.parts.0.thoughtSignature").String()) != signature {
 		t.Fatalf("text chunk after done-only reasoning = %q, want carrier signature", textChunks)
 	}
 
@@ -415,14 +415,14 @@ func TestConvertCodexResponseToGeminiNonStream_MultiSummaryRoundTrip(t *testing.
 		[]byte(`data: {"type":"response.output_text.delta","delta":"answer"}`),
 	} {
 		for _, chunk := range ConvertCodexResponseToGemini(ctx, "muse-spark-1.3", nil, nil, ev, &consecutiveParam) {
-			for _, p := range gjson.GetBytes(chunk, "candidates.0.content.parts").Array() {
+			for _, p := range ojson.GetBytes(chunk, "candidates.0.content.parts").Array() {
 				streamedParts = append(streamedParts, p.Raw)
 			}
 		}
 	}
 	replayReq := []byte(`{"model":"muse-spark-1.3","contents":[{"role":"user","parts":[{"text":"q"}]},{"role":"model","parts":[` + strings.Join(streamedParts, ",") + `]},{"role":"user","parts":[{"text":"next"}]}]}`)
 	replayCodex, _ := ConvertGeminiRequestToCodex("muse-spark-1.3", replayReq, false)
-	if gjson.GetBytes(replayCodex, "input.1.summary.0.text").String() != "first summary" || gjson.GetBytes(replayCodex, "input.2.summary.0.text").String() != "second summary" {
+	if ojson.GetBytes(replayCodex, "input.1.summary.0.text").String() != "first summary" || ojson.GetBytes(replayCodex, "input.2.summary.0.text").String() != "second summary" {
 		t.Fatalf("replayed consecutive reasoning items = %s, want separate summaries", replayCodex)
 	}
 
@@ -438,16 +438,16 @@ func TestConvertCodexResponseToGeminiNonStream_MultiSummaryRoundTrip(t *testing.
 		[]byte(`data: {"type":"response.output_text.delta","delta":"ok"}`),
 	} {
 		for _, chunk := range ConvertCodexResponseToGemini(ctx, "muse-spark-1.3", nil, nil, ev, &wsParam) {
-			for _, p := range gjson.GetBytes(chunk, "candidates.0.content.parts").Array() {
+			for _, p := range ojson.GetBytes(chunk, "candidates.0.content.parts").Array() {
 				wsParts = append(wsParts, p.Raw)
 			}
 		}
 	}
 	wsReplayReq := []byte(`{"model":"muse-spark-1.3","contents":[{"role":"user","parts":[{"text":"q"}]},{"role":"model","parts":[` + strings.Join(wsParts, ",") + `]},{"role":"user","parts":[{"text":"next"}]}]}`)
 	wsReplayCodex, _ := ConvertGeminiRequestToCodex("muse-spark-1.3", wsReplayReq, false)
-	wsSummaries := gjson.GetBytes(wsReplayCodex, "input.1.summary").Array()
+	wsSummaries := ojson.GetBytes(wsReplayCodex, "input.1.summary").Array()
 	if len(wsSummaries) != 3 || wsSummaries[0].Get("text").String()+wsSummaries[1].Get("text").String()+wsSummaries[2].Get("text").String() != "Hello world" {
-		t.Fatalf("whitespace thought chunks round-trip = %s, want ['Hello',' ','world']", gjson.GetBytes(wsReplayCodex, "input.1.summary").Raw)
+		t.Fatalf("whitespace thought chunks round-trip = %s, want ['Hello',' ','world']", ojson.GetBytes(wsReplayCodex, "input.1.summary").Raw)
 	}
 }
 
@@ -458,7 +458,7 @@ func TestConvertCodexResponseToGeminiNonStreamPreservesFunctionCallID(t *testing
 	raw := []byte(`{"type":"response.completed","response":{"id":"resp_123","created_at":1700000000,"usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"function_call","call_id":"call_gateway","name":"lookup","arguments":"{\"query\":\"status\"}"}]}}`)
 	out := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", originalRequest, nil, raw, nil)
 
-	got := gjson.GetBytes(out, "candidates.0.content.parts.0.functionCall.id").String()
+	got := ojson.GetBytes(out, "candidates.0.content.parts.0.functionCall.id").String()
 	if got != "call_gateway" {
 		t.Fatalf("expected functionCall.id %q, got %q; chunk=%s", "call_gateway", got, string(out))
 	}
@@ -500,7 +500,7 @@ func TestConvertCodexResponseToGemini_UsageBreakdown(t *testing.T) {
 				{stream[0], tt.streamUsage},
 				{ConvertCodexResponseToGeminiNonStream(t.Context(), "gpt-test", nil, nil, raw, nil), true},
 			} {
-				metadata := gjson.GetBytes(wire.out, "usageMetadata")
+				metadata := ojson.GetBytes(wire.out, "usageMetadata")
 				if !wire.present {
 					if metadata.Exists() {
 						t.Errorf("unexpected usage metadata: %s", wire.out)
@@ -524,7 +524,235 @@ func TestConvertCodexResponseToGemini_CompletedTerminalSetsStop(t *testing.T) {
 	var param any
 	terminal := []byte(`{"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}`)
 	out := ConvertCodexResponseToGemini(context.Background(), "gpt-test", nil, nil, append([]byte("data: "), terminal...), &param)
-	if len(out) != 1 || gjson.GetBytes(out[0], "candidates.0.finishReason").String() != "STOP" {
+	if len(out) != 1 || ojson.GetBytes(out[0], "candidates.0.finishReason").String() != "STOP" {
 		t.Fatalf("want one chunk with finishReason STOP, got %q", out)
+	}
+}
+
+func TestConvertCodexResponseToGemini_RefusalStreamAndNonStream(t *testing.T) {
+	const refusalText = "I'm sorry, but I can't help with that request."
+	ctx := context.Background()
+
+	t.Run("streamed_refusal_delta_no_duplicate", func(t *testing.T) {
+		var param any
+		events := [][]byte{
+			[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"muse-ember-1.0"}}`),
+			[]byte(`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`),
+			[]byte(`data: {"type":"response.refusal.delta","output_index":0,"item_id":"msg_1","delta":"I'm sorry, but I can't help with that request."}`),
+			[]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I'm sorry, but I can't help with that request."}]}}`),
+			[]byte(`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`),
+		}
+		var texts []string
+		for _, ev := range events {
+			for _, out := range ConvertCodexResponseToGemini(ctx, "muse-ember-1.0", nil, nil, ev, &param) {
+				for _, part := range ojson.GetBytesNoCopy(out, "candidates.0.content.parts").Array() {
+					if txt := part.Get("text").String(); txt != "" {
+						texts = append(texts, txt)
+					}
+				}
+			}
+		}
+		if got := strings.Join(texts, ""); got != refusalText {
+			t.Fatalf("stream text = %q, want %q", got, refusalText)
+		}
+	})
+
+	t.Run("done_only_refusal_fallback", func(t *testing.T) {
+		var param any
+		events := [][]byte{
+			[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"muse-ember-1.0"}}`),
+			[]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I'm sorry, but I can't help with that request."}]}}`),
+			[]byte(`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`),
+		}
+		var texts []string
+		for _, ev := range events {
+			for _, out := range ConvertCodexResponseToGemini(ctx, "muse-ember-1.0", nil, nil, ev, &param) {
+				for _, part := range ojson.GetBytesNoCopy(out, "candidates.0.content.parts").Array() {
+					if txt := part.Get("text").String(); txt != "" {
+						texts = append(texts, txt)
+					}
+				}
+			}
+		}
+		if got := strings.Join(texts, ""); got != refusalText {
+			t.Fatalf("done-only stream text = %q, want %q", got, refusalText)
+		}
+	})
+
+	t.Run("empty_refusal_delta_does_not_suppress_done_fallback", func(t *testing.T) {
+		var param any
+		events := [][]byte{
+			[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"muse-ember-1.0"}}`),
+			[]byte(`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`),
+			[]byte(`data: {"type":"response.refusal.delta","output_index":0,"item_id":"msg_1","delta":""}`),
+			[]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I'm sorry, but I can't help with that request."}]}}`),
+			[]byte(`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`),
+		}
+		var texts []string
+		for _, ev := range events {
+			for _, out := range ConvertCodexResponseToGemini(ctx, "muse-ember-1.0", nil, nil, ev, &param) {
+				for _, part := range ojson.GetBytesNoCopy(out, "candidates.0.content.parts").Array() {
+					if txt := part.Get("text").String(); txt != "" {
+						texts = append(texts, txt)
+					}
+				}
+			}
+		}
+		if got := strings.Join(texts, ""); got != refusalText {
+			t.Fatalf("empty-delta fallback stream text = %q, want %q", got, refusalText)
+		}
+	})
+
+	t.Run("nonstream_refusal", func(t *testing.T) {
+		raw := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"muse-ember-1.0","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I'm sorry, but I can't help with that request."}]}]}}`)
+		out := ConvertCodexResponseToGeminiNonStream(ctx, "muse-ember-1.0", nil, nil, raw, nil)
+		if got := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.0.text").String(); got != refusalText {
+			t.Fatalf("nonstream text = %q, want %q; body=%s", got, refusalText, out)
+		}
+	})
+
+	t.Run("nonstream_empty_refusal_falls_back_to_text", func(t *testing.T) {
+		raw := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"muse-ember-1.0","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"","text":"I'm sorry, but I can't help with that request."}]}]}}`)
+		out := ConvertCodexResponseToGeminiNonStream(ctx, "muse-ember-1.0", nil, nil, raw, nil)
+		if got := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.0.text").String(); got != refusalText {
+			t.Fatalf("nonstream fallback text = %q, want %q; body=%s", got, refusalText, out)
+		}
+	})
+}
+
+func TestConvertCodexResponseToGemini_StreamFunctionCallsOmitPrematureFinishReason(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("parallel_function_calls_completed", func(t *testing.T) {
+		var param any
+		var outputs [][]byte
+		events := [][]byte{
+			[]byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_a","name":"alpha","arguments":"{\"x\":1}"}}`),
+			[]byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_b","name":"beta","arguments":"{\"y\":2}"}}`),
+			[]byte(`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}`),
+		}
+		for _, ev := range events {
+			outputs = append(outputs, ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, ev, &param)...)
+		}
+		if len(outputs) != 3 {
+			t.Fatalf("got %d chunks, want 3; outputs=%q", len(outputs), outputs)
+		}
+		for i := 0; i < 2; i++ {
+			if fr := ojson.GetBytesNoCopy(outputs[i], "candidates.0.finishReason"); fr.Exists() {
+				t.Fatalf("function_call chunk %d unexpectedly set finishReason=%q; payload=%s", i, fr.String(), outputs[i])
+			}
+		}
+		if got := ojson.GetBytesNoCopy(outputs[2], "candidates.0.finishReason").String(); got != "STOP" {
+			t.Fatalf("terminal chunk finishReason = %q, want STOP; payload=%s", got, outputs[2])
+		}
+	})
+
+	t.Run("function_call_then_incomplete_max_tokens", func(t *testing.T) {
+		var param any
+		var outputs [][]byte
+		events := [][]byte{
+			[]byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_a","name":"alpha","arguments":"{\"x\":1}"}}`),
+			[]byte(`data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":2}}}`),
+		}
+		for _, ev := range events {
+			outputs = append(outputs, ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, ev, &param)...)
+		}
+		if len(outputs) != 2 {
+			t.Fatalf("got %d chunks, want 2; outputs=%q", len(outputs), outputs)
+		}
+		if fr := ojson.GetBytesNoCopy(outputs[0], "candidates.0.finishReason"); fr.Exists() {
+			t.Fatalf("function_call chunk unexpectedly set finishReason=%q before incomplete terminal; payload=%s", fr.String(), outputs[0])
+		}
+		if got := ojson.GetBytesNoCopy(outputs[1], "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
+			t.Fatalf("terminal chunk finishReason = %q, want MAX_TOKENS; payload=%s", got, outputs[1])
+		}
+	})
+}
+
+func TestConvertCodexResponseToGemini_InvalidOrTruncatedFunctionCallArguments(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		rawArgs  string
+		wantArgs string
+	}{
+		{
+			name:     "truncated_object",
+			rawArgs:  `{"query":"trunc`,
+			wantArgs: `{}`,
+		},
+		{
+			name:     "trailing_garbage",
+			rawArgs:  `{"query":"ok"} trailing`,
+			wantArgs: `{}`,
+		},
+		{
+			name:     "non_object_array",
+			rawArgs:  `[1,2]`,
+			wantArgs: `{}`,
+		},
+		{
+			name:     "whitespace_padded_valid_object",
+			rawArgs:  `  {"query":"ok"}  `,
+			wantArgs: `{"query":"ok"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run("stream_"+tc.name, func(t *testing.T) {
+			itemDoc := ojson.NewDocString(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":""}}`)
+			_ = itemDoc.Set("item.arguments", tc.rawArgs)
+
+			var param any
+			var outputs [][]byte
+			outputs = append(outputs, ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, append([]byte("data: "), itemDoc.Bytes()...), &param)...)
+			outputs = append(outputs, ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, []byte(`data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":2}}}`), &param)...)
+			if len(outputs) != 2 {
+				t.Fatalf("got %d chunks, want 2; outputs=%q", len(outputs), outputs)
+			}
+			if !ojson.ValidBytes(outputs[0]) {
+				t.Fatalf("stream chunk is not valid JSON: %s", outputs[0])
+			}
+			if got := ojson.GetBytesNoCopy(outputs[0], "candidates.0.content.parts.0.functionCall.args").Raw; got != tc.wantArgs {
+				t.Fatalf("stream functionCall.args = %s, want %s; payload=%s", got, tc.wantArgs, outputs[0])
+			}
+		})
+
+		t.Run("nonstream_"+tc.name, func(t *testing.T) {
+			respDoc := ojson.NewDocString(`{"type":"response.incomplete","response":{"id":"resp_1","created_at":1700000000,"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":""}]}}`)
+			_ = respDoc.Set("response.output.0.arguments", tc.rawArgs)
+
+			out := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, respDoc.Bytes(), nil)
+			if !ojson.ValidBytes(out) {
+				t.Fatalf("non-stream response is not valid JSON: %s", out)
+			}
+			if got := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.0.functionCall.args").Raw; got != tc.wantArgs {
+				t.Fatalf("non-stream functionCall.args = %s, want %s; payload=%s", got, tc.wantArgs, out)
+			}
+		})
+	}
+}
+
+func TestConvertCodexResponseToGemini_RestoresShortenedNameFromSnakeCaseDeclarations_Issue8098(t *testing.T) {
+	ctx := context.Background()
+	prefix := strings.Repeat("a", 65)
+	tool1 := prefix + "_first"
+	tool2 := prefix + "_second"
+
+	origReqDoc := ojson.NewDocString(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	_ = origReqDoc.Set("tools.0.function_declarations.0.name", tool1)
+	_ = origReqDoc.Set("tools.0.function_declarations.1.name", tool2)
+	origReq := origReqDoc.Bytes()
+
+	shortMap := buildShortNameMap([]string{tool1, tool2})
+	short2 := shortMap[tool2]
+
+	respDoc := ojson.NewDocString(`{"type":"response.completed","response":{"id":"resp_1","created_at":1700000000,"usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"function_call","call_id":"call_1","name":"","arguments":"{}"}]}}`)
+	_ = respDoc.Set("response.output.0.name", short2)
+
+	out := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", origReq, nil, respDoc.Bytes(), nil)
+	if got := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.0.functionCall.name").String(); got != tool2 {
+		t.Fatalf("functionCall.name = %q, want %q; out=%s", got, tool2, out)
 	}
 }

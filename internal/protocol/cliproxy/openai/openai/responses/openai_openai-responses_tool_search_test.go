@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestToolSearchRequestMapsCallOutputAndLoadedNamespaceTools(t *testing.T) {
@@ -23,7 +23,7 @@ func TestToolSearchRequestMapsCallOutputAndLoadedNamespaceTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert request: %v", err)
 	}
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	if got := root.Get("tools.#").Int(); got != 2 {
 		t.Fatalf("expected tool_search plus loaded tool, got %d: %s", got, out)
 	}
@@ -53,7 +53,7 @@ func TestToolSearchRequestMapsCallOutputAndLoadedNamespaceTools(t *testing.T) {
 	// restoration when the provider calls it on the next turn.
 	chatResponse := []byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_2","type":"function","function":{"name":"shipping__get_eta","arguments":"{\"order\":\"A\"}"}}]},"finish_reason":"tool_calls"}]}`)
 	responses := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "gpt-5.4", raw, out, chatResponse, nil)
-	responseRoot := gjson.ParseBytes(responses)
+	responseRoot := ojson.ParseBytes(responses)
 	if got := responseRoot.Get("output.0.type").String(); got != "function_call" {
 		t.Fatalf("unexpected reverse item type %q", got)
 	}
@@ -132,7 +132,7 @@ func TestToolSearchChoiceDoesNotSelectOrdinaryFunctionWithoutSearch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if choice := gjson.GetBytes(out, "tool_choice"); choice.Get("type").String() != "tool_search" || choice.Get("function").Exists() {
+	if choice := ojson.GetBytes(out, "tool_choice"); choice.Get("type").String() != "tool_search" || choice.Get("function").Exists() {
 		t.Fatalf("undeclared search choice selected an ordinary function: %s", out)
 	}
 }
@@ -141,7 +141,7 @@ func TestToolSearchResponseNonStreamRestoresSearchCall(t *testing.T) {
 	request := []byte(`{"model":"gpt-5.4","tools":[{"type":"tool_search","execution":"client","parameters":{"type":"object"}}]}`)
 	chatResponse := []byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"ts_1","type":"function","function":{"name":"tool_search","arguments":"{\"goal\":\"shipping\"}"}}]},"finish_reason":"tool_calls"}]}`)
 	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "gpt-5.4", request, request, chatResponse, nil)
-	root := gjson.ParseBytes(out)
+	root := ojson.ParseBytes(out)
 	item := root.Get("output.0")
 	if got := item.Get("type").String(); got != "tool_search_call" {
 		t.Fatalf("unexpected item type %q: %s", got, out)
@@ -189,7 +189,7 @@ func TestToolSearchResponsePreservesOrdinaryFunctionCallArguments(t *testing.T) 
 	request := []byte(`{"model":"gpt-5.4","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`)
 	chatResponse := []byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{bad"}}]},"finish_reason":"tool_calls"}]}`)
 	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "gpt-5.4", request, request, chatResponse, nil)
-	item := gjson.ParseBytes(out).Get("output.0")
+	item := ojson.ParseBytes(out).Get("output.0")
 	if item.Get("type").String() != "function_call" || item.Get("arguments").String() != "{bad" {
 		t.Fatalf("ordinary function call behavior changed: %s", out)
 	}
@@ -203,7 +203,7 @@ func TestToolSearchResponseStreamRestoresSearchCall(t *testing.T) {
 		[]byte(`[DONE]`),
 	}
 	var state any
-	var events []gjson.Result
+	var events []ojson.Result
 	for _, chunk := range chunks {
 		for _, event := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gpt-5.4", request, request, chunk, &state) {
 			_, data := parseOpenAIResponsesSSEEvent(t, event)
@@ -246,13 +246,13 @@ func TestToolSearchAndApplyPatchResponsePreserveBothContracts(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			var state any
-			var response gjson.Result
+			var response ojson.Result
 			if !stream {
 				raw, err := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStreamWithError(context.Background(), "gpt-5.4", request, nil, chatResponse, &state)
 				if err != nil {
 					t.Fatal(err)
 				}
-				response = gjson.ParseBytes(raw)
+				response = ojson.ParseBytes(raw)
 			} else {
 				chunks := [][]byte{
 					[]byte(`data: {"id":"chat_mixed","object":"chat.completion.chunk","created":1710000000,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ts_mixed","type":"function","function":{"name":"tool_search","arguments":"{\"goal\":\"shipping\"}"}},{"index":1,"id":"patch_mixed","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"patch\"}"}}]},"finish_reason":"tool_calls"}]}`),
@@ -270,10 +270,10 @@ func TestToolSearchAndApplyPatchResponsePreserveBothContracts(t *testing.T) {
 								continue
 							}
 							payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-							if !gjson.Valid(payload) {
+							if !ojson.Valid(payload) {
 								t.Fatalf("invalid event: %s", frame)
 							}
-							event := gjson.Parse(payload)
+							event := ojson.Parse(payload)
 							counts[event.Get("type").String()]++
 							if event.Get("type").String() == "response.completed" {
 								response = event.Get("response")
@@ -291,3 +291,74 @@ func TestToolSearchAndApplyPatchResponsePreserveBothContracts(t *testing.T) {
 		})
 	}
 }
+
+func TestChatToolSearch_StreamResponseRestoresSearchCall(t *testing.T) {
+	lines := []string{
+		`data: {"id":"r1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"tool_search","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"r1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"cal\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}
+	var param any
+	var added, done, completed ojson.Result
+	for _, line := range lines {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "m", []byte(chatToolSearchTestRequest), nil, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if strings.HasPrefix(event, "response.function_call_arguments") {
+				t.Fatalf("search call must not stream function argument events: %s", event)
+			}
+			switch {
+			case event == "response.output_item.added" && data.Get("item.type").String() == "tool_search_call":
+				added = data
+			case event == "response.output_item.done" && data.Get("item.type").String() == "tool_search_call":
+				done = data
+			case event == "response.completed":
+				completed = data
+			}
+		}
+	}
+	if !added.Exists() || added.Get("item.call_id").String() != "call_s" {
+		t.Fatalf("missing tool_search_call added event")
+	}
+	if done.Get("item.arguments.query").String() != "cal" || done.Get("item.execution").String() != "client" {
+		t.Fatalf("bad tool_search_call done event: %s", done.Raw)
+	}
+	if completed.Get("response.output.0.type").String() != "tool_search_call" {
+		t.Fatalf("completed output = %s", completed.Get("response.output").Raw)
+	}
+}
+
+func TestChatToolSearch_NonStreamResponseRestoresSearchAndLoadedToolCalls(t *testing.T) {
+	resp := `{"id":"r2","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[
+	  {"id":"call_a","type":"function","function":{"name":"tool_search","arguments":"{\"query\":\"cal\"}"}},
+	  {"id":"call_b","type":"function","function":{"name":"mcp__demo__cal___list","arguments":"{}"}}
+	]}}]}`
+	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "m", []byte(chatToolSearchTestRequest), nil, []byte(resp), nil)
+	search := ojson.GetBytes(out, `output.#(call_id=="call_a")`)
+	if search.Get("type").String() != "tool_search_call" || search.Get("arguments.query").String() != "cal" {
+		t.Fatalf("want tool_search_call, got %s", search.Raw)
+	}
+	loaded := ojson.GetBytes(out, `output.#(call_id=="call_b")`)
+	if loaded.Get("type").String() != "function_call" || loaded.Get("name").String() != "_list" || loaded.Get("namespace").String() != "mcp__demo__cal" {
+		t.Fatalf("loaded tool call must restore namespace identity: %s", loaded.Raw)
+	}
+}
+
+// Synthetic Codex request: one eager tool, the client tool_search declaration,
+// and one completed search round that returned a namespaced tool.
+const chatToolSearchTestRequest = `{
+  "model": "chat-test",
+  "stream": true,
+  "tools": [
+    {"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}},
+    {"type":"tool_search","execution":"client","description":"Search deferred tools","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]}}
+  ],
+  "input": [
+    {"type":"message","role":"user","content":[{"type":"input_text","text":"list my calendars"}]},
+    {"type":"tool_search_call","call_id":"call_ts1","status":"completed","execution":"client","arguments":{"query":"calendar"}},
+    {"type":"tool_search_output","call_id":"call_ts1","status":"completed","execution":"client","tools":[
+      {"type":"namespace","name":"mcp__demo__cal","description":"Calendar","tools":[
+        {"type":"function","name":"_list","description":"List calendars","defer_loading":true,"parameters":{"type":"object","properties":{}}}
+      ]}
+    ]}
+  ]
+}`

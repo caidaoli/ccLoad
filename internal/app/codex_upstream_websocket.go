@@ -20,7 +20,6 @@ import (
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
-	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -576,11 +575,11 @@ func (s *codexUpstreamWebsocketSession) startReader(
 				return
 			}
 			if messageType == websocket.TextMessage {
-				event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+				event := parseJSONBytesNoCopy(payload)
 				eventType = strings.TrimSpace(eventType)
 				terminal = responsesTerminalType(eventType, event)
-				if eventType == "error" {
-					terminal = eventType
+				if codexResponseEventType(payload, true) == "error" {
+					terminal = "error"
 				}
 			}
 			if !s.enqueueRead(codexWebsocketRead{

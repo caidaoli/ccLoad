@@ -1422,6 +1422,31 @@ func TestRewriteUpstreamRequestPath_StripsThinkingSuffix(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Gemini 路径按最后一个冒号拆分模型与动作，含冒号的模型 ID 保持完整。
+ * @param t 测试上下文。
+ */
+func TestExtractModelFromPath_ModelIDWithColons(t *testing.T) {
+	t.Parallel()
+
+	for path, want := range map[string]string{
+		"/v1beta/models/qwen3:32b:streamGenerateContent": "qwen3:32b",
+		"/v1beta/models/org:model:v1:generateContent":    "org:model:v1",
+		"/v1beta/models/gemini-2.5-pro:generateContent":  "gemini-2.5-pro",
+		"/v1beta/models/gemini-2.5-pro":                  "gemini-2.5-pro",
+		"/v1beta/models/qwen3:32b:countTokens/extra":     "qwen3:32b",
+		"/v1/chat/completions":                           "",
+	} {
+		if got := extractModelFromPath(path); got != want {
+			t.Errorf("extractModelFromPath(%q)=%q, want %q", path, got, want)
+		}
+	}
+	got := rewriteUpstreamRequestPath("/v1beta/models/qwen3:32b:streamGenerateContent", "qwen3:72b")
+	if want := "/v1beta/models/qwen3:72b:streamGenerateContent"; got != want {
+		t.Fatalf("rewriteUpstreamRequestPath()=%q, want %q", got, want)
+	}
+}
+
 func TestInjectAnthropicBetaFlag_MergesIntoRawLowercaseKey(t *testing.T) {
 	t.Parallel()
 

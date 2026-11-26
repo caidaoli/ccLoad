@@ -6,7 +6,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestConvertOpenAIRequestToClaude_FileParts(t *testing.T) {
@@ -44,7 +44,7 @@ func TestConvertOpenAIRequestToClaude_FileParts(t *testing.T) {
 			if got.Err != nil {
 				t.Fatalf("err = %v", got.Err)
 			}
-			if types := gjson.GetBytes(got.Body, "messages.0.content.#.type").Raw; types != tc.wantTypes {
+			if types := ojson.GetBytes(got.Body, "messages.0.content.#.type").Raw; types != tc.wantTypes {
 				t.Fatalf("content types = %s, want %s. Output: %s", types, tc.wantTypes, got.Body)
 			}
 		})

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const maxAnthropicResponseSize = 50 * 1024 * 1024
@@ -62,20 +62,20 @@ func decodeJSONObject(raw []byte) (map[string]any, error) {
 }
 
 // decodeValidatedJSONObject is decodeJSONObject for callers that already ran
-// json.Valid on the same bytes. gjson.ParseBytes does not report syntax errors,
+// json.Valid on the same bytes. ojson.ParseBytes does not report syntax errors,
 // so the guard cannot be dropped outright — but it also must not run twice on a
 // 50 MiB response just because the caller was thorough.
 func decodeValidatedJSONObject(raw []byte) (map[string]any, error) {
-	root := gjson.ParseBytes(raw)
+	root := ojson.ParseBytes(raw)
 	if !root.IsObject() {
 		return nil, fmt.Errorf("anthropic response must be an object")
 	}
 	return jsonObjectFirstWins(root), nil
 }
 
-func jsonObjectFirstWins(value gjson.Result) map[string]any {
+func jsonObjectFirstWins(value ojson.Result) map[string]any {
 	object := make(map[string]any)
-	value.ForEach(func(key, member gjson.Result) bool {
+	value.ForEach(func(key, member ojson.Result) bool {
 		if _, exists := object[key.String()]; !exists {
 			object[key.String()] = jsonValueFirstWins(member)
 		}
@@ -84,7 +84,7 @@ func jsonObjectFirstWins(value gjson.Result) map[string]any {
 	return object
 }
 
-func jsonValueFirstWins(value gjson.Result) any {
+func jsonValueFirstWins(value ojson.Result) any {
 	switch {
 	case value.IsObject():
 		return jsonObjectFirstWins(value)
@@ -97,13 +97,13 @@ func jsonValueFirstWins(value gjson.Result) any {
 		return array
 	}
 	switch value.Type {
-	case gjson.String:
+	case ojson.String:
 		return value.String()
-	case gjson.Number:
+	case ojson.Number:
 		return json.Number(value.Raw)
-	case gjson.True:
+	case ojson.True:
 		return true
-	case gjson.False:
+	case ojson.False:
 		return false
 	default:
 		return nil

@@ -1,11 +1,12 @@
 package signature
 
 import (
-	"encoding/base64"
 	"fmt"
 	"math"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/MoeForge/moego/base64"
 )
 
 const (

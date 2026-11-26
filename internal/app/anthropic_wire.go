@@ -26,6 +26,7 @@ import (
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -278,15 +279,15 @@ func prepareAnthropicConvertedRequest(body []byte, requestModel string) []byte {
  * @brief 将 Gemini 的可见性开关写入 Claude 的既有思考模式。
  * @param body 应用模型和渠道思考默认值后的 Anthropic 正文。
  * @param requestModel 实际上游模型，空字符串时取正文 model。
- * @param includeThoughts Gemini 显式布尔开关，缺失时为 gjson.Null。
+ * @param includeThoughts Gemini 显式布尔开关，缺失时为 ojson.Null。
  * @return 写入 display 后的正文，缺省可见性和思考等级保留原有取值。
  */
-func applyGeminiAnthropicThinkingDisplay(body []byte, requestModel string, includeThoughts gjson.Type) []byte {
+func applyGeminiAnthropicThinkingDisplay(body []byte, requestModel string, includeThoughts ojson.Type) []byte {
 	display := "omitted"
 	switch includeThoughts {
-	case gjson.True:
+	case ojson.True:
 		display = "summarized"
-	case gjson.False:
+	case ojson.False:
 	default:
 		return body
 	}
@@ -295,7 +296,7 @@ func applyGeminiAnthropicThinkingDisplay(body []byte, requestModel string, inclu
 	switch thinking.Get("type").Str {
 	case "adaptive", "enabled":
 	case "":
-		if thinking.Exists() || includeThoughts != gjson.True {
+		if thinking.Exists() || includeThoughts != ojson.True {
 			return body
 		}
 		modelName := anthropicRequestModelName(body, requestModel)
