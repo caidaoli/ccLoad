@@ -69,6 +69,7 @@ type nativeToolAgentHandler struct {
 	turns            int
 	turnDelay        time.Duration
 	turnUsage        map[string]any
+	toolTurnText     string                                                                                             ///< 每批工具回调之前的可选回复正文。
 	toolBeforeStream bool                                                                                               ///< 首个工具回调在任何流式响应前到达。
 	sent             []string                                                                                           ///< 按序记录的 Send 消息正文
 	whileToolPending func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage], string, string) (bool, error) ///< true 表示已经发送终态
@@ -145,6 +146,14 @@ func (h *nativeToolAgentHandler) Send(
 		if !h.toolBeforeStream {
 			if err := stream.Send(nativeSDKMessage("thinking", map[string]any{
 				"agent_id": agentID, "run_id": runID, "text": fmt.Sprintf("Check %d.", turn+1), "type": "thinking",
+			})); err != nil {
+				return err
+			}
+		}
+		if h.toolTurnText != "" {
+			if err := stream.Send(nativeSDKMessage("assistant", map[string]any{
+				"agent_id": agentID, "run_id": runID,
+				"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": h.toolTurnText}}},
 			})); err != nil {
 				return err
 			}
@@ -483,7 +492,7 @@ func TestSDKRunnerHonorsToolChoiceOnNativeResume(t *testing.T) {
 }
 
 /**
- * @brief 混合轮只交付一次原生结果，保留新的用户内容并重放替换轮的结果。
+ * @brief 混合轮只交付一次原生结果，保留新的用户内容并重放待处理调用和最终结果。
  * @param t 测试上下文。
  */
 func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
@@ -524,6 +533,21 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 			defer cancel()
 			runner, handler := newNativeToolTestRunner(t)
 			handler.deleted = make(chan string, 4)
+			const toolTurnTokens = 12
+			handler.turnUsage = map[string]any{"inputTokens": 10, "outputTokens": 2, "totalTokens": toolTurnTokens}
+			handler.toolTurnText = "Checking lookup. "
+			finishReplacement := make(chan struct{})
+			handler.whileToolPending = func(ctx context.Context, _ *connect.ServerStream[sdkv1.RunStreamMessage], agentID, _ string) (bool, error) {
+				if agentID != "agent-2" {
+					return false, nil
+				}
+				select {
+				case <-finishReplacement:
+					return false, nil
+				case <-ctx.Done():
+					return false, ctx.Err()
+				}
+			}
 			key := &Credential{APIKey: "channel-key"}
 			settled := make(chan Usage, 1)
 			first, err := runner.Run(ctx, key, Request{
@@ -550,18 +574,51 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := "agent-2:<nil>"
+			wantTerminalTokens := 150
 			var terminal Event
 			if tc.wantTools {
-				followUp := readNativeToolCall(t, events)
+				readPending := func(output <-chan Event, replayed bool, wantTokens int) ToolCall {
+					t.Helper()
+					var toolCall ToolCall
+					var text, thinking string
+					var tokens int
+					for event := range output {
+						if event.Err != nil || event.Done || event.Replayed != replayed ||
+							(replayed && (event.Usage != nil || event.SentEffort != nil)) {
+							t.Fatalf("unexpected pending tool event: %+v", event)
+						}
+						if event.ToolCall != nil {
+							if toolCall.ID != "" {
+								t.Fatalf("duplicate tool call: %+v", event.ToolCall)
+							}
+							toolCall = *event.ToolCall
+						}
+						text += event.Delta
+						thinking += event.ThinkingDelta
+						if event.Usage != nil {
+							tokens += event.Usage.TotalTokens
+						}
+					}
+					if toolCall.ID == "" || tokens != wantTokens || text != handler.toolTurnText || thinking != "Check 1." {
+						t.Fatalf("pending tool call = %+v, tokens = %d, text = %q, thinking = %q", toolCall, tokens, text, thinking)
+					}
+					return toolCall
+				}
+				followUp := readPending(events, false, toolTurnTokens)
 				if followUp.ID == call.ID {
 					t.Fatal("replacement Run reused a previous tool call")
 				}
+				duplicate, err := runner.Run(ctx, key, request)
+				if err != nil {
+					t.Fatalf("retry while waiting for tool result: %v", err)
+				}
+				if got := readPending(duplicate, true, 0); !reflect.DeepEqual(got, followUp) {
+					t.Fatalf("pending tool replay = %+v, want %+v", got, followUp)
+				}
 				changed := request
 				changed.ToolChoice = "none"
-				for _, repeat := range []Request{request, changed} {
-					if duplicate, err := runner.Run(ctx, key, repeat); duplicate != nil || !errors.Is(err, ErrToolTurnInProgress) {
-						t.Fatalf("overlapping continuation = %v, %v", duplicate, err)
-					}
+				if duplicate, err := runner.Run(ctx, key, changed); duplicate != nil || !errors.Is(err, ErrToolTurnInProgress) {
+					t.Fatalf("changed continuation = %v, %v", duplicate, err)
 				}
 				continued, err := runner.Run(ctx, key, Request{
 					ToolResults:  []ToolResult{{CallID: followUp.ID, Output: "replacement result"}},
@@ -570,17 +627,25 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if duplicate, err := runner.Run(ctx, key, request); duplicate != nil || !errors.Is(err, ErrToolTurnInProgress) {
+					t.Fatalf("retry after result delivery = %v, %v", duplicate, err)
+				}
+				close(finishReplacement)
 				terminal = drainRun(t, continued)
 				want = "agent-2:replacement result"
+				wantTerminalTokens -= toolTurnTokens
 			} else {
 				terminal = drainRun(t, events)
 			}
-			if terminal.Text != want || terminal.Replayed || terminal.Usage == nil || terminal.Usage.TotalTokens != 150 {
+			if terminal.Text != want || terminal.Replayed || terminal.Usage == nil || terminal.Usage.TotalTokens != wantTerminalTokens {
 				t.Fatalf("replacement terminal = %+v, want %q", terminal, want)
 			}
 			replay, err := runner.Run(ctx, key, request)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.wantTools {
+				want = handler.toolTurnText + want
 			}
 			if terminal := drainRun(t, replay); !terminal.Replayed || terminal.Text != want || terminal.Usage != nil {
 				t.Fatalf("mixed request replay = %+v", terminal)
@@ -594,7 +659,7 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 			}
 			select {
 			case usage := <-settled:
-				if usage.TotalTokens != 150 {
+				if usage.TotalTokens != 150-toolTurnTokens {
 					t.Fatalf("original detached usage = %+v", usage)
 				}
 			default:
@@ -1023,7 +1088,7 @@ func TestSDKSessionBatchesConcurrentNativeToolCalls(t *testing.T) {
 	session := &sdkSession{
 		ctx: ctx, cancel: cancel, events: make(chan Event, 4), done: make(chan struct{}),
 	}
-	events, err := session.nextTurn(context.Background(), nil, nil, nil)
+	events, err := session.nextTurn(context.Background(), nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("nextTurn() error = %v", err)
 	}
@@ -1076,7 +1141,7 @@ func TestSDKSessionDeliversTerminalAfterFullEventBuffer(t *testing.T) {
 	}
 	wantErr := context.DeadlineExceeded
 	session.finish(Event{Text: "answer", Done: true, Err: wantErr, Usage: &Usage{TotalTokens: 7}})
-	events, err := session.nextTurn(context.Background(), nil, nil, nil)
+	events, err := session.nextTurn(context.Background(), nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("nextTurn() error = %v", err)
 	}
@@ -1108,7 +1173,7 @@ func TestSDKSessionToolBatchWaitsForStoppingRun(t *testing.T) {
 			defer cancel(nil)
 			session := &sdkSession{ctx: ctx, cancel: cancel, events: make(chan Event, 2), done: make(chan struct{})}
 			settlements := make(chan Usage, 1)
-			events, err := session.nextTurn(t.Context(), func(usage Usage) { settlements <- usage }, nil, nil)
+			events, err := session.nextTurn(t.Context(), func(usage Usage) { settlements <- usage }, nil, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1405,7 +1470,7 @@ func TestSDKRunnerSettlesDetachedToolUsage(t *testing.T) {
 			}
 			if mode == "terminal" {
 				// A resume that selected this session before callback cleanup can still read its terminal.
-				lateEvents, err := session.nextTurn(ctx, request.OnDetachedUsage, nil, nil)
+				lateEvents, err := session.nextTurn(ctx, request.OnDetachedUsage, nil, false, nil)
 				if err != nil {
 					t.Fatal(err)
 				}

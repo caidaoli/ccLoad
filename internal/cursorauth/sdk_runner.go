@@ -81,6 +81,7 @@ type sdkSession struct {
 	idleTimeout     time.Duration ///< 工具轮之间等待下一请求的最长间隔。
 	idleTimer       *time.Timer   ///< 仅在无附着请求时运行，受 turnMu 保护。
 	onDetachedUsage func(Usage)   ///< 工具轮解除附着时登记的用量接收方，受 turnMu 保护。
+	toolReply       []Event       ///< 混合续轮的首个工具响应，受 turnMu 保护。
 }
 
 /**
@@ -239,7 +240,7 @@ func (r *SDKRunner) Run(
 		// cursorTurnNew: trailing tool_result blocks are conversation history.
 		// ParseRequest already inlined them into Prompt.
 	}
-	events, _, err := r.runFreshTurn(ctx, apiKey, model, request, nil)
+	events, _, err := r.runFreshTurn(ctx, apiKey, model, request, nil, false)
 	return events, err
 }
 
@@ -250,11 +251,12 @@ func (r *SDKRunner) Run(
  * @param model 实际路由模型；空时用默认模型。
  * @param request 当前轮完整历史和工具声明。
  * @param inherited 已匹配的原 Run 注册的工具；只有请求省略工具声明时可继承。
+ * @param captureToolReply 是否保留首个工具响应供相同混合续轮重试。
  * @return 本轮事件流；启动失败时为 nil。
  * @return 已启动的会话；启动失败时为 nil。
  * @return 请求验证或 Bridge 启动错误；成功时为 nil。
  */
-func (r *SDKRunner) runFreshTurn(ctx context.Context, apiKey, model string, request Request, inherited map[string]*sdkv1.CustomToolDefinition) (<-chan Event, *sdkSession, error) {
+func (r *SDKRunner) runFreshTurn(ctx context.Context, apiKey, model string, request Request, inherited map[string]*sdkv1.CustomToolDefinition, captureToolReply bool) (<-chan Event, *sdkSession, error) {
 	prompt := cursorRequestPrompt(request)
 	if strings.TrimSpace(prompt) == "" {
 		return nil, nil, fmt.Errorf("%w: cursor prompt is required", ErrInvalidRequest)
@@ -301,6 +303,7 @@ func (r *SDKRunner) runFreshTurn(ctx context.Context, apiKey, model string, requ
 		client: client, apiKey: apiKey, scope: request.SessionScope, model: model, customTools: customTools, toolsDigest: toolsDigest,
 		transcriptDigest: transcriptDigest(request.transcript), onDetachedUsage: request.OnDetachedUsage,
 		message: prompt, images: request.Images, effort: cursorSentEffort(selection),
+		captureToolReply: captureToolReply && len(customTools) > 0,
 	}
 	var agentID string
 	if parkedKey != "" {
@@ -386,6 +389,7 @@ type sdkRunStart struct {
 	images           []Image                                ///< 本次 Send 的图片
 	sendModel        *sdkv1.ModelSelection                  ///< 续用 Agent 时覆盖创建时的模型；新建时为 nil
 	effort           string                                 ///< 本轮实际选择的思考档位，未指定时为空
+	captureToolReply bool                                   ///< 保留首个工具响应供混合续轮重试。
 }
 
 /**
@@ -464,7 +468,7 @@ func (r *SDKRunner) startRun(ctx context.Context, run sdkRunStart) (<-chan Event
 	}
 
 	effort := run.effort
-	events, err := session.nextTurn(ctx, run.onDetachedUsage, &effort, nil)
+	events, err := session.nextTurn(ctx, run.onDetachedUsage, &effort, run.captureToolReply, nil)
 	r.active.Add(1)
 	go r.consumeRun(session, stream)
 	if session.parkedStart != nil {
@@ -827,8 +831,8 @@ type mixedCursorToolTurn struct {
  * @param apiKey 当前 Cursor User API Key。
  * @param model 当前实际路由模型；省略时沿用原 Run 模型。
  * @param request 工具结果和新的用户内容。
- * @return 新 Run 或已完成的混合轮事件；提交或启动失败时为 nil。
- * @return 请求或启动错误；重复请求的替换 Run 未结束时为 ErrToolTurnInProgress。
+ * @return 新 Run 或相同混合轮可重放的事件；失败时为 nil。
+ * @return 请求、启动或重放错误；混合轮正在执行时为 ErrToolTurnInProgress。
  */
 func (r *SDKRunner) runMixedToolTurn(ctx context.Context, apiKey, model string, request Request) (<-chan Event, error) {
 	mixed, original, err := r.prepareMixedToolTurn(ctx, apiKey, model, request)
@@ -843,9 +847,9 @@ func (r *SDKRunner) runMixedToolTurn(ctx context.Context, apiKey, model string, 
 		inherited = original.tools
 	}
 	if mixed != nil && mixed.session != nil {
-		return replayCompletedToolTurn(ctx, mixed.session), nil
+		return r.replayMixedToolTurn(ctx, mixed.session)
 	}
-	events, replacement, err := r.runFreshTurn(ctx, apiKey, model, request, inherited)
+	events, replacement, err := r.runFreshTurn(ctx, apiKey, model, request, inherited, mixed != nil)
 	if mixed != nil {
 		r.resumeMu.Lock()
 		mixed.session = replacement
@@ -861,7 +865,7 @@ func (r *SDKRunner) runMixedToolTurn(ctx context.Context, apiKey, model string, 
  * @param apiKey 当前 Cursor User API Key。
  * @param model 当前实际路由模型；空时沿用原 Run 模型。
  * @param request 工具结果和新的用户内容。
- * @return 可启动或已完成的混合轮；仅凭历史启动时为空。
+ * @return 可启动或与本请求相同的混合轮；仅凭历史启动时为空。
  * @return 匹配的原 Run；结果未知或范围不符时为空。
  * @return 上一混合轮仍在执行时为 ErrToolTurnInProgress，其他失败返回请求或提交错误。
  * @note 与纯工具结果续轮串行，且在原 Run 未被请求附着时提交结果。
@@ -887,13 +891,13 @@ func (r *SDKRunner) prepareMixedToolTurn(ctx context.Context, apiKey, model stri
 			return nil, nil, ErrToolTurnInProgress
 		}
 		if mixed.session != nil {
+			if key == mixed.key {
+				return mixed, original, nil
+			}
 			select {
 			case <-mixed.session.done:
 			default:
 				return nil, nil, ErrToolTurnInProgress
-			}
-			if key == mixed.key {
-				return mixed, original, nil
 			}
 		}
 	} else if turn.kind == cursorTurnReplay {
@@ -932,6 +936,43 @@ func (r *SDKRunner) prepareMixedToolTurn(ctx context.Context, apiKey, model stri
 }
 
 /**
+ * @brief 重放相同混合续轮的终态或仍待交回结果的首个工具响应。
+ * @param ctx 重试请求的上下文。
+ * @param session 已匹配的替换 Run。
+ * @return 可重放的事件流；没有可重放的响应时为 nil。
+ * @return 续轮仍在执行时为 ErrToolTurnInProgress，重试已取消时返回取消原因。
+ */
+func (r *SDKRunner) replayMixedToolTurn(ctx context.Context, session *sdkSession) (<-chan Event, error) {
+	session.turnMu.Lock()
+	defer session.turnMu.Unlock()
+	select {
+	case <-session.done:
+		return replayCompletedToolTurn(ctx, session), nil
+	default:
+	}
+	if len(session.toolReply) == 0 || session.ctx.Err() != nil {
+		return nil, ErrToolTurnInProgress
+	}
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
+	r.mu.Lock()
+	missingCall := slices.ContainsFunc(session.toolReply, func(event Event) bool {
+		return event.ToolCall != nil && r.calls[event.ToolCall.ID] == nil
+	})
+	r.mu.Unlock()
+	if missingCall {
+		return nil, ErrToolTurnInProgress
+	}
+	output := make(chan Event, len(session.toolReply))
+	for _, event := range session.toolReply {
+		output <- event
+	}
+	close(output)
+	return output, nil
+}
+
+/**
  * @brief 在已认证的范围内恢复工具会话或重放已完成的工具轮。
  * @param ctx 当前请求上下文。
  * @param apiKey 已去除首尾空白的 User API Key。
@@ -951,7 +992,7 @@ func (r *SDKRunner) resumeToolTurn(ctx context.Context, apiKey, model string, re
 	}
 	switch turn.kind {
 	case cursorTurnResume:
-		return turn.session.nextTurn(ctx, request.OnDetachedUsage, nil, func() error {
+		return turn.session.nextTurn(ctx, request.OnDetachedUsage, nil, false, func() error {
 			turn.session.setTranscriptDigest(transcriptDigest(request.transcript))
 			return r.resolveToolResults(turn.session, turn.pending, request.ToolChoice == "none")
 		})
@@ -1052,6 +1093,7 @@ func replayCompletedToolTurn(ctx context.Context, session *sdkSession) <-chan Ev
  * @param results 待交付的客户端结果。
  * @param disableTools 交付现有结果后是否拒绝本 Run 后续的工具调用。
  * @return 重复提交同一调用时返回 ErrInvalidRequest；会话不再可用或编码失败时返回对应错误。
+ * @note 调用方须持有 session.turnMu。
  */
 func (r *SDKRunner) resolveToolResults(session *sdkSession, results []ToolResult, disableTools bool) error {
 	type preparedResult struct {
@@ -1101,6 +1143,7 @@ func (r *SDKRunner) resolveToolResults(session *sdkSession, results []ToolResult
 	for _, item := range prepared {
 		item.pending.resolved = true
 	}
+	session.toolReply = nil
 	if r.completedCalls == nil {
 		r.completedCalls = make(map[string]*sdkSession)
 	}
@@ -1127,13 +1170,14 @@ func (r *SDKRunner) resolveToolResults(session *sdkSession, results []ToolResult
  * @param ctx 当前请求上下文；附着期间取消会终止 Agent。
  * @param onDetachedUsage 当前请求提供的迟到用量接收方；nil 表示无接收方。
  * @param sentEffort 新 Send 的实际思考档位；恢复工具轮时为 nil。
+ * @param captureToolReply 是否保留本轮工具响应供混合续轮重试。
  * @param before 提交工具结果的操作；提交成功后才完成附着，nil 表示无需提交。
  * @return 当前轮事件流；附着或提交失败时为 nil。
  * @return 已有附着请求或提交失败时返回错误，否则为 nil。
  * @note turnMu 保护附着与空闲计时器。已取消的 Run 由当前请求等待终态，关闭输出前解除请求取消绑定。
  * 无跨请求身份的 Run 在正常交付工具批次并解除附着后取消，剩余用量仍交给 onDetachedUsage。
  */
-func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), sentEffort *string, before func() error) (<-chan Event, error) {
+func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), sentEffort *string, captureToolReply bool, before func() error) (<-chan Event, error) {
 	s.turnMu.Lock()
 	if s.attached {
 		s.turnMu.Unlock()
@@ -1156,6 +1200,7 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 	}
 	s.turnMu.Unlock()
 	stopCaller := context.AfterFunc(ctx, func() { s.cancelRun(nil) })
+	var toolReply []Event
 	release := func(atToolBoundary bool) bool {
 		s.turnMu.Lock()
 		defer s.turnMu.Unlock()
@@ -1164,6 +1209,7 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 				return false
 			}
 			s.onDetachedUsage = onDetachedUsage
+			s.toolReply = toolReply
 			if !s.scope.reusable() {
 				s.cancel(nil)
 			}
@@ -1256,6 +1302,11 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 			}
 			select {
 			case output <- event:
+				if captureToolReply && (event.Delta != "" || event.ThinkingDelta != "" || event.ToolCall != nil) {
+					toolReply = append(toolReply, Event{
+						Delta: event.Delta, ThinkingDelta: event.ThinkingDelta, ToolCall: event.ToolCall, Replayed: true,
+					})
+				}
 				return true
 			case <-ctx.Done():
 				cancelTurn(event)
@@ -1380,6 +1431,7 @@ func (s *sdkSession) confirmParkedStart(err error) bool {
  */
 func (s *sdkSession) finish(event Event) {
 	s.turnMu.Lock()
+	s.toolReply = nil
 	s.emitMu.Lock()
 	var settle func(Usage)
 	var detachedUsage Usage

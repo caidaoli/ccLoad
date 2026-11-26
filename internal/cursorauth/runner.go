@@ -43,9 +43,7 @@ type Event struct {
 	ToolCall      *ToolCall
 	Usage         *Usage  ///< 上游报告的账单增量；上游未报告时为 nil。
 	SentEffort    *string ///< 新 Send 首次确认模型执行时的档位；空字符串表示未指定档位。
-	// Replayed marks a completed native run returned for a duplicate tool-result
-	// request. The wire layer must not charge or log that run a second time.
-	Replayed bool
+	Replayed      bool    ///< 重复工具请求重放的响应，代理层不重复计费或记日志。
 	// Ping marks a live run heartbeat (SDK status RUNNING). It is not assistant text.
 	Ping         bool
 	Done         bool
