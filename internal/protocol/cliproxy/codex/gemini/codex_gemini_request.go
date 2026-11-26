@@ -44,26 +44,12 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	root := gjson.ParseBytes(rawJSON)
 	inputItems := translatorcommon.NewRawArrayItems(root.Get("contents.#").Int())
 
-	// Pre-compute tool name shortening map from declared functionDeclarations
-	shortMap := map[string]string{}
-	if tools := root.Get("tools"); tools.IsArray() {
-		var names []string
-		tarr := tools.Array()
-		for i := 0; i < len(tarr); i++ {
-			fns := tarr[i].Get("functionDeclarations")
-			if !fns.IsArray() {
-				continue
-			}
-			for _, fn := range fns.Array() {
-				if v := fn.Get("name"); v.Exists() {
-					names = append(names, v.String())
-				}
-			}
-		}
-		if len(names) > 0 {
-			shortMap = buildShortNameMap(names)
-		}
+	declarations := translatorcommon.GeminiFunctionDeclarations(root)
+	mode, allowedNames, err := translatorcommon.GeminiFunctionCallingOptions(root, declarations)
+	if err != nil {
+		return nil, err
 	}
+	shortMap := geminiToolShortNames(declarations)
 
 	// helper for generating paired call IDs in the form: call_gemini_<seq>
 	// Gemini uses sequential pairing across possibly multiple in-flight
@@ -99,29 +85,26 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		out, _ = sjson.SetBytes(out, "service_tier", serviceTier)
 	}
 
-	// System instruction maps to the native Responses instructions field.
-	sysParts := root.Get("system_instruction.parts")
-	if !sysParts.Exists() {
-		sysParts = root.Get("systemInstruction.parts")
+	format, outputInstruction, err := translatorcommon.GeminiResponseFormat(root, true)
+	if err != nil {
+		return nil, err
 	}
-	if sysParts.IsArray() {
-		var instructions strings.Builder
-		arr := sysParts.Array()
-		for i := 0; i < len(arr); i++ {
-			p := arr[i]
-			if translatorcommon.IsGeminiThoughtPart(p) {
-				continue
-			}
-			if t := p.Get("text"); t.Exists() {
-				if instructions.Len() > 0 {
-					instructions.WriteByte('\n')
-				}
-				instructions.WriteString(t.String())
-			}
+	if format != nil {
+		out, _ = sjson.SetRawBytes(out, "text.format", format)
+	}
+	// System instruction maps to the native Responses instructions field.
+	instructions := translatorcommon.GeminiSystemInstructionText(root, "system_instruction", "systemInstruction")
+	if gjson.GetBytes(format, "type").Str == "json_object" {
+		outputInstruction = translatorcommon.GeminiJSONObjectInstruction
+	}
+	if outputInstruction != "" {
+		if instructions != "" {
+			instructions += "\n"
 		}
-		if instructions.Len() > 0 {
-			out, _ = sjson.SetBytes(out, "instructions", instructions.String())
-		}
+		instructions += outputInstruction
+	}
+	if instructions != "" {
+		out, _ = sjson.SetBytes(out, "instructions", instructions)
 	}
 
 	// Contents -> messages and function calls/results
@@ -225,17 +208,11 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 				// function call from model
 				if fc := translatorcommon.GeminiPartFunctionCall(p); fc.Exists() {
-					fn := []byte(`{"type":"function_call"}`)
+					fn := []byte(`{"type":"function_call","arguments":"{}"}`)
 					if name := fc.Get("name"); name.Exists() {
-						n := name.String()
-						if short, ok := shortMap[n]; ok {
-							n = short
-						} else {
-							n = shortenNameIfNeeded(n)
-						}
-						fn, _ = sjson.SetBytes(fn, "name", n)
+						fn, _ = sjson.SetBytes(fn, "name", resolveGeminiToolName(shortMap, name.String()))
 					}
-					if args := fc.Get("args"); args.Exists() {
+					if args := fc.Get("args"); args.IsObject() {
 						fn, _ = sjson.SetBytes(fn, "arguments", args.Raw)
 					}
 					// Reuse gateway-provided IDs when present, otherwise generate one for pairing.
@@ -292,116 +269,56 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 	out = translatorcommon.SetRawArrayItems(out, "input", inputItems)
 
-	// Tools mapping: Gemini functionDeclarations -> Codex tools
-	tools := root.Get("tools")
-	if tools.IsArray() {
-		var toolItems [][]byte
-		out, _ = sjson.SetBytes(out, "tool_choice", "auto")
-		tarr := tools.Array()
-		for i := 0; i < len(tarr); i++ {
-			td := tarr[i]
-			fns := td.Get("functionDeclarations")
-			if !fns.IsArray() {
-				continue
+	if root.Get("tools").IsArray() {
+		var tools [][]byte
+		for _, declaration := range declarations {
+			tool := []byte(`{"type":"function"}`)
+			if name := declaration.Get("name"); name.Exists() {
+				tool, _ = sjson.SetBytes(tool, "name", resolveGeminiToolName(shortMap, name.String()))
 			}
-			farr := fns.Array()
-			for j := 0; j < len(farr); j++ {
-				fn := farr[j]
-				tool := []byte(`{}`)
-				tool, _ = sjson.SetBytes(tool, "type", "function")
-				if v := fn.Get("name"); v.Exists() {
-					name := v.String()
-					if short, ok := shortMap[name]; ok {
-						name = short
-					} else {
-						name = shortenNameIfNeeded(name)
-					}
-					tool, _ = sjson.SetBytes(tool, "name", name)
-				}
-				if v := fn.Get("description"); v.Exists() {
-					tool, _ = sjson.SetBytes(tool, "description", v.String())
-				}
-				parameters := fn.Get("parameters")
-				if !parameters.Exists() {
-					parameters = fn.Get("parametersJsonSchema")
-				}
-				if parameters.Exists() {
-					tool, _ = sjson.SetRawBytes(tool, "parameters", cleanGeminiCodexToolParameters(parameters))
-				}
-				tool, _ = sjson.SetBytes(tool, "strict", false)
-				toolItems = append(toolItems, tool)
+			if description := declaration.Get("description"); description.Exists() {
+				tool, _ = sjson.SetBytes(tool, "description", description.String())
 			}
+			if parameters := translatorcommon.GeminiConfigObject(declaration, "parameters", "parametersJsonSchema", "parameters_json_schema"); parameters.Exists() {
+				tool, _ = sjson.SetRawBytes(tool, "parameters", cleanGeminiCodexToolParameters(parameters))
+			}
+			tool, _ = sjson.SetBytes(tool, "strict", false)
+			tools = append(tools, tool)
 		}
-		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(toolItems))
+		out, _ = sjson.SetBytes(out, "tool_choice", "auto")
+		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(tools))
 	}
 
 	// Fixed flags aligning with Codex expectations
 	out, _ = sjson.SetBytes(out, "parallel_tool_calls", true)
-	out = setCodexToolChoiceFromGeminiToolConfig(out, root.Get("toolConfig.functionCallingConfig"))
-	genConfig := root.Get("generationConfig")
-	if !genConfig.Exists() {
-		genConfig = root.Get("generation_config")
+	out = setCodexToolChoiceFromGeminiToolConfig(out, mode, allowedNames, shortMap)
+	genConfig := translatorcommon.GeminiConfigObject(root, "generationConfig", "generation_config")
+	maxTokens, hasMaxTokens := translatorcommon.GeminiConfigInt(genConfig, 0, "maxOutputTokens", "max_output_tokens")
+	if !hasMaxTokens {
+		maxTokens, hasMaxTokens = translatorcommon.GeminiConfigInt(root, 0, "maxOutputTokens", "max_output_tokens", "max_tokens")
 	}
-	for _, v := range []gjson.Result{
-		genConfig.Get("maxOutputTokens"),
-		genConfig.Get("max_output_tokens"),
-		root.Get("maxOutputTokens"),
-		root.Get("max_output_tokens"),
-		root.Get("max_tokens"),
-	} {
-		if v.Type == gjson.Number {
-			out, _ = sjson.SetBytes(out, "max_output_tokens", v.Int())
-			break
-		}
+	if hasMaxTokens {
+		out, _ = sjson.SetBytes(out, "max_output_tokens", maxTokens)
 	}
 
-	// Convert Gemini thinkingConfig to Codex reasoning.effort.
-	// Note: Google official Python SDK sends snake_case fields (thinking_level/thinking_budget).
-	effortSet := false
-	if genConfig.Exists() {
-		thinkingLevel := genConfig.Get("thinkingLevel")
-		if !thinkingLevel.Exists() {
-			thinkingLevel = genConfig.Get("thinking_level")
-		}
-		if thinkingLevel.Exists() {
-			effort := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
-			if effort != "" {
-				out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
-				effortSet = true
-			}
-		} else if thinkingConfig := genConfig.Get("thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
-			thinkingLevel := thinkingConfig.Get("thinkingLevel")
-			if !thinkingLevel.Exists() {
-				thinkingLevel = thinkingConfig.Get("thinking_level")
-			}
-			if thinkingLevel.Exists() {
-				effort := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
-				if effort != "" {
-					out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
-					effortSet = true
-				}
-			} else {
-				thinkingBudget := thinkingConfig.Get("thinkingBudget")
-				if !thinkingBudget.Exists() {
-					thinkingBudget = thinkingConfig.Get("thinking_budget")
-				}
-				if thinkingBudget.Exists() {
-					if effort, ok := thinking.ConvertBudgetToModelLevel(int(thinkingBudget.Int()), modelName, "codex"); ok {
-						out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
-						effortSet = true
-					}
-				}
-			}
-		}
+	level, budget, hasBudget := translatorcommon.GeminiThinkingConfig(root)
+	effort := translatorcommon.GeminiThinkingLevel(genConfig)
+	if effort == "" {
+		effort = level
 	}
-	if !effortSet {
-		// No thinking config, set default effort
-		out, _ = sjson.SetBytes(out, "reasoning.effort", "medium")
+	if effort == "" && hasBudget {
+		effort, _ = thinking.ConvertBudgetToModelLevel(int(budget), modelName, "codex")
 	}
-	// OpenAI documents reasoning summaries as explicit opt-in output. ccLoad
-	// excludes upstream's runtime summary applier, so the converter itself
-	// keeps requesting summaries to preserve visible reasoning downstream.
-	out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
+	if effort == "" {
+		effort = "medium"
+	}
+	if effort != string(thinking.LevelAuto) {
+		out, _ = sjson.SetBytes(out, "reasoning.effort", effort)
+	}
+	// Preserve ccLoad's default reasoning summaries unless Gemini opted out.
+	if translatorcommon.GeminiIncludeThoughts(root) != gjson.False {
+		out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
+	}
 	out, _ = sjson.SetBytes(out, "stream", stream)
 	out, _ = sjson.SetBytes(out, "store", false)
 	out, _ = sjson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})
@@ -443,31 +360,50 @@ func normalizedGeminiThoughtSignatureForCodexTarget(modelName, rawSignature stri
 	return translatorcommon.CodexReplaySignatureForTarget(modelName, decodeGeminiCodexThoughtSignature(rawSignature))
 }
 
-func setCodexToolChoiceFromGeminiToolConfig(out []byte, functionCallingConfig gjson.Result) []byte {
-	if !functionCallingConfig.Exists() {
-		return out
-	}
-	mode := functionCallingConfig.Get("mode").String()
+func setCodexToolChoiceFromGeminiToolConfig(out []byte, mode string, allowedNames []string, shortMap map[string]string) []byte {
 	switch mode {
 	case "NONE":
 		out, _ = sjson.SetBytes(out, "tool_choice", "none")
 	case "AUTO":
-		current := gjson.GetBytes(out, "tool_choice")
-		if current.Type != gjson.String || current.String() != "auto" {
-			out, _ = sjson.SetBytes(out, "tool_choice", "auto")
-		}
+		out, _ = sjson.SetBytes(out, "tool_choice", "auto")
 	case "ANY":
-		allowedNames := functionCallingConfig.Get("allowedFunctionNames")
-		allowedNameItems := allowedNames.Array()
-		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
-			choice := []byte(`{"type":"function","name":""}`)
-			choice, _ = sjson.SetBytes(choice, "name", shortenNameIfNeeded(allowedNameItems[0].String()))
-			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
-		} else {
+		switch len(allowedNames) {
+		case 0:
 			out, _ = sjson.SetBytes(out, "tool_choice", "required")
+		case 1:
+			choice := []byte(`{"type":"function","name":""}`)
+			choice, _ = sjson.SetBytes(choice, "name", shortMap[allowedNames[0]])
+			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
+		default:
+			choice := []byte(`{"type":"allowed_tools","mode":"required","tools":[]}`)
+			var tools [][]byte
+			for _, name := range allowedNames {
+				tool := []byte(`{"type":"function","name":""}`)
+				tool, _ = sjson.SetBytes(tool, "name", shortMap[name])
+				tools = append(tools, tool)
+			}
+			choice, _ = sjson.SetRawBytes(choice, "tools", translatorcommon.JoinRawArray(tools))
+			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
 		}
 	}
 	return out
+}
+
+func geminiToolShortNames(declarations []gjson.Result) map[string]string {
+	var names []string
+	for _, declaration := range declarations {
+		if name := declaration.Get("name"); name.Exists() {
+			names = append(names, name.String())
+		}
+	}
+	return buildShortNameMap(names)
+}
+
+func resolveGeminiToolName(shortMap map[string]string, name string) string {
+	if short, ok := shortMap[name]; ok {
+		return short
+	}
+	return shortenNameIfNeeded(name)
 }
 
 func cleanGeminiCodexToolParameters(parameters gjson.Result) []byte {

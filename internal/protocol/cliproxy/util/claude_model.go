@@ -14,6 +14,36 @@ func IsClaudeThinkingModel(model string) bool {
 	return strings.Contains(lower, "claude") && strings.Contains(lower, "thinking")
 }
 
+// ResolveClaude45ModelAlias returns the dated Claude 4.5 ID for an official short name.
+func ResolveClaude45ModelAlias(model string) string {
+	switch model {
+	case "claude-sonnet-4-5":
+		return "claude-sonnet-4-5-20250929"
+	case "claude-opus-4-5":
+		return "claude-opus-4-5-20251101"
+	case "claude-haiku-4-5":
+		return "claude-haiku-4-5-20251001"
+	default:
+		return model
+	}
+}
+
+// ResolveClaudeThinkingModelAlias returns the catalog ID for thinking capability lookup.
+func ResolveClaudeThinkingModelAlias(model string) string {
+	switch model {
+	case "claude-opus-4-1":
+		return "claude-opus-4-1-20250805"
+	case "claude-opus-4", "claude-opus-4-0":
+		return "claude-opus-4-20250514"
+	case "claude-sonnet-4", "claude-sonnet-4-0":
+		return "claude-sonnet-4-20250514"
+	case "claude-3-7-sonnet-latest":
+		return "claude-3-7-sonnet-20250219"
+	default:
+		return ResolveClaude45ModelAlias(model)
+	}
+}
+
 // IsClaudeLegacySystemReminderModel reports whether the model rejects
 // mid-conversation system messages and requires the legacy reminder path.
 func IsClaudeLegacySystemReminderModel(model string) bool {

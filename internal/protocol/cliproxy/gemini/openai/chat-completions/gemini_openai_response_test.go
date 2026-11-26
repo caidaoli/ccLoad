@@ -9,6 +9,69 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertGeminiResponseToOpenAI_FunctionCallNullOrNonObjectArgsUsesEmptyObject(t *testing.T) {
+	const object = `{"n":9007199254740993,"query":"<tag>"}`
+	for _, tc := range []struct {
+		name, argsField, want string
+	}{
+		{"missing", "", "{}"},
+		{"null", `,"args":null`, "{}"},
+		{"array", `,"args":[1,2]`, "{}"},
+		{"string", `,"args":"{}"`, "{}"},
+		{"object", `,"args":` + object, object},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping"` + tc.argsField + `}}]},"finishReason":"STOP"}]}`)
+			var state any
+			chunks := ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, body, &state)
+			if len(chunks) != 1 {
+				t.Fatalf("expected one stream delta, got %q", chunks)
+			}
+			call := gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0.function")
+			if call.Get("name").Str != "ping" || call.Get("arguments").Str != tc.want {
+				t.Errorf("stream function = %s, want ping with arguments %q", call.Raw, tc.want)
+			}
+			out := ConvertGeminiResponseToOpenAINonStream(t.Context(), "gemini", nil, nil, body, nil)
+			call = gjson.GetBytes(out, "choices.0.message.tool_calls.0.function")
+			if call.Get("name").Str != "ping" || call.Get("arguments").Str != tc.want {
+				t.Errorf("nonstream function = %s, want ping with arguments %q", call.Raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestGeminiChatNamelessNonObjectArgsPreservesDetachedSignature(t *testing.T) {
+	for _, args := range []string{"null", "[1,2]"} {
+		t.Run(args, func(t *testing.T) {
+			placeholder := `{"functionCall":{"args":` + args + `},"thoughtSignature":"` + capturedGeminiToolCallThoughtSignature + `"}`
+			var state any
+			initial := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping","args":{}}}]}}]}`)
+			ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, initial, &state)
+			followup := []byte(`{"candidates":[{"content":{"parts":[` + placeholder + `]}}]}`)
+			chunks := ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, followup, &state)
+			if len(chunks) != 1 {
+				t.Fatalf("expected signature-only tool delta, got %q", chunks)
+			}
+			call := gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0")
+			if call.Get("index").Raw != "0" || call.Get("function").Exists() || call.Get("id").Exists() ||
+				call.Get("extra_content.google.thought_signature").Str != capturedGeminiToolCallThoughtSignature {
+				t.Fatalf("expected signature on preceding call, got %s", call.Raw)
+			}
+			full := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping","args":{}}},` + placeholder + `]},"finishReason":"STOP"}]}`)
+			out := ConvertGeminiResponseToOpenAINonStream(t.Context(), "gemini", nil, nil, full, nil)
+			calls := gjson.GetBytes(out, "choices.0.message.tool_calls").Array()
+			if len(calls) != 1 || calls[0].Get("function.name").Str != "ping" ||
+				calls[0].Get("extra_content.google.thought_signature").Str != capturedGeminiToolCallThoughtSignature {
+				t.Fatalf("expected one signed call, got %q", out)
+			}
+			var standalone any
+			if chunks := ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, followup, &standalone); len(chunks) != 0 {
+				t.Fatalf("standalone placeholder emitted chunks: %q", chunks)
+			}
+		})
+	}
+}
+
 func TestConvertGeminiResponseToOpenAICompletionTokensIncludeThoughts(t *testing.T) {
 	var param any
 	chunk := []byte(`{"usageMetadata":{"promptTokenCount":16,"candidatesTokenCount":5,"thoughtsTokenCount":42,"totalTokenCount":63}}`)
@@ -215,6 +278,54 @@ func TestOpenAIToolNamesRoundTripThroughGemini(t *testing.T) {
 				t.Errorf("non-stream tool name = %q, want %q", got, tc.wantName)
 			}
 		})
+	}
+}
+
+func TestGeminiChatNonStreamNullableFinishReasonAndUsage(t *testing.T) {
+	for _, tc := range []struct{ reason, want, native string }{
+		{"", "null", "null"},
+		{`null`, "null", "null"},
+		{`""`, "null", "null"},
+		{`"  "`, "null", "null"},
+		{`false`, "null", "null"},
+		{`" max_tokens "`, `"length"`, `"max_tokens"`},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			field := ""
+			if tc.reason != "" {
+				field = `,"finishReason":` + tc.reason
+			}
+			input := []byte(`{"candidates":[{"content":{"parts":[{"text":"answer"}]}` + field + `}],"usageMetadata":null}`)
+			out := ConvertGeminiResponseToOpenAINonStream(t.Context(), "gemini", nil, nil, input, nil)
+			result := gjson.ParseBytes(out)
+			if result.Get("choices.0.finish_reason").Raw != tc.want || result.Get("choices.0.native_finish_reason").Raw != tc.native || result.Get("usage").Exists() {
+				t.Fatalf("unexpected finish reason or usage: %s", out)
+			}
+		})
+	}
+}
+
+func TestGeminiChatStreamNullUsagePreservesDetachedSignatureAndPendingZero(t *testing.T) {
+	const signature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
+	var state any
+	convert := func(chunk string) [][]byte {
+		return ConvertGeminiResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(chunk), &state)
+	}
+	chunks := convert(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":null,"cpaUsageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0}}`)
+	if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices.0.finish_reason").Raw != "null" || gjson.GetBytes(chunks[0], "usage").Exists() {
+		t.Fatalf("null usage finalized the tool delta: %q", chunks)
+	}
+	chunks = convert(`{"candidates":[{"finishReason":null,"content":{"parts":[{"thoughtSignature":"` + signature + `"}]}}],"cpaUsageMetadata":null}`)
+	if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0.extra_content.google.thought_signature").String() != signature {
+		t.Fatalf("missing detached signature: %q", chunks)
+	}
+	chunks = convert(`[DONE]`)
+	if len(chunks) != 2 || string(chunks[1]) != "[DONE]" ||
+		gjson.GetBytes(chunks[0], "choices.0.finish_reason").String() != "tool_calls" || gjson.GetBytes(chunks[0], "usage.total_tokens").Raw != "0" {
+		t.Fatalf("expected terminal tool_calls with real zero usage and one SSE marker: %q", chunks)
+	}
+	if chunks := convert(`[DONE]`); len(chunks) != 0 {
+		t.Fatalf("repeated [DONE] emitted a second terminal: %q", chunks)
 	}
 }
 

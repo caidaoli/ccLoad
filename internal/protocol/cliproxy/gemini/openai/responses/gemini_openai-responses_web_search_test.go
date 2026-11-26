@@ -105,23 +105,21 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchAllowedDomains(t *testin
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToGemini_WebSearchToolChoiceNoneSuppresses(t *testing.T) {
-	modelID := "gpt-6.1-terra"
-
-	req := []byte(`{
-		"model": "gemini-search-suppress",
-		"input": "search query",
-		"tools": [{"type": "web_search"}],
-		"tool_choice": "none"
-	}`)
-
-	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
-	if tools := gjson.GetBytes(out, "tools"); tools.Exists() {
-		for _, tool := range tools.Array() {
-			if tool.Get("googleSearch").Exists() {
-				t.Fatalf("tool_choice: none should suppress googleSearch, got: %s", out)
+func TestConvertOpenAIResponsesRequestToGemini_WebSearchToolChoice(t *testing.T) {
+	for _, tc := range []struct {
+		choice string
+		search bool
+	}{{"null", true}, {`"none"`, false}} {
+		t.Run(tc.choice, func(t *testing.T) {
+			req := []byte(`{"input":"search query","tools":[{"type":"web_search"}],"tool_choice":` + tc.choice + `}`)
+			out, err := ConvertOpenAIResponsesRequestToGemini("gpt-6.1-terra", req, false)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			if got := gjson.GetBytes(out, "tools.#.googleSearch").Array(); (len(got) > 0) != tc.search {
+				t.Fatalf("tool_choice=%s: want googleSearch=%t, got %s", tc.choice, tc.search, out)
+			}
+		})
 	}
 }
 

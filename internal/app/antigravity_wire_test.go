@@ -823,6 +823,7 @@ func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
 		{"gemini-unlisted", "xhigh", "high"},
 		{"gemini-4-hydrogen-xhigh", "max", "high"},
 		{"gemini-4-hydrogen-xhigh", "minimal", "low"},
+		{"gemini-unlisted", "THINKING_LEVEL_UNSPECIFIED", "THINKING_LEVEL_UNSPECIFIED"},
 	} {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			for _, path := range []string{"generationConfig.thinkingConfig.thinkingLevel", "generation_config.thinking_config.thinking_level"} {
@@ -835,6 +836,40 @@ func TestAntigravityGeminiWireThinkingLevels(t *testing.T) {
 				if level := gjson.GetBytes(got, outputPath).String(); level != tc.want {
 					t.Fatalf("%s=%q, want %q; body=%s", path, level, tc.want, got)
 				}
+			}
+		})
+	}
+}
+
+func TestAntigravityGeminiWireThinkingAliases(t *testing.T) {
+	t.Parallel()
+	const target = "gemini-3.8-flash-high"
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "test-project"}
+	for _, tc := range []struct {
+		name, fields, want string
+	}{
+		{"null level falls back to mixed alias", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null},"thinking_config":{"thinking_level":"high"}}`, `{"thinkingLevel":"high"}`},
+		{"same config leaf alias", `"generationConfig":{"thinkingConfig":{"thinkingLevel":null,"thinking_level":"high"}}`, `{"thinkingLevel":"high"}`},
+		{"level wins over budget", `"generationConfig":{"thinkingConfig":{"thinkingLevel":"high","thinkingBudget":1024},"thinking_config":{"thinking_level":"low","include_thoughts":false}}`, `{"thinkingLevel":"high","includeThoughts":false}`},
+		{"summary and level from different parents", `"generationConfig":{"thinkingConfig":{"includeThoughts":true}},"generation_config":{"thinkingConfig":{"thinkingLevel":"high"}}`, `{"thinkingLevel":"high","includeThoughts":true}`},
+		{"zero budget survives null", `"generationConfig":{"thinkingConfig":{"thinkingBudget":null},"thinking_config":{"thinking_budget":0}}`, `{"thinkingBudget":0}`},
+		{"preserves other settings", `"generationConfig":{"thinkingConfig":{"thinkingBudget":512,"custom.setting":{"limit":4}},"thinking_config":{"thinking_budget":1024,"custom.setting":{"limit":5},"custom.flag":true}}`, `{"thinkingBudget":512,"custom.setting":{"limit":4},"custom.flag":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` + tc.fields + `}`)
+			translated, err := translateAntigravityRequest(protocol.Gemini, target, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, target, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			got := request.Get("generationConfig.thinkingConfig")
+			if !reflect.DeepEqual(got.Value(), gjson.Parse(tc.want).Value()) ||
+				request.Get("generationConfig.thinking_config").Exists() || request.Get("generation_config").Exists() {
+				t.Fatalf("want one thinking config %s, got %s", tc.want, request.Get("generationConfig").Raw)
 			}
 		})
 	}
@@ -959,6 +994,223 @@ func TestPrepareAntigravityClaudeMixedToolResultAliases(t *testing.T) {
 		turns[1].Get("parts.0.function_response.id").Str != "a" || turns[1].Get("parts.1.functionResponse.id").Str != "b" ||
 		turns[2].Get("parts.0.text").Str != "continue" {
 		t.Fatalf("unexpected tool-result order: %s", wire)
+	}
+}
+
+/**
+ * @brief 验证 Chat 工具选择在 Antigravity 出站阶段限制函数、内置工具和专用搜索。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravityChatToolChoice(t *testing.T) {
+	t.Parallel()
+	const target = "gemini-3-flash"
+	const search = `{"google_search":{"includedDomains":["example.com"]}}`
+	const read = `{"type":"function","function":{"name":"read/file"}}`
+	const write = `{"type":"function","function":{"name":"write"}}`
+	const natives = `{"code_execution":{}},{"url_context":{}}`
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	for _, tc := range []struct {
+		name, tools, choice string
+		requestType, mode   string
+		functions, allowed  []string
+		native              []string
+		searchDomain        string
+	}{
+		{
+			name: "mixed declarations narrowed to search", tools: search + "," + read + "," + natives,
+			choice:      `{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"google_search"}]}}`,
+			requestType: "web_search", native: []string{"googleSearch"}, searchDomain: "example.com",
+		},
+		{
+			name: "typed search declaration", tools: `{"type":"web_search"},` + read,
+			choice:      `{"type":"allowed_tools","mode":"required","tools":[{"type":"web_search"}]}`,
+			requestType: "web_search", native: []string{"googleSearch"},
+		},
+		{
+			name: "bundled native allowlist keeps both nonsearch tools", tools: search + "," + read + "," + natives,
+			choice:      `{"type":"allowed_tools","mode":"auto","tools":[{"google_search":{},"code_execution":{},"url_context":{}}]}`,
+			requestType: "agent", native: []string{"codeExecution", "urlContext"},
+		},
+		{
+			name: "pure search excluded by allowlist", tools: search,
+			choice:      `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"read/file"}]}`,
+			requestType: "agent", mode: "NONE",
+		},
+		{
+			name: "empty nested allowlist falls back to search", tools: search + "," + read,
+			choice:      `{"type":"allowed_tools","allowed_tools":{"tools":[]},"tools":[{"type":"google_search"}]}`,
+			requestType: "web_search", native: []string{"googleSearch"}, searchDomain: "example.com",
+		},
+		{
+			name: "null nested allowlist falls back to function", tools: search + "," + read,
+			choice:      `{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":null},"tools":[{"type":"function","name":"read/file"}]}`,
+			requestType: "agent", mode: "ANY", functions: []string{"read_file"}, allowed: []string{"read_file"},
+		},
+		{
+			name: "populated nested allowlist wins", tools: search + "," + read,
+			choice:      `{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"function","name":"read/file"}]},"tools":[{"type":"google_search"}]}`,
+			requestType: "agent", mode: "ANY", functions: []string{"read_file"}, allowed: []string{"read_file"},
+		},
+		{
+			name: "empty allowlist does not permit tools", tools: search + "," + read,
+			choice:      `{"type":"allowed_tools","allowed_tools":{"tools":[]}}`,
+			requestType: "agent", mode: "NONE",
+		},
+		{
+			name: "required allowlist keeps declared names and allowed native tool", tools: search + "," + read + "," + write + "," + natives,
+			choice:      `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","function":{"name":"read/file"}},{"type":"url_context"},{"type":"function","name":"missing"}]}`,
+			requestType: "agent", mode: "ANY", functions: []string{"read_file"}, allowed: []string{"read_file"}, native: []string{"urlContext"},
+		},
+		{
+			name: "retained function keeps mixed tools on agent", tools: search + "," + read + "," + write,
+			choice:      `{"type":"allowed_tools","mode":"auto","tools":[{"type":"google_search"},{"type":"function","name":"read/file"}]}`,
+			requestType: "agent", mode: "AUTO", functions: []string{"read_file"},
+		},
+		{
+			name: "disabled allowlist cannot run native tools", tools: search + "," + natives,
+			choice:      `{"type":"allowed_tools","mode":"none","tools":[{"type":"google_search"},{"type":"code_execution"},{"type":"url_context"}]}`,
+			requestType: "agent", mode: "NONE",
+		},
+		{
+			name: "null permits dedicated search", tools: search, choice: "null",
+			requestType: "web_search", native: []string{"googleSearch"}, searchDomain: "example.com",
+		},
+		{
+			name: "object auto", tools: read + "," + natives, choice: `{"type":"auto"}`,
+			requestType: "agent", mode: "AUTO", functions: []string{"read_file"}, native: []string{"codeExecution", "urlContext"},
+		},
+		{
+			name: "object required", tools: read + "," + natives, choice: `{"type":"required"}`,
+			requestType: "agent", mode: "ANY", functions: []string{"read_file"}, native: []string{"codeExecution", "urlContext"},
+		},
+		{
+			name: "object none filters built-in tools", tools: search + "," + read + "," + natives, choice: `{"type":"none"}`,
+			requestType: "agent", mode: "NONE", functions: []string{"read_file"},
+		},
+		{
+			name: "forced function uses fallback name and excludes native tools", tools: search + "," + read + "," + write + "," + natives, choice: `{"type":"function","name":"read/file"}`,
+			requestType: "agent", mode: "ANY", functions: []string{"read_file", "write"}, allowed: []string{"read_file"},
+		},
+		{
+			name: "tool variant uses nested name", tools: read + "," + write + "," + natives, choice: `{"type":"tool","function":{"name":"write"}}`,
+			requestType: "agent", mode: "ANY", functions: []string{"read_file", "write"}, allowed: []string{"write"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[` + tc.tools + `],"tool_choice":` + tc.choice + `}`)
+			translated, err := translateAntigravityRequest(protocol.OpenAI, target, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, target, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestType := gjson.GetBytes(wire, "requestType").String()
+			if requestType != tc.requestType || wantsAntigravityWebSearch(body) != (tc.requestType == "web_search") {
+				t.Fatalf("unexpected request type: %s", wire)
+			}
+
+			toolMode := gjson.GetBytes(wire, "request.toolConfig.functionCallingConfig")
+			var allowed []string
+			for _, name := range toolMode.Get("allowedFunctionNames").Array() {
+				allowed = append(allowed, name.String())
+			}
+			if toolMode.Get("mode").String() != tc.mode || !reflect.DeepEqual(allowed, tc.allowed) {
+				t.Fatalf("unexpected function calling config: %s", toolMode.Raw)
+			}
+
+			var functions, native []string
+			for _, tool := range gjson.GetBytes(wire, "request.tools").Array() {
+				if declarations := tool.Get("functionDeclarations"); declarations.Exists() {
+					for _, declaration := range declarations.Array() {
+						functions = append(functions, declaration.Get("name").String())
+					}
+					continue
+				}
+				tool.ForEach(func(key, _ gjson.Result) bool {
+					native = append(native, key.String())
+					return true
+				})
+			}
+			if !reflect.DeepEqual(functions, tc.functions) || !reflect.DeepEqual(native, tc.native) {
+				t.Fatalf("unexpected declarations: %s", gjson.GetBytes(wire, "request.tools").Raw)
+			}
+			if got := gjson.GetBytes(wire, "request.tools.0.googleSearch.includedDomains.0").String(); got != tc.searchDomain {
+				t.Fatalf("search filters were lost: %s", wire)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Chat 的停止序列和工具历史入参符合 Antigravity 出站格式。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravityChatStopAndToolArguments(t *testing.T) {
+	t.Parallel()
+	const target = "gemini-3-flash"
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	for _, tc := range []struct {
+		name, input, wantArgs, stop, wantStop string
+	}{
+		{"object and single stop", `" {\"query\":\"go\"} "`, `{"query":"go"}`, `"END"`, `["END"]`},
+		{"array and mixed stop", `"[1,2]"`, `{"params":"[1,2]"}`, `["A","",null,4,"B"]`, `["A","B"]`},
+		{"null string", `" null "`, `{}`, `null`, ""},
+		{"null literal", `null`, `{}`, `""`, ""},
+		{"empty", `" "`, `{}`, `[]`, ""},
+		{"scalar", `"123"`, `{"params":"123"}`, `false`, ""},
+		{"truncated object", `"{\"query\":1"`, `{"params":"{\"query\":1"}`, `null`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","tool_calls":[{"type":"function","id":"c","function":{"name":"read","arguments":` + tc.input + `}}]},{"role":"tool","tool_call_id":"c","content":"ok"}],"stop":` + tc.stop + `}`)
+			translated, err := translateAntigravityRequest(protocol.OpenAI, target, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, target, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(wire, "request.contents.1.parts.0.functionCall.args"); !got.IsObject() ||
+				!reflect.DeepEqual(got.Value(), gjson.Parse(tc.wantArgs).Value()) {
+				t.Fatalf("unexpected args %s, want %s", got.Raw, tc.wantArgs)
+			}
+			if got := gjson.GetBytes(wire, "request.generationConfig.stopSequences"); got.Exists() != (tc.wantStop != "") ||
+				!reflect.DeepEqual(got.Value(), gjson.Parse(tc.wantStop).Value()) {
+				t.Fatalf("unexpected stopSequences %s, want %s", got.Raw, tc.wantStop)
+			}
+		})
+	}
+}
+
+func TestPrepareAntigravityChatGenerationConfigAliases(t *testing.T) {
+	t.Parallel()
+	const target = "gemini-3.8-flash-high"
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	for _, tc := range []struct {
+		name, camel string
+		temperature float64
+	}{
+		{"null camel", "null", 0.5},
+		{"valid camel", `{"temperature":0.2}`, 0.2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high","generationConfig":` + tc.camel + `,"generation_config":{"temperature":0.5,"thinking_config":{"thinking_budget":1024}}}`)
+			translated, err := translateAntigravityRequest(protocol.OpenAI, target, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, target, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			generation := gjson.GetBytes(wire, "request.generationConfig")
+			if generation.Get("temperature").Num != tc.temperature ||
+				!reflect.DeepEqual(generation.Get("thinkingConfig").Value(), gjson.Parse(`{"thinkingLevel":"high","includeThoughts":true}`).Value()) {
+				t.Fatalf("expected temperature %v and explicit high thinking, got %s", tc.temperature, generation.Raw)
+			}
+		})
 	}
 }
 
@@ -1090,6 +1342,55 @@ func TestPrepareAntigravityRequestBodyClaude55StructuredOutput(t *testing.T) {
 	})
 }
 
+func TestPrepareAntigravityGeminiResponseSchemaAliases(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	const schema = `{"type":"object","properties":{"answer":{"type":"string"}}}`
+	for _, tc := range []struct {
+		name, target, fields string
+		wantPrompt           bool
+	}{
+		{"null canonical schema", "gemini-3.8-flash-high", `"generationConfig":{"responseSchema":null,"responseJsonSchema":` + schema + `}`, false},
+		{"null camel alias", "gemini-3.8-flash-high", `"generationConfig":{"responseJsonSchema":null,"response_json_schema":` + schema + `}`, false},
+		{"snake parent for Claude 5.5", "claude-opus-5-5-high", `"generation_config":{"responseSchema":null,"responseJsonSchema":null,"response_json_schema":` + schema + `}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` + tc.fields + `}`)
+			translated, err := translateAntigravityRequest(protocol.Gemini, tc.target, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, tc.target, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			generation := request.Get("generationConfig")
+			if generation.Get("responseJsonSchema").Exists() || generation.Get("response_json_schema").Exists() || request.Get("generation_config").Exists() {
+				t.Fatalf("schema aliases remain: %s", request.Raw)
+			}
+			gotSchema := generation.Get("responseSchema").Value()
+			if tc.wantPrompt {
+				if generation.Get("responseSchema").Exists() {
+					t.Fatalf("Claude 5.5 received a native schema: %s", generation.Raw)
+				}
+				parts := request.Get("systemInstruction.parts").Array()
+				prompt := parts[len(parts)-1].Get("text").String()
+				start := strings.IndexByte(prompt, '{')
+				if start < 0 {
+					t.Fatalf("prompt has no schema: %q", prompt)
+				}
+				if err := json.NewDecoder(strings.NewReader(prompt[start:])).Decode(&gotSchema); err != nil {
+					t.Fatalf("decode prompt schema: %v", err)
+				}
+			}
+			if !reflect.DeepEqual(gotSchema, gjson.Parse(schema).Value()) {
+				t.Fatalf("schema = %v, want %s", gotSchema, schema)
+			}
+		})
+	}
+}
+
 /**
  * @brief 验证 Antigravity 出站把数字枚举解码为类型名并保留数组项的 schema。
  * @param t 测试上下文。
@@ -1098,13 +1399,20 @@ func TestPrepareAntigravityRequestBodyNumericSchemaTypes(t *testing.T) {
 	t.Parallel()
 	const rawSchema = `{"type":6,"properties":{"tags":{"type":5,"items":{"type":1}}}}`
 	const wantSchema = `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"}}}}`
-	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"lookup","parameters":` + rawSchema + `}]}],"generationConfig":{"responseSchema":` + rawSchema + `}}`)
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[
+		{"name":"lookup","parameters":` + rawSchema + `},
+		{"name":"lookup_camel","parameters":null,"parametersJsonSchema":{"type":6,"minProperties":"1","properties":{"camel":{"type":1}}}},
+		{"name":"lookup_snake","parameters":null,"parametersJsonSchema":null,"parameters_json_schema":{"type":6,"minProperties":"1","properties":{"snake":{"type":1}}}},
+		{"name":"deny_arguments","parameters":null,"parametersJsonSchema":null,"parameters_json_schema":false},
+		{"name":"any_arguments","parameters":null,"parametersJsonSchema":true,"parameters_json_schema":null}
+	]}],"generationConfig":{"responseSchema":` + rawSchema + `}}`)
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
 	for _, tc := range []struct {
 		model, carrier string
 		prompt         bool
 	}{
 		{"gemini-3-pro", "parameters", false},
+		{"gemini-3.8-flash-high", "parameters", false},
 		{"claude-sonnet-4-6", "parametersJsonSchema", false},
 		{"claude-opus-5-5-high", "parametersJsonSchema", true},
 	} {
@@ -1122,6 +1430,35 @@ func TestPrepareAntigravityRequestBodyNumericSchemaTypes(t *testing.T) {
 			if toolSchema.Get("type").String() != "object" || !reflect.DeepEqual(toolSchema.Get("properties.tags").Value(), gjson.Get(wantSchema, "properties.tags").Value()) {
 				t.Fatalf("tool schema lost array item type: %s", toolSchema.Raw)
 			}
+			declarations := request.Get("tools.0.functionDeclarations").Array()
+			if len(declarations) != 5 {
+				t.Fatalf("expected five tool declarations: %s", wire)
+			}
+			for index, want := range []gjson.Type{gjson.False, gjson.True} {
+				declaration := declarations[index+3]
+				if schema := declaration.Get("parametersJsonSchema"); schema.Type != want ||
+					declaration.Get("parameters").Exists() || declaration.Get("parameters_json_schema").Exists() {
+					t.Fatalf("boolean JSON Schema was not preserved: %s", declaration.Raw)
+				}
+			}
+			for index, property := range []string{"camel", "snake"} {
+				declaration := declarations[index+1]
+				schema := declaration.Get(tc.carrier)
+				minProperties := schema.Get("minProperties")
+				minPropertiesOK := minProperties.Type == gjson.Number && minProperties.Int() == 1
+				if tc.model == "gemini-3-pro" {
+					minPropertiesOK = !minProperties.Exists() && schema.Get("description").String() == "minProperties: 1"
+				}
+				if schema.Get("type").String() != "object" || !minPropertiesOK ||
+					schema.Get("properties."+property+".type").String() != "string" {
+					t.Fatalf("null alias masked %s schema or skipped normalization: %s", property, declaration.Raw)
+				}
+				for _, alias := range antigravityParameterSchemaKeys {
+					if alias != tc.carrier && declaration.Get(alias).Exists() {
+						t.Fatalf("alias %s still present: %s", alias, declaration.Raw)
+					}
+				}
+			}
 			responseSchema := request.Get("generationConfig.responseSchema")
 			if tc.prompt {
 				if responseSchema.Exists() {
@@ -1138,6 +1475,57 @@ func TestPrepareAntigravityRequestBodyNumericSchemaTypes(t *testing.T) {
 				}
 			} else if !reflect.DeepEqual(responseSchema.Value(), gjson.Parse(wantSchema).Value()) {
 				t.Fatalf("response schema = %s, want %s", responseSchema.Raw, wantSchema)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Antigravity 出站选择非空值且保持系统指令别名优先顺序。
+ * @param t 测试上下文。
+ */
+func TestPrepareAntigravitySystemInstructionAliases(t *testing.T) {
+	t.Parallel()
+	const target = "gemini-3.8-flash-high"
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	for _, tc := range []struct {
+		name, instructions, wantText string
+	}{
+		{"null snake alias", `"systemInstruction":{"parts":[{"text":"camel instruction"}]},"system_instruction":null`, "camel instruction"},
+		{"null camel alias", `"systemInstruction":null,"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"empty camel object", `"systemInstruction":{},"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"empty camel parts", `"systemInstruction":{"parts":[]},"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"empty camel part object", `"systemInstruction":{"parts":[{}]},"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"blank camel text part", `"systemInstruction":{"parts":[{"text":" \n"}]},"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"empty camel string", `"systemInstruction":"","system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"blank camel string", `"systemInstruction":" \n","system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"invalid camel alias", `"systemInstruction":false,"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "snake instruction"},
+		{"invalid camel array", `"systemInstruction":[],"system_instruction":"legacy snake string"`, "legacy snake string"},
+		{"camel wins when both are populated", `"systemInstruction":{"parts":[{"text":"camel instruction"}]},"system_instruction":{"parts":[{"text":"snake instruction"}]}`, "camel instruction"},
+		{"camel string remains supported", `"systemInstruction":"plain string","system_instruction":null`, "plain string"},
+		{"both aliases null", `"systemInstruction":null,"system_instruction":null`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],` + tc.instructions + `}`)
+			translated, err := translateAntigravityRequest(protocol.Gemini, target, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := prepareAntigravityRequestBody(cfg, target, translated, body, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := gjson.GetBytes(wire, "request")
+			if request.Get("system_instruction").Exists() {
+				t.Fatalf("system instruction alias was not consolidated: %s", wire)
+			}
+			parts := request.Get("systemInstruction.parts").Array()
+			if tc.wantText == "" {
+				if len(parts) != 1 {
+					t.Fatalf("expected only the gateway identity prompt: %s", wire)
+				}
+			} else if len(parts) != 2 || parts[1].Get("text").String() != tc.wantText {
+				t.Fatalf("expected %q after the gateway identity prompt: %s", tc.wantText, wire)
 			}
 		})
 	}
@@ -1613,6 +2001,7 @@ func TestConvertAntigravityResponseToClaude_ImplicitOpenToolContinuationOrdering
 			var param any
 			streamBytes := bytes.Join(antigravityclaude.ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, firstChunk, &param), nil)
 			streamBytes = append(streamBytes, bytes.Join(antigravityclaude.ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, continuationChunk, &param), nil)...)
+			streamBytes = append(streamBytes, bytes.Join(antigravityclaude.ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, []byte("[DONE]"), &param), nil)...)
 			streamText := string(streamBytes)
 			var deltaPartial strings.Builder
 			for line := range strings.SplitSeq(streamText, "\n") {

@@ -43,6 +43,10 @@ func TestRegistry_TranslateRequest_OpenAIToGemini(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Gemini 非流式回复转为 Chat 格式，并将缺失的结束原因保留为 null。
+ * @param t 测试上下文。
+ */
 func TestRegistry_TranslateResponseNonStream_GeminiToOpenAI(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -65,7 +69,7 @@ func TestRegistry_TranslateResponseNonStream_GeminiToOpenAI(t *testing.T) {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
+			FinishReason json.RawMessage `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -76,7 +80,7 @@ func TestRegistry_TranslateResponseNonStream_GeminiToOpenAI(t *testing.T) {
 	if err := json.Unmarshal(got, &response); err != nil {
 		t.Fatalf("unmarshal translated response: %v", err)
 	}
-	if response.ID == "" || response.Object != "chat.completion" || response.Model != "gemini-2.5-pro" || len(response.Choices) != 1 || response.Choices[0].Message.Role != "assistant" || response.Choices[0].Message.Content != "world" || response.Choices[0].FinishReason != "stop" || response.Usage.PromptTokens != 3 || response.Usage.CompletionTokens != 5 || response.Usage.TotalTokens != 8 {
+	if response.ID == "" || response.Object != "chat.completion" || response.Model != "gemini-2.5-pro" || len(response.Choices) != 1 || response.Choices[0].Message.Role != "assistant" || response.Choices[0].Message.Content != "world" || string(response.Choices[0].FinishReason) != "null" || response.Usage.PromptTokens != 3 || response.Usage.CompletionTokens != 5 || response.Usage.TotalTokens != 8 {
 		t.Fatalf("unexpected translated response: %s", got)
 	}
 }
@@ -610,6 +614,15 @@ func TestRegistry_CodexStreamRecoversUnstreamedMessageParts(t *testing.T) {
 	const shiftedDelta = `{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Same."}`
 	const anonymousItem = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Same."}]}`
 	const anonymousMultipartItem = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Same."},{"type":"refusal","refusal":"Declined."}]}`
+	const firstItemAdded = `{"type":"response.output_item.added","item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`
+	const firstItemAddedWithAlias = `{"type":"response.output_item.added","item_id":"msg_1","item":{"type":"message","role":"assistant","content":[]}}`
+	const secondItemAdded = `{"type":"response.output_item.added","item":{"id":"msg_2","type":"message","role":"assistant","content":[]}}`
+	const firstItemDoneWithAlias = `{"type":"response.output_item.done","item_id":"msg_1","item":` + anonymousItem + `}`
+	const firstItemSnapshot = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Same."}]}`
+	const firstItemDone = `{"type":"response.output_item.done","item_id":"msg_2","item":` + firstItemSnapshot + `}`
+	const secondItemDone = `{"type":"response.output_item.done","item":` + nextItem + `}`
+	const keyedDelta = `{"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"Same."}`
+	const unkeyedDelta = `{"type":"response.output_text.delta","content_index":0,"delta":"Same."}`
 	terminal := func(status, output string) string {
 		details := ""
 		if status == "incomplete" {
@@ -647,6 +660,8 @@ func TestRegistry_CodexStreamRecoversUnstreamedMessageParts(t *testing.T) {
 			{"terminal snapshot omits buffered message", []string{refusalDelta, terminal("completed", "")}, "Declined.", "completed", ""},
 			{"one part appears only at terminal", []string{textDelta, terminal("incomplete", item)}, "Intro. Declined.", "incomplete", ""},
 			{"streamed item plus unseen item at reused index", []string{textDelta, refusalDelta, done, terminal("completed", nextItem+","+item)}, "Intro. Declined. Next.", "completed", "Intro. Declined."},
+			{"interleaved messages with item_id on done", []string{firstItemAdded, keyedDelta, secondItemAdded, firstItemDoneWithAlias, secondItemDone, terminal("completed", firstItemSnapshot+","+nextItem)}, "Same. Next.", "completed", "Same."},
+			{"interleaved messages with item_id on added", []string{firstItemAddedWithAlias, unkeyedDelta, secondItemAdded, firstItemDone, secondItemDone, terminal("completed", firstItemSnapshot+","+nextItem)}, "Same. Next.", "completed", "Same."},
 			{"terminal omits reasoning", []string{reasoningDone, shiftedDelta, terminal("completed", anonymousItem)}, "Same.", "completed", "Same."},
 			{"terminal retains reasoning", []string{reasoningDone, shiftedDelta, terminal("completed", reasoningItem+","+anonymousItem)}, "Same.", "completed", "Same."},
 			{"shifted item has a missing part", []string{reasoningDone, shiftedDelta, terminal("completed", anonymousMultipartItem)}, "Same.Declined.", "completed", "Same."},

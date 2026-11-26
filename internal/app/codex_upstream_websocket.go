@@ -20,6 +20,7 @@ import (
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
@@ -249,12 +250,16 @@ func newCodexUpstreamWebsocketSession(
 	}
 }
 
+/**
+ * @brief 上游 WebSocket 读取结果及读取端识别的事件类型。
+ */
 type codexWebsocketRead struct {
-	conn        *websocket.Conn
-	messageType int
-	payload     []byte
-	err         error
-	terminal    bool
+	conn        *websocket.Conn ///< 产生该结果的连接。
+	messageType int             ///< WebSocket 帧类型。
+	payload     []byte          ///< 原始帧正文。
+	err         error           ///< 读取失败时的错误。
+	eventType   string          ///< 去除首尾空白的 JSON type。
+	terminal    string          ///< 标准 Responses 终态或 error，非终态为空。
 }
 
 type codexWebsocketHTTPFallbackError struct {
@@ -350,14 +355,12 @@ func (s *codexUpstreamWebsocketSession) enqueueRead(event codexWebsocketRead) bo
 			if id := strings.TrimSpace(gjson.GetBytes(event.payload, "response.id").String()); id != "" {
 				s.activeResponseID = id
 			}
-			switch gjson.GetBytes(event.payload, "type").String() {
-			case "response.failed", "error":
-				s.turnTerminal = true
-			}
 		}
-		if event.terminal && !s.turnTerminal {
+		if event.terminal != "" && !s.turnTerminal {
 			s.turnTerminal = true
-			s.failureTracker.recordSuccess(s.target.failureTarget())
+			if isSuccessfulResponsesTerminal(event.terminal) {
+				s.failureTracker.recordSuccess(s.target.failureTarget())
+			}
 		}
 		maxQueueBytes := s.maxBodyBytes
 		// Read failures must remain observable even when the data queue is full.
@@ -516,6 +519,13 @@ func (s *codexUpstreamWebsocketSession) finishTurn() {
 	s.turnMu.Unlock()
 }
 
+/**
+ * @brief 启动上游 WebSocket 的帧读取和心跳。
+ * @param conn 已连接的上游 WebSocket。
+ * @param done 连接退役时关闭的信号。
+ * @param timeouts 上游空闲和心跳的时间限制。
+ * @note 启动两个协程；读取错误会使当前连接失效并通知正在等待的回合。
+ */
 func (s *codexUpstreamWebsocketSession) startReader(
 	conn *websocket.Conn,
 	done <-chan struct{},
@@ -548,11 +558,14 @@ func (s *codexUpstreamWebsocketSession) startReader(
 				s.detachReadFailure(conn, err, isCodexWebsocketHeartbeatFailure(err))
 				return
 			}
+			var eventType, terminal string
+			if messageType == websocket.TextMessage {
+				eventType = gjson.GetBytes(payload, "type").Str
+			}
 			// An interrupt can race the response's terminal event. Its rejection
 			// acknowledges the control request, not a failed generation. Drop it
 			// before the turn queue, including when the next turn already started.
-			if messageType == websocket.TextMessage &&
-				gjson.GetBytes(payload, "type").String() == "response.interrupt.failed" &&
+			if eventType == "response.interrupt.failed" &&
 				gjson.GetBytes(payload, "error.code").String() == "response_not_in_progress" {
 				continue
 			}
@@ -562,13 +575,20 @@ func (s *codexUpstreamWebsocketSession) startReader(
 				s.detachReadFailure(conn, interruptedErr, false)
 				return
 			}
+			if messageType == websocket.TextMessage {
+				event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+				eventType = strings.TrimSpace(eventType)
+				terminal = responsesTerminalType(eventType, event)
+				if eventType == "error" {
+					terminal = eventType
+				}
+			}
 			if !s.enqueueRead(codexWebsocketRead{
 				conn:        conn,
 				messageType: messageType,
 				payload:     payload,
-				terminal: messageType == websocket.TextMessage && isCodexWebsocketTerminalEvent(
-					strings.TrimSpace(gjson.GetBytes(payload, "type").String()),
-				),
+				eventType:   eventType,
+				terminal:    terminal,
 			}) {
 				return
 			}
@@ -773,15 +793,6 @@ func isCodexWebsocketSemanticEvent(eventType string) bool {
 	// 空骨架条目不像 SSE 解析器那样延后（isResponsesPreOutputEvent）：已写入管道的帧
 	// 不会随重连撤回，重放会让下游看到两份条目宣告。
 	return eventType != "" && !isResponsesMetadataEvent(eventType) && !isHeartbeatEventType(eventType)
-}
-
-func isCodexWebsocketTerminalEvent(eventType string) bool {
-	switch eventType {
-	case "response.completed", "response.done", "response.incomplete":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *codexUpstreamWebsocketSession) invalidate(conn *websocket.Conn) {
@@ -1322,6 +1333,22 @@ func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
 	return conn, handshakeHeaders, nil
 }
 
+/**
+ * @brief 将原生 WebSocket 回合封装成 HTTP SSE 响应。
+ * @param ctx 当前回合的请求上下文。
+ * @param conn 当前使用的上游 WebSocket。
+ * @param request 用于填充响应的请求。
+ * @param dialer 上游重连时使用的拨号器。
+ * @param target 上游重连的目标。
+ * @param replayReq 用于上游重连的握手请求。
+ * @param replayBody 允许重连时重放的完整请求正文。
+ * @param timeouts 上游空闲和心跳的时间限制。
+ * @param handshakeHeaders 本轮上游握手响应头。
+ * @param turnStateNamespace 标记回合状态元数据的上游账号命名空间。
+ * @param onReconnectHandshake 收到重连握手响应头时调用，可为空。
+ * @return 正文为 SSE 流的 HTTP 响应，调用方须关闭正文。
+ * @note 启动流式写入协程，退出时释放当前回合锁。
+ */
 func (s *codexUpstreamWebsocketSession) streamResponse(
 	ctx context.Context,
 	conn *websocket.Conn,
@@ -1389,7 +1416,8 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 				return
 			}
 			payload := event.payload
-			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+			eventType := event.eventType
+			successfulTerminal := isSuccessfulResponsesTerminal(event.terminal)
 			reconnectReason := ""
 			if !semanticOutput && !retried && ctx.Err() == nil {
 				reconnectReason = codexWebsocketConnectionBoundErrorReason(payload)
@@ -1434,7 +1462,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 					return
 				}
 			}
-			if isCodexWebsocketTerminalEvent(eventType) {
+			if successfulTerminal {
 				// The HTTP/SSE consumer may stop reading as soon as it sees the
 				// terminal event. Mark the turn complete before the pipe write so
 				// Response.Body.Close cannot invalidate a reusable socket in that race.
@@ -1448,11 +1476,11 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 			}
 			semanticOutput = semanticOutput || isCodexWebsocketSemanticEvent(eventType)
 
-			switch eventType {
-			case "response.completed", "response.done", "response.incomplete":
+			switch {
+			case successfulTerminal:
 				_ = writer.Close()
 				return
-			case "response.failed", "error":
+			case event.terminal == "response.failed" || event.terminal == "error":
 				s.invalidate(conn)
 				_ = writer.Close()
 				return

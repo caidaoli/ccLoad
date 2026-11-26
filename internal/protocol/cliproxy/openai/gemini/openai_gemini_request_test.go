@@ -8,6 +8,151 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertGeminiRequestToOpenAI_GenerationConfigAliases(t *testing.T) {
+	tests := []struct {
+		name, input string
+		want        map[string]string
+	}{
+		{
+			name: "snake config and mixed aliases",
+			input: `{"generationConfig":null,"generation_config":{
+				"temperature":0,"maxOutputTokens":null,"max_output_tokens":123,"topP":null,"top_p":0,"top_k":10,
+				"candidateCount":null,"candidate_count":2,"stop_sequences":[null,3,"end"],
+				"response_modalities":[null,"TEXT","AUDIO"],
+				"thinkingConfig":null,"thinking_config":{"thinkingLevel":null,"thinking_level":"LOW","thinking_budget":0}}}`,
+			want: map[string]string{
+				"temperature": "0", "max_tokens": "123", "top_p": "0", "top_k": "10", "n": "2",
+				"stop.#": "1", "stop.0": `"end"`, "modalities.#": "2", "modalities.0": `"text"`, "modalities.1": `"audio"`,
+				"reasoning_effort": `"low"`,
+			},
+		},
+		{
+			name: "null fields",
+			input: `{"generationConfig":{
+				"temperature":null,"maxOutputTokens":null,"topP":null,"topK":null,
+				"candidateCount":null,"stopSequences":null,"responseModalities":null,
+				"thinkingConfig":{"thinkingBudget":null}}}`,
+			want: map[string]string{
+				"temperature": "", "max_tokens": "", "top_p": "", "top_k": "", "n": "", "stop": "", "modalities": "", "reasoning_effort": "",
+			},
+		},
+		{
+			name:  "explicit zero budget and omitted limits",
+			input: `{"generationConfig":{"maxOutputTokens":0,"candidateCount":0,"topK":0,"thinkingConfig":{"thinkingLevel":null,"thinkingBudget":0}}}`,
+			want:  map[string]string{"max_tokens": "", "n": "", "top_k": "0", "reasoning_effort": `"none"`},
+		},
+		{
+			name:  "budget in alternate thinking object",
+			input: `{"generationConfig":{"thinkingConfig":{"includeThoughts":false},"thinking_config":{"thinking_budget":1024}}}`,
+			want:  map[string]string{"reasoning_effort": `"low"`},
+		},
+		{
+			name: "level in alternate generation object overrides budget",
+			input: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":0}},
+				"generation_config":{"thinkingConfig":{"thinking_level":" HIGH "}}}`,
+			want: map[string]string{"reasoning_effort": `"high"`},
+		},
+		{
+			name: "invalid integer budgets fall through",
+			input: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":0.5,"thinking_budget":-2}},
+				"generation_config":{"thinking_config":{"thinking_budget":1024}}}`,
+			want: map[string]string{"reasoning_effort": `"low"`},
+		},
+		{
+			name:  "automatic level",
+			input: `{"generationConfig":{"thinking_config":{"thinking_level":" AUTO ","thinking_budget":0}}}`,
+			want:  map[string]string{"reasoning_effort": ""},
+		},
+		{
+			name:  "automatic budget",
+			input: `{"generation_config":{"thinking_config":{"thinking_budget":-1}}}`,
+			want:  map[string]string{"reasoning_effort": ""},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertGeminiRequestToOpenAI("gpt-6.2-sol", []byte(tt.input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := gjson.ParseBytes(out)
+			for field, want := range tt.want {
+				if value := got.Get(field).Raw; value != want {
+					t.Errorf("%s = %q, want %q (output: %s)", field, value, want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToOpenAI_SDKToolChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name, allowed, mode, forcedName string
+		wantNames                       []string
+		wantError                       bool
+	}{
+		{"single name", `["lookup"]`, "function", "lookup", []string{"lookup", "count", "excluded"}, false},
+		{"multiple names", `["lookup",null,"count","lookup"]`, "required", "", []string{"lookup", "count"}, false},
+		{"partly undeclared", `["unknown","lookup"]`, "function", "lookup", []string{"lookup", "count", "excluded"}, false},
+		{"empty allowlist", `[]`, "required", "", []string{"lookup", "count", "excluded"}, false},
+		{"no allowed declarations", `["unknown","missing"]`, "", "", nil, true},
+		{"no valid allowlist entries", `[null,4,""]`, "", "", nil, true},
+		{"invalid allowlist type", `"lookup"`, "", "", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := []byte(`{
+				"contents":[{"parts":[{"text":"hello"}]}],
+				"tools":[{
+					"function_declarations":[
+						{"name":"lookup","parameters":null,"parameters_json_schema":{"type":"OBJECT","properties":{"query":{"type":"STRING"}}}},
+						{"name":"count"},
+						{"name":"excluded"}
+					]
+				}],
+				"toolConfig":{"function_calling_config":{"mode":"ANY","allowed_function_names":` + tc.allowed + `}}
+			}`)
+			out, err := ConvertGeminiRequestToOpenAI("gpt-6.2-sol", request, false)
+			if tc.wantError {
+				if err == nil || len(out) != 0 {
+					t.Fatalf("expected an invalid tool allowlist to fail, got %s, %v", out, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := gjson.ParseBytes(out)
+			tools := root.Get("tools").Array()
+			choice := root.Get("tool_choice")
+			switch {
+			case tc.forcedName != "":
+				if choice.Get("type").String() != tc.mode || choice.Get("function.name").String() != tc.forcedName {
+					t.Fatalf("expected to force %q, got %s", tc.forcedName, out)
+				}
+			case tc.mode != "":
+				if choice.Type != gjson.String || choice.Str != tc.mode {
+					t.Fatalf("expected %q tool choice, got %s", tc.mode, out)
+				}
+			default:
+				if choice.Exists() {
+					t.Fatalf("expected tool choice to be omitted, got %s", out)
+				}
+			}
+			if len(tools) != len(tc.wantNames) {
+				t.Fatalf("expected tools %v, got %s", tc.wantNames, out)
+			}
+			for index, name := range tc.wantNames {
+				if tools[index].Get("function.name").String() != name {
+					t.Fatalf("expected tool %q at index %d, got %s", name, index, out)
+				}
+			}
+			if len(tools) > 0 && tools[0].Get("function.parameters.properties.query.type").String() != "string" {
+				t.Fatalf("snake_case parameter schema was lost: %s", out)
+			}
+		})
+	}
+}
+
 func TestConvertGeminiRequestToOpenAI_OmittedRolesAndToolAliases(t *testing.T) {
 	for _, fields := range [][2]string{{"functionCall", "functionResponse"}, {"function_call", "function_response"}} {
 		t.Run(fields[0], func(t *testing.T) {
@@ -43,6 +188,40 @@ func TestConvertGeminiRequestToOpenAI_OmittedRolesAndToolAliases(t *testing.T) {
 			}
 			if messages[4].Get("content").String() != "followup" {
 				t.Fatalf("followup text changed: %s", out)
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToOpenAI_HistoryToolArguments(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		argsField string
+		wantArgs  string
+		wantID    string
+	}{
+		{"null", `,"args":null`, "{}", "call_17544649d6896e2d1d8e2c99"},
+		{"array", `,"args":[1,2]`, "{}", "call_df6b19dc70741480c09cc976"},
+		{"string", `,"args":"{\"q\":\"s\"}"`, "{}", "call_b84bfd5df8e7274caa86a89a"},
+		{"missing", "", "{}", "call_d50f0673f9082ac8f7fa7c2a"},
+		{"object", `,"args":{"q":"s"}`, `{"q":"s"}`, "call_a72c08faca5ff3b3ae5bdb71"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"contents":[
+				{"role":"model","parts":[{"functionCall":{"name":"lookup"%s}}]},
+				{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"result":"ok"}}}]}
+			]}`, tt.argsField)
+			out, err := ConvertGeminiRequestToOpenAI("test-model", []byte(input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			callID := gjson.GetBytes(out, "messages.0.tool_calls.0.id").String()
+			resultID := gjson.GetBytes(out, "messages.1.tool_call_id").String()
+			if callID != tt.wantID || resultID != tt.wantID {
+				t.Fatalf("call id = %q, result id = %q, want %q for both", callID, resultID, tt.wantID)
+			}
+			if got := gjson.GetBytes(out, "messages.0.tool_calls.0.function.arguments"); got.Type != gjson.String || got.String() != tt.wantArgs {
+				t.Fatalf("arguments = %s, want JSON string %q", got.Raw, tt.wantArgs)
 			}
 		})
 	}

@@ -39,6 +39,7 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	rawJSON := inputRawJSON
 	var drops translatorcommon.UserTurnDrops
 	functionNameMap := util.SanitizedFunctionNameMap(rawJSON)
+	toolChoice := parseAntigravityOpenAIToolChoice(gjson.GetBytes(rawJSON, "tool_choice"))
 	// Base envelope (no default thinkingConfig)
 	out := []byte(`{"project":"","request":{"contents":[]},"model":"gemini-2.5-pro"}`)
 
@@ -46,9 +47,7 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	out, _ = sjson.SetBytes(out, "model", modelName)
 
 	// Let user-provided generationConfig pass through
-	if genConfig := gjson.GetBytes(rawJSON, "generationConfig"); genConfig.Exists() {
-		out, _ = sjson.SetRawBytes(out, "request.generationConfig", []byte(genConfig.Raw))
-	} else if genConfig := gjson.GetBytes(rawJSON, "generation_config"); genConfig.Exists() {
+	if genConfig := translatorcommon.GeminiConfigObject(util.ParseGJSONBytesNoCopy(rawJSON), "generationConfig", "generation_config"); genConfig.Exists() {
 		out, _ = sjson.SetRawBytes(out, "request.generationConfig", []byte(genConfig.Raw))
 	}
 
@@ -69,6 +68,9 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetBytes(out, "request.generationConfig.maxOutputTokens", maxTok.Num)
 	} else if mct := gjson.GetBytes(rawJSON, "max_completion_tokens"); mct.Exists() && mct.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "request.generationConfig.maxOutputTokens", mct.Num)
+	}
+	if stops := translatorcommon.ChatStopSequences(gjson.GetBytes(rawJSON, "stop")); len(stops) > 0 {
+		out, _ = sjson.SetBytes(out, "request.generationConfig.stopSequences", stops)
 	}
 
 	// Map OpenAI response_format to Antigravity structured output settings.
@@ -252,15 +254,10 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						if functionName == "" {
 							continue
 						}
-						functionArgs := tc.Get("function.arguments").String()
 						part := []byte(`{"functionCall":{"id":"","name":""}}`)
 						part, _ = sjson.SetBytes(part, "functionCall.id", functionID)
 						part, _ = sjson.SetBytes(part, "functionCall.name", functionName)
-						if gjson.Valid(functionArgs) {
-							part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte(functionArgs))
-						} else {
-							part, _ = sjson.SetBytes(part, "functionCall.args.params", []byte(functionArgs))
-						}
+						part = translatorcommon.SetGeminiFunctionCallArguments(part, tc.Get("function.arguments").String(), "params")
 						part, _ = sjson.SetBytes(part, "thoughtSignature", antigravityFunctionThoughtSignature)
 						partItems = append(partItems, part)
 						toolCalls = append(toolCalls, assistantToolCall{
@@ -327,7 +324,7 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		for _, t := range toolResults {
 			if t.Get("type").String() == "function" {
 				fn := t.Get("function")
-				if fn.Exists() && fn.IsObject() {
+				if fn.IsObject() && toolChoice.allowsFunction(fn.Get("name").String()) {
 					fnRaw := fn.Raw
 					if fn.Get("parameters").Exists() {
 						renamed, errRename := util.RenameKey(fnRaw, "parameters", "parametersJsonSchema")
@@ -372,16 +369,24 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					functionDeclarations = append(functionDeclarations, fnRawBytes)
 				}
 			}
-			if gs := t.Get("google_search"); gs.Exists() {
+			gs := t.Get("google_search")
+			if !gs.Exists() {
+				gs = t.Get("googleSearch")
+			}
+			if toolChoice.allowsNativeTool("google_search") && (gs.Exists() || isAntigravityWebSearchName(t.Get("type").String())) {
 				googleToolNode := []byte(`{}`)
+				config := gs.Raw
+				if !gs.Exists() {
+					config = "{}"
+				}
 				var errSet error
-				googleToolNode, errSet = sjson.SetRawBytes(googleToolNode, "googleSearch", []byte(gs.Raw))
+				googleToolNode, errSet = sjson.SetRawBytes(googleToolNode, "googleSearch", []byte(config))
 				if errSet != nil {
 					continue
 				}
 				googleSearchNodes = append(googleSearchNodes, googleToolNode)
 			}
-			if ce := t.Get("code_execution"); ce.Exists() {
+			if ce := t.Get("code_execution"); ce.Exists() && toolChoice.allowsNativeTool("code_execution") {
 				codeToolNode := []byte(`{}`)
 				var errSet error
 				codeToolNode, errSet = sjson.SetRawBytes(codeToolNode, "codeExecution", []byte(ce.Raw))
@@ -390,7 +395,7 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				}
 				codeExecutionNodes = append(codeExecutionNodes, codeToolNode)
 			}
-			if uc := t.Get("url_context"); uc.Exists() {
+			if uc := t.Get("url_context"); uc.Exists() && toolChoice.allowsNativeTool("url_context") {
 				urlToolNode := []byte(`{}`)
 				var errSet error
 				urlToolNode, errSet = sjson.SetRawBytes(urlToolNode, "urlContext", []byte(uc.Raw))
@@ -416,7 +421,7 @@ func convertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		}
 	}
 
-	out = applyOpenAIToolChoiceToAntigravity(out, rawJSON, functionNameMap)
+	out = toolChoice.apply(out, functionNameMap)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		out = gemini.SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, out)
 	}
@@ -471,40 +476,189 @@ func antigravityOpenAIAudioMIMEType(format string) string {
 	}
 }
 
-func applyOpenAIToolChoiceToAntigravity(out, rawJSON []byte, functionNameMap map[string]string) []byte {
-	toolChoice := gjson.GetBytes(rawJSON, "tool_choice")
-	if !toolChoice.Exists() {
-		return out
+type antigravityOpenAIToolChoice struct {
+	mode         string
+	name         string
+	allowsSearch bool
+	functions    map[string]struct{}
+	nativeTools  map[string]struct{}
+}
+
+func parseAntigravityOpenAIToolChoice(value gjson.Result) antigravityOpenAIToolChoice {
+	var choice antigravityOpenAIToolChoice
+	kind := value.String()
+	if value.IsObject() {
+		kind = value.Get("type").String()
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "":
+		choice.allowsSearch = value.Type == gjson.Null || value.Type == gjson.String || value.IsObject()
+	case "none":
+		choice.mode = "NONE"
+	case "auto":
+		choice.mode = "AUTO"
+		choice.allowsSearch = true
+	case "required", "any":
+		choice.mode = "ANY"
+		choice.allowsSearch = true
+	case "function", "tool":
+		if value.IsObject() {
+			choice.name = strings.TrimSpace(value.Get("function.name").String())
+			if choice.name == "" {
+				choice.name = strings.TrimSpace(value.Get("name").String())
+			}
+			choice.mode = "NONE"
+			if choice.name != "" {
+				choice.mode = "ANY"
+			}
+			// Claude uses a named tool choice for its typed built-in web search.
+			choice.allowsSearch = kind == "tool" && choice.name == "web_search"
+		}
+	case "allowed_tools":
+		if value.IsObject() {
+			return parseAntigravityOpenAIAllowedTools(value)
+		}
+	default:
+		choice.allowsSearch = isAntigravityWebSearchName(kind)
+	}
+	return choice
+}
+
+func parseAntigravityOpenAIAllowedTools(value gjson.Result) antigravityOpenAIToolChoice {
+	choice := antigravityOpenAIToolChoice{
+		mode:        "NONE",
+		functions:   make(map[string]struct{}),
+		nativeTools: make(map[string]struct{}),
+	}
+	mode := strings.TrimSpace(value.Get("allowed_tools.mode").String())
+	if mode == "" {
+		mode = strings.TrimSpace(value.Get("mode").String())
+	}
+	switch strings.ToLower(mode) {
+	case "", "auto":
+		choice.mode = "AUTO"
+	case "required", "any":
+		choice.mode = "ANY"
 	}
 
-	mode := ""
-	allowedName := ""
-	if toolChoice.Type == gjson.String {
-		switch strings.ToLower(strings.TrimSpace(toolChoice.String())) {
-		case "none":
-			mode = "NONE"
-		case "auto":
-			mode = "AUTO"
-		case "required", "any":
-			mode = "ANY"
+	tools := value.Get("allowed_tools.tools")
+	if !tools.IsArray() || tools.Get("#").Int() == 0 {
+		tools = value.Get("tools")
+	}
+	if !tools.IsArray() {
+		return choice
+	}
+	for _, tool := range tools.Array() {
+		kind := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+		if isAntigravityWebSearchName(kind) || tool.Get("google_search").Exists() || tool.Get("googleSearch").Exists() {
+			choice.nativeTools["google_search"] = struct{}{}
 		}
-	} else if toolChoice.IsObject() {
-		switch strings.ToLower(strings.TrimSpace(toolChoice.Get("type").String())) {
-		case "none":
-			mode = "NONE"
-		case "function":
-			mode = "ANY"
-			allowedName = toolChoice.Get("function.name").String()
+		if kind == "code_execution" || tool.Get("code_execution").Exists() {
+			choice.nativeTools["code_execution"] = struct{}{}
+		}
+		if kind == "url_context" || tool.Get("url_context").Exists() {
+			choice.nativeTools["url_context"] = struct{}{}
+		}
+		if kind == "function" || kind == "" {
+			name := strings.TrimSpace(tool.Get("function.name").String())
+			if name == "" {
+				name = strings.TrimSpace(tool.Get("name").String())
+			}
+			if name != "" {
+				choice.functions[name] = struct{}{}
+			}
 		}
 	}
+	choice.allowsSearch = choice.allowsNativeTool("google_search")
+	return choice
+}
+
+func (choice antigravityOpenAIToolChoice) allowsFunction(name string) bool {
+	_, allowed := choice.functions[name]
+	return choice.functions == nil || allowed
+}
+
+func (choice antigravityOpenAIToolChoice) allowsNativeTool(kind string) bool {
+	if choice.mode == "NONE" || choice.name != "" {
+		return false
+	}
+	_, allowed := choice.nativeTools[kind]
+	return choice.nativeTools == nil || allowed
+}
+
+// WantsWebSearch reports whether the effective tools can use Antigravity's
+// dedicated search request. App callers also pass native Gemini and Claude tool
+// declarations, where there is no OpenAI allowlist to apply.
+func WantsWebSearch(payload []byte) bool {
+	root := gjson.ParseBytes(payload)
+	choice := parseAntigravityOpenAIToolChoice(root.Get("tool_choice"))
+	tools := root.Get("tools")
+	if !choice.allowsSearch || !tools.IsArray() {
+		return false
+	}
+	hasSearch := false
+	for _, tool := range tools.Array() {
+		if !tool.IsObject() {
+			return false
+		}
+		typedSearch := isAntigravityWebSearchName(tool.Get("type").String())
+		searchConfig := tool.Get("google_search").Exists() || tool.Get("googleSearch").Exists()
+		if choice.functions == nil {
+			if !typedSearch && (!searchConfig || len(tool.Map()) != 1) {
+				return false
+			}
+		} else {
+			if tool.Get("type").String() == "function" && choice.allowsFunction(tool.Get("function.name").String()) {
+				return false
+			}
+			for _, kind := range []string{"code_execution", "url_context"} {
+				if tool.Get(kind).Exists() && choice.allowsNativeTool(kind) {
+					return false
+				}
+			}
+		}
+		hasSearch = hasSearch || typedSearch || searchConfig
+	}
+	return hasSearch
+}
+
+func isAntigravityWebSearchName(value string) bool {
+	name := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(name, "web_search") || name == "google_search"
+}
+
+func (choice antigravityOpenAIToolChoice) apply(out []byte, functionNameMap map[string]string) []byte {
+	mode := choice.mode
 	if mode == "" {
 		return out
 	}
 
+	var allowedNames []string
+	if choice.functions != nil && mode != "NONE" {
+		hasNativeTools := false
+		for _, tool := range gjson.GetBytes(out, "request.tools").Array() {
+			declarations := tool.Get("functionDeclarations")
+			if !declarations.Exists() {
+				hasNativeTools = true
+			}
+			for _, declaration := range declarations.Array() {
+				allowedNames = append(allowedNames, declaration.Get("name").String())
+			}
+		}
+		if len(allowedNames) == 0 {
+			if hasNativeTools {
+				return out
+			}
+			mode = "NONE"
+		}
+	} else if choice.name != "" {
+		allowedNames = append(allowedNames, util.MapSanitizedFunctionName(functionNameMap, choice.name))
+	}
+
 	out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.mode", mode)
-	if strings.TrimSpace(allowedName) != "" {
-		mappedName := util.MapSanitizedFunctionName(functionNameMap, allowedName)
-		out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames", []string{mappedName})
+	if mode == "ANY" && len(allowedNames) > 0 {
+		out, _ = sjson.SetBytes(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames", allowedNames)
 	}
 	return out
 }

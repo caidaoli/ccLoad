@@ -146,7 +146,7 @@ func (s *Server) forwardCursorAgent(
 	}
 	// Effort is written in the client's own shape; translation then carries it
 	// into the chat body ParseRequest reads.
-	clientBody := applyThinkingSuffixForModel(reqCtx.body, reqCtx.clientProtocol, requestedModel, modelID)
+	clientBody := applyThinkingSuffixForModel(reqCtx.body, reqCtx.clientProtocol, protocol.OpenAI, requestedModel, modelID)
 	clientBody = applyAutomaticReasoning(clientBody, reqCtx, protocol.OpenAI, modelID)
 	body := clientBody
 	// The SDK only reads chat-shaped requests. Always translate from the client

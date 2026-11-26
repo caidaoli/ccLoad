@@ -1020,7 +1020,7 @@ func TestProxy_GeminiChatChoiceFinishesAfterUsage(t *testing.T) {
 	t.Parallel()
 
 	const first = `{"candidates":[{"index":0,"content":{"parts":[{"text":"first"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":5}}`
-	const second = `{"candidates":[{"index":1,"content":{"parts":[{"text":"second"}]},"finishReason":"MAX_TOKENS"}]}`
+	const second = `{"candidates":[{"index":1,"content":{"parts":[{"text":"second"}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":null}`
 	const placeholder = `{"candidates":[{"index":1,"finishReason":""}]}`
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1039,8 +1039,11 @@ func TestProxy_GeminiChatChoiceFinishesAfterUsage(t *testing.T) {
 	var totalTokens int64
 	for event := range strings.SplitSeq(response.Body.String(), "\n\n") {
 		_, data := parseSSEEventChunk([]byte(event))
-		if usage := gjson.GetBytes(data, "usage.total_tokens"); usage.Exists() {
-			totalTokens = usage.Int()
+		if usage := gjson.GetBytes(data, "usage"); usage.IsObject() {
+			totalTokens = usage.Get("total_tokens").Int()
+			if totalTokens != 5 {
+				t.Fatalf("unexpected usage: %s", usage.Raw)
+			}
 		}
 		for _, choice := range gjson.GetBytes(data, "choices").Array() {
 			idx := int(choice.Get("index").Int())
@@ -1077,8 +1080,9 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 		gotBody, _ = io.ReadAll(r.Body)
 		body := bytes.NewBufferString(
 			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"query\":\"one\"}}}]}}],\"modelVersion\":\"gemini-2.5-pro\"}\n\n" +
-				"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"search\",\"args\":{\"query\":\"two\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":5,\"totalTokenCount\":8},\"modelVersion\":\"gemini-2.5-pro\"}\n\n" +
-				"data: [DONE]\n\n",
+				"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"args\":{\"page\":2}}}]}}]}\n\n" +
+				"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"search\",\"args\":{\"query\":\"two\"}}}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\"}\n\n" +
+				"data: {\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":5,\"totalTokenCount\":8}}\n\n",
 		)
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -1117,7 +1121,8 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 	}
 	body := w.Body.String()
 	var toolBlocks []map[string]any
-	var partialJSON []string
+	var toolIndices []any
+	partialJSON := make(map[any]string)
 	var stopReason string
 	messageStopped := false
 	for block := range strings.SplitSeq(body, "\n\n") {
@@ -1131,12 +1136,13 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 			contentBlock, _ := payload["content_block"].(map[string]any)
 			if contentBlock != nil && contentBlock["type"] == "tool_use" {
 				toolBlocks = append(toolBlocks, contentBlock)
+				toolIndices = append(toolIndices, payload["index"])
 			}
 		case "content_block_delta":
 			delta, _ := payload["delta"].(map[string]any)
 			if delta != nil && delta["type"] == "input_json_delta" {
 				partial, _ := delta["partial_json"].(string)
-				partialJSON = append(partialJSON, partial)
+				partialJSON[payload["index"]] += partial
 			}
 		case "message_delta":
 			delta, _ := payload["delta"].(map[string]any)
@@ -1153,7 +1159,9 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 	if firstID == "" || secondID == "" || firstID == secondID || toolBlocks[0]["name"] != "lookup" || toolBlocks[1]["name"] != "search" {
 		t.Fatalf("unexpected anthropic tool identities, got %s", body)
 	}
-	if len(partialJSON) != 2 || partialJSON[0] != `{"query":"one"}` || partialJSON[1] != `{"query":"two"}` {
+	firstArgs, secondArgs := partialJSON[toolIndices[0]], partialJSON[toolIndices[1]]
+	if len(partialJSON) != 2 || !gjson.Valid(firstArgs) || !gjson.Valid(secondArgs) ||
+		gjson.Get(firstArgs, "query").String() != "one" || gjson.Get(firstArgs, "page").Int() != 2 || gjson.Get(secondArgs, "query").String() != "two" {
 		t.Fatalf("unexpected anthropic tool arguments, got %s", body)
 	}
 	if stopReason != "tool_use" || !messageStopped {

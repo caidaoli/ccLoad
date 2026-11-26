@@ -60,7 +60,7 @@ func HasOnlyResponsesWebSearchTools(root gjson.Result) bool {
 // AllowsResponsesWebSearchToolChoice checks whether tool_choice permits web search execution.
 func AllowsResponsesWebSearchToolChoice(root gjson.Result) bool {
 	toolChoice := root.Get("tool_choice")
-	if !toolChoice.Exists() {
+	if toolChoice.Type == gjson.Null {
 		return true
 	}
 	if toolChoice.Type == gjson.String {

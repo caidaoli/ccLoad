@@ -44,12 +44,13 @@ func openAIResponsesToolSearchCallAsFunctionCall(item gjson.Result, forwardMap m
 	if status := item.Get("status"); status.Exists() {
 		call, _ = sjson.SetBytes(call, "status", status.String())
 	}
-	if arguments := item.Get("arguments"); arguments.Exists() {
-		if arguments.Type == gjson.String {
-			call, _ = translatorcommon.SetStringWithoutHTMLEscape(call, "arguments", arguments.String())
-		} else if arguments.IsObject() || arguments.IsArray() {
-			call, _ = translatorcommon.SetStringWithoutHTMLEscape(call, "arguments", arguments.Raw)
-		}
+	arguments := item.Get("arguments")
+	rawArgs := arguments.Raw
+	if arguments.Type == gjson.String {
+		rawArgs = strings.TrimSpace(arguments.Str)
+	}
+	if strings.HasPrefix(rawArgs, "{") && gjson.Valid(rawArgs) {
+		call, _ = translatorcommon.SetStringWithoutHTMLEscape(call, "arguments", rawArgs)
 	}
 	return gjson.ParseBytes(call)
 }

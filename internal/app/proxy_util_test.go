@@ -277,6 +277,27 @@ func TestExtractThinkingEffortReadsCodexReasoningEffort(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 读取 Gemini SDK 请求中的蛇形思考等级。
+ * @param t 测试上下文。
+ */
+func TestExtractThinkingEffortReadsGeminiSDKConfig(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"generation_config":{"thinking_config":{"thinking_level":" HIGH "}}}`,
+		`{"generationConfig":{"thinking_config":{"thinkingLevel":"high"}}}`,
+		`{"generationConfig":null,"generation_config":{"thinkingConfig":{"thinking_level":"high"}}}`,
+		`{"generationConfig":{"thinkingConfig":{"thinkingLevel":null},"thinking_config":{"thinking_level":"high"}}}`,
+		`{"request":{"generationConfig":{"thinkingConfig":{"includeThoughts":true}},"generation_config":{"thinkingConfig":{"thinkingLevel":"high"}}}}`,
+		`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"},"thinking_config":{"thinking_level":"low"}},"generation_config":{"thinking_config":{"thinking_level":"medium"}}}`,
+	} {
+		if got := extractThinkingEffortFromJSON([]byte(body)); got != "high" {
+			t.Errorf("thinking_effort=%q, want high. body=%s", got, body)
+		}
+	}
+}
+
 func TestThinkingEffortFromRequestPrefersModelSuffix(t *testing.T) {
 	t.Parallel()
 
@@ -434,14 +455,13 @@ func TestApplyThinkingSuffixWritesClientProtocolFields(t *testing.T) {
 			wantInts:       map[string]int64{"thinking.budget_tokens": 8192},
 		},
 		{
-			name:           "anthropic 日期 ID 同样写 adaptive 不查 catalog",
+			name:           "anthropic 日期 ID 使用手动预算",
 			clientProtocol: protocol.Anthropic,
 			requestedModel: "claude-sonnet-4-5-20250929(high)",
 			body:           `{"model":"claude-sonnet-4-5-20250929","messages":[]}`,
-			wantStrings: map[string]string{
-				"thinking.type":        "adaptive",
-				"output_config.effort": "high",
-			},
+			wantStrings:    map[string]string{"thinking.type": "enabled"},
+			wantInts:       map[string]int64{"thinking.budget_tokens": 24576},
+			wantAbsent:     []string{"output_config.effort"},
 		},
 		{
 			name:           "gemini xhigh 收敛到 high",
@@ -457,6 +477,48 @@ func TestApplyThinkingSuffixWritesClientProtocolFields(t *testing.T) {
 			body:           `{"contents":[],"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`,
 			wantInts:       map[string]int64{geminiThinkingBudgetPath: 0},
 			wantAbsent:     []string{geminiThinkingLevelPath},
+		},
+		{
+			name:           "Gemini SDK 限额和摘要开关与显式等级并存",
+			clientProtocol: protocol.Gemini,
+			requestedModel: "gemini-3-pro(high)",
+			body:           `{"contents":[],"generation_config":{"max_output_tokens":370,"thinking_config":{"thinking_budget":300,"include_thoughts":true}}}`,
+			wantStrings:    map[string]string{"generation_config.thinking_config.thinking_level": "high", "generation_config.thinking_config.include_thoughts": "true"},
+			wantInts:       map[string]int64{"generation_config.max_output_tokens": 370},
+			wantAbsent:     []string{"generationConfig", "generation_config.thinking_config.thinking_budget"},
+		},
+		{
+			name:           "Gemini 显式预算覆盖混合命名的等级",
+			clientProtocol: protocol.Gemini,
+			requestedModel: "gemini-2.5-pro(512)",
+			body:           `{"contents":[],"generation_config":{"maxOutputTokens":1000,"thinkingConfig":{"thinking_level":"high","includeThoughts":true}}}`,
+			wantStrings:    map[string]string{"generation_config.thinkingConfig.includeThoughts": "true"},
+			wantInts:       map[string]int64{"generation_config.maxOutputTokens": 1000, "generation_config.thinkingConfig.thinkingBudget": 512},
+			wantAbsent:     []string{"generationConfig", "generation_config.thinkingConfig.thinking_level"},
+		},
+		{
+			name:           "Gemini 显式 auto 覆盖所有别名容器中的等级与预算",
+			clientProtocol: protocol.Gemini,
+			requestedModel: "gemini-2.5-pro(auto)",
+			body: `{"contents":[],
+				"generationConfig":{"maxOutputTokens":128,"thinkingLevel":"low",
+					"thinkingConfig":{"thinkingLevel":"low","includeThoughts":true},
+					"thinking_config":{"thinking_budget":123,"thinking_level":"low","include_thoughts":false}},
+				"generation_config":{"top_p":0.9,"thinking_level":"high",
+					"thinkingConfig":{"thinkingBudget":456},"thinking_config":{"thinking_level":"high","include_thoughts":true}}}`,
+			wantStrings: map[string]string{
+				"generationConfig.thinkingConfig.includeThoughts":    "true",
+				"generationConfig.thinking_config.include_thoughts":  "false",
+				"generation_config.thinking_config.include_thoughts": "true",
+				"generation_config.top_p":                            "0.9",
+			},
+			wantInts: map[string]int64{geminiThinkingBudgetPath: -1, "generationConfig.maxOutputTokens": 128},
+			wantAbsent: []string{
+				"generationConfig.thinkingLevel", geminiThinkingLevelPath,
+				"generationConfig.thinking_config.thinking_budget", "generationConfig.thinking_config.thinking_level",
+				"generation_config.thinking_level", "generation_config.thinkingConfig.thinkingBudget",
+				"generation_config.thinking_config.thinking_level",
+			},
 		},
 		{
 			name:           "未识别后缀不改写",

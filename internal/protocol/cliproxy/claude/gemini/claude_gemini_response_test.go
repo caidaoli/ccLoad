@@ -62,6 +62,15 @@ func TestConvertClaudeResponseToGemini_StreamPreservesToolUseID(t *testing.T) {
 	if got != "toolu_gateway" {
 		t.Fatalf("expected functionCall.id %q, got %q; chunk=%s", "toolu_gateway", got, string(out[0]))
 	}
+	if finish := gjson.GetBytes(out[0], "candidates.0.finishReason"); finish.Exists() {
+		t.Fatalf("tool block set finishReason before message_delta: %s", out[0])
+	}
+
+	terminal := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":2}}`)
+	out = ConvertClaudeResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, terminal, &param)
+	if len(out) != 1 || gjson.GetBytes(out[0], "candidates.0.finishReason").String() != "MAX_TOKENS" {
+		t.Fatalf("expected MAX_TOKENS at message_delta, got %q", out)
+	}
 }
 
 func TestConvertClaudeResponseToGeminiNonStreamPreservesToolUseID(t *testing.T) {

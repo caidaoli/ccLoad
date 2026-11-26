@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 
 	"ccLoad/internal/protocol/cliproxy/signature"
@@ -136,6 +138,81 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelNormalizesStrictClaudeThou
 	}
 	if part.Get("thought_signature").Exists() {
 		t.Fatalf("signature alias was not removed: %s", output)
+	}
+}
+
+func TestSanitizeAntigravityClaudeGeminiRequestSignatures_CanonicalizesExistingSignatureAliases(t *testing.T) {
+	canonical, ok := signature.CompatibleAntigravityClaudeThinkingSignature(testAntigravityGeminiClaudeSignature(t))
+	if !ok {
+		t.Fatal("test signature should be compatible")
+	}
+	for _, tc := range []struct {
+		name, fields string
+	}{
+		{"snake_case", fmt.Sprintf(`"thought_signature":%q`, canonical)},
+		{"nested alias", fmt.Sprintf(`"extra_content":{"google":{"thought_signature":%q,"keep":true}}`, canonical)},
+		{"canonical and alias", fmt.Sprintf(`"thoughtSignature":%q,"thought_signature":null`, canonical)},
+		{"empty canonical and alias", fmt.Sprintf(`"thoughtSignature":" ","thought_signature":%q`, canonical)},
+		{"duplicate canonical with valid last value", fmt.Sprintf(`"thoughtSignature":"obsolete","thoughtSignature":%q`, canonical)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := []byte(`{"request":{"contents":[{"role":"model","parts":[{"thought":true,"text":"reasoning",` + tc.fields + `}]}]}}`)
+			output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-opus-4-6-thinking", input)
+			part := gjson.GetBytes(output, "request.contents.0.parts.0")
+			if part.Get("thoughtSignature").String() != canonical || strings.Count(part.Raw, `"thoughtSignature"`) != 1 ||
+				part.Get("thought_signature").Exists() || part.Get("extra_content.google.thought_signature").Exists() {
+				t.Fatalf("expected exactly one canonical signature, got %s", part.Raw)
+			}
+			if tc.name == "nested alias" && part.Get("extra_content.google.keep").Type != gjson.True {
+				t.Fatalf("unrelated provider metadata was lost: %s", part.Raw)
+			}
+		})
+	}
+}
+
+func TestSanitizeAntigravityClaudeGeminiRequestSignatures_LeavesCanonicalAndOpaquePartsUnchanged(t *testing.T) {
+	canonical, ok := signature.CompatibleAntigravityClaudeThinkingSignature(testAntigravityGeminiClaudeSignature(t))
+	if !ok {
+		t.Fatal("test signature should be compatible")
+	}
+	input := fmt.Appendf(nil, `{
+		"request":{"contents":[
+			{"role":"model","parts":[
+				{"thought":true, "text":"reasoning", "thoughtSignature":%q},
+				{"functionCall":{"name":"first","args":{"thoughtSignature":"opaque"}}, "thoughtSignature":%q},
+				{"function_call":{"name":"second","args":{"thought_signature":"opaque"}}}
+			]},
+			{"role":"user","parts":[
+				{"functionResponse":{"name":"first","response":{"thoughtSignature":"opaque"}}},
+				{"function_response":{"name":"second","response":{"nested":[{"thought_signature":"opaque"}]}}}
+			]}
+		]}
+	}`, canonical, signature.GeminiSkipThoughtSignatureValidator)
+	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-opus-4-6-thinking", input)
+	if !bytes.Equal(input, output) {
+		t.Fatalf("expected already canonical parts and opaque tool fields to remain byte-identical: %s", output)
+	}
+}
+
+func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StripsOnlySnakeCaseToolSignaturePaths(t *testing.T) {
+	input := []byte(`{"request":{"contents":[
+		{"role":"model","parts":[
+			{"function_call":{"name":"lookup","args":{"thought_signature":"argument"},"thought_signature":"drop"}}
+		]},
+		{"role":"user","parts":[
+			{"function_response":{"thoughtSignature":"shadowed"},"function_response":{"name":"lookup","response":{"thoughtSignature":"result"}}}
+		]}
+	]}}`)
+	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-opus-4-6-thinking", input)
+	call := gjson.GetBytes(output, "request.contents.0.parts.0")
+	if call.Get("thoughtSignature").String() != signature.GeminiSkipThoughtSignatureValidator ||
+		call.Get("function_call.thought_signature").Exists() || call.Get("function_call.args.thought_signature").String() != "argument" {
+		t.Fatalf("expected only the tool-call signature to change, got %s", call.Raw)
+	}
+	response := gjson.GetBytes(output, "request.contents.1.parts.0")
+	if response.Get("function_response.thoughtSignature").Exists() || response.Get("function_response.response.thoughtSignature").String() != "result" ||
+		strings.Count(response.Raw, `"function_response"`) != 1 {
+		t.Fatalf("expected aliased tool-response signature to be removed while keeping its result, got %s", response.Raw)
 	}
 }
 
@@ -1638,7 +1715,7 @@ func TestConvertGeminiRequestToAntigravity_ExcessToolResponsesMatchCalls(t *test
 }
 
 func TestConvertGeminiRequestToAntigravity_NormalizesParametersNumericConstraints_Issue7149(t *testing.T) {
-	for _, carrier := range []string{"parameters", "parametersJsonSchema"} {
+	for _, carrier := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema"} {
 		t.Run(carrier, func(t *testing.T) {
 			inputJSON := []byte(fmt.Sprintf(`{
 		"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
@@ -1674,9 +1751,13 @@ func TestConvertGeminiRequestToAntigravity_NormalizesParametersNumericConstraint
 				t.Fatalf("ConvertGeminiRequestToAntigravity returned error: %v", err)
 			}
 
-			schema := gjson.GetBytes(out, "request.tools.0.functionDeclarations.0.parametersJsonSchema")
+			schemaKey := carrier
+			if carrier == "parameters" {
+				schemaKey = "parametersJsonSchema"
+			}
+			schema := gjson.GetBytes(out, "request.tools.0.functionDeclarations.0."+schemaKey)
 			if !schema.Exists() {
-				t.Fatalf("expected parametersJsonSchema to exist, got: %s", out)
+				t.Fatalf("expected %s to exist, got: %s", schemaKey, out)
 			}
 			for _, tc := range []struct {
 				path string
@@ -1702,5 +1783,68 @@ func TestConvertGeminiRequestToAntigravity_NormalizesParametersNumericConstraint
 				t.Errorf("default = %s (type %v), want string \"1\"", got.Raw, got.Type)
 			}
 		})
+	}
+}
+
+func TestConvertGeminiRequestToAntigravityNormalizesNativeMediaAliases(t *testing.T) {
+	input := []byte(`{
+		"system_instruction":{"parts":[{"inline_data":{"mime_type":"image/jpeg","data":"QUJD"}}]},
+		"contents":[
+			{"role":"user","parts":[
+				{"inline_data":{"data":"discard"},"inlineData":{"mime_type":"image/jpeg","mimeType":"image/png","data":"UkVUQUlO"}},
+				{"fileData":{"mime_type":"application/pdf","file_uri":"gs://bucket/top.pdf"}}
+			]},
+			{"role":"model","parts":[
+				{"functionCall":{"name":"camel","args":{"inline_data":{"mime_type":"keep-argument"},"number":9007199254740993}}},
+				{"function_call":{"name":"snake","args":{}}}
+			]},
+			{"role":"user","parts":[
+				{"functionResponse":{"name":"camel","response":{"file_data":{"file_uri":"keep-result"}},"parts":[
+					{"inline_data":{"mime_type":"image/png","data":"QUJD"}},
+					{"file_data":{"mime_type":"application/pdf","file_uri":"gs://bucket/camel.pdf"}}
+				]}},
+				{"function_response":{"name":"snake","response":{"ok":true},"parts":[
+					{"inline_data":{"mime_type":"image/jpeg","data":"REVG"}},
+					{"file_data":{"mime_type":"application/pdf","file_uri":"gs://bucket/discard.pdf","fileUri":"gs://bucket/snake.pdf"}}
+				]}}
+			]}
+		]
+	}`)
+	out, err := ConvertGeminiRequestToAntigravity("gemini-3.8-flash-high", input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := gjson.GetBytes(out, "request")
+	for _, tc := range []struct {
+		path, mimeType, data, fileURI string
+	}{
+		{"systemInstruction.parts.0", "image/jpeg", "QUJD", ""},
+		{"contents.0.parts.0", "image/png", "UkVUQUlO", ""},
+		{"contents.0.parts.1", "application/pdf", "", "gs://bucket/top.pdf"},
+		{"contents.2.parts.0.functionResponse.parts.0", "image/png", "QUJD", ""},
+		{"contents.2.parts.0.functionResponse.parts.1", "application/pdf", "", "gs://bucket/camel.pdf"},
+		{"contents.2.parts.1.function_response.parts.0", "image/jpeg", "REVG", ""},
+		{"contents.2.parts.1.function_response.parts.1", "application/pdf", "", "gs://bucket/snake.pdf"},
+	} {
+		part := request.Get(tc.path)
+		if part.Get("inline_data").Exists() || part.Get("file_data").Exists() {
+			t.Errorf("%s retains a snake_case media key: %s", tc.path, part.Raw)
+		}
+		if tc.data != "" {
+			if media := part.Get("inlineData"); media.Get("mimeType").String() != tc.mimeType ||
+				media.Get("data").String() != tc.data || media.Get("mime_type").Exists() {
+				t.Errorf("%s has invalid inlineData: %s", tc.path, part.Raw)
+			}
+		} else if media := part.Get("fileData"); media.Get("mimeType").String() != tc.mimeType ||
+			media.Get("fileUri").String() != tc.fileURI || media.Get("mime_type").Exists() || media.Get("file_uri").Exists() {
+			t.Errorf("%s has invalid fileData: %s", tc.path, part.Raw)
+		}
+	}
+	if got := request.Get("contents.1.parts.0.functionCall.args"); got.Get("inline_data.mime_type").String() != "keep-argument" ||
+		got.Get("number").Raw != "9007199254740993" {
+		t.Fatalf("tool arguments were modified: %s", got.Raw)
+	}
+	if got := request.Get("contents.2.parts.0.functionResponse.response.file_data.file_uri").String(); got != "keep-result" {
+		t.Fatalf("tool result was modified: %s", request.Get("contents.2.parts.0").Raw)
 	}
 }

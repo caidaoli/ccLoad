@@ -117,8 +117,9 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	template := params.newChunk()
 
 	usageResult := gjson.GetBytes(rawJSON, "response.usageMetadata")
+	hasUsage := usageResult.IsObject()
 	if params.SawFinishReason {
-		if !usageResult.Exists() || usageResult.Raw == params.LastUsageMetadata {
+		if !hasUsage || usageResult.Raw == params.LastUsageMetadata {
 			return nil
 		}
 		params.LastUsageMetadata = strings.Clone(usageResult.Raw)
@@ -136,8 +137,8 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	// FilterSSEUsageMetadata renames
 	// non-terminal usage to cpaUsageMetadata, so retain the latest copy for [DONE]
 	// instead of treating an intermediate chunk as terminal.
-	if !usageResult.Exists() {
-		if pendingUsage := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata"); pendingUsage.Exists() {
+	if !hasUsage {
+		if pendingUsage := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata"); pendingUsage.IsObject() {
 			params.PendingUsageMetadata = append(params.PendingUsageMetadata[:0], pendingUsage.Raw...)
 		}
 	}
@@ -250,12 +251,12 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	// across chunks and keep streaming afterwards, and finalizing early would make
 	// strict clients drop the remaining content. When upstream never sends
 	// finishReason at all, the [DONE] branch synthesizes the terminal chunk.
-	if params.UpstreamFinishReason != "" && usageResult.Exists() && len(params.ActiveToolCalls) > 0 {
+	if params.UpstreamFinishReason != "" && hasUsage && len(params.ActiveToolCalls) > 0 {
 		// A tool explicitly marked as incomplete can have continuations after this frame.
 		params.PendingUsageMetadata = append(params.PendingUsageMetadata[:0], usageResult.Raw...)
-		usageResult = gjson.Result{}
+		hasUsage = false
 	}
-	if params.UpstreamFinishReason != "" && usageResult.Exists() {
+	if params.UpstreamFinishReason != "" && hasUsage {
 		params.LastUsageMetadata = strings.Clone(usageResult.Raw)
 		terminal := setOpenAIUsageMetadata(params.finishChunk(template), usageResult)
 		if hasNonEmptyDelta {
@@ -264,10 +265,10 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 		return [][]byte{terminal}
 	}
 
-	if !hasDeltaContent && !usageResult.Exists() {
+	if !hasDeltaContent && !hasUsage {
 		return [][]byte{}
 	}
-	if usageResult.Exists() {
+	if hasUsage {
 		template = setOpenAIUsageMetadata(template, usageResult)
 	}
 
@@ -280,7 +281,7 @@ func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc gjson.Result) 
 	args := fc.Get("args")
 	streaming := translatorcommon.IsVertexStreamingFunctionCall(fc)
 	marked := streaming || fc.Get("willContinue").Type == gjson.False || fc.Get("will_continue").Type == gjson.False
-	if rawName == "" && id == "" && !marked && (!args.Exists() || args.IsObject() && strings.TrimSpace(args.Raw[1:len(args.Raw)-1]) == "") {
+	if rawName == "" && id == "" && !marked && (!args.IsObject() || strings.TrimSpace(args.Raw[1:len(args.Raw)-1]) == "") {
 		return nil, nil // An empty placeholder carries no continuation information.
 	}
 	activeID, active, err := p.findActiveToolCall(id, rawName, marked)
@@ -329,7 +330,7 @@ func (p *convertCliResponseToOpenAIChatParams) convertToolCall(fc gjson.Result) 
 			p.ActiveToolCalls[id] = active
 		}
 		call, _ = translatorcommon.SetStringWithoutHTMLEscape(call, "function.arguments", delta)
-	} else if args.Exists() {
+	} else if args.IsObject() {
 		call, _ = sjson.SetBytes(call, "function.arguments", args.Raw)
 	}
 	p.FunctionIndex++
@@ -449,7 +450,7 @@ func hasAntigravityResponsePayload(rawJSON []byte) bool {
 	for _, path := range []string{"response.candidates", "candidates"} {
 		if candidates := gjson.GetBytes(rawJSON, path); candidates.IsArray() {
 			for _, cand := range candidates.Array() {
-				if strings.TrimSpace(cand.Get("finishReason").String()) != "" {
+				if strings.TrimSpace(cand.Get("finishReason").Str) != "" {
 					return true
 				}
 				if chunks := cand.Get("groundingMetadata.groundingChunks"); chunks.IsArray() && len(chunks.Array()) > 0 {
@@ -459,7 +460,7 @@ func hasAntigravityResponsePayload(rawJSON []byte) bool {
 					hasVisibleInlineData := !part.Get("thought").Bool() &&
 						(part.Get("inlineData.data").String() != "" || part.Get("inline_data.data").String() != "")
 					if part.Get("text").String() != "" ||
-						part.Get("functionCall").Exists() || part.Get("function_call").Exists() ||
+						strings.TrimSpace(translatorcommon.GeminiPartFunctionCall(part).Get("name").Str) != "" ||
 						hasVisibleInlineData ||
 						part.Get("fileData").Exists() || part.Get("file_data").Exists() ||
 						part.Get("executableCode").Exists() || part.Get("executable_code").Exists() ||
@@ -518,7 +519,7 @@ func isAntigravityContentFilterFinishReason(reason string) bool {
 func setOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {
 	cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
 	template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
-	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
+	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Type != gjson.Null {
 		template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 	}
 	promptTokenCount := usageResult.Get("promptTokenCount").Int()

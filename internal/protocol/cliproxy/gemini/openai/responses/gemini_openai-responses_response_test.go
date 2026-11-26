@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/base64"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -24,6 +25,129 @@ func parseSSEEvent(t *testing.T, chunk []byte) (string, gjson.Result) {
 		t.Fatalf("invalid SSE data JSON: %q", dataLine)
 	}
 	return event, gjson.Parse(dataLine)
+}
+
+func TestConvertGeminiResponseToOpenAIResponses_OptionalRequestEcho(t *testing.T) {
+	provider := []byte(`{"modelVersion":"provider-model","responseId":"resp_echo","candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":2}}`)
+	for _, tc := range []struct {
+		name string
+		req  string
+		want map[string]string
+	}{
+		{
+			name: "nullable fields",
+			req:  `{"model":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"parallel_tool_calls":null,"previous_response_id":null,"prompt_cache_key":null,"reasoning":null,"safety_identifier":null,"service_tier":null,"store":null,"temperature":null,"text":null,"tool_choice":null,"tools":null,"top_logprobs":null,"top_p":null,"truncation":null,"user":null,"metadata":null}`,
+			want: map[string]string{"model": `"provider-model"`},
+		},
+		{
+			name: "falsy and composite fields are explicit values",
+			req: `{"model":"client-model","instructions":"","temperature":0,"top_p":0,"top_logprobs":0,"store":false,"parallel_tool_calls":false,"metadata":{},"tool_choice":{"type":"function","name":"lookup"},"tools":[
+				{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"key":{"const":9007199254740993}}}}
+			]}`,
+			want: map[string]string{
+				"model": `"client-model"`, "instructions": `""`, "temperature": "0", "top_p": "0",
+				"top_logprobs": "0", "store": "false", "parallel_tool_calls": "false", "metadata": "{}",
+				"tools":       `[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"key":{"const":9007199254740993}}}}]`,
+				"tool_choice": `{"type":"function","name":"lookup"}`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(t *testing.T, response gjson.Result) {
+				t.Helper()
+				gjson.Parse(tc.req).ForEach(func(field, _ gjson.Result) bool {
+					got := response.Get(field.Str)
+					want := gjson.Parse(tc.want[field.Str])
+					if got.Exists() != want.Exists() || !reflect.DeepEqual(got.Value(), want.Value()) {
+						t.Errorf("%s = %q, want %q. response=%s", field.Str, got.Raw, want.Raw, response.Raw)
+					}
+					return true
+				})
+				const schemaValuePath = "tools.0.parameters.properties.key.const"
+				want := gjson.Get(tc.req, schemaValuePath).Raw
+				if got := response.Get(schemaValuePath).Raw; got != want {
+					t.Errorf("%s = %s, want %s", schemaValuePath, got, want)
+				}
+			}
+			t.Run("JSON", func(t *testing.T) {
+				got := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "", []byte(tc.req), nil, provider, nil)
+				check(t, gjson.ParseBytes(got))
+			})
+			t.Run("SSE", func(t *testing.T) {
+				var state any
+				for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "", []byte(tc.req), nil, append([]byte("data: "), provider...), &state) {
+					if event, payload := parseSSEEvent(t, chunk); event == "response.completed" {
+						check(t, payload.Get("response"))
+						return
+					}
+				}
+				t.Fatal("missing response.completed")
+			})
+		})
+	}
+}
+
+func TestConvertGeminiResponseToOpenAIResponses_CompleteFunctionCallArgs(t *testing.T) {
+	const preciseArgs = `{"amount":9007199254740993,"query":"<tag>"}`
+	tests := []struct {
+		name, tool, request, args, wantArgs, wantStatus string
+	}{
+		{name: "function missing", tool: "ping", wantArgs: "{}", wantStatus: "completed"},
+		{name: "function null", tool: "ping", args: `,"args":null`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "function array", tool: "ping", args: `,"args":[1,2]`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "function string", tool: "ping", args: `,"args":"{\"query\":\"go\"}"`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "function number", tool: "ping", args: `,"args":23`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "function boolean", tool: "ping", args: `,"args":true`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "function complete with markers", tool: "ping", args: `,"args":[1],"willContinue":false,"partialArgs":[]`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "function object", tool: "ping", args: `,"args":` + preciseArgs, wantArgs: preciseArgs, wantStatus: "completed"},
+		{name: "search missing", tool: "tool_search", request: toolSearchFixtureRequest, wantArgs: "{}", wantStatus: "completed"},
+		{name: "search null", tool: "tool_search", request: toolSearchFixtureRequest, args: `,"args":null`, wantArgs: "{}", wantStatus: "completed"},
+		{name: "search array", tool: "tool_search", request: toolSearchFixtureRequest, args: `,"args":[1,2]`, wantArgs: "{}", wantStatus: "incomplete"},
+		{name: "search object", tool: "tool_search", request: toolSearchFixtureRequest, args: `,"args":` + preciseArgs, wantArgs: preciseArgs, wantStatus: "completed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const model = "gemini-3.8-flash"
+			raw := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"` + tt.tool + `"` + tt.args + `}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1},"responseId":"resp_args"}`
+			checkItem := func(event string, item gjson.Result) {
+				t.Helper()
+				wantType := "function_call"
+				args := item.Get("arguments")
+				gotArgs := args.Str
+				if tt.tool == "tool_search" {
+					wantType = "tool_search_call"
+					gotArgs = args.Raw
+				}
+				if item.Get("type").Str != wantType || item.Get("status").Str != tt.wantStatus || gotArgs != tt.wantArgs {
+					t.Fatalf("%s item = %s, want %s with status %s and arguments %s", event, item.Raw, wantType, tt.wantStatus, tt.wantArgs)
+				}
+			}
+			var param any
+			out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), model, []byte(tt.request), nil, []byte(raw), &param)
+			checkItem("nonstream", gjson.GetBytes(out, "output.0"))
+			var state any
+			var delta, done string
+			var itemDone, completed gjson.Result
+			for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), model, []byte(tt.request), nil, []byte("data: "+raw), &state) {
+				event, data := parseSSEEvent(t, chunk)
+				switch event {
+				case "response.function_call_arguments.delta":
+					delta += data.Get("delta").Str
+				case "response.function_call_arguments.done":
+					done = data.Get("arguments").Str
+				case "response.output_item.done":
+					itemDone = data.Get("item")
+				case "response.completed":
+					completed = data.Get("response.output.0")
+				}
+			}
+			checkItem("output_item.done", itemDone)
+			checkItem("response.completed", completed)
+			if tt.tool == "ping" && (delta != tt.wantArgs || done != tt.wantArgs) {
+				t.Fatalf("stream delta = %q, done = %q, want %q", delta, done, tt.wantArgs)
+			}
+		})
+	}
 }
 
 func TestConvertGeminiResponseToOpenAIResponses_VertexStreamingPartialArgs(t *testing.T) {
@@ -343,11 +467,11 @@ func TestConvertGeminiResponseToOpenAIResponses_UnwrapAndAggregateText(t *testin
 	if responseID != "resp_req_vrtx_1" {
 		t.Fatalf("unexpected response id: got %q", responseID)
 	}
-	if createdModels != "gpt-5" {
-		t.Fatalf("response.created models = %q, want gpt-5", createdModels)
+	if createdModels != "test-model" {
+		t.Fatalf("response.created models = %q, want test-model", createdModels)
 	}
-	if inProgressModels != "gpt-5" {
-		t.Fatalf("response.in_progress models = %q, want gpt-5", inProgressModels)
+	if inProgressModels != "test-model" {
+		t.Fatalf("response.in_progress models = %q, want test-model", inProgressModels)
 	}
 	if instructions != "test instructions" {
 		t.Fatalf("unexpected instructions echo: got %q", instructions)

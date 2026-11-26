@@ -30,6 +30,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -175,6 +176,9 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 	})
 }
 
+/**
+ * @brief 保存单次渠道测试中选定的客户端和上游请求参数，供 HTTP 与流式入口共用。
+ */
 type channelTestRequestPlan struct {
 	clientProtocol    string
 	upstreamProtocol  string
@@ -198,6 +202,7 @@ type channelTestRequestPlan struct {
 	anthropicOAuthFingerprint *anthropicOAuthFingerprint
 	anthropicMappedSessionID  string
 	anthropicTestBody         []byte
+	anthropicThinkingLevel    thinking.ThinkingLevel ///< 合成手动预算的显式等级。
 	openCodeResponses         *openCodeResponsesPlan
 	xaiTools                  *xaiResponsesToolsPlan
 	timeout                   *channelTestTimeout
@@ -586,20 +591,45 @@ func (s *Server) buildChannelTestRequestPlan(
 		!anthropicModelSupportsEffort(testReq.Model) {
 		body = deleteAnthropicOutputEffort(body)
 	}
-	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), requestedModel, testReq.Model)
+	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), protocol.Protocol(upstreamProtocol), requestedModel, testReq.Model)
+	var anthropicThinkingLevel thinking.ThinkingLevel
+	nativeClaudeTest := clientProtocol == util.ProtocolAnthropic && upstreamProtocol == util.ProtocolAnthropic
+	translatedGeminiTest := clientProtocol == util.ProtocolGemini && upstreamProtocol != util.ProtocolGemini
+	if nativeClaudeTest || translatedGeminiTest {
+		_, suffix, hasSuffix := model.ParseThinkingSuffix(requestedModel)
+		level := suffix.Level
+		if !hasSuffix {
+			level, _ = thinking.ParseLevelSuffix(strings.TrimSpace(testReq.ThinkingEffort))
+			if level == thinking.LevelMax {
+				level = thinking.LevelXHigh // The test option uses max as an alias for xhigh.
+			}
+			if level != "" {
+				choice := thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: level}
+				if nativeClaudeTest {
+					body = applyAnthropicThinking(body, choice, testReq.Model, protocol.Anthropic)
+				} else {
+					body = applyGeminiThinking(body, choice, testReq.Model, protocol.Protocol(upstreamProtocol))
+				}
+			}
+		}
+		if nativeClaudeTest {
+			anthropicThinkingLevel = level
+		}
+	}
 
 	plan := &channelTestRequestPlan{
-		clientProtocol:   clientProtocol,
-		upstreamProtocol: upstreamProtocol,
-		apiKey:           apiKey,
-		clientTester:     clientTester,
-		clientURL:        fullURL,
-		clientHeaders:    cloneHeaders(headers),
-		fullURL:          fullURL,
-		headers:          headers,
-		requestBody:      body,
-		clientBody:       body,
-		antigravityOAuth: cfgForBuild.UsesAntigravityOAuth(),
+		clientProtocol:         clientProtocol,
+		upstreamProtocol:       upstreamProtocol,
+		apiKey:                 apiKey,
+		clientTester:           clientTester,
+		clientURL:              fullURL,
+		clientHeaders:          cloneHeaders(headers),
+		fullURL:                fullURL,
+		headers:                headers,
+		requestBody:            body,
+		clientBody:             body,
+		antigravityOAuth:       cfgForBuild.UsesAntigravityOAuth(),
+		anthropicThinkingLevel: anthropicThinkingLevel,
 	}
 	if zaiMessages {
 		// 实际出站仍用基名；来源保留后缀，防止 (none)/(0) 被当作缺省重启。
@@ -622,6 +652,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	// 请求选项，必须先写进上游 tester body，否则 Codex 模板默认 medium 会盖掉它。
 	upstreamBody = applyThinkingSuffixForModel(
 		upstreamBody,
+		protocol.Protocol(upstreamProtocol),
 		protocol.Protocol(upstreamProtocol),
 		requestedModel,
 		testReq.Model,
@@ -1797,7 +1828,7 @@ func (s *Server) testCursorOAuthChannel(
 	if err != nil {
 		return fail(0, "构造测试请求失败: "+err.Error(), true)
 	}
-	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), requestedModel, attemptReq.Model)
+	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), protocol.OpenAI, requestedModel, attemptReq.Model)
 	result["upstream_request_body"] = string(body)
 
 	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -2550,9 +2581,12 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if len(callerBody) == 0 {
 		callerBody = requestPlan.requestBody
 	}
-	callerBodyIsAnthropic := requestPlan.clientProtocol == string(protocol.Anthropic) || len(requestPlan.anthropicTestBody) > 0
+	callerProtocol := protocol.Protocol(requestPlan.clientProtocol)
+	if len(requestPlan.anthropicTestBody) > 0 {
+		callerProtocol = protocol.Anthropic
+	}
 	callerWire := classifyAnthropicRequestCallerWire(
-		callerBody, requestPlan.headers, upstreamProtocolValue, requestPath, callerBodyIsAnthropic)
+		callerBody, requestPlan.headers, upstreamProtocolValue, requestPath, callerProtocol == protocol.Anthropic)
 	if cfgForBuild.UsesAnthropicOAuth() {
 		fingerprintSource := http.Header(nil)
 		if callerWire.nativeClaudeCode && len(requestPlan.anthropicTestBody) == 0 {
@@ -2560,13 +2594,23 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		}
 		requestPlan.anthropicOAuthFingerprint = s.getAnthropicOAuthFingerprint(ctx, cfgForBuild, fingerprintSource)
 	}
+	var generatedThinkingBudget int64
+	if requestPlan.anthropicThinkingLevel != "" {
+		generatedThinkingBudget = gjson.GetBytes(requestPlan.requestBody, "thinking.budget_tokens").Int()
+	}
 	requestPlan.requestBody, _, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, testReq.Model, requestPlan.requestBody, callerBody,
 		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
-		false, callerBodyIsAnthropic,
+		false, callerProtocol,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
+	}
+	if isAnthropicMessagesRequest(upstreamProtocolValue, requestPath) {
+		requestPlan.requestBody, err = finalizeAnthropicManualThinkingLevel(requestPlan.requestBody, generatedThinkingBudget, requestPlan.anthropicThinkingLevel, testReq.Model)
+		if err != nil {
+			return nil, nil, fmt.Errorf("finalize test request body: %w", err)
+		}
 	}
 	if vertexWire {
 		requestPlan.requestBody = prepareVertexRequestBody(requestPlan.requestBody, requestPlan.clientProtocol == string(protocol.Codex))

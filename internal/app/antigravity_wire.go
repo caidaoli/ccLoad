@@ -447,8 +447,8 @@ func prepareAntigravityRequestBody(
 	request = restoreAntigravityAnthropicToolIDs(request, sourceBody)
 	request = rewriteAntigravityConversationText(request)
 	request, structuredOutputPrompt := takeAntigravityClaude55StructuredOutput(request, modelName)
+	request = normalizeAntigravityThinkingConfig(request, modelName)
 	request = normalizeAntigravitySchemas(request, modelName)
-	request = normalizeAntigravityThinkingLevel(request, modelName)
 	lookupID := strings.ToLower(strings.TrimSpace(modelName))
 	if strings.Contains(lookupID, "claude") {
 		request = normalizeAntigravityClaudeOutputLimit(request, lookupID)
@@ -584,46 +584,92 @@ func takeAntigravityClaude55StructuredOutput(request []byte, modelName string) (
 }
 
 /**
- * @brief 按实际模型能力保留 xhigh，其余客户端别名沿用 Antigravity 枚举映射。
+ * @brief 合并思考配置别名，按实际模型能力输出一个等级或预算。
  * @param request 信封内 Gemini 请求体。
  * @param modelName 实际发送到 Antigravity 的模型名。
- * @return 规范化思考等级后的请求体；不改写其他字段。
+ * @return 清理冲突的思考字段并保留摘要开关和其他选项后的请求体。
  */
-func normalizeAntigravityThinkingLevel(request []byte, modelName string) []byte {
-	info := cliproxyregistry.LookupModelInfo(strings.ToLower(strings.TrimSpace(modelName)), "antigravity")
-	supportsXHigh := info != nil && info.Thinking != nil && slices.Contains(info.Thinking.Levels, "xhigh")
-	for _, generationConfigKey := range []string{"generationConfig", "generation_config"} {
-		if !gjson.GetBytes(request, generationConfigKey).IsObject() {
+func normalizeAntigravityThinkingConfig(request []byte, modelName string) []byte {
+	paths := [...]string{"generationConfig.thinkingConfig", "generationConfig.thinking_config", "generation_config.thinking_config", "generation_config.thinkingConfig"}
+	root := cliproxyutil.ParseGJSONBytesNoCopy(request)
+
+	var config []byte
+	var path string
+	merged := false
+	for _, alias := range paths {
+		value := root.Get(alias)
+		if !value.IsObject() {
 			continue
 		}
-		for _, thinkingConfigKey := range []string{"thinkingConfig", "thinking_config"} {
-			configPath := generationConfigKey + "." + thinkingConfigKey
-			if !gjson.GetBytes(request, configPath).IsObject() {
-				continue
+		if path == "" {
+			path, config = alias, []byte(value.Raw)
+			continue
+		}
+		path, merged = paths[0], true
+		value.ForEach(func(key, value gjson.Result) bool {
+			if !gjson.GetBytes(config, sjsonPathEscape(key.String())).Exists() {
+				config = setJSONRaw(config, sjsonObjectPathJoin("", key.String()), value.Raw)
 			}
-			levelKey := "thinkingLevel"
-			levelPath := configPath + "." + levelKey
-			level := jsonStringValue(gjson.GetBytes(request, levelPath))
-			if level == "" {
-				levelKey = "thinking_level"
-				levelPath = configPath + "." + levelKey
-				level = jsonStringValue(gjson.GetBytes(request, levelPath))
-			}
-			switch normalized := strings.ToLower(strings.TrimSpace(level)); normalized {
-			case "minimal":
-				request = setJSONValue(request, levelPath, "low")
-			case "xhigh":
-				if supportsXHigh {
-					request = setJSONValue(request, levelPath, normalized)
-				} else {
-					request = setJSONValue(request, levelPath, "high")
-				}
-			case "max":
-				request = setJSONValue(request, levelPath, "high")
-			case "low", "medium", "high":
-				request = setJSONValue(request, levelPath, normalized)
+			return true
+		})
+	}
+	if path == "" {
+		return request
+	}
+
+	level, budget, hasBudget := cliproxycommon.GeminiThinkingConfig(root)
+	includeThoughts := cliproxycommon.GeminiIncludeThoughts(root)
+	data := gjson.ParseBytes(config)
+	switch level {
+	case "minimal":
+		level = "low"
+	case "max":
+		level = "high"
+	case "xhigh":
+		info := cliproxyregistry.LookupModelInfo(strings.ToLower(strings.TrimSpace(modelName)), "antigravity")
+		if info == nil || info.Thinking == nil || !slices.Contains(info.Thinking.Levels, "xhigh") {
+			level = "high"
+		}
+	case "", "low", "medium", "high":
+	default:
+		for _, key := range [...]string{geminiThinkingLevelKey, "thinking_level"} {
+			if original := jsonStringValue(data.Get(key)); strings.EqualFold(strings.TrimSpace(original), level) {
+				level = original
+				break
 			}
 		}
+	}
+	levelKey, budgetKey, summaryKey := geminiThinkingLevelKey, geminiThinkingBudgetKey, "includeThoughts"
+	if !merged {
+		if !data.Get(levelKey).Exists() && data.Get("thinking_level").Exists() {
+			levelKey = "thinking_level"
+		}
+		if !data.Get(budgetKey).Exists() && data.Get("thinking_budget").Exists() {
+			budgetKey = "thinking_budget"
+		}
+		if !data.Get(summaryKey).Exists() && data.Get("include_thoughts").Exists() {
+			summaryKey = "include_thoughts"
+		}
+	}
+	for _, key := range [...]string{geminiThinkingLevelKey, "thinking_level", geminiThinkingBudgetKey, "thinking_budget", "includeThoughts", "include_thoughts"} {
+		switch {
+		case key == levelKey && level != "":
+			config = setJSONValue(config, key, level)
+		case key == budgetKey && level == "" && hasBudget:
+			config = setJSONValue(config, key, budget)
+		case key == summaryKey && includeThoughts != gjson.Null:
+			config = setJSONValue(config, key, includeThoughts == gjson.True)
+		default:
+			config = deleteJSONPath(config, key)
+		}
+	}
+	for _, alias := range paths {
+		if alias != path && root.Get(alias).Exists() {
+			request = deleteJSONPath(request, alias)
+		}
+	}
+	if !bytes.Equal(config, []byte(root.Get(path).Raw)) {
+		request = setJSONRaw(request, path, string(config))
 	}
 	return request
 }
@@ -750,7 +796,7 @@ func wantsAntigravityWebSearch(body []byte) bool {
 	if gjson.GetBytes(body, "input").Exists() {
 		return antigravityresponses.WantsWebSearch(body)
 	}
-	return hasOnlyAntigravityWebSearchTools(body)
+	return antigravitychat.WantsWebSearch(body)
 }
 
 // Antigravity 的 Claude/GPT 模型静默忽略 googleSearch，搜索交给 Gemini；Gemini 模型原生支持搜索。
@@ -760,43 +806,6 @@ func antigravityWebSearchModel(modelName string) string {
 		return antigravityWebSearchFallbackModel
 	}
 	return modelName
-}
-
-// 只有内置搜索工具且 tool_choice 未禁用时才走专用搜索请求；客户端同名函数不算内置搜索。
-func hasOnlyAntigravityWebSearchTools(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-	toolChoice := gjson.GetBytes(body, "tool_choice")
-	if toolChoice.String() == "none" || toolChoice.Get("type").String() == "none" {
-		return false
-	}
-	tools := gjson.GetBytes(body, "tools")
-	if !tools.IsArray() {
-		return false
-	}
-	hasSearch := false
-	for _, tool := range tools.Array() {
-		if !tool.IsObject() || !isAntigravityBuiltinWebSearchTool(tool) {
-			return false
-		}
-		hasSearch = true
-	}
-	return hasSearch
-}
-
-func isAntigravityBuiltinWebSearchTool(tool gjson.Result) bool {
-	if isAntigravityWebSearchName(jsonStringValue(tool.Get("type"))) {
-		return true
-	}
-	// Gemini 原生工具对象可以同时携带 googleSearch 和 functionDeclarations。
-	fields := tool.Map()
-	if len(fields) != 1 {
-		return false
-	}
-	_, camel := fields["googleSearch"]
-	_, snake := fields["google_search"]
-	return camel || snake
 }
 
 func ensureAntigravityGoogleSearchTool(request []byte) []byte {
@@ -835,11 +844,6 @@ func stripAntigravityGoogleSearchTools(request []byte) []byte {
 		return deleteJSONPath(request, "tools")
 	}
 	return setJSONRaw(request, "tools", "["+strings.Join(kept, ",")+"]")
-}
-
-func isAntigravityWebSearchName(value string) bool {
-	name := strings.ToLower(strings.TrimSpace(value))
-	return strings.HasPrefix(name, "web_search") || name == "google_search"
 }
 
 func normalizeAntigravityContentsRoles(request []byte) []byte {

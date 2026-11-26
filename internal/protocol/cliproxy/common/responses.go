@@ -1,6 +1,7 @@
 package common
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -132,7 +133,8 @@ func (s *ResponsesMessageStream) ObserveEvent(eventType string, event gjson.Resu
 	case "message":
 		if eventType == "response.output_item.added" {
 			s.forgetCurrent()
-			s.current = s.message(item.Get("id").String(), index)
+			id := cmp.Or(item.Get("id").String(), event.Get("item_id").String())
+			s.current = s.message(id, index)
 			s.current.phase = strings.Clone(item.Get("phase").String())
 		}
 	case "":
@@ -212,7 +214,8 @@ func (m *responsesStreamedMessage) sawPart(index int64, part gjson.Result) bool 
 // FinishMessage returns visible parts that still need to be emitted at item completion.
 func (s *ResponsesMessageStream) FinishMessage(event gjson.Result) []ResponsesFinishedPart {
 	item := event.Get("item")
-	message := s.message(item.Get("id").String(), event.Get("output_index"))
+	id := cmp.Or(item.Get("id").String(), event.Get("item_id").String())
+	message := s.message(id, event.Get("output_index"))
 	var missing []ResponsesFinishedPart
 	for index, part := range item.Get("content").Array() {
 		contentIndex := int64(index)

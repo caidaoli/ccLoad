@@ -274,7 +274,6 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 				functionCall, _ = sjson.SetBytes(functionCall, "functionCall.id", toolID)
 			}
 			template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", functionCall)
-			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
 			(*param).(*ConvertAnthropicResponseToGeminiParams).LastStorageOutput = append([]byte(nil), template...)
 			// cleanup used state for this index
 			if (*param).(*ConvertAnthropicResponseToGeminiParams).ToolUseArgs != nil {

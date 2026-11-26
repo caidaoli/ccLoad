@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ============================================================================
@@ -61,6 +63,7 @@ type sseUsageParser struct {
 	dataLines        []string     // 当前事件的data行（跨Feed保存）
 	oversized        bool         // 当前事件超出大小限制，丢弃到事件边界后恢复解析
 	upstreamProtocol string       // 实际上游协议，用于精确平台判断。
+	responsesSSE     bool         ///< 上游声明 Responses 或已经发送 Responses 事件。
 	discardTail      string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
 	scanner          jsonUsageParser
 	scanVersion      int
@@ -193,6 +196,12 @@ func (u *usageAccumulator) GetResponseModel() string {
 	return u.ResponseModel
 }
 
+/**
+ * @brief 保存上游声明的实际模型，供请求日志展示。
+ * @param payload 已解析的上游响应或 SSE 事件。
+ * @param upstreamProtocol 实际上游协议。
+ * @note 模型名可能从整帧 JSON 字符串切出，只有变化时复制短字符串。
+ */
 func (u *usageAccumulator) captureResponseModel(payload map[string]any, upstreamProtocol string) {
 	if payload == nil {
 		return
@@ -212,7 +221,9 @@ func (u *usageAccumulator) captureResponseModel(payload map[string]any, upstream
 
 	for _, candidate := range candidates {
 		if normalized := normalizeResponseModel(candidate); normalized != "" {
-			u.ResponseModel = normalized
+			if normalized != u.ResponseModel {
+				u.ResponseModel = strings.Clone(normalized)
+			}
 			return
 		}
 	}
@@ -280,6 +291,7 @@ const (
 func newSSEUsageParser(upstreamProtocol string) *sseUsageParser {
 	p := &sseUsageParser{
 		upstreamProtocol: upstreamProtocol,
+		responsesSSE:     upstreamProtocol == util.ProtocolCodex,
 	}
 	p.scanner.upstreamProtocol = upstreamProtocol
 	return p
@@ -611,14 +623,14 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		p.streamComplete, p.streamEnded = true, true
 		return nil
 	}
-	if isHeartbeatEvent(eventType, data) {
-		return nil
-	}
 	// 先解析 usage。失败终态也可能包含已经消耗的 token，计费不能因为
 	// response.failed 提前返回而静默归零。Unmarshal 失败不改写、不丢弃
 	// 下游已经在拷的字节；终态仍用廉价字段认，避免把完整流记成 599。
 	event, err := sseJSONObjectMap([]byte(data))
 	if err != nil {
+		if isHeartbeatEventType(eventType) {
+			return nil
+		}
 		if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
 			log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 			p.geminiFilterNotice = ""
@@ -630,6 +642,12 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
+	payloadType, _ := event["type"].(string)
+	effectiveType := cmp.Or(payloadType, eventType)
+	if isHeartbeatEventType(effectiveType) {
+		return nil
+	}
+	p.responsesSSE = p.responsesSSE || isCodexSSEEventType(effectiveType)
 	if p.advisor != nil && (event["type"] == "message_start" || event["type"] == "content_block_start") {
 		p.advisor.observe(gjson.Parse(data))
 	}
@@ -667,20 +685,28 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 	}
 
+	terminalType := responsesTerminalType(effectiveType, gjson.Parse(data))
+
 	// 特殊处理：error 事件（记录日志 + 存储错误体用于后续冷却处理）
 	// - Anthropic/聚合站：event: error 或 data 顶层 type=error / error 对象
 	// - OpenAI Responses：event/type=response.failed，error 嵌在 response.error
 	// 兼容不带 event 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
-	if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
+	if effectiveType == "error" || terminalType == "response.failed" || isErrorPayload(data) {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 		p.geminiFilterNotice = ""
-		p.recordError([]byte(data))
+		errorData := []byte(data)
+		if payloadType == "" && (effectiveType == "error" || effectiveType == "response.done" || terminalType == "response.failed") {
+			errorData, _ = sjson.SetBytes(errorData, "type", effectiveType)
+		}
+		p.recordError(errorData)
+		// A detail-free failure may be followed by a more specific error event.
+		if terminalType == "response.failed" && sseErrorHasDetail(errorData) {
+			p.streamEnded = true
+		}
 		return nil // 不解析usage，避免误判
 	}
 
-	payloadType, _ := event["type"].(string)
-
-	if !p.hasStreamOutput && isEmptyResponsesIncomplete(eventType, payloadType, data) {
+	if !p.hasStreamOutput && isEmptyResponsesIncomplete(effectiveType, data) {
 		log.Printf("[WARN]  [SSE错误事件] 上游 response.incomplete 无任何输出(0 tokens)，按流中断处理: %s", data)
 		p.lastError = []byte(responsesEmptyIncompleteErrorPayload)
 		return nil
@@ -708,7 +734,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 			return nil
 		}
 		p.hasStreamOutput = p.hasStreamOutput || visible || thought || geminiStreamPayloadComplete(event)
-	} else if isResponsesPreOutputEvent(payloadType, data) || isResponsesPreOutputEvent(eventType, data) {
+	} else if isResponsesPreOutputEvent(effectiveType, data) {
 		p.hasStreamMetadata = true
 	} else if p.upstreamProtocol == util.ProtocolOpenAI && !openAIComplete && isOpenAIStreamMetadata(event) {
 		p.hasStreamMetadata = true
@@ -722,14 +748,13 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		"content_block_delta", // Claude增量内容（无usage）
 	}
 
-	if eventType != "" && slices.Contains(ignoredEvents, eventType) {
+	if effectiveType == eventType && slices.Contains(ignoredEvents, eventType) {
 		return nil // 跳过已知无用事件
 	}
-	isAnthropicTerminal := payloadType == "message_stop" || (payloadType == "" && eventType == "message_stop")
-	if isAnthropicTerminal || isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType) {
+	if effectiveType == "message_stop" || isSuccessfulResponsesTerminal(terminalType) {
 		p.streamComplete, p.streamEnded = true, true
 	}
-	if isImagesStreamTerminal(payloadType) || (payloadType == "" && isImagesStreamTerminal(eventType)) {
+	if isImagesStreamTerminal(effectiveType) {
 		p.streamComplete, p.streamEnded = true, true
 	}
 	// OpenAI Chat Completions 与 Gemini 在 finish_reason 处、Anthropic 在 message_delta.stop_reason
@@ -738,7 +763,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if openAIComplete || geminiStreamPayloadComplete(event) || anthropicStreamPayloadComplete(event) {
 		p.streamComplete = true
 	}
-	if isSuccessfulResponsesTerminal(payloadType) {
+	if isSuccessfulResponsesTerminal(terminalType) {
 		responseRaw := gjson.Get(data, "response")
 		if responseRaw.IsObject() {
 			p.responsesTurnResult = responsesWebsocketTurnFromResponse(responseRaw)
@@ -748,26 +773,14 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 
 	// Responses 的 response.created/queued/in_progress 通常只是请求回显，
 	// 不能当作实际上游服务档位。仅采信终止事件；无 type 的 Chat 分片仍可读取。
-	if tier := observedServiceTierFromEvent(eventType, payloadType, event); tier != "" {
+	if tier := observedServiceTierFromEvent(effectiveType, payloadType, terminalType, event); tier != "" {
 		p.ServiceTier = tier
 	}
 	if effort := extractThinkingEffortFromPayload(event); effort != "" {
-		p.ThinkingEffort = effort
+		p.ThinkingEffort = strings.Clone(effort)
 	}
 
-	if usage == nil {
-		return nil
-	}
-
-	// Anthropic fast mode: 以 usage.speed 记录上游实际档位，standard 也必须保留，
-	// 否则请求 fast、上游降为 standard 时无法在计费层识别降档。
-	if speed, ok := usage["speed"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(speed)) {
-		case "fast", "standard":
-			p.ServiceTier = strings.ToLower(strings.TrimSpace(speed))
-		}
-	}
-
+	p.observeUsageSpeed(usage)
 	return nil
 }
 
@@ -993,33 +1006,26 @@ func isResponsesEmptyPart(part gjson.Result) bool {
 	}
 }
 
-func isSuccessfulResponsesTerminal(eventType string) bool {
-	switch eventType {
-	case "response.completed", "response.done", "response.incomplete":
-		return true
-	default:
-		return false
-	}
-}
-
 // responsesEmptyIncompleteErrorPayload 复用流中断错误码：分类为 599，
 // 冷却当前模型并切换候选；候选耗尽时 Responses WS 客户端按中断重放。
 const responsesEmptyIncompleteErrorPayload = `{"type":"error","error":{"type":"server_error","code":"` +
 	responsesWebsocketInterruptedCode + `","message":"upstream terminated with incomplete empty response (0 tokens)"}}`
 
-// isEmptyResponsesIncomplete 识别上游静默中止：response.incomplete 没有任何
-// output 且 usage.output_tokens 明确为数字 0（对齐 CLIProxyAPI
-// IsCodexTerminalEmptyIncomplete）。调用方还须保证此前没有语义输出。
-// content_filter 是确定性结果，换渠道重放只会连带冷却，保持原样返回；
-// interrupted 是上游对客户端 response.interrupt 的确认，空输出同样是正常终结。
-func isEmptyResponsesIncomplete(eventType, payloadType, data string) bool {
-	if payloadType == "" {
-		payloadType = eventType
-	}
-	if payloadType != "response.incomplete" {
+/**
+ * @brief 识别 Responses 上游在无输出时静默中止的终态，以便尝试其他渠道。
+ * @param eventType SSE 数据的 type 字段，缺失时采用 event 行。
+ * @param data SSE 事件的 JSON 数据。
+ * @return 不完整终态没有 output 且 output_tokens 明确为数字 0 时返回 true。
+ * @note 调用方须保证此前没有语义输出。内容过滤及客户端中断的确认会直接结束请求。
+ */
+func isEmptyResponsesIncomplete(eventType, data string) bool {
+	if eventType != "response.incomplete" && eventType != "response.done" {
 		return false
 	}
 	response := gjson.Get(data, "response")
+	if eventType == "response.done" && !strings.EqualFold(strings.TrimSpace(response.Get("status").String()), "incomplete") {
+		return false
+	}
 	switch response.Get("incomplete_details.reason").String() {
 	case "content_filter", "interrupted":
 		return false
@@ -1086,13 +1092,12 @@ func markSSETerminalFromRaw(p *sseUsageParser, eventType, data string) {
 		return
 	}
 	payload := string(first)
-	payloadType := gjson.Get(payload, "type").String()
-	isAnthropicTerminal := payloadType == "message_stop" || (payloadType == "" && eventType == "message_stop")
-	if isAnthropicTerminal || isSuccessfulResponsesTerminal(payloadType) ||
-		(payloadType == "" && isSuccessfulResponsesTerminal(eventType)) {
+	event := gjson.Parse(payload)
+	effectiveType := cmp.Or(event.Get("type").Str, eventType)
+	if effectiveType == "message_stop" || isSuccessfulResponsesTerminal(responsesTerminalType(effectiveType, event)) {
 		p.streamComplete, p.streamEnded = true, true
 	}
-	if isImagesStreamTerminal(payloadType) || (payloadType == "" && isImagesStreamTerminal(eventType)) {
+	if isImagesStreamTerminal(effectiveType) {
 		p.streamComplete, p.streamEnded = true, true
 	}
 	openAIComplete := gjsonOpenAIStreamComplete(payload)
@@ -1143,12 +1148,19 @@ func gjsonGeminiStreamComplete(data string) bool {
 	return false
 }
 
-func observedServiceTierFromEvent(eventType, payloadType string, event map[string]any) string {
+/**
+ * @brief 读取成功结束的 Responses 回包或 Chat 分片实际声明的计费档位。
+ * @param eventType 优先取 JSON 的事件类型，缺失时取 SSE event 行。
+ * @param payloadType JSON 中声明的事件类型，缺失或非字符串时为空。
+ * @param terminalType 已归一的 Responses 终态，非终态为空。
+ * @param event 上游事件正文，缺失时可为 nil。
+ * @return 已知的实际档位；未声明、未知档位或请求回显返回空字符串。
+ */
+func observedServiceTierFromEvent(eventType, payloadType, terminalType string, event map[string]any) string {
 	if event == nil {
 		return ""
 	}
-	terminal := isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType)
-	if !terminal && (eventType != "" || payloadType != "") {
+	if !isSuccessfulResponsesTerminal(terminalType) && eventType != "" {
 		// Responses 的 typed delta 一律忽略，避免读取请求回显；没有 type
 		// 的自定义 Chat 事件仍可读取 service_tier。
 		if payloadType != "" || isResponsesMetadataEvent(eventType) {
@@ -1394,19 +1406,6 @@ func geminiStreamPayloadComplete(payload map[string]any) bool {
 		}
 	}
 	return false
-}
-
-func isHeartbeatEvent(eventType, data string) bool {
-	if isHeartbeatEventType(eventType) {
-		return true
-	}
-	if data == "" {
-		return false
-	}
-	var event struct {
-		Type string `json:"type"`
-	}
-	return json.Unmarshal([]byte(data), &event) == nil && isHeartbeatEventType(event.Type)
 }
 
 // isHeartbeatEventType 判断事件类型是否为纯心跳。
@@ -1663,16 +1662,24 @@ func (p *jsonUsageParser) finishJSONValueCapture() {
 	p.scanCaptureDiscard = false
 }
 
+/**
+ * @brief 记录 Anthropic 用量中的实际速度，保留上游降至 standard 的计费依据。
+ * @param usage 上游用量；缺失、非字符串或未知速度保留已有计费档位。
+ */
+func (u *usageAccumulator) observeUsageSpeed(usage map[string]any) {
+	speed, _ := usage["speed"].(string)
+	switch speed := normalizeBillingServiceTier(speed); speed {
+	case "fast", "standard":
+		u.ServiceTier = speed
+	}
+}
+
+/**
+ * @brief 将非流式响应的用量快照用于计费。
+ * @param usage 上游声明的用量；nil 不更新计费数据。
+ */
 func (p *jsonUsageParser) applyUsageMap(usage map[string]any) {
-	if usage == nil {
-		return
-	}
-	if speed, ok := usage["speed"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(speed)) {
-		case "fast", "standard":
-			p.ServiceTier = strings.ToLower(strings.TrimSpace(speed))
-		}
-	}
+	p.observeUsageSpeed(usage)
 	p.applyUsage(usage, p.upstreamProtocol)
 }
 

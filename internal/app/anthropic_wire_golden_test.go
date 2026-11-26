@@ -412,7 +412,7 @@ func TestAnthropicClaude52NativeRequestContract(t *testing.T) {
 				body := []byte(`{"model":"client-alias","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]` + testCase.fields + `}`)
 				_, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
-					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, true)
+					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.Anthropic)
 				if (err != nil) != testCase.wantErr {
 					t.Fatalf("error=%v, wantErr=%t", err, testCase.wantErr)
 				}
@@ -473,7 +473,7 @@ func TestAnthropicClaude55ThinkingRequestContract(t *testing.T) {
 				body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]` + testCase.fields + `}`)
 				got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
-					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, true)
+					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.Anthropic)
 				wantErr := testCase.haikuErr
 				if isSonnet {
 					wantErr = testCase.sonnetErr
@@ -518,7 +518,7 @@ func TestAnthropicClaude55ThinkingRequestContract(t *testing.T) {
 				}
 				_, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
-					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, true)
+					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.Anthropic)
 				if (err != nil) != testCase.wantErr {
 					t.Fatalf("error=%v, wantErr=%t", err, testCase.wantErr)
 				}
@@ -551,7 +551,7 @@ func TestAnthropicClaude55ConvertedThinkingContract(t *testing.T) {
 					}
 					got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 						protocol.Anthropic, "/v1/messages", modelName, translated, source, anthropicGoldenAPIKey,
-						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, false)
+						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.OpenAI)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -610,7 +610,7 @@ func TestAnthropicClaude52ConvertedRequestContract(t *testing.T) {
 					translated = preserveAnthropicConvertedEffort(translated, source, modelName)
 					got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 						protocol.Anthropic, "/v1/messages", modelName, translated, source, anthropicGoldenAPIKey,
-						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, false)
+						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.OpenAI)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -655,7 +655,7 @@ func TestAnthropicClaude52ConvertedRequestContract(t *testing.T) {
 			body := []byte(`{"model":"claude-mythos-5-2","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"lookup","disable_parallel_tool_use":true},"top_k":50` + testCase.fields + `}`)
 			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic", CustomRequestRules: testCase.rules},
 				protocol.Anthropic, "/v1/messages", "claude-mythos-5-2", body, []byte(`{}`), anthropicGoldenAPIKey,
-				anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, false)
+				anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.OpenAI)
 			if err != nil {
 				t.Fatal(err)
 			}

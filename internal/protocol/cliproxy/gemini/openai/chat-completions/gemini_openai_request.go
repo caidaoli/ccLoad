@@ -68,6 +68,9 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 	} else if mct := gjson.GetBytes(rawJSON, "max_completion_tokens"); mct.Exists() && mct.Type == gjson.Number {
 		out, _ = sjson.SetBytes(out, "generationConfig.maxOutputTokens", mct.Num)
 	}
+	if sequences := translatorcommon.ChatStopSequences(gjson.GetBytes(rawJSON, "stop")); len(sequences) > 0 {
+		out, _ = sjson.SetBytes(out, "generationConfig.stopSequences", sequences)
+	}
 
 	// Candidate count (OpenAI 'n' parameter)
 	if n := gjson.GetBytes(rawJSON, "n"); n.Exists() && n.Type == gjson.Number {
@@ -236,7 +239,7 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						}
 						part := []byte(`{"functionCall":{"name":""}}`)
 						part, _ = sjson.SetBytes(part, "functionCall.name", functionName)
-						part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte(tc.Get("function.arguments").String()))
+						part = translatorcommon.SetGeminiFunctionCallArguments(part, tc.Get("function.arguments").String(), "params")
 						part, _ = sjson.SetBytes(part, "thoughtSignature", openAIToolCallGeminiThoughtSignature(tc))
 						partItems = append(partItems, part)
 						toolCalls = append(toolCalls, assistantToolCall{

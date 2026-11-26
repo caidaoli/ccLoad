@@ -1,6 +1,7 @@
 package common
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -20,6 +21,194 @@ func GeminiClaudeMessageID(responseID gjson.Result) string {
 // IsGeminiThoughtPart reports whether a Gemini part contains hidden model thought.
 func IsGeminiThoughtPart(part gjson.Result) bool {
 	return part.Get("thought").Bool()
+}
+
+// GeminiUsageMetadataFromOpenAI maps Chat and Responses usage into Gemini's
+// separate candidate and thought counts. Cached tokens stay part of the prompt.
+func GeminiUsageMetadataFromOpenAI(usage gjson.Result, out []byte) []byte {
+	prompt, hasPrompt := tokenCountFromUsage(usage, "prompt_tokens", "input_tokens")
+	output, hasOutput := tokenCountFromUsage(usage, "completion_tokens", "output_tokens")
+	total, hasTotal := tokenCountFromUsage(usage, "total_tokens")
+	thoughts, hasThoughts := tokenCountFromUsage(usage, "completion_tokens_details.reasoning_tokens", "output_tokens_details.reasoning_tokens")
+	if hasPrompt {
+		out, _ = sjson.SetBytes(out, "promptTokenCount", prompt)
+	}
+	if hasOutput {
+		out, _ = sjson.SetBytes(out, "candidatesTokenCount", max(0, output-thoughts))
+	}
+	if hasTotal {
+		out, _ = sjson.SetBytes(out, "totalTokenCount", total)
+	} else if hasPrompt || hasOutput {
+		out, _ = sjson.SetBytes(out, "totalTokenCount", prompt+output)
+	}
+	if hasThoughts {
+		out, _ = sjson.SetBytes(out, "thoughtsTokenCount", thoughts)
+	}
+	if cached, ok := tokenCountFromUsage(usage, "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"); ok {
+		out, _ = sjson.SetBytes(out, "cachedContentTokenCount", cached)
+	}
+	return out
+}
+
+// tokenCountFromUsage preserves explicit zeros and skips null aliases. Some
+// Chat-compatible upstreams encode token counts as JSON strings.
+func tokenCountFromUsage(usage gjson.Result, paths ...string) (int64, bool) {
+	for _, path := range paths {
+		value := usage.Get(path)
+		switch value.Type {
+		case gjson.Number:
+			if count := value.Int(); count >= 0 && float64(count) == value.Num {
+				return count, true
+			}
+		case gjson.String:
+			if count, err := strconv.ParseInt(value.Str, 10, 64); err == nil && count >= 0 {
+				return count, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// ChatStopSequences reads nonempty stop strings from the Chat stop union.
+func ChatStopSequences(stop gjson.Result) []string {
+	if stop.Type == gjson.String && stop.Str != "" {
+		return []string{stop.Str}
+	}
+	if !stop.IsArray() {
+		return nil
+	}
+	var sequences []string
+	stop.ForEach(func(_, item gjson.Result) bool {
+		if item.Type == gjson.String && item.Str != "" {
+			sequences = append(sequences, item.Str)
+		}
+		return true
+	})
+	return sequences
+}
+
+// GeminiConfigObject selects the first valid object among Gemini SDK aliases.
+func GeminiConfigObject(parent gjson.Result, keys ...string) gjson.Result {
+	for _, key := range keys {
+		if value := parent.Get(key); value.IsObject() {
+			return value
+		}
+	}
+	return gjson.Result{}
+}
+
+// GeminiConfigNumber selects a numeric field while distinguishing zero from null.
+func GeminiConfigNumber(parent gjson.Result, keys ...string) gjson.Result {
+	for _, key := range keys {
+		if value := parent.Get(key); value.Type == gjson.Number {
+			return value
+		}
+	}
+	return gjson.Result{}
+}
+
+// GeminiConfigInt selects the first integer that meets the field's minimum.
+func GeminiConfigInt(parent gjson.Result, minValue int64, keys ...string) (int64, bool) {
+	for _, key := range keys {
+		value := parent.Get(key)
+		if value.Type == gjson.Number {
+			if number := value.Int(); number >= minValue && float64(number) == value.Num {
+				return number, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// GeminiConfigStrings selects a string list, skipping entries of other JSON types.
+func GeminiConfigStrings(parent gjson.Result, keys ...string) []string {
+	for _, key := range keys {
+		value := parent.Get(key)
+		if !value.IsArray() {
+			continue
+		}
+		var result []string
+		for _, item := range value.Array() {
+			if item.Type == gjson.String {
+				result = append(result, item.Str)
+			}
+		}
+		return result
+	}
+	return nil
+}
+
+// GeminiThinkingLevel selects the first nonempty SDK spelling of a thinking level.
+func GeminiThinkingLevel(config gjson.Result) string {
+	for _, key := range []string{"thinkingLevel", "thinking_level"} {
+		if value := config.Get(key); value.Type == gjson.String {
+			if level := strings.TrimSpace(value.Str); level != "" {
+				return strings.ToLower(level)
+			}
+		}
+	}
+	return ""
+}
+
+// GeminiThinkingConfig reads the first valid nested level and budget independently across SDK spellings.
+func GeminiThinkingConfig(root gjson.Result) (level string, budget int64, hasBudget bool) {
+	for _, group := range [...]struct {
+		generationKey string
+		thinkingKeys  [2]string
+	}{
+		{"generationConfig", [...]string{"thinkingConfig", "thinking_config"}},
+		{"generation_config", [...]string{"thinking_config", "thinkingConfig"}},
+	} {
+		generation := root.Get(group.generationKey)
+		if !generation.IsObject() {
+			continue
+		}
+		for _, key := range group.thinkingKeys {
+			config := generation.Get(key)
+			if level == "" {
+				level = GeminiThinkingLevel(config)
+			}
+			if !hasBudget {
+				budget, hasBudget = GeminiConfigInt(config, -1, "thinkingBudget", "thinking_budget")
+			}
+			if level != "" && hasBudget {
+				return level, budget, hasBudget
+			}
+		}
+	}
+	return level, budget, hasBudget
+}
+
+// GeminiIncludeThoughts returns the explicit summary visibility flag, if set.
+func GeminiIncludeThoughts(root gjson.Result) gjson.Type {
+	for _, group := range [...]struct {
+		generationKey string
+		paths         [4]string
+	}{
+		{"generationConfig", [...]string{
+			"thinkingConfig.includeThoughts",
+			"thinkingConfig.include_thoughts",
+			"thinking_config.include_thoughts",
+			"thinking_config.includeThoughts",
+		}},
+		{"generation_config", [...]string{
+			"thinking_config.include_thoughts",
+			"thinking_config.includeThoughts",
+			"thinkingConfig.include_thoughts",
+			"thinkingConfig.includeThoughts",
+		}},
+	} {
+		generation := root.Get(group.generationKey)
+		if !generation.IsObject() {
+			continue
+		}
+		for _, path := range group.paths {
+			if value := generation.Get(path); value.Type == gjson.True || value.Type == gjson.False {
+				return value.Type
+			}
+		}
+	}
+	return gjson.Null
 }
 
 // GeminiMessageRole maps Gemini content roles to roles accepted by the other
@@ -119,18 +308,55 @@ func ContentHasGeminiFunctionResponse(content []byte) bool {
 
 // GeminiPartFunctionCall returns the functionCall or function_call field.
 func GeminiPartFunctionCall(part gjson.Result) gjson.Result {
-	if fc := part.Get("functionCall"); fc.Exists() {
-		return fc
-	}
-	return part.Get("function_call")
+	return geminiPartToolObject(part, "functionCall", "function_call")
 }
 
 // GeminiPartFunctionResponse returns the functionResponse or function_response field.
 func GeminiPartFunctionResponse(part gjson.Result) gjson.Result {
-	if fr := part.Get("functionResponse"); fr.Exists() {
-		return fr
+	return geminiPartToolObject(part, "functionResponse", "function_response")
+}
+
+func geminiPartToolObject(part gjson.Result, keys ...string) gjson.Result {
+	for _, key := range keys {
+		value := part.Get(key)
+		if !value.IsObject() {
+			continue
+		}
+		hasMember := false
+		value.ForEach(func(_, _ gjson.Result) bool {
+			hasMember = true
+			return false
+		})
+		if hasMember {
+			return value
+		}
 	}
-	return part.Get("function_response")
+	return gjson.Result{}
+}
+
+// GeminiSystemInstructionText reads the first alias with visible system text.
+func GeminiSystemInstructionText(root gjson.Result, keys ...string) string {
+	for _, key := range keys {
+		parts := root.Get(key + ".parts")
+		if !parts.IsArray() {
+			continue
+		}
+		var text strings.Builder
+		for _, part := range parts.Array() {
+			value := part.Get("text").Str
+			if IsGeminiThoughtPart(part) || strings.TrimSpace(value) == "" {
+				continue
+			}
+			if text.Len() > 0 {
+				text.WriteByte('\n')
+			}
+			text.WriteString(value)
+		}
+		if text.Len() > 0 {
+			return text.String()
+		}
+	}
+	return ""
 }
 
 // ReorderGeminiUserParts reorders parts within a Gemini user turn so that

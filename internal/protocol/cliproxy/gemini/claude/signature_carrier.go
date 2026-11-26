@@ -93,6 +93,12 @@ func geminiClaudeCarrierSignatures(blocks []gjson.Result) map[int]string {
 		if !compatible || sigcompat.IsGeminiThoughtSignatureBypass(signature) {
 			continue
 		}
+		if target != i && blocks[target].Get("type").String() == "thinking" {
+			ownSignature, ownCompatible := sigcompat.CompatibleSignatureForProviderBlock(sigcompat.SignatureProviderGemini, blocks[target].Get("signature").String(), sigcompat.SignatureBlockKindGeminiModelPart)
+			if ownCompatible && !sigcompat.IsGeminiThoughtSignatureBypass(ownSignature) {
+				target = i
+			}
+		}
 		if signatures == nil {
 			signatures = make(map[int]string)
 		}

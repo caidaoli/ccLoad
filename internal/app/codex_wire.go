@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,12 +16,50 @@ import (
 	codexresponses "ccLoad/internal/protocol/cliproxy/codex/openai/responses"
 	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/protocol/cliproxy/thinking"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 const maxCodexNonStreamOutputBytes = 32 << 20
+
+/**
+ * @brief 依据事件类型和 response.done 的嵌套状态识别 Responses 终态。
+ * @param eventType JSON 的 type，缺失时采用 SSE event 行。
+ * @param event 解析后的上游事件。
+ * @return 独立于帧缓冲区的标准终态类型；其他事件返回空串。
+ */
+func responsesTerminalType(eventType string, event gjson.Result) string {
+	switch eventType {
+	case "response.completed":
+		return "response.completed"
+	case "response.incomplete":
+		return "response.incomplete"
+	case "response.failed":
+		return "response.failed"
+	case "response.done":
+		switch strings.ToLower(strings.TrimSpace(event.Get("response.status").String())) {
+		case "failed":
+			return "response.failed"
+		case "incomplete", "cancelled":
+			return "response.incomplete"
+		default:
+			return "response.completed"
+		}
+	default:
+		return ""
+	}
+}
+
+/**
+ * @brief 判断 Responses 终态是否可用于完成回合并保存输出。
+ * @param terminalType 标准终态类型。
+ * @return 已完成或不完整终态返回 true。
+ */
+func isSuccessfulResponsesTerminal(terminalType string) bool {
+	return terminalType == "response.completed" || terminalType == "response.incomplete"
+}
 
 // normalizeCodexClientPath maps Codex client alias paths (/v1/codex/responses,
 // /backend-api/codex/responses) to the canonical upstream /v1/responses, so a
@@ -288,7 +327,7 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 
 	terminal := collector.patchedTerminal()
 	if isImagesResponsesPlan(reqCtx.transformPlan) &&
-		gjson.GetBytes(terminal, "type").String() != "response.completed" {
+		collector.terminalType != "response.completed" {
 		err := errors.New("responses image generation did not complete")
 		result.Body = terminal
 		result.StreamDiagMsg = err.Error()
@@ -321,7 +360,7 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 			reqCtx.transformPlan.ResponseModel(),
 			reqCtx.transformPlan.OriginalBody,
 			reqCtx.transformPlan.TranslatedBody,
-			responseBody,
+			terminal,
 		)
 		if err != nil {
 			result.Body = responseBody
@@ -366,9 +405,13 @@ func (discardHTTPResponseWriter) Header() http.Header         { return make(http
 func (discardHTTPResponseWriter) WriteHeader(int)             {}
 func (discardHTTPResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
 
+/**
+ * @brief 为非流式客户端从 Responses 事件流收集终态和可能需要回填的输出。
+ */
 type codexNonStreamCollector struct {
 	parser       *sseUsageParser
 	terminal     []byte
+	terminalType string ///< 已归一化的终态；空串表示尚未收到可交付的响应。
 	indexedItems map[int64]json.RawMessage
 	fallback     []json.RawMessage
 	outputBytes  int
@@ -380,6 +423,11 @@ func newCodexNonStreamCollector(parser *sseUsageParser) *codexNonStreamCollector
 	return &codexNonStreamCollector{parser: parser, indexedItems: make(map[int64]json.RawMessage)}
 }
 
+/**
+ * @brief 计入一帧上游用量并保存完整输出项或可交付的终态。
+ * @param rawEvent 当前 SSE 帧；收集器独立保存跨帧使用的数据。
+ * @return 总是返回 nil。解析失败或超限会记录在收集器中，供结束判定与调用方读取。
+ */
 func (c *codexNonStreamCollector) consume(rawEvent []byte) error {
 	if c.err != nil {
 		return nil
@@ -393,27 +441,34 @@ func (c *codexNonStreamCollector) consume(rawEvent []byte) error {
 		c.err = err
 		return nil
 	}
-	data := sseEventData(rawEvent)
+	eventType, data := parseSSEEventChunk(rawEvent)
 	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 		return nil
 	}
-	switch gjson.GetBytes(data, "type").String() {
-	case "response.output_item.done":
-		item := gjson.GetBytes(data, "item")
+	event := cliproxyutil.ParseGJSONBytesNoCopy(data)
+	payloadType := event.Get("type").Str
+	eventType = cmp.Or(payloadType, eventType)
+	if eventType == "response.output_item.done" {
+		item := event.Get("item")
 		if !item.Exists() || item.Type != gjson.JSON {
 			return nil
 		}
 		if !c.reserveOutput(len(item.Raw)) {
 			return nil
 		}
-		copyItem := json.RawMessage(bytes.Clone([]byte(item.Raw)))
-		if index := gjson.GetBytes(data, "output_index"); index.Exists() {
+		copyItem := json.RawMessage(item.Raw)
+		if index := event.Get("output_index"); index.Exists() {
 			c.indexedItems[index.Int()] = copyItem
 		} else {
 			c.fallback = append(c.fallback, copyItem)
 		}
-	case "response.completed", "response.incomplete":
-		c.terminal = bytes.Clone(data)
+	} else if terminalType := responsesTerminalType(eventType, event); isSuccessfulResponsesTerminal(terminalType) {
+		c.terminalType = terminalType
+		if payloadType == "" {
+			c.terminal, c.err = sjson.SetBytes(data, "type", eventType)
+		} else {
+			c.terminal = bytes.Clone(data)
+		}
 	}
 	return nil
 }
@@ -427,18 +482,26 @@ func (c *codexNonStreamCollector) reserveOutput(size int) bool {
 	return true
 }
 
+/**
+ * @brief 判断普通 Responses 请求是否可以停止读取上游。
+ * @return 已取得可交付终态、具体上游错误或收集错误时为 true。
+ */
 func (c *codexNonStreamCollector) done() bool {
-	return c.err != nil || c.parser.GetLastError() != nil || len(c.terminal) > 0
+	return c.err != nil || sseErrorHasDetail(c.parser.GetLastError()) || len(c.terminal) > 0
 }
 
+/**
+ * @brief 判断图像请求是否已得到结果，允许已完成终态继续等待迟到的图像输出项。
+ * @return 已出错、响应不完整，或已完成响应中有图像结果时为 true。
+ */
 func (c *codexNonStreamCollector) doneForImages() bool {
-	if c.err != nil || c.parser.GetLastError() != nil {
+	if c.err != nil || sseErrorHasDetail(c.parser.GetLastError()) {
 		return true
 	}
 	if len(c.terminal) == 0 {
 		return false
 	}
-	if gjson.GetBytes(c.terminal, "type").String() != "response.completed" {
+	if c.terminalType != "response.completed" {
 		return true
 	}
 	terminal := c.patchedTerminal()

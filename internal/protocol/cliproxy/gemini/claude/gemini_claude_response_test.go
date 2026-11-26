@@ -246,7 +246,8 @@ func TestConvertGeminiResponseToClaude_VertexStreamingPartialArgs(t *testing.T) 
 		cArgs := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"},"partialArgs":[]}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7},"modelVersion":"gemini-2.5-pro","responseId":"resp-claude-args"}`)
 		outs2 := ConvertGeminiResponseToClaude(ctx, "gemini-2.5-pro", nil, nil, cArgs, &p2)
 		text2 := string(bytes.Join(outs2, nil))
-		if !strings.Contains(text2, `{\"city\":\"Paris\"}`) {
+		args := geminiClaudeInputJSONDeltas(t, text2)
+		if !gjson.Valid(args) || gjson.Get(args, "city").String() != "Paris" {
 			t.Fatalf("expected Paris args to be preserved when partialArgs is empty array, got: %s", text2)
 		}
 	})
@@ -1299,7 +1300,11 @@ func geminiClaudeInputJSONDeltas(t *testing.T, streamText string) string {
 		}
 		payload := strings.TrimPrefix(line, "data: ")
 		if gjson.Get(payload, "delta.type").String() == "input_json_delta" {
-			builder.WriteString(gjson.Get(payload, "delta.partial_json").String())
+			partialJSON := gjson.Get(payload, "delta.partial_json").String()
+			if partialJSON == "" {
+				t.Fatalf("empty input_json_delta: %s", payload)
+			}
+			builder.WriteString(partialJSON)
 		}
 	}
 	return builder.String()
@@ -1318,6 +1323,7 @@ func TestConvertGeminiResponseToClaude_SanitizesParameterlessToolArguments(t *te
 
 	var param any
 	streamBytes := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, rawResponse, &param), nil)
+	streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, []byte("[DONE]"), &param), nil)...)
 	if got := geminiClaudeInputJSONDeltas(t, string(streamBytes)); got != "{}" {
 		t.Fatalf("expected streaming partial_json {}, got %q (stream: %s)", got, string(streamBytes))
 	}
@@ -1340,6 +1346,7 @@ func TestConvertGeminiResponseToClaude_CanonicalNameCollisionKeepsExactToolArgum
 
 	var param any
 	streamBytes := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, readWithArgs, &param), nil)
+	streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, []byte("[DONE]"), &param), nil)...)
 	if got := geminiClaudeInputJSONDeltas(t, string(streamBytes)); got != `{"path":"/tmp/a"}` {
 		t.Fatalf("expected streaming exact read args preserved, got %q (stream: %s)", got, string(streamBytes))
 	}
@@ -1387,6 +1394,7 @@ func TestConvertGeminiResponseToClaude_ParameterlessToolContinuationDoesNotDupli
 	var param any
 	streamBytes := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, firstChunk, &param), nil)
 	streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, continuationChunk, &param), nil)...)
+	streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, []byte("[DONE]"), &param), nil)...)
 	if got := geminiClaudeInputJSONDeltas(t, string(streamBytes)); got != "{}" {
 		t.Fatalf("expected concatenated partial_json {}, got %q (stream: %s)", got, string(streamBytes))
 	}
@@ -1405,6 +1413,11 @@ func TestConvertGeminiResponseToClaude_ImplicitOpenToolContinuationOrdering(t *t
 		{"placeholder_then_real_args", `{"reason":"thinking"}`, `{"user":"v"}`, `{"user":"v"}`},
 		{"real_args_then_empty", `{"user":"v"}`, `{}`, `{"user":"v"}`},
 		{"real_args_then_placeholder", `{"user":"v"}`, `{"reason":"done"}`, `{"user":"v"}`},
+		{"whitespace_then_real_args", `{ }`, `{"user":"v"}`, `{"user":"v"}`},
+		{"null_then_real_args", `null`, `{"user":"v"}`, `{"user":"v"}`},
+		{"real_args_then_array", `{"user":"v"}`, `[1]`, `{"user":"v"}`},
+		{"scalar_arguments", `true`, `42`, `{}`},
+		{"two_objects", `{"user":"v"}`, `{"other":2}`, `{"user":"v","other":2}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			firstChunk := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"echo","args":` + tc.firstArgs + `}}],"role":"model"}}],"modelVersion":"gemini-3-flash","responseId":"resp-echo"}`)
@@ -1413,12 +1426,57 @@ func TestConvertGeminiResponseToClaude_ImplicitOpenToolContinuationOrdering(t *t
 			ctx := context.Background()
 			var param any
 			streamBytes := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, firstChunk, &param), nil)
-			streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, continuationChunk, &param), nil)...)
+			for _, chunk := range [][]byte{[]byte(`{"candidates":[{"finishReason":"STOP"}]}`), continuationChunk, []byte(`{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`), []byte("[DONE]")} {
+				streamBytes = append(streamBytes, bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash", origRequest, origRequest, chunk, &param), nil)...)
+			}
 			if got := geminiClaudeInputJSONDeltas(t, string(streamBytes)); got != tc.want {
 				t.Fatalf("expected concatenated partial_json %s, got %q (stream: %s)", tc.want, got, string(streamBytes))
 			}
 		})
 	}
+}
+
+func TestGeminiClaudeDefersContinuationSignatureUntilToolCloses(t *testing.T) {
+	parts := []string{
+		`{"functionCall":{"name":"lookup","args":{"query":"go"}}}`,
+		`{"functionCall":{"args":{"page":2}},"thoughtSignature":"` + capturedGeminiThinkingSignature + `"}`,
+		`{"functionCall":{"args":{"limit":10}}}`,
+		`{"text":"Done."}`,
+	}
+	for _, mode := range []string{"stream same chunk", "stream split chunks"} {
+		t.Run(mode, func(t *testing.T) {
+			content := geminiClaudeContentForParts(t, parts, mode)
+			blocks := gjson.Parse(content).Array()
+			if len(blocks) != 3 || blocks[0].Get("type").String() != "tool_use" || blocks[0].Get("name").String() != "lookup" ||
+				blocks[0].Get("input.query").String() != "go" || blocks[0].Get("input.page").Int() != 2 || blocks[0].Get("input.limit").Int() != 10 ||
+				blocks[1].Get("type").String() != "thinking" || blocks[2].Get("text").String() != "Done." {
+				t.Fatalf("expected merged tool input, then signature carrier and text: %s", content)
+			}
+			replayed := replayGeminiClaudeContent(t, content)
+			if got := gjson.GetBytes(replayed, "contents.0.parts.0.thoughtSignature").String(); got != capturedGeminiThinkingSignature {
+				t.Fatalf("signature did not replay on lookup: %s", replayed)
+			}
+		})
+	}
+
+	t.Run("signature after usage-only frame", func(t *testing.T) {
+		chunks := []string{
+			`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"query":"go"}}}]},"finishReason":"STOP"}]}`,
+			`{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`,
+			`{"candidates":[{"content":{"parts":[{"thoughtSignature":"` + capturedGeminiThinkingSignature + `"}]}}]}`,
+			"[DONE]",
+		}
+		var state any
+		var stream []byte
+		for _, chunk := range chunks {
+			stream = append(stream, bytes.Join(ConvertGeminiResponseToClaude(t.Context(), "gemini-4-carbon", nil, nil, []byte(chunk), &state), nil)...)
+		}
+		content := string(claudeContentFromGeminiStream(t, stream))
+		replayed := replayGeminiClaudeContent(t, content)
+		if got := gjson.GetBytes(replayed, "contents.0.parts.0.thoughtSignature").String(); got != capturedGeminiThinkingSignature {
+			t.Fatalf("late signature did not replay on lookup: %s; stream=%s", replayed, stream)
+		}
+	})
 }
 
 func TestConvertGeminiResponseToClaude_RejectsContentDuringPartialArgs(t *testing.T) {
@@ -1807,6 +1865,61 @@ func TestGeminiClaudeNonStreamConsecutiveTrailingSignatures(t *testing.T) {
 	}
 }
 
+func TestGeminiClaudeKeepsSignedThoughtBoundaries(t *testing.T) {
+	first := capturedGeminiThinkingSignature
+	second := "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsE"
+	signed := `{"text":"first","thought":true,"thoughtSignature":"` + first + `"}`
+	for _, tc := range []struct {
+		name          string
+		next          string
+		nextThought   string
+		nextSignature string
+	}{
+		{"signed thought", `{"text":"second","thought":true,"thoughtSignature":"` + second + `"}`, "second", second},
+		{"unsigned thought", `{"text":"second","thought":true}`, "second", sigcompat.GeminiSkipThoughtSignatureValidator},
+		{"detached signature", `{"text":"","thought":true,"thoughtSignature":"` + second + `"}`, "", second},
+	} {
+		for _, mode := range []string{"nonstream", "stream same chunk", "stream split chunks"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				content := geminiClaudeContentForParts(t, []string{signed, tc.next}, mode)
+				blocks := gjson.Parse(content).Array()
+				if len(blocks) != 2 || blocks[0].Get("thinking").String() != "first" || blocks[0].Get("signature").String() != first ||
+					blocks[1].Get("thinking").String() != tc.nextThought {
+					t.Fatalf("misplaced thinking blocks: %s", content)
+				}
+				if tc.nextSignature == sigcompat.GeminiSkipThoughtSignatureValidator && blocks[1].Get("signature").Exists() {
+					t.Fatalf("unsigned thinking inherited an earlier signature: %s", content)
+				}
+				request := []byte(`{"messages":[{"role":"assistant","content":` + content + `},{"role":"user","content":"continue"}]}`)
+				output, err := ConvertClaudeRequestToGeminiWithCompat("gemini-4-carbon", request, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts := gjson.GetBytes(output, "contents.0.parts").Array()
+				if len(parts) != 2 || parts[0].Get("thoughtSignature").String() != first || parts[1].Get("thoughtSignature").String() != tc.nextSignature {
+					t.Fatalf("misplaced replay signatures: %s", output)
+				}
+			})
+		}
+	}
+}
+
+func TestGeminiClaudeReplayCarrierDoesNotReplaceSignedThinking(t *testing.T) {
+	first := capturedGeminiThinkingSignature
+	second := "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsE"
+	carrier := "cpa-gemini-carrier-v1:previous:text:" + base64.RawStdEncoding.EncodeToString([]byte(second))
+	request := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"first","signature":"` + first + `"},{"type":"thinking","thinking":"","signature":"` + carrier + `"}]},{"role":"user","content":"continue"}]}`)
+	output, err := ConvertClaudeRequestToGeminiWithCompat("gemini-4-carbon", request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	if len(parts) != 2 || parts[0].Get("text").String() != "first" || parts[0].Get("thoughtSignature").String() != first ||
+		parts[1].Get("text").String() != "" || parts[1].Get("thoughtSignature").String() != second {
+		t.Fatalf("carrier overwrote signed thinking: %s", output)
+	}
+}
+
 func replayGeminiClaudeContent(t *testing.T, content string) []byte {
 	t.Helper()
 	request := []byte(`{"messages":[{"role":"assistant","content":` + content + `},{"role":"user","content":[]}]}`)
@@ -1896,11 +2009,15 @@ func claudeContentFromGeminiStream(t *testing.T, events []byte) []byte {
 	t.Helper()
 	content := []byte(`[]`)
 	arguments := make(map[int]string)
+	stopped := false
 	for _, line := range strings.Split(string(events), "\n") {
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		if stopped {
+			t.Fatalf("event followed message_stop: %s", event.Raw)
+		}
 		index := int(event.Get("index").Int())
 		switch event.Get("type").String() {
 		case "content_block_start":
@@ -1908,7 +2025,8 @@ func claudeContentFromGeminiStream(t *testing.T, events []byte) []byte {
 		case "content_block_delta":
 			switch event.Get("delta.type").String() {
 			case "signature_delta":
-				content, _ = sjson.SetBytes(content, strconv.Itoa(index)+".signature", event.Get("delta.signature").String())
+				path := strconv.Itoa(index) + ".signature"
+				content, _ = sjson.SetBytes(content, path, gjson.GetBytes(content, path).String()+event.Get("delta.signature").String())
 			case "input_json_delta":
 				arguments[index] += event.Get("delta.partial_json").String()
 			case "text_delta":
@@ -1925,6 +2043,8 @@ func claudeContentFromGeminiStream(t *testing.T, events []byte) []byte {
 				}
 				content, _ = sjson.SetRawBytes(content, strconv.Itoa(index)+".input", []byte(args))
 			}
+		case "message_stop":
+			stopped = true
 		}
 	}
 	return content
@@ -1932,7 +2052,7 @@ func claudeContentFromGeminiStream(t *testing.T, events []byte) []byte {
 
 func TestGeminiClaudeTrailingTextSignatureRoundTrip(t *testing.T) {
 	for _, stream := range []bool{false, true} {
-		upstream := []byte(`{"candidates":[{"content":{"parts":[{"text":"answer"},{"thoughtSignature":"` + capturedGeminiThinkingSignature + `"},{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`)
+		upstream := []byte(`{"candidates":[{"content":{"parts":[{"text":"answer"},{"thoughtSignature":null,"thought_signature":"` + capturedGeminiThinkingSignature + `"},{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`)
 		var content string
 		if stream {
 			var param any
@@ -1952,6 +2072,55 @@ func TestGeminiClaudeTrailingTextSignatureRoundTrip(t *testing.T) {
 		parts := gjson.GetBytes(output, "contents.0.parts").Array()
 		if len(parts) != 2 || parts[0].Get("text").String() != "answer" || parts[0].Get("thoughtSignature").String() != capturedGeminiThinkingSignature || parts[1].Get("thoughtSignature").String() != sigcompat.GeminiSkipThoughtSignatureValidator {
 			t.Fatalf("stream=%t: text signature was rebound to a later tool: %s", stream, output)
+		}
+	}
+}
+
+func TestGeminiClaudeKeepsUsageUntilValidTerminal(t *testing.T) {
+	ctx := t.Context()
+	var state any
+	var terminal gjson.Result
+	stops := 0
+	for i, frame := range []string{
+		`{"candidates":[{"content":{"parts":[{"text":"answer"}]}}],"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":7}}`,
+		`{"candidates":[{"finishReason":"STOP"}],"usageMetadata":null}`,
+		`{"usageMetadata":{"cachedContentTokenCount":null,"candidatesTokenCount":4,"totalTokenCount":14}}`,
+		"[DONE]", "[DONE]",
+	} {
+		output := bytes.Join(ConvertGeminiResponseToClaude(ctx, "gemini-3-flash-preview", nil, nil, []byte(frame), &state), nil)
+		for line := range strings.SplitSeq(string(output), "\n") {
+			data, ok := strings.CutPrefix(line, "data: ")
+			if !ok {
+				continue
+			}
+			event := gjson.Parse(data)
+			switch event.Get("type").Str {
+			case "message_delta":
+				if i < 3 {
+					t.Errorf("terminal before [DONE]: %s", event.Raw)
+				}
+				terminal = event
+			case "message_stop":
+				stops++
+			}
+		}
+	}
+	if stops != 1 || terminal.Get("delta.stop_reason").Str != "end_turn" ||
+		terminal.Get("usage.input_tokens").Int() != 3 || terminal.Get("usage.output_tokens").Int() != 4 ||
+		terminal.Get("usage.cache_read_input_tokens").Int() != 7 {
+		t.Fatalf("stops=%d terminal=%s", stops, terminal.Raw)
+	}
+	for _, tc := range []struct {
+		raw  string
+		want gjson.Type
+	}{
+		{`null`, gjson.Null},
+		{`{"promptTokenCount":0,"candidatesTokenCount":0}`, gjson.Number},
+	} {
+		raw := []byte(`{"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}],"usageMetadata":` + tc.raw + `}`)
+		result := ConvertGeminiResponseToClaudeNonStream(ctx, "gemini-3-flash-preview", nil, nil, raw, nil)
+		if got := gjson.GetBytes(result, "usage.input_tokens"); got.Type != tc.want || got.Int() != 0 {
+			t.Errorf("usage input_tokens = %s for upstream usage %s", got.Raw, tc.raw)
 		}
 	}
 }

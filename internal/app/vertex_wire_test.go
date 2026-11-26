@@ -768,6 +768,126 @@ func TestProxy_VertexPublisherURLWithAPIKeyKeepsGoogleAPIKey(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 Vertex 明确拒绝 topP 范围时只拒绝当前请求，其他异常保留原有故障切换。
+ * @param t 测试上下文。
+ */
+func TestProxy_VertexTopPRangeRejection(t *testing.T) {
+	t.Parallel()
+
+	const plain = `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"generationConfig.topP must be between 0 and 1"}}`
+	const structured = `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Invalid request","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"generation_config.top_p"}]}]}}`
+	const errorInfo = `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INVALID_ARGUMENT","domain":"aiplatform.googleapis.com"}`
+	const structuredWithErrorInfo = `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Invalid request","details":[` + errorInfo + `,{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"generationConfig.topP"}]}]}}`
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		oauth      bool
+		sse        bool
+		ordinary   bool
+		chat       bool
+		bodyRule   bool
+		wantReturn bool
+	}{
+		{name: "express range message", status: 400, body: plain, wantReturn: true},
+		{name: "express structured violation", status: 400, body: structured, wantReturn: true},
+		{name: "express structured violation with ErrorInfo", status: 400, body: structuredWithErrorInfo, wantReturn: true},
+		{name: "service account range message", status: 400, body: plain, oauth: true, wantReturn: true},
+		{name: "express stream error", status: 400, body: plain, sse: true, wantReturn: true},
+		{name: "express stream structured violation with ErrorInfo", status: 400, body: structuredWithErrorInfo, sse: true, wantReturn: true},
+		{name: "Chat top_p translated to Vertex", status: 400, body: plain, chat: true, wantReturn: true},
+		{name: "topP invalid only after channel rule", status: 400, body: plain, bodyRule: true},
+		{name: "structured topP invalid only after channel rule", status: 400, body: structuredWithErrorInfo, bodyRule: true},
+		{name: "unknown invalid argument", status: 400, body: `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Request rejected"}}`},
+		{name: "mixed model and topP violations", status: 400, body: `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"generationConfig.topP must be between 0 and 1","details":[` + errorInfo + `,{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"generation_config.top_p"},{"field":"model"}]}]}}`},
+		{name: "model unavailable", status: 400, body: `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Model is not available in this location"}}`},
+		{name: "invalid key", status: 400, body: `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"API key not valid. Please pass a valid API key.","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}`},
+		{name: "malformed credentials", status: 400, body: `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Request credential must be between 0 and 1"}}`},
+		{name: "permission denied", status: 403, body: `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Permission denied"}}`},
+		{name: "ordinary Gemini endpoint", status: 400, body: plain, ordinary: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			primary := newVertexTestUpstream(t)
+			primary.respond = func(w http.ResponseWriter, _ *http.Request) {
+				if tc.sse {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprint(w, "data: "+tc.body+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}
+			fallback := newVertexTestUpstream(t)
+			channel := testChannel{name: "primary", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel, priority: 100}
+			baseURL := primary.server.URL + "/v1/publishers/google"
+			wantPublisherPath := "/v1/publishers/google/models/" + vertexTestModel
+			if tc.oauth {
+				channel.authType = model.AuthTypeVertexOAuth
+				channel.oauthCredential = vertexTestCredential(t, primary.tokenURI())
+				baseURL = primary.server.URL + vertexTestRegionURL
+				wantPublisherPath = vertexTestRegionURL + "/models/" + vertexTestModel
+			}
+			if tc.ordinary {
+				baseURL = primary.server.URL
+				wantPublisherPath = "/v1beta/models/" + vertexTestModel
+			}
+			if tc.bodyRule {
+				channel.customRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+					Action: model.RuleActionOverride, Path: "generationConfig.topP", Value: json.RawMessage(`1.25`),
+				}}}
+			}
+			env := setupProxyTestEnv(t, []testChannel{
+				channel, {name: "fallback", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel, priority: 90},
+			}, map[int]string{0: baseURL, 1: fallback.server.URL})
+			action, query := ":generateContent", ""
+			if tc.sse {
+				action, query = ":streamGenerateContent", "?alt=sse"
+			}
+			path := "/v1beta/models/" + vertexTestModel + action + query
+			topP := 1.25
+			if tc.bodyRule {
+				topP = 0.5
+			}
+			request := map[string]any{
+				"contents":         []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+				"generationConfig": map[string]any{"topP": topP},
+			}
+			if tc.chat {
+				path = "/v1/chat/completions"
+				request = map[string]any{"model": vertexTestModel, "top_p": topP, "messages": []map[string]string{{"role": "user", "content": "hello"}}}
+			}
+			response := doProxyRequest(t, env.engine, path, request, nil)
+			calls, bodies := primary.calls()
+			if len(calls) != 1 || calls[0].URL.Path != wantPublisherPath+action || gjson.GetBytes(bodies[0], "generationConfig.topP").Float() != 1.25 {
+				t.Fatalf("primary calls = %v, bodies = %q", calls, bodies)
+			}
+			otherCalls, _ := fallback.calls()
+			if tc.wantReturn {
+				if response.Code != http.StatusBadRequest || !bytes.Equal(response.Body.Bytes(), []byte(tc.body)) || len(otherCalls) != 0 {
+					t.Errorf("want original 400 and no retries, got status=%d body=%s fallback calls=%d", response.Code, response.Body.String(), len(otherCalls))
+				}
+			} else if response.Code != http.StatusOK || len(otherCalls) != 1 {
+				t.Errorf("want existing fallback, got status=%d body=%s fallback calls=%d", response.Code, response.Body.String(), len(otherCalls))
+			}
+
+			models, modelErr := env.store.GetAllModelCooldowns(t.Context())
+			keys, keyErr := env.store.GetAllKeyCooldowns(t.Context())
+			channels, channelErr := env.store.GetAllChannelCooldowns(t.Context())
+			if err := errors.Join(modelErr, keyErr, channelErr); err != nil {
+				t.Fatal(err)
+			}
+			wantModel := !tc.wantReturn && tc.status == http.StatusBadRequest
+			wantKey := !tc.wantReturn && tc.status == http.StatusForbidden
+			if (len(models) != 0) != wantModel || (len(keys) != 0) != wantKey || (len(channels) != 0) == tc.wantReturn {
+				t.Errorf("models=%v keys=%v channels=%v, want model/key/channel cooldown=%t/%t/%t", models, keys, channels, wantModel, wantKey, !tc.wantReturn)
+			}
+		})
+	}
+}
+
 // Vertex publisher bases carry /v1 in their path, which ordinary channels
 // reject. Saving an imported Vertex channel from the editor or CSV must stay possible.
 func TestValidateChannelBaseURLAcceptsVertexPublisherBase(t *testing.T) {

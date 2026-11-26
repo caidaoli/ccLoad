@@ -56,7 +56,13 @@ func reasoningModelLevels(model string, upstream protocol.Protocol) ([]string, b
 	provider := "openai"
 	switch upstream {
 	case protocol.Anthropic:
-		provider = "claude"
+		if info := claudeThinkingModel(model); info != nil {
+			if info.Thinking == nil {
+				return nil, true
+			}
+			return info.Thinking.Levels, true
+		}
+		return reasoningCatalogLevels(model)
 	case protocol.Gemini:
 		provider = "gemini"
 	}
@@ -108,6 +114,14 @@ func reasoningDecisionLevels(model string) []string {
 	return levels
 }
 
+/**
+ * @brief 在客户端协议正文中写入选定的思考等级供后续转换。
+ * @param body 应用思考决策前的请求 JSON。
+ * @param client 决定思考字段位置的客户端协议。
+ * @param effort 已选定的思考等级。
+ * @return 写入等级的正文；Claude 请求同时清除与等级冲突的预算和指令。
+ * @return 修改 JSON 失败时返回对应错误。
+ */
 func writeReasoningEffort(body []byte, client protocol.Protocol, effort string) ([]byte, error) {
 	switch client {
 	case protocol.Codex:
@@ -125,11 +139,7 @@ func writeReasoningEffort(body []byte, client protocol.Protocol, effort string) 
 		}
 		return sjson.SetBytes(out, "output_config.effort", effort)
 	case protocol.Gemini:
-		out, err := sjson.DeleteBytes(body, geminiThinkingBudgetPath)
-		if err != nil {
-			return nil, err
-		}
-		return sjson.SetBytes(out, geminiThinkingLevelPath, effort)
+		return writeGeminiThinking(body, effort, 0)
 	default:
 		return sjson.SetBytes(body, "reasoning_effort", effort)
 	}

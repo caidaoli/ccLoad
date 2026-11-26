@@ -24,7 +24,110 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Post-snapshot compatibility fixes (2026-11-26)
+
+Selected behavior from official `v8.1.4` (`38fe929502f19f7cce03c69c19aacddf30f1ef5e`):
+
+- Gemini reasoning levels and budgets are read independently across SDK field
+  spellings (`aa1389a3`). Claude requests use the routed model's thinking
+  capabilities to select adaptive effort or a manual budget (`0c668192`).
+  Explicit Gemini auto mode leaves the effort unset for Chat and Responses.
+
+- Antigravity Chat uses the outer allowed-tools list when the nested list is
+  empty, including for its dedicated search route (`c8419674`). Native
+  Antigravity Gemini resolves the effective thinking level across SDK spellings
+  while preserving the explicit thought-visibility option (`aa1389a3`).
+
+Local corrections verified against the same release:
+
+- Chat and Responses usage translated to Gemini separates thinking from
+  candidate tokens and reports cache reads as a subset of input in JSON and
+  SSE. Responses streams retain their first valid creation timestamp.
+- Native Gemini requests sent to Antigravity preserve a valid system instruction
+  or tool schema when another spelling of the field contains JSON null. The
+  adapter drops empty system parts before choosing an instruction. When both
+  instructions have content, ccLoad prefers the camelCase spelling.
+
+- Responses terminal events can name their type in SSE's event line. The
+  WebSocket bridge and the HTTP non-stream collector retain terminal status
+  and completed output items. Clients whose streams already emitted text
+  receive an error event when the upstream response fails.
+- Gemini requests carry JSON output constraints through Chat, Responses and
+  Claude conversion. Chat and Responses preserve object schemas in non-strict
+  mode. Claude uses its native format for supported schemas and includes the
+  full schema in the system instruction when native constraints are unavailable.
+  For Gemini `text/x.enum`, all three targets receive a text instruction
+  with the allowed strings and the required plain-text response format.
+  Empty SDK aliases no longer hide usable system instructions, tool calls, results, function-calling modes or provider
+  output schemas.
+- Gemini and Antigravity responses retain valid cumulative usage across
+  sparse frames. For ordinary Gemini-to-Chat non-stream text, a missing, null
+  or blank finish reason leaves the Chat finish reason null. Antigravity-to-Claude
+  plain text closes when both a finish reason and standard usage have arrived,
+  in either order. Tool streams can still receive a signature after split finish
+  and usage frames, and stay open for the terminator. Regular Responses function arguments are object-shaped.
+  Tool-search events with formatted JSON remain valid SSE. Claude replay
+  recognizes a nonempty snake-case signature alongside an empty camel-case one.
+- Proxy and admin thinking suffixes use the routed target's level support.
+  Claude 3.7 and 4.0/4.1 short names use the manual budgets of their dated
+  catalog entries for reasoning, preserving the model name sent to the channel.
+  Gemini/Responses conversions use the same client model name in JSON and
+  SSE. Responses creation times are valid integer seconds rendered in UTC.
+
 ## Post-snapshot compatibility fixes (2026-11-25)
+
+Selected ports from official `v8.1.4` (`38fe929502f19f7cce03c69c19aacddf30f1ef5e`):
+
+- Claude and Codex tool calls reach Gemini clients as soon as each call is
+  complete. Only the source message's terminal event sets `finishReason`.
+  Codex calls with invalid argument JSON retain the empty object expected by
+  Gemini (`5ec384c6`, `60035f91`).
+- Gemini and Antigravity tool-argument continuations form one Claude input
+  object per call. Signatures can arrive before the last argument frame.
+  Separately signed Gemini thoughts retain their individual block boundaries
+  in Claude history (`af624626`, `28d175c4`, `36c17654`, `1b5196ae`).
+- Responses history sent to Antigravity Claude validates the signature on each
+  translated thought. Filtering or combining a preceding reasoning item can no
+  longer shift a signature onto an unrelated thought (`e1c37c02`).
+- Gemini generation settings accept SDK snake_case and camelCase. Optional
+  null values no longer force zero output tokens or disable thinking. A
+  Responses request with `tool_choice: null` can use declared web search on
+  Gemini and Antigravity (`0c668192`, `dbd6729b`, `aa1389a3`, `3b1387ad`).
+- ccLoad recognizes the Responses `response.done` alias when translating
+  terminal events to Chat, Claude, and Gemini, including the nested response
+  status for truncated output (adapted from `db276e8b`).
+- Gemini SDK tool declarations accept both field spellings. Forced functions
+  and allowlists use the same names as their declarations, including Codex
+  shortening and collision handling (`0c668192`, `dbd6729b`, `aa1389a3`).
+- Chat stop sequences reach both Gemini and Antigravity. Antigravity Chat
+  accounts for allowed tools when selecting its dedicated search route
+  (`c8419674`). Claude requests skip empty text and incomplete inline images
+  while preserving tool results and the existing empty-user-turn error
+  (`4771e69c`).
+- Gemini and Antigravity receive object-shaped arguments for replayed Chat
+  and Responses functions. Gemini calls without arguments return `"{}"`
+  to Responses clients in both JSON and SSE. Nullable Responses options stay
+  absent from Gemini requests (`c975104f`, `f7137853`, `aa9eaeb3`, `a66e0105`).
+- Chat and Gemini trim finish reasons before closing a candidate. Only a usage
+  object can finalize a pending Gemini or Antigravity Chat response. Complete
+  named calls with non-object arguments emit `"{}"`; a nameless placeholder
+  emits no call. Incremental arguments retain their existing validation
+  (adapted from `f5524379` and `32a42455`).
+- The native Antigravity Gemini adapter normalizes media fields in messages,
+  system instructions and tool-result parts, numeric constraints in SDK
+  schemas, and signature aliases on Claude thinking parts (`37f003c57`).
+- Gemini tool calls replayed to Chat and Codex serialize object arguments
+  as JSON strings. Missing and non-object arguments become `"{}"`
+  (`dbd6729b`, `aa1389a3`).
+- Overlapping Responses messages can use the top-level `item_id` when an
+  output item omits its nested ID. Matching its final text to earlier deltas
+  prevents duplicate output (`7ec25aaa`).
+- Antigravity Chat recognizes each native tool in a combined allowlist entry
+  when deciding whether only web search remains (`c8419674`).
+- Gemini's explicit `includeThoughts` option accepts mixed SDK spellings
+  (`0c668192`). An explicit opt-out suppresses the Codex summary request.
+  The app applies explicit visibility to Claude thinking before channel body
+  rules, preserving model and channel defaults when the flag is absent.
 
 Selected ports from official `v8.1.3` (`8cd6817b831f34caa593c76242d2c1f0674bf794`):
 
@@ -58,6 +161,9 @@ Selected ports from official `v8.1.3` (`8cd6817b831f34caa593c76242d2c1f0674bf794
 
 Local fixes verified against the same snapshot:
 
+- Following the buffer-lifetime fix in `8ba2b683`, the app detaches observed
+  model names, service tiers and WebSocket continuation IDs from SSE frames
+  before retaining them for logs or later turns.
 - Gemini Chat retains each candidate's last non-empty string finish reason
   across tool continuations and usage frames. Responses tool choices going
   to Gemini or Antigravity resolve client-declared names first. Returned calls

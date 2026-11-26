@@ -105,7 +105,7 @@ func TestCodexOAuthRetryPreservesFinalBodyRules(t *testing.T) {
 
 	wire, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Codex, "/v1/responses", "", original, original,
-		"", headers, false, nil, false, false,
+		"", headers, false, nil, false, protocol.Codex,
 	)
 	if err != nil {
 		t.Fatalf("initial body finalization: %v", err)
@@ -122,7 +122,7 @@ func TestCodexOAuthRetryPreservesFinalBodyRules(t *testing.T) {
 
 	replayed, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Codex, "/v1/responses", "", wire, wire,
-		"", headers, false, nil, true, false,
+		"", headers, false, nil, true, protocol.Codex,
 	)
 	if err != nil {
 		t.Fatalf("retry body finalization: %v", err)

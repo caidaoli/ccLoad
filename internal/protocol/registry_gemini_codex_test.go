@@ -9,7 +9,93 @@ import (
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
+
+func TestRegistryGeminiResponsesModelMatchesAcrossJSONAndSSE(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	const payload = `{"responseId":"resp_model","modelVersion":"provider-build","candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":0}}`
+	for _, tc := range []struct {
+		name, model, request, want string
+	}{
+		{"resolved", "gemini-2.5-pro", `{"model":"gemini-2.5-pro(high)"}`, "gemini-2.5-pro"},
+		{"original request", "", `{"model":"client-alias"}`, "client-alias"},
+		{"provider fallback", "", `{"model":null}`, "provider-build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := []byte(tc.request)
+			result, err := reg.TranslateResponseNonStream(t.Context(), protocol.Gemini, protocol.Codex, tc.model, request, nil, []byte(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(result, "model").Str; got != tc.want {
+				t.Errorf("JSON model = %q, want %q", got, tc.want)
+			}
+			var state any
+			chunks, err := reg.TranslateResponseStream(t.Context(), protocol.Gemini, protocol.Codex, tc.model, request, nil, []byte("data: "+payload+"\n\n"), &state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			models := make(map[string]string)
+			for _, event := range registryToolInputEvents(t, chunks) {
+				if model := event.Get("response.model"); model.Exists() {
+					models[event.Get("type").Str] = model.Str
+				}
+			}
+			for _, name := range []string{"response.created", "response.in_progress", "response.completed"} {
+				if got := models[name]; got != tc.want {
+					t.Errorf("%s model = %q, want %q", name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestRegistryGeminiResponsesToolSearchMultilineSSE(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	request := []byte(`{"model":"gemini-3.8-flash","tools":[{"type":"tool_search","execution":"client","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}}],"input":"Find fixture tools","stream":true}`)
+	const precise = "9007199254740993"
+	frame := "data: {\"responseId\":\"resp_search\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"answer\"},{\"functionCall\":{\"id\":\"call_search\",\"name\":\"tool_search\",\"args\":{\n" +
+		"data: \"query\":\"fixture tools\",\n" +
+		"data: \"limit\":" + precise + "\n" +
+		"data: }}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"totalTokenCount\":14}}\n\n"
+	var state any
+	chunks, err := reg.TranslateResponseStream(t.Context(), protocol.Gemini, protocol.Codex, "gemini-3.8-flash", request, nil, []byte(frame), &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchItems := make(map[string]gjson.Result)
+	for _, event := range registryToolInputEvents(t, chunks) {
+		switch kind := event.Get("type").Str; kind {
+		case "response.output_item.added", "response.output_item.done":
+			if item := event.Get("item"); item.Get("type").Str == "tool_search_call" {
+				searchItems[kind] = item
+			}
+		case "response.completed":
+			if event.Get("response.output.0.content.0.text").Str != "answer" {
+				t.Errorf("missing text alongside native search: %s", event.Raw)
+			}
+			searchItems[kind] = event.Get("response.output.1")
+		case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+			t.Errorf("native search emitted generic function arguments: %s", event.Raw)
+		}
+	}
+	for kind, want := range map[string]string{
+		"response.output_item.added": "in_progress",
+		"response.output_item.done":  "completed",
+		"response.completed":         "completed",
+	} {
+		item := searchItems[kind]
+		args := item.Get("arguments")
+		if item.Get("type").Str != "tool_search_call" || item.Get("call_id").Str != "call_search" || item.Get("status").Str != want ||
+			!args.IsObject() || args.Get("query").Str != "fixture tools" || args.Get("limit").Raw != precise {
+			t.Errorf("%s did not preserve native search arguments or identity: %s", kind, item.Raw)
+		}
+	}
+}
 
 func TestRegistry_TranslateRequest_GeminiToCodex(t *testing.T) {
 	t.Parallel()

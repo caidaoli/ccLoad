@@ -3,13 +3,318 @@ package protocol_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
+
+/**
+ * @brief 验证 Gemini 结构化输出在各协议保留 schema 约束，并拒绝无法表示的根类型。
+ * @param t 测试上下文。
+ */
+func TestRegistryGeminiStructuredOutput(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	const native = `{"type":"OBJECT","properties":{"properties":{"type":"STRING","minLength":"1"}},"required":["properties"]}`
+	const normalized = `{"type":"object","properties":{"properties":{"type":"string","minLength":1}},"required":["properties"]}`
+	const nullable = `{"type":"OBJECT","properties":{"nullable":{"type":"STRING","enum":["default"],"nullable":true},"samples":{"type":"ARRAY","items":{"type":"INTEGER","nullable":true}}}}`
+	const normalizedNullable = `{"type":"object","properties":{"nullable":{"anyOf":[{"type":"string","enum":["default"]},{"type":"null"}]},"samples":{"type":"array","items":{"anyOf":[{"type":"integer"},{"type":"null"}]}}}}`
+	const jsonSchema = `{"$ref":"#/$defs/Value","$defs":{"Value":{"type":"object","properties":{"type":{"type":"string","const":"OBJECT"},"$ref":{"type":"string"}}}}}`
+	const closedObject = `{"type":"object","additionalProperties":false,"properties":{"settings":{"type":"object","additionalProperties":false,"properties":{"minimum":{"type":"number"},"additionalProperties":{"type":"boolean"},"$ref":{"type":"string"}}},"nullable":{"anyOf":[{"type":"string"},{"type":"null"}]}}}`
+	const nestedOpenObject = `{"type":"object","additionalProperties":false,"properties":{"settings":{"type":"object","properties":{"answer":{"type":"string"}}}}}`
+	const numericConstraint = `{"type":"object","additionalProperties":false,"properties":{"score":{"type":"number","minimum":1}}}`
+	const openDictionary = `{"type":"object","additionalProperties":{"type":"string"}}`
+	for _, target := range []struct {
+		protocol protocol.Protocol
+		model    string
+		format   string
+		schema   string
+	}{
+		{protocol.OpenAI, "gpt-5.4", "response_format", "response_format.json_schema.schema"},
+		{protocol.Codex, "gpt-5.4", "text.format", "text.format.schema"},
+		{protocol.Anthropic, "claude-sonnet-4-6", "output_config.format", "output_config.format.schema"},
+	} {
+		for _, tc := range []struct {
+			name, generation, want string
+			claudeNative           bool
+		}{
+			{"camel protobuf", `"generationConfig":{"responseMimeType":"application/json","responseSchema":` + native + `}`, normalized, false},
+			{"snake protobuf", `"generation_config":{"response_mime_type":"application/json","response_schema":` + native + `}`, normalized, false},
+			{"protobuf nested nullable", `"generationConfig":{"responseSchema":` + nullable + `}`, normalizedNullable, false},
+			{"camel JSON Schema", `"generationConfig":{"responseJsonSchema":` + jsonSchema + `}`, jsonSchema, false},
+			{"snake JSON Schema", `"generation_config":{"response_json_schema":` + jsonSchema + `}`, jsonSchema, false},
+			{"invalid aliases before JSON Schema", `"generationConfig":{"responseJsonSchema":null,"responseSchema":"invalid"},"generation_config":{"response_json_schema":` + jsonSchema + `}`, jsonSchema, false},
+			{"JSON Schema wins over protobuf", `"generationConfig":{"responseJsonSchema":` + jsonSchema + `,"responseSchema":` + native + `}`, jsonSchema, false},
+			{"empty object is a schema", `"generationConfig":{"responseJsonSchema":{},"responseSchema":` + native + `}`, `{}`, false},
+			{"closed objects and nullable field", `"generationConfig":{"responseJsonSchema":` + closedObject + `}`, closedObject, true},
+			{"nested open object", `"generationConfig":{"responseJsonSchema":` + nestedOpenObject + `}`, nestedOpenObject, false},
+			{"closed object with numeric constraint", `"generationConfig":{"responseJsonSchema":` + numericConstraint + `}`, numericConstraint, false},
+			{"open dictionary", `"generationConfig":{"responseJsonSchema":` + openDictionary + `}`, openDictionary, false},
+		} {
+			t.Run(string(target.protocol)+"/"+tc.name, func(t *testing.T) {
+				in := []byte(`{"contents":[{"parts":[{"text":"question"}]}],` + tc.generation + `}`)
+				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, in, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := gjson.ParseBytes(out)
+				if target.protocol == protocol.Anthropic && !tc.claudeNative {
+					assertClaudeSchemaInstruction(t, body, tc.want)
+					return
+				}
+				if body.Get(target.format+".type").Str != "json_schema" ||
+					!reflect.DeepEqual(body.Get(target.schema).Value(), gjson.Parse(tc.want).Value()) {
+					t.Fatalf("structured output missing or modified: %s", out)
+				}
+			})
+		}
+		invalid := []string{`"responseJsonSchema":"not a schema"`, `"responseJsonSchema":false`}
+		if target.protocol != protocol.Anthropic {
+			invalid = append(invalid,
+				`"responseJsonSchema":true`,
+				`"responseJsonSchema":{"type":"array"}`,
+				`"responseSchema":{"type":"OBJECT","nullable":true}`,
+			)
+		}
+		for _, bad := range invalid {
+			t.Run(string(target.protocol)+"/unrepresentable/"+bad, func(t *testing.T) {
+				in := []byte(`{"generationConfig":{"responseMimeType":"application/json",` + bad + `}}`)
+				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, in, false)
+				var translationErr *protocol.RequestTranslationError
+				if !errors.As(err, &translationErr) || out != nil {
+					t.Fatalf("expected request translation error, got %s, %v", out, err)
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证 Gemini 枚举输出以纯文本提示保留可选值，并拒绝无效枚举。
+ * @param t 测试上下文。
+ */
+func TestRegistryGeminiEnumOutput(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	const values = `["Woodwind","String, bowed","a\"b",""]`
+	const contents = `"contents":[{"role":"user","parts":[{"text":"Classify this instrument"}]}]`
+	for _, target := range []struct {
+		protocol                   protocol.Protocol
+		model, instruction, format string
+	}{
+		{protocol.OpenAI, "gpt-5.4", `messages.#(role=="system").content`, "response_format"},
+		{protocol.Codex, "gpt-5.4", "instructions", "text.format"},
+		{protocol.Anthropic, "claude-sonnet-4-6", "system.0.text", "output_config.format"},
+	} {
+		t.Run(string(target.protocol), func(t *testing.T) {
+			for _, generation := range []string{
+				`"generationConfig":{"responseMimeType":"text/x.enum","responseSchema":{"type":"STRING","enum":` + values + `}}`,
+				`"generation_config":{"response_mime_type":"text/x.enum","response_schema":{"type":1,"enum":` + values + `}}`,
+				`"generationConfig":{"responseMimeType":"text/x.enum","responseJsonSchema":{"type":"string","enum":` + values + `}}`,
+			} {
+				in := []byte(`{` + contents + `,` + generation + `}`)
+				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, in, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result := gjson.ParseBytes(out)
+				instruction := result.Get(target.instruction).Str
+				directive, choices, found := strings.Cut(instruction, ": ")
+				var labels []string
+				if result.Get(target.format).Exists() || !found ||
+					!strings.Contains(directive, "plain text, without adding quotation marks") ||
+					json.Unmarshal([]byte(choices), &labels) != nil ||
+					!reflect.DeepEqual(labels, []string{"Woodwind", "String, bowed", `a"b`, ""}) {
+					t.Fatalf("expected plain-text enum instruction and no JSON format: %s", out)
+				}
+			}
+			in := []byte(`{` + contents + `,"generationConfig":{"responseMimeType":"text/x.enum"}}`)
+			out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, in, false)
+			result := gjson.ParseBytes(out)
+			if err != nil || result.Get(target.format).Exists() || result.Get(target.instruction).Str != "" {
+				t.Fatalf("expected enum MIME without schema to preserve plain text: %s, %v", out, err)
+			}
+			for _, schema := range []string{
+				`"not a schema"`,
+				`{"type":"INTEGER","enum":["1"]}`,
+				`{"type":"STRING","enum":[]}`,
+				`{"type":"STRING","enum":["Woodwind",1]}`,
+			} {
+				in := []byte(`{"generationConfig":{"responseMimeType":"text/x.enum","responseSchema":` + schema + `}}`)
+				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, in, false)
+				var translationErr *protocol.RequestTranslationError
+				if !errors.As(err, &translationErr) || out != nil {
+					t.Fatalf("expected enum translation error for %s, got %s, %v", schema, out, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRegistryGeminiStructuredOutputClaudeRootShapes(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, modelName := range []string{"claude-sonnet-4-6", "claude-3-7-sonnet-20250219"} {
+		for _, tc := range []struct {
+			name, field, want string
+			native            bool
+		}{
+			{"array", `"responseSchema":{"type":"ARRAY","items":{"type":"STRING"}}`, `{"type":"array","items":{"type":"string"}}`, true},
+			{"scalar", `"responseJsonSchema":{"type":"string","const":"answer"}`, `{"type":"string","const":"answer"}`, true},
+			{"nullable object", `"responseSchema":{"type":"OBJECT","nullable":true,"additionalProperties":false}`, `{"anyOf":[{"type":"object","additionalProperties":false},{"type":"null"}]}`, true},
+			{"array with unsupported constraint", `"responseSchema":{"type":"ARRAY","items":{"type":"STRING"},"maxItems":2}`, `{"type":"array","items":{"type":"string"},"maxItems":2}`, false},
+			{"allow-all Boolean schema", `"responseJsonSchema":true`, `true`, false},
+		} {
+			t.Run(modelName+"/"+tc.name, func(t *testing.T) {
+				in := []byte(`{"generationConfig":{"responseMimeType":"application/json",` + tc.field + `},"contents":[{"parts":[{"text":"question"}]}]}`)
+				out, err := reg.TranslateRequest(protocol.Gemini, protocol.Anthropic, modelName, in, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := gjson.ParseBytes(out)
+				if tc.native && modelName == "claude-sonnet-4-6" {
+					format := body.Get("output_config.format")
+					if format.Get("type").Str != "json_schema" || !reflect.DeepEqual(format.Get("schema").Value(), gjson.Parse(tc.want).Value()) {
+						t.Fatalf("Claude native schema = %s, want %s", format.Raw, tc.want)
+					}
+					return
+				}
+				assertClaudeSchemaInstruction(t, body, tc.want)
+				if !strings.Contains(body.Get("system.0.text").Str, "outside of the JSON value") {
+					t.Fatalf("the prompt should permit any root described by the schema: %s", out)
+				}
+			})
+		}
+	}
+}
+
+func assertClaudeSchemaInstruction(t *testing.T, body gjson.Result, want string) {
+	t.Helper()
+	prompt := body.Get("system.0.text").Str
+	_, schema, found := strings.Cut(prompt, "JSON Schema:\n")
+	if body.Get("output_config.format").Exists() || !found {
+		t.Fatalf("expected Claude schema instruction, got %s", body.Raw)
+	}
+	var got any
+	if err := json.NewDecoder(strings.NewReader(schema)).Decode(&got); err != nil || !reflect.DeepEqual(got, gjson.Parse(want).Value()) {
+		t.Fatalf("prompt schema = %v, error = %v, want %s", got, err, want)
+	}
+}
+
+/**
+ * @brief 验证 Gemini JSON MIME-only 模式和 Claude 旧模型的提示词兜底。
+ * @param t 测试上下文。
+ */
+func TestRegistryGeminiJSONMIMEAndClaudeFallback(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, tc := range []struct {
+		protocol protocol.Protocol
+		model    string
+		format   string
+		prompt   string
+	}{
+		{protocol.OpenAI, "gpt-5.4", "response_format.type", "messages.1.content"},
+		{protocol.Codex, "gpt-5.4", "text.format.type", "instructions"},
+		{protocol.Anthropic, "claude-sonnet-4-6", "", "system.0.text"},
+	} {
+		t.Run(string(tc.protocol), func(t *testing.T) {
+			in := []byte(`{"generation_config":{"response_mime_type":"application/json"},"system_instruction":{"parts":[{"text":"original instruction"}]},"contents":[{"parts":[{"text":"question"}]}]}`)
+			out, err := reg.TranslateRequest(protocol.Gemini, tc.protocol, tc.model, in, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := gjson.ParseBytes(out)
+			if tc.format != "" && root.Get(tc.format).Str != "json_object" {
+				t.Fatalf("JSON object mode missing: %s", out)
+			}
+			if !strings.Contains(root.Get(tc.prompt).Str, "JSON object") || !bytes.Contains(out, []byte("original instruction")) {
+				t.Fatalf("JSON instruction or caller's system instruction missing: %s", out)
+			}
+		})
+	}
+	for _, model := range []string{"claude-3-7-sonnet-20250219", "glm-5"} {
+		t.Run(model, func(t *testing.T) {
+			in := []byte(`{"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"answer":{"type":"string"}}}},"contents":[{"parts":[{"text":"question"}]}]}`)
+			out, err := reg.TranslateRequest(protocol.Gemini, protocol.Anthropic, model, in, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := gjson.ParseBytes(out)
+			if root.Get("output_config.format").Exists() || !strings.Contains(root.Get("system.0.text").Str, `"answer":{"type":"string"}`) {
+				t.Fatalf("schema instruction fallback missing: %s", out)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Gemini 请求的空占位字段不会遮蔽有效的系统指令、工具历史或工具开关。
+ * @param t 测试上下文。
+ */
+func TestRegistryGeminiRequestAliasFallback(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, target := range []struct {
+		protocol protocol.Protocol
+		model    string
+		system   string
+		callID   string
+		callName string
+		resultID string
+		result   string
+		choice   string
+	}{
+		{protocol.OpenAI, "gpt-5.4", "messages.0.content.0.text", "messages.1.tool_calls.0.id", "messages.1.tool_calls.0.function.name", "messages.2.tool_call_id", "messages.2.content", "tool_choice"},
+		{protocol.Codex, "gpt-5.4", "instructions", "input.0.call_id", "input.0.name", "input.1.call_id", "input.1.output", "tool_choice"},
+		{protocol.Anthropic, "claude-sonnet-4-6", "messages.0.content.0.text", "messages.1.content.0.id", "messages.1.content.0.name", "messages.2.content.0.tool_use_id", "messages.2.content.0.content", "tool_choice.type"},
+	} {
+		for _, placeholder := range []string{`null`, `{}`, `{"parts":null}`, `{"parts":[]}`, `"wrong type"`} {
+			t.Run(string(target.protocol)+"/"+placeholder, func(t *testing.T) {
+				fallback, preferred := "system_instruction", "systemInstruction"
+				if target.protocol == protocol.Codex {
+					fallback, preferred = preferred, fallback
+				}
+				toolPlaceholder := placeholder
+				if placeholder == `{"parts":null}` || placeholder == `{"parts":[]}` {
+					toolPlaceholder = "{}"
+				}
+				in := fmt.Appendf(nil, `{
+					%q:%s,%q:{"parts":[{"text":"alternate instruction"}]},
+					"contents":[{"role":"model","parts":[{"functionCall":%s,"function_call":{"name":"lookup","id":"call_lookup","args":{"q":"s"}}}]},
+						{"role":"user","parts":[{"functionResponse":%s,"function_response":{"name":"lookup","id":"call_lookup","response":{"result":"tool result"}}}]}],
+					"tools":[{"function_declarations":[{"name":"lookup"}]}],
+					"toolConfig":{"functionCallingConfig":{"mode":null}},
+					"tool_config":{"function_calling_config":{"mode":"NONE"}}
+				}`, preferred, placeholder, fallback, toolPlaceholder, toolPlaceholder)
+				out, err := reg.TranslateRequest(protocol.Gemini, target.protocol, target.model, in, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				root := gjson.ParseBytes(out)
+				for path, want := range map[string]string{
+					target.system: "alternate instruction", target.callID: "call_lookup", target.callName: "lookup",
+					target.resultID: "call_lookup", target.choice: "none",
+				} {
+					if got := root.Get(path).Str; got != want {
+						t.Fatalf("%s = %q, want %q: %s", path, got, want, out)
+					}
+				}
+				if !strings.Contains(root.Get(target.result).Str, "tool result") {
+					t.Fatalf("tool result missing: %s", out)
+				}
+			})
+		}
+	}
+}
 
 /**
  * @brief Chat 内容数组通过 Responses 边界保留思考、正文与截断状态
@@ -265,9 +570,18 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound(t *testing.T)
 		joined := string(bytes.Join(chunks, nil))
 		toolStart := mustSSEEventData(t, joined, "content_block_start")
 		toolBlock := mustMap(t, toolStart["content_block"])
-		toolDelta := mustMap(t, mustSSEEventData(t, joined, "content_block_delta")["delta"])
+		var toolInput strings.Builder
+		for _, event := range parseSSEEvents(t, joined) {
+			if event.Event != "content_block_delta" || event.Data["index"] != toolStart["index"] {
+				continue
+			}
+			delta := mustMap(t, event.Data["delta"])
+			if delta["type"] == "input_json_delta" {
+				toolInput.WriteString(mustString(t, delta["partial_json"]))
+			}
+		}
 		messageDelta := mustMap(t, mustSSEEventData(t, joined, "message_delta")["delta"])
-		arguments := mustJSONMap(t, []byte(mustString(t, toolDelta["partial_json"])))
+		arguments := mustJSONMap(t, []byte(toolInput.String()))
 		if mustString(t, toolBlock["id"]) == "" || toolBlock["type"] != "tool_use" || toolBlock["name"] != "lookup" || arguments["query"] != "go" || messageDelta["stop_reason"] != "tool_use" || !strings.Contains(joined, `event: message_stop`) {
 			t.Fatalf("unexpected Anthropic stream chunks: %s", joined)
 		}

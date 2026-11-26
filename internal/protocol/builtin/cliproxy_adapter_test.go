@@ -3,6 +3,9 @@ package builtin
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -195,5 +198,152 @@ func TestCliproxyCodexTerminalResponseDoesNotDoubleWrap(t *testing.T) {
 	}
 	if string(got) != string(raw) {
 		t.Fatalf("already wrapped response was modified: %s", got)
+	}
+}
+
+/**
+ * @brief 验证 Responses 终态别名与标准终态的正文、用量及停止原因转换一致。
+ * @param t 测试上下文。
+ */
+func TestRegistryCodexDoneTerminal(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	Register(reg)
+	decode := func(t *testing.T, raw []byte) any {
+		t.Helper()
+		if bytes.Equal(raw, []byte("[DONE]")) {
+			return "[DONE]"
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			t.Fatalf("invalid translated JSON %q: %v", raw, err)
+		}
+		return value
+	}
+	decodeStream := func(t *testing.T, chunks [][]byte) []any {
+		t.Helper()
+		var values []any
+		for _, chunk := range chunks {
+			for line := range bytes.SplitSeq(chunk, []byte{'\n'}) {
+				if data, ok := bytes.CutPrefix(line, []byte("data: ")); ok {
+					values = append(values, decode(t, data))
+				}
+			}
+		}
+		return values
+	}
+	const responseTemplate = `"response":{"id":"resp_1","created_at":1,"model":"gpt-test","status":%q,%s"output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`
+	for _, tc := range []struct {
+		status, details, canonicalEvent string
+		aliasHeader, aliasPayloadType   bool
+	}{
+		{status: "completed", canonicalEvent: "response.completed", aliasPayloadType: true},
+		{status: "incomplete", details: `"incomplete_details":{"reason":"max_output_tokens"},`, canonicalEvent: "response.incomplete", aliasHeader: true},
+		{status: "cancelled", details: `"incomplete_details":null,`, canonicalEvent: "response.incomplete", aliasHeader: true, aliasPayloadType: true},
+	} {
+		for _, target := range []protocol.Protocol{protocol.OpenAI, protocol.Anthropic, protocol.Gemini} {
+			t.Run(tc.status+"/"+string(target), func(t *testing.T) {
+				response := fmt.Sprintf(responseTemplate, tc.status, tc.details)
+				alias := []byte(`{"type":"response.done",` + response + `}`)
+				canonicalStatus, canonicalDetails := tc.status, tc.details
+				if tc.status == "cancelled" {
+					canonicalStatus = "incomplete"
+					canonicalDetails = `"incomplete_details":{"reason":"cancelled"},`
+				}
+				canonical := []byte(fmt.Sprintf(`{"type":%q,`+responseTemplate+`}`, tc.canonicalEvent, canonicalStatus, canonicalDetails))
+				want, err := reg.TranslateResponseNonStream(t.Context(), protocol.Codex, target, "gpt-test", nil, nil, canonical)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := reg.TranslateResponseNonStream(t.Context(), protocol.Codex, target, "gpt-test", nil, nil, alias)
+				if err != nil || !reflect.DeepEqual(decode(t, got), decode(t, want)) {
+					t.Fatalf("response.done translation = %s (%v), want %s", got, err, want)
+				}
+				var aliasFrame string
+				if tc.aliasHeader {
+					aliasFrame = "event: response.done\n"
+				}
+				if !tc.aliasPayloadType {
+					alias = []byte(`{` + response + `}`)
+				}
+				aliasFrame += "data: " + string(alias) + "\n\n"
+				canonicalFrame := []byte("event: " + tc.canonicalEvent + "\ndata: " + string(canonical) + "\n\n")
+				var state any
+				wantChunks, err := reg.TranslateResponseStream(t.Context(), protocol.Codex, target, "gpt-test", nil, nil, canonicalFrame, &state)
+				if err != nil || len(wantChunks) == 0 {
+					t.Fatalf("canonical stream translation = %q (%v)", wantChunks, err)
+				}
+				state = nil
+				gotChunks, err := reg.TranslateResponseStream(t.Context(), protocol.Codex, target, "gpt-test", nil, nil, []byte(aliasFrame), &state)
+				if err != nil || !reflect.DeepEqual(decodeStream(t, gotChunks), decodeStream(t, wantChunks)) {
+					t.Fatalf("response.done stream translation = %q (%v), want %q", gotChunks, err, wantChunks)
+				}
+				if target != protocol.OpenAI {
+					state = nil
+					gotChunks, err = reg.TranslateResponseStream(t.Context(), protocol.OpenAI, target, "gpt-test", nil, nil, []byte(aliasFrame), &state)
+					if err != nil || !reflect.DeepEqual(decodeStream(t, gotChunks), decodeStream(t, wantChunks)) {
+						t.Fatalf("response.done in OpenAI channel = %q (%v), want %q", gotChunks, err, wantChunks)
+					}
+				}
+			})
+		}
+	}
+}
+
+/**
+ * @brief 验证名义 Chat 渠道实际发来的 Responses 终态对 Responses 客户端保持原样。
+ * @param t 测试上下文。
+ */
+func TestRegistryCodexDonePreservesResponsesWire(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	Register(reg)
+	const payload = `{"type":"response.done","response":{"id":"resp-failed","status":"failed","error":{"code":"server_error","message":"upstream failed"}}}`
+	frame := []byte("event: response.done\ndata: " + payload + "\n\n")
+	for _, source := range []protocol.Protocol{protocol.OpenAI, protocol.Codex} {
+		t.Run(string(source), func(t *testing.T) {
+			var state any
+			chunks, err := reg.TranslateResponseStream(t.Context(), source, protocol.Codex, "gpt-test", nil, nil, frame, &state)
+			if err != nil || len(chunks) != 1 {
+				t.Fatalf("Responses wire = %q (%v), want one event", chunks, err)
+			}
+			header, data, _ := bytes.Cut(chunks[0], []byte("\ndata: "))
+			root := gjson.ParseBytes(bytes.TrimSpace(data))
+			if string(header) != "event: response.done" || root.Get("type").String() != "response.done" || root.Get("response.status").String() != "failed" || root.Get("response.error.message").String() != "upstream failed" {
+				t.Fatalf("Responses wire lost passthrough event: %s", chunks[0])
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Responses SSE 转 Gemini 时优先使用 JSON 的字符串类型。
+ * @param t 测试上下文。
+ */
+func TestRegistryResponsesSSETerminalTypePrecedence(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	Register(reg)
+	for _, source := range []protocol.Protocol{protocol.Codex, protocol.OpenAI} {
+		for _, tc := range []struct{ name, payload, want string }{
+			{"valid JSON type wins", `"type":"response.completed",`, "STOP"},
+			{"missing type falls back", "", "OTHER"},
+			{"non-string type falls back", `"type":123,`, "OTHER"},
+		} {
+			t.Run(string(source)+"/"+tc.name, func(t *testing.T) {
+				frame := "event: response.done\ndata: {" + tc.payload + `"response":{"id":"r","status":"cancelled"}}` + "\n\n"
+				var state any
+				chunks, err := reg.TranslateResponseStream(t.Context(), source, protocol.Gemini, "gpt-test", nil, nil, []byte(frame), &state)
+				if err != nil || len(chunks) != 1 {
+					t.Fatalf("stream = %q, err = %v", chunks, err)
+				}
+				data := bytes.TrimSpace(bytes.TrimPrefix(chunks[0], []byte("data:")))
+				if got := gjson.GetBytes(data, "candidates.0.finishReason").String(); got != tc.want {
+					t.Fatalf("finishReason = %q, want %q: %s", got, tc.want, data)
+				}
+			})
+		}
 	}
 }

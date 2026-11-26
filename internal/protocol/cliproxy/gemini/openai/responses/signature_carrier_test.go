@@ -165,3 +165,22 @@ func TestDecodeGeminiResponsesCarrierRejectsNestedEnvelope(t *testing.T) {
 		t.Fatalf("nested carrier marked=%v ok=%v, want marked invalid", marked, ok)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToGemini_UnknownAliasDoesNotLeakForeignSignature(t *testing.T) {
+	input := []byte(`{"input":[
+		{"type":"reasoning","encrypted_content":"` + validResponsesGPTReasoningSignature() + `","summary":[{"type":"summary_text","text":"foreign reasoning"}]},
+		{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+	for _, model := range []string{"alias-without-provider-name", "claude-named-gemini-channel-alias"} {
+		t.Run(model, func(t *testing.T) {
+			out, err := ConvertOpenAIResponsesRequestToGemini(model, input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			part := gjson.GetBytes(out, "contents.0.parts.0")
+			if !part.Get("thought").Bool() || part.Get("text").String() != "foreign reasoning" || part.Get("thoughtSignature").Exists() {
+				t.Fatalf("expected an unsigned reasoning part. Output: %s", out)
+			}
+		})
+	}
+}

@@ -2,8 +2,10 @@ package responses
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -54,43 +56,7 @@ type geminiFunctionCallEvidence struct {
 	PatchCall    *translatorcommon.ApplyPatchCallState
 }
 
-// Gemini usage frames are cumulative snapshots, not additive deltas.
-type geminiResponsesUsage struct {
-	Present    bool
-	Prompt     int64
-	Candidates int64
-	Thoughts   int64
-	Total      int64
-	Cached     int64
-}
-
-func (usage *geminiResponsesUsage) Merge(root gjson.Result) bool {
-	metadata := root.Get("usageMetadata")
-	if !metadata.Exists() {
-		metadata = root.Get("cpaUsageMetadata")
-	}
-	if !metadata.Exists() {
-		return false
-	}
-	usage.Present = true
-	for _, field := range []struct {
-		name  string
-		value *int64
-	}{
-		{"promptTokenCount", &usage.Prompt},
-		{"candidatesTokenCount", &usage.Candidates},
-		{"thoughtsTokenCount", &usage.Thoughts},
-		{"totalTokenCount", &usage.Total},
-		{"cachedContentTokenCount", &usage.Cached},
-	} {
-		if value := metadata.Get(field.name); value.Exists() {
-			*field.value = value.Int()
-		}
-	}
-	return true
-}
-
-func (usage geminiResponsesUsage) JSON() []byte {
+func geminiResponsesUsageJSON(usage translatorcommon.GeminiUsageSnapshot) []byte {
 	out := []byte(`{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`)
 	out, _ = sjson.SetBytes(out, "input_tokens", usage.Prompt)
 	out, _ = sjson.SetBytes(out, "input_tokens_details.cached_tokens", usage.Cached)
@@ -157,7 +123,7 @@ type geminiToResponsesState struct {
 	Started      bool
 	Completed    bool
 	FinishReason string
-	Usage        geminiResponsesUsage
+	Usage        translatorcommon.GeminiUsageSnapshot
 	Model        string
 
 	// message aggregation
@@ -263,6 +229,47 @@ func unwrapRequestRoot(root gjson.Result) gjson.Result {
 	return root
 }
 
+func echoOpenAIResponsesRequestFields(out []byte, prefix string, req gjson.Result) []byte {
+	for _, key := range [...]string{
+		"instructions", "max_output_tokens", "max_tool_calls",
+		"parallel_tool_calls", "previous_response_id", "prompt_cache_key", "reasoning",
+		"safety_identifier", "service_tier", "store", "temperature", "text",
+		"tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user", "metadata",
+	} {
+		value := req.Get(key)
+		var echo any
+		switch key {
+		case "max_output_tokens", "max_tool_calls", "top_logprobs":
+			if value.Type != gjson.Number {
+				continue
+			}
+			echo = value.Int()
+		case "temperature", "top_p":
+			if value.Type != gjson.Number {
+				continue
+			}
+			echo = value.Num
+		case "parallel_tool_calls", "store":
+			if value.Type != gjson.True && value.Type != gjson.False {
+				continue
+			}
+			echo = value.Bool()
+		case "reasoning", "text", "tool_choice", "tools", "user", "metadata":
+			if value.Type == gjson.Null {
+				continue
+			}
+			echo = json.RawMessage(value.Raw)
+		default:
+			if value.Type != gjson.String {
+				continue
+			}
+			echo = value.Str
+		}
+		out, _ = sjson.SetBytes(out, prefix+key, echo)
+	}
+	return out
+}
+
 func unwrapGeminiResponseRoot(root gjson.Result) gjson.Result {
 	resp := root.Get("response")
 	if !resp.Exists() {
@@ -276,6 +283,12 @@ func unwrapGeminiResponseRoot(root gjson.Result) gjson.Result {
 }
 
 func emitEvent(event string, payload []byte) []byte {
+	if bytes.ContainsAny(payload, "\r\n") {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, payload); err == nil {
+			payload = compact.Bytes()
+		}
+	}
 	return translatorcommon.SSEEventData(event, payload)
 }
 
@@ -446,11 +459,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		return [][]byte{}
 	}
 	root = unwrapGeminiResponseRoot(root)
-	hasUsage := st.Usage.Merge(root)
+	hasUsage := st.Usage.Merge(root.Get("usageMetadata")) || st.Usage.Merge(root.Get("cpaUsageMetadata"))
 	messageStatus := "completed"
-	if model := root.Get("modelVersion").String(); model != "" {
-		st.Model = model
+	finishReason := strings.TrimSpace(root.Get("candidates.0.finishReason").Str)
+	requestModel := ""
+	if !st.Started {
+		requestModel = translatorcommon.RequestModelName(originalRequestRawJSON, requestRawJSON)
 	}
+	st.Model = cmp.Or(st.Model, modelName, requestModel, root.Get("modelVersion").Str)
 
 	var out [][]byte
 	nextSeq := func() int { st.Seq++; return st.Seq }
@@ -846,15 +862,8 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		created, _ = sjson.SetBytes(created, "sequence_number", nextSeq())
 		created, _ = sjson.SetBytes(created, "response.id", st.ResponseID)
 		created, _ = sjson.SetBytes(created, "response.created_at", st.CreatedAt)
-		requestModelName := translatorcommon.RequestModelName(originalRequestRawJSON, requestRawJSON)
-		if requestModelName == "" && len(reqJSON) > 0 {
-			requestModelName = translatorcommon.RequestModelName(reqJSON, nil)
-		}
-		if requestModelName == "" {
-			requestModelName = modelName
-		}
-		if requestModelName != "" {
-			created, _ = sjson.SetBytes(created, "response.model", requestModelName)
+		if st.Model != "" {
+			created, _ = sjson.SetBytes(created, "response.model", st.Model)
 		}
 		out = append(out, emitEvent("response.created", created))
 
@@ -862,14 +871,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		inprog, _ = sjson.SetBytes(inprog, "sequence_number", nextSeq())
 		inprog, _ = sjson.SetBytes(inprog, "response.id", st.ResponseID)
 		inprog, _ = sjson.SetBytes(inprog, "response.created_at", st.CreatedAt)
-		if requestModelName != "" {
-			inprog, _ = sjson.SetBytes(inprog, "response.model", requestModelName)
+		if st.Model != "" {
+			inprog, _ = sjson.SetBytes(inprog, "response.model", st.Model)
 		}
 		out = append(out, emitEvent("response.in_progress", inprog))
 
 		st.Started = true
 		st.NextIndex = 0
-		st.WebSearchStreamMode = determineWebSearchStreamMode(modelName, requestModelName, originalRequestRawJSON, requestRawJSON, reqJSON)
+		st.WebSearchStreamMode = determineWebSearchStreamMode(modelName, cmp.Or(requestModel, modelName), originalRequestRawJSON, requestRawJSON, reqJSON)
 	}
 
 	// Handle groundingMetadata for web search
@@ -1352,12 +1361,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						fullArgs := active.Assembler.FullArguments()
 						st.ActiveStreamingFunc = nil
 						if st.FuncToolSearch[idx] {
-							itemStatus := "completed"
-							if fr := root.Get("candidates.0.finishReason").String(); fr != "" {
-								_, itemStatus, _ = geminiResponsesTerminalState(fr)
-							} else if st.FinishReason != "" {
-								_, itemStatus, _ = geminiResponsesTerminalState(st.FinishReason)
-							}
+							_, itemStatus, _ := geminiResponsesTerminalState(cmp.Or(finishReason, st.FinishReason))
 							itemID := openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx])
 							itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
 							itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
@@ -1477,21 +1481,13 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				st.FuncCustom[idx] = isCustom
 				st.FuncToolSearch[idx] = isToolSearch
 
-				argsJSON := "{}"
-				if args := fc.Get("args"); args.Exists() {
-					argsJSON = args.Raw
-				}
+				argsJSON := geminiResponsesFunctionArguments(fc.Get("args"), identity)
 				if st.FuncArgsBuf[idx].Len() == 0 && argsJSON != "" {
 					st.FuncArgsBuf[idx].WriteString(argsJSON)
 				}
 
 				if isToolSearch {
-					itemStatus := "completed"
-					if fr := root.Get("candidates.0.finishReason").String(); fr != "" {
-						_, itemStatus, _ = geminiResponsesTerminalState(fr)
-					} else if st.FinishReason != "" {
-						_, itemStatus, _ = geminiResponsesTerminalState(st.FinishReason)
-					}
+					_, itemStatus, _ := geminiResponsesTerminalState(cmp.Or(finishReason, st.FinishReason))
 					itemID := openAIResponsesToolSearchCallItemID(st.FuncCallIDs[idx])
 					item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{}}`)
 					item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
@@ -1619,9 +1615,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 
 	// Preserve the first source finish, including across a usage-only tail or [DONE].
-	if fr := root.Get("candidates.0.finishReason").String(); fr != "" && st.FinishReason == "" {
-		st.FinishReason = fr
-	}
+	st.FinishReason = cmp.Or(st.FinishReason, finishReason)
 	if st.FinishReason != "" && st.ActiveStreamingFunc == nil && !st.HasFailedStreamingFunc {
 		if errIdentity := geminiPendingIdentityError(st); errIdentity != nil {
 			st.SetToolInputError(errIdentity)
@@ -1725,76 +1719,12 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		completed, _ = sjson.SetBytes(completed, "sequence_number", nextSeq())
 		completed, _ = sjson.SetBytes(completed, "response.id", st.ResponseID)
 		completed, _ = sjson.SetBytes(completed, "response.created_at", st.CreatedAt)
-		responseModel := modelName
-		if responseModel == "" {
-			responseModel = st.Model
-		}
-		if responseModel != "" {
-			completed, _ = sjson.SetBytes(completed, "response.model", responseModel)
+		if st.Model != "" {
+			completed, _ = sjson.SetBytes(completed, "response.model", st.Model)
 		}
 
 		if len(reqJSON) > 0 {
-			req := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
-			if v := req.Get("instructions"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.instructions", v.String())
-			}
-			if v := req.Get("max_output_tokens"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.max_output_tokens", v.Int())
-			}
-			if v := req.Get("max_tool_calls"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.max_tool_calls", v.Int())
-			}
-			if v := req.Get("model"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.model", v.String())
-			}
-			if v := req.Get("parallel_tool_calls"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.parallel_tool_calls", v.Bool())
-			}
-			if v := req.Get("previous_response_id"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.previous_response_id", v.String())
-			}
-			if v := req.Get("prompt_cache_key"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.prompt_cache_key", v.String())
-			}
-			if v := req.Get("reasoning"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.reasoning", v.Value())
-			}
-			if v := req.Get("safety_identifier"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.safety_identifier", v.String())
-			}
-			if v := req.Get("service_tier"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.service_tier", v.String())
-			}
-			if v := req.Get("store"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.store", v.Bool())
-			}
-			if v := req.Get("temperature"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.temperature", v.Float())
-			}
-			if v := req.Get("text"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.text", v.Value())
-			}
-			if v := req.Get("tool_choice"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.tool_choice", v.Value())
-			}
-			if v := req.Get("tools"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.tools", v.Value())
-			}
-			if v := req.Get("top_logprobs"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.top_logprobs", v.Int())
-			}
-			if v := req.Get("top_p"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.top_p", v.Float())
-			}
-			if v := req.Get("truncation"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.truncation", v.String())
-			}
-			if v := req.Get("user"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.user", v.Value())
-			}
-			if v := req.Get("metadata"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.metadata", v.Value())
-			}
+			completed = echoOpenAIResponsesRequestFields(completed, "response.", unwrapRequestRoot(gjson.ParseBytes(reqJSON)))
 		}
 
 		emitLateCitations()
@@ -1878,7 +1808,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		}
 
 		if st.Usage.Present {
-			completed, _ = sjson.SetRawBytes(completed, "response.usage", st.Usage.JSON())
+			completed, _ = sjson.SetRawBytes(completed, "response.usage", geminiResponsesUsageJSON(st.Usage))
 		}
 
 		out = append(out, emitEvent(eventType, completed))
@@ -1898,7 +1828,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 
 	// Base response scaffold
 	resp := []byte(`{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"incomplete_details":null}`)
-	_, status, incompleteDetails := geminiResponsesTerminalState(root.Get("candidates.0.finishReason").String())
+	_, status, incompleteDetails := geminiResponsesTerminalState(root.Get("candidates.0.finishReason").Str)
 	resp, _ = sjson.SetBytes(resp, "status", status)
 	if incompleteDetails != nil {
 		resp, _ = sjson.SetRawBytes(resp, "incomplete_details", incompleteDetails)
@@ -1924,76 +1854,12 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 	}
 	resp, _ = sjson.SetBytes(resp, "created_at", createdAt)
 
-	// Echo request fields when present; fallback model from response modelVersion
-	if len(reqJSON) > 0 {
-		req := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
-		if v := req.Get("instructions"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "instructions", v.String())
-		}
-		if v := req.Get("max_output_tokens"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "max_output_tokens", v.Int())
-		}
-		if v := req.Get("max_tool_calls"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "max_tool_calls", v.Int())
-		}
-		if v := req.Get("model"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "model", v.String())
-		} else if v = root.Get("modelVersion"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "model", v.String())
-		}
-		if v := req.Get("parallel_tool_calls"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "parallel_tool_calls", v.Bool())
-		}
-		if v := req.Get("previous_response_id"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "previous_response_id", v.String())
-		}
-		if v := req.Get("prompt_cache_key"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "prompt_cache_key", v.String())
-		}
-		if v := req.Get("reasoning"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "reasoning", v.Value())
-		}
-		if v := req.Get("safety_identifier"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "safety_identifier", v.String())
-		}
-		if v := req.Get("service_tier"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "service_tier", v.String())
-		}
-		if v := req.Get("store"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "store", v.Bool())
-		}
-		if v := req.Get("temperature"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "temperature", v.Float())
-		}
-		if v := req.Get("text"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "text", v.Value())
-		}
-		if v := req.Get("tool_choice"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "tool_choice", v.Value())
-		}
-		if v := req.Get("tools"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "tools", v.Value())
-		}
-		if v := req.Get("top_logprobs"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "top_logprobs", v.Int())
-		}
-		if v := req.Get("top_p"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "top_p", v.Float())
-		}
-		if v := req.Get("truncation"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "truncation", v.String())
-		}
-		if v := req.Get("user"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "user", v.Value())
-		}
-		if v := req.Get("metadata"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "metadata", v.Value())
-		}
-	} else if v := root.Get("modelVersion"); v.Exists() {
-		resp, _ = sjson.SetBytes(resp, "model", v.String())
-	}
-	if modelName != "" {
-		resp, _ = sjson.SetBytes(resp, "model", modelName)
+	// Use the externally resolved model consistently with the streaming response.
+	req := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
+	resp = echoOpenAIResponsesRequestFields(resp, "", req)
+	requestModel := translatorcommon.RequestModelName(originalRequestRawJSON, requestRawJSON)
+	if responseModel := cmp.Or(modelName, requestModel, root.Get("modelVersion").Str); responseModel != "" {
+		resp, _ = sjson.SetBytes(resp, "model", responseModel)
 	}
 
 	// Build outputs from candidates[0].content.parts
@@ -2254,11 +2120,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 					return true
 				}
 
-				args := fc.Get("args")
-				argsStr := ""
-				if args.Exists() {
-					argsStr = args.Raw
-				}
+				argsStr := geminiResponsesFunctionArguments(fc.Get("args"), identity)
 				callID := fmt.Sprintf("call_%x_%d", time.Now().UnixNano(), atomic.AddUint64(&funcCallIDCounter, 1))
 				if (identity.ApplyPatch || identity.ToolSearch) && evidence.UpstreamID != "" {
 					callID = evidence.UpstreamID
@@ -2429,12 +2291,20 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 		resp, _ = sjson.SetBytes(resp, "tool_usage.web_search.num_requests", 1)
 	}
 
-	var usage geminiResponsesUsage
-	if usage.Merge(root) {
-		resp, _ = sjson.SetRawBytes(resp, "usage", usage.JSON())
+	var usage translatorcommon.GeminiUsageSnapshot
+	if usage.Merge(root.Get("usageMetadata")) || usage.Merge(root.Get("cpaUsageMetadata")) {
+		resp, _ = sjson.SetRawBytes(resp, "usage", geminiResponsesUsageJSON(usage))
 	}
 
 	return resp
+}
+
+func geminiResponsesFunctionArguments(args gjson.Result, identity util.ResponsesToolIdentity) string {
+	if !identity.ApplyPatch && (args.Type == gjson.Null ||
+		(!identity.Custom && !identity.ToolSearch && !args.IsObject())) {
+		return "{}"
+	}
+	return args.Raw
 }
 
 // Full snapshots are evidence, never source prefixes. Stable IDs and explicit

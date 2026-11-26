@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -844,6 +846,11 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if bridgeWriter.closedForMessageTooBig {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
 	}
+	if bridgeWriter.failed && isResponsesWebsocketTerminalPayload(bridgeWriter.failedPayload) {
+		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{
+			payload: bytes.Clone(bridgeWriter.failedPayload), forwarded: true,
+		}
+	}
 	// 本地中断按客户端取消收尾（499、不冷却、不换渠道）；上游抢先终结时以上游为准。
 	if payload := interrupt.localPayload(); payload != nil && !bridgeWriter.completed {
 		return writeResponsesWebsocketLocalInterrupt(conn, payload, bridgeWriter.collectedOutput())
@@ -856,11 +863,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 	if succeeded {
 		if !bridgeWriter.completed {
-			if bridgeWriter.failed && isResponsesWebsocketTerminalPayload(bridgeWriter.failedPayload) {
-				return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{
-					payload: bytes.Clone(bridgeWriter.failedPayload), forwarded: true,
-				}
-			}
 			// 裸 error 事件（server_is_overloaded 等）终结不了回合，和流被截断是同一种
 			// 故障：回合没有终结事件，只能中断连接让客户端完整重放。
 			message := responsesWebsocketInterruptedMessage
@@ -1043,33 +1045,37 @@ func writeResponsesWebsocketSyntheticPrewarm(
 	}, nil
 }
 
+/**
+ * @brief 识别可作为失败回合正文的上游 JSON 事件。
+ * @param payload 上游返回的正文。
+ * @return 正文是合法 JSON 且代表失败时返回 true。
+ */
 func isResponsesWebsocketFailurePayload(payload []byte) bool {
 	if !json.Valid(payload) {
 		return false
 	}
-	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
-	case "error", "response.failed":
-		return true
-	default:
-		return false
-	}
+	event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+	eventType := strings.TrimSpace(event.Get("type").Str)
+	return eventType == "error" || responsesTerminalType(eventType, event) == "response.failed"
 }
 
-// isResponsesWebsocketTerminalPayload 判断 payload 能否终结客户端的一个回合。
-// response.failed 是协议定义的终结事件；裸 error 事件只有携带上游 HTTP 状态
-// （usage_limit_reached 这类明确裁决，判据同 websocketErrorStatusAndHeaders）时
-// 才是客户端认得出的最终答案。不带状态的裸 error（server_is_overloaded 等）终结
-// 不了回合，客户端收下之后仍在等终结事件，只有连接断开才会重放当前回合。
+/**
+ * @brief 判断上游失败正文能否终结客户端回合。
+ * @param payload 上游失败事件的正文。
+ * @return response.failed 或携带 HTTP 状态的 error 返回 true。
+ * @details 裸 error 缺少 HTTP 状态时客户端会继续等待终态，连接断开后才能重放。
+ */
 func isResponsesWebsocketTerminalPayload(payload []byte) bool {
-	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
-	case "response.failed":
+	event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+	eventType := strings.TrimSpace(event.Get("type").Str)
+	if responsesTerminalType(eventType, event) == "response.failed" {
 		return true
-	case "error":
+	}
+	if eventType == "error" {
 		status, _ := websocketErrorStatusAndHeaders(payload)
 		return status != 0
-	default:
-		return false
 	}
+	return false
 }
 
 // responsesWebsocketUpstreamErrorMessage 把上游错误事件的原因带进中断提示，
@@ -1150,6 +1156,12 @@ func (w *responsesWebsocketBridgeWriter) WriteHeader(statusCode int) {
 	w.status = statusCode
 }
 
+/**
+ * @brief 将上游 SSE 字节写入下游 WebSocket，并收集跨轮续接数据。
+ * @param data 要写入的 SSE 字节，可包含部分事件。
+ * @return 接收的字节数；写入失败或关闭连接时返回 0。
+ * @return 正文超限、事件畸形或 WebSocket 写入失败时返回错误。
+ */
 func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 	if w == nil || w.conn == nil {
 		return 0, errors.New("websocket connection is nil")
@@ -1164,32 +1176,43 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 		if !ok {
 			break
 		}
-		payload := sseEventData(rawEvent)
+		eventType, payload := parseSSEEventChunk(rawEvent)
 		if len(payload) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 			continue
 		}
 		if !json.Valid(payload) {
 			return 0, errors.New("invalid JSON in upstream SSE event")
 		}
-		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		event := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+		payloadType := strings.TrimSpace(event.Get("type").Str)
+		eventType = cmp.Or(payloadType, eventType)
+		if payloadType == "" && eventType != "" {
+			var err error
+			payload, err = sjson.SetBytes(payload, "type", eventType)
+			if err != nil {
+				return 0, err
+			}
+		}
 		w.interrupt.observe(payload)
 		if err := w.collectOutputItem(eventType, payload); err != nil {
 			return 0, err
 		}
-		if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
+		terminalType := responsesTerminalType(eventType, event)
+		if isSuccessfulResponsesTerminal(terminalType) {
 			w.completed = true
-			output := gjson.GetBytes(payload, "response.output")
-			if output.Exists() && output.IsArray() && len(output.Array()) > 0 {
+			output := event.Get("response.output")
+			if output.IsArray() && len(output.Array()) > 0 {
 				w.completedOutput = w.reconcileCompletedOutput(output)
-				if !bytes.Equal(w.completedOutput, []byte(output.Raw)) {
-					if reconciled, errSet := sjson.SetRawBytes(payload, "response.output", w.completedOutput); errSet == nil {
-						payload = reconciled
-					}
-				}
 			} else {
 				w.completedOutput = w.collectedOutput()
 			}
-			w.completedResponseID = strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+			if (output.IsArray() || !bytes.Equal(w.completedOutput, []byte("[]"))) &&
+				!bytes.Equal(w.completedOutput, []byte(output.Raw)) {
+				if reconciled, errSet := sjson.SetRawBytes(payload, "response.output", w.completedOutput); errSet == nil {
+					payload = reconciled
+				}
+			}
+			w.completedResponseID = strings.Clone(strings.TrimSpace(event.Get("response.id").String()))
 		}
 		if isResponsesWebsocketMessageTooBigPayload(payload) {
 			if err := w.conn.WriteControl(
@@ -1204,7 +1227,7 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 			w.closedForMessageTooBig = true
 			return 0, nil
 		}
-		if eventType == "error" || eventType == "response.failed" {
+		if eventType == "error" || terminalType == "response.failed" {
 			w.failed = true
 			w.failedPayload = bytes.Clone(payload)
 		}
@@ -1334,8 +1357,13 @@ func (w *responsesWebsocketBridgeWriter) reconcileCompletedOutput(output gjson.R
 	return encoded
 }
 
+/**
+ * @brief 提取完整工具调用的 ID，以便在后续回合配对工具结果。
+ * @param output 响应的 output JSON 数组。
+ * @return 按原顺序去重的独立 ID；没有完整工具调用时返回 nil。
+ */
 func responsesWebsocketPendingToolCallIDs(output []byte) []string {
-	result := gjson.ParseBytes(output)
+	result := cliproxyutil.ParseGJSONBytesNoCopy(output)
 	if !result.IsArray() {
 		return nil
 	}
@@ -1347,14 +1375,11 @@ func responsesWebsocketPendingToolCallIDs(output []byte) []string {
 			continue
 		}
 		callID := strings.TrimSpace(item.Get("call_id").String())
-		if callID == "" {
-			continue
-		}
 		if _, ok := seen[callID]; ok {
 			continue
 		}
 		seen[callID] = struct{}{}
-		callIDs = append(callIDs, callID)
+		callIDs = append(callIDs, strings.Clone(callID))
 	}
 	return callIDs
 }

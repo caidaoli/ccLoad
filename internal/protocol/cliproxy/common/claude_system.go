@@ -100,7 +100,12 @@ func BuildClaudeStructuredOutputInstruction(format gjson.Result) string {
 		}
 		builder.WriteString("JSON Schema:\n")
 		builder.WriteString(schema.Raw)
-		builder.WriteString("\nDo not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object.")
+		builder.WriteString("\nDo not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON ")
+		if schema.Get("type").Str == "object" {
+			builder.WriteString("object.")
+		} else {
+			builder.WriteString("value.")
+		}
 		return builder.String()
 	default:
 		return ""

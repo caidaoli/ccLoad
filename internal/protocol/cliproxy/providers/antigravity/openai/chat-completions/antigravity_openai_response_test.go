@@ -76,6 +76,38 @@ func TestFinishReasonToolCallsNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestAntigravityChatStreamNullUsagePreservesPendingZero(t *testing.T) {
+	var state any
+	convert := func(chunk string) [][]byte {
+		return ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, []byte(chunk), &state)
+	}
+	convert(`{"response":{"candidates":[{"content":{"parts":[{"text":"first"}]}}],"cpaUsageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0}}}`)
+	chunks := convert(`{"response":{"candidates":[{"content":{"parts":[{"text":"last"}]},"finishReason":" MAX_TOKENS "}],"usageMetadata":null,"cpaUsageMetadata":null}}`)
+	if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices.0.delta.content").String() != "last" ||
+		gjson.GetBytes(chunks[0], "choices.0.finish_reason").Raw != "null" || gjson.GetBytes(chunks[0], "usage").Exists() {
+		t.Fatalf("null usage finalized the text delta: %q", chunks)
+	}
+	chunks = convert(`[DONE]`)
+	if len(chunks) != 1 || gjson.GetBytes(chunks[0], "choices.0.finish_reason").String() != "length" ||
+		gjson.GetBytes(chunks[0], "usage.total_tokens").Raw != "0" {
+		t.Fatalf("expected one terminal with real zero usage: %q", chunks)
+	}
+	for _, payload := range []string{`{"response":{"usageMetadata":null}}`, `[DONE]`} {
+		if got := convert(payload); len(got) != 0 {
+			t.Fatalf("post-terminal payload %s emitted %q", payload, got)
+		}
+	}
+}
+
+func TestAntigravityChatNonStreamNullableFinishReasonAndUsage(t *testing.T) {
+	input := []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":null}],"usageMetadata":null}}`)
+	out := ConvertAntigravityResponseToOpenAINonStream(t.Context(), "gemini", nil, nil, input, nil)
+	result := gjson.ParseBytes(out)
+	if result.Get("choices.0.finish_reason").Raw != "null" || result.Get("choices.0.native_finish_reason").Raw != "null" || result.Get("usage").Exists() {
+		t.Fatalf("unexpected finish reason or usage: %s", out)
+	}
+}
+
 func TestAntigravityStreamSeparatesToolDeltasAndKeepsLateUsage(t *testing.T) {
 	var state any
 	convert := func(chunk string) [][]byte {
@@ -187,6 +219,38 @@ func TestAntigravityStreamKeepsToolArgumentContinuationsOnTheirCall(t *testing.T
 	}
 }
 
+func TestAntigravityChatCompleteToolCallArguments(t *testing.T) {
+	const object = `{"n":9007199254740993,"query":"<tag>"}`
+	for _, tc := range []struct{ name, argsField, want string }{
+		{"missing", "", "{}"},
+		{"null", `,"args":null`, "{}"},
+		{"array", `,"args":[1,2]`, "{}"},
+		{"object", `,"args":` + object, object},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":null}},{"functionCall":{"name":"ping"` + tc.argsField + `}}]},"finishReason":"STOP"}]}}`)
+			for _, stream := range []bool{true, false} {
+				var calls []gjson.Result
+				if stream {
+					var state any
+					for _, chunk := range ConvertAntigravityResponseToOpenAI(t.Context(), "gemini", nil, nil, body, &state) {
+						calls = append(calls, gjson.GetBytes(chunk, "choices.0.delta.tool_calls").Array()...)
+					}
+					if err := state.(interface{ ToolInputError() error }).ToolInputError(); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					out := ConvertAntigravityResponseToOpenAINonStream(t.Context(), "gemini", nil, nil, body, nil)
+					calls = gjson.GetBytes(out, "choices.0.message.tool_calls").Array()
+				}
+				if len(calls) != 1 || calls[0].Get("function.name").Str != "ping" || calls[0].Get("function.arguments").Str != tc.want {
+					t.Fatalf("stream=%v calls = %v, want one ping call with arguments %q", stream, calls, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestAntigravityStreamMatchesExplicitToolTailWithoutID(t *testing.T) {
 	var state any
 	convert := func(frame string) [][]byte {
@@ -218,6 +282,7 @@ func TestAntigravityStreamMatchesExplicitToolTailWithoutID(t *testing.T) {
 func TestAntigravityStreamRejectsInvalidOrTruncatedToolArguments(t *testing.T) {
 	for _, tc := range []struct{ name, frame, errorText string }{
 		{"invalid partial args", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","partialArgs":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":7}}}`, "vertex partialArgs must be an array"},
+		{"invalid fragment args", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","args":null,"willContinue":true}}]}}]}}`, "upstream Antigravity tool argument fragment must be an object"},
 		{"nonempty args without a matching call", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"city":"Paris"}}}]}}]}}`, "upstream Antigravity function arguments have no matching tool call"},
 		{"truncated tool", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","willContinue":true}}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":7}}}`, "upstream Antigravity tool call ended before complete arguments"},
 	} {
@@ -497,13 +562,12 @@ func TestConvertAntigravityResponseToOpenAI_ResponseFreeEventDoesNotStartStream(
 	ctx := context.Background()
 	var param any
 
-	// A JSON keepalive or malformed envelope carries no candidates and no usage,
-	// so it must not make an otherwise empty stream look complete.
 	for _, chunk := range [][]byte{
 		[]byte(`{}`),
 		[]byte(`{"response":{}}`),
 		[]byte(`{"response":{"candidates":[]}}`),
 		[]byte(`{"response":{"candidates":[],"usageMetadata":{}}}`),
+		[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":null}}]}}],"usageMetadata":null}}`),
 	} {
 		ConvertAntigravityResponseToOpenAI(ctx, "gemini-3.7-flash", nil, nil, chunk, &param)
 	}
@@ -530,12 +594,12 @@ func TestConvertAntigravityResponseToOpenAINonStreamRestoresDisambiguatedName(t 
 }
 
 func TestConvertAntigravityResponseToOpenAINonStreamRestoresToolNameOnce(t *testing.T) {
-	original := []byte(`{"messages":[{"role":"user","content":"search"}],"tools":[{"type":"function","function":{"name":"mcp/search"}},{"type":"function","function":{"name":"mcp_search"}}],"tool_choice":{"type":"allowed_tools","allowed_tools":{"tools":[{"type":"function","function":{"name":"mcp/search"}}]}}}`)
+	original := []byte(`{"messages":[{"role":"user","content":"search"}],"tools":[{"type":"function","function":{"name":"mcp/search"}},{"type":"function","function":{"name":"mcp_search"}}],"tool_choice":{"type":"allowed_tools","allowed_tools":{"tools":[{"type":"function","function":{"name":"mcp_search"}}]}}}`)
 	request, err := ConvertOpenAIRequestToAntigravity("gemini", original, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wireName := gjson.GetBytes(request, "request.tools.0.functionDeclarations.1.name").String()
+	wireName := gjson.GetBytes(request, "request.tools.0.functionDeclarations.0.name").String()
 	if wireName == "" || wireName == "mcp_search" {
 		t.Fatalf("expected an Antigravity alias for mcp_search, got %q", wireName)
 	}

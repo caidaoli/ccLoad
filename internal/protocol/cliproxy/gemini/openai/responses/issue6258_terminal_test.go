@@ -215,6 +215,61 @@ func TestIssue6258GeminiResponsesUsageSnapshots(t *testing.T) {
 	}
 }
 
+func TestGeminiResponsesWaitsForValidFinishAndUsage(t *testing.T) {
+	for _, wrapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wrapped=%t", wrapped), func(t *testing.T) {
+			var state any
+			var events []gjson.Result
+			for i, frame := range []string{
+				`{"responseId":"nullable-usage","candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":" "}],"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":7,"thoughtsTokenCount":2}}`,
+				`{"candidates":[{"finishReason":false}],"usageMetadata":{"cachedContentTokenCount":null,"thoughtsTokenCount":"9"}}`,
+				`{"candidates":[{"finishReason":"MAX_TOKENS"}],"usageMetadata":null}`,
+				`{"usageMetadata":{},"cpaUsageMetadata":{"candidatesTokenCount":4,"totalTokenCount":16}}`,
+				"[DONE]", "[DONE]",
+			} {
+				if wrapped && frame != "[DONE]" {
+					frame = `{"response":` + frame + `}`
+				}
+				tail := issue6258Translate(t, &state, "data: "+frame)
+				for _, event := range tail {
+					if event.Get("response.status").Str != "" && event.Get("response.status").Str != "in_progress" && i != 3 {
+						t.Fatalf("terminal at frame %d: %s", i, event.Raw)
+					}
+				}
+				events = append(events, tail...)
+			}
+			response := issue6258Terminal(t, events)
+			issue6258AssertIncomplete(t, response)
+			issue6258AssertUsage(t, response, 10, 6, 2, 16, 7)
+		})
+	}
+}
+
+func TestGeminiResponsesNonStreamNullableUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name, usage string
+		wantUsage   bool
+	}{
+		{"null", `"usageMetadata":null`, false},
+		{"no counts", `"usageMetadata":{"totalTokenCount":null}`, false},
+		{"cpa fallback", `"usageMetadata":null,"cpaUsageMetadata":{"totalTokenCount":0}`, true},
+		{"zero", `"usageMetadata":{"totalTokenCount":0}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}],` + tc.usage + `}`
+			response := gjson.ParseBytes(ConvertGeminiResponseToOpenAIResponsesNonStream(t.Context(), "gemini-3.7-flash", nil, nil, []byte(raw), nil))
+			total := response.Get("usage.total_tokens")
+			if tc.wantUsage {
+				if total.Type != gjson.Number || total.Int() != 0 {
+					t.Errorf("expected numeric zero: %s", response.Raw)
+				}
+			} else if response.Get("usage").Exists() {
+				t.Errorf("unexpected usage: %s", response.Raw)
+			}
+		})
+	}
+}
+
 func TestIssue6258GeminiResponsesMaxTokensOnlyActiveMessageIncomplete(t *testing.T) {
 	var param any
 	var events []gjson.Result

@@ -1,8 +1,10 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"ccLoad/internal/model"
@@ -51,6 +53,95 @@ func usesVertexWire(cfg *model.Config, upstreamProtocol protocol.Protocol, baseU
 	}
 	modelName, action, hasAction := strings.Cut(modelAction, ":")
 	return hasAction && modelName != "" && (action == "generateContent" || action == "streamGenerateContent" || action == "countTokens")
+}
+
+/**
+ * @brief 匹配明确指出 topP 固定范围的完整错误文本。
+ */
+var vertexTopPRange = regexp.MustCompile(`(?i)^(?:generation_?config\.)?top_?p must be (?:between 0(?:\.0+)? and 1(?:\.0+)?|in (?:the range |range )?\[0(?:\.0+)?, *1(?:\.0+)?\])\.?$`)
+
+/**
+ * @brief 确认 Vertex 400 响应明确指出客户端给定的非法 topP。
+ * @param client 原始客户端协议。
+ * @param original 应用渠道请求规则前的客户端正文。
+ * @param body Vertex HTTP 错误正文或 SSE 错误事件 JSON。
+ * @return 原始 topP 超出 0–1 且错误只指向该字段时返回 true。
+ */
+func isVertexTopPRangeError(client protocol.Protocol, original, body []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
+			Details []struct {
+				Type       string `json:"@type"`
+				Violations []struct {
+					Field string `json:"field"`
+				} `json:"fieldViolations"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil || payload.Error.Code != http.StatusBadRequest || payload.Error.Status != "INVALID_ARGUMENT" {
+		return false
+	}
+	if len(payload.Error.Details) == 0 {
+		return vertexTopPRange.MatchString(strings.TrimSpace(payload.Error.Message)) && vertexClientTopPOutOfRange(client, original)
+	}
+	hasTopPViolation := false
+	for _, detail := range payload.Error.Details {
+		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" {
+			continue
+		}
+		if detail.Type != "type.googleapis.com/google.rpc.BadRequest" || len(detail.Violations) == 0 {
+			return false
+		}
+		for _, violation := range detail.Violations {
+			switch violation.Field {
+			case "generationConfig.topP", "generationConfig.top_p", "generation_config.topP", "generation_config.top_p":
+			default:
+				return false
+			}
+		}
+		hasTopPViolation = true
+	}
+	return hasTopPViolation && vertexClientTopPOutOfRange(client, original)
+}
+
+/**
+ * @brief 判断请求方显式声明的 topP 是否超出 Vertex 的 0–1 范围。
+ * @param client 原始客户端协议。
+ * @param body 应用渠道请求规则前的客户端正文。
+ * @return 至少有一个数值且所有同义字段都超出范围时返回 true。
+ */
+func vertexClientTopPOutOfRange(client protocol.Protocol, body []byte) bool {
+	if client != protocol.Gemini {
+		var request struct {
+			TopP *float64 `json:"top_p"`
+		}
+		return json.Unmarshal(body, &request) == nil && request.TopP != nil && (*request.TopP < 0 || *request.TopP > 1)
+	}
+	type generationConfig struct {
+		TopPCamel *float64 `json:"topP"`
+		TopPSnake *float64 `json:"top_p"`
+	}
+	var request struct {
+		ConfigCamel generationConfig `json:"generationConfig"`
+		ConfigSnake generationConfig `json:"generation_config"`
+	}
+	if json.Unmarshal(body, &request) != nil {
+		return false
+	}
+	found := false
+	for _, topP := range []*float64{request.ConfigCamel.TopPCamel, request.ConfigCamel.TopPSnake, request.ConfigSnake.TopPCamel, request.ConfigSnake.TopPSnake} {
+		if topP == nil {
+			continue
+		}
+		if *topP >= 0 && *topP <= 1 {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // buildVertexPublisherURL maps a Gemini API path onto a Vertex publisher base:

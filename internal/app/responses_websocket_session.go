@@ -219,13 +219,18 @@ func (s *responsesWebsocketSession) commit(request []byte, result responsesWebso
 	s.pendingToolCallIDs = append([]string(nil), result.pendingToolCallIDs...)
 }
 
+/**
+ * @brief 提取供 Responses 会话续轮使用的终态输出和关联 ID。
+ * @param response 上游终态的 Responses 对象，可能引用整帧 JSON。
+ * @return 含独立响应 ID 的续轮结果。
+ */
 func responsesWebsocketTurnFromResponse(response gjson.Result) responsesWebsocketTurnResult {
 	output := []byte("[]")
 	if items := response.Get("output"); items.IsArray() {
 		output = []byte(items.Raw)
 	}
 	return responsesWebsocketTurnResult{
-		completedResponseID: strings.TrimSpace(response.Get("id").String()),
+		completedResponseID: strings.Clone(strings.TrimSpace(response.Get("id").String())),
 		completedOutput:     output,
 		pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
 	}

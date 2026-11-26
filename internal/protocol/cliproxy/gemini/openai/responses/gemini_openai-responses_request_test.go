@@ -14,6 +14,60 @@ import (
 
 const testResponsesGeminiThoughtSignature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
 
+func TestConvertOpenAIResponsesRequestToGemini_OptionalGenerationFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		want      map[string]string
+	}{
+		{
+			name: "null",
+			raw:  `{"instructions":null,"max_output_tokens":null,"temperature":null,"top_p":null,"stop_sequences":null}`,
+		},
+		{
+			name: "wrong types and empty sequences",
+			raw:  `{"input":"prompt","instructions":{"ignored":true},"max_output_tokens":"512","temperature":"0","top_p":false,"stop_sequences":[null,"",7]}`,
+		},
+		{
+			name: "empty instructions and zero output cap",
+			raw:  `{"instructions":"","max_output_tokens":0,"stop_sequences":"END"}`,
+		},
+		{
+			name: "explicit options",
+			raw:  `{"input":"prompt","instructions":"Be brief","max_output_tokens":512,"temperature":0,"top_p":0,"stop_sequences":["END",7,"","\n"]}`,
+			want: map[string]string{
+				"systemInstruction.parts.0.text":   `"Be brief"`,
+				"generationConfig.maxOutputTokens": "512",
+				"generationConfig.temperature":     "0",
+				"generationConfig.topP":            "0",
+				"generationConfig.stopSequences":   `["END","\n"]`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", []byte(tc.raw), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == nil {
+				for _, path := range []string{"systemInstruction", "generationConfig"} {
+					if value := gjson.GetBytes(got, path); value.Exists() {
+						t.Errorf("unexpected %s = %s", path, value.Raw)
+					}
+				}
+				if gjson.Get(tc.raw, "input").Type != gjson.String && gjson.GetBytes(got, "contents.#").Int() != 0 {
+					t.Errorf("empty instructions produced a fake user turn: %s", got)
+				}
+				return
+			}
+			for path, want := range tc.want {
+				if value := gjson.GetBytes(got, path); value.Raw != want {
+					t.Errorf("%s = %s, want %s", path, value.Raw, want)
+				}
+			}
+		})
+	}
+}
+
 func TestReorderOpenAIResponsesDetachedReasoningDoesNotCrossUserMessage(t *testing.T) {
 	items := gjson.Parse(`[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]},
@@ -26,6 +80,40 @@ func TestReorderOpenAIResponsesDetachedReasoningDoesNotCrossUserMessage(t *testi
 	}
 	if got := reordered[1].Get("type").String(); got != "reasoning" {
 		t.Fatalf("item 1 = %q, want reasoning", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ValidatesFunctionCallArguments(t *testing.T) {
+	tests := []struct {
+		name, arguments, wantObject, wrapped string
+	}{
+		{name: "object", arguments: `,"arguments":"  {\"amount\":9007199254740993}  "`, wantObject: `{"amount":9007199254740993}`},
+		{name: "missing", wantObject: "{}"},
+		{name: "blank", arguments: `,"arguments":"   "`, wantObject: "{}"},
+		{name: "null", arguments: `,"arguments":null`, wantObject: "{}"},
+		{name: "encoded null", arguments: `,"arguments":" null "`, wantObject: "{}"},
+		{name: "array", arguments: `,"arguments":"[1,2]"`, wrapped: "[1,2]"},
+		{name: "scalar", arguments: `,"arguments":"123"`, wrapped: "123"},
+		{name: "truncated", arguments: `,"arguments":"  {\"p\":1  "`, wrapped: `  {"p":1  `},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := []byte(`{"input":[
+				{"type":"function_call","call_id":"call_1","name":"read"` + tt.arguments + `},
+				{"type":"function_call_output","call_id":"call_1","output":"ok"}
+			]}`)
+			out, err := ConvertOpenAIResponsesRequestToGemini("gemini-3-flash", request, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := gjson.GetBytes(out, "contents.0.parts.0.functionCall.args")
+			if !gjson.ValidBytes(out) || !args.IsObject() {
+				t.Fatalf("expected valid Gemini request with object arguments: %s", out)
+			}
+			if tt.wantObject != "" && args.Raw != tt.wantObject || tt.wrapped != "" && args.Get("arguments").Str != tt.wrapped {
+				t.Fatalf("translated args = %s, want object %q or wrapped arguments %q", args.Raw, tt.wantObject, tt.wrapped)
+			}
+		})
 	}
 }
 

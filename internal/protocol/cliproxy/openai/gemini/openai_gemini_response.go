@@ -107,9 +107,8 @@ func ConvertOpenAIResponseToGemini(_ context.Context, modelName string, _, _ []b
 			parts := openAIMessageGeminiParts(delta)
 			candidate.accumulateTools(delta.Get("tool_calls"))
 
-			var finishReason string
-			if reason := choice.Get("finish_reason"); reason.Type == gjson.String && reason.String() != "" {
-				finishReason = mapOpenAIFinishReasonToGemini(reason.String())
+			finishReason := mapOpenAIFinishReasonToGemini(choice.Get("finish_reason").Str)
+			if finishReason != "" {
 				parts = appendAccumulatedToolCalls(parts, candidate.tools)
 				candidate.tools = nil
 				candidate.done = true
@@ -126,7 +125,7 @@ func ConvertOpenAIResponseToGemini(_ context.Context, modelName string, _, _ []b
 	if !usage.IsObject() {
 		return results
 	}
-	metadata := geminiUsageMetadataFromOpenAI(usage)
+	metadata := translatorcommon.GeminiUsageMetadataFromOpenAI(usage, nil)
 	if metadata == nil {
 		if len(results) > 0 || state.lastUsage != nil {
 			return results
@@ -256,7 +255,9 @@ func openAIToolCallThoughtSignature(toolCall gjson.Result) string {
 
 // mapOpenAIFinishReasonToGemini maps OpenAI finish reasons to Gemini finish reasons
 func mapOpenAIFinishReasonToGemini(openAIReason string) string {
-	switch openAIReason {
+	switch strings.TrimSpace(openAIReason) {
+	case "":
+		return ""
 	case "stop":
 		return "STOP"
 	case "length":
@@ -563,10 +564,7 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, _, _ []
 				}
 			}
 
-			var finishReason string
-			if reason := choice.Get("finish_reason"); reason.Type == gjson.String && reason.String() != "" {
-				finishReason = mapOpenAIFinishReasonToGemini(reason.String())
-			}
+			finishReason := mapOpenAIFinishReasonToGemini(choice.Get("finish_reason").Str)
 			index := openAIChoiceIndex(position, choice)
 			candidates = append(candidates, geminiCandidate(index, parts, finishReason))
 			return true
@@ -576,7 +574,7 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, _, _ []
 		}
 	}
 	if usage := root.Get("usage"); usage.IsObject() {
-		if metadata := geminiUsageMetadataFromOpenAI(usage); metadata != nil {
+		if metadata := translatorcommon.GeminiUsageMetadataFromOpenAI(usage, nil); metadata != nil {
 			out, _ = sjson.SetRawBytes(out, "usageMetadata", metadata)
 		}
 	}
@@ -586,64 +584,6 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, _, _ []
 // GeminiTokenCount builds a Gemini token count response.
 func GeminiTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.GeminiTokenCountJSON(count)
-}
-
-func reasoningTokensFromUsage(usage gjson.Result) int64 {
-	if usage.Exists() {
-		if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() {
-			return v.Int()
-		}
-		if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
-			return v.Int()
-		}
-	}
-	return 0
-}
-
-func geminiUsageMetadataFromOpenAI(usage gjson.Result) []byte {
-	promptTokens, hasPromptTokens := tokenCountFromUsage(usage, "prompt_tokens", "input_tokens")
-	completionTokens, hasCompletionTokens := tokenCountFromUsage(usage, "completion_tokens", "output_tokens")
-	totalTokens, hasTotalTokens := tokenCountFromUsage(usage, "total_tokens")
-	var out []byte
-	if hasPromptTokens {
-		out, _ = sjson.SetBytes(out, "promptTokenCount", promptTokens)
-	}
-	if hasCompletionTokens {
-		out, _ = sjson.SetBytes(out, "candidatesTokenCount", completionTokens)
-	}
-	if hasTotalTokens {
-		out, _ = sjson.SetBytes(out, "totalTokenCount", totalTokens)
-	} else if hasPromptTokens || hasCompletionTokens {
-		out, _ = sjson.SetBytes(out, "totalTokenCount", promptTokens+completionTokens)
-	}
-	if reasoningTokens := reasoningTokensFromUsage(usage); reasoningTokens > 0 {
-		out, _ = sjson.SetBytes(out, "thoughtsTokenCount", reasoningTokens)
-	}
-	if cachedTokens := cachedTokensFromUsage(usage); cachedTokens > 0 {
-		out, _ = sjson.SetBytes(out, "cachedContentTokenCount", cachedTokens)
-	}
-	return out
-}
-
-func tokenCountFromUsage(usage gjson.Result, paths ...string) (int64, bool) {
-	for _, path := range paths {
-		if v := usage.Get(path); v.Exists() {
-			return v.Int(), true
-		}
-	}
-	return 0, false
-}
-
-func cachedTokensFromUsage(usage gjson.Result) int64 {
-	if usage.Exists() {
-		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
-			return v.Int()
-		}
-		if v := usage.Get("input_tokens_details.cached_tokens"); v.Exists() {
-			return v.Int()
-		}
-	}
-	return 0
 }
 
 func openAIMessageGeminiParts(message gjson.Result) [][]byte {

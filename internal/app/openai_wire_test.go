@@ -88,7 +88,7 @@ func TestPrepareTranslatedUpstreamBodyMaxTokensRespectsBodyRules(t *testing.T) {
 
 	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.OpenAI, "/v1/chat/completions", "gpt-5.4", body, body,
-		"", headers, false, nil, false, false,
+		"", headers, false, nil, false, protocol.OpenAI,
 	)
 	if err != nil {
 		t.Fatal(err)

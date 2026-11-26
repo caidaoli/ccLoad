@@ -2,6 +2,7 @@ package chat_completions
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,6 +10,73 @@ import (
 
 	"ccLoad/internal/protocol/cliproxy/signature"
 )
+
+func TestConvertOpenAIRequestToGemini_StopSequences(t *testing.T) {
+	for _, tc := range []struct {
+		stop string
+		want []string
+	}{
+		{`"END"`, []string{"END"}},
+		{`["A","",4,null,"\n"]`, []string{"A", "\n"}},
+		{`null`, nil},
+		{`[]`, nil},
+		{`""`, nil},
+	} {
+		t.Run(tc.stop, func(t *testing.T) {
+			raw := []byte(`{"messages":[{"role":"user","content":"hello"}],"stop":` + tc.stop + `}`)
+			out, err := ConvertOpenAIRequestToGemini("gemini-2.5-pro", raw, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stops := gjson.GetBytes(out, "generationConfig.stopSequences")
+			if tc.want == nil {
+				if stops.Exists() {
+					t.Fatalf("stopSequences unexpectedly present: %s", out)
+				}
+				return
+			}
+			var got []string
+			for _, item := range stops.Array() {
+				got = append(got, item.String())
+			}
+			if !stops.IsArray() || !slices.Equal(got, tc.want) {
+				t.Fatalf("stopSequences = %s, want %q", stops.Raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIRequestToGemini_ValidatesToolCallArguments(t *testing.T) {
+	tests := []struct {
+		name, arguments, wantObject, wrapped string
+	}{
+		{name: "object", arguments: `,"arguments":"  {\"amount\":9007199254740993}  "`, wantObject: `{"amount":9007199254740993}`},
+		{name: "missing", wantObject: "{}"},
+		{name: "blank", arguments: `,"arguments":"   "`, wantObject: "{}"},
+		{name: "null", arguments: `,"arguments":null`, wantObject: "{}"},
+		{name: "array", arguments: `,"arguments":"[1,2]"`, wrapped: "[1,2]"},
+		{name: "truncated", arguments: `,"arguments":"  {\"p\":1  "`, wrapped: `  {"p":1  `},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := []byte(`{"messages":[
+				{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read"` + tt.arguments + `}}]},
+				{"role":"tool","tool_call_id":"call_1","content":"ok"}
+			]}`)
+			out, err := ConvertOpenAIRequestToGemini("gemini-3-flash", request, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := gjson.GetBytes(out, "contents.0.parts.0.functionCall.args")
+			if !gjson.ValidBytes(out) || !args.IsObject() {
+				t.Fatalf("expected valid Gemini request with object arguments: %s", out)
+			}
+			if tt.wantObject != "" && args.Raw != tt.wantObject || tt.wrapped != "" && args.Get("params").Str != tt.wrapped {
+				t.Fatalf("translated args = %s, want object %q or params %q", args.Raw, tt.wantObject, tt.wrapped)
+			}
+		})
+	}
+}
 
 func TestConvertOpenAIRequestToGeminiGoogleThinkingPrecedence(t *testing.T) {
 	for _, tc := range []struct {

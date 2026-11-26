@@ -219,8 +219,11 @@ func committedStreamFailureMessage(sseErrorEvent []byte) string {
 	if len(sseErrorEvent) == 0 {
 		return "upstream stream interrupted before completion"
 	}
-	if message := gjson.GetBytes(sseErrorEvent, "error.message").String(); message != "" {
-		return message
+	event := gjson.ParseBytes(sseErrorEvent)
+	for _, path := range []string{"error.message", "response.error.message"} {
+		if message := event.Get(path).String(); message != "" {
+			return message
+		}
 	}
 	return "upstream stream failed before completion"
 }
@@ -1063,7 +1066,7 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 		requestedModel = reqCtx.originalModel
 	}
 	// 后缀来自客户端字面模型名，能力却属于重定向/模糊匹配后的实际上游模型。
-	bodyToSend = applyThinkingSuffixForModel(bodyToSend, reqCtx.clientProtocol, requestedModel, actualModel)
+	bodyToSend = applyThinkingSuffixForModel(bodyToSend, reqCtx.clientProtocol, upstreamProtocol, requestedModel, actualModel)
 	if reqCtx.clientProtocol == protocol.OpenAI && upstreamProtocol == protocol.Gemini &&
 		protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyChatCompletions {
 		bodyToSend = omitOpenAIGoogleThinkingForAuto(bodyToSend, requestedModel)
@@ -1255,14 +1258,18 @@ func extractThinkingEffortFromPayload(payload map[string]any) string {
 		}
 	}
 
-	if thinkingConfig, ok := payload["thinkingConfig"].(map[string]any); ok {
-		if effort := firstStringMapValue(thinkingConfig, "thinkingLevel", "thinking_level", "effort", "level"); effort != "" {
-			return normalizeThinkingEffort(effort)
+	for _, key := range [...]string{"thinkingConfig", "thinking_config"} {
+		if thinkingConfig, ok := payload[key].(map[string]any); ok {
+			if effort := firstStringMapValue(thinkingConfig, "thinkingLevel", "thinking_level", "effort", "level"); effort != "" {
+				return normalizeThinkingEffort(effort)
+			}
 		}
 	}
-	if generationConfig, ok := payload["generationConfig"].(map[string]any); ok {
-		if effort := extractThinkingEffortFromPayload(generationConfig); effort != "" {
-			return effort
+	for _, key := range [...]string{"generationConfig", "generation_config"} {
+		if generationConfig, ok := payload[key].(map[string]any); ok {
+			if effort := extractThinkingEffortFromPayload(generationConfig); effort != "" {
+				return effort
+			}
 		}
 	}
 
@@ -1534,14 +1541,27 @@ func requestBodyServiceTier(upstreamProtocol protocol.Protocol, body []byte) str
 	return normalizeBillingServiceTier(gjson.GetBytes(body, "service_tier").String())
 }
 
-func normalizeObservedServiceTier(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
+/**
+ * @brief 将计费档位归一为固定值，使日志中的档位独立于原始 JSON。
+ * @param value 上游或客户端声明的档位。
+ * @return 已知档位的小写常量，未知档位返回空字符串。
+ */
 func normalizeBillingServiceTier(value string) string {
-	switch normalizeObservedServiceTier(value) {
-	case "ultrafast", "auto", "priority", "fast", "flex", "default", "standard":
-		return normalizeObservedServiceTier(value)
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ultrafast":
+		return "ultrafast"
+	case "auto":
+		return "auto"
+	case "priority":
+		return "priority"
+	case "fast":
+		return "fast"
+	case "flex":
+		return "flex"
+	case "default":
+		return "default"
+	case "standard":
+		return "standard"
 	default:
 		return ""
 	}

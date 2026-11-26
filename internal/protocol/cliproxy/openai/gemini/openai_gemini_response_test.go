@@ -137,6 +137,69 @@ func TestConvertOpenAIResponseToGeminiStream_PreservesUpdatedUsage(t *testing.T)
 	}
 }
 
+func TestConvertOpenAIResponseToGemini_PreservesZeroAndSkipsNullUsageFields(t *testing.T) {
+	const usage = `"usage":{"prompt_tokens":null,"input_tokens":0,"completion_tokens":"2","total_tokens":null,"completion_tokens_details":{"reasoning_tokens":null},"output_tokens_details":{"reasoning_tokens":1}}`
+	check := func(out []byte) {
+		t.Helper()
+		metadata := gjson.GetBytes(out, "usageMetadata")
+		for field, want := range map[string]string{"promptTokenCount": "0", "candidatesTokenCount": "1", "totalTokenCount": "2", "thoughtsTokenCount": "1"} {
+			if got := metadata.Get(field).Raw; got != want {
+				t.Errorf("%s = %s, want %s: %s", field, got, want, out)
+			}
+		}
+	}
+	var state any
+	if out := ConvertOpenAIResponseToGemini(t.Context(), "gpt-test", nil, nil, []byte(`{"choices":[],"usage":null}`), &state); len(out) != 0 {
+		t.Fatalf("null usage emitted a frame: %q", out)
+	}
+	out := ConvertOpenAIResponseToGemini(t.Context(), "gpt-test", nil, nil, []byte(`{"choices":[],`+usage+`}`), &state)
+	if len(out) != 1 {
+		t.Fatalf("expected one usage frame, got %q", out)
+	}
+	check(out[0])
+	check(ConvertOpenAIResponseToGeminiNonStream(t.Context(), "gpt-test", nil, nil, []byte(`{"choices":[],`+usage+`}`), nil))
+}
+
+func TestConvertOpenAIResponseToGemini_UsageBreakdown(t *testing.T) {
+	for _, tt := range []struct {
+		name, usage string
+		want        map[string]string
+	}{
+		{"authoritative total", `{"prompt_tokens":12,"completion_tokens":8,"total_tokens":25,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":5}}`, map[string]string{
+			"promptTokenCount": "12", "candidatesTokenCount": "3", "totalTokenCount": "25", "thoughtsTokenCount": "5", "cachedContentTokenCount": "3",
+		}},
+		{"explicit zero", `{"prompt_tokens":0,"input_tokens":60,"completion_tokens":0,"output_tokens":40,"total_tokens":0,"prompt_tokens_details":{"cached_tokens":0},"input_tokens_details":{"cached_tokens":9},"completion_tokens_details":{"reasoning_tokens":0},"output_tokens_details":{"reasoning_tokens":8}}`, map[string]string{
+			"promptTokenCount": "0", "candidatesTokenCount": "0", "totalTokenCount": "0", "thoughtsTokenCount": "0", "cachedContentTokenCount": "0",
+		}},
+		{"no breakdown", `{"prompt_tokens":10,"completion_tokens":3,"total_tokens":null,"prompt_tokens_details":{"cached_tokens":null},"completion_tokens_details":{"reasoning_tokens":null}}`, map[string]string{
+			"promptTokenCount": "10", "candidatesTokenCount": "3", "totalTokenCount": "13",
+		}},
+		{"invalid fields skip to valid aliases", `{"prompt_tokens":"","input_tokens":10,"completion_tokens":0.5,"output_tokens":"4","total_tokens":"garbage","prompt_tokens_details":{"cached_tokens":false},"input_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":-1},"output_tokens_details":{"reasoning_tokens":3}}`, map[string]string{
+			"promptTokenCount": "10", "candidatesTokenCount": "1", "totalTokenCount": "14", "thoughtsTokenCount": "3", "cachedContentTokenCount": "2",
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(`{"choices":[],"usage":` + tt.usage + `}`)
+			var state any
+			stream := ConvertOpenAIResponseToGemini(t.Context(), "gpt-test", nil, nil, raw, &state)
+			if len(stream) != 1 {
+				t.Fatalf("want one usage event, got %q", stream)
+			}
+			for _, out := range [][]byte{stream[0], ConvertOpenAIResponseToGeminiNonStream(t.Context(), "gpt-test", nil, nil, raw, nil)} {
+				metadata := gjson.GetBytes(out, "usageMetadata")
+				if len(metadata.Map()) != len(tt.want) {
+					t.Errorf("unexpected fields in %s", metadata.Raw)
+				}
+				for field, want := range tt.want {
+					if got := metadata.Get(field).Raw; got != want {
+						t.Errorf("%s = %s, want %s: %s", field, got, want, out)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIResponseToGemini_ReasoningAndTypedContent(t *testing.T) {
 	type part struct {
 		text    string
@@ -216,8 +279,8 @@ func TestConvertOpenAIResponseToGeminiStreamPreservesToolCallID(t *testing.T) {
 func TestConvertOpenAIResponseToGeminiStream_NullFinishReasonIgnored(t *testing.T) {
 	var param any
 
-	// Chunk 1: Contentless delta with explicit finish_reason: null (e.g. role declaration or pre-reasoning delta)
-	chunk1 := []byte(`{"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`)
+	// Contentless role chunk with a blank finish reason must leave the choice open.
+	chunk1 := []byte(`{"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"   "}]}`)
 	out1 := ConvertOpenAIResponseToGemini(context.Background(), "gpt-test", nil, nil, chunk1, &param)
 	for i, chunk := range out1 {
 		if fr := gjson.GetBytes(chunk, "candidates.0.finishReason"); fr.Exists() && fr.String() != "" {
@@ -290,6 +353,10 @@ func TestConvertOpenAIResponseToGeminiNonStream_NullFinishReasonIgnored(t *testi
 		{
 			name:    "empty finish_reason",
 			payload: []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":""}]}`),
+		},
+		{
+			name:    "whitespace finish_reason",
+			payload: []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"   "}]}`),
 		},
 	}
 

@@ -2,6 +2,16 @@ package common
 
 import "github.com/tidwall/gjson"
 
+// ThoughtSignature returns the first nonempty signature across Gemini's field aliases.
+func ThoughtSignature(part gjson.Result) string {
+	for _, field := range [...]string{"thoughtSignature", "thought_signature"} {
+		if signature := part.Get(field).Str; signature != "" {
+			return signature
+		}
+	}
+	return ""
+}
+
 // HasUnsupportedPartPayload keeps omitted payloads from being mistaken for
 // detached signatures belonging to a neighboring supported part.
 func HasUnsupportedPartPayload(part gjson.Result, supportedFields ...string) bool {

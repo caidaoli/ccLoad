@@ -53,13 +53,16 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 	rawJSON = fixedJSON
 
+	rawJSON = signature.SanitizeGeminiSystemInstruction(rawJSON, "request.contents")
 	if systemInstructionResult := util.GetGJSONBytesNoCopy(rawJSON, "request.system_instruction"); systemInstructionResult.Exists() {
-		rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.systemInstruction", []byte(systemInstructionResult.Raw))
+		camel := util.GetGJSONBytesNoCopy(rawJSON, "request.systemInstruction")
+		if !hasAntigravitySystemInstruction(camel) && hasAntigravitySystemInstruction(systemInstructionResult) {
+			rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.systemInstruction", []byte(systemInstructionResult.Raw))
+		}
 		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.system_instruction")
 	}
 
-	rawJSON = signature.SanitizeGeminiSystemInstruction(rawJSON, "request.contents")
-
+	rawJSON = normalizeAntigravityMedia(rawJSON)
 	rawJSON = normalizeGeminiGenerationConfigResponseSchema(rawJSON)
 
 	// Normalize roles in request.contents: default to valid values if missing/invalid.
@@ -122,16 +125,9 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						declarationJSON, _ = sjson.SetBytes(declarationJSON, "name", mappedName)
 						declarationsChanged = true
 					}
-					if parameters := declaration.Get("parameters"); parameters.Exists() {
-						normalizedParams := util.NormalizeJSONSchemaNumericConstraints(parameters.Raw)
-						declarationJSON, _ = sjson.SetRawBytes(declarationJSON, "parametersJsonSchema", []byte(normalizedParams))
-						declarationJSON, _ = sjson.DeleteBytes(declarationJSON, "parameters")
+					if normalized, changed := normalizeAntigravityParameterSchema(declaration, declarationJSON); changed {
+						declarationJSON = normalized
 						declarationsChanged = true
-					} else if parametersJSONSchema := declaration.Get("parametersJsonSchema"); parametersJSONSchema.Exists() {
-						if normalizedParams := util.NormalizeJSONSchemaNumericConstraints(parametersJSONSchema.Raw); normalizedParams != parametersJSONSchema.Raw {
-							declarationJSON, _ = sjson.SetRawBytes(declarationJSON, "parametersJsonSchema", []byte(normalizedParams))
-							declarationsChanged = true
-						}
 					}
 					declarationItems = append(declarationItems, declarationJSON)
 					return true
@@ -165,6 +161,129 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings"), nil
 }
 
+// hasAntigravitySystemInstruction treats empty aliases as absent while retaining
+// instructions carried by non-text parts.
+func hasAntigravitySystemInstruction(instruction gjson.Result) bool {
+	if instruction.Type == gjson.String {
+		return strings.TrimSpace(instruction.Str) != ""
+	}
+	parts := instruction.Get("parts")
+	if !parts.IsArray() {
+		return false
+	}
+	for _, part := range parts.Array() {
+		if !part.IsObject() {
+			continue
+		}
+		hasContent := false
+		part.ForEach(func(key, value gjson.Result) bool {
+			hasContent = key.Str != "text" || strings.TrimSpace(value.Str) != ""
+			return !hasContent
+		})
+		if hasContent {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeAntigravityParameterSchema(declaration gjson.Result, raw []byte) ([]byte, bool) {
+	for _, key := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema"} {
+		schema := declaration.Get(key)
+		if schema.IsObject() {
+			normalized := util.NormalizeJSONSchemaNumericConstraints(schema.Raw)
+			if key == "parameters" {
+				raw, _ = sjson.SetRawBytes(raw, "parametersJsonSchema", []byte(normalized))
+				raw, _ = sjson.DeleteBytes(raw, key)
+			} else if normalized != schema.Raw {
+				raw, _ = sjson.SetRawBytes(raw, key, []byte(normalized))
+			} else {
+				return raw, false
+			}
+			return raw, true
+		}
+		// Only the JSON Schema carrier can hold a boolean schema.
+		if key != "parameters" && (schema.Type == gjson.True || schema.Type == gjson.False) {
+			raw, _ = sjson.SetRawBytes(raw, "parametersJsonSchema", []byte(schema.Raw))
+			raw, _ = sjson.DeleteBytes(raw, "parameters")
+			raw, _ = sjson.DeleteBytes(raw, "parameters_json_schema")
+			return raw, true
+		}
+	}
+	return raw, false
+}
+
+func normalizeAntigravityMedia(payload []byte) []byte {
+	contents := util.GetGJSONBytesNoCopy(payload, "request.contents")
+	if normalized := rewriteAntigravityMediaArray(contents, normalizeAntigravityContentMedia); normalized != contents.Raw {
+		payload, _ = sjson.SetRawBytes(payload, "request.contents", []byte(normalized))
+	}
+	system := util.GetGJSONBytesNoCopy(payload, "request.systemInstruction")
+	if normalized := normalizeAntigravityContentMedia(system); normalized != system.Raw {
+		payload, _ = sjson.SetRawBytes(payload, "request.systemInstruction", []byte(normalized))
+	}
+	return payload
+}
+
+func normalizeAntigravityContentMedia(content gjson.Result) string {
+	return normalizeAntigravityNestedMedia(content.Raw, content.Get("parts"), "parts")
+}
+
+func normalizeAntigravityMediaPart(part gjson.Result) string {
+	raw := moveAntigravityMediaAlias(part.Raw, "inline_data", "inlineData")
+	raw = moveAntigravityMediaAlias(raw, "inlineData.mime_type", "inlineData.mimeType")
+	raw = moveAntigravityMediaAlias(raw, "file_data", "fileData")
+	raw = moveAntigravityMediaAlias(raw, "fileData.mime_type", "fileData.mimeType")
+	raw = moveAntigravityMediaAlias(raw, "fileData.file_uri", "fileData.fileUri")
+	for _, path := range []string{"functionResponse.parts", "function_response.parts"} {
+		raw = normalizeAntigravityNestedMedia(raw, part.Get(path), path)
+	}
+	return raw
+}
+
+func normalizeAntigravityNestedMedia(raw string, parts gjson.Result, path string) string {
+	if normalized := rewriteAntigravityMediaArray(parts, normalizeAntigravityMediaPart); normalized != parts.Raw {
+		raw, _ = sjson.SetRaw(raw, path, normalized)
+	}
+	return raw
+}
+
+// rewriteAntigravityMediaArray keeps unchanged raw elements and rebuilds an
+// array only when a child needs a rewrite, including for large inline payloads.
+func rewriteAntigravityMediaArray(array gjson.Result, rewrite func(gjson.Result) string) string {
+	if !array.IsArray() {
+		return array.Raw
+	}
+	values := array.Array()
+	var items []string
+	for i, value := range values {
+		normalized := rewrite(value)
+		if items == nil && normalized != value.Raw {
+			items = make([]string, len(values))
+			for j := 0; j < i; j++ {
+				items[j] = values[j].Raw
+			}
+		}
+		if items != nil {
+			items[i] = normalized
+		}
+	}
+	if items == nil {
+		return array.Raw
+	}
+	return "[" + strings.Join(items, ",") + "]"
+}
+
+func moveAntigravityMediaAlias(raw, snake, camel string) string {
+	if alias := gjson.Get(raw, snake); alias.Exists() {
+		if !gjson.Get(raw, camel).Exists() {
+			raw, _ = sjson.SetRaw(raw, camel, alias.Raw)
+		}
+		raw, _ = sjson.Delete(raw, snake)
+	}
+	return raw
+}
+
 // normalizeGeminiGenerationConfigResponseSchema converts generationConfig.responseJsonSchema
 // (and snake_case response_json_schema) to generationConfig.responseSchema for Antigravity compatibility.
 func normalizeGeminiGenerationConfigResponseSchema(rawJSON []byte) []byte {
@@ -176,7 +295,7 @@ func normalizeGeminiGenerationConfigResponseSchema(rawJSON []byte) []byte {
 			oldPath := container + "." + schemaKey
 			if schema := util.GetGJSONBytesNoCopy(rawJSON, oldPath); schema.Exists() {
 				targetPath := container + ".responseSchema"
-				if !util.GetGJSONBytesNoCopy(rawJSON, targetPath).Exists() {
+				if schema.IsObject() && !util.GetGJSONBytesNoCopy(rawJSON, targetPath).IsObject() {
 					rawJSON, _ = sjson.SetRawBytes(rawJSON, targetPath, []byte(schema.Raw))
 				}
 				rawJSON, _ = sjson.DeleteBytes(rawJSON, oldPath)
@@ -398,8 +517,10 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 				continue
 			}
 
-			rawSignature, hasStringSignature := antigravityClaudeGeminiPartThoughtSignature(part)
-			hasSignatureKey := hasStringSignature || antigravityClaudeGeminiPartHasThoughtSignatureKey(part) || antigravityClaudeGeminiPartHasThoughtSignatureKeyInRaw(partResult.Raw)
+			rawSignature := antigravityClaudeGeminiPartThoughtSignature(part)
+			canonicalCount, hasAlias := antigravityClaudeGeminiPartSignatureFields(partResult)
+			hasSignatureKey := canonicalCount != 0 || hasAlias
+			hasCanonicalSignature := canonicalCount == 1 && !hasAlias
 
 			if hasFunctionResponsePart(part) {
 				if hasSignatureKey {
@@ -430,6 +551,11 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 			if hasFunctionCallPart(part) {
 				isFirstFunctionCall := !firstFunctionCallSeen
 				firstFunctionCallSeen = true
+				hasBypass := hasCanonicalSignature && rawSignature == signature.GeminiSkipThoughtSignatureValidator
+				if (isFirstFunctionCall && hasBypass) || (!isFirstFunctionCall && !hasSignatureKey) {
+					rewrittenParts = append(rewrittenParts, []byte(partResult.Raw))
+					continue
+				}
 				changed = true
 				contentChanged = true
 				partBytes := deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part)
@@ -462,11 +588,13 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 					logAntigravityClaudeGeminiSignatureSanitize(modelName, "drop_thinking_block", "empty_thinking_text", contentIndex, partIndex, rawSignature)
 					continue
 				}
-				if normalized != rawSignature {
-					changed = true
-					contentChanged = true
-					logAntigravityClaudeGeminiSignatureSanitize(modelName, "normalize_signature", "compatible_claude_signature", contentIndex, partIndex, rawSignature)
+				if hasCanonicalSignature && normalized == rawSignature {
+					rewrittenParts = append(rewrittenParts, []byte(partResult.Raw))
+					continue
 				}
+				changed = true
+				contentChanged = true
+				logAntigravityClaudeGeminiSignatureSanitize(modelName, "normalize_signature", "compatible_claude_signature", contentIndex, partIndex, rawSignature)
 				partBytes := deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part)
 				var setErr error
 				partBytes, setErr = sjson.SetBytes(partBytes, "thoughtSignature", normalized)
@@ -515,66 +643,6 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 	return out
 }
 
-func antigravityClaudeGeminiPartHasThoughtSignatureKeyInRaw(raw string) bool {
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.UseNumber()
-	var stack []bool
-	expectKey := false
-
-	for {
-		t, err := dec.Token()
-		if err != nil {
-			break
-		}
-
-		switch v := t.(type) {
-		case json.Delim:
-			switch v {
-			case '{':
-				stack = append(stack, true)
-				expectKey = true
-			case '}':
-				if len(stack) > 0 {
-					stack = stack[:len(stack)-1]
-				}
-				if len(stack) > 0 && stack[len(stack)-1] {
-					expectKey = true
-				} else {
-					expectKey = false
-				}
-			case '[':
-				stack = append(stack, false)
-				expectKey = false
-			case ']':
-				if len(stack) > 0 {
-					stack = stack[:len(stack)-1]
-				}
-				if len(stack) > 0 && stack[len(stack)-1] {
-					expectKey = true
-				} else {
-					expectKey = false
-				}
-			}
-		case string:
-			if expectKey && len(stack) > 0 && stack[len(stack)-1] {
-				if v == "thoughtSignature" || v == "thought_signature" {
-					return true
-				}
-				expectKey = false
-			} else {
-				if len(stack) > 0 && stack[len(stack)-1] {
-					expectKey = true
-				}
-			}
-		default:
-			if len(stack) > 0 && stack[len(stack)-1] {
-				expectKey = true
-			}
-		}
-	}
-	return false
-}
-
 var antigravityClaudeGeminiThoughtSignaturePaths = [][]string{
 	{"thoughtSignature"},
 	{"thought_signature"},
@@ -589,37 +657,51 @@ var antigravityClaudeGeminiThoughtSignaturePaths = [][]string{
 	{"extra_content", "google", "thought_signature"},
 }
 
-func antigravityClaudeGeminiPartHasThoughtSignatureKey(part map[string]any) bool {
-	for _, path := range antigravityClaudeGeminiThoughtSignaturePaths {
-		if hasKeyAtPath(part, path...) {
-			return true
+// antigravityClaudeGeminiPartSignatureFields distinguishes a single canonical
+// key from alternate signatures. Inspect only the known paths, never tool data.
+func antigravityClaudeGeminiPartSignatureFields(part gjson.Result) (canonicalCount int, hasAlias bool) {
+	part.ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if name == "thoughtSignature" {
+			canonicalCount++
+		} else if !hasAlias {
+			for _, path := range antigravityClaudeGeminiThoughtSignaturePaths[1:] {
+				if name != path[0] || (len(path) > 1 && !hasAntigravitySignaturePath(value, path[1:])) {
+					continue
+				}
+				hasAlias = true
+				break
+			}
 		}
-	}
-	return false
+		return true
+	})
+	return canonicalCount, hasAlias
 }
 
-func hasKeyAtPath(value map[string]any, path ...string) bool {
-	var current any = value
-	for _, key := range path {
-		m, ok := current.(map[string]any)
-		if !ok {
-			return false
-		}
-		if _, exists := m[key]; !exists {
-			return false
-		}
-		current = m[key]
+func hasAntigravitySignaturePath(value gjson.Result, path []string) bool {
+	if !value.IsObject() {
+		return false
 	}
-	return true
+	if len(path) == 1 {
+		return value.Get(path[0]).Exists()
+	}
+	found := false
+	value.ForEach(func(key, child gjson.Result) bool {
+		if key.String() == path[0] && hasAntigravitySignaturePath(child, path[1:]) {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
-func antigravityClaudeGeminiPartThoughtSignature(part map[string]any) (string, bool) {
+func antigravityClaudeGeminiPartThoughtSignature(part map[string]any) string {
 	for _, path := range antigravityClaudeGeminiThoughtSignaturePaths {
 		if value, ok := stringAtPath(part, path...); ok && strings.TrimSpace(value) != "" {
-			return value, true
+			return value
 		}
 	}
-	return "", false
+	return ""
 }
 
 func deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part map[string]any) []byte {

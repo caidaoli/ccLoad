@@ -211,19 +211,15 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			systemTypePromptResult := systemPromptResult.Get("type")
 			if systemTypePromptResult.Type == gjson.String && systemTypePromptResult.String() == "text" {
 				systemPrompt := systemPromptResult.Get("text").String()
-				if util.IsClaudeCodeAttributionSystemText(systemPrompt) {
+				if systemPrompt == "" || util.IsClaudeCodeAttributionSystemText(systemPrompt) {
 					continue
 				}
-				partJSON := []byte(`{}`)
-				if systemPrompt != "" {
-					partJSON, _ = sjson.SetBytes(partJSON, "text", systemPrompt)
-				}
+				partJSON, _ := sjson.SetBytes(nil, "text", systemPrompt)
 				systemParts = append(systemParts, partJSON)
 			}
 		}
-	} else if systemResult.Type == gjson.String && !util.IsClaudeCodeAttributionSystemText(systemResult.String()) {
-		partJSON := []byte(`{"text":""}`)
-		partJSON, _ = sjson.SetBytes(partJSON, "text", systemResult.String())
+	} else if systemResult.Type == gjson.String && systemResult.Str != "" && !util.IsClaudeCodeAttributionSystemText(systemResult.Str) {
+		partJSON, _ := sjson.SetBytes(nil, "text", systemResult.Str)
 		systemParts = append(systemParts, partJSON)
 	}
 
@@ -538,17 +534,9 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 								imagePartItems := make([][]byte, 0, 2)
 								for _, fr := range frResults {
 									if fr.Get("type").String() == "image" && fr.Get("source.type").String() == "base64" {
-										inlineDataJSON := []byte(`{}`)
-										if mimeType := fr.Get("source.media_type").String(); mimeType != "" {
-											inlineDataJSON, _ = sjson.SetBytes(inlineDataJSON, "mimeType", mimeType)
+										if part := claudeBase64InlineData(fr.Get("source")); part != nil {
+											imagePartItems = append(imagePartItems, part)
 										}
-										if data := fr.Get("source.data").String(); data != "" {
-											inlineDataJSON, _ = sjson.SetBytes(inlineDataJSON, "data", data)
-										}
-
-										imagePartJSON := []byte(`{}`)
-										imagePartJSON, _ = sjson.SetRawBytes(imagePartJSON, "inlineData", inlineDataJSON)
-										imagePartItems = append(imagePartItems, imagePartJSON)
 										continue
 									}
 									if fr.Get("type").String() == "document" {
@@ -578,17 +566,9 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 							} else if functionResponseResult.IsObject() {
 								if functionResponseResult.Get("type").String() == "image" && functionResponseResult.Get("source.type").String() == "base64" {
-									inlineDataJSON := []byte(`{}`)
-									if mimeType := functionResponseResult.Get("source.media_type").String(); mimeType != "" {
-										inlineDataJSON, _ = sjson.SetBytes(inlineDataJSON, "mimeType", mimeType)
+									if part := claudeBase64InlineData(functionResponseResult.Get("source")); part != nil {
+										functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "parts", translatorcommon.JoinRawArray([][]byte{part}))
 									}
-									if data := functionResponseResult.Get("source.data").String(); data != "" {
-										inlineDataJSON, _ = sjson.SetBytes(inlineDataJSON, "data", data)
-									}
-
-									imagePartJSON := []byte(`{}`)
-									imagePartJSON, _ = sjson.SetRawBytes(imagePartJSON, "inlineData", inlineDataJSON)
-									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "parts", translatorcommon.JoinRawArray([][]byte{imagePartJSON}))
 									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, "")
 								} else if docPartJSON := claudeBase64InlineData(functionResponseResult.Get("source")); functionResponseResult.Get("type").String() == "document" && docPartJSON != nil {
 									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "parts", translatorcommon.JoinRawArray([][]byte{docPartJSON}))
@@ -609,21 +589,9 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							partItems = append(partItems, partJSON)
 						}
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "image" {
-						sourceResult := contentResult.Get("source")
-						if sourceResult.Get("type").String() == "base64" {
-							inlineDataJSON := []byte(`{}`)
-							if mimeType := sourceResult.Get("media_type").String(); mimeType != "" {
-								inlineDataJSON, _ = sjson.SetBytes(inlineDataJSON, "mimeType", mimeType)
-							}
-							if data := sourceResult.Get("data").String(); data != "" {
-								inlineDataJSON, _ = sjson.SetBytes(inlineDataJSON, "data", data)
-							}
-
-							partJSON := []byte(`{}`)
-							partJSON, _ = sjson.SetRawBytes(partJSON, "inlineData", inlineDataJSON)
+						if partJSON := claudeBase64InlineData(contentResult.Get("source")); partJSON != nil {
 							partItems = append(partItems, partJSON)
 						} else if originalRole == "user" {
-							// A part that cannot be inlined (url or file source) is dropped; the turn is refused only if nothing else is left.
 							drops.Drop("image")
 						}
 					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "document" || contentTypeResult.String() == "container_upload") {
@@ -718,11 +686,8 @@ func convertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					}
 				}
 				contentItems = append(contentItems, clientContentJSON)
-			} else if contentsResult.Type == gjson.String {
-				partJSON := []byte(`{}`)
-				if prompt := contentsResult.String(); prompt != "" {
-					partJSON, _ = sjson.SetBytes(partJSON, "text", prompt)
-				}
+			} else if contentsResult.Type == gjson.String && contentsResult.Str != "" {
+				partJSON, _ := sjson.SetBytes(nil, "text", contentsResult.Str)
 				contentItems = append(contentItems, antigravityClaudeContent(role, [][]byte{partJSON}))
 			}
 		}

@@ -9,11 +9,85 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertCodexResponseToGemini_StreamKeepsResponseCreationTime(t *testing.T) {
+	var state any
+	for _, tc := range []struct{ name, event, want string }{
+		{"missing at start", `{"type":"response.created","response":{"id":"first","model":"codex"}}`, ""},
+		{"reject null", `{"type":"response.output_text.delta","response":{"created_at":null},"delta":"first"}`, ""},
+		{"reject string", `{"type":"response.output_text.delta","response":{"created_at":"1700000000"},"delta":"text"}`, ""},
+		{"reject fraction", `{"type":"response.output_text.delta","response":{"created_at":1.5},"delta":"text"}`, ""},
+		{"reject out-of-range year", `{"type":"response.output_text.delta","response":{"created_at":253402300800},"delta":"text"}`, ""},
+		{"record first valid time", `{"type":"response.output_text.delta","response":{"created_at":1700000000},"delta":"text"}`, "2023-11-14T22:13:20Z"},
+		{"reuse on sparse frame", `{"type":"response.output_text.delta","delta":"text"}`, "2023-11-14T22:13:20Z"},
+		{"keep first time on terminal", `{"type":"response.completed","response":{"created_at":1700000001}}`, "2023-11-14T22:13:20Z"},
+		{"reset on new response", `{"type":"response.created","response":{"id":"second","model":"codex"}}`, ""},
+		{"new sparse frame has no old time", `{"type":"response.output_text.delta","delta":"text"}`, ""},
+		{"record epoch on response created", `{"type":"response.created","response":{"id":"third","model":"codex","created_at":0}}`, "1970-01-01T00:00:00Z"},
+		{"reuse epoch through terminal", `{"type":"response.completed","response":{}}`, "1970-01-01T00:00:00Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := ConvertCodexResponseToGemini(t.Context(), "gemini", nil, nil, []byte("data: "+tc.event), &state)
+			if len(out) != 1 {
+				t.Fatalf("expected one chunk, got %q", out)
+			}
+			if model := gjson.GetBytes(out[0], "modelVersion").Str; model != "gemini" {
+				t.Errorf("modelVersion = %q, want the client model gemini", model)
+			}
+			createTime := gjson.GetBytes(out[0], "createTime")
+			if createTime.Exists() != (tc.want != "") || createTime.Str != tc.want {
+				t.Errorf("createTime = %s, want %q: %s", createTime.Raw, tc.want, out[0])
+			}
+		})
+	}
+}
+
+func TestConvertCodexResponseToGemini_TerminalMetadata(t *testing.T) {
+	for _, tc := range []struct{ name, createdAt, want string }{
+		{"missing", "", ""},
+		{"null", "null", ""},
+		{"number as string", `"1700000000"`, ""},
+		{"fraction", "1.5", ""},
+		{"before year one", "-62135596801", ""},
+		{"after year 9999", "253402300800", ""},
+		{"first representable date", "-62135596800", "0001-01-01T00:00:00Z"},
+		{"epoch", "0", "1970-01-01T00:00:00Z"},
+		{"valid", "1700000000", "2023-11-14T22:13:20Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := `{"type":"response.completed","response":{"model":"served"`
+			if tc.createdAt != "" {
+				event += `,"created_at":` + tc.createdAt
+			}
+			event += "}}"
+			var state any
+			stream := ConvertCodexResponseToGemini(t.Context(), "alias", nil, nil, []byte("data: "+event), &state)
+			if len(stream) != 1 {
+				t.Fatalf("expected one terminal chunk, got %q", stream)
+			}
+			full := ConvertCodexResponseToGeminiNonStream(t.Context(), "alias", nil, nil, []byte(event), nil)
+			for _, output := range [][]byte{stream[0], full} {
+				if got := gjson.GetBytes(output, "createTime"); got.Exists() != (tc.want != "") || got.Str != tc.want {
+					t.Errorf("createTime = %s, want %q in %s", got.Raw, tc.want, output)
+				}
+				if got := gjson.GetBytes(output, "modelVersion").Str; got != "alias" {
+					t.Errorf("modelVersion = %q, want alias", got)
+				}
+			}
+		})
+	}
+}
+
 func TestConvertCodexResponseToGemini_IncompleteTerminal(t *testing.T) {
 	ctx := context.Background()
 	terminal := []byte(`{"type":"response.incomplete","response":{"id":"resp_1","model":"gpt-5.5","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`)
 
 	var param any
+	tool := []byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}}`)
+	toolOut := ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, tool, &param)
+	if len(toolOut) != 1 || gjson.GetBytes(toolOut[0], "candidates.0.finishReason").Exists() {
+		t.Fatalf("expected tool chunk without finishReason, got %q", toolOut)
+	}
+
 	streamOut := ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, append([]byte("data: "), terminal...), &param)
 	if len(streamOut) != 1 {
 		t.Fatalf("expected 1 streaming terminal chunk, got %d", len(streamOut))
@@ -25,6 +99,43 @@ func TestConvertCodexResponseToGemini_IncompleteTerminal(t *testing.T) {
 	nonStreamOut := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, terminal, nil)
 	if got := gjson.GetBytes(nonStreamOut, "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
 		t.Fatalf("non-stream finishReason = %q, want MAX_TOKENS; payload=%s", got, nonStreamOut)
+	}
+}
+
+func TestConvertCodexResponseToGemini_ValidatesFunctionCallArguments(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name      string
+		arguments string
+		wantQuery string
+	}{
+		{name: "truncated object", arguments: `"{\"query\":\"trunc"`},
+		{name: "trailing garbage", arguments: `"{\"query\":\"ok\"} trailing"`},
+		{name: "array", arguments: `"[1,2]"`},
+		{name: "object string with whitespace", arguments: `"  {\"query\":\"ok\"}  "`, wantQuery: "ok"},
+		{name: "native object", arguments: `{"query":"ok"}`, wantQuery: "ok"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			item := `{"type":"function_call","call_id":"call_1","name":"lookup","arguments":` + tt.arguments + `}`
+			event := `data: {"type":"response.output_item.done","item":` + item + `}`
+			terminal := `{"type":"response.completed","response":{"output":[` + item + `]}}`
+			var param any
+			streamOut := ConvertCodexResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, []byte(event), &param)
+			if len(streamOut) != 1 {
+				t.Fatalf("expected one tool chunk, got %q", streamOut)
+			}
+			nonStreamOut := ConvertCodexResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, []byte(terminal), nil)
+			for _, out := range [][]byte{streamOut[0], nonStreamOut} {
+				if !json.Valid(out) {
+					t.Errorf("invalid Gemini JSON: %s", out)
+					continue
+				}
+				args := gjson.GetBytes(out, "candidates.0.content.parts.0.functionCall.args")
+				if !args.IsObject() || args.Get("query").String() != tt.wantQuery || (tt.wantQuery == "" && len(args.Map()) != 0) {
+					t.Errorf("unexpected args %s for query %q; payload=%s", args.Raw, tt.wantQuery, out)
+				}
+			}
+		})
 	}
 }
 
@@ -225,6 +336,17 @@ func TestConvertCodexResponseToGemini_StreamMultipleFunctionCallsKeepSignatureAn
 	for _, event := range events {
 		outputs = append(outputs, ConvertCodexResponseToGemini(ctx, "muse-spark-1.3", nil, nil, event, &param)...)
 	}
+	if len(outputs) != 3 {
+		t.Fatalf("expected two tool chunks and one terminal chunk, got %q", outputs)
+	}
+	for _, chunk := range outputs[:2] {
+		if gjson.GetBytes(chunk, "candidates.0.finishReason").Exists() {
+			t.Errorf("tool chunk set finishReason early: %s", chunk)
+		}
+	}
+	if got := gjson.GetBytes(outputs[2], "candidates.0.finishReason").String(); got != "STOP" {
+		t.Errorf("terminal finishReason = %q, want STOP", got)
+	}
 	var names []string
 	signatureOnAlpha := false
 	for _, chunk := range outputs {
@@ -339,6 +461,62 @@ func TestConvertCodexResponseToGeminiNonStreamPreservesFunctionCallID(t *testing
 	got := gjson.GetBytes(out, "candidates.0.content.parts.0.functionCall.id").String()
 	if got != "call_gateway" {
 		t.Fatalf("expected functionCall.id %q, got %q; chunk=%s", "call_gateway", got, string(out))
+	}
+}
+
+func TestConvertCodexResponseToGemini_UsageBreakdown(t *testing.T) {
+	for _, tt := range []struct {
+		name, usage string
+		want        map[string]string
+		streamUsage bool
+	}{
+		{"authoritative total", `"usage":{"input_tokens":12,"output_tokens":8,"total_tokens":25,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":5}}`, map[string]string{
+			"promptTokenCount": "12", "candidatesTokenCount": "3", "totalTokenCount": "25", "thoughtsTokenCount": "5", "cachedContentTokenCount": "3",
+		}, true},
+		{"explicit zero", `"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}`, map[string]string{
+			"promptTokenCount": "0", "candidatesTokenCount": "0", "totalTokenCount": "0", "thoughtsTokenCount": "0", "cachedContentTokenCount": "0",
+		}, true},
+		{"fallback total", `"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":null,"output_tokens_details":{"reasoning_tokens":2}}`, map[string]string{
+			"promptTokenCount": "10", "candidatesTokenCount": "1", "totalTokenCount": "13", "thoughtsTokenCount": "2",
+		}, true},
+		{"no breakdown", `"usage":{"input_tokens":10,"output_tokens":3,"input_tokens_details":{"cached_tokens":null},"output_tokens_details":{"reasoning_tokens":null}}`, map[string]string{
+			"promptTokenCount": "10", "candidatesTokenCount": "3", "totalTokenCount": "13",
+		}, true},
+		{"empty usage", `"usage":{}`, nil, true},
+		{"null usage", `"usage":null`, nil, false},
+		{"absent usage", "", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(`{"type":"response.completed","response":{` + tt.usage + `}}`)
+			var state any
+			stream := ConvertCodexResponseToGemini(t.Context(), "gpt-test", nil, nil, append([]byte("data: "), raw...), &state)
+			if len(stream) != 1 {
+				t.Fatalf("want one terminal event, got %q", stream)
+			}
+			for _, wire := range []struct {
+				out     []byte
+				present bool
+			}{
+				{stream[0], tt.streamUsage},
+				{ConvertCodexResponseToGeminiNonStream(t.Context(), "gpt-test", nil, nil, raw, nil), true},
+			} {
+				metadata := gjson.GetBytes(wire.out, "usageMetadata")
+				if !wire.present {
+					if metadata.Exists() {
+						t.Errorf("unexpected usage metadata: %s", wire.out)
+					}
+					continue
+				}
+				if len(metadata.Map()) != len(tt.want)+1 || metadata.Get("trafficType").Str != "PROVISIONED_THROUGHPUT" {
+					t.Errorf("unexpected metadata fields: %s", wire.out)
+				}
+				for field, want := range tt.want {
+					if got := metadata.Get(field).Raw; got != want {
+						t.Errorf("%s = %s, want %s: %s", field, got, want, wire.out)
+					}
+				}
+			}
+		})
 	}
 }
 

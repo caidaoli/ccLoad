@@ -3034,6 +3034,95 @@ func TestResponsesWebsocketForwardsUpstreamResponseFailed(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 HTTP→WS 桥接补齐事件类型、回填输出并只发送一次失败终态。
+ * @param t 测试上下文。
+ */
+func TestResponsesWebsocketHTTPBridgeTerminalVariants(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, header, typed, status, wantType string
+		bareError                             bool
+	}{
+		{name: "header completed", header: "response.completed", status: "completed", wantType: "response.completed"},
+		{name: "header incomplete", header: "response.incomplete", status: "incomplete", wantType: "response.incomplete"},
+		{name: "typed completed wins", header: "response.failed", typed: `"response.completed"`, status: "completed", wantType: "response.completed"},
+		{name: "non-string type falls back to header", header: "response.incomplete", typed: "123", status: "incomplete", wantType: "response.incomplete"},
+		{name: "done cancelled", header: "response.done", status: "cancelled", wantType: "response.done"},
+		{name: "done failed", header: "response.done", status: "failed", wantType: "response.done"},
+		{name: "header failed", header: "response.failed", status: "failed", wantType: "response.failed"},
+		{name: "bare error before failed", header: "response.failed", status: "failed", wantType: "response.failed", bareError: true},
+		{name: "bare error before done failed", header: "response.done", status: "failed", wantType: "response.done", bareError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var turns atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if turns.Add(1) != 1 {
+					_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"after","output":[]}}`+"\n\n")
+					return
+				}
+				item := "event: response.output_item.done\n" +
+					`data: {"output_index":0,"item":{"id":"m","type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}}` + "\n\n"
+				if tc.bareError {
+					item += `data: {"type":"error","error":{"code":"server_error","message":"preliminary detail"}}` + "\n\n"
+				}
+				terminal := fmt.Sprintf(`"response":{"id":"first","status":%q,"output":[]}`, tc.status)
+				if tc.status == "failed" {
+					terminal = `"response":{"id":"first","status":"failed","error":{"code":"server_error","message":"upstream detail"}}`
+				}
+				if tc.typed != "" {
+					terminal = `"type":` + tc.typed + "," + terminal
+				}
+				_, _ = io.WriteString(w, item+"event: "+tc.header+"\ndata: {"+terminal+"}\n\n")
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "http-terminal", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+			}}, map[int]string{0: upstream.URL})
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			request := map[string]any{
+				"type": "response.create", "model": "gpt-test",
+				"input": []any{map[string]any{"type": "message", "role": "user", "content": "hi"}},
+			}
+			if err := conn.WriteJSON(request); err != nil {
+				t.Fatal(err)
+			}
+			_, item, err := conn.ReadMessage()
+			if err != nil || gjson.GetBytes(item, "type").String() != "response.output_item.done" {
+				t.Fatalf("first event = %s, err = %v", item, err)
+			}
+			_, rawTerminal, err := conn.ReadMessage()
+			terminal := gjson.ParseBytes(rawTerminal)
+			if err != nil || terminal.Get("type").String() != tc.wantType ||
+				terminal.Get("response.status").String() != tc.status || terminal.Get("response.id").String() != "first" {
+				t.Fatalf("terminal = %s, err = %v", rawTerminal, err)
+			}
+			if tc.status == "failed" {
+				if terminal.Get("response.error.message").String() != "upstream detail" {
+					t.Fatalf("missing upstream failure reason: %s", rawTerminal)
+				}
+			} else {
+				if terminal.Get("response.output.0.content.0.text").String() != "partial" {
+					t.Fatalf("missing completed output: %s", rawTerminal)
+				}
+				request["previous_response_id"] = "first"
+			}
+			if err := conn.WriteJSON(request); err != nil {
+				t.Fatal(err)
+			}
+			_, next, err := conn.ReadMessage()
+			if err != nil || gjson.GetBytes(next, "response.id").String() != "after" {
+				t.Fatalf("next event (must not repeat terminal) = %s, err = %v", next, err)
+			}
+		})
+	}
+}
+
 // TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest locks down
 // local rejection of a function_call_output whose call_id has no matching
 // function_call anywhere in the same input array. Upstream would hard-reject
@@ -5944,6 +6033,85 @@ func TestNativeCodexWebsocketPreservesFinalFailedEvent(t *testing.T) {
 		t.Fatalf("response.failed was forwarded twice: %s", duplicate)
 	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 		t.Fatalf("unexpected websocket state after response.failed: %v", err)
+	}
+}
+
+/**
+ * @brief 验证原生 WS 的 response.done 失败保留原帧，下一回合切换上游连接。
+ * @param t 测试上下文。
+ */
+func TestNativeCodexWebsocketFailedDoneRotatesUpstream(t *testing.T) {
+	t.Parallel()
+	for _, immediateEOF := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immediate EOF=%t", immediateEOF), func(t *testing.T) {
+			var sockets, turns atomic.Int32
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("upgrade upstream connection: %v", err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				sockets.Add(1)
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+					if turns.Add(1) == 1 {
+						payload := `{"type":"response.done","response":{"id":"failed","status":"failed","error":{"code":"server_error","message":"original reason"}}}`
+						if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+							t.Errorf("write failed response: %v", err)
+							return
+						}
+						if immediateEOF {
+							return
+						}
+						continue
+					}
+					payload := `{"type":"response.completed","response":{"id":"next","status":"completed","output":[]}}`
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+						t.Errorf("write successful response: %v", err)
+					}
+					return
+				}
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "failed-done-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100,
+			}}, map[int]string{0: upstream.URL})
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			request := map[string]any{
+				"type": "response.create", "model": "gpt-test",
+				"input": []any{map[string]any{"role": "user", "content": "hello"}},
+			}
+			if err := conn.WriteJSON(request); err != nil {
+				t.Fatal(err)
+			}
+			_, failure, err := conn.ReadMessage()
+			if err != nil || gjson.GetBytes(failure, "type").String() != "response.done" ||
+				gjson.GetBytes(failure, "response.error.message").String() != "original reason" {
+				t.Fatalf("failure frame = %s, err = %v", failure, err)
+			}
+			tracker := env.server.responsesExecutionSessions.websocketFailures
+			tracker.mu.Lock()
+			transportFailures := len(tracker.states)
+			tracker.mu.Unlock()
+			if transportFailures != 0 {
+				t.Fatalf("terminal failure was counted as %d transport failures", transportFailures)
+			}
+			if err := conn.WriteJSON(request); err != nil {
+				t.Fatal(err)
+			}
+			_, success, err := conn.ReadMessage()
+			if err != nil || gjson.GetBytes(success, "type").String() != "response.completed" ||
+				gjson.GetBytes(success, "response.id").String() != "next" || sockets.Load() != 2 {
+				t.Fatalf("next frame = %s, upstream sockets = %d, err = %v", success, sockets.Load(), err)
+			}
+		})
 	}
 }
 
@@ -9851,7 +10019,7 @@ func TestNativeCodexWebsocketInterruptWriteDoesNotBlockSession(t *testing.T) {
 				if err := peer.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-active","output":[]}}`)); err != nil {
 					t.Fatal(err)
 				}
-				if event := read(conn); event.err != nil || !event.terminal {
+				if event := read(conn); event.err != nil || event.terminal != "response.completed" {
 					t.Fatalf("terminal did not progress during blocked interrupt: %+v", event)
 				}
 				release()

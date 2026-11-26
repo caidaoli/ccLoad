@@ -219,6 +219,23 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_ToolSearchCall(t *testi
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallArrayArgumentsDefaultsToEmptyObject(t *testing.T) {
+	for _, rawArgs := range []string{`["bad","array"]`, `"[\"bad\",\"array\"]"`} {
+		request := []byte(`{"tools":[{"type":"tool_search","execution":"client"}],"input":[
+			{"type":"tool_search_call","execution":"client","call_id":"search_1","arguments":` + rawArgs + `},
+			{"type":"tool_search_output","execution":"client","call_id":"search_1","status":"completed","tools":[]}
+		]}`)
+		out, err := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash-high", request, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := gjson.GetBytes(out, "contents.0.parts.0.functionCall.args")
+		if args.Raw != "{}" {
+			t.Fatalf("tool_search args for %s = %s, want {}. Output: %s", rawArgs, args.Raw, out)
+		}
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToGemini_ToolSearchCallWithStringArgumentsAndEmptyOutput(t *testing.T) {
 	request := `{
 		"model": "gemini-3.8-flash-high",

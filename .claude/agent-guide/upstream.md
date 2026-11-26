@@ -167,6 +167,8 @@
 
 ## Vertex
 
+- Vertex 返回 HTTP 400 或首个 SSE 错误，且 `INVALID_ARGUMENT` 明确指向 `topP` 时，代理同时核对客户端原始请求。只有客户端显式传入小于 0 或大于 1 的数值才直接返回该错误，跳过重试与冷却。结构化错误可同时含 `google.rpc.ErrorInfo` 和仅指向 `topP` 的 `BadRequest.fieldViolations`。渠道规则引入的越界值、凭证错误和其他参数错误仍走原有分类。
+
 - Vertex 原生模型 `gemini-4-neon` 的静态目录登记 1,048,576 个共享上下文 token 和 65,536 个单段输出 token，供 Vertex 目录回退和 Gemini 模型列表使用。支持 low、medium、high、xhigh 四档思考等级。[Google Cloud 模型规格](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-neon)
 
 - **Gemini Omni 1.2 Flash**：2026-11-10核对[官方模型页](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/omni-1-2-flash)，只支持Interactions，不支持GenerateContent/Chat Completions。当前不把上游目录中的该条目导入普通Gemini能力表；这不限制管理员为自定义中继配置模型名。

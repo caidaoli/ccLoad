@@ -1106,7 +1106,9 @@ func (s *Server) handleProxyErrorResponse(
 		failure.nextAction = cooldown.ActionRetryChannel
 		return failure, cooldown.ActionRetryChannel
 	}
-	if forceReturnClient || isXAIOAuthCredentialForbidden(cfg, res) {
+	if forceReturnClient || isXAIOAuthCredentialForbidden(cfg, res) ||
+		(res.Status == http.StatusBadRequest && usesVertexWire(cfg, reqCtx.upstreamProtocol, reqCtx.baseURL) &&
+			isVertexTopPRangeError(reqCtx.clientProtocol, reqCtx.body, res.Body)) {
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient
 	}

@@ -948,11 +948,24 @@ func TestReasoningAutoAnthropicAndGeminiClients(t *testing.T) {
 		env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 			name: "gemini-client", upstreamProtocol: "codex", models: "gpt-5.6-sol",
 		}}, []string{business.server.URL})
-		reasoningAutoRequest(t, env, "/v1beta/models/gpt-5.6-sol:streamGenerateContent?alt=sse", map[string]any{
+		body := map[string]any{
 			"systemInstruction": map[string]any{"parts": []any{map[string]any{"text": "Be brief."}}},
 			"contents":          []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "What does HTTP 503 mean?"}}}},
-		}, nil)
-		assertReasoningAutoEfforts(t, business.snapshot(), "low")
+			"generation_config": map[string]any{
+				"max_output_tokens": 370,
+				"thinking_level":    "medium",
+				"thinking_config":   map[string]any{"thinking_level": "medium"},
+			},
+		}
+		reasoningAutoRequest(t, env, "/v1beta/models/gpt-5.6-sol:streamGenerateContent?alt=sse", body, nil)
+		reasoningAutoRequest(t, env, "/v1beta/models/gpt-5.6-sol(high):streamGenerateContent?alt=sse", body, nil)
+		sent := business.snapshot()
+		assertReasoningAutoEfforts(t, sent, "low", "high")
+		for _, request := range sent {
+			if cap := gjson.GetBytes(request, "max_output_tokens"); cap.Type != gjson.Number || cap.Int() != 370 {
+				t.Errorf("max_output_tokens=%s, want 370. body=%s", cap.Raw, request)
+			}
+		}
 		if decisions := judge.snapshot(); len(decisions) != 1 || !strings.Contains(decisions[0].Conversation, "HTTP 503") {
 			t.Fatalf("gemini decision requests=%+v", decisions)
 		}
@@ -1711,6 +1724,46 @@ func TestReasoningAutoFailoverReusesSuggestionAndCommitsSupportedTarget(t *testi
 			t.Fatalf("same-channel key retry repeated decision: calls=%d", got)
 		}
 	})
+}
+
+/**
+ * @brief 验证 Gemini 动态建议在重定向到 Claude 后服从实际模型能力。
+ * @param t 测试上下文。
+ */
+func TestReasoningAutoGeminiRedirectUsesClaudeCapabilities(t *testing.T) {
+	const logicalModel = "gpt-5.6-sol"
+	for _, target := range []struct {
+		model, mode, effort string
+		budget              int64
+	}{
+		{model: "claude-sonnet-4-5", mode: "enabled", budget: 2048},
+		{model: "claude-opus-4-7", mode: "adaptive", effort: "xhigh"},
+	} {
+		t.Run(target.model, func(t *testing.T) {
+			judge := newReasoningAutoJudge(t, "xhigh")
+			requests := make(chan []byte, 1)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				requests <- body
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"message","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`)
+			}))
+			env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+				name: "business", upstreamProtocol: "anthropic",
+				modelEntries: []model.ModelEntry{{Model: logicalModel, RedirectModel: target.model}},
+			}}, []string{upstream.URL})
+			request := json.RawMessage(`{"contents":[{"role":"user","parts":[{"text":"Plan a complex migration."}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":2048}}}`)
+			reasoningAutoRequest(t, env, "/v1beta/models/"+logicalModel+":generateContent", request, nil)
+			wire := gjson.ParseBytes(<-requests)
+			if len(judge.snapshot()) != 1 || wire.Get("thinking.type").Str != target.mode ||
+				wire.Get("output_config.effort").Str != target.effort || wire.Get("thinking.budget_tokens").Int() != target.budget {
+				t.Fatalf("wrong target thinking configuration: %s", wire.Raw)
+			}
+		})
+	}
 }
 
 /**

@@ -73,18 +73,6 @@ func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningKeepsClaudeSi
 	}
 }
 
-func TestRewriteAntigravityClaudeReasoningRequiresBooleanThought(t *testing.T) {
-	t.Parallel()
-	nativeSig := testAntigravityResponsesClaudeSignature(t)
-	input := []byte(`{"input":[{"type":"reasoning","encrypted_content":"` + nativeSig + `","summary":[{"type":"summary_text","text":"reasoning"}]}]}`)
-	gemini := []byte(`{"contents":[{"parts":[{"thought":1,"text":"reasoning","thoughtSignature":"old"}]}]}`)
-
-	got := rewriteOpenAIResponsesReasoningForAntigravityClaude("claude-opus-4-6", input, gemini)
-	if string(got) != string(gemini) {
-		t.Fatalf("non-boolean thought was rewritten: got %s", got)
-	}
-}
-
 func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningDropsIncompatibleSignature(t *testing.T) {
 	raw := []byte(`{
 		"model": "claude-opus-4-6-thinking",
@@ -264,6 +252,153 @@ func TestConvertOpenAIResponsesRequestToAntigravity_EmptyClaudeReasoningBeforeFu
 	if got := thoughts[0].Get("thoughtSignature").String(); got != expectedSig2 {
 		t.Fatalf("later thought received the wrong signature prefix/len = %q/%d, want %q/%d. Output: %s", firstByte(got), len(got), firstByte(expectedSig2), len(expectedSig2), out)
 	}
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningSurvivesDroppedInvalidCarrier(t *testing.T) {
+	rawSignature := testAntigravityResponsesClaudeSignature(t)
+	input := `[
+		{"type":"reasoning","encrypted_content":"cpa-gemini-responses-carrier-v1:previous:text:not-base64!","summary":[]},
+		{"role":"assistant","content":[{"type":"output_text","text":"earlier turn"}]},
+		{"role":"user","content":[{"type":"input_text","text":"next"}]},
+		{"type":"reasoning","encrypted_content":"` + rawSignature + `","summary":[{"type":"summary_text","text":"Claude thought"}]},
+		{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]`
+	tests := []struct {
+		name        string
+		tools       string
+		stream      bool
+		requestType string
+	}{
+		{name: "regular", tools: `[]`},
+		{name: "stream", tools: `[]`, stream: true},
+		{name: "web search", tools: `[{"type":"web_search"}]`, stream: true, requestType: "web_search"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(fmt.Sprintf(`{"input":%s,"tools":%s}`, input, tt.tools))
+			out := assertAntigravityResponsesClaudeThoughts(t, raw, tt.stream, expectedClaudeThought{"Claude thought", rawSignature})
+			if got := gjson.GetBytes(out, "request.contents.0.parts.0.text").String(); got != "earlier turn" {
+				t.Fatalf("earlier visible answer = %q, want earlier turn. Output: %s", got, out)
+			}
+			if got := gjson.GetBytes(out, "requestType").String(); got != tt.requestType {
+				t.Fatalf("requestType = %q, want %q. Output: %s", got, tt.requestType, out)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningSurvivesMergedDetachedAfterCarrier(t *testing.T) {
+	firstSignature := testAntigravityResponsesClaudeSignature(t)
+	secondSignature := testAntigravityResponsesClaudeSignatureForModel(t, "claude-opus-4-6")
+	raw := []byte(`{"input":[
+		{"id":"rs_turn1_0","type":"reasoning","summary":[{"type":"summary_text","text":"first thought"}]},
+		{"id":"rs_turn1_detached_after_1","type":"reasoning","encrypted_content":"` + firstSignature + `","summary":[]},
+		{"role":"user","content":[{"type":"input_text","text":"next"}]},
+		{"id":"rs_turn2_0","type":"reasoning","encrypted_content":"` + secondSignature + `","summary":[{"type":"summary_text","text":"second thought"}]},
+		{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+	assertAntigravityResponsesClaudeThoughts(t, raw, false,
+		expectedClaudeThought{"first thought", firstSignature},
+		expectedClaudeThought{"second thought", secondSignature},
+	)
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_DetachedAfterCarrierWithDifferentOriginDoesNotBindToEarlierThought(t *testing.T) {
+	firstSignature := testAntigravityResponsesClaudeSignature(t)
+	secondSignature := testAntigravityResponsesClaudeSignatureForModel(t, "claude-opus-4-6")
+	raw := []byte(`{"input":[
+		{"id":"rs_turnA_0","type":"reasoning","summary":[{"type":"summary_text","text":"unsigned thought"}]},
+		{"id":"rs_turnB_detached_after_1","type":"reasoning","encrypted_content":"` + firstSignature + `","summary":[]},
+		{"role":"user","content":[{"type":"input_text","text":"next"}]},
+		{"id":"rs_turnC_0","type":"reasoning","encrypted_content":"` + secondSignature + `","summary":[{"type":"summary_text","text":"signed thought"}]},
+		{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+	assertAntigravityResponsesClaudeThoughts(t, raw, false, expectedClaudeThought{"signed thought", secondSignature})
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningSurvivesEarlierGeminiCarrierInCrossProviderHistory(t *testing.T) {
+	geminiSignature := "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
+	claudeSignature := testAntigravityResponsesClaudeSignature(t)
+	for name, encrypted := range map[string]string{
+		"raw":    geminiSignature,
+		"marked": "cpa-gemini-responses-carrier-v1:next:text:" + base64.RawStdEncoding.EncodeToString([]byte(geminiSignature)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(`{"input":[
+				{"type":"reasoning","encrypted_content":"` + encrypted + `","summary":[]},
+				{"role":"assistant","content":[{"type":"output_text","text":"Gemini answer"}]},
+				{"role":"user","content":[{"type":"input_text","text":"switch to Claude"}]},
+				{"type":"reasoning","encrypted_content":"` + claudeSignature + `","summary":[{"type":"summary_text","text":"Claude thought"}]},
+				{"role":"assistant","content":[{"type":"output_text","text":"Claude answer"}]},
+				{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+			]}`)
+			out := assertAntigravityResponsesClaudeThoughts(t, raw, false, expectedClaudeThought{"Claude thought", claudeSignature})
+			part := gjson.GetBytes(out, "request.contents.0.parts.0")
+			if part.Get("text").String() != "Gemini answer" || part.Get("thoughtSignature").Exists() {
+				t.Fatalf("expected unsigned visible Gemini answer. Output: %s", out)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningPairedWithFunctionCallPreservesSignature(t *testing.T) {
+	firstSignature := testAntigravityResponsesClaudeSignature(t)
+	secondSignature := testAntigravityResponsesClaudeSignatureForModel(t, "claude-opus-4-6")
+	raw := []byte(`{"input":[
+		{"type":"reasoning","encrypted_content":"cpa-gemini-responses-carrier-v1:previous:text:not-base64!","summary":[]},
+		{"type":"reasoning","encrypted_content":"` + firstSignature + `","summary":[{"type":"summary_text","text":"thinking before tool"}]},
+		{"type":"function_call","call_id":"call-1","name":"run","arguments":"{}"},
+		{"type":"reasoning","encrypted_content":"` + testAntigravityResponsesGPTSignature() + `","summary":[{"type":"summary_text","text":"foreign thought"}]},
+		{"type":"function_call","call_id":"call-2","name":"run","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call-1","output":"ok"},
+		{"type":"function_call_output","call_id":"call-2","output":"ok"},
+		{"type":"reasoning","encrypted_content":"` + secondSignature + `","summary":[{"type":"summary_text","text":"thinking after tool"}]},
+		{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+	out := assertAntigravityResponsesClaudeThoughts(t, raw, false,
+		expectedClaudeThought{"thinking before tool", firstSignature},
+		expectedClaudeThought{"thinking after tool", secondSignature},
+	)
+	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
+	if len(parts) != 3 || parts[1].Get("functionCall.id").String() != "call-1" ||
+		parts[1].Get("thoughtSignature").String() != sigcompat.GeminiSkipThoughtSignatureValidator ||
+		parts[2].Get("functionCall.id").String() != "call-2" || parts[2].Get("thoughtSignature").Exists() {
+		t.Fatalf("expected only the first parallel call to carry the validator bypass. Output: %s", out)
+	}
+}
+
+type expectedClaudeThought struct {
+	text      string
+	signature string
+}
+
+func assertAntigravityResponsesClaudeThoughts(t *testing.T, raw []byte, stream bool, want ...expectedClaudeThought) []byte {
+	t.Helper()
+	out, err := ConvertOpenAIResponsesRequestToAntigravity("claude-opus-4-6-thinking", raw, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thoughts []gjson.Result
+	for _, content := range gjson.GetBytes(out, "request.contents").Array() {
+		for _, part := range content.Get("parts").Array() {
+			if part.Get("thought").Bool() {
+				thoughts = append(thoughts, part)
+			}
+		}
+	}
+	if len(thoughts) != len(want) {
+		t.Fatalf("thought count = %d, want %d. Output: %s", len(thoughts), len(want), out)
+	}
+	for i, part := range thoughts {
+		signature, ok := sigcompat.CompatibleAntigravityClaudeThinkingSignature(want[i].signature)
+		if !ok {
+			t.Fatal("test fixture should be a compatible Claude signature")
+		}
+		if part.Get("text").String() != want[i].text || part.Get("thoughtSignature").String() != signature {
+			t.Fatalf("thought %d = %s, want %q with its own signature. Output: %s", i, part.Raw, want[i].text, out)
+		}
+	}
+	return out
 }
 
 func TestConvertOpenAIResponsesRequestToAntigravity_GeminiReasoningUsesNativeThoughtSignaturePlacement(t *testing.T) {

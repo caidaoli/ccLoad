@@ -7813,6 +7813,56 @@ func TestBuildTestUpstreamRequestPlanKeepsThinkingSuffixAcrossCodexTransform(t *
 }
 
 /**
+ * @brief 验证管理测试与普通代理一致，按实际 Claude 模型选择手动或自适应思考。
+ * @param t 测试上下文。
+ */
+func TestBuildTestUpstreamRequestPlanUsesClaudeThinkingCapabilities(t *testing.T) {
+	srv := newInMemoryServer(t)
+	for _, tc := range []struct {
+		client, model, suffix, option, mode, effort string
+		budget                                      int64
+	}{
+		{client: util.ProtocolAnthropic, model: "claude-sonnet-4-5", suffix: "high", mode: "enabled", budget: 4095},
+		{client: util.ProtocolAnthropic, model: "claude-sonnet-4-5", option: "high", mode: "enabled", budget: 4095},
+		{client: util.ProtocolAnthropic, model: "claude-sonnet-4-5", suffix: "auto"},
+		{client: util.ProtocolAnthropic, model: "claude-opus-4-7", suffix: "xhigh", mode: "adaptive", effort: "xhigh"},
+		{client: util.ProtocolAnthropic, model: "claude-opus-4-7", option: "xhigh", mode: "adaptive", effort: "xhigh"},
+		{client: util.ProtocolGemini, model: "claude-opus-4-7", suffix: "xhigh", mode: "adaptive", effort: "xhigh"},
+		{client: util.ProtocolGemini, model: "claude-opus-4-7", option: "xhigh", mode: "adaptive", effort: "xhigh"},
+	} {
+		t.Run(tc.client+"/"+tc.model+"/suffix="+tc.suffix+"/option="+tc.option, func(t *testing.T) {
+			cfg := &model.Config{Name: "claude", AuthType: model.AuthTypeAPIKey}
+			testReq := &testutil.TestChannelRequest{
+				Model: tc.model, ClientProtocol: tc.client, Content: "hello", MaxTokens: 4096, ThinkingEffort: tc.option,
+			}
+			requestedModel := "latest"
+			if tc.suffix != "" {
+				requestedModel += "(" + tc.suffix + ")"
+			}
+			built, plan, err := srv.buildTestUpstreamRequestPlan(context.Background(), cfg, "sk-test", testReq,
+				requestedModel, tc.client, util.ProtocolAnthropic, "https://api.anthropic.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, cancel, err := srv.newTestUpstreamRequest(context.Background(), built, testReq, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire := gjson.ParseBytes(body)
+			if wire.Get("thinking.type").Str != tc.mode || wire.Get("thinking.budget_tokens").Int() != tc.budget ||
+				wire.Get("output_config.effort").Str != tc.effort {
+				t.Fatalf("wrong Claude thinking mode or effort: %s", body)
+			}
+		})
+	}
+}
+
+/**
  * @brief 验证管理检测在跨协议转换后保留按实际 5.2 模型应用的 xhigh/max 后缀。
  * @param t 当前测试上下文。
  */

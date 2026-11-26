@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -29,7 +30,10 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
+	cliproxycommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/signature"
+	"ccLoad/internal/protocol/cliproxy/thinking"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -242,10 +246,13 @@ func (s *Server) buildProxyRequest(
 	if len(callerBody) == 0 {
 		callerBody = body
 	}
-	callerBodyIsAnthropic := reqCtx == nil || !reqCtx.transformPlan.NeedsTransform
+	callerProtocol := upstreamProtocol
+	if reqCtx != nil && reqCtx.transformPlan.NeedsTransform {
+		callerProtocol = reqCtx.transformPlan.ClientProtocol
+	}
 	var callerWire anthropicCallerWire
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
-		callerWire = classifyAnthropicRequestCallerWire(callerBody, hdr, upstreamProtocol, requestPath, callerBodyIsAnthropic)
+		callerWire = classifyAnthropicRequestCallerWire(callerBody, hdr, upstreamProtocol, requestPath, callerProtocol == protocol.Anthropic)
 	}
 	callerOwnsAnthropicWire := callerWire.ownsWire()
 	var oauthFingerprint *anthropicOAuthFingerprint
@@ -319,17 +326,32 @@ func (s *Server) buildProxyRequest(
 		}
 	}
 	var thinkingOmitStrategy string
+	var thinkingLevel thinking.ThinkingLevel
+	var generatedThinkingBudget int64
+	if reqCtx != nil && !reqCtx.replayBodyRulesApplied && callerProtocol == protocol.Anthropic &&
+		isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
+		_, suffix, _ := model.ParseThinkingSuffix(reqCtx.transformPlan.RequestedModel)
+		thinkingLevel = suffix.Level
+		if thinkingLevel != "" {
+			generatedThinkingBudget = gjson.GetBytes(body, "thinking.budget_tokens").Int()
+		}
+	}
 	body, thinkingOmitStrategy, err = s.prepareTranslatedUpstreamBody(
 		cfg, upstreamProtocol, requestPath, requestModel, body, sourceBody, apiKey, hdr,
 		reqCtx != nil && reqCtx.anthropicClaudeCodeWire, parsedUpstreamURL,
 		reqCtx != nil && reqCtx.replayBodyRulesApplied,
-		callerBodyIsAnthropic,
+		callerProtocol,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if reqCtx != nil {
 		reqCtx.anthropicThinkingOmitStrategy = thinkingOmitStrategy
+		if generatedThinkingBudget > 0 {
+			if body, err = finalizeAnthropicManualThinkingLevel(body, generatedThinkingBudget, thinkingLevel, requestModel); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if vertexWire {
 		body = prepareVertexRequestBody(body, reqCtx != nil && reqCtx.transformPlan.ClientProtocol == protocol.Codex)
@@ -571,7 +593,7 @@ func (s *Server) buildProxyRequest(
  * @param anthropicAlreadyFinalized 是否已完成 Anthropic wire 最终化。
  * @param target 上游地址，可为空。
  * @param wireBodyRulesApplied 是否重放已应用规则的 wire；跳过默认注入与规则。
- * @param callerBodyIsAnthropic 原始调用方是否使用 Anthropic 协议。
+ * @param callerProtocol 原始调用方协议，用于判定调用方原生字段。
  * @return 准备后的正文。
  * @return 思考省略策略；空字符串表示未指定。
  * @return JSON 或提供商正文校验失败时返回错误。
@@ -588,8 +610,19 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	anthropicAlreadyFinalized bool,
 	target *url.URL,
 	wireBodyRulesApplied bool,
-	callerBodyIsAnthropic bool,
+	callerProtocol protocol.Protocol,
 ) ([]byte, string, error) {
+	var geminiIncludeThoughts gjson.Type
+	if !wireBodyRulesApplied && callerProtocol == protocol.Gemini && isAnthropicMessagesRequest(upstreamProtocol, requestPath) &&
+		!isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+		// Model compatibility may turn an explicit zero budget into adaptive.
+		// It should not turn that caller intent into visible thinking.
+		switch gjson.GetBytes(body, "thinking.type").Str {
+		case "disabled", "between_tools":
+		default:
+			geminiIncludeThoughts = cliproxycommon.GeminiIncludeThoughts(cliproxyutil.ParseGJSONBytesNoCopy(sourceBody))
+		}
+	}
 	if isOpenCodeInferencePath(upstreamProtocol, requestPath) && target != nil && isOpenCodeAPIKeyEndpoint(cfg, target.String()) {
 		if wireBodyRulesApplied {
 			return body, "", nil
@@ -600,6 +633,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		prepared := prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
 		var err error
 		if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
+			prepared = applyGeminiAnthropicThinkingDisplay(prepared, requestModel, geminiIncludeThoughts)
 			if prepared, err = normalizeOpenCodeAnthropicMessagesBody(prepared); err != nil {
 				return nil, "", err
 			}
@@ -621,6 +655,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	}
 	var callerWire anthropicCallerWire
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		callerBodyIsAnthropic := callerProtocol == protocol.Anthropic
 		callerWire = classifyAnthropicRequestCallerWire(callerBody, headers, upstreamProtocol, requestPath, callerBodyIsAnthropic)
 		if callerBodyIsAnthropic {
 			if err := validateAnthropicClaude55Request(callerBody, requestModel); err != nil {
@@ -649,6 +684,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		body = prepareZAIThinkingDefaults(body, sourceBody, requestModel)
 	}
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
+	body = applyGeminiAnthropicThinkingDisplay(body, requestModel, geminiIncludeThoughts)
 	if !wireBodyRulesApplied && !isCodeBuddyChatRequest(cfg, upstreamProtocol) {
 		body = normalizeOpenAIChatMaxTokens(upstreamProtocol, requestPath, body)
 	}
@@ -1082,6 +1118,12 @@ func translatedStreamChunksComplete(clientProtocol protocol.Protocol, chunks [][
 
 var sseDoneMarker = []byte("[DONE]")
 
+/**
+ * @brief 判断翻译后的 SSE 事件是否完成客户端协议的输出。
+ * @param clientProtocol 下游客户端协议。
+ * @param chunk 已翻译的 SSE 事件。
+ * @return 识别到客户端协议的成功终态时返回 true。
+ */
 func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []byte) bool {
 	eventType, data := parseSSEEventChunk(chunk)
 	if len(data) == 0 && eventType == "" {
@@ -1092,7 +1134,9 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 	case protocol.Anthropic:
 		return eventType == "message_stop" || ssePayloadType(data) == "message_stop"
 	case protocol.Codex:
-		return isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(ssePayloadType(data))
+		event := cliproxyutil.ParseGJSONBytesNoCopy(data)
+		eventType = cmp.Or(event.Get("type").Str, eventType)
+		return isSuccessfulResponsesTerminal(responsesTerminalType(eventType, event))
 	case protocol.OpenAI:
 		if bytes.Equal(data, sseDoneMarker) {
 			return true
@@ -1345,15 +1389,15 @@ func detectProtocolFromSSEPrefix(prefix []byte) protocol.Protocol {
 
 func detectProtocolFromSSEEvent(event []byte) protocol.Protocol {
 	eventType, data := parseSSEEventChunk(event)
+	payload, _ := decodeSSEPayload(data)
+	if payloadType, _ := payload["type"].(string); payloadType != "" {
+		return detectProtocolFromJSONPayload(payload)
+	}
 	if isAnthropicSSEEventType(eventType) {
 		return protocol.Anthropic
 	}
 	if isCodexSSEEventType(eventType) {
 		return protocol.Codex
-	}
-	payload, ok := decodeSSEPayload(data)
-	if !ok {
-		return ""
 	}
 	return detectProtocolFromJSONPayload(payload)
 }
@@ -1548,7 +1592,7 @@ func (s *Server) handleSuccessResponse(
 	if reqCtx.xaiResponses || reqCtx.openCodeResponses != nil || len(reqCtx.anthropicToolAliases) > 0 {
 		hdrClone.Del("Content-Length")
 	}
-	if isResponsesSSE && isSSE {
+	if isSSE && (!reqCtx.isStreaming && isCodexResponses || isResponsesSSE) {
 		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
 	}
 	if reqCtx.transformPlan.Streaming && isImagesResponsesPlan(reqCtx.transformPlan) {
@@ -1870,6 +1914,12 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()
 
+	if upstreamProtocol == util.ProtocolCodex && isErrorPayload(string(responseBody)) {
+		result.Status = classifySSEErrorStatus(responseBody)
+		result.Body = responseBody
+		return result, reqCtx.Duration().Seconds(), nil
+	}
+
 	if blockErr := translatedGeminiPromptBlockError(reqCtx, responseBody); blockErr != nil {
 		result.Body = []byte(blockErr.Error())
 		return result, reqCtx.Duration().Seconds(), blockErr
@@ -2007,23 +2057,28 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	var translationErr error
 	var promptBlockErr error
 	var pendingGeminiFilterEvent []byte
+	codexClient := reqCtx.transformPlan.ClientProtocol == protocol.Codex
 	recordTranslatedOutput := func(chunks [][]byte) {
 		for _, chunk := range chunks {
 			eventType, data := parseSSEEventChunk(chunk)
-			if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
+			event := cliproxyutil.ParseGJSONBytesNoCopy(data)
+			eventType = cmp.Or(event.Get("type").Str, eventType)
+			terminalType := responsesTerminalType(eventType, event)
+			if codexClient {
 				responsesCursor.observe(data)
-				if isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(ssePayloadType(data)) {
-					if response := gjson.GetBytes(data, "response"); response.IsObject() {
+				if isSuccessfulResponsesTerminal(terminalType) {
+					translatedComplete = true
+					if response := event.Get("response"); response.IsObject() {
 						translatedTurn = responsesWebsocketTurnFromResponse(response)
 						hasTranslatedTurn = true
 					}
 				}
 			}
-			if eventType == "response.failed" || eventType == "error" || isErrorPayload(string(data)) {
+			if terminalType == "response.failed" || eventType == "error" || isErrorPayload(string(data)) {
 				translatedError = bytes.Clone(data)
 			}
 		}
-		if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
+		if !codexClient && !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
 			translatedComplete = true
 		}
 	}
@@ -2146,7 +2201,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				markFirstStreamResponse(reqCtx, readStats)
 			}
 			if !deferredWriter.Committed() && parser.GetLastError() != nil && parser.geminiAbnormalFinish == "" {
-				return errAbortStreamBeforeWrite
+				if !parser.responsesSSE || sseErrorHasDetail(parser.GetLastError()) || parser.HasStreamOutput() {
+					return errAbortStreamBeforeWrite
+				}
 			}
 			if !deferredWriter.Committed() {
 				if promptBlockErr = translatedGeminiPromptBlockError(reqCtx, sseEventData(parserEvent)); promptBlockErr != nil {
@@ -2181,9 +2238,12 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if reqCtx.codeBuddyOAuth {
 				return codeBuddyDone
 			}
-			terminalProtocol := reqCtx.transformPlan.UpstreamProtocol == protocol.Codex ||
-				reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
-			return terminalProtocol && parser.IsStreamEnded() && translatedComplete
+			if parser.responsesSSE && reqCtx.transformPlan.ClientProtocol != protocol.Codex &&
+				sseErrorHasDetail(parser.GetLastError()) {
+				return true
+			}
+			terminalProtocol := parser.responsesSSE || reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
+			return terminalProtocol && parser.IsStreamEnded() && (translatedComplete || parser.GetLastError() != nil)
 		},
 	)
 	streamErr = parser.geminiFilterBlockError(streamErr)
@@ -2270,6 +2330,18 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.SSEErrorEvent = parser.GetLastError()
 	if translatedError != nil && result.SSEErrorEvent == nil {
 		result.SSEErrorEvent = translatedError
+	}
+	if result.ResponseCommitted && result.SSEErrorEvent != nil && translatedError == nil &&
+		parser.responsesSSE && reqCtx.ctx.Err() == nil {
+		message := committedStreamFailureMessage(result.SSEErrorEvent)
+		switch reqCtx.transformPlan.ClientProtocol {
+		case protocol.Anthropic:
+			writeAnthropicStreamErrorEvent(w, http.StatusInternalServerError, message)
+		case protocol.Gemini:
+			if writeErr := writeSSEChunks(w, [][]byte{geminiStreamFailureChunk(message)}); writeErr != nil && streamErr == nil {
+				streamErr = writeErr
+			}
+		}
 	}
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
@@ -3601,7 +3673,7 @@ func (s *Server) handleCommittedAwareProxyError(
 				writeAnthropicStreamErrorEvent(w, http.StatusInternalServerError, message)
 			}
 		case reqCtx.clientProtocol == protocol.Gemini && geminiZeroOutput:
-			_ = writeSSEChunks(w, [][]byte{fmt.Appendf(nil, "data: {\"error\":{\"code\":502,\"status\":\"INTERNAL\",\"message\":%q}}\n\n", message)})
+			_ = writeSSEChunks(w, [][]byte{geminiStreamFailureChunk(message)})
 		case res.UnterminatedTranslatedStream == nil:
 		case reqCtx.clientProtocol == protocol.OpenAI:
 			writeOpenAIStreamErrorEvent(w, message)
@@ -3612,6 +3684,16 @@ func (s *Server) handleCommittedAwareProxyError(
 		}
 	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
+}
+
+/**
+ * @brief 将已提交的 Gemini 流错误编码为 SSE 帧。
+ * @param message 要转给客户端的错误原因。
+ * @return 带 Gemini 错误正文的完整 SSE 帧。
+ */
+func geminiStreamFailureChunk(message string) []byte {
+	encoded, _ := json.Marshal(message)
+	return fmt.Appendf(nil, "data: {\"error\":{\"code\":502,\"status\":\"INTERNAL\",\"message\":%s}}\n\n", encoded)
 }
 
 func (s *Server) handleSuccessfulForwardAnomaly(
@@ -3786,6 +3868,7 @@ func (s *Server) forwardAttempt(
 		// the client's original body may contain only previous_response_id.
 		plan.OriginalBody = bodyToSend
 	}
+	plan.RequestedModel = reqCtx.requestedModel
 	var nativeAttempt *nativeCodexWebsocketAttempt
 	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && upstreamProtocol == protocol.Codex &&
 		protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyResponses && !plan.NeedsTransform {
@@ -3795,6 +3878,7 @@ func (s *Server) forwardAttempt(
 		}
 		incrementalBody := applyThinkingSuffixForModel(
 			reqCtx.nativeCodexBody,
+			protocol.Codex,
 			protocol.Codex,
 			requestedModel,
 			actualModel,

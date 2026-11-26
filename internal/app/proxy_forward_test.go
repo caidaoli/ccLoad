@@ -1198,6 +1198,69 @@ func TestCodexOAuthNonStreamReassemblesMalformedSSETerminalResponse(t *testing.T
 	}
 }
 
+/**
+ * @brief 验证 Responses SSE 的输出项与终态可收集为非流式 Gemini 响应。
+ * @param t 测试上下文。
+ */
+func TestResponsesSSENonStreamReassemblesTerminalVariants(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, header, typed, status, details, finish string
+	}{
+		{name: "completed header", header: "response.completed", status: "completed", finish: "STOP"},
+		{name: "incomplete header", header: "response.incomplete", status: "incomplete", details: `,"incomplete_details":{"reason":"max_output_tokens"}`, finish: "MAX_TOKENS"},
+		{name: "typed completed wins", header: "response.failed", typed: `"response.completed"`, status: "completed", finish: "STOP"},
+		{name: "non-string type falls back to header", header: "response.incomplete", typed: "123", status: "incomplete", details: `,"incomplete_details":{"reason":"max_output_tokens"}`, finish: "MAX_TOKENS"},
+		{name: "done completed", header: "response.done", status: "completed", finish: "STOP"},
+		{name: "done incomplete", header: "response.done", typed: `"response.done"`, status: "incomplete", details: `,"incomplete_details":{"reason":"max_output_tokens"}`, finish: "MAX_TOKENS"},
+		{name: "done cancelled", header: "response.done", status: "cancelled", finish: "OTHER"},
+		{name: "detail-free failure followed by detailed error", header: "response.failed", status: "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const items = "event: response.output_item.done\n" +
+				`data: {"output_index":1,"item":{"id":"m2","type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}}` + "\n\n" +
+				"event: response.output_item.done\n" +
+				`data: {"output_index":0,"item":{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}}` + "\n\n"
+			response := fmt.Sprintf(`"response":{"id":"r","status":%q%s,"output":[],"usage":{"input_tokens":3,"output_tokens":2}}`, tc.status, tc.details)
+			if tc.typed != "" {
+				response = `"type":` + tc.typed + "," + response
+			}
+			body := items + "event: " + tc.header + "\ndata: {" + response + "}\n\n"
+			if tc.status == "failed" {
+				body += `data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"specific upstream reason"}}` + "\n\n"
+			}
+			reg := protocol.NewRegistry()
+			builtin.Register(reg)
+			reqCtx := &requestContext{
+				ctx: t.Context(), startTime: time.Now(),
+				transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Gemini, UpstreamProtocol: protocol.Codex, ActualModel: "gpt-test", NeedsTransform: true},
+			}
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}
+			recorder := newRecorder()
+			server := &Server{protocolRegistry: reg}
+			result, _, err := server.handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Codex), &streamReadStats{}, nil)
+			if tc.status == "failed" {
+				if err != nil || result.ResponseCommitted || gjson.GetBytes(result.SSEErrorEvent, "error.message").String() != "specific upstream reason" {
+					t.Fatalf("failure = %+v, err = %v", result, err)
+				}
+				return
+			}
+			if err != nil || !result.ResponseCommitted || result.StreamDiagMsg != "" || result.InputTokens != 3 || result.OutputTokens != 2 {
+				t.Fatalf("result = %+v, err = %v", result, err)
+			}
+			got := gjson.ParseBytes(recorder.Body.Bytes())
+			if got.Get("responseId").String() != "r" || got.Get("candidates.0.finishReason").String() != tc.finish ||
+				got.Get("candidates.0.content.parts.0.text").String() != "first" || got.Get("candidates.0.content.parts.1.text").String() != "second" {
+				t.Fatalf("unexpected collected response: %s", got.Raw)
+			}
+		})
+	}
+}
+
 // StreamDiagMsg 非空会让 forwardAttempt 把结果判为 599 并触发模型级冷却，
 // 所以只有真实上游故障才允许写入：客户端取消必须留空，交给 499 路径。
 func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
@@ -2213,7 +2276,7 @@ func TestAnthropicAdvisorToolModelsPreserveReplayAndZAI(t *testing.T) {
 			body := []byte(`{"model":"` + testCase.model + `","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"advisor_20260301","name":"advisor","model":"override-model(high)"}]}`)
 			out, _, err := (&Server{}).prepareTranslatedUpstreamBody(testCase.cfg, protocol.Anthropic, "/v1/messages",
 				testCase.model, body, body, "advisor-access", http.Header{}, testCase.replay,
-				anthropicOfficialTestURL, testCase.replay, true)
+				anthropicOfficialTestURL, testCase.replay, protocol.Anthropic)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3648,9 +3711,13 @@ func TestAnthropicClaude55GuardUsesCallerBody(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			body := []byte(testCase.body)
+			callerProtocol := protocol.OpenAI
+			if testCase.callerIsAnthropic {
+				callerProtocol = protocol.Anthropic
+			}
 			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", testCase.model, body, body,
-				"sk-ant-key", http.Header{}, false, anthropicOfficialTestURL, false, testCase.callerIsAnthropic,
+				"sk-ant-key", http.Header{}, false, anthropicOfficialTestURL, false, callerProtocol,
 			)
 			if (err != nil) != testCase.wantErr {
 				t.Fatalf("err=%v, wantErr=%v", err, testCase.wantErr)
@@ -3710,7 +3777,7 @@ func TestAnthropicOAuthNativeClaudeCodeRetryPreservesCallerCCH(t *testing.T) {
 
 	replayed, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
-		"", headers, true, anthropicOfficialTestURL, false, true,
+		"", headers, true, anthropicOfficialTestURL, false, protocol.Anthropic,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -4606,7 +4673,7 @@ func TestAnthropicClaudeCodeRetryReplaysUnsignedMimicWire(t *testing.T) {
 			}
 			replayed, _, err := server.prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
-				"sk-ant-key", headers, true, testCase.target, false, true)
+				"sk-ant-key", headers, true, testCase.target, false, protocol.Anthropic)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -4634,7 +4701,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages", "",
 		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
-		false, true,
+		false, protocol.Anthropic,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -4647,6 +4714,28 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 		if name := gjson.GetBytes(got, fmt.Sprintf("tools.%d.name", index)).String(); name != want {
 			t.Fatalf("tools.%d.name = %q, want %q; body = %s", index, name, want, got)
 		}
+	}
+}
+
+/**
+ * @brief Verifies Gemini visibility reaches the OpenCode Claude request body.
+ * @param t Test context.
+ */
+func TestPrepareTranslatedUpstreamBodyOpenCodeGeminiThinkingDisplay(t *testing.T) {
+	t.Parallel()
+	const modelName = "claude-sonnet-4-6"
+	translated := []byte(`{"model":"claude-sonnet-4-6","max_tokens":1600,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"}}`)
+	source := []byte(`{"generationConfig":{"thinking_config":{"includeThoughts":true}}}`)
+	target := mustParseTestURL("https://opencode.ai/zen/go/v1/messages")
+	body, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+		&model.Config{AuthType: model.AuthTypeAPIKey}, protocol.Anthropic, "/v1/messages", modelName,
+		translated, source, "sk-key", http.Header{}, false, target, false, protocol.Gemini,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(body, "thinking.display").Str; got != "summarized" {
+		t.Fatalf("thinking.display = %q, want summarized. Body: %s", got, body)
 	}
 }
 
@@ -4669,7 +4758,7 @@ func TestPrepareTranslatedUpstreamBodyFillsXAIAnthropicToolDescriptions(t *testi
 			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 				&model.Config{}, protocol.Anthropic, "/v1/messages", "",
 				[]byte(body), []byte(body), "sk-key", http.Header{}, false, mustParseTestURL(test.target),
-				false, false,
+				false, protocol.OpenAI,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -4702,7 +4791,7 @@ func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
 	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Gemini, "/v1internal:generateContent", modelName,
-		body, body, "", http.Header{}, false, nil, false, false,
+		body, body, "", http.Header{}, false, nil, false, protocol.Gemini,
 	)
 	if err != nil {
 		t.Fatal(err)

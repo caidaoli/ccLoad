@@ -9,6 +9,181 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertGeminiRequestToClaude_GenerationConfigAliases(t *testing.T) {
+	tests := []struct {
+		name, input string
+		want        map[string]string
+	}{
+		{
+			name: "snake config and mixed aliases",
+			input: `{"generationConfig":null,"generation_config":{
+				"maxOutputTokens":0,"max_output_tokens":123,"topP":null,"top_p":0,
+				"topK":-0.5,"top_k":32,"stopSequences":null,"stop_sequences":[null,5,"end"],
+				"thinkingConfig":null,"thinking_config":{"thinkingLevel":null,"thinking_budget":2048}}}`,
+			want: map[string]string{
+				"max_tokens": "123", "top_p": "0", "top_k": "32",
+				"stop_sequences.#": "1", "stop_sequences.0": `"end"`,
+				"thinking.type": `"adaptive"`, "output_config.effort": `"medium"`,
+			},
+		},
+		{
+			name: "null fields",
+			input: `{"generationConfig":{
+				"maxOutputTokens":null,"topP":null,"topK":null,"stopSequences":null,
+				"thinkingConfig":{"thinkingBudget":null}}}`,
+			want: map[string]string{
+				"max_tokens": "32000", "top_p": "", "top_k": "", "stop_sequences": "", "thinking": "",
+			},
+		},
+		{
+			name:  "explicit zero budget and omitted limit",
+			input: `{"generationConfig":{"maxOutputTokens":0,"topK":0,"thinkingConfig":{"thinkingBudget":0}}}`,
+			want: map[string]string{
+				"max_tokens": "32000", "top_k": "0", "thinking.type": `"disabled"`, "output_config": "",
+			},
+		},
+		{
+			name:  "level wins over budget",
+			input: `{"generation_config":{"thinking_config":{"thinkingLevel":null,"thinking_level":"LOW","thinking_budget":0}}}`,
+			want:  map[string]string{"thinking.type": `"adaptive"`, "output_config.effort": `"low"`},
+		},
+		{
+			name:  "budget in alternate thinking object",
+			input: `{"generationConfig":{"thinkingConfig":{"includeThoughts":false},"thinking_config":{"thinking_budget":0}}}`,
+			want:  map[string]string{"thinking.type": `"disabled"`, "output_config.effort": ""},
+		},
+		{
+			name: "level in alternate generation object overrides budget",
+			input: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":0}},
+				"generation_config":{"thinkingConfig":{"thinking_level":"LOW"}}}`,
+			want: map[string]string{"thinking.type": `"adaptive"`, "output_config.effort": `"low"`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ConvertGeminiRequestToClaude("claude-opus-4-6", []byte(tt.input), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := gjson.ParseBytes(out)
+			for field, want := range tt.want {
+				if value := got.Get(field).Raw; value != want {
+					t.Errorf("%s = %q, want %q (output: %s)", field, value, want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToClaude_RestrictsGeminiSDKToolChoice(t *testing.T) {
+	request := []byte(`{
+		"contents":[{"parts":[{"text":"hello"}]}],
+		"tools":[
+			{"functionDeclarations":[{"name":"first"}],"function_declarations":[{"name":"first"}]},
+			{"function_declarations":[
+				{"name":"mcp.server.lookup","parameters":null,"parameters_json_schema":{"type":"OBJECT","properties":{"query":{"type":"STRING"}}}},
+				{"name":"excluded"}
+			]}
+		],
+		"tool_config":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":null,
+			"allowed_function_names":["first","mcp.server.lookup","first",null]}}
+	}`)
+	out, err := ConvertGeminiRequestToClaude("claude-opus-4-6", request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := gjson.ParseBytes(out)
+	tools := root.Get("tools").Array()
+	if len(tools) != 2 || tools[0].Get("name").String() != "first" || tools[1].Get("name").String() != "mcp_server_lookup" {
+		t.Fatalf("expected only the two allowed tools, got %s", out)
+	}
+	if root.Get("tool_choice.type").String() != "any" || tools[1].Get("input_schema.properties.query.type").String() != "string" {
+		t.Fatalf("expected required tool selection and the snake_case parameter schema, got %s", out)
+	}
+}
+
+func TestConvertGeminiRequestToClaude_ForceOnlyDeclaredToolBeforeSanitizing(t *testing.T) {
+	for _, tc := range []struct {
+		allowed, want string
+	}{
+		{`["mcp server lookup","mcp_server_lookup"]`, "mcp_server_lookup"},
+		{`["mcp server lookup"]`, ""},
+	} {
+		t.Run(tc.allowed, func(t *testing.T) {
+			request := []byte(`{"tools":[{"functionDeclarations":[
+				{"name":"mcp.server.lookup","description":"unselected"},
+				{"name":"mcp_server_lookup","description":"selected"}
+			]}],
+			"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":` + tc.allowed + `}}}`)
+			out, err := ConvertGeminiRequestToClaude("claude-opus-4-6", request, false)
+			if tc.want == "" {
+				if err == nil || len(out) != 0 {
+					t.Fatalf("expected the undeclared name to fail before sanitizing, got %s, %v", out, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tools := gjson.GetBytes(out, "tools").Array()
+			if len(tools) != 1 || tools[0].Get("description").String() != "selected" || gjson.GetBytes(out, "tool_choice.name").String() != tc.want {
+				t.Fatalf("expected only the declared and allowed tool, got %s", out)
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToClaude_ThinkingLevelRespectsModelCapabilities(t *testing.T) {
+	const legacy = "claude-sonnet-4-5-20250929"
+	const modern = "claude-opus-5-5"
+	const aliasHigh = `"max_output_tokens":4096,"thinking_config":{"thinking_level":"high"}`
+	for _, tc := range []struct {
+		name, model, generation, mode, effort, budget string
+	}{
+		{name: "legacy high", model: legacy, generation: `"thinking_config":{"thinking_level":"high"}`, mode: "enabled", budget: "24576"},
+		{name: "legacy Sonnet short name", model: "claude-sonnet-4-5", generation: `"thinking_config":{"thinking_level":"high"}`, mode: "enabled", budget: "24576"},
+		{name: "legacy Haiku short name", model: "claude-haiku-4-5", generation: `"thinking_config":{"thinking_level":"high"}`, mode: "enabled", budget: "24576"},
+		{name: "legacy Opus short name", model: "claude-opus-4-5", generation: `"thinking_config":{"thinking_budget":-1}`},
+		{name: "Opus 4.1 alias", model: "claude-opus-4-1", generation: aliasHigh, mode: "enabled", budget: "4095"},
+		{name: "Opus 4.1 alias auto budget", model: "claude-opus-4-1", generation: `"thinking_config":{"thinking_budget":-1}`},
+		{name: "Opus 4.0 alias", model: "claude-opus-4-0", generation: aliasHigh, mode: "enabled", budget: "4095"},
+		{name: "Sonnet 4.0 alias", model: "claude-sonnet-4-0", generation: aliasHigh, mode: "enabled", budget: "4095"},
+		{name: "Sonnet 3.7 alias", model: "claude-3-7-sonnet-latest", generation: aliasHigh, mode: "enabled", budget: "4095"},
+		{name: "legacy minimum", model: legacy, generation: `"thinking_config":{"thinking_level":"minimal"}`, mode: "enabled", budget: "1024"},
+		{name: "legacy output ceiling", model: legacy, generation: `"max_output_tokens":4096,"thinking_config":{"thinking_level":"xhigh"}`, mode: "enabled", budget: "4095"},
+		{name: "legacy auto", model: legacy, generation: `"thinking_config":{"thinking_level":"auto"}`},
+		{name: "legacy auto budget", model: legacy, generation: `"thinking_config":{"thinking_budget":-1}`},
+		{name: "legacy explicit positive budget", model: legacy, generation: `"thinking_config":{"thinking_budget":12000}`, mode: "enabled", budget: "12000"},
+		{name: "legacy zero budget", model: legacy, generation: `"thinking_config":{"thinking_budget":0}`, mode: "disabled"},
+		{name: "modern xhigh", model: modern, generation: `"thinking_config":{"thinking_level":"xhigh"}`, mode: "adaptive", effort: "xhigh"},
+		{name: "modern auto", model: modern, generation: `"thinking_config":{"thinking_level":"auto"}`, mode: "adaptive"},
+		{name: "4.6 auto fallback", model: "claude-opus-4-6", generation: `"thinking_config":{"thinking_level":"auto"}`, mode: "adaptive", effort: "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := []byte(`{"generation_config":{` + tc.generation + `}}`)
+			out, err := ConvertGeminiRequestToClaude(tc.model, input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := gjson.ParseBytes(out)
+			if result.Get("model").Str != tc.model {
+				t.Fatalf("resolved capability lookup changed requested model: %s", out)
+			}
+			if result.Get("thinking.type").Str != tc.mode ||
+				result.Get("output_config.effort").Str != tc.effort ||
+				result.Get("thinking.budget_tokens").Raw != tc.budget {
+				t.Fatalf("thinking=%s, effort=%s; want mode %q, effort %q, budget %q", result.Get("thinking").Raw, result.Get("output_config.effort").Raw, tc.mode, tc.effort, tc.budget)
+			}
+		})
+	}
+	t.Run("output cap leaves no room for manual thinking", func(t *testing.T) {
+		input := []byte(`{"generationConfig":{"maxOutputTokens":1024,"thinkingConfig":{"thinkingLevel":"high"}}}`)
+		if out, err := ConvertGeminiRequestToClaude(legacy, input, false); err == nil || len(out) != 0 {
+			t.Fatalf("expected incompatible output cap to fail conversion, got %s, %v", out, err)
+		}
+	})
+}
+
 func TestConvertGeminiRequestToClaude_BudgetRespectsModelEffort(t *testing.T) {
 	for _, tt := range []struct {
 		model  string

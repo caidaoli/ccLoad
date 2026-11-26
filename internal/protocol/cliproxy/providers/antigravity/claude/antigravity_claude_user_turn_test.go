@@ -120,9 +120,7 @@ func TestConvertAntigravityResponseToClaudeStream_WaitsForNonEmptyFinishReason(t
 					t.Fatalf("frame closed the stream prematurely: %s", event.Raw)
 				}
 			}
-			for _, frame := range [][]byte{last, []byte("[DONE]")} {
-				output = append(output, bytes.Join(ConvertAntigravityResponseToClaude(t.Context(), "gemini-3.8-flash-high", request, request, frame, &state), nil)...)
-			}
+			output = append(output, bytes.Join(ConvertAntigravityResponseToClaude(t.Context(), "gemini-3.8-flash-high", request, request, last, &state), nil)...)
 			var text strings.Builder
 			var stopReason string
 			stops := 0
@@ -139,7 +137,198 @@ func TestConvertAntigravityResponseToClaudeStream_WaitsForNonEmptyFinishReason(t
 			if text.String() != "First. Last." || stopReason != "max_tokens" || stops != 1 {
 				t.Fatalf("text=%q, stop_reason=%q, stops=%d: %s", text.String(), stopReason, stops, output)
 			}
+			if done := ConvertAntigravityResponseToClaude(t.Context(), "gemini-3.8-flash-high", request, request, []byte("[DONE]"), &state); len(bytes.Join(done, nil)) != 0 {
+				t.Fatalf("DONE emitted events after the stream stopped: %q", done)
+			}
 		})
+	}
+}
+
+func TestAntigravityClaudeTextFinishesOnTrailingUsage(t *testing.T) {
+	const model = "gemini-3.8-flash-high"
+	request := []byte(`{"model":"` + model + `"}`)
+	var state any
+	for _, frame := range []string{
+		`{"response":{"candidates":[{"content":{"parts":[{"text":"Last."}]},"finishReason":"MAX_TOKENS"}]}}`,
+		`{"response":{"usageMetadata":null,"cpaUsageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":4}}}`,
+		`{"response":{"usageMetadata":{"candidatesTokenCount":"0"}}}`,
+	} {
+		chunks := ConvertAntigravityResponseToClaude(t.Context(), model, request, request, []byte(frame), &state)
+		for _, event := range antigravityClaudeStreamEvents(t, bytes.Join(chunks, nil)) {
+			switch event.Get("type").String() {
+			case "content_block_stop", "message_delta", "message_stop":
+				t.Fatalf("stream ended before valid standard usage: %s", event.Raw)
+			}
+		}
+	}
+
+	usage := []byte(`{"response":{"usageMetadata":{"candidatesTokenCount":0}}}`)
+	chunks := ConvertAntigravityResponseToClaude(t.Context(), model, request, request, usage, &state)
+	events := antigravityClaudeStreamEvents(t, bytes.Join(chunks, nil))
+	if len(events) != 3 || events[0].Get("type").String() != "content_block_stop" ||
+		events[1].Get("type").String() != "message_delta" || events[2].Get("type").String() != "message_stop" {
+		t.Fatalf("trailing usage did not close the text and message in order: %s", bytes.Join(chunks, nil))
+	}
+	delta := events[1]
+	if delta.Get("delta.stop_reason").String() != "max_tokens" || delta.Get("usage.input_tokens").Int() != 6 ||
+		delta.Get("usage.output_tokens").Type != gjson.Number || delta.Get("usage.output_tokens").Int() != 0 ||
+		delta.Get("usage.cache_read_input_tokens").Int() != 4 {
+		t.Fatalf("trailing usage did not retain the stop reason and accumulated counts: %s", delta.Raw)
+	}
+	if done := ConvertAntigravityResponseToClaude(t.Context(), model, request, request, []byte("[DONE]"), &state); len(bytes.Join(done, nil)) != 0 {
+		t.Fatalf("DONE emitted events after the stream stopped: %q", done)
+	}
+}
+
+func TestAntigravityClaudeDefersContinuationSignatureUntilToolCloses(t *testing.T) {
+	signature := testGeminiEPrefixSignature(t)
+	request := []byte(`{"model":"gemini-3.8-flash-high"}`)
+	toolFrames := []string{
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{ "query":"go" }}}]}}]}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"page":2}},"thoughtSignature":"` + signature + `"}]}}]}}`,
+		`{"response":{"candidates":[{"finishReason":"STOP"}]}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":null}},{"functionCall":{"args":{ }}},{"functionCall":{"args":{"limit":10}}}]}}]}}`,
+	}
+	for _, tc := range []struct {
+		name     string
+		followUp string
+	}{
+		{"follow-up text", `{"response":{"candidates":[{"content":{"parts":[{"text":"Done."}]},"finishReason":"STOP"}]}}`},
+		{"follow-up thinking", `{"response":{"candidates":[{"content":{"parts":[{"text":"Next step.","thought":true}]},"finishReason":"STOP"}]}}`},
+		{"finish with usage", `{"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}}`},
+		{"eof", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks := append([]string(nil), toolFrames...)
+			if tc.followUp != "" {
+				chunks = append(chunks, tc.followUp)
+			}
+			chunks = append(chunks, "[DONE]")
+			var param any
+			var output []byte
+			for _, chunk := range chunks {
+				events := ConvertAntigravityResponseToClaude(t.Context(), "gemini-3.8-flash-high", request, request, []byte(chunk), &param)
+				output = append(output, bytes.Join(events, nil)...)
+			}
+			var input strings.Builder
+			var closed bool
+			var toolCount int
+			var gotCarrier string
+			for _, event := range antigravityClaudeStreamEvents(t, output) {
+				index := event.Get("index").Int()
+				switch event.Get("type").String() {
+				case "content_block_start":
+					if event.Get("content_block.type").String() == "tool_use" {
+						toolCount++
+					}
+				case "content_block_stop":
+					if index == 0 {
+						closed = true
+					}
+				case "content_block_delta":
+					switch event.Get("delta.type").String() {
+					case "input_json_delta":
+						fragment := event.Get("delta.partial_json").String()
+						if index != 0 || closed || fragment == "" {
+							t.Fatalf("unexpected tool input delta: %s", event.Raw)
+						}
+						input.WriteString(fragment)
+					case "signature_delta":
+						if index != 1 || !closed {
+							t.Fatalf("signature must follow the tool block: %s", event.Raw)
+						}
+						gotCarrier = event.Get("delta.signature").String()
+					}
+				}
+			}
+			if toolCount != 1 || !closed || gotCarrier != encodeGeminiClaudeCarrierSignature(signature, geminiClaudeCarrierPrevious, geminiClaudeCarrierFunction) {
+				t.Fatalf("expected one tool block followed by its signature carrier: %s", output)
+			}
+			args := input.String()
+			if !gjson.Valid(args) || gjson.Get(args, "query").String() != "go" || gjson.Get(args, "page").Int() != 2 || gjson.Get(args, "limit").Int() != 10 {
+				t.Fatalf("invalid merged tool input: %q", args)
+			}
+		})
+	}
+}
+
+func TestAntigravityClaudeAcceptsLateToolSignatureAfterUsage(t *testing.T) {
+	const signature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
+	request := []byte(`{"model":"gemini-3.8-flash-high"}`)
+	chunks := []string{
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"query":"go"}}}]}}],"cpaUsageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":7}}}`,
+		`{"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":null}}`,
+		`{"response":{"usageMetadata":{"cachedContentTokenCount":null,"thoughtsTokenCount":2,"totalTokenCount":16}}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"thoughtSignature":"","thought_signature":"` + signature + `"}]}}]}}`,
+		"[DONE]", "[DONE]",
+	}
+	var param any
+	var output []byte
+	for _, chunk := range chunks {
+		out := ConvertAntigravityResponseToClaude(t.Context(), "gemini-3.8-flash-high", request, request, []byte(chunk), &param)
+		output = append(output, bytes.Join(out, nil)...)
+	}
+	var gotSignature string
+	stopped := false
+	for _, event := range antigravityClaudeStreamEvents(t, output) {
+		if stopped {
+			t.Fatalf("event followed message_stop: %s", event.Raw)
+		}
+		switch event.Get("type").String() {
+		case "content_block_delta":
+			if event.Get("delta.type").String() == "signature_delta" {
+				gotSignature = event.Get("delta.signature").String()
+			}
+		case "message_delta":
+			if event.Get("usage.input_tokens").Int() != 3 || event.Get("usage.output_tokens").Int() != 6 ||
+				event.Get("usage.cache_read_input_tokens").Int() != 7 {
+				t.Fatalf("usage-only frame was lost: %s", event.Raw)
+			}
+		case "message_stop":
+			stopped = true
+		}
+	}
+	if !stopped || gotSignature != encodeGeminiClaudeCarrierSignature(signature, geminiClaudeCarrierPrevious, geminiClaudeCarrierFunction) {
+		t.Fatalf("expected deferred signature before message_stop: %s", output)
+	}
+
+	for _, tc := range []struct {
+		usage string
+		want  gjson.Type
+	}{
+		{`"usageMetadata":null`, gjson.Null},
+		{`"usageMetadata":null,"cpaUsageMetadata":{"promptTokenCount":0}`, gjson.Number},
+	} {
+		raw := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}},{"thoughtSignature":"","thought_signature":"` + signature + `"}]},"finishReason":"STOP"}],` + tc.usage + `}}`)
+		out := ConvertAntigravityResponseToClaudeNonStream(t.Context(), "gemini-3.8-flash-high", request, request, raw, nil)
+		if got := gjson.GetBytes(out, "usage.input_tokens"); got.Type != tc.want || got.Int() != 0 {
+			t.Errorf("usage input_tokens = %s for upstream usage %s", got.Raw, tc.usage)
+		}
+		if got := gjson.GetBytes(out, "content.1.signature").Str; got != gotSignature {
+			t.Errorf("expected the same tool signature carrier in JSON: %s", out)
+		}
+	}
+}
+
+func TestAntigravityClaudeParameterlessContinuationEmitsOneInputDelta(t *testing.T) {
+	request := []byte(`{"model":"gemini-3.8-flash-high","tools":[{"name":"lookup","input_schema":{"type":"object","properties":{},"additionalProperties":false}}]}`)
+	chunks := []string{
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"reason":"first"}}}]}}]}}`,
+		`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"reason":"second"}}}]},"finishReason":"STOP"}]}}`,
+		"[DONE]",
+	}
+	var param any
+	var inputDeltas []string
+	for _, chunk := range chunks {
+		out := ConvertAntigravityResponseToClaude(t.Context(), "gemini-3.8-flash-high", request, request, []byte(chunk), &param)
+		for _, event := range antigravityClaudeStreamEvents(t, bytes.Join(out, nil)) {
+			if event.Get("delta.type").String() == "input_json_delta" {
+				inputDeltas = append(inputDeltas, event.Get("delta.partial_json").String())
+			}
+		}
+	}
+	if len(inputDeltas) != 1 || inputDeltas[0] != "{}" {
+		t.Fatalf("parameterless tool emitted input deltas %q, want one empty object", inputDeltas)
 	}
 }
 
@@ -331,8 +520,10 @@ func requireImageRefusal(t *testing.T, envelope requestEnvelope) {
 
 func TestClaudeToAntigravityUnrepresentableImageOnlyTurnIsRefused(t *testing.T) {
 	cases := map[string]string{
-		"url source":  `{"type":"url","url":"https://example.test/a.png"}`,
-		"file source": `{"type":"file","file_id":"file-1"}`,
+		"url source":   `{"type":"url","url":"https://example.test/a.png"}`,
+		"file source":  `{"type":"file","file_id":"file-1"}`,
+		"missing mime": `{"type":"base64","data":"YWJj"}`,
+		"missing data": `{"type":"base64","media_type":"image/png"}`,
 	}
 	for name, source := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -356,6 +547,30 @@ func TestClaudeToAntigravityUnrepresentableImageBesideTextStillSucceeds(t *testi
 
 func TestClaudeToAntigravityEmptyTextDoesNotHideAnUnrepresentableImage(t *testing.T) {
 	requireImageRefusal(t, claudeImageTurnToAntigravity(`{"type":"text","text":""},{"type":"image","source":{"type":"url","url":"https://example.test/a.png"}}`))
+}
+
+func TestClaudeToAntigravitySkipsEmptySystemAndMessages(t *testing.T) {
+	for _, tc := range []struct {
+		system string
+		count  int64
+		text   string
+	}{
+		{system: `""`},
+		{system: `[{"type":"text","text":""},{"type":"text","text":"rules"}]`, count: 1, text: "rules"},
+	} {
+		input := []byte(`{"system":` + tc.system + `,"messages":[{"role":"user","content":""},{"role":"assistant","content":""},{"role":"user","content":"keep"}]}`)
+		body, err := ConvertClaudeRequestToAntigravity("m", input, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := gjson.GetBytes(body, "request")
+		if request.Get("systemInstruction.parts.#").Int() != tc.count || request.Get("systemInstruction.parts.0.text").String() != tc.text {
+			t.Fatalf("system %s produced %s", tc.system, body)
+		}
+		if request.Get("contents.#").Int() != 1 || request.Get("contents.0.parts.0.text").String() != "keep" {
+			t.Fatalf("empty messages survived or visible text was lost: %s", body)
+		}
+	}
 }
 
 func TestClaudeToAntigravityBase64ImageOnlyTurnStaysInlineData(t *testing.T) {
@@ -483,6 +698,16 @@ func TestConvertClaudeRequestToAntigravity_PreservesToolResultErrors(t *testing.
 			name:         "failed_multiple_blocks",
 			fields:       `"is_error":true,"content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]`,
 			wantResponse: `{"error":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}`,
+		},
+		{
+			name:         "incomplete_image_object",
+			fields:       `"content":{"type":"image","source":{"type":"base64","data":"YWJj"}}`,
+			wantResponse: `{"result":""}`,
+		},
+		{
+			name:         "incomplete_image_beside_error_text",
+			fields:       `"is_error":true,"content":[{"type":"image","source":{"type":"base64","media_type":"image/png"}},{"type":"text","text":"failed"}]`,
+			wantResponse: `{"error":{"type":"text","text":"failed"}}`,
 		},
 		{
 			name:         "failed_without_content",

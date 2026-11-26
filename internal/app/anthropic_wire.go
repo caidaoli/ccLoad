@@ -275,6 +275,47 @@ func prepareAnthropicConvertedRequest(body []byte, requestModel string) []byte {
 }
 
 /**
+ * @brief 将 Gemini 的可见性开关写入 Claude 的既有思考模式。
+ * @param body 应用模型和渠道思考默认值后的 Anthropic 正文。
+ * @param requestModel 实际上游模型，空字符串时取正文 model。
+ * @param includeThoughts Gemini 显式布尔开关，缺失时为 gjson.Null。
+ * @return 写入 display 后的正文，缺省可见性和思考等级保留原有取值。
+ */
+func applyGeminiAnthropicThinkingDisplay(body []byte, requestModel string, includeThoughts gjson.Type) []byte {
+	display := "omitted"
+	switch includeThoughts {
+	case gjson.True:
+		display = "summarized"
+	case gjson.False:
+	default:
+		return body
+	}
+
+	thinking := gjson.GetBytes(body, "thinking")
+	switch thinking.Get("type").Str {
+	case "adaptive", "enabled":
+	case "":
+		if thinking.Exists() || includeThoughts != gjson.True {
+			return body
+		}
+		modelName := anthropicRequestModelName(body, requestModel)
+		// Claude's Messages API runs these families adaptively without a thinking field.
+		switch strings.TrimSuffix(modelName, "[1m]") {
+		case "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5", "claude-mythos-preview",
+			"claude-fable-5-1", "claude-fable-5.1", "claude-mythos-5-1", "claude-mythos-5.1":
+		default:
+			if anthropicClaude55Family(modelName) == "" && anthropicClaude52Family(modelName) == "" {
+				return body
+			}
+		}
+		body = setJSONValue(body, "thinking.type", "adaptive")
+	default:
+		return body
+	}
+	return setJSONValue(body, "thinking.display", display)
+}
+
+/**
  * @brief 恢复 Fable/Mythos 5.2 被旧转换目录折算为预算前的五档思考等级。
  * @param body 刚完成跨协议转换的 Anthropic 正文。
  * @param sourceBody 实际传入转换器的正文，包含按最终模型应用的后缀与动态决策。
@@ -929,17 +970,17 @@ func anthropicHeaderValue(headers http.Header, name string) string {
 	return ""
 }
 
+/**
+ * @brief 将 Claude Code 出站请求中的官方 4.5 短名转换为对应的日期 ID。
+ * @param body 即将发送的 Messages 请求 JSON。
+ * @return 可识别短名使用日期 ID，其余模型保留原正文。
+ */
 func normalizeAnthropicOAuthModel(body []byte) []byte {
-	switch strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "model"))) {
-	case "claude-sonnet-4-5":
-		return setJSONRaw(body, "model", `"claude-sonnet-4-5-20250929"`)
-	case "claude-opus-4-5":
-		return setJSONRaw(body, "model", `"claude-opus-4-5-20251101"`)
-	case "claude-haiku-4-5":
-		return setJSONRaw(body, "model", `"claude-haiku-4-5-20251001"`)
-	default:
-		return body
+	modelName := strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "model")))
+	if resolved := cliproxyutil.ResolveClaude45ModelAlias(modelName); resolved != modelName {
+		return setJSONValue(body, "model", resolved)
 	}
+	return body
 }
 
 // isNativeAnthropicClaudeCodeRequest 判断请求是否应按原生 Claude Code wire 直通。

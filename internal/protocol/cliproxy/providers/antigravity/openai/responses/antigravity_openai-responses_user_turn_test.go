@@ -82,7 +82,8 @@ func TestOpenAIResponsesToAntigravityInlineFileStaysInlineData(t *testing.T) {
 	if envelope.Err != nil {
 		t.Fatalf("envelope.Err = %v", envelope.Err)
 	}
-	if got := gjson.GetBytes(envelope.Body, "request.contents.2.parts.0.inline_data.mime_type").String(); got != "application/pdf" {
+	inline := gjson.GetBytes(envelope.Body, "request.contents.2.parts.0.inlineData")
+	if inline.Get("mimeType").String() != "application/pdf" || inline.Get("data").String() != "JVBERi0xLjQK" {
 		t.Fatalf("inline file was not kept: %s", envelope.Body)
 	}
 }

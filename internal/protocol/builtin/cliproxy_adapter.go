@@ -26,6 +26,7 @@ import (
 	"ccLoad/internal/protocol/cliproxy/openai/claude"
 	openaigemini "ccLoad/internal/protocol/cliproxy/openai/gemini"
 	openairesponses "ccLoad/internal/protocol/cliproxy/openai/openai/responses"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 )
 
 func cliproxyOpenAIRequestToGemini(model string, raw []byte, stream bool) ([]byte, error) {
@@ -36,7 +37,7 @@ func cliproxyOpenAIRequestToGemini(model string, raw []byte, stream bool) ([]byt
 }
 
 func cliproxyGeminiResponseToOpenAIStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamOpenAI, oaigemini.ConvertGeminiResponseToOpenAI)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamGemini, cliproxyStreamOpenAI, oaigemini.ConvertGeminiResponseToOpenAI)
 }
 
 func cliproxyGeminiResponseToOpenAINonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -64,7 +65,7 @@ func cliproxyOpenAIRequestToAnthropic(model string, raw []byte, stream bool) ([]
 }
 
 func cliproxyAnthropicResponseToOpenAIStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamOpenAI, oaiclaude.ConvertClaudeResponseToOpenAI)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamAnthropic, cliproxyStreamOpenAI, oaiclaude.ConvertClaudeResponseToOpenAI)
 }
 
 func cliproxyAnthropicResponseToOpenAINonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -103,7 +104,7 @@ func cliproxyOpenAIRequestToCodex(model string, raw []byte, stream bool) ([]byte
 }
 
 func cliproxyCodexResponseToOpenAIStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamOpenAI, oaicodex.ConvertCodexResponseToOpenAI)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamCodex, cliproxyStreamOpenAI, oaicodex.ConvertCodexResponseToOpenAI)
 }
 
 func cliproxyCodexResponseToOpenAINonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -163,7 +164,7 @@ func cliproxyGeminiRequestToAnthropic(model string, raw []byte, stream bool) ([]
 }
 
 func cliproxyAnthropicResponseToGeminiStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamGemini, gemini.ConvertClaudeResponseToGemini)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamAnthropic, cliproxyStreamGemini, gemini.ConvertClaudeResponseToGemini)
 }
 
 func cliproxyAnthropicResponseToGeminiNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -182,7 +183,7 @@ func cliproxyCodexRequestToGemini(model string, raw []byte, stream bool) ([]byte
 }
 
 func cliproxyGeminiResponseToCodexStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamCodex, openairespgemini.ConvertGeminiResponseToOpenAIResponses)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamGemini, cliproxyStreamCodex, openairespgemini.ConvertGeminiResponseToOpenAIResponses)
 }
 
 func cliproxyGeminiResponseToCodexNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -196,7 +197,7 @@ func cliproxyGeminiRequestToCodex(model string, raw []byte, stream bool) ([]byte
 }
 
 func cliproxyCodexResponseToGeminiStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamGemini, geminicodex.ConvertCodexResponseToGemini)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamCodex, cliproxyStreamGemini, geminicodex.ConvertCodexResponseToGemini)
 }
 
 func cliproxyCodexResponseToGeminiNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -215,7 +216,7 @@ func cliproxyCodexRequestToAnthropic(model string, raw []byte, stream bool) ([]b
 }
 
 func cliproxyAnthropicResponseToCodexStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamCodex, oairespclaude.ConvertClaudeResponseToOpenAIResponses)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamAnthropic, cliproxyStreamCodex, oairespclaude.ConvertClaudeResponseToOpenAIResponses)
 }
 
 func cliproxyAnthropicResponseToCodexNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -240,7 +241,7 @@ func cliproxyAnthropicRequestToCodex(model string, raw []byte, stream bool) ([]b
 }
 
 func cliproxyCodexResponseToAnthropicStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
-	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamAnthropic, claudecodex.ConvertCodexResponseToClaude)
+	return cliproxyTranslateStream(ctx, model, original, translated, raw, param, cliproxyStreamCodex, cliproxyStreamAnthropic, claudecodex.ConvertCodexResponseToClaude)
 }
 
 func cliproxyCodexResponseToAnthropicNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
@@ -521,9 +522,12 @@ func cliproxyValidateCodexRequest(raw []byte, allowToolSearch, allowCompaction b
  * @return 输入不是 JSON 对象时返回错误。
  */
 func cliproxyCodexTerminalResponse(raw []byte) ([]byte, error) {
-	response := gjson.ParseBytes(raw)
+	response := cliproxyutil.ParseGJSONBytesNoCopy(raw)
 	if !json.Valid(raw) || !response.IsObject() {
 		return nil, fmt.Errorf("decode codex response: invalid JSON object")
+	}
+	if response.Get("type").String() == "response.done" {
+		return cliproxyNormalizeCodexDone(raw, response.Get("response")), nil
 	}
 	if response.Get("response").Exists() {
 		return raw, nil
@@ -539,6 +543,36 @@ func cliproxyCodexTerminalResponse(raw []byte) ([]byte, error) {
 	wrapped = append(wrapped, raw...)
 	wrapped = append(wrapped, '}')
 	return wrapped, nil
+}
+
+/**
+ * @brief 将兼容上游的 response.done 终态映射为转换器已识别的事件。
+ * @param payload 已验证的终态 JSON。
+ * @param response 终态事件内嵌的 Responses 对象。
+ * @return 转换器使用的事件 JSON，保留输出、用量及失败详情。
+ */
+func cliproxyNormalizeCodexDone(payload []byte, response gjson.Result) []byte {
+	if !response.IsObject() {
+		return payload
+	}
+	eventType := "response.completed"
+	switch strings.ToLower(strings.TrimSpace(response.Get("status").String())) {
+	case "incomplete":
+		eventType = "response.incomplete"
+	case "cancelled":
+		eventType = "response.incomplete"
+		payload, _ = sjson.SetBytes(payload, "response.status", "incomplete")
+		if response.Get("incomplete_details.reason").String() == "" {
+			payload, _ = sjson.SetBytes(payload, "response.incomplete_details.reason", "cancelled")
+		}
+	case "failed":
+		eventType = "error"
+		if failure := response.Get("error"); failure.IsObject() {
+			payload, _ = sjson.SetRawBytes(payload, "error", []byte(failure.Raw))
+		}
+	}
+	payload, _ = sjson.SetBytes(payload, "type", eventType)
+	return payload
 }
 
 func cliproxySSEDataEvent(rawEvent []byte) ([]byte, error) {
@@ -569,12 +603,18 @@ func cliproxySSEDataEvent(rawEvent []byte) ([]byte, error) {
 	return out, nil
 }
 
+/**
+ * @brief 从 SSE 事件名补全 JSON 事件类型，并按 Claude 增量内容推断缺失的 delta.type。
+ * @param eventType SSE 的 event 字段。
+ * @param payload 当前事件的 data 字段。
+ * @return 可交给转换器的事件 JSON；无事件名、无效 JSON 或无字段可补时返回原数据。
+ */
 func cliproxyNormalizeSSEPayload(eventType string, payload []byte) []byte {
 	if eventType == "" || !json.Valid(payload) {
 		return payload
 	}
-	root := gjson.ParseBytes(payload)
-	payloadType := root.Get("type").String()
+	root := cliproxyutil.ParseGJSONBytesNoCopy(payload)
+	payloadType := root.Get("type").Str
 	if payloadType == "" {
 		payload, _ = sjson.SetBytes(payload, "type", eventType)
 		payloadType = eventType
@@ -597,6 +637,19 @@ func cliproxyNormalizeSSEPayload(eventType string, payload []byte) []byte {
 		payload, _ = sjson.SetBytes(payload, "delta.type", deltaType)
 	}
 	return payload
+}
+
+/**
+ * @brief 为将 Responses SSE 转换成不同线协议的路径归一化 .done。
+ * @param data 已提取的 SSE data 行，也可以是流结束时的空切片。
+ * @return 带 data 前缀的事件，保持其他输入原样。
+ */
+func cliproxyNormalizeCodexSSEData(data []byte) []byte {
+	payload := bytes.TrimPrefix(data, []byte("data: "))
+	if gjson.GetBytes(payload, "type").String() != "response.done" {
+		return data
+	}
+	return append([]byte("data: "), cliproxyNormalizeCodexDone(payload, gjson.GetBytes(payload, "response"))...)
 }
 
 type cliproxyStreamFunc func(context.Context, string, []byte, []byte, []byte, *any) [][]byte
@@ -665,7 +718,7 @@ func cliproxyTranslateOpenAIToCodexStream(ctx context.Context, model string, ori
 
 	payload := bytes.TrimSpace(bytes.TrimPrefix(data, []byte("data:")))
 	if !bytes.Equal(payload, []byte("[DONE]")) {
-		root := gjson.ParseBytes(payload)
+		root := cliproxyutil.ParseGJSONBytesNoCopy(payload)
 		if strings.HasPrefix(root.Get("type").String(), "response.") {
 			state.response = true
 			return cliproxyFrameStreamChunks(cliproxyStreamCodex, [][]byte{payload})
@@ -705,7 +758,7 @@ func cliproxyTranslateOpenAIToAnthropicStream(ctx context.Context, model string,
 
 	payload := bytes.TrimSpace(bytes.TrimPrefix(data, []byte("data:")))
 	if !bytes.Equal(payload, []byte("[DONE]")) {
-		root := gjson.ParseBytes(payload)
+		root := cliproxyutil.ParseGJSONBytesNoCopy(payload)
 		if strings.HasPrefix(root.Get("type").String(), "response.") {
 			state.response = true
 		} else if !state.response && root.Get("choices.0.delta.content").String() == "\u200b" {
@@ -715,6 +768,7 @@ func cliproxyTranslateOpenAIToAnthropicStream(ctx context.Context, model string,
 
 	var chunks [][]byte
 	if state.response {
+		data = cliproxyNormalizeCodexSSEData(data)
 		chunks = claudecodex.ConvertCodexResponseToClaude(ctx, model, original, translated, data, &state.responses)
 	} else {
 		chunks = claude.ConvertOpenAIResponseToClaude(ctx, model, original, translated, data, &state.chat)
@@ -758,6 +812,7 @@ func cliproxyTranslateOpenAIToGeminiStream(ctx context.Context, model string, or
 
 	var chunks [][]byte
 	if state.response {
+		data = cliproxyNormalizeCodexSSEData(data)
 		chunks = geminicodex.ConvertCodexResponseToGemini(ctx, model, original, translated, data, &state.responses)
 	} else {
 		chunks = openaigemini.ConvertOpenAIResponseToGemini(ctx, model, original, translated, data, &state.chat)
@@ -765,13 +820,30 @@ func cliproxyTranslateOpenAIToGeminiStream(ctx context.Context, model string, or
 	return cliproxyFrameStreamChunks(cliproxyStreamGemini, chunks)
 }
 
-func cliproxyTranslateStream(ctx context.Context, model string, original, translated, raw []byte, param *any, target cliproxyStreamProtocol, translate cliproxyStreamFunc) ([][]byte, error) {
+/**
+ * @brief 解析上游 SSE、执行跨协议转换并封装客户端事件。
+ * @param ctx 当前响应的上下文。
+ * @param model 目标模型名称。
+ * @param original 客户端请求正文。
+ * @param translated 发给上游的请求正文。
+ * @param raw 上游 SSE 事件，空切片表示流结束。
+ * @param param 当前流的转换状态。
+ * @param source 上游 SSE 线协议。
+ * @param target 客户端 SSE 线协议。
+ * @param translate 对应该协议对的转换器。
+ * @return 可写给客户端的完整 SSE 事件。
+ * @return 上游事件解析、工具输入或客户端事件封装错误。
+ */
+func cliproxyTranslateStream(ctx context.Context, model string, original, translated, raw []byte, param *any, source, target cliproxyStreamProtocol, translate cliproxyStreamFunc) ([][]byte, error) {
 	data, err := cliproxySSEDataEvent(raw)
 	if err != nil {
 		return nil, err
 	}
 	if len(data) == 0 && len(raw) != 0 {
 		return nil, nil
+	}
+	if source == cliproxyStreamCodex {
+		data = cliproxyNormalizeCodexSSEData(data)
 	}
 	if param == nil {
 		var local any

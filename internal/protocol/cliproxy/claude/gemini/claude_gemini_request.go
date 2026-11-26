@@ -7,6 +7,7 @@ package gemini
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
@@ -89,182 +90,113 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		out, _ = sjson.SetBytes(out, "service_tier", serviceTier.String())
 	}
 
-	// Generation config extraction from Gemini format
-	if genConfig := root.Get("generationConfig"); genConfig.Exists() {
-		// Max output tokens configuration
-		if maxTokens := genConfig.Get("maxOutputTokens"); maxTokens.Exists() {
-			out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
-		}
-		// Top P setting for nucleus sampling.
-		if topP := genConfig.Get("topP"); topP.Exists() {
-			out, _ = sjson.SetBytes(out, "top_p", topP.Float())
-		}
-		// Stop sequences configuration for custom termination conditions
-		if stopSeqs := genConfig.Get("stopSequences"); stopSeqs.Exists() && stopSeqs.IsArray() {
-			var stopSequences []string
-			stopSeqs.ForEach(func(_, value gjson.Result) bool {
-				stopSequences = append(stopSequences, value.String())
-				return true
-			})
-			if len(stopSequences) > 0 {
-				out, _ = sjson.SetBytes(out, "stop_sequences", stopSequences)
-			}
-		}
-		// Include thoughts configuration for reasoning process visibility
-		// Translator only does format conversion, ApplyThinking handles model capability validation.
-		if thinkingConfig := genConfig.Get("thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
-			mi := registry.LookupModelInfo(modelName, "claude")
-			supportsAdaptive := mi != nil && mi.Thinking != nil && len(mi.Thinking.Levels) > 0
-			supportsMax := supportsAdaptive && thinking.HasLevel(mi.Thinking.Levels, string(thinking.LevelMax))
-			supportsDynamic := supportsAdaptive && mi.Thinking.DynamicAllowed
-
-			// MapToClaudeEffort normalizes levels (e.g. minimal→low, xhigh→high) to avoid
-			// validation errors since validate treats same-provider unsupported levels as errors.
-			thinkingLevel := thinkingConfig.Get("thinkingLevel")
-			if !thinkingLevel.Exists() {
-				thinkingLevel = thinkingConfig.Get("thinking_level")
-			}
-			if thinkingLevel.Exists() {
-				level := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
-				if supportsAdaptive {
-					switch {
-					case level == "":
-					case level == "none":
-						out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
-						out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-						out, _ = sjson.DeleteBytes(out, "output_config.effort")
-					case level == "auto" && supportsDynamic:
-						out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
-						out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-						out, _ = sjson.DeleteBytes(out, "output_config.effort")
-					default:
-						if !thinking.HasLevel(mi.Thinking.Levels, level) {
-							if mapped, ok := thinking.MapToClaudeEffort(level, supportsMax); ok {
-								level = mapped
-							}
-						}
-						out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
-						out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-						out, _ = sjson.SetBytes(out, "output_config.effort", level)
-					}
-				} else {
-					switch level {
-					case "":
-					case "none":
-						out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
-						out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-					case "auto":
-						out, _ = sjson.SetBytes(out, "thinking.type", "enabled")
-						out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-					default:
-						if budget, ok := thinking.ConvertLevelToBudget(level); ok {
-							out, _ = sjson.SetBytes(out, "thinking.type", "enabled")
-							out, _ = sjson.SetBytes(out, "thinking.budget_tokens", budget)
-						}
-					}
-				}
-			} else {
-				thinkingBudget := thinkingConfig.Get("thinkingBudget")
-				if !thinkingBudget.Exists() {
-					thinkingBudget = thinkingConfig.Get("thinking_budget")
-				}
-				if thinkingBudget.Exists() {
-					budget := int(thinkingBudget.Int())
-					if supportsAdaptive {
-						switch {
-						case budget == 0:
-							out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
-							out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-							out, _ = sjson.DeleteBytes(out, "output_config.effort")
-						case budget == -1 && supportsDynamic:
-							out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
-							out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-							out, _ = sjson.DeleteBytes(out, "output_config.effort")
-						default:
-							level, ok := thinking.ConvertBudgetToLevel(budget)
-							if ok {
-								if level == string(thinking.LevelMax) {
-									level = thinking.ClampEffortToLevels(level, mi.Thinking.Levels)
-								} else if !thinking.HasLevel(mi.Thinking.Levels, level) {
-									if mapped, ok := thinking.MapToClaudeEffort(level, supportsMax); ok {
-										level = mapped
-									}
-								}
-								out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
-								out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-								out, _ = sjson.SetBytes(out, "output_config.effort", level)
-							}
-						}
-					} else {
-						switch budget {
-						case 0:
-							out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
-							out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-						case -1:
-							out, _ = sjson.SetBytes(out, "thinking.type", "enabled")
-							out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-						default:
-							out, _ = sjson.SetBytes(out, "thinking.type", "enabled")
-							out, _ = sjson.SetBytes(out, "thinking.budget_tokens", budget)
-						}
-					}
-				}
-			}
-		}
+	genConfig := translatorcommon.GeminiConfigObject(root, "generationConfig", "generation_config")
+	if maxTokens, ok := translatorcommon.GeminiConfigInt(genConfig, 1, "maxOutputTokens", "max_output_tokens"); ok {
+		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens)
 	}
-	if thinkingConfig := root.Get("generationConfig.thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
-		thinkingLevel := thinkingConfig.Get("thinkingLevel")
-		if !thinkingLevel.Exists() {
-			thinkingLevel = thinkingConfig.Get("thinking_level")
-		}
-		if thinkingLevel.Exists() {
-			level := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
-			switch level {
-			case "":
-			case "none":
-				out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
-				out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
-				out, _ = sjson.DeleteBytes(out, "output_config.effort")
-			default:
-				if mapped, ok := thinking.MapToClaudeEffort(level, true); ok {
-					level = mapped
+	// Temperature is omitted for Claude requests.
+	if topP := translatorcommon.GeminiConfigNumber(genConfig, "topP", "top_p"); topP.Exists() {
+		out, _ = sjson.SetBytes(out, "top_p", topP.Float())
+	}
+	if topK, ok := translatorcommon.GeminiConfigInt(genConfig, 0, "topK", "top_k"); ok {
+		out, _ = sjson.SetBytes(out, "top_k", topK)
+	}
+	if stops := translatorcommon.GeminiConfigStrings(genConfig, "stopSequences", "stop_sequences"); len(stops) > 0 {
+		out, _ = sjson.SetBytes(out, "stop_sequences", stops)
+	}
+
+	level, value, hasBudget := translatorcommon.GeminiThinkingConfig(root)
+	if level != "" {
+		model := registry.LookupModelInfo(util.ResolveClaudeThinkingModelAlias(strings.TrimSpace(modelName)), "claude")
+		switch {
+		case level == "none":
+			out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
+		case model != nil && model.Thinking == nil:
+			// The model does not support thinking.
+		case model != nil && len(model.Thinking.Levels) == 0:
+			if budget, ok := thinking.ConvertLevelToBudget(level); ok && budget > 0 {
+				minBudget := model.Thinking.Min
+				maxTokens := gjson.GetBytes(out, "max_tokens").Int()
+				if maxTokens <= int64(minBudget) {
+					return nil, fmt.Errorf("max output tokens must exceed %d for thinking level %q on %s", minBudget, level, modelName)
 				}
-				out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
-				out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
+				budget = max(budget, minBudget)
+				if model.Thinking.Max > 0 {
+					budget = min(budget, model.Thinking.Max)
+				}
+				budget = int(min(int64(budget), maxTokens-1))
+				out, _ = sjson.SetBytes(out, "thinking.type", "enabled")
+				out, _ = sjson.SetBytes(out, "thinking.budget_tokens", budget)
+			}
+		default:
+			var levels []string
+			if model != nil {
+				levels = model.Thinking.Levels
+			}
+			out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
+			if level != "auto" || model == nil || !model.Thinking.DynamicAllowed {
+				if !thinking.HasLevel(levels, level) {
+					supportsMax := model == nil || thinking.HasLevel(levels, "max")
+					if mapped, ok := thinking.MapToClaudeEffort(level, supportsMax); ok {
+						level = mapped
+					}
+				}
 				out, _ = sjson.SetBytes(out, "output_config.effort", level)
 			}
 		}
-	}
-
-	// Anthropic requires at least one message. Keep Gemini system instructions
-	// in the native system field when conversation content exists; otherwise
-	// turn the instruction into the sole user prompt.
-	sysInstr := root.Get("systemInstruction")
-	if !sysInstr.Exists() {
-		sysInstr = root.Get("system_instruction")
-	}
-	if sysInstr.Exists() {
-		if parts := sysInstr.Get("parts"); parts.Exists() && parts.IsArray() {
-			var systemText strings.Builder
-			parts.ForEach(func(_, part gjson.Result) bool {
-				if translatorcommon.IsGeminiThoughtPart(part) {
-					return true
-				}
-				if text := part.Get("text"); text.Exists() {
-					if systemText.Len() > 0 {
-						systemText.WriteString("\n")
+	} else if hasBudget {
+		budget := int(value)
+		mi := registry.LookupModelInfo(util.ResolveClaudeThinkingModelAlias(strings.TrimSpace(modelName)), "claude")
+		supportsAdaptive := mi != nil && mi.Thinking != nil && len(mi.Thinking.Levels) > 0
+		switch {
+		case budget == 0:
+			out, _ = sjson.SetBytes(out, "thinking.type", "disabled")
+		case supportsAdaptive:
+			if budget == -1 && mi.Thinking.DynamicAllowed {
+				out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
+			} else if level, ok := thinking.ConvertBudgetToLevel(budget); ok {
+				if level == string(thinking.LevelMax) {
+					level = thinking.ClampEffortToLevels(level, mi.Thinking.Levels)
+				} else if !thinking.HasLevel(mi.Thinking.Levels, level) {
+					supportsMax := thinking.HasLevel(mi.Thinking.Levels, string(thinking.LevelMax))
+					if mapped, ok := thinking.MapToClaudeEffort(level, supportsMax); ok {
+						level = mapped
 					}
-					systemText.WriteString(text.String())
 				}
-				return true
-			})
-			if systemText.Len() > 0 {
-				systemMessage := []byte(`{"role":"user","content":[{"type":"text","text":""}]}`)
-				systemMessage, _ = sjson.SetBytes(systemMessage, "content.0.text", systemText.String())
-				messageAccumulator.Append(systemMessage)
-				messageAccumulator.Flush()
+				out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
+				out, _ = sjson.SetBytes(out, "output_config.effort", level)
+			}
+		case budget != -1 || mi == nil:
+			out, _ = sjson.SetBytes(out, "thinking.type", "enabled")
+			if budget != -1 {
+				out, _ = sjson.SetBytes(out, "thinking.budget_tokens", budget)
 			}
 		}
+	}
+
+	// Keep the Gemini system instruction in its established Claude preamble turn.
+	if text := translatorcommon.GeminiSystemInstructionText(root, "systemInstruction", "system_instruction"); text != "" {
+		systemMessage := []byte(`{"role":"user","content":[{"type":"text","text":""}]}`)
+		systemMessage, _ = sjson.SetBytes(systemMessage, "content.0.text", text)
+		messageAccumulator.Append(systemMessage)
+		messageAccumulator.Flush()
+	}
+	format, outputInstruction, err := translatorcommon.GeminiResponseFormat(root, false)
+	if err != nil {
+		return nil, err
+	}
+	if format != nil {
+		responseFormat := gjson.ParseBytes(format)
+		if schema, ok := translatorcommon.ClaudeOutputFormatSchema(modelName, responseFormat); ok && supportsNativeClaudeGeminiOutputSchema(schema) {
+			out, _ = sjson.SetBytes(out, "output_config.format.type", "json_schema")
+			out, _ = sjson.SetRawBytes(out, "output_config.format.schema", []byte(schema.Raw))
+		} else {
+			outputInstruction = translatorcommon.BuildClaudeStructuredOutputInstruction(responseFormat)
+		}
+	}
+	if outputInstruction != "" {
+		out, _ = sjson.SetRawBytes(out, "system", []byte(`[{"type":"text","text":""}]`))
+		out, _ = sjson.SetBytes(out, "system.0.text", outputInstruction)
 	}
 
 	// Contents conversion to messages with proper role mapping
@@ -415,48 +347,46 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	orderGeminiClaudeToolResults(messages)
 	out = translatorcommon.SetRawArrayItems(out, "messages", messages)
 
-	// Tools mapping: Gemini functionDeclarations -> Claude Code tools
-	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
-		var anthropicTools []interface{}
-
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			if funcDecls := tool.Get("functionDeclarations"); funcDecls.Exists() && funcDecls.IsArray() {
-				funcDecls.ForEach(func(_, funcDecl gjson.Result) bool {
-					anthropicTool := []byte(`{"name":"","description":"","input_schema":{"type":"object","properties":{}}}`)
-
-					if name := funcDecl.Get("name"); name.Exists() {
-						anthropicTool, _ = sjson.SetBytes(anthropicTool, "name", util.SanitizeClaudeFunctionName(name.String()))
-					}
-					if desc := funcDecl.Get("description"); desc.Exists() {
-						anthropicTool, _ = sjson.SetBytes(anthropicTool, "description", desc.String())
-					}
-					if params := funcDecl.Get("parameters"); params.Exists() {
-						cleaned := normalizeClaudeToolSchema(params)
-						anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", cleaned)
-					} else if params = funcDecl.Get("parametersJsonSchema"); params.Exists() {
-						cleaned := normalizeClaudeToolSchema(params)
-						anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", cleaned)
-					} else {
-						anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", []byte(`{"type":"object","properties":{}}`))
-					}
-
-					anthropicTools = append(anthropicTools, gjson.ParseBytes(anthropicTool).Value())
-					return true
-				})
-			}
-			return true
-		})
-
-		if len(anthropicTools) > 0 {
-			out, _ = sjson.SetBytes(out, "tools", anthropicTools)
+	declarations := translatorcommon.GeminiFunctionDeclarations(root)
+	mode, allowedNames, err := translatorcommon.GeminiFunctionCallingOptions(root, declarations)
+	if err != nil {
+		return nil, err
+	}
+	var tools [][]byte
+	for _, declaration := range declarations {
+		name := declaration.Get("name")
+		if len(allowedNames) > 0 && !slices.Contains(allowedNames, name.String()) {
+			continue
 		}
+		tool := []byte(`{"name":"","description":"","input_schema":{"type":"object","properties":{}}}`)
+		if name.Exists() {
+			tool, _ = sjson.SetBytes(tool, "name", util.SanitizeClaudeFunctionName(name.String()))
+		}
+		if description := declaration.Get("description"); description.Exists() {
+			tool, _ = sjson.SetBytes(tool, "description", description.String())
+		}
+		if parameters := translatorcommon.GeminiConfigObject(declaration, "parameters", "parametersJsonSchema", "parameters_json_schema"); parameters.Exists() {
+			tool, _ = sjson.SetRawBytes(tool, "input_schema", normalizeClaudeToolSchema(parameters))
+		}
+		tools = append(tools, tool)
+	}
+	if len(tools) > 0 {
+		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(tools))
 	}
 
-	// Tool config mapping from Gemini format to Claude Code format
-	if toolConfig := root.Get("tool_config"); toolConfig.Exists() {
-		out = setClaudeToolChoiceFromGeminiToolConfig(out, toolConfig.Get("function_calling_config"))
-	} else if toolConfig := root.Get("toolConfig"); toolConfig.Exists() {
-		out = setClaudeToolChoiceFromGeminiToolConfig(out, toolConfig.Get("functionCallingConfig"))
+	switch mode {
+	case "AUTO":
+		out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
+	case "NONE":
+		out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"none"}`))
+	case "ANY":
+		if len(allowedNames) == 1 {
+			choice := []byte(`{"type":"tool","name":""}`)
+			choice, _ = sjson.SetBytes(choice, "name", util.SanitizeClaudeFunctionName(allowedNames[0]))
+			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
+		} else {
+			out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"any"}`))
+		}
 	}
 
 	// Stream setting configuration
@@ -466,6 +396,73 @@ func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		return out, err
 	}
 	return out, toolOutputErr
+}
+
+// supportsNativeClaudeGeminiOutputSchema recognizes closed schemas that Claude
+// can enforce directly. Other schemas are sent intact in the system instruction.
+func supportsNativeClaudeGeminiOutputSchema(schema gjson.Result) bool {
+	if !schema.IsObject() {
+		return false
+	}
+	kind := schema.Get("type").Str
+	switch kind {
+	case "object":
+		if schema.Get("additionalProperties").Type != gjson.False {
+			return false
+		}
+	case "array", "string", "integer", "number", "boolean", "null":
+	case "":
+		if !schema.Get("anyOf").IsArray() {
+			return false
+		}
+	default:
+		return false
+	}
+
+	supported := true
+	schema.ForEach(func(key, value gjson.Result) bool {
+		switch key.Str {
+		case "title", "description":
+			supported = value.Type == gjson.String
+		case "type", "default":
+			supported = kind != ""
+		case "additionalProperties":
+			supported = kind == "object"
+		case "required":
+			supported = kind == "object" && value.IsArray() && !slices.ContainsFunc(value.Array(), func(item gjson.Result) bool {
+				return item.Type != gjson.String
+			})
+		case "properties":
+			supported = kind == "object" && value.IsObject() && allNativeClaudeGeminiOutputSchemasSupported(value)
+		case "items":
+			supported = kind == "array" && supportsNativeClaudeGeminiOutputSchema(value)
+		case "anyOf":
+			supported = kind == "" && value.IsArray() && value.Get("#").Int() != 0 && allNativeClaudeGeminiOutputSchemasSupported(value)
+		case "const":
+			supported = kind != "" && !value.IsObject() && !value.IsArray()
+		case "enum":
+			supported = kind != "" && value.IsArray() && value.Get("#").Int() != 0 && !slices.ContainsFunc(value.Array(), func(item gjson.Result) bool {
+				return item.IsObject() || item.IsArray()
+			})
+		case "minItems":
+			supported = kind == "array" && value.Type == gjson.Number && (value.Num == 0 || value.Num == 1)
+		case "format":
+			supported = kind == "string" && slices.Contains([]string{"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}, value.Str)
+		default:
+			supported = false
+		}
+		return supported
+	})
+	return supported
+}
+
+func allNativeClaudeGeminiOutputSchemasSupported(schemas gjson.Result) bool {
+	supported := true
+	schemas.ForEach(func(_, schema gjson.Result) bool {
+		supported = supportsNativeClaudeGeminiOutputSchema(schema)
+		return supported
+	})
+	return supported
 }
 
 // orderGeminiClaudeToolResults keeps tool results before other user content,
@@ -505,36 +502,6 @@ func normalizeClaudeToolSchema(parameters gjson.Result) []byte {
 		cleaned, _ = sjson.SetBytes(cleaned, "$schema", schema)
 	}
 	return cleaned
-}
-
-func setClaudeToolChoiceFromGeminiToolConfig(out []byte, funcCalling gjson.Result) []byte {
-	if !funcCalling.Exists() {
-		return out
-	}
-	mode := funcCalling.Get("mode")
-	if !mode.Exists() {
-		return out
-	}
-	switch mode.String() {
-	case "AUTO":
-		out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
-	case "NONE":
-		out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"none"}`))
-	case "ANY":
-		allowedNames := funcCalling.Get("allowedFunctionNames")
-		if !allowedNames.Exists() {
-			allowedNames = funcCalling.Get("allowed_function_names")
-		}
-		allowedNameItems := allowedNames.Array()
-		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
-			choice := []byte(`{"type":"tool","name":""}`)
-			choice, _ = sjson.SetBytes(choice, "name", util.SanitizeClaudeFunctionName(allowedNameItems[0].String()))
-			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
-		} else {
-			out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"any"}`))
-		}
-	}
-	return out
 }
 
 func geminiClaudeInlineData(part gjson.Result) gjson.Result {

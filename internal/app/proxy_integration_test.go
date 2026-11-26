@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -4981,6 +4982,187 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 			response := doProxyRequest(t, env.engine, testCase.path, testCase.body, nil)
 			if response.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief Verifies Gemini thinking levels, budgets and summary visibility in translated HTTP requests.
+ * @param t Test context.
+ */
+func TestProxy_GeminiThinkingOnTranslatedRoutes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, channel, model, upstream, config, mode, effort, display, summary string
+		canonicalGeneration, snakeThinking, suffix                             string
+		budget                                                                 int64
+		forced, override                                                       bool
+	}{
+		{name: "active Claude opt in", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"thinking_level":"high","include_thoughts":true`, mode: "adaptive", effort: "high", display: "summarized"},
+		{name: "legacy Claude manual high", model: "claude-sonnet-4-5-20250929", upstream: "anthropic", config: `"thinking_level":"HIGH"`, mode: "enabled", budget: 24576},
+		{name: "legacy Claude budget in alternate thinking config", model: "claude-haiku-4-5-20251001", upstream: "anthropic", config: `"include_thoughts":false`, snakeThinking: `{"thinking_budget":1024}`, mode: "enabled", budget: 1024, display: "omitted"},
+		{name: "Opus native xhigh", model: "claude-opus-5-5", upstream: "anthropic", config: `"thinking_level":"XHIGH"`, mode: "adaptive", effort: "xhigh"},
+		{name: "suffix keeps Claude xhigh", model: "claude-opus-4-7", upstream: "anthropic", suffix: "(xhigh)", config: `"thinking_level":"low"`, mode: "adaptive", effort: "xhigh"},
+		{name: "suffix keeps Claude max", model: "claude-opus-4-7", upstream: "anthropic", suffix: "(max)", mode: "adaptive", effort: "max"},
+		{name: "suffix keeps Chat xhigh", model: "gpt-5.5", upstream: "openai", suffix: "(xhigh)", effort: "xhigh"},
+		{name: "suffix clamps Responses max", model: "gpt-5.5", upstream: "codex", suffix: "(max)", effort: "xhigh", summary: "auto"},
+		{name: "Opus native auto", model: "claude-opus-5-5", upstream: "anthropic", config: `"thinking_level":"AUTO"`, mode: "adaptive"},
+		{name: "active Claude opt out", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"thinking_level":"high","include_thoughts":false`, mode: "adaptive", effort: "high", display: "omitted"},
+		{name: "Claude visibility in alternate thinking config", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"thinking_level":"high"`, snakeThinking: `{"include_thoughts":false}`, mode: "adaptive", effort: "high", display: "omitted"},
+		{name: "Claude omitted flag", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"thinking_level":"high"`, mode: "adaptive", effort: "high"},
+		{name: "Claude disabled stays disabled", model: "claude-fable-5-2", upstream: "anthropic", config: `"thinking_budget":0,"include_thoughts":true`, mode: "adaptive"},
+		{name: "Claude legacy default stays off", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"include_thoughts":true`},
+		{name: "Claude unknown model default", model: "claude-opus-5-99", upstream: "anthropic", config: `"include_thoughts":true`},
+		{name: "Claude model defaults to adaptive", model: "claude-fable-5-2", upstream: "anthropic", config: `"include_thoughts":true`, mode: "adaptive", display: "summarized"},
+		{name: "Claude dotted model defaults to adaptive", model: "claude-fable-5.1", upstream: "anthropic", config: `"include_thoughts":true`, mode: "adaptive", display: "summarized"},
+		{name: "AnyRouter keeps default effort", channel: "anyrouter", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"include_thoughts":false`, mode: "adaptive", effort: "high", display: "omitted"},
+		{name: "Claude forced tool removes thinking", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"thinking_level":"high","include_thoughts":true`, forced: true},
+		{name: "Claude channel display rule wins", model: "claude-sonnet-4-6", upstream: "anthropic", config: `"thinking_level":"high","include_thoughts":true`, mode: "adaptive", effort: "high", display: "omitted", override: true},
+		{name: "Responses omitted flag keeps auto", model: "gpt-5.4", upstream: "codex", effort: "medium", summary: "auto"},
+		{name: "Responses explicit auto budget omits effort", model: "gpt-5.4", upstream: "codex", config: `"include_thoughts":true`, snakeThinking: `{"thinking_budget":-1}`, summary: "auto"},
+		{name: "Chat explicit auto level omits effort", model: "gpt-5.4", upstream: "openai", config: `"thinking_level":"AUTO"`},
+		{name: "Responses explicit true keeps auto", model: "gpt-5.4", upstream: "codex", config: `"include_thoughts":true`, effort: "medium", summary: "auto"},
+		{name: "Responses explicit false omits summary", model: "gpt-5.4", upstream: "codex", config: `"thinking_level":"high","include_thoughts":false`, effort: "high"},
+		{name: "Responses visibility in alternate generation config", model: "gpt-5.4", upstream: "codex", config: `"include_thoughts":false`, canonicalGeneration: `{"thinkingConfig":{"thinkingLevel":"high"}}`, effort: "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wireBodies := make(chan []byte, 1)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				wireBodies <- body
+				w.Header().Set("Content-Type", "application/json")
+				switch tc.upstream {
+				case "anthropic":
+					_, _ = io.WriteString(w, `{"id":"msg_a","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+				case "openai":
+					_, _ = io.WriteString(w, `{"id":"chat_a","object":"chat.completion","model":"gpt","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+				case "codex":
+					_, _ = io.WriteString(w, `{"id":"resp_a","object":"response","model":"gpt","status":"completed","output":[{"id":"msg_a","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			channelName := tc.channel
+			if channelName == "" {
+				channelName = "thought-visibility"
+			}
+			channel := testChannel{name: channelName, models: tc.model, upstreamProtocol: tc.upstream}
+			if tc.override {
+				channel.customRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+					Action: model.RuleActionOverride, Path: "thinking.display", Value: json.RawMessage(`"omitted"`),
+				}}}
+			}
+			env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
+			generation := map[string]any{"thinkingConfig": json.RawMessage("{" + tc.config + "}")}
+			if tc.snakeThinking != "" {
+				generation["thinking_config"] = json.RawMessage(tc.snakeThinking)
+			}
+			request := map[string]any{
+				"generation_config": generation,
+				"contents":          json.RawMessage(`[{"role":"user","parts":[{"text":"hello"}]}]`),
+			}
+			if tc.canonicalGeneration != "" {
+				request["generationConfig"] = json.RawMessage(tc.canonicalGeneration)
+			}
+			if tc.forced {
+				request["tools"] = json.RawMessage(`[{"functionDeclarations":[{"name":"lookup","parameters":{"type":"object"}}]}]`)
+				request["toolConfig"] = json.RawMessage(`{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["lookup"]}}`)
+			}
+			response := doProxyRequest(t, env.engine, "/v1beta/models/"+tc.model+tc.suffix+":generateContent", request, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			wire := gjson.ParseBytes(<-wireBodies)
+			switch tc.upstream {
+			case "anthropic":
+				if wire.Get("thinking.type").Str != tc.mode || wire.Get("output_config.effort").Str != tc.effort ||
+					wire.Get("thinking.budget_tokens").Int() != tc.budget || (tc.effort == "" && wire.Get("output_config.effort").Exists()) ||
+					wire.Get("thinking.display").Str != tc.display || (tc.display == "" && wire.Get("thinking.display").Exists()) {
+					t.Fatalf("Claude thinking = %s, effort = %s. Want mode %q, budget %d, effort %q, display %q", wire.Get("thinking").Raw, wire.Get("output_config.effort").Raw, tc.mode, tc.budget, tc.effort, tc.display)
+				}
+			case "openai":
+				if effort := wire.Get("reasoning_effort"); effort.Str != tc.effort || (tc.effort == "" && effort.Exists()) {
+					t.Fatalf("Chat effort = %s, want %q", effort.Raw, tc.effort)
+				}
+			case "codex":
+				if wire.Get("reasoning.effort").Str != tc.effort || (tc.effort == "" && wire.Get("reasoning.effort").Exists()) ||
+					wire.Get("reasoning.summary").Str != tc.summary || (tc.summary == "" && wire.Get("reasoning.summary").Exists()) ||
+					wire.Get("include.0").Str != "reasoning.encrypted_content" {
+					t.Fatalf("Responses body = %s. Want effort %q, summary %q and encrypted reasoning", wire.Raw, tc.effort, tc.summary)
+				}
+			}
+		})
+	}
+}
+
+func TestProxy_GeminiStructuredOutputToClaude(t *testing.T) {
+	t.Parallel()
+	const target = "claude-sonnet-4-6"
+	bodies := make(chan []byte, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		bodies <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_schema","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"[]"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	env := setupProxyTestEnv(t, []testChannel{{name: "gemini-structured-to-claude", models: target, upstreamProtocol: "anthropic"}}, map[int]string{0: upstream.URL})
+	for _, tc := range []struct {
+		name, field, schema string
+		prompt              bool
+	}{
+		{"native array root", `"responseSchema":{"type":"ARRAY","items":{"type":"STRING"}}`, `{"type":"array","items":{"type":"string"}}`, false},
+		{"unsupported constraint falls back intact", `"responseJsonSchema":{"type":"object","additionalProperties":false,"properties":{"score":{"type":"integer","minimum":1}}}`, `{"type":"object","additionalProperties":false,"properties":{"score":{"type":"integer","minimum":1}}}`, true},
+		{"unsatisfiable false schema", `"responseJsonSchema":false`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doProxyRequest(t, env.engine, "/v1beta/models/"+target+":generateContent", map[string]any{
+				"contents":         json.RawMessage(`[{"parts":[{"text":"question"}]}]`),
+				"generationConfig": json.RawMessage(`{"responseMimeType":"application/json",` + tc.field + `}`),
+			}, nil)
+			if tc.schema == "" {
+				if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "responseJsonSchema is false and matches no JSON value") {
+					t.Fatalf("expected an unsatisfiable schema error, got %d: %s", resp.Code, resp.Body.String())
+				}
+				select {
+				case body := <-bodies:
+					t.Fatalf("unsatisfiable schema was sent upstream: %s", body)
+				default:
+				}
+				return
+			}
+			if resp.Code != http.StatusOK {
+				t.Fatalf("expected success, got %d: %s", resp.Code, resp.Body.String())
+			}
+			wire := gjson.ParseBytes(<-bodies)
+			format := wire.Get("output_config.format")
+			var got any
+			if tc.prompt {
+				if format.Exists() {
+					t.Fatalf("unsupported schema sent as a native format: %s", format.Raw)
+				}
+				prompt := wire.Get("messages.0.content").Str
+				_, schema, found := strings.Cut(prompt, "JSON Schema:\n")
+				if !found {
+					t.Fatalf("missing Claude schema prompt: %s", wire.Raw)
+				}
+				if err := json.NewDecoder(strings.NewReader(schema)).Decode(&got); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if format.Get("type").Str != "json_schema" {
+					t.Fatalf("native schema format missing: %s", wire.Raw)
+				}
+				got = format.Get("schema").Value()
+			}
+			if !reflect.DeepEqual(got, gjson.Parse(tc.schema).Value()) {
+				t.Fatalf("outbound schema = %v, want %s", got, tc.schema)
 			}
 		})
 	}
@@ -15157,7 +15339,8 @@ func TestProxy_StreamingGeminiClientNormalizesOpenAISSEFromUpstreamMode(t *testi
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
 			body := bytes.NewBufferString(
-				"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n" +
+				"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"   \"}]}\n\n" +
+					"data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n" +
 					"data: [DONE]\n\n",
 			)
 			return &http.Response{
@@ -15191,12 +15374,27 @@ func TestProxy_StreamingGeminiClientNormalizesOpenAISSEFromUpstreamMode(t *testi
 	if gotPath != "/v1beta/models/gpt-4o:streamGenerateContent" {
 		t.Fatalf("expected upstream mode to keep Gemini path, got %s", gotPath)
 	}
-	body := w.Body.String()
-	if strings.Contains(body, `"chat.completion.chunk"`) || strings.Contains(body, `"choices"`) {
-		t.Fatalf("expected Gemini SSE, got raw OpenAI SSE: %s", body)
+	var content strings.Builder
+	var stops int
+	for frame := range strings.SplitSeq(w.Body.String(), "\n\n") {
+		_, data := parseSSEEventChunk([]byte(frame))
+		if gjson.GetBytes(data, "choices").Exists() {
+			t.Fatalf("expected Gemini SSE, got Chat choices: %s", data)
+		}
+		for _, candidate := range gjson.GetBytes(data, "candidates").Array() {
+			for _, part := range candidate.Get("content.parts").Array() {
+				content.WriteString(part.Get("text").String())
+			}
+			if reason := candidate.Get("finishReason").String(); reason != "" {
+				stops++
+				if reason != "STOP" || content.String() != "Hello" {
+					t.Fatalf("finishReason=%q after %q: %s", reason, content.String(), data)
+				}
+			}
+		}
 	}
-	if !strings.Contains(body, `"text":"Hello"`) || !strings.Contains(body, `"finishReason":"STOP"`) {
-		t.Fatalf("unexpected normalized Gemini SSE: %s", body)
+	if stops != 1 || content.String() != "Hello" {
+		t.Fatalf("got %d terminal events and content %q", stops, content.String())
 	}
 }
 
@@ -17539,6 +17737,95 @@ func TestProxy_ThinkingSuffixUsesResolvedModelCapabilities(t *testing.T) {
 			}
 			if gotEffort != "xhigh" {
 				t.Fatalf("upstream reasoning_effort = %q, want xhigh", gotEffort)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Anthropic 原生请求在重定向后使用目标模型的思考模式和档位。
+ * @param t 测试上下文。
+ */
+func TestProxy_AnthropicThinkingSuffixUsesTargetCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		model, suffix, mode, effort string
+		maxTokens, budget           int
+		status                      int
+		overrideMax, overrideBudget int
+		errText                     string
+		wireModel                   string
+	}{
+		{model: "claude-sonnet-4-5", wireModel: "claude-sonnet-4-5-20250929", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-haiku-4-5", wireModel: "claude-haiku-4-5-20251001", suffix: "auto", maxTokens: 4096, status: http.StatusOK},
+		{model: "claude-opus-4-1", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-opus-4-0", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-sonnet-4-0", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-3-7-sonnet-latest", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-opus-4", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-sonnet-4", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 4095, status: http.StatusOK},
+		{model: "claude-opus-4-7", suffix: "xhigh", mode: "adaptive", effort: "xhigh", maxTokens: 4096, status: http.StatusOK},
+		{model: "claude-fable-5.1", suffix: "xhigh", mode: "adaptive", effort: "xhigh", maxTokens: 4096, status: http.StatusOK},
+		{model: "claude-opus-4-6", suffix: "8192", mode: "enabled", maxTokens: 16384, budget: 8192, status: http.StatusOK},
+		{model: "claude-sonnet-4-5", suffix: "high", maxTokens: 1024, status: http.StatusBadRequest, errText: "max_tokens must exceed 1024"},
+		{model: "claude-sonnet-4-5", wireModel: "claude-sonnet-4-5-20250929", suffix: "high", mode: "enabled", maxTokens: 1024, budget: 2047, status: http.StatusOK, overrideMax: 2048},
+		{model: "claude-sonnet-4-5", wireModel: "claude-sonnet-4-5-20250929", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 2047, status: http.StatusOK, overrideMax: 2048},
+		{model: "claude-sonnet-4-5", wireModel: "claude-sonnet-4-5-20250929", suffix: "high", mode: "enabled", maxTokens: 4096, budget: 1500, status: http.StatusOK, overrideMax: 2048, overrideBudget: 1500},
+		{model: "claude-sonnet-4-5", suffix: "high", maxTokens: 4096, status: http.StatusBadRequest, overrideMax: 2048, overrideBudget: 2200, errText: "max_tokens must exceed 2200"},
+	} {
+		t.Run(fmt.Sprintf("%s/%s/%d/maxRule=%d/budgetRule=%d", tc.model, tc.suffix, tc.maxTokens, tc.overrideMax, tc.overrideBudget), func(t *testing.T) {
+			channel := testChannel{
+				name: "claude", upstreamProtocol: "anthropic",
+				modelEntries: []model.ModelEntry{{Model: "latest", RedirectModel: tc.model}},
+			}
+			if tc.overrideMax > 0 {
+				channel.customRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+					Action: model.RuleActionOverride, Path: "max_tokens", Value: json.RawMessage(strconv.Itoa(tc.overrideMax)),
+				}}}
+			}
+			if tc.overrideBudget > 0 {
+				channel.customRequestRules.Body = append(channel.customRequestRules.Body, model.CustomBodyRule{
+					Action: model.RuleActionOverride, Path: "thinking.budget_tokens", Value: json.RawMessage(strconv.Itoa(tc.overrideBudget)),
+				})
+			}
+			env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: "https://upstream.example.com"})
+			var outbound []byte
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				var err error
+				outbound, err = io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"id":"msg_a","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`)),
+					Request:    r,
+				}, nil
+			})}
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "latest(" + tc.suffix + ")", "max_tokens": tc.maxTokens,
+				"messages": []map[string]string{{"role": "user", "content": "hello"}},
+				"thinking": map[string]any{"type": "adaptive"}, "output_config": map[string]any{"effort": "medium"},
+			}, nil)
+			if response.Code != tc.status {
+				t.Fatalf("status=%d, want %d: %s", response.Code, tc.status, response.Body)
+			}
+			if tc.status != http.StatusOK {
+				if outbound != nil || !strings.Contains(response.Body.String(), tc.errText) {
+					t.Fatalf("invalid manual budget reached upstream or returned wrong error: %s / %s", outbound, response.Body)
+				}
+				return
+			}
+			wire := gjson.ParseBytes(outbound)
+			if want := cmp.Or(tc.wireModel, tc.model); wire.Get("model").Str != want {
+				t.Fatalf("upstream model = %q, want %q", wire.Get("model").Str, want)
+			}
+			if wire.Get("thinking.type").Str != tc.mode || wire.Get("output_config.effort").Str != tc.effort ||
+				wire.Get("thinking.budget_tokens").Int() != int64(tc.budget) {
+				t.Fatalf("wrong Claude thinking mode or effort: %s", outbound)
+			}
+			if tc.overrideMax > 0 && wire.Get("max_tokens").Int() != int64(tc.overrideMax) {
+				t.Fatalf("output limit rule missing: %s", outbound)
 			}
 		})
 	}
@@ -20841,20 +21128,26 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 }
 
-// 上游静默中止：response.incomplete 无 output 且 output_tokens=0，首包前按流中断切渠道；
-// content_filter 与 interrupted（上游确认 response.interrupt）原样返回不切渠道。
+/**
+ * @brief 验证 Responses 在首包前静默中止会切渠道，内容过滤与客户端取消保留终态事件。
+ * @param t 测试上下文。
+ */
 func TestProxy_ResponsesEmptyIncompleteBeforeOutput(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
+		eventType  string
+		status     string
 		reason     string
 		wantRetry  bool
 		wantInBody string
 	}{
-		{name: "silent abort retries next channel", reason: "max_output_tokens", wantRetry: true, wantInBody: "resp-ch2"},
-		{name: "content filter is returned", reason: "content_filter", wantRetry: false, wantInBody: "resp-ch1-incomplete"},
-		{name: "interrupt acknowledgement is returned", reason: "interrupted", wantRetry: false, wantInBody: "resp-ch1-incomplete"},
+		{name: "silent abort retries next channel", eventType: "response.incomplete", status: "incomplete", reason: "max_output_tokens", wantRetry: true, wantInBody: "resp-ch2"},
+		{name: "content filter is returned", eventType: "response.incomplete", status: "incomplete", reason: "content_filter", wantInBody: "resp-ch1-incomplete"},
+		{name: "interrupt acknowledgement is returned", eventType: "response.incomplete", status: "incomplete", reason: "interrupted", wantInBody: "resp-ch1-incomplete"},
+		{name: "done alias with silent abort retries", eventType: "response.done", status: "incomplete", reason: "max_output_tokens", wantRetry: true, wantInBody: "resp-ch2"},
+		{name: "done alias with cancellation is returned", eventType: "response.done", status: "cancelled", wantInBody: "resp-ch1-incomplete"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -20864,7 +21157,7 @@ func TestProxy_ResponsesEmptyIncompleteBeforeOutput(t *testing.T) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 				_, _ = fmt.Fprint(w, `data: {"type":"response.created","response":{"id":"resp-ch1-incomplete","status":"in_progress"}}`+"\n\n")
-				_, _ = fmt.Fprint(w, `data: {"type":"response.incomplete","response":{"id":"resp-ch1-incomplete","status":"incomplete","incomplete_details":{"reason":"`+tc.reason+`"},"output":[],"usage":{"input_tokens":5,"output_tokens":0,"total_tokens":5}}}`+"\n\n")
+				_, _ = fmt.Fprintf(w, `data: {"type":%q,"response":{"id":"resp-ch1-incomplete","status":%q,"incomplete_details":{"reason":%q},"output":[],"usage":{"input_tokens":5,"output_tokens":0,"total_tokens":5}}}`+"\n\n", tc.eventType, tc.status, tc.reason)
 			}))
 			defer upstream1.Close()
 
@@ -20894,8 +21187,209 @@ func TestProxy_ResponsesEmptyIncompleteBeforeOutput(t *testing.T) {
 			if body := w.Body.String(); !strings.Contains(body, tc.wantInBody) {
 				t.Fatalf("body missing %q: %s", tc.wantInBody, body)
 			}
+			if !tc.wantRetry {
+				var terminal gjson.Result
+				for frame := range strings.SplitSeq(w.Body.String(), "\n\n") {
+					_, data := parseSSEEventChunk([]byte(frame))
+					payload := gjson.ParseBytes(data)
+					if payload.Get("type").String() == tc.eventType {
+						terminal = payload
+					}
+				}
+				if terminal.Get("response.status").String() != tc.status {
+					t.Fatalf("native terminal = %s, want %s with status %s", terminal.Raw, tc.eventType, tc.status)
+				}
+			}
 			if got := secondCalls.Load() == 1; got != tc.wantRetry {
 				t.Fatalf("second channel called = %v, want %v", got, tc.wantRetry)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 .done 内嵌失败经过跨协议代理后按实际错误分类，保留原因。
+ * @param t 测试上下文。
+ */
+func TestProxy_ResponsesDoneFailureAcrossProtocols(t *testing.T) {
+	t.Parallel()
+
+	const terminal = `{"type":"response.done","response":{"id":"resp-failed","status":"failed","error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded"},"output":[]}}`
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			t.Parallel()
+
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/responses" {
+					t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
+				}
+				if stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprint(w, "event: keepalive\ndata: "+terminal+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, terminal)
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "responses-done-failure", upstreamProtocol: util.ProtocolCodex, models: "gpt-test"},
+			}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-test", "stream": stream,
+				"messages": []map[string]string{{"role": "user", "content": "hello"}},
+			}, nil)
+			if response.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want 429: %s", response.Code, response.Body.String())
+			}
+			if got := gjson.GetBytes(response.Body.Bytes(), "response.error.message").String(); got != "Upstream rate limit exceeded" {
+				t.Fatalf("upstream error missing from response: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Responses 已提交的流按客户端协议发出一条带原始原因的错误。
+ * @param t 测试上下文。
+ */
+func TestProxy_ResponsesFailureAfterOutput(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, path string
+		body       map[string]any
+	}{
+		{"chat", "/v1/chat/completions", map[string]any{"model": "gpt-test", "stream": true, "messages": []map[string]string{{"role": "user", "content": "hello"}}}},
+		{"claude", "/v1/messages", map[string]any{"model": "gpt-test", "stream": true, "max_tokens": 32, "messages": []map[string]string{{"role": "user", "content": "hello"}}}},
+		{"gemini", "/v1beta/models/gpt-test:streamGenerateContent?alt=sse", map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []map[string]string{{"text": "hello"}}}}}},
+	} {
+		for _, eventType := range []string{"response.done", "response.failed", "error"} {
+			for _, typed := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/typed=%t", tc.name, eventType, typed), func(t *testing.T) {
+					t.Parallel()
+
+					release := make(chan struct{})
+					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set("Content-Type", "text/event-stream")
+						header := eventType
+						const upstreamError = `{"code":"server_error","message":"upstream failed\u0000after output"}`
+						payload := `{"response":{"id":"resp-failed","status":"failed","error":` + upstreamError + `}}`
+						if eventType == "error" {
+							payload = `{"error":` + upstreamError + `}`
+						}
+						if typed {
+							payload = fmt.Sprintf(`{"type":%q,%s`, eventType, payload[1:])
+							header = "keepalive"
+						}
+						const followup = `data: {"type":"error","error":{"code":"server_error","message":"second error must stay upstream"}}`
+						_, _ = io.WriteString(w, "event: keepalive\n"+`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial"}`+"\n\n"+
+							"event: "+header+"\ndata: "+payload+"\n\n"+followup+"\n\n")
+						if err := http.NewResponseController(w).Flush(); err != nil {
+							return
+						}
+						select {
+						case <-r.Context().Done():
+						case <-release:
+						}
+					}))
+					defer upstream.Close()
+
+					env := setupProxyTestEnv(t, []testChannel{
+						{name: "responses-failure-after-output", upstreamProtocol: util.ProtocolCodex, models: "gpt-test"},
+					}, map[int]string{0: upstream.URL})
+					done := make(chan *httptest.ResponseRecorder, 1)
+					go func() { done <- doProxyRequest(t, env.engine, tc.path, tc.body, nil) }()
+					var response *httptest.ResponseRecorder
+					select {
+					case response = <-done:
+						close(release)
+					case <-time.After(3 * time.Second):
+						close(release)
+						<-done
+						t.Fatal("translated stream waited for upstream EOF after an explicit error")
+					}
+					if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "partial") {
+						t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+					}
+					var messages []string
+					for frame := range strings.SplitSeq(response.Body.String(), "\n\n") {
+						_, data := parseSSEEventChunk([]byte(frame))
+						if message := gjson.GetBytes(data, "error.message").String(); message != "" {
+							if !json.Valid(data) {
+								t.Fatalf("invalid error JSON: %s", data)
+							}
+							messages = append(messages, message)
+						}
+					}
+					if !slices.Equal(messages, []string{"upstream failed\x00after output"}) {
+						t.Fatalf("want one terminal error with upstream message: %s", response.Body.String())
+					}
+				})
+			}
+		}
+	}
+}
+
+/**
+ * @brief 验证名义 Chat 上游在首个心跳之后发送 Responses SSE 时，Gemini 仍收到原始错误。
+ * @param t 测试上下文。
+ */
+func TestProxy_ResponsesFailureAfterHeartbeatOnChatChannel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, payload string }{
+		{"failed", `{"type":"response.failed","response":{"status":"failed","error":{"message":"upstream reason"}}}`},
+		{"done", `{"type":"response.done","response":{"status":"failed","error":{"message":"upstream reason"}}}`},
+		{"error", `{"type":"error","error":{"message":"upstream reason"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const delta = `data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial"}`
+			body := newDataThenBlockReadCloser([]byte(delta+"\n\ndata: "+tc.payload+"\n\n"), 0)
+			defer func() { _ = body.Close() }()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "nominal-chat", upstreamProtocol: util.ProtocolOpenAI, models: "gpt-test"},
+			}, map[int]string{0: "https://nominal-chat.example"})
+			env.server.client = &http.Client{
+				Transport: automaticFallbackToPath("/v1/chat/completions", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+						Body: readerWithCloser{
+							Reader: io.MultiReader(strings.NewReader(": heartbeat\n\n"), body),
+							Closer: body,
+						},
+						Request: r,
+					}, nil
+				})),
+			}
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				done <- doProxyRequest(t, env.engine, "/v1beta/models/gpt-test:streamGenerateContent?alt=sse",
+					map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []map[string]string{{"text": "hello"}}}}}, nil)
+			}()
+			var response *httptest.ResponseRecorder
+			select {
+			case response = <-done:
+			case <-time.After(3 * time.Second):
+				_ = body.Close()
+				<-done
+				t.Fatal("Responses compatibility stream waited for upstream EOF")
+			}
+			var texts, messages []string
+			for chunk := range strings.SplitSeq(response.Body.String(), "\n\n") {
+				_, data := parseSSEEventChunk([]byte(chunk))
+				event := gjson.ParseBytes(data)
+				if text := event.Get("candidates.0.content.parts.0.text").String(); text != "" {
+					texts = append(texts, text)
+				}
+				if message := event.Get("error.message").String(); message != "" {
+					messages = append(messages, message)
+				}
+			}
+			if response.Code != http.StatusOK || !slices.Equal(texts, []string{"partial"}) || !slices.Equal(messages, []string{"upstream reason"}) {
+				t.Fatalf("status = %d, unexpected SSE: %s", response.Code, response.Body.String())
 			}
 		})
 	}
@@ -22084,9 +22578,9 @@ func TestProxy_AntigravitySignatureRejectionPreservesNewerEntries(t *testing.T) 
 func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name                string
-		stream, mixed, none bool
-	}{{name: "json"}, {name: "stream", stream: true}, {name: "mixed", mixed: true}, {name: "none", none: true}} {
+		name                            string
+		stream, mixed, none, nullChoice bool
+	}{{name: "json"}, {name: "stream", stream: true}, {name: "null choice", nullChoice: true}, {name: "mixed", mixed: true}, {name: "none", none: true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			search := !tc.mixed && !tc.none
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22120,6 +22614,9 @@ func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {
 				tools = append(tools, map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}})
 			}
 			body := map[string]any{"model": "gemini-3-flash", "input": "question", "instructions": "keep instructions", "tools": tools, "stream": tc.stream}
+			if tc.nullChoice {
+				body["tool_choice"] = nil
+			}
 			if tc.none {
 				body["tool_choice"] = "none"
 			}
