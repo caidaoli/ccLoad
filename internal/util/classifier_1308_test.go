@@ -258,8 +258,8 @@ func TestClassifyHTTPResponseWithMeta_CodexUsageFrequencyLimitUsesMsgResetTime(t
 			if !got.ModelScoped || !got.HasModelCooldownUntil {
 				t.Fatalf("classification=%+v, want fixed model cooldown", got)
 			}
-			if got.ModelCooldownReason != codexUsageFrequencyLimitReason {
-				t.Fatalf("ModelCooldownReason=%q, want %q", got.ModelCooldownReason, codexUsageFrequencyLimitReason)
+			if got.ModelCooldownReason != CodexUsageFrequencyLimitReason {
+				t.Fatalf("ModelCooldownReason=%q, want %q", got.ModelCooldownReason, CodexUsageFrequencyLimitReason)
 			}
 			if !got.ModelCooldownUntil.Equal(tt.want) {
 				t.Fatalf("ModelCooldownUntil=%s, want %s", got.ModelCooldownUntil, tt.want)

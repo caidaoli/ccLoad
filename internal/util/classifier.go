@@ -92,9 +92,8 @@ const (
 // Rate Limit 相关常量
 const (
 	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
-	RetryAfterThresholdSeconds = 60
-	// codexUsageFrequencyLimitReason 是 Codex 6004 频率限制的精确冷却原因。
-	codexUsageFrequencyLimitReason = "CODEX_USAGE_FREQUENCY_LIMIT"
+	RetryAfterThresholdSeconds     = 60
+	CodexUsageFrequencyLimitReason = "CODEX_USAGE_FREQUENCY_LIMIT" ///< 6004 模型额度错误给出了有效重置时间。
 	// anthropicRateLimitUnifiedResetHeader 是 Anthropic 当前被拒绝配额窗口的 Unix 秒重置时间。
 	anthropicRateLimitUnifiedResetHeader = "Anthropic-Ratelimit-Unified-Reset"
 	// anthropicMaxRateLimitWindow 是 Anthropic 最长限流窗口（7d）加 1h 时钟偏差余量；
@@ -543,9 +542,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 				}
 				return classification
 			}
-			if reason == "model_cooldown" || reason == codexUsageFrequencyLimitReason || reason == "INFERENCE_CAP_ERROR" {
+			if reason == "model_cooldown" || reason == CodexUsageFrequencyLimitReason || reason == "INFERENCE_CAP_ERROR" {
 				classification.ModelScoped = true
 				classification.ModelCooldownReason = reason
+				classification.PreventKeyFallback = reason == CodexUsageFrequencyLimitReason
 				if cooldownUntil.After(now) {
 					classification.ModelCooldownUntil = cooldownUntil
 					classification.HasModelCooldownUntil = true
@@ -1259,7 +1259,7 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time, 
 	switch {
 	case code == "6004":
 		if until, ok := parseCodexUsageFrequencyLimitCooldown(message, now); ok {
-			return until, codexUsageFrequencyLimitReason, ErrorLevelKey, true
+			return until, CodexUsageFrequencyLimitReason, ErrorLevelKey, true
 		}
 		return time.Time{}, "", ErrorLevelNone, false
 	case code == "MODEL_COOLDOWN":

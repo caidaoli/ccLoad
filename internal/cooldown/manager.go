@@ -37,6 +37,7 @@ type ErrorInput struct {
 	ChannelID          int64
 	Model              string   // 实际发送给上游的模型名
 	ChannelModels      []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
+	ChannelKeyCount    int      ///< 渠道快照中的启用 Key 数，包含正在冷却的 Key。
 	KeyIndex           int
 	StatusCode         int
 	UpstreamStatusCode int  // 原始上游 HTTP 状态码；0 表示与 StatusCode 相同
@@ -140,28 +141,6 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		action: ActionReturnClient,
 	}
 
-	// A channel-local configured rule has priority over the built-in classifier,
-	// but it cannot widen an error that the caller has already confirmed is
-	// model-scoped. A model-scoped rule may still refine the cooldown deadline.
-	// Network errors intentionally bypass this branch because they do not have a
-	// trustworthy upstream response body to match.
-	if !in.IsNetworkError {
-		now := time.Now()
-		if configured, ok := configuredCooldownDecision(in, now); ok {
-			if !in.ModelScoped || configured.modelScoped {
-				return configured
-			}
-		}
-		if statusCode == http.StatusTooManyRequests && in.KeyIndex != NoKeyIndex {
-			return cooldownDecision{
-				action:              ActionRetryKey,
-				keyCooldownUntil:    util.APIKeyRateLimitUntil(in.Headers, errorBody, now),
-				hasKeyCooldownUntil: true,
-				keyCooldownReason:   "rate_limit",
-			}
-		}
-	}
-
 	// 1. 区分网络错误和HTTP错误的分类策略
 	if in.IsNetworkError {
 		// 网络错误默认按"渠道级"处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
@@ -174,8 +153,28 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			}
 		}
 	} else {
+		now := time.Now()
+		// 已由调用方确认只影响模型的错误，检测规则只能调整模型冷却。
+		if configured, ok := configuredCooldownDecision(in, now); ok {
+			if !in.ModelScoped || configured.modelScoped {
+				return configured
+			}
+		}
+
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
 		classification := util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
+		rateLimitKey := statusCode == http.StatusTooManyRequests
+		if classification.ModelCooldownReason == util.CodexUsageFrequencyLimitReason {
+			rateLimitKey = in.ChannelKeyCount > 1
+		}
+		if in.KeyIndex != NoKeyIndex && rateLimitKey {
+			return cooldownDecision{
+				action:              ActionRetryKey,
+				keyCooldownUntil:    util.APIKeyRateLimitUntil(in.Headers, errorBody, now),
+				hasKeyCooldownUntil: true,
+				keyCooldownReason:   "rate_limit",
+			}
+		}
 		errLevel = classification.Level
 		decision.keyCooldownUntil = classification.KeyCooldownUntil
 		decision.hasKeyCooldownUntil = classification.HasKeyCooldownUntil

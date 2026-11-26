@@ -217,7 +217,7 @@ func setAntigravityCapacityRetryHint(in *cooldown.ErrorInput) {
 }
 
 /**
- * @brief 附加渠道规则及上游确认的模型冷却。
+ * @brief 附加渠道规则、启用 Key 数量及上游确认的模型冷却。
  * @param cfg 当前渠道配置。
  * @param in 从本次错误及实际模型构造的输入。
  * @return 补全后的冷却输入。
@@ -241,6 +241,7 @@ func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput
 		}
 	}
 	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
+	in.ChannelKeyCount = cfg.KeyCount
 	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {
 		in.ChannelModels = s.channelModelCooldownKeys(cfg)
 	}

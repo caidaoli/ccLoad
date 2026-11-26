@@ -1673,53 +1673,91 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 }
 
 /**
- * @brief 上游文案的明确重置时间用于失败 Key，单 Key 渠道同步恢复。
+ * @brief 6004 按上游重置时间冷却，多个启用 Key 时可继续换 Key。
  * @param t 测试上下文。
  */
 func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-	manager := NewManager(store, nil)
-	ctx := context.Background()
-	cfg := createTestChannel(t, store, "test-codex-usage-frequency-limit")
-	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-		ChannelID:   cfg.ID,
-		KeyIndex:    0,
-		APIKey:      "sk-codex-usage-frequency-limit",
-		KeyStrategy: model.KeyStrategySequential,
-	}})
-
 	loc := time.FixedZone("UTC+8", 8*60*60)
-	resetAt := time.Now().In(loc).Add(2 * time.Hour).Truncate(time.Second)
-	body := fmt.Appendf(nil, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 %s UTC+8 重置，您也可以切换其他模型继续使用。"}`, resetAt.Format("2006-01-02 15:04:05"))
+	resetAt := time.Now().In(loc).Add(24 * time.Hour).Truncate(time.Second)
+	body := fmt.Appendf(nil, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 %s UTC+8 重置，您也可以切换其他模型继续使用。","requestId":"340065f3a1b1676386603cb8b42e0ebf"}`, resetAt.Format("2006-01-02 15:04:05"))
 
-	action := manager.HandleError(ctx, ErrorInput{
-		ChannelID:  cfg.ID,
-		Model:      "gpt-6-astra",
-		KeyIndex:   0,
-		StatusCode: 429,
-		ErrorBody:  body,
-	})
-	if action != ActionRetryChannel {
-		t.Fatalf("action=%v, want ActionRetryChannel", action)
-	}
-
-	keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
-	if !exists {
-		t.Fatal("expected key cooldown")
-	}
-	if !keyCooldownUntil.Equal(resetAt) {
-		t.Fatalf("key cooldown until=%s, want %s", keyCooldownUntil, resetAt)
-	}
-	channel, err := store.GetConfig(ctx, cfg.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if channel.CooldownUntil != resetAt.Unix() {
-		t.Fatalf("channel cooldown=%v, want key recovery %v", time.Unix(channel.CooldownUntil, 0), resetAt)
-	}
-	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-6-astra"); exists {
-		t.Fatal("model should remain available")
+	for _, tc := range []struct {
+		name        string
+		keyIndex    int
+		keyFallback bool
+		otherKey    bool
+		disabled    bool
+		wantAction  Action
+	}{
+		{name: "no independent key", keyIndex: NoKeyIndex, wantAction: ActionRetryModel},
+		{name: "single api key", wantAction: ActionRetryModel},
+		{name: "single enabled api key with fallback", keyFallback: true, otherKey: true, disabled: true, wantAction: ActionRetryModel},
+		{name: "multiple api keys", otherKey: true, wantAction: ActionRetryKey},
+		{name: "multiple api keys with fallback", keyFallback: true, otherKey: true, wantAction: ActionRetryKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+			manager := NewManager(store, nil)
+			ctx := t.Context()
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "test-codex-usage-frequency-limit", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+				ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra"}, {Model: "gpt-6-luna"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.keyIndex != NoKeyIndex {
+				keys := []*model.APIKey{{
+					ChannelID: cfg.ID, KeyIndex: tc.keyIndex, APIKey: "test-key", KeyStrategy: model.KeyStrategySequential,
+				}}
+				if tc.otherKey {
+					keys = append(keys, &model.APIKey{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "other-key", Disabled: tc.disabled})
+				}
+				if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err = store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := ErrorInput{
+				ChannelID: cfg.ID, Model: "gpt-6-astra", KeyIndex: tc.keyIndex,
+				ChannelKeyCount: cfg.KeyCount,
+				StatusCode:      http.StatusTooManyRequests, ErrorBody: body,
+			}
+			handle := manager.HandleError
+			if tc.keyFallback {
+				handle = manager.HandleErrorWithKeyFallback
+			}
+			action := handle(ctx, input)
+			if action != tc.wantAction {
+				t.Fatalf("action=%v, want %v", action, tc.wantAction)
+			}
+			keyUntil, _ := getKeyCooldownUntil(ctx, store, cfg.ID, tc.keyIndex)
+			modelUntil, modelCooled := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-6-astra")
+			if tc.wantAction == ActionRetryKey {
+				if !keyUntil.Equal(resetAt) || modelCooled {
+					t.Fatalf("key cooldown=%v, model cooldown=%v, want only the key cooled until %v", keyUntil, modelUntil, resetAt)
+				}
+			} else if !modelUntil.Equal(resetAt) || keyUntil.After(time.Now()) {
+				t.Fatalf("key cooldown=%v, model cooldown=%v, want only the model cooled until %v", keyUntil, modelUntil, resetAt)
+			}
+			if until, _ := getKeyCooldownUntil(ctx, store, cfg.ID, 1); until.After(time.Now()) {
+				t.Fatalf("unrelated key cooled until %v", until)
+			}
+			if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-6-luna"); exists {
+				t.Fatal("unrelated model cooled")
+			}
+			current, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.IsCoolingDown(time.Now()) {
+				t.Fatal("channel cooled while another model remained available")
+			}
+		})
 	}
 }
 

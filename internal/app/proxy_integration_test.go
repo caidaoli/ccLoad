@@ -10321,6 +10321,59 @@ func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 多 Key 渠道收到 6004 后使用备用 Key 重试同一模型。
+ * @param t 测试上下文。
+ */
+func TestProxy_Codex6004RetriesWithAnotherKey(t *testing.T) {
+	t.Parallel()
+	const modelName = "gpt-6-astra"
+	resetAt := time.Now().In(time.FixedZone("UTC+8", 8*60*60)).Add(24 * time.Hour).Truncate(time.Second)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer backup-key" {
+			_, _ = io.WriteString(w, `{"id":"backup","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprintf(w, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 %s UTC+8 重置，您也可以切换其他模型继续使用。"}`, resetAt.Format("2006-01-02 15:04:05"))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{name: "codex-relay", models: modelName}}, map[int]string{0: upstream.URL})
+	ctx := t.Context()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	channelID := configs[0].ID
+	if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channelID, KeyIndex: 1, APIKey: "backup-key", Priority: -1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": modelName, "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "id").String() != "backup" {
+		t.Fatalf("status=%d body=%s, want success from backup key", response.Code, response.Body.String())
+	}
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := keyCooldowns[channelID]; len(keys) != 1 || !keys[0].Equal(resetAt) {
+		t.Fatalf("key cooldowns=%v, want only key 0 cooled until %v", keys, resetAt)
+	}
+	modelCooldowns, err := env.store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modelCooldowns[channelID]) != 0 {
+		t.Fatalf("unexpected model cooldowns: %v", modelCooldowns[channelID])
+	}
+}
+
 func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
