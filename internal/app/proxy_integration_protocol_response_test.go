@@ -1013,6 +1013,46 @@ func TestProxy_StructuredAnthropicResponseToCodexTransform(t *testing.T) {
 }
 
 /**
+ * @brief 原生 Gemini JSON 数组流保持透传，日志按累计快照记录用量。
+ * @param t 测试上下文。
+ */
+func TestProxy_GeminiJSONStreamRecordsUsage(t *testing.T) {
+	t.Parallel()
+
+	const modelName = "gemini-2.5-pro"
+	const path = "/v1beta/models/" + modelName + ":streamGenerateContent"
+	chunks := []string{
+		`[`,
+		`{"candidates":[{"content":{"role":"model","parts":[{"text":"first"}]}}],"usageMetadata":{"promptTokenCount":10547,"candidatesTokenCount":15,"totalTokenCount":10562}},`,
+		`{"candidates":[{"content":{"role":"model","parts":[{"text":"second"}]}}],"usageMetadata":{"promptTokenCount":10547,"candidatesTokenCount":287,"totalTokenCount":10834}},`,
+		`{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10547,"candidatesTokenCount":287,"totalTokenCount":10834}}`,
+		`]`,
+	}
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path || r.URL.Query().Get("alt") != "" {
+			t.Errorf("unexpected upstream URL: %s", r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		for _, chunk := range chunks {
+			_, _ = io.WriteString(w, chunk)
+		}
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{name: "gemini", upstreamProtocol: "gemini", models: modelName}}, map[int]string{0: upstream.URL})
+	response := doProxyRequest(t, env.engine, path, map[string]any{
+		"contents": []map[string]any{{"role": "user", "parts": []map[string]string{{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("HTTP %d, Content-Type %q: %s", response.Code, response.Header().Get("Content-Type"), response.Body)
+	}
+	if got, want := response.Body.String(), strings.Join(chunks, ""); got != want {
+		t.Fatalf("response body = %s, want %s", got, want)
+	}
+	if entry := waitForProxyLog(t, env, modelName); entry.InputTokens != 10547 || entry.OutputTokens != 287 {
+		t.Fatalf("logged input/output tokens = %d/%d, want 10547/287", entry.InputTokens, entry.OutputTokens)
+	}
+}
+
+/**
  * @brief Gemini 上游直接 EOF 时，候选的空占位不覆盖已收到的结束原因。
  * @param t 测试上下文。
  */

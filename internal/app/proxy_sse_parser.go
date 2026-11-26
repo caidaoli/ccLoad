@@ -1701,6 +1701,13 @@ func (p *jsonUsageParser) countTokensResult() int {
 	return int(gjson.GetBytes(p.buffer.Bytes(), "input_tokens").Int())
 }
 
+/**
+ * @brief 读取响应的累计用量，Gemini 分块数组按响应顺序应用用量快照。
+ * @return 非缓存输入 token 数，缺失时为零。
+ * @return 输出 token 数，缺失时为零。
+ * @return 缓存读取 token 数，缺失时为零。
+ * @return 缓存写入 token 数，缺失时为零。
+ */
 func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	if p.truncated {
 		return p.normalizedUsage(p.upstreamProtocol)
@@ -1728,6 +1735,21 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			p.CodexHasCredits = sseParser.GetCodexHasCredits()
 			return sseParser.GetUsage()
 		}
+	}
+
+	if p.upstreamProtocol == util.ProtocolGemini && bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+		var chunks []map[string]any
+		if err := json.Unmarshal(data, &chunks); err != nil {
+			log.Printf("[WARN] usage JSON 解析失败: %v", err)
+			return 0, 0, 0, 0
+		}
+		// 整体解码后只采信分块的协议字段，排除增量扫描可能读到的工具参数。
+		p.usageAccumulator = usageAccumulator{}
+		for _, chunk := range chunks {
+			p.captureResponseModel(chunk, p.upstreamProtocol)
+			p.applyUsageMap(extractUsage(chunk))
+		}
+		return p.normalizedUsage(p.upstreamProtocol)
 	}
 
 	var payload map[string]any
