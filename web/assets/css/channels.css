@@ -1448,6 +1448,18 @@
         grid-template-columns: minmax(0, 1fr);
       }
 
+      .channel-editor-limits-grid .channel-editor-inline-field,
+      .channel-editor-limits-grid .channel-editor-inline-field:first-child,
+      .channel-editor-connection-fields .advanced-settings-proxy-field,
+      .channel-editor-connection-fields .advanced-settings-availability-row {
+        grid-template-columns: var(--channel-connection-label-width) minmax(0, 1fr);
+        gap: 4px 10px;
+      }
+
+      .channel-editor-connection-fields .advanced-settings-field-help {
+        grid-column: 2;
+      }
+
       .channel-drawer__footer {
         padding: 10px 14px;
       }
@@ -2558,7 +2570,7 @@
       background: rgba(245, 158, 11, 0.16);
     }
 
-    /* 优先级平时显示为纯数字；行悬停、输入聚焦或有未保存改动时才露出输入框，只读时始终是纯数字 */
+    /* 优先级和权重各自在单元格悬停时显示输入框，聚焦或有未保存改动时保持可见 */
     .ch-priority-editor:has(.ch-priority-input:disabled) {
       border-color: transparent;
       background: transparent;
@@ -2570,18 +2582,18 @@
     }
 
     @media (hover: hover) {
-      .channel-table-row:hover .ch-col-weight {
+      .ch-col-weight:hover {
         --weight-label-display: none;
         --weight-hint-display: block;
       }
 
-      .channel-table-row:not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) {
+      :is(.ch-col-priority, .ch-col-weight):not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) {
         border-color: transparent;
         background: transparent;
         box-shadow: none;
       }
 
-      .channel-table-row:not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) .ch-priority-input {
+      :is(.ch-col-priority, .ch-col-weight):not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) .ch-priority-input {
         background: transparent;
       }
     }
@@ -6123,6 +6135,7 @@
 
       .channel-table .ch-col-priority,
       .channel-table .ch-col-weight {
+        align-self: start;
         justify-content: flex-start !important;
         gap: 8px !important;
       }
@@ -6144,8 +6157,10 @@
         gap: 12px;
       }
 
-      .channel-table .ch-col-priority::before,
-      .channel-table .ch-col-weight::before {
+      .channel-table td.ch-col-priority::before,
+      .channel-table td.ch-col-weight::before {
+        align-self: flex-start;
+        line-height: 30px;
         margin-bottom: 0;
         flex: 0 0 auto;
       }
@@ -6220,7 +6235,7 @@
       }
 
       .inline-key-table tbody .mobile-inline-row {
-        grid-template-columns: 28px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         align-items: center;
         padding: 10px 12px;
         gap: 6px 8px;
@@ -6339,7 +6354,8 @@
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-key {
         order: 2;
-        grid-column: 2 / -1;
+        grid-column: 1 / -1;
+        margin-left: 36px;
         grid-row: 1;
         display: flex;
         align-items: center;
@@ -6348,7 +6364,8 @@
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-note {
         order: 3;
-        grid-column: 2 / -1;
+        grid-column: 1 / -1;
+        margin-left: 36px;
         grid-row: 2;
         display: flex;
         align-items: center;
@@ -6356,9 +6373,8 @@
       }
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-status {
-        order: 4;
-        grid-column: 1 / 3;
-        grid-row: 4;
+        order: 5;
+        grid-column: 1;
         display: flex;
         align-items: center;
         gap: 6px;
@@ -6377,36 +6393,63 @@
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority,
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-weight,
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier {
-        grid-row: 3;
+        order: 4;
         display: flex;
-        align-items: center;
+        align-items: baseline;
+        align-self: start;
+        gap: 4px;
         min-width: 0;
       }
 
-      .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier {
-        grid-column: 2;
+      .inline-key-table .inline-key-multiplier-scope {
+        flex-wrap: wrap;
+        min-width: 0;
+        max-width: 100%;
       }
 
-      .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority {
-        grid-column: 3;
+      .inline-key-table .mobile-inline-row input[type="number"] {
+        min-width: 0;
       }
 
-      .inline-key-table tbody .mobile-inline-row td.inline-key-col-weight {
-        grid-column: 4;
+      .inline-key-table .inline-key-multiplier-input {
+        max-width: 52px;
+        flex-shrink: 1;
+      }
+
+      .inline-key-table .key-fetch-rate-btn {
+        max-width: 100%;
+        white-space: normal;
+      }
+
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-select {
+        justify-self: start;
+      }
+
+      #channelAPIKeyTable {
+        container-type: inline-size;
+      }
+
+      @container (max-width: 350px) {
+        .inline-key-table tbody .mobile-inline-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier {
+          grid-column: 1 / -1;
+        }
       }
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority[data-mobile-label]::before,
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-weight[data-mobile-label]::before,
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier[data-mobile-label]::before {
         width: auto;
-        margin: 0 8px 0 0;
+        margin: 0;
         flex: 0 0 auto;
       }
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-actions {
-        order: 5;
-        grid-column: 3 / -1;
-        grid-row: 4;
+        order: 6;
+        grid-column: 2 / -1;
         display: flex;
         align-items: center;
         justify-content: flex-end;
@@ -6576,7 +6619,7 @@
         flex-wrap: wrap;
       }
 
-      /* URL 可换行，模型标签另起一行按卡片宽度排 */
+      /* 模型标签在 URL 下方独占一行 */
       .channel-table .ch-url-line {
         flex-wrap: wrap;
         align-items: flex-start;
@@ -6592,11 +6635,7 @@
       }
 
       .channel-table .ch-url-text {
-        max-width: none;
-        white-space: normal;
-        overflow: visible;
-        text-overflow: unset;
-        word-break: break-all;
+        max-width: 100%;
       }
 
       .channel-table .channel-refresh-result {
@@ -7682,16 +7721,6 @@
         padding: 16px;
       }
 
-      .channel-editor-limits-grid .channel-editor-inline-field,
-      .channel-editor-limits-grid .channel-editor-inline-field:first-child {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 4px;
-      }
-
-      .channel-editor-limits-grid .channel-editor-inline-field:first-child > .form-label {
-        justify-content: flex-start;
-      }
-
       .codex-credential-toolbar-actions {
         flex-wrap: wrap;
         margin-left: 0;
@@ -7703,8 +7732,7 @@
 
       .advanced-settings-proxy-field,
       .advanced-settings-other-field,
-      .cooldown-detection-field,
-      .cooldown-detection-name {
+      .cooldown-detection-field {
         grid-template-columns: 1fr;
         gap: 4px;
       }
@@ -7750,14 +7778,26 @@
         width: 100%;
       }
 
-      html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-field,
       html:not([lang^="zh"]) .cooldown-detection-rule .cooldown-detection-field {
-        grid-template-columns: 1fr;
+        grid-template-columns: 112px minmax(0, 1fr);
+      }
+
+      html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-field {
+        grid-template-columns: 64px minmax(0, 1fr);
       }
 
       .cooldown-detection-rule-header {
         align-items: flex-start;
         flex-wrap: wrap;
+      }
+
+      .cooldown-detection-name {
+        flex: 1 1 180px;
+        grid-template-columns: max-content minmax(0, 1fr);
+      }
+
+      .cooldown-detection-name .form-input {
+        width: 100%;
       }
 
       .cooldown-detection-rule-controls {
@@ -7771,6 +7811,7 @@
 
       .cooldown-detection-rule .cooldown-detection-field {
         flex-basis: 100%;
+        gap: 8px;
       }
 
       .cooldown-detection-rule .cooldown-detection-field .form-input {
