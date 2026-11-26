@@ -269,12 +269,13 @@ func TestProxyAntigravityConversationToolResults(t *testing.T) {
 		{"role":"user","parts":[{"text":"` + phrase + `"}]},
 		{"role":"model","parts":[
 			{"text":"` + phrase + `","thought":true,"thoughtSignature":"` + signature + `"},
-			{"functionCall":{"name":"lookup","id":"` + phrase + `","args":{"query":"` + phrase + `"}}}
+			{"functionCall":{"name":"lookup","id":"` + phrase + `","args":{"query":"` + phrase + `"}}},
+			{"functionCall":{"name":"lookup","id":"snake","args":{}}}
 		]},
 		{"role":"user","parts":[{"functionResponse":{"name":"lookup","id":"` + phrase + `","response":{
 			"result":{"items":["` + phrase + `",{"` + phrase + `":"` + phrase + `"},9007199254740993,true,null]},
 			"error":"` + phrase + `"
-		}}}]}
+		}}},{"function_response":{"name":"lookup","id":"snake","response":{"error":"` + phrase + `"}}}]}
 	],"tools":[{"functionDeclarations":[{"name":"lookup","description":"` + phrase + `","parameters":{
 		"type":"object","properties":{"query":{"type":"string","description":"` + phrase + `"}}
 	}}]}]}`
@@ -314,6 +315,7 @@ func TestProxyAntigravityConversationToolResults(t *testing.T) {
 					"contents.2.parts.0.functionResponse.id":                                 phrase,
 					"contents.2.parts.0.functionResponse.response.result.items.0":            tc.want,
 					"contents.2.parts.0.functionResponse.response.error":                     tc.want,
+					"contents.2.parts.1.function_response.response.error":                    tc.want,
 					"tools.0.functionDeclarations.0.description":                             phrase,
 					"tools.0.functionDeclarations.0.parameters.properties.query.description": phrase,
 				} {

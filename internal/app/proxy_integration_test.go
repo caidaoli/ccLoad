@@ -5184,17 +5184,20 @@ func TestProxy_OpenAIGoogleThinkingOnGeminiRoutes(t *testing.T) {
 			thinkingPath = "request." + thinkingPath
 		}
 		for _, tc := range []struct {
-			name    string
-			suffix  string
-			config  string
-			dynamic bool
-			budget  string
-			level   string
-			logged  string
+			name      string
+			suffix    string
+			container string // 承载思考配置的根字段；为空时放在 extra_body.google
+			config    string
+			dynamic   bool
+			budget    string
+			level     string
+			logged    string
 		}{
 			{name: "extension", budget: "0", logged: "none"},
 			{name: "extension level", config: `"thinking_level":" HIGH "`, level: "high", logged: "high"},
 			{name: "auto defaults", suffix: "(auto)", logged: "auto"},
+			{name: "auto clears native generationConfig", suffix: "(auto)", container: "generationConfig", config: `"thinkingLevel":"low"`, logged: "auto"},
+			{name: "auto clears native generation_config", suffix: "(auto)", container: "generation_config", logged: "auto"},
 			{name: "numeric auto with judgement", suffix: "(-1)", dynamic: true, level: "high", logged: "high"},
 		} {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
@@ -5234,7 +5237,11 @@ func TestProxy_OpenAIGoogleThinkingOnGeminiRoutes(t *testing.T) {
 				if config == "" {
 					config = `"thinking_budget":0`
 				}
-				body["extra_body"] = json.RawMessage(`{"google":{"thinking_config":{"include_thoughts":false,` + config + `}}}`)
+				if tc.container == "" {
+					body["extra_body"] = json.RawMessage(`{"google":{"thinking_config":{"include_thoughts":false,` + config + `}}}`)
+				} else {
+					body[tc.container] = json.RawMessage(`{"thinkingConfig":{"includeThoughts":false,` + config + `}}`)
+				}
 				reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
 				thinkingConfig := <-wireConfigs
 				if thinkingConfig.Get("thinkingBudget").Raw != tc.budget || thinkingConfig.Get("thinkingLevel").String() != tc.level {

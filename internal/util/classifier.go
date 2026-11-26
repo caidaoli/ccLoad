@@ -831,9 +831,25 @@ func ParseRetryAfterHint(headers map[string][]string, now time.Time) (time.Time,
  * @param headers 上游响应头。
  * @param body 上游错误正文。
  * @param now 相对延迟的起算时间。
- * @return 上游明确给出的恢复时间（含立即重试），缺失时为 now 后一分钟。
+ * @return 上游明确给出的恢复时间（含立即重试）；缺失或晚于 now 加最长限流窗口时为 now 后一分钟。
+ * @details Key 冷却只会被更晚的截止时间覆盖，超长提示（毫秒时间戳、异常 Retry-After）
+ * 一旦写入便无法被后续短冷却纠正，因此按无效提示处理。
  */
 func APIKeyRateLimitUntil(headers map[string][]string, body []byte, now time.Time) time.Time {
+	if until := apiKeyRateLimitHint(headers, body, now); until.Sub(now) <= anthropicMaxRateLimitWindow {
+		return until
+	}
+	return now.Add(time.Minute)
+}
+
+/**
+ * @brief 按优先级提取独立 API Key 429 的上游恢复时间提示。
+ * @param headers 上游响应头。
+ * @param body 上游错误正文。
+ * @param now 相对延迟的起算时间。
+ * @return 上游明确给出的恢复时间（含立即重试），不限上限；缺失时为 now 后一分钟。
+ */
+func apiKeyRateLimitHint(headers map[string][]string, body []byte, now time.Time) time.Time {
 	if until, ok := ParseResetTimeFrom1308Error(body); ok && until.After(now) {
 		return until
 	}

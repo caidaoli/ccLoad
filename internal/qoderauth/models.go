@@ -62,9 +62,10 @@ var outputRange = regexp.MustCompile(`(?i)range of max_tokens should be \[\s*1\s
 var loginExpiredText = regexp.MustCompile(`(?i)\b(?:login(?: or access token)?|access token) expired\b`)
 
 /**
- * @brief 识别明确的配额或余额不足提示
+ * @brief 识别明确的配额、余额、试用或订阅不足提示
+ * @details 只收完整短语：参考实现的裸词（plan、credit、insufficient、exceeded）会把权限拒绝和上下文超限误判为额度耗尽。
  */
-var quotaExhaustedText = regexp.MustCompile(`(?i)\b(insufficient (quota|credits?|balance)|not enough credits?|quota (exceeded|exhausted)|credit balance exhausted|credits? (are )?(exhausted|used up)|insufficient_quota|no_quota|quota_exceed(ed)?|exceed_quota|credit_balance_exhausted)\b`)
+var quotaExhaustedText = regexp.MustCompile(`(?i)\b(insufficient (quota|credits?|balance)|not enough credits?|quota (exceeded|exhausted)|credit balance exhausted|credits? (are )?(exhausted|used up)|insufficient_quota|no_quota|quota_exceed(ed)?|exceed_quota|credit_balance_exhausted|trial( period| credits?| quota)? (has |have )?(expired|ended|exhausted|been used up|used up)|subscription (has )?(expired|ended)|no active subscription|upgrade (your |to a (paid )?)?(plan|subscription))\b`)
 
 /**
  * @brief 解码 Qoder 的整数错误号，兼容 JSON 数字和数字字符串

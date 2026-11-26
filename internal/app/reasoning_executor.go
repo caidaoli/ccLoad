@@ -206,7 +206,7 @@ func reasoningDecisionKey(cfg *model.ReasoningAutoConfig, transcript string, lev
  * @param levels 按强度升序排列的候选等级
  * @return 判定结果，duration 为本请求的总等待时间；缓存命中时仅含等级与置信度
  * @return 候选耗尽、容量满或上下文结束时返回错误；成功时为 nil
- * @note 只缓存成功结果；合并时首个请求被取消，其余请求在自身预算内重新判定
+ * @note 只缓存成功结果；合并时首个请求被取消，其余请求在自身预算内重新合并判定
  */
 func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (reasoningCallResult, error) {
 	start := time.Now()
@@ -214,29 +214,31 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript str
 	ctx, cancel := context.WithTimeout(reasoningDecisionContext(parent), time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	key := reasoningDecisionKey(cfg, transcript, levels)
-	if hit, ok := s.reasoningShared.lookup(key, start); ok {
-		return reasoningCallResult{effort: hit.effort, confidence: hit.confidence, status: http.StatusOK, duration: time.Since(start)}, nil
-	}
-	ch := s.reasoningShared.group.DoChan(key, func() (any, error) {
-		result, err := s.runReasoningDecision(ctx, start, cfg, transcript, levels)
-		if err == nil {
-			s.reasoningShared.store(key, result, time.Now())
+	for {
+		if hit, ok := s.reasoningShared.lookup(key, start); ok {
+			return reasoningCallResult{effort: hit.effort, confidence: hit.confidence, status: http.StatusOK, duration: time.Since(start)}, nil
 		}
-		return result, err
-	})
-	select {
-	case <-ctx.Done():
-		result := reasoningCallResult{duration: time.Since(start)}
-		result.setContextFailure(ctx.Err())
-		return result, ctx.Err()
-	case shared := <-ch:
-		result := shared.Val.(reasoningCallResult)
-		if shared.Shared && shared.Err != nil && result.reason == "cancelled" && ctx.Err() == nil {
-			// The first caller's client went away; this request still has budget.
-			return s.runReasoningDecision(ctx, start, cfg, transcript, levels)
+		ch := s.reasoningShared.group.DoChan(key, func() (any, error) {
+			result, err := s.runReasoningDecision(ctx, start, cfg, transcript, levels)
+			if err == nil {
+				s.reasoningShared.store(key, result, time.Now())
+			}
+			return result, err
+		})
+		select {
+		case <-ctx.Done():
+			result := reasoningCallResult{duration: time.Since(start)}
+			result.setContextFailure(ctx.Err())
+			return result, ctx.Err()
+		case shared := <-ch:
+			result := shared.Val.(reasoningCallResult)
+			if shared.Shared && shared.Err != nil && result.reason == "cancelled" && ctx.Err() == nil {
+				// The first caller's client went away; rejoin so remaining waiters still share one call.
+				continue
+			}
+			result.duration = time.Since(start)
+			return result, shared.Err
 		}
-		result.duration = time.Since(start)
-		return result, shared.Err
 	}
 }
 

@@ -676,7 +676,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
 
   if (visibleStart > 0) {
     const topSpacer = document.createElement('tr');
-    topSpacer.innerHTML = `<td colspan="7" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
+    topSpacer.innerHTML = `<td colspan="8" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
     tbody.appendChild(topSpacer);
   }
 
@@ -689,7 +689,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
   if (visibleEnd < filteredIndices.length) {
     const bottomSpacer = document.createElement('tr');
     const bottomHeight = (filteredIndices.length - visibleEnd) * ROW_HEIGHT;
-    bottomSpacer.innerHTML = `<td colspan="7" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
+    bottomSpacer.innerHTML = `<td colspan="8" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
     tbody.appendChild(bottomSpacer);
   }
 }

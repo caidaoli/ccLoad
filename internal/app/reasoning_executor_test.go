@@ -392,7 +392,7 @@ func TestReasoningDecisionSharesIdenticalInput(t *testing.T) {
 }
 
 /**
- * @brief 合并中的首个请求被取消时，等待中的相同请求在自身预算内重新判定
+ * @brief 合并中的首个请求被取消时，等待中的相同请求在自身预算内重新合并为一次判定并缓存
  * @param t 测试上下文
  */
 func TestReasoningDecisionSharedLeaderCancelled(t *testing.T) {
@@ -406,6 +406,7 @@ func TestReasoningDecisionSharedLeaderCancelled(t *testing.T) {
 			<-r.Context().Done()
 			return
 		}
+		time.Sleep(50 * time.Millisecond) // keep the retry in flight until every follower rejoins
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, reasoningRetryAnswer)
 	})
@@ -417,21 +418,32 @@ func TestReasoningDecisionSharedLeaderCancelled(t *testing.T) {
 		leaderDone <- err
 	}()
 	<-entered
-	followerDone := make(chan reasoningCallResult, 1)
-	go func() {
-		result, err := env.server.executeReasoningDecision(context.Background(), "same task", reasoningDefaultLevels)
-		if err != nil {
-			result.reason = "error: " + err.Error()
-		}
-		followerDone <- result
-	}()
-	time.Sleep(20 * time.Millisecond) // let the follower join the in-flight call
+	const followers = 2
+	followerDone := make(chan reasoningCallResult, followers)
+	for range followers {
+		go func() {
+			result, err := env.server.executeReasoningDecision(context.Background(), "same task", reasoningDefaultLevels)
+			if err != nil {
+				result.reason = "error: " + err.Error()
+			}
+			followerDone <- result
+		}()
+	}
+	time.Sleep(20 * time.Millisecond) // let the followers join the in-flight call
 	cancelLeader()
 	if err := <-leaderDone; err == nil {
 		t.Fatal("cancelled leader succeeded")
 	}
-	if result := <-followerDone; result.effort != "xhigh" || calls.Load() != 2 {
-		t.Fatalf("follower=%+v calls=%d", result, calls.Load())
+	for range followers {
+		if result := <-followerDone; result.effort != "xhigh" {
+			t.Fatalf("follower=%+v", result)
+		}
+	}
+	if result, err := env.server.executeReasoningDecision(context.Background(), "same task", reasoningDefaultLevels); err != nil || result.effort != "xhigh" {
+		t.Fatalf("cached decision=%+v error=%v", result, err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("decision calls=%d, want 2", got)
 	}
 }
 

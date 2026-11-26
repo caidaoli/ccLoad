@@ -1853,7 +1853,7 @@ func TestClassifyOrdinaryRateLimitStillModelScoped(t *testing.T) {
 }
 
 /**
- * @brief 验证独立 API Key 的有效 429 优先采用明确恢复时间，否则冷却一分钟。
+ * @brief 验证独立 API Key 的有效 429 优先采用不超过最长窗口的明确恢复时间，否则冷却一分钟。
  * @param t 当前测试上下文。
  */
 func TestAPIKeyRateLimitUntil(t *testing.T) {
@@ -1875,6 +1875,8 @@ func TestAPIKeyRateLimitUntil(t *testing.T) {
 		{name: "seconds header", headers: map[string][]string{"retry-after": {"13"}}, want: now.Add(13 * time.Second)},
 		{name: "immediate header", headers: map[string][]string{"Retry-After": {"0"}}, want: now},
 		{name: "date header", headers: map[string][]string{"Retry-After": {windowReset.Format(http.TimeFormat)}}, want: windowReset},
+		{name: "oversized seconds header", headers: map[string][]string{"Retry-After": {"99999999"}}, want: now.Add(time.Minute)},
+		{name: "millisecond structured reset", body: `{"error":{"type":"usage_limit_reached","resets_at":` + strconv.FormatInt(windowReset.UnixMilli(), 10) + `}}`, want: now.Add(time.Minute)},
 		{name: "expired date header", headers: map[string][]string{"Retry-After": {now.Add(-time.Second).Format(http.TimeFormat)}}, want: now.Add(time.Minute)},
 		{name: "structured reset without error code", body: `{"error":{"reset_seconds":120}}`, want: now.Add(2 * time.Minute)},
 		{name: "structured reset with quota code", body: `{"error":{"code":"daily_limit_exceeded","resets_in_seconds":120}}`, want: now.Add(2 * time.Minute)},

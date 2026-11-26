@@ -1273,11 +1273,15 @@ func rewriteAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) ([
  * @param request Antigravity 信封内的请求。
  * @return 改写后的请求副本；未命中时返回原字节，不修改调用方字节。
  * @note 保留 thinking、签名、工具调用参数、工具定义与标识；不扩大系统指令的身份或混淆规则。
+ * @details 工具结果同时识别 Gemini 原生客户端的 camelCase 与 snake_case 字段；正文不含触发句前缀时跳过逐段重建。
  */
 func rewriteAntigravityConversationText(request []byte) []byte {
+	if !bytes.Contains(request, []byte("You are Codex")) {
+		return request
+	}
 	for contentIndex, content := range gjson.GetBytes(request, "contents").Array() {
 		for partIndex, part := range content.Get("parts").Array() {
-			for _, field := range []string{"text", "functionResponse.response"} {
+			for _, field := range []string{"text", "functionResponse.response", "function_response.response"} {
 				if field == "text" && part.Get("thought").Bool() {
 					continue
 				}

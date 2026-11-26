@@ -131,13 +131,14 @@ func openAIGoogleThinkingEffort(body []byte) string {
  * @brief Chat 转 Gemini 时，显式 auto 后缀使用模型默认思考，保留扩展里的摘要开关。
  * @param body 协议转换前的 Chat 请求体。
  * @param requestedModel 客户端提交的模型名，可能含思考后缀。
- * @return 显式 auto 时去掉扩展思考等级和预算，否则返回原始请求体。
+ * @return 显式 auto 时去掉原生生成配置与扩展中的思考等级和预算，否则返回原始请求体。
+ * @details 路径与 thinking.ParseOpenAIGoogleThinking 读取的容器一致，否则日志记 auto 而上游仍按残留配置执行。
  */
 func omitOpenAIGoogleThinkingForAuto(body []byte, requestedModel string) []byte {
 	if _, cfg, ok := model.ParseThinkingSuffix(requestedModel); !ok || cfg.Mode != thinking.ModeAuto {
 		return body
 	}
-	for _, googlePath := range [...]string{"extra_body.google", "extra_body.extra_body.google", "google"} {
+	for _, googlePath := range [...]string{"generationConfig", "generation_config", "extra_body.google", "extra_body.extra_body.google", "google"} {
 		google := gjson.GetBytes(body, googlePath)
 		for _, configKey := range [...]string{"thinking_config", "thinkingConfig"} {
 			config := google.Get(configKey)
