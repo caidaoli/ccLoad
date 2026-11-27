@@ -1073,7 +1073,7 @@ boundaries, commits only complete successful responses, and invalidates the scop
 on signature rejection. Explicit carriers remain authoritative. No upstream
 runtime cache or executor is imported, and signature-400 history-stripping retries
 are removed. The app auth service follows the upstream `02e9e852` Hub UA contract: release
-changelists for known versions and a `2.24.0` fallback.
+changelists for known versions and the newest registered pair as fallback.
 
 ## Provider adapter snapshot
 
@@ -1290,7 +1290,7 @@ documented adaptations:
 - Executor/runtime parity remains implemented at the app boundary rather than in
   this snapshot. Antigravity uses refresh-token-scoped HTTP/1.1 pools with native
   keepalive limits and bounded LRU eviction. Its runtime User-Agent is resolved
-  once at startup from the official Hub updater manifest, falls back to Hub 2.8.1,
+  once at startup from the official Hub updater manifest, falls back to the newest registered Hub release,
   and is shared by data, project/model, and quota requests (the OAuth token
   endpoint retains its native client UA); its request finalizer performs one
   object-tree rewrite per attempt. Claude OAuth preserves confirmed native and
