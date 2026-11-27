@@ -27,63 +27,66 @@
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-        <!-- 默认显示并由空导航占位，避免分组按钮渲染后推移下方表格；仅一个分组时由脚本隐藏 -->
-        <section id="settings-group-nav-section" class="mt-2 mb-2 settings-group-nav-section">
-          <div class="time-range-container settings-group-nav-container">
-            <div id="settings-group-nav" class="time-range-selector settings-group-nav"></div>
-          </div>
-        </section>
-
-        <section class="glass-card mb-6">
-          <p class="settings-restart-note" data-i18n="settings.restartNote">以下设置保存后需重启服务生效。</p>
-          <div class="table-container settings-table-container mobile-card-table-container">
-            <table class="modern-table settings-table mobile-card-table">
-              <colgroup>
-                <col class="settings-col-description">
-                <col class="settings-col-value">
-                <col class="settings-col-actions">
-              </colgroup>
-              <tbody id="settings-tbody"></tbody>
-            </table>
-          </div>
-          <div class="settings-save-actions">
-            <button id="runtime-metrics-btn" type="button" class="btn btn-secondary settings-runtime-metrics-btn" data-i18n="settings.runtimeMetrics.button">
-              运行状态
-            </button>
-            <button id="reasoning-auto-btn" type="button" class="btn btn-secondary" data-i18n="settings.reasoningAuto.title">
-              动态思考等级
-            </button>
-            <input type="hidden" id="reasoning_auto" value="{}">
-            <button id="privacy-redaction-btn" type="button" class="btn btn-secondary" data-i18n="settings.privacyRedaction.title">
-              隐私脱敏
-            </button>
-            <input type="hidden" id="privacy_redaction" value="{}">
-            <button id="model-multimodal-fallback-btn" type="button" class="btn btn-secondary settings-multimodal-fallback-btn" data-i18n="settings.multimodalFallback.edit">
-              多模态回退
-            </button>
-            <span class="settings-action-meta">
-              <span id="model-multimodal-fallback-summary" class="settings-multimodal-fallback-summary"></span>
-              <span class="settings-effect-badge settings-effect-badge--hot" data-i18n="settings.effect.hot">立即生效</span>
-            </span>
-            <input type="hidden" id="model_multimodal_fallback" value="{}">
-            <button id="model-custom-pricing-btn" type="button" class="btn btn-secondary settings-custom-pricing-btn" data-i18n="settings.customPricing.edit">
-              模型价格
-            </button>
-            <span class="settings-action-meta">
-              <span id="model-custom-pricing-summary" class="settings-custom-pricing-summary"></span>
-              <span class="settings-effect-badge settings-effect-badge--hot" data-i18n="settings.effect.hot">立即生效</span>
-            </span>
-            <input type="hidden" id="model_custom_pricing" value="{}">
-          </div>
-          <div id="privacyRedactionWarnings" class="privacy-redaction-warnings settings-privacy-warnings" role="status" hidden></div>
-        </section>
-
-        <!-- 保存栏置于卡片之外：.glass-card 的 overflow:hidden 会让 sticky 失效 -->
-        <div class="settings-savebar" role="region" data-i18n-aria-label="settings.savebar.label" aria-label="保存设置">
-          <span id="settings-dirty-status" class="settings-savebar-status" aria-live="polite"></span>
+        <header class="glass-card mt-2 mb-4 settings-header">
+          <h1 class="settings-header-title" data-i18n="settings.heading">系统设置</h1>
+          <span id="settings-dirty-status" class="settings-dirty-status" aria-live="polite"></span>
+          <button id="runtime-metrics-btn" type="button" class="btn btn-secondary settings-runtime-metrics-btn" data-i18n="settings.runtimeMetrics.button">
+            查看运行状态
+          </button>
           <button id="save-all-btn" type="button" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
             保存所有更改
           </button>
+        </header>
+
+        <div class="settings-layout">
+          <aside class="settings-sidebar">
+            <input type="search" id="settings-search" class="form-input settings-search" autocomplete="off"
+              data-i18n-placeholder="settings.search.placeholder" placeholder="搜索设置名称或键"
+              data-i18n-aria-label="settings.search.placeholder" aria-label="搜索设置名称或键">
+            <nav id="settings-group-nav" class="settings-group-nav" data-i18n-aria-label="settings.nav.label" aria-label="设置分类"></nav>
+          </aside>
+
+          <section class="glass-card settings-panel">
+            <section id="settings-features" class="settings-features" data-group="features" aria-labelledby="settings-features-title">
+              <div class="settings-features-header">
+                <h2 id="settings-features-title" class="settings-features-title" data-i18n="settings.group.features">功能模块</h2>
+                <span class="settings-effect-badge settings-effect-badge--hot" data-i18n="settings.features.hot">保存后立即生效，无需重启</span>
+              </div>
+              <div class="settings-feature-grid">
+                <button id="reasoning-auto-btn" type="button" class="settings-feature-card" data-key="reasoning_auto">
+                  <span class="settings-feature-name" data-i18n="settings.reasoningAuto.title">动态思考等级</span>
+                  <span class="settings-feature-desc" data-i18n="settings.features.reasoningAuto">由判断模型按请求内容自动选择思考等级</span>
+                  <span id="reasoning-auto-summary" class="settings-feature-summary"></span>
+                </button>
+                <input type="hidden" id="reasoning_auto" value="{}">
+                <button id="privacy-redaction-btn" type="button" class="settings-feature-card" data-key="privacy_redaction">
+                  <span class="settings-feature-name" data-i18n="settings.privacyRedaction.title">隐私脱敏</span>
+                  <span class="settings-feature-desc" data-i18n="settings.features.privacyRedaction">发往上游前替换敏感文本，回复返回后还原</span>
+                  <span id="privacy-redaction-summary" class="settings-feature-summary"></span>
+                </button>
+                <input type="hidden" id="privacy_redaction" value="{}">
+                <button id="model-multimodal-fallback-btn" type="button" class="settings-feature-card" data-key="model_multimodal_fallback">
+                  <span class="settings-feature-name" data-i18n="settings.multimodalFallback.edit">多模态回退</span>
+                  <span class="settings-feature-desc" data-i18n="settings.features.multimodalFallback">含图片、文件的请求自动改用回退模型</span>
+                  <span id="model-multimodal-fallback-summary" class="settings-feature-summary"></span>
+                </button>
+                <input type="hidden" id="model_multimodal_fallback" value="{}">
+                <button id="model-custom-pricing-btn" type="button" class="settings-feature-card" data-key="model_custom_pricing">
+                  <span class="settings-feature-name" data-i18n="settings.customPricing.edit">模型价格</span>
+                  <span class="settings-feature-desc" data-i18n="settings.features.customPricing">覆盖系统默认的模型 Token 价格</span>
+                  <span id="model-custom-pricing-summary" class="settings-feature-summary"></span>
+                </button>
+                <input type="hidden" id="model_custom_pricing" value="{}">
+              </div>
+              <div id="privacyRedactionWarnings" class="privacy-redaction-warnings settings-privacy-warnings" role="status" hidden></div>
+            </section>
+
+            <div id="settings-table-section">
+              <p class="settings-restart-note" data-i18n="settings.restartNote">以下设置保存后服务会自动重启生效。</p>
+              <div id="settings-list" class="settings-list"></div>
+            </div>
+            <p id="settings-search-empty" class="settings-search-empty" data-i18n="settings.search.empty" hidden>没有匹配的设置</p>
+          </section>
         </div>
       </div>
     </main>
@@ -339,29 +342,27 @@
 
   <!-- 设置行模板 -->
   <template id="tpl-setting-row">
-    <tr class="mobile-card-row setting-data-row" data-key="{{key}}">
-      <td class="setting-col-description" data-mobile-label="{{mobileLabelDescription}}">
-        <span class="setting-description-text">{{description}}</span>
-      </td>
-      <td class="setting-col-value" data-mobile-label="{{mobileLabelValue}}">{{{inputHtml}}}</td>
-      <td class="setting-col-actions" data-mobile-label="{{mobileLabelActions}}">
-        <button type="button" class="btn-icon setting-reset-btn" data-key="{{key}}" data-i18n-title="settings.resetToDefault" data-i18n-aria-label="settings.resetToDefault" title="重置为默认值" aria-label="恢复默认值">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-            <path d="M3 3v5h5"/>
-          </svg>
-        </button>
-      </td>
-    </tr>
+    <div class="setting-data-row" data-key="{{key}}" data-group="{{groupId}}">
+      <div class="setting-col-description">
+        <label class="setting-description-text" for="{{key}}">{{description}}</label>
+        <span class="setting-hint">{{hint}}</span>
+      </div>
+      <div class="setting-col-value">{{{resetHtml}}}{{{inputHtml}}}</div>
+    </div>
   </template>
 
-  <!-- 分组标题行模板 -->
+  <!-- 超时矩阵模板 -->
+  <template id="tpl-setting-matrix-row">
+    <div class="setting-matrix-row" data-group="{{groupId}}" data-keys="{{keys}}">
+      <span id="timeout-matrix-title" class="setting-description-text" data-i18n="settings.timeoutMatrix.title">{{title}}</span>
+      <span class="setting-hint" data-i18n="settings.timeoutMatrix.hint">{{hint}}</span>
+      <div class="setting-matrix-scroll">{{{matrixHtml}}}</div>
+    </div>
+  </template>
+
+  <!-- 分组标题模板 -->
   <template id="tpl-setting-group-row">
-    <tr class="setting-group-row" id="settings-group-{{groupId}}" data-group="{{groupId}}">
-      <td colspan="3" class="setting-group-cell">
-        <span class="setting-group-title">{{groupName}}</span>
-      </td>
-    </tr>
+    <h3 class="setting-group-row" id="settings-group-{{groupId}}" data-group="{{groupId}}">{{groupName}}</h3>
   </template>
 
 </body>

@@ -42,15 +42,6 @@ function projectCustomPricingDefaults(pricing) {
   return projected;
 }
 
-const advancedSettingKeys = new Set([
-  'api_token_login_enabled', 'api_token_show_channels',
-  'auto_update_interval_hours', 'auto_update_channel',
-  'auto_refresh_interval_seconds',
-  'codex_map_429_to_503',
-  'model_catalog_sync_interval_hours',
-  'model_fuzzy_match'
-]);
-
 /**
  * @brief 以 MiB 编辑、以整数字节持久化的设置键
  */
@@ -656,6 +647,7 @@ function applyReasoningAuto() {
     return;
   }
   document.getElementById('reasoning_auto').value = value;
+  updateEnabledSummary('reasoning_auto', value);
   setSettingInvalid('reasoning_auto', false);
   updateDirtyStatus();
   closeReasoningAutoModal();
@@ -1060,6 +1052,7 @@ async function applyPrivacyRedaction() {
   }
   if (!current()) return;
   document.getElementById('privacy_redaction').value = value;
+  updateEnabledSummary('privacy_redaction', value);
   renderPrivacyRedactionWarnings('privacyRedactionWarnings', preview?.warnings);
   setSettingInvalid('privacy_redaction', false);
   updateDirtyStatus();
@@ -1263,6 +1256,10 @@ const responsesRuntimeMetricGroups = [
   }
 ];
 
+/**
+ * @brief 绑定页面常驻按钮与搜索框事件
+ * @note 按钮以 dataset.bound 防重复绑定；仅在页面初始化时调用一次
+ */
 function bindSettingsPageActions() {
   const saveAllBtn = document.getElementById('save-all-btn');
   if (saveAllBtn && !saveAllBtn.dataset.bound) {
@@ -1271,6 +1268,9 @@ function bindSettingsPageActions() {
     });
     saveAllBtn.dataset.bound = '1';
   }
+
+  document.getElementById('settings-search')?.addEventListener('input', applySettingsVisibility);
+  settingsMobileLayout.addEventListener('change', applySettingsVisibility);
 
   const runtimeMetricsBtn = document.getElementById('runtime-metrics-btn');
   if (runtimeMetricsBtn && !runtimeMetricsBtn.dataset.bound) {
@@ -1481,6 +1481,27 @@ function parseMultimodalFallback(value) {
 
 function multimodalFallbackCount(value) {
   return parseMultimodalFallback(value).length;
+}
+
+/**
+ * @brief 以 enabled 字段为开关的功能模块及其卡片摘要元素 ID
+ */
+const enabledSummaryIDs = new Map([
+  ['reasoning_auto', 'reasoning-auto-summary'],
+  ['privacy_redaction', 'privacy-redaction-summary']
+]);
+
+/**
+ * @brief 更新功能模块卡片上的启用状态摘要
+ * @param key 系统设置键；非 enabledSummaryIDs 中的键直接忽略
+ * @param value 编辑器格式的配置 JSON
+ */
+function updateEnabledSummary(key, value) {
+  const summaryID = enabledSummaryIDs.get(key);
+  const summary = summaryID && document.getElementById(summaryID);
+  if (!summary) return;
+  const config = key === 'reasoning_auto' ? parseReasoningAuto(value) : parsePrivacyRedaction(value);
+  summary.textContent = t(config.enabled ? 'settings.features.enabled' : 'settings.features.disabled');
 }
 
 function updateMultimodalFallbackSummary(value) {
@@ -2418,82 +2439,16 @@ async function loadRuntimeMetrics(options) {
 }
 
 /**
- * @brief 获取设置所属的界面分组
- * @param key 系统设置键
- * @return 分组标识、翻译名称与顺序；未匹配时归入高级设置
+ * @brief 仅在全部前置开关启用时才起作用的设置
+ * @details 前置开关关闭时对应行置灰提示，但仍可编辑以便预先配置。
  */
-function getSettingGroupInfo(key) {
-  const k = String(key || '').toLowerCase();
-
-  const defs = [
-    { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
-    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' || k === 'reasoning_auto' || k === 'privacy_redaction' },
-
-    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
-    { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
-    { id: 'stream-timeout', nameKey: 'settings.group.streamTimeout', order: 20, match: () => k === 'stream_timeout' || k.endsWith('stream_idle_timeout') || k.endsWith('_first_byte_timeout') },
-    { id: 'non-stream-timeout', nameKey: 'settings.group.nonStreamTimeout', order: 21, match: () => k === 'non_stream_timeout' || k.endsWith('_non_stream_timeout') },
-    { id: 'limits', nameKey: 'settings.group.limits', order: 26, match: () => k === 'max_concurrency' || k.endsWith('_body_bytes') || k === 'request_body_memory_budget_bytes' || k === 'http_read_timeout_seconds' },
-    { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k.includes('ttfb') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
-    { id: 'billing', nameKey: 'settings.group.billing', order: 35, match: () => k === modelCustomPricingSettingKey },
-    { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') || k === globalCooldownRulesSettingKey },
-    { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') || k.startsWith('debug_') },
-    { id: 'access', nameKey: 'settings.group.access', order: 60, match: () => k.includes('auth_') },
-  ];
-
-  for (const d of defs) {
-    if (d.match()) return { ...d, name: t(d.nameKey) };
-  }
-  return { id: 'advanced', nameKey: 'settings.group.advanced', name: t('settings.group.advanced'), order: 70 };
-}
-
-/**
- * @brief 获取设置在所属分组内的展示顺序
- * @param key 系统设置键
- * @return 设置顺序；未登记时返回 1000
- */
-function getSettingOrder(key) {
-  const orders = {
-    upstream_connection_reuse_limit_seconds: 90,
-    antigravity_url: 100,
-    anthropic_base_url: 110,
-    codex_base_url: 120,
-    xai_base_url: 130,
-    upstream_first_byte_timeout: 100,
-    stream_timeout: 101,
-    stream_idle_timeout: 102,
-    non_stream_timeout: 102,
-    anthropic_first_byte_timeout: 110,
-    anthropic_non_stream_timeout: 111,
-    anthropic_stream_idle_timeout: 112,
-    codex_first_byte_timeout: 120,
-    codex_non_stream_timeout: 121,
-    openai_first_byte_timeout: 130,
-    openai_non_stream_timeout: 131,
-    gemini_first_byte_timeout: 140,
-    gemini_non_stream_timeout: 141,
-    max_concurrency: 200,
-    max_body_bytes: 201,
-    max_image_body_bytes: 202,
-    request_body_memory_budget_bytes: 203,
-    http_read_timeout_seconds: 204,
-    cooldown_fallback_enabled: 300,
-    cooldown_auth_seconds: 301,
-    cooldown_server_seconds: 302,
-    cooldown_timeout_seconds: 303,
-    cooldown_rate_limit_seconds: 304,
-    cooldown_min_seconds: 305,
-    cooldown_max_seconds: 306,
-    global_cooldown_detection_rules: 307,
-    auto_update_interval_hours: 700,
-    auto_update_channel: 701,
-    api_token_login_enabled: 702,
-    api_token_show_channels: 703,
-    model_custom_pricing: 710
-  };
-  const normalizedKey = String(key || '').toLowerCase();
-  return orders[normalizedKey] ?? 1000;
-}
+const settingDependencies = new Map([
+  ...['enable_ttfb_score', 'health_min_confident_sample', 'health_score_update_interval', 'health_score_window_minutes',
+    'success_rate_penalty_weight'].map((key) => [key, ['enable_health_score']]),
+  ...['ttfb_max_slow_ratio', 'ttfb_min_confident_sample', 'ttfb_penalty_weight']
+    .map((key) => [key, ['enable_health_score', 'enable_ttfb_score']]),
+  ['debug_log_retention_minutes', ['debug_log_enabled']]
+]);
 
 function isModalSettingKey(key) {
   return key === 'reasoning_auto' || hotReloadSettingKeys.has(key);
@@ -2511,121 +2466,307 @@ function settingLabel(key) {
   return settingDefinitions.get(key)?.description || key;
 }
 
-function groupSettings(settings) {
-  const groupsById = new Map();
-
-  for (const s of settings) {
-    const g = getSettingGroupInfo(s.key);
-    if (!groupsById.has(g.id)) {
-      groupsById.set(g.id, { id: g.id, name: g.name, order: g.order, settings: [] });
-    }
-    groupsById.get(g.id).settings.push(s);
-  }
-
-  const groups = Array.from(groupsById.values())
-    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
-
-  for (const g of groups) {
-    g.settings.sort((a, b) => {
-      const orderDiff = getSettingOrder(a.key) - getSettingOrder(b.key);
-      if (orderDiff !== 0) return orderDiff;
-      return String(a.key).localeCompare(String(b.key));
-    });
-  }
-
-  return groups;
+/**
+ * @brief 设置项的补充说明：单位、取值含义与默认值
+ * @param key 系统设置键
+ * @return 说明文本；无说明且无可展示默认值时返回空串
+ */
+function settingHint(key) {
+  const hintKey = `settings.hint.${key}`;
+  const hint = t(hintKey);
+  const parts = hint === hintKey ? [] : [hint];
+  const defaultText = settingDefaultText(key);
+  if (defaultText) parts.push(t('settings.defaultValue', { value: defaultText }));
+  return parts.join(' · ');
 }
 
+/**
+ * @brief 以编辑单位展示的默认值
+ * @param key 系统设置键
+ * @return 数值、开关与下拉项的默认值文本；文本类设置返回空串，避免长 URL 或 JSON 挤占说明
+ */
+function settingDefaultText(key) {
+  const setting = settingDefinitions.get(key);
+  const value = settingValueForDisplay(key, setting.default_value ?? '');
+  const options = selectSettingOptions.get(key);
+  if (options) {
+    const option = options.find((item) => item.value === value);
+    return option ? t(option.labelKey) : '';
+  }
+  if (setting.value_type === 'bool') return t(value === 'true' ? 'common.enable' : 'common.disable');
+  if (byteSettingKeys.has(key)) return `${value} MiB`;
+  return ['int', 'duration', 'float'].includes(setting.value_type) ? value : '';
+}
+
+/**
+ * @brief 刷新设置行的未保存、非默认与前置开关状态
+ * @param key 系统设置键
+ * @note 非默认行才显示重置按钮；修改前置开关时同步刷新其从属行
+ */
+function updateSettingRowState(key) {
+  const control = getSettingControl(key);
+  if (!control?.row) return;
+  const defaultValue = settingValueForDisplay(key, settingDefinitions.get(key)?.default_value ?? '');
+  control.row.classList.toggle('setting-row--dirty', isSettingChanged(key, control));
+  control.row.classList.toggle('setting-row--custom', control.value !== defaultValue);
+  const parents = settingDependencies.get(key);
+  if (parents) {
+    control.row.classList.toggle('setting-row--inactive', parents.some((parent) => getSettingControl(parent)?.value === 'false'));
+  }
+  for (const [child, childParents] of settingDependencies) {
+    if (childParents.includes(key)) updateSettingRowState(child);
+  }
+}
+
+/**
+ * @brief 超时矩阵的列，对应 settings.timeoutMatrix.<列> 翻译键
+ */
+const timeoutMatrixColumns = ['firstByte', 'streamIdle', 'stream', 'nonStream'];
+
+/**
+ * @brief 承载单个设置状态类（自定义/未保存/未生效）的元素：超时矩阵单元格或设置行
+ */
+const settingRowSelector = '.setting-matrix-cell, .setting-data-row';
+
+/**
+ * @brief 超时矩阵的行：协议范围及其按列排列的设置键
+ * @details null 表示该协议没有对应超时项；协议级 0 表示沿用全局值。
+ */
+const timeoutMatrixRows = [
+  ['global', ['upstream_first_byte_timeout', 'stream_idle_timeout', 'stream_timeout', 'non_stream_timeout']],
+  ['Anthropic', ['anthropic_first_byte_timeout', 'anthropic_stream_idle_timeout', null, 'anthropic_non_stream_timeout']],
+  ['Codex', ['codex_first_byte_timeout', null, null, 'codex_non_stream_timeout']],
+  ['OpenAI', ['openai_first_byte_timeout', null, null, 'openai_non_stream_timeout']],
+  ['Gemini', ['gemini_first_byte_timeout', null, null, 'gemini_non_stream_timeout']]
+];
+
+/**
+ * @brief 合并进超时矩阵、不再单独成行的设置键
+ */
+const timeoutMatrixKeys = new Set(timeoutMatrixRows.flatMap(([, keys]) => keys).filter(Boolean));
+
+/**
+ * @brief 设置分组及组内展示顺序；数组顺序即导航顺序
+ * @details 分组名取自 settings.group.<id>；未登记的键归入末尾的 other 分组并按键名排序。
+ */
+const settingGroupKeys = [
+  ['routing', ['max_key_retries', 'model_fuzzy_match', 'codex_map_429_to_503']],
+  ['timeout', [...timeoutMatrixKeys, 'http_read_timeout_seconds']],
+  ['upstream-connection', ['upstream_connection_reuse_limit_seconds', 'ANTIGRAVITY_URL', 'ANTHROPIC_BASE_URL', 'CODEX_BASE_URL', 'XAI_BASE_URL']],
+  ['limits', ['max_concurrency', 'max_body_bytes', 'max_image_body_bytes', 'request_body_memory_budget_bytes']],
+  ['websocket', ['responses_ws_max_connections', 'responses_ws_max_connections_per_token', 'responses_ws_max_sessions',
+    'responses_ws_session_ttl_minutes', 'responses_ws_max_transcript_bytes']],
+  ['health', ['enable_health_score', 'health_score_window_minutes', 'health_score_update_interval', 'health_min_confident_sample',
+    'success_rate_penalty_weight', 'enable_ttfb_score', 'ttfb_penalty_weight', 'ttfb_max_slow_ratio', 'ttfb_min_confident_sample']],
+  ['cooldown', ['cooldown_fallback_enabled', 'cooldown_auth_seconds', 'cooldown_server_seconds', 'cooldown_timeout_seconds',
+    'cooldown_rate_limit_seconds', 'cooldown_min_seconds', 'cooldown_max_seconds', globalCooldownRulesSettingKey]],
+  ['log', ['log_retention_days', 'debug_log_enabled', 'debug_log_retention_minutes']],
+  ['security', ['api_token_login_enabled', 'api_token_show_channels', 'antigravity_sensitive_words']],
+  ['ui', ['channel_stats_range', 'log_channel_click_action', 'auto_refresh_interval_seconds', 'channel_test_content']],
+  ['system', ['auto_update_channel', 'auto_update_interval_hours', 'model_catalog_sync_interval_hours']]
+];
+
+/**
+ * @brief 当前显示的设置分组；features 为页面常驻的功能模块卡片，搜索时与手机布局下被忽略
+ */
+let activeSettingsGroup = 'features';
+
+/**
+ * @brief 手机布局媒体查询：与样式表断点一致，命中时隐藏分组导航，所有分组纵向连续显示
+ */
+const settingsMobileLayout = window.matchMedia('(max-width: 768px)');
+
+/**
+ * @brief 将表格内设置按分组归类
+ * @param settings 后端返回的全部设置
+ * @return 非空分组列表，元素为 { id, settings }；弹窗类设置不在其中
+ */
+function groupSettings(settings) {
+  const byKey = new Map(settings.filter((setting) => !isModalSettingKey(setting.key)).map((setting) => [setting.key, setting]));
+  const groups = settingGroupKeys.map(([id, keys]) => ({ id, settings: keys.filter((key) => byKey.has(key)).map((key) => byKey.get(key)) }));
+  const knownKeys = new Set(settingGroupKeys.flatMap(([, keys]) => keys));
+  groups.push({
+    id: 'other',
+    settings: [...byKey.values()].filter((setting) => !knownKeys.has(setting.key)).sort((a, b) => a.key.localeCompare(b.key))
+  });
+  return groups.filter((group) => group.settings.length > 0);
+}
+
+/**
+ * @brief 渲染左侧分组导航，功能模块固定为第一项
+ * @param groups groupSettings 返回的表格分组
+ */
 function renderGroupNav(groups) {
   const nav = document.getElementById('settings-group-nav');
-  const navSection = document.getElementById('settings-group-nav-section');
   if (!nav) return;
-
   nav.innerHTML = '';
-  const hasMultipleGroups = Array.isArray(groups) && groups.length > 1;
-  if (navSection) navSection.hidden = !hasMultipleGroups;
-  if (!hasMultipleGroups) return;
-
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
-    const btn = document.createElement('button');
-    btn.className = 'time-range-btn' + (i === 0 ? ' active' : '');
-    btn.dataset.group = g.id;
-    btn.textContent = t(`settings.nav.${g.id}`);
-    btn.title = g.name;
-    btn.addEventListener('click', () => {
-      // 移除所有按钮的 active 状态
-      nav.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      // 滚动到对应分组
-      const target = document.getElementById(`settings-group-${g.id}`);
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    nav.appendChild(btn);
+  for (const group of [{ id: 'features' }, ...groups]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'settings-nav-item';
+    button.dataset.group = group.id;
+    button.textContent = t(`settings.group.${group.id}`);
+    button.addEventListener('click', () => showSettingsGroup(group.id));
+    nav.appendChild(button);
   }
 }
 
+/**
+ * @brief 切换到指定分组并清空搜索
+ * @param groupId 分组标识
+ */
+function showSettingsGroup(groupId) {
+  activeSettingsGroup = groupId;
+  const search = document.getElementById('settings-search');
+  if (search) search.value = '';
+  applySettingsVisibility();
+}
+
+/**
+ * @brief 按搜索词或当前分组刷新功能卡片、设置行与导航的显示状态
+ * @details 有搜索词时跨分组匹配名称、说明与设置键，并只保留有命中的分组标题；
+ *          否则手机布局显示全部分组，桌面只显示当前分组。用类而非 hidden 隐藏，因为卡片与设置行的 display 会盖过 [hidden]。
+ */
+function applySettingsVisibility() {
+  const query = (document.getElementById('settings-search')?.value || '').trim().toLowerCase();
+  const showAll = settingsMobileLayout.matches;
+  const isVisible = (group, text) => (query ? text.toLowerCase().includes(query) : showAll || group === activeSettingsGroup);
+  const visibleGroups = new Set();
+  for (const card of document.querySelectorAll('#settings-features .settings-feature-card')) {
+    const visible = isVisible('features', `${card.dataset.key} ${card.textContent}`);
+    card.classList.toggle('is-filtered-out', !visible);
+    if (visible) visibleGroups.add('features');
+  }
+  const rows = Array.from(document.querySelectorAll('#settings-list [data-group]'));
+  for (const row of rows) {
+    if (row.classList.contains('setting-group-row')) continue;
+    const text = `${row.dataset.key || row.dataset.keys} ${(row.querySelector('.setting-col-description') || row).textContent}`;
+    const visible = isVisible(row.dataset.group, text);
+    row.classList.toggle('is-filtered-out', !visible);
+    if (visible) visibleGroups.add(row.dataset.group);
+  }
+  for (const row of rows) {
+    if (row.classList.contains('setting-group-row')) row.classList.toggle('is-filtered-out', !visibleGroups.has(row.dataset.group));
+  }
+  document.getElementById('settings-features')?.classList.toggle('is-filtered-out', !visibleGroups.has('features'));
+  document.getElementById('settings-table-section')?.classList.toggle('is-filtered-out',
+    ![...visibleGroups].some((group) => group !== 'features'));
+  for (const button of document.querySelectorAll('#settings-group-nav [data-group]')) {
+    const active = !query && button.dataset.group === activeSettingsGroup;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute('aria-current');
+  }
+  const empty = document.getElementById('settings-search-empty');
+  if (empty) empty.hidden = visibleGroups.size > 0;
+}
+
+/**
+ * @brief 设置行与超时矩阵单元格共用的重置按钮 HTML
+ * @param key 系统设置键
+ * @return 按钮 HTML
+ */
+function settingResetButtonHtml(key) {
+  const label = escapeHtml(t('settings.resetToDefault'));
+  return `<button type="button" class="btn-icon setting-reset-btn" data-key="${escapeHtml(key)}" data-i18n-title="settings.resetToDefault" data-i18n-aria-label="settings.resetToDefault" title="${label}" aria-label="${label}">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+  </button>`;
+}
+
+/**
+ * @brief 渲染超时矩阵：行为协议范围，列为超时类型
+ * @param settingsByKey 后端返回的设置，按键索引
+ * @return 矩阵 HTML；后端未返回或该协议无此项的单元格显示占位符
+ * @note 每个输入框以行、列标题作可访问名称，说明与默认值放在 title 中
+ */
+function renderTimeoutMatrix(settingsByKey) {
+  const columnHeaders = timeoutMatrixColumns.map((column) => (
+    `<span class="setting-matrix-col" id="timeout-col-${column}" data-i18n="settings.timeoutMatrix.${column}">${escapeHtml(t(`settings.timeoutMatrix.${column}`))}</span>`
+  )).join('');
+  const rows = timeoutMatrixRows.map(([scope, keys]) => {
+    const scopeID = `timeout-row-${scope.toLowerCase()}`;
+    const scopeLabel = scope === 'global'
+      ? `<span class="setting-matrix-scope" id="${scopeID}" data-i18n="settings.timeoutMatrix.global">${escapeHtml(t('settings.timeoutMatrix.global'))}</span>`
+      : `<span class="setting-matrix-scope" id="${scopeID}">${scope}</span>`;
+    const cells = keys.map((key, index) => {
+      const setting = key && settingsByKey.get(key);
+      if (!setting) return '<span class="setting-matrix-cell setting-matrix-cell--empty" aria-hidden="true">—</span>';
+      const value = escapeHtml(settingValueForDisplay(key, setting.value));
+      return `<span class="setting-matrix-cell"><input type="number" id="${escapeHtml(key)}" value="${value}" class="settings-input settings-input--number"
+        aria-labelledby="${scopeID} timeout-col-${timeoutMatrixColumns[index]}" title="${escapeHtml(settingHint(key))}" ${numericInputAttributes(setting)}>${settingResetButtonHtml(key)}</span>`;
+    }).join('');
+    return scopeLabel + cells;
+  }).join('');
+  return `<div class="setting-matrix" role="group" aria-labelledby="timeout-matrix-title"><span aria-hidden="true"></span>${columnHeaders}${rows}</div>`;
+}
+
+/**
+ * @brief 切换语言后刷新 JS 动态写入的分组名、设置标题、说明与摘要
+ * @note 带 data-i18n 的静态文本已由 i18n.translatePage 先行更新
+ */
 function refreshSettingsTranslations() {
-  const groups = groupSettings(Array.from(settingDefinitions.values()))
-    .map((group) => ({ ...group, settings: group.settings.filter((setting) => !isModalSettingKey(setting.key)) }))
-    .filter((group) => group.settings.length > 0);
-  for (const group of groups) {
-    const button = document.querySelector(`#settings-group-nav [data-group="${group.id}"]`);
-    if (button) {
-      button.textContent = t(`settings.nav.${group.id}`);
-      button.title = group.name;
-    }
-    const title = document.querySelector(`#settings-group-${group.id} .setting-group-title`);
-    if (title) title.textContent = group.name;
+  for (const button of document.querySelectorAll('#settings-group-nav [data-group]')) {
+    button.textContent = t(`settings.group.${button.dataset.group}`);
+  }
+  for (const heading of document.querySelectorAll('#settings-list .setting-group-row')) {
+    heading.textContent = t(`settings.group.${heading.dataset.group}`);
   }
   for (const setting of settingDefinitions.values()) {
+    if (timeoutMatrixKeys.has(setting.key)) {
+      const input = document.getElementById(setting.key);
+      if (input) input.title = settingHint(setting.key);
+      continue;
+    }
     const row = document.querySelector(`.setting-data-row[data-key="${setting.key}"]`);
     if (!row) continue;
-    const description = row.querySelector('.setting-col-description');
-    const descriptionText = description.querySelector('.setting-description-text');
-    if (descriptionText) descriptionText.textContent = settingLabel(setting.key);
-    description.dataset.mobileLabel = t('settings.configItem');
-    row.querySelector('.setting-col-value').dataset.mobileLabel = t('settings.currentValue');
-    row.querySelector('.setting-col-actions').dataset.mobileLabel = t('common.actions');
+    row.querySelector('.setting-description-text').textContent = settingLabel(setting.key);
+    row.querySelector('.setting-hint').textContent = settingHint(setting.key);
   }
   updateGlobalCooldownRulesSummary(document.getElementById(globalCooldownRulesSettingKey)?.value || '');
   updateMultimodalFallbackSummary(document.getElementById(modelMultimodalFallbackSettingKey)?.value || '');
   updateCustomPricingSummary(document.getElementById(modelCustomPricingSettingKey)?.value || '');
+  for (const key of enabledSummaryIDs.keys()) updateEnabledSummary(key, document.getElementById(key)?.value || '');
   updateDirtyStatus();
 }
 
 async function loadSettings() {
-  const tbody = document.getElementById('settings-tbody');
+  const list = document.getElementById('settings-list');
   try {
     const data = await fetchDataWithAuth('/admin/settings');
     if (!Array.isArray(data)) throw new Error(t('settings.msg.invalidResponse'));
     renderSettings(data);
   } catch (err) {
     console.error('Failed to load settings:', err);
-    if (tbody) renderSettingsLoadError(tbody, err);
+    if (list) renderSettingsLoadError(list, err);
     else showError(t('settings.msg.loadFailed') + ': ' + err.message);
   }
 }
 
-// 加载失败时在表格内给出原因与重试入口，重试通过事件委托重新调用 loadSettings。
-function renderSettingsLoadError(tbody, err) {
+/**
+ * @brief 加载失败时在设置列表内给出原因与重试入口
+ * @param list 设置列表容器
+ * @param err 加载错误
+ * @note 重试经列表的事件委托重新调用 loadSettings
+ */
+function renderSettingsLoadError(list, err) {
   initSettingsEventDelegation();
-  tbody.innerHTML = `
-    <tr class="settings-load-error-row">
-      <td colspan="3">
-        <div class="settings-load-error" role="alert">
-          <span>${escapeHtml(t('settings.msg.loadFailed') + ': ' + (err?.message || ''))}</span>
-          <button type="button" class="btn btn-secondary" data-action="retry-load-settings">${escapeHtml(t('common.retry'))}</button>
-        </div>
-      </td>
-    </tr>`;
+  list.innerHTML = `
+    <div class="settings-load-error" role="alert">
+      <span>${escapeHtml(t('settings.msg.loadFailed') + ': ' + (err?.message || ''))}</span>
+      <button type="button" class="btn btn-secondary" data-action="retry-load-settings">${escapeHtml(t('common.retry'))}</button>
+    </div>`;
 }
 
+/**
+ * @brief 渲染全部设置：弹窗类写入隐藏输入，其余按分组渲染为设置行，超时项合并为矩阵
+ * @param settings 后端 /admin/settings 返回的设置列表
+ * @note 重置原始值基线；重新加载时保留当前分组
+ */
 function renderSettings(settings) {
-  const tbody = document.getElementById('settings-tbody');
+  const list = document.getElementById('settings-list');
   originalSettings = {};
   settingDefinitions = new Map(settings.map((setting) => [setting.key, setting]));
-  tbody.innerHTML = '';
+  list.innerHTML = '';
 
   // 初始化事件委托（仅一次）
   initSettingsEventDelegation();
@@ -2638,44 +2779,60 @@ function renderSettings(settings) {
     if (target) target.value = displayValue;
     if (s.key === modelMultimodalFallbackSettingKey) updateMultimodalFallbackSummary(displayValue);
     else if (s.key === modelCustomPricingSettingKey) updateCustomPricingSummary(displayValue);
+    else updateEnabledSummary(s.key, displayValue);
   }
 
-  const groups = groupSettings(settings)
-    .map((group) => ({ ...group, settings: group.settings.filter((setting) => !isModalSettingKey(setting.key)) }))
-    .filter((group) => group.settings.length > 0);
+  const groups = groupSettings(settings);
   renderGroupNav(groups);
 
   for (const g of groups) {
     const groupRow = TemplateEngine.render('tpl-setting-group-row', {
       groupId: g.id,
-      groupName: g.name
+      groupName: t(`settings.group.${g.id}`)
     });
-    if (groupRow) tbody.appendChild(groupRow);
+    if (groupRow) list.appendChild(groupRow);
+
+    const matrixKeys = g.settings.filter((s) => timeoutMatrixKeys.has(s.key)).map((s) => s.key);
+    if (matrixKeys.length > 0) {
+      const matrixRow = TemplateEngine.render('tpl-setting-matrix-row', {
+        groupId: g.id,
+        keys: matrixKeys.join(' '),
+        title: t('settings.timeoutMatrix.title'),
+        hint: t('settings.timeoutMatrix.hint'),
+        matrixHtml: renderTimeoutMatrix(settingDefinitions)
+      });
+      if (matrixRow) list.appendChild(matrixRow);
+    }
 
     for (const s of g.settings) {
+      if (timeoutMatrixKeys.has(s.key)) continue;
       const displayValue = settingValueForDisplay(s.key, s.value);
       const row = TemplateEngine.render('tpl-setting-row', {
         key: s.key,
+        groupId: g.id,
         description: settingLabel(s.key),
+        hint: settingHint(s.key),
         inputHtml: renderInput({ ...s, value: displayValue }),
-        mobileLabelDescription: t('settings.configItem'),
-        mobileLabelValue: t('settings.currentValue'),
-        mobileLabelActions: t('common.actions')
+        resetHtml: settingResetButtonHtml(s.key)
       });
-      if (row) tbody.appendChild(row);
+      if (row) list.appendChild(row);
     }
   }
+  for (const g of groups) {
+    for (const s of g.settings) updateSettingRowState(s.key);
+  }
+  applySettingsVisibility();
   updateDirtyStatus();
 }
 
 // 初始化事件委托（替代 inline onclick）
 function initSettingsEventDelegation() {
-  const tbody = document.getElementById('settings-tbody');
-  if (!tbody || tbody.dataset.delegated) return;
-  tbody.dataset.delegated = 'true';
+  const list = document.getElementById('settings-list');
+  if (!list || list.dataset.delegated) return;
+  list.dataset.delegated = 'true';
 
   // 重置按钮点击
-  tbody.addEventListener('click', (e) => {
+  list.addEventListener('click', (e) => {
     const retryBtn = e.target.closest('[data-action="retry-load-settings"]');
     if (retryBtn) {
       retryBtn.disabled = true;
@@ -2703,8 +2860,8 @@ function initSettingsEventDelegation() {
     const input = e.target.closest('input, select');
     if (input) markChanged(input);
   };
-  tbody.addEventListener('input', onEdit);
-  tbody.addEventListener('change', onEdit);
+  list.addEventListener('input', onEdit);
+  list.addEventListener('change', onEdit);
 }
 
 // 手动触发完整更新流程：检查、下载、校验、替换，之后由服务端等待空闲重启。
@@ -2734,7 +2891,8 @@ function renderInput(setting) {
   const safeValue = escapeHtml(setting.value);
   const placeholder = oauthBaseURLPlaceholders.get(setting.key);
   const placeholderAttribute = placeholder ? `placeholder="${escapeHtml(placeholder)}"` : '';
-  const wideTextInput = setting.key === 'channel_test_content' || oauthBaseURLPlaceholders.has(setting.key);
+  const textWidthClass = setting.key === 'antigravity_sensitive_words' ? ' settings-input--double'
+    : setting.key === 'channel_test_content' || oauthBaseURLPlaceholders.has(setting.key) ? ' settings-input--wide' : '';
   const numericAttributes = numericInputAttributes(setting);
 
   if (setting.key === globalCooldownRulesSettingKey) {
@@ -2795,22 +2953,20 @@ function renderInput(setting) {
     case 'float':
       return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes}>`;
     default:
-      return `<input type="text" id="${safeKey}" value="${safeValue}" ${placeholderAttribute} class="settings-input settings-input--text${wideTextInput ? ' settings-input--wide' : ''}">`;
+      return `<input type="text" id="${safeKey}" value="${safeValue}" ${placeholderAttribute} class="settings-input settings-input--text${textWidthClass}">`;
   }
 }
 
+/**
+ * @brief 控件编辑后刷新错误标记、行状态与未保存计数
+ * @param input 触发编辑的输入控件
+ */
 function markChanged(input) {
-  const row = input.closest('tr');
-  if (!row) return; // 常驻控制区（如多模态回退 hidden input）没有表格行可高亮
+  const row = input.closest(settingRowSelector);
+  if (!row) return; // 功能模块的 hidden input 没有设置行可高亮
   const key = input.type === 'radio' ? input.name : input.id;
   setSettingInvalid(key, false);
-  const control = getSettingControl(key);
-
-  if (control && isSettingChanged(key, control)) {
-    row.style.background = 'rgba(59, 130, 246, 0.08)';
-  } else {
-    row.style.background = '';
-  }
+  updateSettingRowState(key);
   updateDirtyStatus();
 }
 
@@ -2833,9 +2989,16 @@ function setSettingInvalid(key, invalid) {
   }
 }
 
+/**
+ * @brief 定位到设置控件：切换到其所在分组并滚动聚焦，弹窗类设置打开对应弹窗
+ * @param key 系统设置键
+ * @note 会清空搜索词
+ */
 function focusSettingControl(key) {
   const control = getSettingControl(key);
   if (!control?.input) return;
+  const groupId = control.input.closest('[data-group]')?.dataset.group;
+  if (groupId) showSettingsGroup(groupId);
   control.row?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   if (key === 'reasoning_auto') openReasoningAutoModal(document.getElementById('reasoning-auto-btn'));
   if (key === 'privacy_redaction') openPrivacyRedactionModal(document.getElementById('privacy-redaction-btn'));
@@ -2858,22 +3021,36 @@ function hasUnsavedSettings() {
   return changedSettingKeys().length > 0;
 }
 
+/**
+ * @brief 刷新保存栏的未保存计数与导航上的分组修改标记
+ */
 function updateDirtyStatus() {
+  const changedKeys = changedSettingKeys();
+  const changedGroups = new Set(changedKeys.map((key) => getSettingControl(key).input.closest('[data-group]')?.dataset.group));
+  for (const button of document.querySelectorAll('#settings-group-nav [data-group]')) {
+    button.classList.toggle('has-changes', changedGroups.has(button.dataset.group));
+  }
   const status = document.getElementById('settings-dirty-status');
   if (!status) return;
-  const count = changedSettingKeys().length;
+  const count = changedKeys.length;
   status.textContent = count > 0
     ? t('settings.savebar.dirty', { count })
     : t('settings.savebar.clean');
   status.dataset.dirty = count > 0 ? 'true' : 'false';
 }
 
+/**
+ * @brief 获取设置对应的控件、状态承载元素与当前值
+ * @param key 系统设置键
+ * @return { input, radios?, row, value }；row 为超时矩阵单元格或设置行，功能模块的 hidden input 为 null；
+ *         页面无此控件时返回 null
+ */
 function getSettingControl(key) {
   const input = document.getElementById(key);
   if (input) {
     return {
       input,
-      row: input.closest('tr'),
+      row: input.closest(settingRowSelector),
       value: input.value
     };
   }
@@ -2885,11 +3062,18 @@ function getSettingControl(key) {
   return {
     input: radios[0],
     radios,
-    row: radios[0].closest('tr'),
+    row: radios[0].closest(settingRowSelector),
     value: checkedRadio ? checkedRadio.value : ''
   };
 }
 
+/**
+ * @brief 将存储值写回控件并刷新相关摘要
+ * @param key 系统设置键
+ * @param value 存储格式的值
+ * @return 设置控件；页面无此控件时返回 null
+ * @note 不更新原始值基线与行状态
+ */
 function setSettingControlValue(key, value) {
   const normalizedValue = settingValueForDisplay(key, value);
   const control = getSettingControl(key);
@@ -2907,17 +3091,21 @@ function setSettingControlValue(key, value) {
   if (key === globalCooldownRulesSettingKey) updateGlobalCooldownRulesSummary(normalizedValue);
   if (key === modelMultimodalFallbackSettingKey) updateMultimodalFallbackSummary(normalizedValue);
   if (key === modelCustomPricingSettingKey) updateCustomPricingSummary(normalizedValue);
+  updateEnabledSummary(key, normalizedValue);
   return control;
 }
 
+/**
+ * @brief 保存成功后同步控件值与原始值基线
+ * @param key 系统设置键
+ * @param value 已保存的存储格式值
+ */
 function syncSettingState(key, value) {
   const normalizedValue = settingValueForDisplay(key, value);
   const control = setSettingControlValue(key, value);
 
   originalSettings[key] = normalizedValue;
-  if (control?.row) {
-    control.row.style.background = '';
-  }
+  if (control?.row) updateSettingRowState(key);
   updateDirtyStatus();
 }
 

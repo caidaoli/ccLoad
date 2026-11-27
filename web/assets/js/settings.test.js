@@ -213,7 +213,7 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], r
   const radioGroups = new Map();
   const elements = new Map([
     ['save-all-btn', saveButton],
-    ['settings-tbody', settingsBody],
+    ['settings-list', settingsBody],
     ['model-multimodal-fallback-btn', multimodalFallbackButton],
     ['multimodalFallbackModal', multimodalModal],
     ['multimodalFallbackRows', multimodalRowsContainer],
@@ -396,6 +396,8 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], r
   for (const [key, value] of Object.entries(inputValues)) {
     const row = {
       style: {},
+      dataset: {},
+      classList: classSet(),
       querySelector(selector) {
         if (!selector.endsWith(':checked')) return null;
         return (radioGroups.get(key) || []).find((radio) => radio.checked) || null;
@@ -458,6 +460,7 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], r
   const privacyPreviews = [];
 
   global.window = {
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
     t(key, params = {}) {
       if (key === 'settings.msg.confirmSave') return confirmMessage;
       if (key === 'settings.msg.confirmSaveHot') return confirmHotMessage;

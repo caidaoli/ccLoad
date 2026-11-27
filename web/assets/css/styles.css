@@ -2605,14 +2605,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
     grid-column: 1 / -1;
     width: 100%;
   }
-
-  .settings-save-actions {
-    justify-content: stretch;
-  }
-
-  .settings-save-btn {
-    width: 100%;
-  }
 }
 
 @media (max-width: 360px) {
@@ -3453,30 +3445,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
   margin-left: 16px;
 }
 
-.settings-group-nav-section[hidden] {
-  display: none !important;
-}
-
-.settings-group-nav-container {
-  justify-content: flex-end;
-}
-
-/* 设置加载前隐藏操作栏：表格填充会把它推到下方，隐藏态移动不产生可见位移 */
-.settings-table-container:has(#settings-tbody:empty) + .settings-save-actions {
-  visibility: hidden;
-}
-
-.settings-group-nav {
-  width: auto;
-  min-width: 0;
-  flex-wrap: wrap;
-  overflow: visible;
-}
-
-.settings-group-nav .time-range-btn {
-  padding-inline: 12px;
-}
-
 .table-col-select {
   width: 30px;
 }
@@ -4280,21 +4248,8 @@ html[data-resolved-theme="dark"] .time-range-selector {
   color: var(--color-text);
 }
 
-.settings-save-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  padding: 16px 0 0 0;
-}
-
-.settings-save-btn,
-.settings-runtime-metrics-btn {
-  min-width: 120px;
-}
-
 .settings-save-btn {
-  margin-inline-start: auto;
+  min-width: 120px;
 }
 
 .global-cooldown-rules-control {
@@ -4311,10 +4266,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
 .global-cooldown-rules-summary {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
-}
-
-.settings-multimodal-fallback-btn {
-  min-width: 0;
 }
 
 .settings-update-channel-control {
@@ -4347,25 +4298,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
 
 .settings-update-check-btn:disabled::before {
   content: none;
-}
-
-/* 摘要与生效徽标成组：桌面端照常参与按钮行排列，移动端合并为一行 */
-.settings-action-meta {
-  display: contents;
-}
-
-.settings-multimodal-fallback-summary {
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.settings-custom-pricing-btn {
-  min-width: 0;
-}
-
-.settings-custom-pricing-summary {
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
 }
 
 /* ===== 设置页弹窗共用外壳：固定头尾、主体滚动 ===== */
@@ -5060,22 +4992,6 @@ button.settings-dialog-count[aria-pressed="true"] {
 }
 
 @media (max-width: 768px) {
-  .settings-save-actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .settings-save-actions .btn {
-    width: 100%;
-  }
-
-  .settings-action-meta {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
   .modal-content.settings-dialog,
   .modal-content.settings-dialog--lg,
   .modal-content.settings-dialog--full {
@@ -5194,35 +5110,6 @@ button.settings-dialog-count[aria-pressed="true"] {
   .multimodal-fallback-head {
     display: none;
   }
-}
-
-.settings-table td.setting-col-value {
-  text-align: right;
-}
-
-@media (min-width: 769px) {
-  .settings-table {
-    table-layout: fixed;
-  }
-
-  .settings-table col.settings-col-description {
-    width: 60%;
-  }
-
-  .settings-table col.settings-col-actions {
-    width: 64px;
-  }
-}
-
-.setting-group-cell {
-  background: var(--neutral-100);
-  color: var(--neutral-700);
-  font-weight: 700;
-  letter-spacing: 0.2px;
-}
-
-.setting-group-title {
-  display: block;
 }
 
 .settings-input:disabled,
@@ -8100,126 +7987,6 @@ body:not(.web-hide-channels) .stats-table th[data-column="model"] {
     flex: 0 0 auto;
   }
 
-  .settings-group-nav-container {
-    padding: 0 2px 2px;
-  }
-
-  .settings-group-nav-section {
-    display: none !important;
-  }
-
-  .settings-table.mobile-card-table tbody .setting-data-row {
-    grid-template-columns: minmax(0, 1fr) 56px;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-description {
-    grid-column: 1 / -1;
-    order: 10;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value {
-    grid-column: 1 / 2;
-    order: 20;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: nowrap;
-    min-width: 0;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-description::before,
-  .settings-table.mobile-card-table td.setting-col-value::before {
-    display: inline-block;
-    width: auto;
-    margin: 0 8px 0 0;
-    flex: 0 0 auto;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-actions {
-    grid-column: 2 / 3;
-    order: 21;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    padding-top: 0;
-    border-top: none;
-    min-width: 56px;
-    align-self: center;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-actions::before {
-    content: none;
-    display: none;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-input,
-  .settings-table.mobile-card-table td.setting-col-value .form-input,
-  .settings-table.mobile-card-table td.setting-col-value select,
-  .settings-table.mobile-card-table td.setting-col-value textarea {
-    width: auto;
-    flex: 1 1 auto;
-    max-width: none;
-    min-width: 0;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value textarea {
-    flex-basis: 100%;
-    width: 100%;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-input--select {
-    width: auto;
-    flex: 0 1 auto;
-    max-width: 100%;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-input--wide {
-    width: auto;
-    flex: 1 1 0;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-input--number {
-    flex: 0 1 96px;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-bool-group {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: nowrap;
-    min-width: 0;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-bool-option {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex: 0 0 auto;
-    white-space: nowrap;
-  }
-
-  .settings-table.mobile-card-table td.setting-col-value .settings-bool-option + .settings-bool-option {
-    margin-left: 0;
-  }
-
-  .settings-table .setting-group-row {
-    display: block;
-    grid-column: 1 / -1;
-    margin-top: 4px;
-  }
-
-  .settings-table .setting-group-row td {
-    display: block;
-    padding: 12px 14px !important;
-    border: 1px solid var(--neutral-200);
-    border-radius: 14px;
-    background: var(--neutral-100) !important;
-  }
-
   .model-test-toolbar {
     display: grid;
     grid-template-columns: 1fr;
@@ -9797,15 +9564,9 @@ body.web-hide-channels .chart-card--channel {
   vertical-align: middle;
 }
 
-.settings-save-actions .settings-effect-badge {
-  align-self: center;
-  margin-left: 0;
-}
-
 .settings-restart-note {
   margin: 0;
   padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-border);
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
 }
@@ -9816,43 +9577,48 @@ body.web-hide-channels .chart-card--channel {
   border-color: var(--success-200);
 }
 
-.settings-table input.is-invalid,
-.settings-table select.is-invalid {
+.settings-list input.is-invalid,
+.settings-list select.is-invalid {
   border-color: var(--error-500);
   box-shadow: 0 0 0 1px var(--error-500);
 }
 
-.settings-table input[type="radio"].is-invalid {
+.settings-list input[type="radio"].is-invalid {
   box-shadow: none;
   outline: 2px solid var(--error-500);
   outline-offset: 1px;
 }
 
-.settings-savebar {
+/* 页面操作条：吸附在顶栏下方，保存入口始终可见 */
+.settings-header {
   position: sticky;
-  bottom: 0;
+  top: var(--topbar-offset);
   z-index: var(--z-sticky);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-3);
+  gap: var(--space-2) var(--space-3);
   padding: var(--space-3) var(--space-4);
-  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
-  background: var(--surface-bg-strong);
-  border-top: 1px solid var(--surface-border);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  /* 卡片背景半透明，吸顶时与顶栏一样模糊滚过的内容 */
+  -webkit-backdrop-filter: saturate(1.6) blur(12px);
+  backdrop-filter: saturate(1.6) blur(12px);
 }
 
-.settings-savebar-status {
+.settings-header-title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-base);
+  font-weight: 700;
+}
+
+.settings-dirty-status {
   flex: 1 1 auto;
   min-width: 0;
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
 }
 
-.settings-savebar-status[data-dirty="true"] {
+.settings-dirty-status[data-dirty="true"] {
   color: var(--warning-700);
   font-weight: 500;
 }
@@ -9868,15 +9634,378 @@ body.web-hide-channels .chart-card--channel {
 }
 
 @media (max-width: 768px) {
-  .settings-savebar {
+  .settings-header {
     padding: var(--space-2) var(--space-3);
-    padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
   }
 
-  .settings-savebar .settings-save-btn {
-    flex: 1 1 100%;
+  .settings-header-title {
+    display: none;
+  }
+
+  .settings-dirty-status {
+    flex-basis: 100%;
+  }
+
+  .settings-header .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: var(--space-2) var(--space-3);
+    font-size: 13px;
+  }
+
+  /* 窄屏整体降一档字号，保持标题/说明/提示的层级差 */
+  .settings-dirty-status,
+  .settings-search,
+  .settings-list,
+  .settings-list .settings-bool-option {
+    font-size: 13px;
   }
 }
+/* 功能模块卡片：热生效的独立编辑器入口 */
+.settings-features {
+  padding: var(--space-4);
+}
+
+.settings-features-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.settings-features-title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-base);
+  font-weight: 700;
+}
+
+.settings-features-header .settings-effect-badge {
+  margin-left: 0;
+}
+
+.settings-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+
+.settings-feature-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  background: var(--surface-bg-muted);
+  color: var(--color-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.settings-feature-card:hover,
+.settings-feature-card:focus-visible {
+  border-color: var(--primary-400);
+  background: var(--surface-bg-strong);
+}
+
+.settings-feature-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.settings-feature-desc {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.settings-feature-summary {
+  margin-top: auto;
+  padding-top: 4px;
+  color: var(--primary-600);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+/* 设置列表：分组标题 + 行；每行左侧标题说明自适应，右侧控件与重置按钮贴右，窄屏控件折到下一行 */
+.settings-list {
+  margin: 0 var(--space-4) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  font-size: var(--text-sm);
+}
+
+.setting-group-row {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--neutral-100);
+  color: var(--neutral-700);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.setting-data-row,
+.setting-matrix-row {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.setting-data-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.setting-col-description {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.setting-col-value {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+/* 控件区按内容收缩，百分比宽度无参照，文本框需固定宽度；敏感词 JSON 较长取两倍宽 */
+.setting-col-value .settings-input--text {
+  width: 280px;
+}
+
+/* 数字框与启用/禁用单选组同宽（容纳英文标签），右侧控件列对齐 */
+.setting-col-value .settings-input--number,
+.setting-col-value .settings-bool-group {
+  width: 150px;
+}
+
+.setting-col-value .settings-bool-group {
+  display: flex;
+  justify-content: space-between;
+}
+
+.setting-col-value .settings-input--double {
+  width: 560px;
+}
+
+.setting-col-value .settings-input--wide {
+  width: clamp(240px, 28vw, 420px);
+}
+
+@media (max-width: 768px) {
+  .settings-restart-note {
+    padding: 0 0 var(--space-3);
+  }
+
+  .settings-list {
+    margin: 0;
+  }
+
+  .setting-col-value {
+    flex-basis: 100%;
+  }
+
+  .setting-col-value .settings-input--wide {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+}
+
+/* 设置行：标题 + 说明两层；非默认值行显示标记与重置按钮 */
+.setting-description-text {
+  display: block;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.setting-hint {
+  display: block;
+  flex-basis: 100%;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.setting-hint:empty {
+  display: none;
+}
+
+/* 行内无可重置值时不占位，整组未改动时控件贴右；矩阵单元格需占位保持网格对齐 */
+.setting-data-row:not(.setting-row--custom) .setting-reset-btn {
+  display: none;
+}
+
+.setting-matrix-cell:not(.setting-row--custom) .setting-reset-btn {
+  visibility: hidden;
+}
+
+.setting-matrix-cell.setting-row--custom .settings-input {
+  border-color: var(--primary-500);
+}
+
+.setting-matrix-cell.setting-row--dirty .settings-input {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.setting-data-row.setting-row--custom {
+  box-shadow: inset 3px 0 0 var(--primary-500);
+}
+
+.setting-data-row.setting-row--dirty {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.setting-data-row.setting-row--inactive > * {
+  opacity: 0.5;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  margin-bottom: var(--space-6);
+}
+
+.settings-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.settings-search {
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.settings-group-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-base);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--neutral-100);
+  color: var(--color-text);
+}
+
+.settings-nav-item.active {
+  background: var(--primary-50);
+  color: var(--primary-700);
+  font-weight: 600;
+}
+
+/* 分组内有未保存修改时在名称后显示圆点 */
+.settings-nav-item.has-changes::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-inline-start: auto;
+  border-radius: 50%;
+  background: var(--primary-500);
+}
+
+.settings-panel {
+  min-width: 0;
+}
+
+/* 卡片与设置行的 display 会盖过 [hidden]，筛选隐藏用更高优先级的类 */
+.settings-panel .is-filtered-out {
+  display: none;
+}
+
+.settings-search-empty {
+  margin: 0;
+  padding: var(--space-6) var(--space-4);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+/* width:0 + min-width:100% 让矩阵不参与表格宽度计算，窄屏时只在容器内横向滚动 */
+.setting-matrix-scroll {
+  width: 0;
+  min-width: 100%;
+  margin-top: var(--space-3);
+  overflow-x: auto;
+}
+
+.setting-matrix {
+  display: grid;
+  grid-template-columns: max-content repeat(4, minmax(120px, 1fr));
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+  min-width: 600px;
+}
+
+.setting-matrix-col {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.setting-matrix-scope {
+  padding-inline-end: var(--space-2);
+  font-weight: 500;
+}
+
+.setting-matrix-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.setting-matrix-cell .settings-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+.setting-matrix-cell--empty {
+  color: var(--neutral-400);
+  padding-inline-start: 12px;
+}
+
+@media (max-width: 768px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 手机布局不用分组导航，所有分组纵向滚动浏览 */
+  .settings-group-nav {
+    display: none;
+  }
+}
+
 /* ===== 系统设置页 end ===== */
 
 /* ===== stats/trend/index 页面修复 ===== */
