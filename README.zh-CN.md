@@ -257,7 +257,7 @@ curl -X POST http://localhost:8080/v1/messages \
 
 编程智能体的大多数轮次是读文件、跑命令、小改动，用不着深度思考；少数涉及架构判断或疑难排查的轮次又需要想透。固定一个思考等级，要么浪费时间和费用，要么关键时刻想得不够。动态思考等级让决策模型逐轮判断：
 
-- **对客户端透明**：Claude Code、Codex 等客户端不用改配置。判断结果按实际上游协议写入思考参数（Anthropic `thinking`、OpenAI/Codex `reasoning.effort`、Gemini `thinkingBudget`），并裁剪到该模型支持的档位；`max` 不会被自动选中。
+- **对客户端透明**：Claude Code、Codex 等客户端不用改配置。判断结果按实际上游协议写入思考参数（Anthropic `thinking`、OpenAI/Codex `reasoning.effort`、Gemini `thinkingLevel`），并裁剪到该模型支持的档位；目录列出 `max` 的模型才会被选到 `max`。
 - **多家决策模型**：支持 System One（Jev、vllm-sr）、阿里云、Gemini Decisions 和 OpenAI Decisions。内置指令按提供商分别调优，自动匹配；也可以在设置页直接编辑判断指令和五档标准。
 - **决策渠道同样故障切换**：同一个决策模型可以配置在多个决策渠道上，按优先级、健康度和冷却规则选路，在总判断超时（默认 2 秒，可设 0.1–10 秒）内换渠道重试。
 - **失败不拖累请求**：判断超时、出错或置信度不足时，沿用本会话上一轮的等级，没有则按原请求发送；客户端显式指定的等级（如 `model(high)`、`(none)`、数字预算）不参与判断。

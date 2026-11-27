@@ -1115,8 +1115,9 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 	}
 	decisionLog := waitForDecisionLog(t, env)
 	proxyLog := waitForProxyLog(t, env, "gpt-5.6-sol")
-	for _, entry := range []*model.LogEntry{decisionLog, proxyLog} {
-		if entry.ReasoningDecision == nil || entry.ReasoningDecision.Reason != "timeout" || entry.ReasoningDecision.DurationMS < 90 || entry.ReasoningDecision.DurationMS > 400 {
+	// 决策日志只计本次尝试，扣除了选路耗时；业务元数据计整次判定，至少等满预算。
+	for entry, minMS := range map[*model.LogEntry]int64{decisionLog: 1, proxyLog: 100} {
+		if entry.ReasoningDecision == nil || entry.ReasoningDecision.Reason != "timeout" || entry.ReasoningDecision.DurationMS < minMS || entry.ReasoningDecision.DurationMS > 400 {
 			t.Fatalf("timeout fallback metadata = %+v", entry.ReasoningDecision)
 		}
 	}

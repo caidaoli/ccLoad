@@ -864,24 +864,27 @@ test('渠道列表行内编辑权重：提交 batch-advanced，清空即恢复�
     filterChannels: global.filterChannels
   };
   const requests = [];
+  const errors = [];
+  let response = {};
   const channel = { id: 7, priority: 10, weight: 0 };
-  global.window = { t: key => key, showSuccess() {}, showError() {} };
+  global.window = { t: key => key, showSuccess() {}, showError: message => errors.push(message) };
   global.fetchDataWithAuth = async (url, options) => {
     requests.push({ url, body: JSON.parse(options.body) });
-    return {};
+    return response;
   };
   global.isTokenChannelsReadOnly = () => false;
   global.channels = [channel];
   global.filterChannels = () => {};
-  const makeInput = (value, original) => ({
+  const makeInput = (value, original, badInput = false) => ({
     value,
+    validity: { badInput },
     dataset: { channelId: '7', field: 'weight', originalValue: original },
     classList: { remove() {} },
     closest: () => null
   });
 
   try {
-    const input = makeInput('4.8', '0');
+    const input = makeInput('4', '0');
     await saveInlineChannelValue(input);
     assert.deepEqual(requests.pop(), { url: '/admin/channels/batch-advanced', body: { channel_ids: [7], weight: 4 } });
     assert.equal(channel.weight, 4);
@@ -895,6 +898,21 @@ test('渠道列表行内编辑权重：提交 batch-advanced，清空即恢复�
 
     await saveInlineChannelValue(makeInput('', '0'));
     assert.equal(requests.length, 0, 'unchanged value does not submit');
+
+    for (const invalid of [makeInput('4.8', '3'), makeInput('-5', '3'), makeInput('20000', '3'), makeInput('', '3', true)]) {
+      await saveInlineChannelValue(invalid);
+      assert.equal(invalid.value, '3', `invalid input ${invalid.value} rolls back`);
+      assert.equal(errors.pop(), 'channels.weightInvalid');
+    }
+    assert.equal(requests.length, 0, 'invalid values do not submit');
+
+    response = { updated: 0, not_found_count: 1 };
+    const deleted = makeInput('6', '0');
+    await saveInlineChannelValue(deleted);
+    assert.equal(requests.length, 1);
+    assert.equal(channel.weight, 0, 'missing channel keeps the local value');
+    assert.equal(deleted.value, '', 'missing channel rolls back the input');
+    assert.equal(errors.pop(), 'channels.inlineUpdateNotFound');
   } finally {
     Object.assign(global, saved);
   }

@@ -907,10 +907,14 @@ func TestAntigravityClaudeWireClampsThinkingBudgetAfterOutputCap(t *testing.T) {
 		{"smaller caller cap", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 32000, 40000, 32000, 31999},
 		{"smaller caller cap on unknown model", "claude-unlisted", "generationConfig", "thinkingConfig.thinkingBudget", 32000, 40000, 32000, 31999},
 		{"model cap unknown", "claude-unlisted", "generationConfig", "thinkingConfig.thinkingBudget", 100000, 70000, 100000, 70000},
+		{"absent cap uses catalog", "claude-opus-4-6-thinking", "generationConfig", "thinkingConfig.thinkingBudget", 0, 100000, 64000, 63999},
+		{"absent cap keeps dynamic budget", "claude-sonnet-4-6", "generationConfig", "thinkingConfig.thinkingBudget", 0, -1, 64000, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
-			body = setJSONValue(body, tc.configPath+".maxOutputTokens", tc.maxOut)
+			if tc.maxOut > 0 {
+				body = setJSONValue(body, tc.configPath+".maxOutputTokens", tc.maxOut)
+			}
 			body = setJSONValue(body, tc.configPath+"."+tc.budgetPath, tc.budget)
 			wire, err := prepareAntigravityRequestBody(cfg, tc.model, body, body, nil, nil)
 			if err != nil {
@@ -926,7 +930,7 @@ func TestAntigravityClaudeWireClampsThinkingBudgetAfterOutputCap(t *testing.T) {
 }
 
 /**
- * @brief 验证 Claude 出站统一输出上限别名并保留零上限。
+ * @brief 验证 Claude 出站统一输出上限别名，零或缺省上限在带思考预算时补写目录上限。
  * @param t 测试上下文。
  */
 func TestAntigravityClaudeWireNormalizesOutputLimitAliases(t *testing.T) {
@@ -939,9 +943,9 @@ func TestAntigravityClaudeWireNormalizesOutputLimitAliases(t *testing.T) {
 		{"snake only", `"max_output_tokens":32000,`, 32000, 31999},
 		{"smaller snake", `"maxOutputTokens":50000,"max_output_tokens":32000,`, 32000, 31999},
 		{"smaller camel", `"maxOutputTokens":32000,"max_output_tokens":50000,`, 32000, 31999},
-		{"canonical zero", `"maxOutputTokens":0,"max_output_tokens":32000,`, 0, 40000},
-		{"snake zero", `"max_output_tokens":0,`, 0, 40000},
-		{"absent", "", -1, 40000},
+		{"canonical zero", `"maxOutputTokens":0,"max_output_tokens":32000,`, 64000, 40000},
+		{"snake zero", `"max_output_tokens":0,`, 64000, 40000},
+		{"absent", "", 64000, 40000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generation_config":{` + tc.generation + `"thinkingConfig":{"thinking_budget":40000}}}`)

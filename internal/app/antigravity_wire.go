@@ -520,7 +520,8 @@ func prepareAntigravityRequestBody(
  * @brief 归一 Claude 的输出上限别名，按有效上限限制思考预算。
  * @param request 已合并 generationConfig 别名的 Antigravity 请求体。
  * @param modelID 已归一为小写的实际上游模型 ID。
- * @return 保留缺省或零输出上限，已有正上限按模型目录收紧后的请求体；思考预算低于
+ * @return 已有正上限按模型目录收紧；缺省或零上限且带思考预算时补写目录上限（CLIProxyAPI
+ *         normalizeClaudeBudgetDoc），无预算或目录未收录时保持原样。思考预算低于
  *         Claude 最小值 1024 时整个思考配置（含 includeThoughts）被删除。
  * @note 调用前思考配置别名已合并到 generationConfig 下的单个容器。
  */
@@ -538,20 +539,31 @@ func normalizeAntigravityClaudeOutputLimit(request []byte, modelID string) []byt
 		request = deleteJSONPath(request, aliasPath)
 	}
 	request = dropAntigravityClaudeUndersizedThinkingBudget(request)
-	if !ok || maxOut <= 0 {
-		return request
+	var catalogMax int64
+	if info := cliproxyregistry.LookupModelInfo(modelID, "antigravity"); info != nil {
+		catalogMax = int64(info.MaxCompletionTokens)
 	}
-	if info := cliproxyregistry.LookupModelInfo(modelID, "antigravity"); info != nil &&
-		info.MaxCompletionTokens > 0 && maxOut > int64(info.MaxCompletionTokens) {
-		maxOut = int64(info.MaxCompletionTokens)
-		request = setJSONValue(request, canonicalPath, maxOut)
-	}
-	for _, path := range []string{
+	budgetPaths := [...]string{
 		"generationConfig.thinkingConfig.thinkingBudget",
 		"generationConfig.thinkingConfig.thinking_budget",
 		"generationConfig.thinking_config.thinkingBudget",
 		"generationConfig.thinking_config.thinking_budget",
-	} {
+	}
+	if !ok || maxOut <= 0 {
+		hasBudget := slices.ContainsFunc(budgetPaths[:], func(path string) bool {
+			_, ok := jsonIntegerValue(gjson.GetBytes(request, path))
+			return ok
+		})
+		if catalogMax <= 0 || !hasBudget {
+			return request
+		}
+		maxOut = catalogMax
+		request = setJSONValue(request, canonicalPath, maxOut)
+	} else if catalogMax > 0 && maxOut > catalogMax {
+		maxOut = catalogMax
+		request = setJSONValue(request, canonicalPath, maxOut)
+	}
+	for _, path := range budgetPaths {
 		if budget, ok := jsonIntegerValue(gjson.GetBytes(request, path)); ok && budget >= maxOut {
 			if maxOut-1 < antigravityClaudeMinThinkingBudget {
 				request = deleteJSONPath(request, "generationConfig.thinkingConfig")

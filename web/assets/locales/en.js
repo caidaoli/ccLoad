@@ -759,6 +759,8 @@ window.I18N_LOCALES['en'] = {
   'channels.weightAutoPlaceholder': 'Auto',
   'channels.weightHint': 'Splits traffic within a priority tier; leave empty to use the available key count',
   'channels.weightInvalid': 'Channel weight must be an integer between 0 and 10000',
+  'channels.priorityInvalid': 'Channel priority must be an integer between {min} and {max}',
+  'channels.inlineUpdateNotFound': 'Channel not found. Refresh and try again',
   'channels.weightAutoCurrent': 'Auto weight: {count}',
   'channels.weightAutoTitle': 'Auto weight: available key count ({count})',
   'channels.weightUpdateSuccess': 'Weight updated',

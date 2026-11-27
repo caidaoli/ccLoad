@@ -28,9 +28,10 @@ const maxCodexNonStreamOutputBytes = 32 << 20
  * @param payload 上游 SSE data 或 WebSocket 文本帧。
  * @param allowCodeMessageFallback 是否启用“顶层 code 与 message 都非空即错误”的兜底；仅 Codex 上游启用，
  *        避免把非 Codex 流里每 chunk 携带 code/message 的成功帧误判为错误。
- * @return 显式 type 去首尾空白后原样返回；缺少 type 时，error/body.error/response.error 为对象或非空字符串
+ * @return 显式 type 去首尾空白后原样返回；缺少 type 时，error/body.error/response.error 为非空对象或非空字符串
  *        （或启用兜底时顶层 code 与 message 都非空）返回 "error"；其他情况（含非法 JSON）返回空串。
- * @details 显式 type 优先，输出与元数据事件即使带 error 字段也不会被当成失败终态。
+ * @details 显式 type 优先，输出与元数据事件即使带 error 字段也不会被当成失败终态。所有上游协议共用此判断，
+ *          空对象 `"error":{}` 不携带错误信息，按成功帧处理。
  */
 func codexResponseEventType(payload []byte, allowCodeMessageFallback bool) string {
 	if eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String()); eventType != "" {
@@ -41,7 +42,7 @@ func codexResponseEventType(payload []byte, allowCodeMessageFallback bool) strin
 	}
 	for _, path := range [...]string{"error", "body.error", "response.error"} {
 		node := gjson.GetBytes(payload, path)
-		if node.IsObject() || node.Type == gjson.String && strings.TrimSpace(node.Str) != "" {
+		if node.IsObject() && len(node.Map()) > 0 || node.Type == gjson.String && strings.TrimSpace(node.Str) != "" {
 			return "error"
 		}
 	}

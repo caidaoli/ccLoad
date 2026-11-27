@@ -216,6 +216,8 @@ func TestIsErrorPayloadRecognizesUntypedErrorFrames(t *testing.T) {
 		{`{"status":400,"code":"bio_policy","message":"blocked","sequence_number":7}`, true},
 		{`{"body":{"error":"blocked"}}`, true},
 		{`{"error":null}`, false},
+		{`{"id":"chatcmpl-1","choices":[{"delta":{"content":"hi"}}],"error":{}}`, false},
+		{`{"body":{"error":{}}}`, false},
 		{`{"error":" "}`, false},
 		{`{"body":{"error":null}}`, false},
 		{`{"response":{"error":null,"status":"completed"}}`, false},

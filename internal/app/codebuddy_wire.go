@@ -411,7 +411,7 @@ func normalizeCodeBuddyBusinessError(root gjson.Result) ([]byte, int) {
  * @brief 归一 CodeBuddy SSE 别名及已识别的业务错误。
  * @param raw 原始完整 SSE 事件。
  * @return 归一后的事件；空数据、DONE 或无法解析的事件保持原样。
- * @details 尾部仅含用量的帧补空 choices 数组，满足 Chat Completions 流式转换契约。
+ * @details 尾部仅含用量、choices 缺失或为 null 的帧补空 choices 数组，满足 Chat Completions 流式转换契约。
  */
 func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	data := sseEventData(raw)
@@ -437,7 +437,7 @@ func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 		data = setJSONValue(data, "status", http.StatusBadRequest)
 		return append(append([]byte("data: "), data...), '\n', '\n')
 	}
-	if payload["choices"] == nil && root.Get("usage").IsObject() {
+	if root.Get("choices").Type == gjson.Null && root.Get("usage").IsObject() {
 		payload["choices"] = json.RawMessage(`[]`)
 	}
 	var choices []map[string]json.RawMessage

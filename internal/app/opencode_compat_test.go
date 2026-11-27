@@ -730,7 +730,7 @@ func TestOpenCodeRequestBodyAnthropicThinking(t *testing.T) {
 		t.Run(modelName, func(t *testing.T) {
 			env := setupProxyTestEnv(t, []testChannel{{name: "OpenCode", upstreamProtocol: "anthropic", protocolTransformMode: model.ProtocolTransformModeLocal, models: modelName, apiKey: "test-key"}}, map[int]string{0: "https://opencode.ai/zen"})
 			var request map[string]any
-			if err := json.Unmarshal([]byte(`{"model":"`+modelName+`","max_tokens":64,"stream":false,"thinking":{"type":"enabled","budget_tokens":16},"provider_extension":{"opaque":true},"context_management":{"edits":[]},"tools":[{"name":"custom","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"kept","signature":"signed","provider_extension":"kept"},{"type":"tool_use","id":"a","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"thinking","thinking":" "},{"type":"tool_use","id":"b","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"},{"type":"tool_use","id":"c","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"tool_use","id":"d","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"thinking","thinking":"plain","signature":"untouched"},{"type":"text","text":"plain"}]}]}`), &request); err != nil {
+			if err := json.Unmarshal([]byte(`{"model":"`+modelName+`","max_tokens":64,"stream":false,"thinking":{"type":"enabled","budget_tokens":16},"provider_extension":{"opaque":true},"context_management":{"edits":[]},"tools":[{"name":"custom","input_schema":{"type":"object"}},{"name":"bracket","input_schema":{"type":"object","properties":{"a[b]":{}}}}],"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"kept","signature":"signed","provider_extension":"kept"},{"type":"tool_use","id":"a","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"thinking","thinking":" "},{"type":"tool_use","id":"b","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"},{"type":"tool_use","id":"c","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"tool_use","id":"d","name":"custom","input":{}}]},{"role":"assistant","content":[{"type":"thinking","thinking":"plain","signature":"untouched"},{"type":"text","text":"plain"}]}]}`), &request); err != nil {
 				t.Fatal(err)
 			}
 			called := false
@@ -754,8 +754,14 @@ func TestOpenCodeRequestBodyAnthropicThinking(t *testing.T) {
 				} else if root.Get("messages.1.content.0.signature").Exists() || root.Get("messages.1.content.0.thinking").String() != "kept" || root.Get("messages.1.content.0.provider_extension").String() != "kept" || root.Get("messages.2.content.0.thinking").String() != "tool call" || root.Get("messages.3.content.0.thinking").String() != "[redacted thinking]" || root.Get("messages.3.content.0.data").Exists() || root.Get("messages.4.content.0.thinking").String() != "tool call" || root.Get("messages.4.content.1.id").String() != "d" {
 					t.Fatalf("vendor thinking not repaired: %s", body)
 				}
-				if !root.Get("provider_extension.opaque").Bool() || root.Get("stream").Bool() || len(root.Get("tools").Array()) != 1 || root.Get("tools.0.name").String() != "custom" {
+				if !root.Get("provider_extension.opaque").Bool() || root.Get("stream").Bool() || len(root.Get("tools").Array()) != 2 || root.Get("tools.0.name").String() != "custom" {
 					t.Fatalf("unrelated fields changed: %s", body)
+				}
+				// Claude rejects property names outside ^[a-zA-Z0-9_.-]{1,64}$; vendor models keep their schema.
+				renamed := !root.Get("tools.1.input_schema.properties").Get(`a\[b\]`).Exists() &&
+					strings.HasPrefix(root.Get("tools.1.description").String(), anthropicToolSchemaFallbackPrefix)
+				if renamed != (modelName == "claude-test") {
+					t.Fatalf("tool property fallback=%v for %s: %s", renamed, modelName, body)
 				}
 				// The fixed OpenCode Anthropic-Beta header lacks context-management.
 				if root.Get("context_management").Exists() {

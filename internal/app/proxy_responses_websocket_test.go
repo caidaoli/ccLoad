@@ -2922,6 +2922,23 @@ func TestResponsesWebsocketSwitchesChannelAfterMetadataThenBareError(t *testing.
 // upstream_stream_interrupted plus close 1011.
 func TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testing.T) {
 	t.Parallel()
+	for name, errorEvent := range map[string]string{
+		"typed":   `{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":7}`,
+		"untyped": `{"error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":7}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			testResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t, errorEvent)
+		})
+	}
+}
+
+/**
+ * @brief 已提交输出后收到上游 error 事件时，网关下发中断事件并以 1011 关闭，客户端重连可完整重放。
+ * @param t 测试上下文。
+ * @param errorEvent 上游在输出中途发送的 error 事件 JSON，可缺少 type。
+ */
+func testResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testing.T, errorEvent string) {
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -2935,14 +2952,14 @@ func TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testin
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		_, _ = io.WriteString(w, `data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":7}`+"\n\n")
+		_, _ = io.WriteString(w, "data: "+errorEvent+"\n\n")
 	}))
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "committed-upstream-error", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "committed-upstream-error-retry")
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "committed-upstream-error-retry-"+strconv.Itoa(len(errorEvent)))
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatalf("set committed upstream error deadline: %v", err)
 	}
@@ -2970,7 +2987,7 @@ func TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testin
 		t.Fatalf("committed upstream error close=%v, want websocket 1011", errClose)
 	}
 
-	conn = dialResponsesWebsocketWithSessionID(t, env.engine, "committed-upstream-error-retry")
+	conn = dialResponsesWebsocketWithSessionID(t, env.engine, "committed-upstream-error-retry-"+strconv.Itoa(len(errorEvent)))
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatalf("set committed upstream error replay deadline: %v", err)
 	}

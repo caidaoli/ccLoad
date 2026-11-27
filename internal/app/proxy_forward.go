@@ -635,6 +635,10 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		var err error
 		if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 			prepared = applyGeminiAnthropicThinkingDisplay(prepared, requestModel, geminiIncludeThoughts)
+			if !isOpenCodeVendorReasoningModel(requestModel) {
+				// Claude 目标与普通 API Key 渠道一样拒收不合规的工具属性名。
+				prepared = normalizeAnthropicToolPropertyNames(prepared)
+			}
 			if prepared, err = normalizeOpenCodeAnthropicMessagesBody(prepared); err != nil {
 				return nil, "", err
 			}

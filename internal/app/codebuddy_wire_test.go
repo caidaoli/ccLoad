@@ -1140,3 +1140,21 @@ func writeCodeBuddyCommaRetrySuccess(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	_, _ = io.WriteString(w, "data: "+`{"id":"comma-success","model":"hy3","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 }
+
+/**
+ * @brief 尾部用量帧缺少 choices 或 choices 为 null 时都补成空数组
+ * @param t 测试上下文
+ */
+func TestNormalizeCodeBuddySSEEventFillsUsageOnlyChoices(t *testing.T) {
+	t.Parallel()
+	for name, data := range map[string]string{
+		"missing": `{"usage":{"prompt_tokens":1}}`,
+		"null":    `{"choices":null,"usage":{"prompt_tokens":1}}`,
+	} {
+		event := normalizeCodeBuddySSEEvent([]byte("data: " + data + "\n\n"))
+		choices := gjson.GetBytes(sseEventData(event), "choices")
+		if !choices.IsArray() || len(choices.Array()) != 0 {
+			t.Fatalf("%s: normalized event = %s, want empty choices array", name, event)
+		}
+	}
+}

@@ -161,7 +161,7 @@ Configure the same decision model on multiple System One channels to enable fail
 For covered models:
 
 - Requests with no thinking suffix or with `(auto)` are judged, and the result overrides any effort already in the body. Explicit levels, `(none)` and numeric budgets skip the judge.
-- Candidate levels come from the requested model's catalog (low–xhigh when unknown), and `max` is never picked automatically; each attempt is then clamped to the actual upstream model, as with suffixes.
+- Candidate levels come from the requested model's catalog (low–xhigh when unknown), so `max` is a candidate only when the catalog lists it; each attempt is then clamped to the actual upstream model, as with suffixes.
 - A timeout, error or low-confidence answer keeps the session's previous level; when there is none, the request is sent as is and `(auto)` falls back to the model default.
 - The decision never changes the model name or routing; channel custom request rules still run last and can override it.
 

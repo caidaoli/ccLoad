@@ -1184,7 +1184,8 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 		}
 		event := parseJSONBytesNoCopy(payload)
 		payloadType := strings.TrimSpace(event.Get("type").Str)
-		eventType = cmp.Or(payloadType, eventType)
+		// 缺少 type 的错误帧与 SSE 解析器同样按 error 处理，并补齐 type 再下发。
+		eventType = cmp.Or(payloadType, eventType, codexResponseEventType(payload, false))
 		if payloadType == "" && eventType != "" {
 			var err error
 			payload, err = sjson.SetBytes(payload, "type", eventType)

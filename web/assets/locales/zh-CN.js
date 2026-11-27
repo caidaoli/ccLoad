@@ -759,6 +759,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.weightAutoPlaceholder': '自动',
   'channels.weightHint': '同优先级内按权重分配请求，留空按可用 Key 数',
   'channels.weightInvalid': '渠道权重必须为 0～10000 之间的整数',
+  'channels.priorityInvalid': '渠道优先级必须为 {min}～{max} 之间的整数',
+  'channels.inlineUpdateNotFound': '渠道不存在，请刷新后重试',
   'channels.weightAutoCurrent': '自动权重 {count}',
   'channels.weightAutoTitle': '自动权重：按可用 Key 数（{count}）',
   'channels.weightUpdateSuccess': '权重已更新',

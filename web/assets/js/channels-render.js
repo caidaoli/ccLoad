@@ -427,11 +427,11 @@ function buildChannelWeightHtml(channel) {
 
 /**
  * @brief 渠道列表可行内编辑的数值字段
- * @details 两者都以整数截断并夹到合法区间；权重 0 表示自动，输入框显示为空
+ * @details 服务端值以整数截断并夹到合法区间后显示；用户输入须为区间内整数，否则回滚。权重 0 表示自动，输入框显示为空
  */
 const INLINE_CHANNEL_FIELDS = {
-  priority: { min: CHANNEL_PRIORITY_MIN, max: CHANNEL_PRIORITY_MAX, successKey: 'channels.priorityUpdateSuccess', failedKey: 'channels.priorityUpdateFailed' },
-  weight: { min: 0, max: CHANNEL_WEIGHT_MAX, successKey: 'channels.weightUpdateSuccess', failedKey: 'channels.weightUpdateFailed' }
+  priority: { min: CHANNEL_PRIORITY_MIN, max: CHANNEL_PRIORITY_MAX, successKey: 'channels.priorityUpdateSuccess', failedKey: 'channels.priorityUpdateFailed', invalidKey: 'channels.priorityInvalid' },
+  weight: { min: 0, max: CHANNEL_WEIGHT_MAX, successKey: 'channels.weightUpdateSuccess', failedKey: 'channels.weightUpdateFailed', invalidKey: 'channels.weightInvalid' }
 };
 
 /**
@@ -552,7 +552,7 @@ function resetInlineChannelInput(input) {
 /**
  * @brief 保存行内编辑框的改动；值未变化时只清除脏状态
  * @param input 优先级或权重输入框
- * @return Promise<void>：成功后重渲染列表，失败时回滚输入并提示错误
+ * @return Promise<void>：成功后重渲染列表；输入非区间内整数、渠道已不存在或接口失败时回滚输入并提示错误
  */
 async function saveInlineChannelValue(input) {
   if (!input || isTokenChannelsReadOnly()) return;
@@ -562,7 +562,13 @@ async function saveInlineChannelValue(input) {
   const field = input.dataset.field;
   const config = INLINE_CHANNEL_FIELDS[field];
   const originalValue = normalizeInlineChannelValue(field, input.dataset.originalValue, 0);
-  const nextValue = normalizeInlineChannelValue(field, input.value, originalValue);
+  // 空串按 0 处理（权重即自动）；badInput 时 value 同为空串，须单独拦下。
+  const nextValue = Number(input.value);
+  if (input.validity.badInput || !Number.isInteger(nextValue) || nextValue < config.min || nextValue > config.max) {
+    resetInlineChannelInput(input);
+    if (window.showError) window.showError(window.t(config.invalidKey, { min: config.min, max: config.max }));
+    return;
+  }
   input.value = formatInlineChannelValue(field, nextValue);
   if (nextValue === originalValue) {
     input.classList.remove('is-dirty');
@@ -573,7 +579,10 @@ async function saveInlineChannelValue(input) {
 
   try {
     setInlineChannelSaving(input, true);
-    await requestInlineChannelUpdate(channelId, field, nextValue);
+    const result = await requestInlineChannelUpdate(channelId, field, nextValue);
+    if (result.not_found_count > 0) {
+      throw new Error(window.t('channels.inlineUpdateNotFound'));
+    }
 
     input.classList.remove('is-dirty');
     updateLocalChannelField(channelId, field, nextValue);
