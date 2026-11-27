@@ -205,7 +205,7 @@ func DefineSchemaMigrationsTable() *TableBuilder {
 }
 
 /**
- * @brief 定义日志表，估算用量使用独立可空 JSON 文本列
+ * @brief 定义日志表，估算用量及计费明细快照使用独立可空 JSON 文本列
  * @return 支持各 SQL 方言的日志表定义
  */
 func DefineLogsTable() *TableBuilder {
@@ -237,6 +237,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("reasoning_decision TEXT NULL").
 		Column("privacy_masked TEXT NULL").
 		Column("usage_estimate TEXT NULL").
+		Column("cost_breakdown TEXT NULL").
 		Column("input_tokens INT NOT NULL DEFAULT 0").
 		Column("output_tokens INT NOT NULL DEFAULT 0").
 		Column("reasoning_tokens INT NOT NULL DEFAULT 0").

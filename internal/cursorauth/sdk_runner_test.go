@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -542,8 +544,8 @@ func TestSDKRunnerListModelsAddsFastSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
 	}
-	want := []string{"grok-4.6", "composer-2.5", "composer-2.5-fast"}
-	if !reflect.DeepEqual(models, want) {
+	want := []string{"grok-4.6", "composer-2.5", "composer-2.5-slow", "composer-2.5-fast"}
+	if !reflect.DeepEqual(models.Models, want) {
 		t.Fatalf("ListModels() = %#v, want %#v", models, want)
 	}
 	if got := handler.request.GetOptions().GetApiKey(); got != "user-api-key" {
@@ -595,7 +597,7 @@ func TestSDKRunnerRoutesCatalogFastModels(t *testing.T) {
 	}
 	models, err := runner.ListModels(t.Context(), credential.APIKey)
 	want := []string{"native", "native-fast", "native-high", "native-high-fast", "variant", "variant-fast", "slow"}
-	if err != nil || !reflect.DeepEqual(models, want) {
+	if err != nil || !reflect.DeepEqual(models.Models, want) {
 		t.Fatalf("ListModels() = %v, %v, want %v", models, err, want)
 	}
 }
@@ -708,7 +710,7 @@ func TestSDKRunnerListModelsRetriesOnceAfterBridgeCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
 	}
-	if !reflect.DeepEqual(models, []string{"model-a"}) {
+	if !reflect.DeepEqual(models.Models, []string{"model-a"}) {
 		t.Fatalf("ListModels() = %#v, want [model-a]", models)
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 || spawnCount.Load() != 2 {
@@ -746,14 +748,14 @@ func TestSDKRunnerListModelsKeepsConcurrentChannelAPIKeysIsolated(t *testing.T) 
 	runner := &SDKRunner{bridge: bridge, idleTimeout: 3 * time.Second}
 
 	type result struct {
-		models []string
-		err    error
+		catalog ModelCatalog
+		err     error
 	}
 	results := make(chan result, 2)
 	for _, apiKey := range []string{"account-a", "account-b"} {
 		go func() {
 			models, err := runner.ListModels(context.Background(), apiKey)
-			results <- result{models: models, err: err}
+			results <- result{catalog: models, err: err}
 		}()
 	}
 	gotModels := make(map[string]bool)
@@ -762,10 +764,10 @@ func TestSDKRunnerListModelsKeepsConcurrentChannelAPIKeysIsolated(t *testing.T) 
 		if got.err != nil {
 			t.Fatalf("ListModels() error = %v", got.err)
 		}
-		if len(got.models) != 1 {
-			t.Fatalf("ListModels() = %#v", got.models)
+		if len(got.catalog.Models) != 1 {
+			t.Fatalf("ListModels() = %#v", got.catalog.Models)
 		}
-		gotModels[got.models[0]] = true
+		gotModels[got.catalog.Models[0]] = true
 	}
 	if !gotModels["model-account-a"] || !gotModels["model-account-b"] {
 		t.Fatalf("models = %#v", gotModels)
@@ -1608,7 +1610,12 @@ func TestSDKRunnerCancellationPreservesBufferedUsage(t *testing.T) {
 				return err
 			}
 		}
-		return stream.Send(usage)
+		for range 4 {
+			if err := stream.Send(usage); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	runner := newTestSDKRunner(t, handler)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1625,16 +1632,30 @@ func TestSDKRunnerCancellationPreservesBufferedUsage(t *testing.T) {
 	cancel()
 	var total Usage
 	var final Event
+	var increments []Usage
 	for event := range events {
 		if event.Usage != nil {
 			total.Add(event.Usage)
+			if len(event.UsageIncrements) > 0 {
+				increments = append(increments, event.UsageIncrements...)
+			} else {
+				increments = append(increments, *event.Usage)
+			}
 		}
 		if event.Done {
 			final = event
 		}
 	}
-	if total != (Usage{InputTokens: 20, OutputTokens: 4, TotalTokens: 24}) {
+	if total != (Usage{InputTokens: 50, OutputTokens: 10, TotalTokens: 60}) {
 		t.Fatalf("cancellation lost or duplicated usage: %+v", total)
+	}
+	if len(increments) != 5 {
+		t.Fatalf("cancellation lost usage boundaries: %+v", increments)
+	}
+	for _, increment := range increments {
+		if increment != (Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) {
+			t.Fatalf("cancellation changed individual usage: %+v", increment)
+		}
 	}
 	if !final.Done || !errors.Is(final.Err, context.Canceled) {
 		t.Fatalf("terminal event = %+v", final)
@@ -1756,7 +1777,7 @@ func TestSDKRunnerClassifiesAccountAndContextFailures(t *testing.T) {
 }
 
 /**
- * @brief 测试错误终态补发的正文及诊断均遮蔽 SDK 回显的凭证。
+ * @brief 错误终态只通过错误交付诊断，并遮蔽 SDK 回显的凭证。
  * @param t 测试上下文。
  */
 func TestSDKRunnerRedactsFailedResultText(t *testing.T) {
@@ -1792,8 +1813,8 @@ func TestSDKRunnerRedactsFailedResultText(t *testing.T) {
 		}
 	}
 	const want = "Model rejected credential [redacted]"
-	if streamed.String() != want || final.Text != want {
-		t.Fatalf("streamed=%q final=%q, want %q", streamed.String(), final.Text, want)
+	if streamed.Len() != 0 || final.Text != "" {
+		t.Fatalf("diagnostic was emitted as text: streamed=%q final=%q", streamed.String(), final.Text)
 	}
 	if _, limited := RateLimitRetryTime(final.Err, time.Now()); !limited || !strings.Contains(final.Err.Error(), want) {
 		t.Fatalf("terminal error=%v, want a redacted rate limit diagnosis", final.Err)
@@ -1874,7 +1895,7 @@ func TestSDKRunnerPreservesStreamedTextAtCompletion(t *testing.T) {
 		{name: "extra surrounding whitespace", snapshot: " Final answer.\t", done: true},
 		{name: "additional newline", snapshot: answer + "\n", done: true},
 		{name: "partial word", snapshot: "swer.", done: true, wantError: "diverged"},
-		{name: "missing done", wantError: "before done"},
+		{name: "missing done", snapshot: answer + "unconfirmed", wantError: "before done"},
 		{name: "conflicting snapshot", snapshot: "different answer", done: true, wantError: "diverged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1920,26 +1941,19 @@ func TestSDKRunnerPreservesStreamedTextAtCompletion(t *testing.T) {
 	}
 }
 
-func TestSDKRunStateRequiresTerminalSequenceAndRejectsDivergence(t *testing.T) {
+/**
+ * @brief 缺失任一终态帧均可通过 io.ErrUnexpectedEOF 识别。
+ * @param t 测试上下文。
+ */
+func TestSDKRunStateRequiresTerminalSequence(t *testing.T) {
 	state := &sdkRunState{agentID: "agent-1"}
-	if _, err := state.consume(sdkMessage(t, "assistant", map[string]any{
-		"agent_id": "agent-1", "run_id": "run-1",
-		"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "Hi"}}},
-	})); err != nil {
-		t.Fatal(err)
-	}
-	if err := state.finalError(nil); err == nil || !strings.Contains(err.Error(), "before result") {
+	if err := state.finalError(nil, ""); !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "before result") {
 		t.Fatalf("missing result error = %v", err)
 	}
-	if _, err := state.consume(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Hello")); err == nil || !strings.Contains(err.Error(), "diverged") {
-		t.Fatalf("divergent result error = %v", err)
-	}
-
-	state = &sdkRunState{agentID: "agent-1"}
 	if _, err := state.consume(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.finalError(nil); err == nil || !strings.Contains(err.Error(), "before done") {
+	if err := state.finalError(nil, ""); !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "before done") {
 		t.Fatalf("missing done error = %v", err)
 	}
 }
@@ -1973,7 +1987,7 @@ func TestSDKRunStateUsesStatusFailureMessage(t *testing.T) {
 	if _, err := state.consume(runDone("agent-1", "run-1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.finalError(nil); err == nil || !strings.Contains(err.Error(), "human readable failure") ||
+	if err := state.finalError(nil, ""); err == nil || !strings.Contains(err.Error(), "human readable failure") ||
 		strings.Contains(err.Error(), code) {
 		t.Fatalf("final error = %v", err)
 	}
@@ -1993,7 +2007,7 @@ func TestSDKRunStateClassifiesUsageLimitFailure(t *testing.T) {
 	if _, err := state.consume(runDone("agent-1", "run-1")); err != nil {
 		t.Fatal(err)
 	}
-	err := state.finalError(nil)
+	err := state.finalError(nil, "")
 	if !IsUsageLimitExceeded(err) || IsCredentialRejected(err) || !strings.Contains(err.Error(), message) {
 		t.Fatalf("final error = %v", err)
 	}
@@ -2126,7 +2140,7 @@ func TestSDKRunnerClassifiesTerminalModelFailures(t *testing.T) {
 		want      sdkv1.SdkErrorCode
 	}{
 		{"rate limit without final text", "RATE_LIMIT_EXCEEDED", "", "partial", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED},
-		{"rate limit with final suffix", "RATE_LIMIT_EXCEEDED", "partial answer", "partial answer", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED},
+		{"rate limit snapshot starts with partial text", "RATE_LIMIT_EXCEEDED", "partial answer", "partial", sdkv1.SdkErrorCode_SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED},
 		{"invalid model", "SDK_ERROR_CODE_INVALID_MODEL", "not the partial text", "partial", sdkv1.SdkErrorCode_SDK_ERROR_CODE_INVALID_MODEL},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2223,17 +2237,17 @@ func runDone(agentID, runID string) *sdkv1.RunStreamMessage {
  * @brief 创建同时提供 Agent 与模型目录服务的测试执行器。
  * @param t 测试上下文。
  * @param handler Agent 服务。
- * @param models ListModels 返回的模型目录。
+ * @param catalogs ListModels 按请求顺序返回的目录，至少一个；用完后继续返回最后一个。
  * @return 测试执行器与 ListModels 调用计数。
  */
-func newCatalogTestSDKRunner(t *testing.T, handler *testAgentHandler, models []*sdkv1.SdkModel) (*SDKRunner, *atomic.Int32) {
+func newCatalogTestSDKRunner(t *testing.T, handler *testAgentHandler, catalogs ...[]*sdkv1.SdkModel) (*SDKRunner, *atomic.Int32) {
 	t.Helper()
 	var listCalls atomic.Int32
 	agentPath, agentHTTP := sdkv1connect.NewSdkAgentServiceHandler(handler)
 	cursorPath, cursorHTTP := sdkv1connect.NewSdkCursorServiceHandler(&testCursorHandlerFunc{
 		listModels: func(*sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
-			listCalls.Add(1)
-			return &sdkv1.ListModelsResponse{Items: models}, nil
+			index := min(int(listCalls.Add(1))-1, len(catalogs)-1)
+			return &sdkv1.ListModelsResponse{Items: catalogs[index]}, nil
 		},
 	})
 	mux := http.NewServeMux()
@@ -2262,6 +2276,63 @@ func finishedRunSend(t *testing.T, text string) func(context.Context, *connect.S
 			return err
 		}
 		return stream.Send(runDone("agent-1", "run-1"))
+	}
+}
+
+/**
+ * @brief 真实 SDK 用量事件按目录默认值和实际发送的参数携带计费速度。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerReportsCursorBillingSpeed(t *testing.T) {
+	for _, tt := range []struct {
+		model      string
+		want       string
+		wantParams []string
+	}{
+		{"composer-2.5", "composer-2.5-fast", nil},
+		{"composer-2.5-slow", "composer-2.5", []string{"fast=false"}},
+		{"composer-2.5-fast", "composer-2.5-fast", nil},
+		{"grok-4.7@500k-fast", "grok-4.7-fast", []string{"context=500k", "fast=true"}},
+		{"grok-4.7@500k-slow", "grok-4.7", []string{"context=500k", "fast=false"}},
+		{"grok-4.7@300k", "grok-4.7-fast", []string{"context=300k"}},
+	} {
+		t.Run(tt.model, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+				result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "ok")
+				result.GetResult().GetResult().Usage = &sdkv1.TokenUsage{InputTokens: 14, OutputTokens: 2, TotalTokens: 16}
+				if err := stream.Send(result); err != nil {
+					return err
+				}
+				return stream.Send(runDone("agent-1", "run-1"))
+			}}
+			runner, _ := newCatalogTestSDKRunner(t, handler, []*sdkv1.SdkModel{
+				{Id: "composer-2.5", Variants: []*sdkv1.ModelVariant{
+					{IsDefault: true, Params: []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}},
+					{Params: []*sdkv1.ModelParameterValue{{Id: "fast", Value: "false"}}},
+				}},
+				{Id: "composer-2.5-fast"},
+				{Id: "grok-4.7", Variants: []*sdkv1.ModelVariant{
+					{IsDefault: true, Params: []*sdkv1.ModelParameterValue{{Id: "context", Value: "256k"}, {Id: "fast", Value: "false"}}},
+					{Params: []*sdkv1.ModelParameterValue{{Id: "context", Value: "500k"}, {Id: "fast", Value: "true"}}},
+					{Params: []*sdkv1.ModelParameterValue{{Id: "context", Value: "500k"}, {Id: "fast", Value: "false"}}},
+					{Params: []*sdkv1.ModelParameterValue{{Id: "context", Value: "300k"}, {Id: "fast", Value: "true"}}},
+				}},
+			})
+			event := drainRun(t, mustRun(t, runner, &Credential{APIKey: "key"}, Request{Model: tt.model, Prompt: "hi"}))
+			if event.Usage == nil || event.BillingModel != tt.want {
+				t.Fatalf("event=%+v, want usage for %q", event, tt.want)
+			}
+			handler.mu.Lock()
+			params := handler.create.GetOptions().GetModel().GetParams()
+			handler.mu.Unlock()
+			var sent []string
+			for _, param := range params {
+				sent = append(sent, param.GetId()+"="+param.GetValue())
+			}
+			if !reflect.DeepEqual(sent, tt.wantParams) {
+				t.Fatalf("SDK parameters = %v, want %v", sent, tt.wantParams)
+			}
+		})
 	}
 }
 
@@ -2463,6 +2534,55 @@ func TestSDKRunnerMapsCatalogReasoningParameters(t *testing.T) {
 				if model.GetId() != tc.model || len(model.GetParams()) != len(tc.want) || !reflect.DeepEqual(got, tc.want) {
 					t.Errorf("%s model = %v, want %s %v", op, model, tc.model, tc.want)
 				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证空模型目录刷新失败时保留有效缓存，运行时也拒绝缓存空目录。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerRejectsEmptyModelCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		items []*sdkv1.SdkModel
+	}{
+		{name: "no items"},
+		{name: "only blank IDs", items: []*sdkv1.SdkModel{{}, {Id: " \t"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &testAgentHandler{sendFn: finishedRunSend(t, "ok")}
+			valid := []*sdkv1.SdkModel{{Id: "model-a", Parameters: []*sdkv1.ModelParameterDefinition{{
+				Id: "effort", Values: []*sdkv1.ModelParameterDefinitionValue{{Value: "high"}},
+			}}}}
+			runner, listCalls := newCatalogTestSDKRunner(t, handler, valid, tc.items, tc.items, valid)
+			if models, err := runner.ListModels(t.Context(), "old-key"); err != nil || !reflect.DeepEqual(models.Models, []string{"model-a"}) {
+				t.Fatalf("ListModels() = %v, %v, want [model-a]", models, err)
+			}
+			const emptyCatalogError = "cursor SDK returned an empty model catalog"
+			if models, err := runner.ListModels(t.Context(), "old-key"); models.Models != nil || models.ContextWindows != nil || err == nil || err.Error() != emptyCatalogError {
+				t.Fatalf("ListModels() = %v, %v, want %q", models, err, emptyCatalogError)
+			}
+			request := Request{Model: "model-a", Prompt: "hi", Effort: "high"}
+			drainRun(t, mustRun(t, runner, &Credential{APIKey: "old-key"}, request))
+			if calls := listCalls.Load(); calls != 2 {
+				t.Fatalf("ListModels calls after using the retained catalog = %d, want 2", calls)
+			}
+			handler.mu.Lock()
+			params := handler.create.GetOptions().GetModel().GetParams()
+			handler.mu.Unlock()
+			if len(params) != 1 || params[0].GetId() != "effort" || params[0].GetValue() != "high" {
+				t.Fatalf("CreateAgent params from the retained catalog = %v, want effort=high", params)
+			}
+
+			newCredential := &Credential{APIKey: "new-key"}
+			if _, err := runner.Run(t.Context(), newCredential, request); err == nil || err.Error() != emptyCatalogError {
+				t.Fatalf("Run() error = %v, want %q", err, emptyCatalogError)
+			}
+			drainRun(t, mustRun(t, runner, newCredential, request))
+			if calls := listCalls.Load(); calls != 4 {
+				t.Fatalf("ListModels calls after a successful retry = %d, want 4", calls)
 			}
 		})
 	}
@@ -2818,4 +2938,26 @@ func mustRun(t *testing.T, runner *SDKRunner, credential *Credential, request Re
 		t.Fatalf("Run() error = %v", err)
 	}
 	return events
+}
+
+/**
+ * @brief 验证 Bridge 的传输诊断经过字段遮蔽和限长，保留代理错误原因。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerScrubsTransportDiagnostics(t *testing.T) {
+	handler := &testAgentHandler{createErr: connect.NewError(connect.CodeUnavailable, errors.New("upstream proxy https://u:privatepass@proxy.invalid; Bearer privatebearer; access_token=privatetoken\nCookie: sid=privatecookie\n"+strings.Repeat("长", 1700)))}
+	runner := newTestSDKRunner(t, handler)
+	_, err := runner.Run(t.Context(), &Credential{APIKey: "user-key"}, Request{Model: "m", Prompt: "hello"})
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	diagnosis := err.Error()
+	for _, secret := range []string{"privatepass", "privatebearer", "privatetoken", "privatecookie"} {
+		if strings.Contains(diagnosis, secret) {
+			t.Fatalf("diagnostic contains %q", secret)
+		}
+	}
+	if !strings.Contains(diagnosis, "proxy.invalid") || !strings.Contains(diagnosis, "…") || !utf8.ValidString(diagnosis) {
+		t.Fatalf("invalid sanitized diagnostic: %.120s", diagnosis)
+	}
 }

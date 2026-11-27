@@ -1,7 +1,9 @@
 package cursorauth
 
 import (
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -10,13 +12,39 @@ import (
 )
 
 /**
- * @brief 去除 Bridge 诊断可能回显的当前请求凭证。
+ * @brief Bridge 诊断中可能由网络库附带的认证数据，覆盖代理地址、请求头和结构化字段。
+ */
+var (
+	diagnosticURLAuth = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s/?#@]+@`)                                                                       ///< URL 中的用户信息。
+	diagnosticHeader  = regexp.MustCompile(`(?i)\b((?:set-cookie|cookie|(?:proxy-)?authorization)["']?\s*[:=]\s*)[^\r\n]+`)                               ///< 整个认证头包含多种授权格式或多个 Cookie。
+	diagnosticBearer  = regexp.MustCompile(`(?i)\b(bearer\s+)[a-z0-9._~+/=-]+`)                                                                           ///< 诊断中的独立 Bearer 值。
+	diagnosticField   = regexp.MustCompile(`(?i)\b((?:api[_-]?key|(?:access[_-]?|refresh[_-]?)?token|session[_-]?id)["']?\s*[:=]\s*["']?)[^"'\s,;}\]&]+`) ///< 结构化文本与查询参数中的凭证值。
+)
+
+/**
+ * @brief 遮蔽 Bridge 诊断里的凭证并限制诊断文本的大小。
  * @param text 上游诊断文本。
  * @param apiKey 当前请求的非空 User API Key。
- * @return 替换精确凭证后的上游诊断文本。
+ * @return 可公开的上游诊断，保留 UTF-8 字符边界。
  */
 func redactSDKDiagnostic(text, apiKey string) string {
-	return strings.ReplaceAll(text, apiKey, "[redacted]")
+	if text == "" {
+		return ""
+	}
+	text = diagnosticURLAuth.ReplaceAllString(text, "${1}[redacted]@")
+	text = diagnosticHeader.ReplaceAllString(text, "${1}[redacted]")
+	text = diagnosticBearer.ReplaceAllString(text, "${1}[redacted]")
+	text = diagnosticField.ReplaceAllString(text, "${1}[redacted]")
+	text = strings.ReplaceAll(text, apiKey, "[redacted]")
+	const limit = 4096
+	if len(text) > limit {
+		cut := limit - len("…")
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		return text[:cut] + "…"
+	}
+	return text
 }
 
 /**

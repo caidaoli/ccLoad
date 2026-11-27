@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 func selectScheduledCheckModel(cfg *model.Config) (string, string) {
@@ -45,6 +46,7 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 		ThinkingEffort:   detectionThinkingEffort(requestThinkingEffort, result),
 		CodexHasCredits:  cfg != nil && cfg.UsesCodexOAuth() && result["codex_has_credits"] == true,
 	}
+	entry.CostBreakdown, _ = result["cost_breakdown"].(*util.StandardCostBreakdown)
 	if cfg != nil {
 		entry.ChannelID = cfg.ID
 	}

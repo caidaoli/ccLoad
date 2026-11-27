@@ -193,7 +193,7 @@ func (r *SDKRunner) deleteParkedAgentsLocked() {
 
 /**
  * @brief 计算停放键。
- * @param scope 已认证的调用方与当前渠道。
+ * @param scope 当前渠道、已认证的调用方与客户端会话归属。
  * @param apiKey User API Key。
  * @param toolsDigest 自定义工具摘要。
  * @param prefix 上一请求完整消息摘要。
@@ -202,7 +202,7 @@ func (r *SDKRunner) deleteParkedAgentsLocked() {
  */
 func parkedAgentKey(scope SessionScope, apiKey, toolsDigest, prefix, anchor string) string {
 	h := sha256.New()
-	writeDigestFields(h, strconv.FormatInt(scope.ChannelID, 10), strconv.FormatInt(scope.TokenID, 10), apiKey, toolsDigest, prefix, anchor)
+	writeDigestFields(h, strconv.FormatInt(scope.ChannelID, 10), strconv.FormatInt(scope.TokenID, 10), scope.SessionID, scope.ThreadID, scope.ClaudeSessionID, scope.ClaudeAgentID, apiKey, toolsDigest, prefix, anchor)
 	return string(h.Sum(nil))
 }
 

@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/storage/schema"
 	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/util"
 
 	"github.com/tidwall/sjson"
 	_ "modernc.org/sqlite"
@@ -2406,6 +2407,87 @@ func TestUsageEstimateMigrationAndRoundTripSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyUsageEstimateMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+/**
+ * @brief 验证 SQLite 旧日志迁移及计费明细快照持久化。
+ * @param t 测试上下文。
+ */
+func TestCostBreakdownMigrationAndRoundTripSQLite(t *testing.T) {
+	db := openTestDB(t)
+	if err := migrate(context.Background(), db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	verifyCostBreakdownMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+/**
+ * @brief 验证旧日志为空及单条、批量、调试日志写入路径均保留计费明细快照。
+ * @param t 测试上下文。
+ * @param db 隔离测试数据库。
+ * @param store 目标方言存储。
+ * @param dialect 目标 SQL 方言。
+ */
+func verifyCostBreakdownMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+	legacy := &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "legacy", StatusCode: 200, Cost: 0.3}
+	if err := store.AddLog(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE logs DROP COLUMN cost_breakdown"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := migrate(ctx, db, dialect); err != nil {
+			t.Fatal(err)
+		}
+	}
+	breakdown := &util.StandardCostBreakdown{
+		Input: util.CostComponent{PricePerMillion: 3, Quantity: 100_000, Cost: 0.3},
+		Total: 0.3,
+	}
+	single := &model.LogEntry{Time: legacy.Time, Model: "single", StatusCode: 200, Cost: breakdown.Total, InputTokens: 100_000, CostBreakdown: breakdown}
+	if err := store.AddLog(ctx, single); err != nil {
+		t.Fatal(err)
+	}
+	batch, debug, plain := *single, *single, *single
+	batch.Model = "batch"
+	debug.Model = "debug"
+	debug.DebugData = &model.DebugLogEntry{CreatedAt: now.Unix(), ReqBody: []byte(`{}`)}
+	plain.Model = "plain"
+	plain.CostBreakdown = nil
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{&batch, &debug, &plain}); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, nil)
+	if err != nil || len(logs) != 5 {
+		t.Fatalf("logs: %v, error: %v", logs, err)
+	}
+	for _, entry := range logs {
+		if entry.Cost != breakdown.Total {
+			t.Errorf("%s cost = %g, want %g", entry.Model, entry.Cost, breakdown.Total)
+		}
+		switch entry.Model {
+		case "legacy", "plain":
+			if entry.CostBreakdown != nil {
+				t.Errorf("%s breakdown = %+v, want nil", entry.Model, entry.CostBreakdown)
+			}
+		case "single", "batch", "debug":
+			if entry.CostBreakdown == nil || *entry.CostBreakdown != *breakdown {
+				t.Errorf("%s breakdown = %+v, want %+v", entry.Model, entry.CostBreakdown, breakdown)
+			}
+		default:
+			t.Errorf("unexpected log model %q", entry.Model)
+		}
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE logs SET cost_breakdown = '{' WHERE model = 'single'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{Model: "single"}); err == nil || !strings.Contains(err.Error(), "cost_breakdown") {
+		t.Fatalf("invalid breakdown JSON error = %v", err)
+	}
 }
 
 /**

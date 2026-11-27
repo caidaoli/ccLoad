@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -550,7 +553,10 @@ func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 		"model":      "claude-sonnet-5",
 		"max_tokens": 16,
 		"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
-	}, map[string]string{"anthropic-version": "2023-06-01"})
+	}, map[string]string{
+		"anthropic-version": "2023-06-01", "Session-Id": "client-session", "Thread-Id": "client-thread",
+		"X-Claude-Code-Session-Id": "claude-session", "X-Claude-Code-Agent-Id": "child",
+	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
 	}
@@ -573,9 +579,12 @@ func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 		t.Fatalf("model = %q", runner.model)
 	}
 	entry := waitForProxyLog(t, env, "claude-sonnet-5")
-	wantScope := cursorauth.SessionScope{ChannelID: entry.ChannelID, TokenID: 1}
+	wantScope := cursorauth.SessionScope{
+		ChannelID: entry.ChannelID, TokenID: 1, SessionID: "client-session", ThreadID: "client-thread",
+		ClaudeSessionID: "claude-session", ClaudeAgentID: "child",
+	}
 	if runner.request.SessionScope != wantScope {
-		t.Fatal("Cursor runner did not receive the selected channel and authenticated token identity")
+		t.Fatalf("Cursor runner scope = %+v, want %+v", runner.request.SessionScope, wantScope)
 	}
 	if entry.InputTokens != 11 || entry.OutputTokens != 7 || entry.CacheReadInputTokens != 5 ||
 		entry.CacheCreationInputTokens != 3 || entry.Cache5mInputTokens != 3 || entry.ReasoningTokens != 2 {
@@ -785,7 +794,7 @@ func TestProxy_CursorSDKModelRejection(t *testing.T) {
 					return cursorUsageEventsRunner{{Done: true, Text: "another model"}}.Run(ctx, credential, request)
 				}
 				if tt.committed {
-					return cursorUsageEventsRunner{{Ping: true}, {Done: true, Err: failure}}.Run(ctx, credential, request)
+					return cursorUsageEventsRunner{{Delta: "partial"}, {Done: true, Err: failure}}.Run(ctx, credential, request)
 				}
 				return nil, failure
 			})
@@ -899,7 +908,7 @@ func TestProxy_CursorSDKAccountAndRequestFailures(t *testing.T) {
 				}
 				events := cursorUsageEventsRunner{}
 				if tc.committed {
-					events = append(events, cursorauth.Event{Ping: true})
+					events = append(events, cursorauth.Event{Delta: "partial"})
 				}
 				events = append(events, cursorauth.Event{Done: true, Err: tc.err})
 				return events.Run(ctx, credential, req)
@@ -1111,7 +1120,7 @@ func TestProxy_CursorReplayDoesNotRefreshOrFailOver(t *testing.T) {
 		primaryCalls++
 		events := cursorUsageEventsRunner{}
 		if primaryCalls != 2 {
-			events = append(events, cursorauth.Event{Ping: true})
+			events = append(events, cursorauth.Event{Delta: "partial"})
 		}
 		return append(events, cursorauth.Event{Done: true, Err: failure, Replayed: primaryCalls > 1}).Run(ctx, credential, request)
 	})
@@ -1216,6 +1225,10 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 	residual := &cursorauth.Usage{
 		InputTokens: 100, OutputTokens: 20, CacheReadTokens: 30, CacheWriteTokens: 40, ReasoningTokens: 5,
 	}
+	lowTier := &cursorauth.Usage{InputTokens: 150_000, OutputTokens: 1000, CacheReadTokens: 25_000, CacheWriteTokens: 1_000}
+	highTier := &cursorauth.Usage{InputTokens: 190_000, OutputTokens: 2_000, CacheReadTokens: 20_000, CacheWriteTokens: 2_000}
+	twoLowTiers := *lowTier
+	twoLowTiers.Add(lowTier)
 	for _, tt := range []struct {
 		name         string
 		events       cursorUsageEventsRunner
@@ -1223,6 +1236,7 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 		failed       bool
 		uncommitted  bool
 		wantEstimate bool
+		wantHighTier *cursorauth.Usage
 		wantBillable cursorauth.Usage
 		wantClient   cursorauth.Usage
 	}{
@@ -1241,6 +1255,24 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 			},
 			wantBillable: cursorauth.Usage{InputTokens: 1600, OutputTokens: 320, CacheReadTokens: 480, CacheWriteTokens: 640, ReasoningTokens: 80},
 			wantClient:   cursorauth.Usage{InputTokens: 1500, OutputTokens: 300, CacheReadTokens: 450, CacheWriteTokens: 600, ReasoningTokens: 75},
+		},
+		{
+			name: "terminal residual retains its own context tier",
+			events: cursorUsageEventsRunner{
+				{Usage: lowTier}, {Usage: lowTier}, {Text: "final", Done: true, Usage: highTier},
+			},
+			wantBillable: cursorauth.Usage{InputTokens: 490_000, OutputTokens: 4_000, CacheReadTokens: 70_000, CacheWriteTokens: 4_000},
+			wantClient:   cursorauth.Usage{InputTokens: 300_000, OutputTokens: 2_000, CacheReadTokens: 50_000, CacheWriteTokens: 2_000},
+			wantHighTier: highTier,
+		},
+		{
+			name: "interrupted stream keeps low-tier increments separate",
+			events: cursorUsageEventsRunner{
+				{Delta: "partial", Text: "partial"},
+				{Done: true, Err: errors.New("Cursor stream interrupted"), Usage: &twoLowTiers, UsageIncrements: []cursorauth.Usage{*lowTier, *lowTier}},
+			},
+			failed:       true,
+			wantBillable: twoLowTiers,
 		},
 		{
 			name: "zero usage does not hide real terminal usage",
@@ -1296,10 +1328,12 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 				t.Fatalf("encode Cursor credential: %v", err)
 			}
 			inputPrice, outputPrice, cacheReadPrice, cacheWritePrice := 2.0, 3.0, 0.5, 4.0
+			highInput, highOutput, highRead, highWrite := 4.0, 6.0, 1.0, 8.0
 			env := setupProxyTestEnv(t, []testChannel{{
 				name: "cursor-incremental-usage", upstreamProtocol: "openai",
 				modelEntries: []model.ModelEntry{{Model: "grok-4.6", Pricing: &util.CustomModelPrice{
 					InputPrice: &inputPrice, OutputPrice: &outputPrice, CacheReadPrice: &cacheReadPrice, CacheWritePrice: &cacheWritePrice,
+					InputPriceHigh: &highInput, OutputPriceHigh: &highOutput, CacheReadPriceHigh: &highRead, CacheWritePriceHigh: &highWrite,
 				}}},
 				authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
 			}}, map[int]string{0: "https://unused.invalid"})
@@ -1401,8 +1435,13 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 				wantStatus = http.StatusBadGateway
 				wantSuccesses, wantFailures = 0, 1
 			}
-			wantCost := (float64(want.InputTokens)*inputPrice + float64(want.OutputTokens)*outputPrice +
-				float64(want.CacheReadTokens)*cacheReadPrice + float64(want.CacheWriteTokens)*cacheWritePrice) / 1_000_000
+			priced := want
+			if tt.wantHighTier != nil {
+				// Our high-tier prices are double the low-tier ones.
+				priced.Add(tt.wantHighTier)
+			}
+			wantCost := (float64(priced.InputTokens)*inputPrice + float64(priced.OutputTokens)*outputPrice +
+				float64(priced.CacheReadTokens)*cacheReadPrice + float64(priced.CacheWriteTokens)*cacheWritePrice) / 1_000_000
 			if entry.StatusCode != wantStatus || entry.InputTokens != want.InputTokens || entry.OutputTokens != want.OutputTokens ||
 				entry.CacheReadInputTokens != want.CacheReadTokens || entry.CacheCreationInputTokens != want.CacheWriteTokens ||
 				entry.Cache5mInputTokens != want.CacheWriteTokens || entry.ReasoningTokens != want.ReasoningTokens || math.Abs(entry.Cost-wantCost) > 1e-12 {
@@ -1415,6 +1454,17 @@ func TestProxy_CursorOAuthAccountsIncrementalUsage(t *testing.T) {
 				}
 			} else if entry.UsageEstimate != nil {
 				t.Fatalf("real usage must not carry an estimate: %+v", entry.UsageEstimate)
+			}
+			if (entry.CostBreakdown != nil) != (wantCost > 0) {
+				t.Fatalf("cost=%g, cost breakdown=%+v", wantCost, entry.CostBreakdown)
+			}
+			if breakdown := entry.CostBreakdown; breakdown != nil {
+				wantInputCost := float64(priced.InputTokens) * inputPrice / 1_000_000
+				if math.Abs(breakdown.Total-wantCost) > 1e-12 || breakdown.Input.Quantity != want.InputTokens ||
+					math.Abs(breakdown.Input.Cost-wantInputCost) > 1e-12 ||
+					math.Abs(breakdown.Input.PricePerMillion-wantInputCost*1_000_000/float64(want.InputTokens)) > 1e-12 {
+					t.Fatalf("cost breakdown=%+v, want total=%v input cost=%v", breakdown, wantCost, wantInputCost)
+				}
 			}
 			for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 				token, err = env.store.GetAuthTokenByValue(ctx, tokenHash)
@@ -1861,6 +1911,139 @@ func TestProxy_CursorOAuthFirstByteTimeoutPersistsActualDuration(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 网关仅在未输出时切换中断的 Cursor 流，且按失败模型冷却。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorInterruptedStreamCooldownAndFallback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		idle      bool
+		committed bool
+	}{
+		{name: "heartbeat then idle", idle: true},
+		{name: "heartbeat then EOF"},
+		{name: "partial output then idle", idle: true, committed: true},
+		{name: "partial output then EOF", committed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const modelID = "composer-2.5"
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "cursor-primary", upstreamProtocol: "openai", models: modelID + ",grok-4.6",
+					authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"session","api_key":"primary-key"}`},
+				{name: "cursor-backup", upstreamProtocol: "openai", models: modelID,
+					authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"session","api_key":"backup-key"}`},
+			}, map[int]string{0: "https://unused.invalid", 1: "https://unused.invalid"})
+			env.server.streamIdleTimeout = 50 * time.Millisecond
+			backupRuns := 0
+			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, _ cursorauth.Request) (<-chan cursorauth.Event, error) {
+				events := make(chan cursorauth.Event, 3)
+				if credential.APIKey == "backup-key" {
+					backupRuns++
+					events <- cursorauth.Event{Done: true, Text: "backup reply"}
+					close(events)
+					return events, nil
+				}
+				events <- cursorauth.Event{Ping: true}
+				if tc.committed {
+					events <- cursorauth.Event{Delta: "partial reply"}
+				}
+				if tc.idle {
+					go func() {
+						defer close(events)
+						<-ctx.Done()
+						events <- cursorauth.Event{Done: true, Err: context.Cause(ctx)}
+					}()
+				} else {
+					close(events)
+				}
+				return events, nil
+			})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": modelID, "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, nil)
+			wantBackupRuns := 1
+			if tc.committed {
+				wantBackupRuns = 0
+			}
+			if response.Code != http.StatusOK || backupRuns != wantBackupRuns {
+				t.Fatalf("HTTP=%d backup calls=%d body=%s", response.Code, backupRuns, response.Body)
+			}
+			var text strings.Builder
+			var failureCode string
+			var completed bool
+			for block := range bytes.SplitSeq(response.Body.Bytes(), []byte("\n\n")) {
+				_, data := parseSSEEventChunk(block)
+				completed = completed || bytes.Equal(data, []byte("[DONE]"))
+				text.WriteString(gjson.GetBytes(data, "choices.0.delta.content").String())
+				if code := gjson.GetBytes(data, "error.code").String(); code != "" {
+					failureCode = code
+				}
+			}
+			if tc.committed {
+				if text.String() != "partial reply" || completed || failureCode != "upstream_stream_interrupted" {
+					t.Fatalf("committed stream body=%s", response.Body)
+				}
+			} else if text.String() != "backup reply" || !completed || failureCode != "" || strings.Contains(response.Body.String(), ": ping") {
+				t.Fatalf("failover stream body=%s", response.Body)
+			}
+			entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+				return entry.Model == modelID && entry.StatusCode == util.StatusStreamIncomplete
+			})
+			wantDiagnostic := "unexpected EOF"
+			if tc.idle {
+				wantDiagnostic = "upstream stream idle timeout"
+			}
+			if !strings.Contains(entry.Message, wantDiagnostic) || (entry.FirstByteTime > 0) != tc.committed {
+				t.Fatalf("unexpected failure log %+v", entry)
+			}
+			modelCooldowns, err := env.store.GetAllModelCooldowns(t.Context())
+			if err != nil || len(modelCooldowns) != 1 || len(modelCooldowns[entry.ChannelID]) != 1 ||
+				!modelCooldowns[entry.ChannelID][modelID].After(time.Now()) {
+				t.Fatalf("model cooldowns=%v err=%v", modelCooldowns, err)
+			}
+			channelCooldowns, err := env.store.GetAllChannelCooldowns(t.Context())
+			if err != nil || len(channelCooldowns) != 0 {
+				t.Fatalf("channel cooldowns=%v err=%v", channelCooldowns, err)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 请求路由保留原模型，日志使用 SDK 实际选择的计费速度。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorOAuthBillsSelectedSpeed(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{APIKey: "cursor-key", AccessToken: "cursor-session"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-speed", upstreamProtocol: "openai",
+		modelEntries: []model.ModelEntry{{Model: "composer-2.5"}},
+		authType:     model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = cursorUsageEventsRunner{{
+		Done: true, Text: "ok", BillingModel: "composer-2.5-fast",
+		Usage: &cursorauth.Usage{InputTokens: 1_000, OutputTokens: 1_000, CacheReadTokens: 1_000},
+	}}
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "composer-2.5", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, body = %s", response.Code, response.Body.String())
+	}
+	entry := waitForProxyLog(t, env, "composer-2.5")
+	if entry.ServiceTier != "fast" || math.Abs(entry.Cost-0.0185) > 1e-12 || entry.CostBreakdown == nil ||
+		math.Abs(entry.CostBreakdown.Input.PricePerMillion-3) > 1e-12 {
+		t.Fatalf("logged Cursor cost=%+v, want Fast reference cost of $0.0185", entry)
+	}
+}
+
 func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 	t.Parallel()
 
@@ -1923,8 +2106,11 @@ func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 			if !strings.Contains(runner.prompt, "[undefined]") {
 				t.Fatalf("caller-provided prompt content was rewritten: %q", runner.prompt)
 			}
+			entry := waitForProxyLog(t, env, "composer-2.5")
+			if entry.CacheCreationInputTokens != 3 {
+				t.Fatalf("logged cache creation = %d, want 3", entry.CacheCreationInputTokens)
+			}
 			if streaming {
-				entry := waitForProxyLog(t, env, "composer-2.5")
 				debugLog, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
 				if err != nil || debugLog == nil {
 					t.Fatalf("load Cursor Responses debug log: debug=%+v err=%v", debugLog, err)
@@ -1948,6 +2134,9 @@ func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 						delta = payload["delta"] == "MacBook M5 answer"
 					case "response.completed":
 						completed = true
+						if got := gjson.GetBytes(data, "response.usage.cache_creation_input_tokens").Int(); got != 3 {
+							t.Fatalf("stream cache creation = %d, want 3; data=%s", got, data)
+						}
 					}
 				}
 				if !delta || !completed {
@@ -1970,6 +2159,367 @@ func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 			if payload.Object != "response" || len(payload.Output) == 0 ||
 				len(payload.Output[0].Content) == 0 || payload.Output[0].Content[0].Text != "MacBook M5 answer" {
 				t.Fatalf("invalid Responses body: %s", response.Body.String())
+			}
+			if got := gjson.GetBytes(response.Body.Bytes(), "usage.cache_creation_input_tokens").Int(); got != 3 {
+				t.Fatalf("JSON cache creation = %d, want 3", got)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 HTTP Responses 把工具结果交回原 Agent，并在所属执行会话内原样重放已完成的响应。
+ * @param t 测试生命周期。
+ */
+func TestProxy_CursorResponsesContinuation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Cursor Bridge discovery fixture uses a shell executable")
+	}
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			env, bridge := setupCursorRoutingTest(t, []model.ModelEntry{
+				{Model: "custom-model", RedirectModel: "upstream-a"},
+				{Model: "custom-model", RedirectModel: "upstream-b"},
+			})
+			if res := batchUpdateSetting(t, env.server, privacySettingKey, `{"enabled":true,"words":["tool-output"]}`); res.Code != http.StatusOK {
+				t.Fatalf("enable privacy restoration: HTTP %d %s", res.Code, res.Body)
+			}
+			const path = "/v1/responses"
+			headers := map[string]string{"Session-Id": "responses", "Thread-Id": "original"}
+			readTerminal := func(body []byte) gjson.Result {
+				if !stream {
+					return gjson.ParseBytes(body)
+				}
+				for block := range bytes.SplitSeq(body, []byte("\n\n")) {
+					if event, data := parseSSEEventChunk(block); event == "response.completed" {
+						return gjson.GetBytes(data, "response")
+					}
+				}
+				return gjson.Result{}
+			}
+			first := doProxyRequest(t, env.engine, path, map[string]any{
+				"model": "custom-model", "input": "lookup", "stream": stream,
+				"tools": []any{map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}}},
+			}, headers)
+			terminal := readTerminal(first.Body.Bytes())
+			responseID := terminal.Get("id").String()
+			callID := terminal.Get(`output.#(type=="function_call").call_id`).String()
+			created := bridge.createdAgents()
+			if first.Code != http.StatusOK || responseID == "" || callID == "" || len(created) != 1 {
+				t.Fatalf("first HTTP %d; created=%v; body=%s", first.Code, created, first.Body)
+			}
+			owner := created[0]
+			payload := map[string]any{
+				"model": "custom-model", "previous_response_id": responseID, "stream": stream,
+				"input": []any{map[string]any{"type": "function_call_output", "call_id": callID, "output": "tool-output"}},
+			}
+			injectAPIToken(env.server.authService, "other-cursor-responses-api-key", 0, 2)
+			for _, foreignHeaders := range []map[string]string{
+				nil,
+				{"Session-Id": "other", "Thread-Id": "original"},
+				{"Session-Id": "responses", "Thread-Id": "other"},
+				{"Session-Id": "responses", "Thread-Id": "original", "Authorization": "Bearer other-cursor-responses-api-key"},
+			} {
+				foreign := doProxyRequest(t, env.engine, path, payload, foreignHeaders)
+				if foreign.Code != http.StatusBadRequest || !strings.Contains(foreign.Body.String(), "resend the full conversation input without previous_response_id") {
+					t.Fatalf("unavailable history HTTP %d; body=%s", foreign.Code, foreign.Body)
+				}
+			}
+			second := doProxyRequest(t, env.engine, path, payload, headers)
+			text := readTerminal(second.Body.Bytes()).Get(`output.#(type=="message").content.0.text`).String()
+			if created := bridge.createdAgents(); second.Code != http.StatusOK || text != owner+" received tool-output" || !slices.Equal(created, []string{owner}) {
+				t.Fatalf("continuation HTTP %d; created=%v; body=%s", second.Code, created, second.Body)
+			}
+			runner := env.server.swapCursorRunner(cursorRunnerFunc(func(context.Context, *cursorauth.Credential, cursorauth.Request) (<-chan cursorauth.Event, error) {
+				t.Error("replayed or rejected tool continuation reached the Cursor Runner")
+				return nil, cursorauth.ErrAgentMissing
+			}))
+			defer env.server.swapCursorRunner(runner)
+			replay := doProxyRequest(t, env.engine, path, payload, headers)
+			if replay.Code != http.StatusOK || replay.Header().Get("Content-Type") != second.Header().Get("Content-Type") ||
+				!bytes.Equal(replay.Body.Bytes(), second.Body.Bytes()) {
+				t.Fatalf("replay HTTP %d; original=%s; replay=%s", replay.Code, second.Body, replay.Body)
+			}
+			alternate := "route-a"
+			if owner == alternate {
+				alternate = "route-b"
+			}
+			for _, mismatch := range []struct {
+				name    string
+				path    string
+				payload map[string]any
+				headers map[string]string
+			}{
+				{"path", "/v1/codex/responses", payload, headers},
+				{"query", path + "?timeout=5", payload, headers},
+				{"channel", path, payload, map[string]string{"Session-Id": "responses", "Thread-Id": "original", "x-ccload-channel": alternate}},
+				{"thread", path, payload, map[string]string{"Session-Id": "responses", "Thread-Id": "other"}},
+				{"token", path, payload, map[string]string{"Session-Id": "responses", "Thread-Id": "original", "Authorization": "Bearer other-cursor-responses-api-key"}},
+				{"stream", path, map[string]any{"model": "custom-model", "previous_response_id": responseID, "input": payload["input"], "stream": !stream}, headers},
+				{"stale ordinary input", path, map[string]any{"model": "custom-model", "previous_response_id": responseID, "input": "unrelated"}, headers},
+				{"changed tool output", path, map[string]any{
+					"model": "custom-model", "previous_response_id": responseID, "stream": stream,
+					"input": []any{map[string]any{"type": "function_call_output", "call_id": callID, "output": "changed"}},
+				}, headers},
+			} {
+				t.Run(mismatch.name, func(t *testing.T) {
+					res := doProxyRequest(t, env.engine, mismatch.path, mismatch.payload, mismatch.headers)
+					if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "resend the full conversation input without previous_response_id") {
+						t.Fatalf("mismatched replay HTTP %d; body=%s", res.Code, res.Body)
+					}
+				})
+			}
+			ctx := context.Background()
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ownerIndex := slices.IndexFunc(configs, func(cfg *model.Config) bool { return cfg.Name == owner })
+			if ownerIndex < 0 {
+				t.Fatalf("Cursor replay owner %q not found", owner)
+			}
+			cfg := configs[ownerIndex]
+			if stream {
+				cfg.ModelEntries = []model.ModelEntry{{Model: "custom-model", RedirectModel: "upstream-replacement"}}
+				if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				updated, err := env.store.CompareAndSwapOAuthCredential(ctx, cfg.ID, model.AuthTypeCursorOAuth, cfg.OAuthCredential,
+					`{"api_key":"replacement-account","access_token":"replacement-session"}`)
+				if err != nil || !updated {
+					t.Fatalf("rotate Cursor key: updated=%t, err=%v", updated, err)
+				}
+			}
+			env.server.InvalidateChannelListCache()
+			reconfigured := doProxyRequest(t, env.engine, path, payload, headers)
+			if reconfigured.Code != http.StatusBadRequest || !strings.Contains(reconfigured.Body.String(), "resend the full conversation input without previous_response_id") {
+				t.Fatalf("changed replay route HTTP %d; body=%s", reconfigured.Code, reconfigured.Body)
+			}
+			env.server.responsesExecutionSessions.cleanup(time.Now().Add(time.Hour))
+			expired := doProxyRequest(t, env.engine, path, payload, headers)
+			if expired.Code != http.StatusBadRequest || !strings.Contains(expired.Body.String(), "resend the full conversation input without previous_response_id") {
+				t.Fatalf("expired history HTTP %d; body=%s", expired.Code, expired.Body)
+			}
+			if created := bridge.createdAgents(); !slices.Equal(created, []string{owner}) {
+				t.Fatalf("expected one Agent after replays, created = %v", created)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Cursor 生成、流式交付和展开本地压缩历史，并拒绝外部压缩历史。
+ * @param t 测试生命周期。
+ */
+func TestProxy_CursorResponsesCompaction(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			const path = "/v1/responses"
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "cursor", upstreamProtocol: "openai", models: "composer-2.5",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"fixture","access_token":"session"}`,
+			}}, map[int]string{0: "https://unused.invalid"})
+			var requests []cursorauth.Request
+			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
+				requests = append(requests, req)
+				text := "continuation reply"
+				if strings.Contains(req.Prompt, responsesCompactionPrompt) {
+					text = "retained conversation finding"
+				}
+				return cursorUsageEventsRunner{{Text: text, Usage: &cursorauth.Usage{InputTokens: 9, OutputTokens: 4}, Done: true}}.Run(ctx, credential, req)
+			})
+			compactPath := path + "/compact"
+			input := []any{
+				map[string]any{"role": "user", "content": "old task"},
+				map[string]any{"type": "function_call", "call_id": "call_old", "name": "lookup", "arguments": "{}"},
+				map[string]any{"type": "function_call_output", "call_id": "call_old", "output": "historical result"},
+			}
+			if stream {
+				compactPath = path
+				input = append(input, map[string]any{"type": "compaction_trigger"})
+			}
+			headers := map[string]string{"Session-Id": "cursor-summary"}
+			res := doProxyRequest(t, env.engine, compactPath, map[string]any{
+				"model": "composer-2.5", "stream": stream, "input": input, "tool_choice": "required",
+				"tools": []any{map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}}},
+			}, headers)
+			if res.Code != http.StatusOK || len(requests) != 1 {
+				t.Fatalf("compaction HTTP %d; SDK runs=%d; body=%s", res.Code, len(requests), res.Body)
+			}
+			req := requests[0]
+			if len(req.Tools) != 0 || len(req.ToolResults) != 0 || req.SessionScope != (cursorauth.SessionScope{}) || req.ToolChoice != "auto" {
+				t.Fatalf("summary inherited runtime state: %+v", req)
+			}
+			for _, want := range []string{"old task", "historical result", responsesCompactionPrompt} {
+				if !strings.Contains(req.Prompt, want) {
+					t.Fatalf("summary prompt lost %q: %q", want, req.Prompt)
+				}
+			}
+			terminal := gjson.ParseBytes(res.Body.Bytes())
+			object := "response.compaction"
+			if stream {
+				object = "response"
+				var types []string
+				for block := range bytes.SplitSeq(res.Body.Bytes(), []byte("\n\n")) {
+					event, data := parseSSEEventChunk(block)
+					if event != "" {
+						types = append(types, event)
+					}
+					if event == "response.completed" {
+						terminal = gjson.GetBytes(data, "response")
+					}
+				}
+				if !slices.Equal(types, []string{"response.created", "response.in_progress", "response.output_item.added", "response.output_item.done", "response.completed"}) {
+					t.Fatalf("compaction SSE events: %v", types)
+				}
+			}
+			capsule := terminal.Get("output.0")
+			if terminal.Get("object").String() != object || terminal.Get("id").String() == "" ||
+				terminal.Get("usage.input_tokens").Int() != 9 || len(terminal.Get("output").Array()) != 1 ||
+				capsule.Get("type").String() != "compaction" || !strings.HasPrefix(capsule.Get("encrypted_content").String(), responsesCompactionPrefix) {
+				t.Fatalf("compaction terminal: %s", res.Body)
+			}
+			foreign := doProxyRequest(t, env.engine, path, json.RawMessage(`{"model":"composer-2.5","input":[
+				{"type":"compaction","encrypted_content":"foreign"},{"role":"user","content":"continue"}]}`), headers)
+			if foreign.Code != http.StatusBadRequest || !strings.Contains(foreign.Body.String(), "cannot restore foreign compaction history") || len(requests) != 1 {
+				t.Fatalf("foreign history HTTP %d; SDK runs=%d; body=%s", foreign.Code, len(requests), foreign.Body)
+			}
+			followups := []map[string]any{
+				{"model": "composer-2.5", "previous_response_id": terminal.Get("id").String(), "input": "continue by reference"},
+				{"model": "composer-2.5", "input": []any{json.RawMessage(capsule.Raw), map[string]any{"role": "user", "content": "continue by replay"}}},
+			}
+			for i, followup := range followups {
+				continued := doProxyRequest(t, env.engine, path, followup, headers)
+				if continued.Code != http.StatusOK || len(requests) != i+2 {
+					t.Fatalf("continuation HTTP %d; SDK runs=%d; body=%s", continued.Code, len(requests), continued.Body)
+				}
+				prompt := requests[i+1].Prompt
+				if !strings.Contains(prompt, "Context summary from previous turns:\nretained conversation finding") ||
+					!strings.Contains(prompt, "continue by") || strings.Contains(prompt, "old task") || strings.Contains(prompt, responsesCompactionPrompt) {
+					t.Fatalf("invalid replayed prompt: %q", prompt)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证 Cursor 合成的 Responses ID 切换渠道后回放历史，且新终态能继续续轮。
+ * @param t 测试生命周期。
+ */
+func TestProxy_CursorResponsesCrossRouteHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name, protocol                   string
+		stream, fallback, websocketFirst bool
+	}{
+		{name: "native JSON", protocol: "codex"},
+		{name: "native SSE fallback", protocol: "codex", stream: true, fallback: true},
+		{name: "native HTTP after Cursor WebSocket", protocol: "codex", websocketFirst: true},
+		{name: "translated JSON", protocol: "openai"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const path = "/v1/responses"
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if !bytes.Contains(body, []byte("first Cursor answer")) || gjson.GetBytes(body, "previous_response_id").Exists() || gjson.GetBytes(body, "stream").Bool() != tc.stream {
+					t.Errorf("upstream did not receive a full history with the correct stream mode: %s", body)
+				}
+				if tc.protocol == "codex" {
+					const response = `{"id":"resp_native","object":"response","status":"completed","output":[{"id":"msg_native","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"other route answer"}]}]}`
+					if tc.stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":%s}\n\n", response)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, response)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chat_other","object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"other route answer"}}]}`)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "cursor", upstreamProtocol: "openai", models: "composer-2.5", priority: 100, authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"fixture","access_token":"session"}`},
+				{name: "other", upstreamProtocol: tc.protocol, models: "composer-2.5", priority: 50, apiKey: "other-channel-key"},
+			}, map[int]string{0: "https://unused.invalid", 1: upstream.URL})
+			var prompts []string
+			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
+				prompts = append(prompts, req.Prompt)
+				if tc.fallback && len(prompts) == 2 {
+					return nil, errors.New("fixture Cursor bridge unavailable before output")
+				}
+				return cursorUsageEventsRunner{{Text: "first Cursor answer", Done: true}}.Run(ctx, credential, req)
+			})
+			const sessionID = "cross-route"
+			cursorHeaders := map[string]string{"Session-Id": sessionID, "x-ccload-channel": "cursor"}
+			getResponseID := func(recorder *httptest.ResponseRecorder) string {
+				t.Helper()
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("HTTP %d; body=%s", recorder.Code, recorder.Body)
+				}
+				if strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/event-stream") {
+					parser := newSSEUsageParser("codex")
+					if err := parser.Feed(recorder.Body.Bytes()); err != nil {
+						t.Fatal(err)
+					}
+					if turn, ok := parser.GetResponsesTurnResult(); ok && turn.completedResponseID != "" {
+						return turn.completedResponseID
+					}
+				}
+				if id := gjson.GetBytes(recorder.Body.Bytes(), "id").String(); id != "" {
+					return id
+				}
+				t.Fatalf("missing terminal response ID: %s", recorder.Body)
+				return ""
+			}
+			var firstID string
+			if tc.websocketFirst {
+				conn := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+					"Session-Id": {sessionID}, "X-Ccload-Channel": {"cursor"},
+				})
+				if err := conn.WriteJSON(map[string]any{
+					"type": "response.create", "model": "composer-2.5", "input": []any{map[string]string{"role": "user", "content": "original task"}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				terminal := readWebsocketUntilType(t, conn, "response.completed")
+				response, _ := terminal["response"].(map[string]any)
+				firstID, _ = response["id"].(string)
+				if firstID == "" {
+					t.Fatalf("missing WebSocket terminal response ID: %#v", terminal)
+				}
+			} else {
+				firstID = getResponseID(doProxyRequest(t, env.engine, path, map[string]any{
+					"model": "composer-2.5", "input": "original task", "stream": tc.stream,
+				}, cursorHeaders))
+			}
+			secondHeaders := map[string]string{"Session-Id": sessionID}
+			if !tc.fallback {
+				secondHeaders["x-ccload-channel"] = "other"
+			}
+			secondID := getResponseID(doProxyRequest(t, env.engine, path, map[string]any{
+				"model": "composer-2.5", "input": "other route task", "stream": tc.stream, "previous_response_id": firstID,
+			}, secondHeaders))
+			third := doProxyRequest(t, env.engine, path, map[string]any{
+				"model": "composer-2.5", "previous_response_id": secondID, "input": "back to Cursor",
+			}, cursorHeaders)
+			wantRuns := 2
+			if tc.fallback {
+				wantRuns++
+			}
+			if third.Code != http.StatusOK || len(prompts) != wantRuns {
+				t.Fatalf("third HTTP %d; SDK runs=%d; body=%s", third.Code, len(prompts), third.Body)
+			}
+			if prompt := prompts[len(prompts)-1]; !strings.Contains(prompt, "other route task") || !strings.Contains(prompt, "other route answer") ||
+				!strings.Contains(prompt, "back to Cursor") || !strings.Contains(prompt, "first Cursor answer") {
+				t.Fatalf("invalid cross-route history: %q", prompt)
 			}
 		})
 	}
@@ -2262,7 +2812,7 @@ func TestProxy_CursorGeminiContextOverflow(t *testing.T) {
 			path := "/v1beta/models/composer-2.5:generateContent"
 			wantHTTP := http.StatusBadRequest
 			if streaming {
-				events = append(events, cursorauth.Event{Ping: true})
+				events = append(events, cursorauth.Event{Delta: "partial"})
 				path = "/v1beta/models/composer-2.5:streamGenerateContent?alt=sse"
 				wantHTTP = http.StatusOK
 			}
@@ -2395,6 +2945,22 @@ func (b *cursorRedactionBridge) Send(_ context.Context, request *connect.Request
 			return err
 		}
 	}
+	if agentID == "cursor-sse" {
+		assistant, err := structpb.NewStruct(map[string]any{
+			"agent_id": agentID, "run_id": "run-redaction",
+			"message": map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "ordinary assistant output"},
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_SdkMessage{
+			SdkMessage: &sdkv1.SdkMessage{Type: "assistant", Message: assistant},
+		}}); err != nil {
+			return err
+		}
+	}
 	const statusError = sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR
 	result := &sdkv1.RunResult{
 		RunId: "run-redaction", AgentId: agentID, Status: statusError,
@@ -2441,12 +3007,27 @@ func (b *cursorRedactionBridge) DeleteAgent(_ context.Context, _ *connect.Reques
 func newCursorRedactionTestRunner(t *testing.T, apiKey string) *cursorauth.SDKRunner {
 	t.Helper()
 	dir := t.TempDir()
+	bridge := &cursorRedactionBridge{apiKey: apiKey, stopPath: filepath.Join(dir, "stop")}
+	return newCursorProxyTestRunner(t, dir, bridge)
+}
+
+/**
+ * @brief 启动测试用 Companion，保留 SDKRunner 的真实握手和 Connect RPC 边界。
+ * @param t 当前测试上下文。
+ * @param dir 测试目录；Bridge 的 Shutdown 应在此创建 stop 文件。
+ * @param bridge 模拟 Agent 和控制 RPC 的同一本地服务。
+ * @return 尚未连接的 SDKRunner。
+ */
+func newCursorProxyTestRunner(t *testing.T, dir string, bridge interface {
+	sdkv1connect.SdkAgentServiceHandler
+	sdkv1connect.SdkBridgeControlServiceHandler
+}) *cursorauth.SDKRunner {
+	t.Helper()
 	bridgePath := filepath.Join(dir, "cursor-sdk-bridge")
 	tokenPath := filepath.Join(dir, "token")
 	if err := os.WriteFile(tokenPath, []byte("test-bridge-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bridge := &cursorRedactionBridge{apiKey: apiKey, stopPath: filepath.Join(dir, "stop")}
 	mux := http.NewServeMux()
 	agentPath, agentHandler := sdkv1connect.NewSdkAgentServiceHandler(bridge)
 	controlPath, controlHandler := sdkv1connect.NewSdkBridgeControlServiceHandler(bridge)
@@ -2461,7 +3042,7 @@ func newCursorRedactionTestRunner(t *testing.T, apiKey string) *cursorauth.SDKRu
 		t.Fatal(err)
 	}
 	t.Setenv("CCLOAD_TEST_BRIDGE_READY_PREFIX", string(ready[:len(ready)-1]))
-	t.Setenv("CCLOAD_TEST_BRIDGE_STOP", bridge.stopPath)
+	t.Setenv("CCLOAD_TEST_BRIDGE_STOP", filepath.Join(dir, "stop"))
 	t.Setenv("SQLITE_PATH", filepath.Join(dir, "test.db"))
 	const script = `#!/bin/sh
 printf 'cursor-sdk-bridge ready %s,"pid":%s}\n' "$CCLOAD_TEST_BRIDGE_READY_PREFIX" "$$" >&2
@@ -2471,6 +3052,245 @@ while [ ! -f "$CCLOAD_TEST_BRIDGE_STOP" ]; do sleep 0.02; done
 		t.Fatal(err)
 	}
 	return cursorauth.NewSDKRunner(bridgePath)
+}
+
+/**
+ * @brief 模拟会挂起工具调用并能区分同一 Run 续接与另起 Run 的本地 Bridge。
+ */
+type cursorRoutingBridge struct {
+	cursorRedactionBridge
+	mu          sync.Mutex ///< 保护回调注册及 Agent 记录。
+	callbackURL string     ///< 当前工具回调地址。
+	callbackKey string     ///< 当前工具回调的 Bearer Token。
+	created     []string   ///< 按创建顺序记录渠道名称。
+}
+
+/**
+ * @brief 保存工具回调地址和鉴权令牌。
+ * @param _ 本地 RPC 上下文。
+ * @param req 工具回调注册请求。
+ * @return 注册成功响应。
+ * @return 始终为 nil。
+ */
+func (b *cursorRoutingBridge) SetToolCallback(_ context.Context, req *connect.Request[sdkv1.SetToolCallbackRequest]) (*connect.Response[sdkv1.SetToolCallbackResponse], error) {
+	b.mu.Lock()
+	b.callbackURL, b.callbackKey = req.Msg.GetUrl(), req.Msg.GetAuthToken()
+	b.mu.Unlock()
+	return connect.NewResponse(&sdkv1.SetToolCallbackResponse{}), nil
+}
+
+/**
+ * @brief 记录创建操作并用渠道凭证区分 Agent。
+ * @param _ 本地 RPC 上下文。
+ * @param req 含测试凭证的 Agent 创建请求。
+ * @return 包含 Agent ID 的成功响应。
+ * @return 始终为 nil。
+ */
+func (b *cursorRoutingBridge) CreateAgent(_ context.Context, req *connect.Request[sdkv1.CreateAgentRequest]) (*connect.Response[sdkv1.CreateAgentResponse], error) {
+	key := req.Msg.GetOptions().GetApiKey()
+	b.mu.Lock()
+	b.created = append(b.created, key)
+	b.mu.Unlock()
+	return connect.NewResponse(&sdkv1.CreateAgentResponse{AgentId: key}), nil
+}
+
+/**
+ * @brief 初始轮发起工具回调并等待结果；历史重建时直接返回渠道标记。
+ * @param ctx 本地 RPC 上下文。
+ * @param req 新轮请求。
+ * @param stream 模拟上游 SDK 流。
+ * @return 流写入或工具回调错误；正常完成为 nil。
+ */
+func (b *cursorRoutingBridge) Send(ctx context.Context, req *connect.Request[sdkv1.SendRequest], stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+	agentID := req.Msg.GetAgentId()
+	runID := "run-" + agentID
+	var text string
+	if strings.Contains(req.Msg.GetMessage().GetText(), "HOST_SESSION_RECOVERY") {
+		text = "created fresh on " + agentID
+	} else {
+		status, _ := structpb.NewStruct(map[string]any{"status": "RUNNING", "run_id": runID, "agent_id": agentID})
+		if err := stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_SdkMessage{SdkMessage: &sdkv1.SdkMessage{Type: "status", Message: status}}}); err != nil {
+			return err
+		}
+		b.mu.Lock()
+		callbackURL, callbackKey := b.callbackURL, b.callbackKey
+		b.mu.Unlock()
+		callback := sdkv1connect.NewSdkCustomToolCallbackServiceClient(http.DefaultClient, callbackURL)
+		call := connect.NewRequest(&sdkv1.CallCustomToolRequest{AgentId: agentID, ToolName: "lookup", ToolCallId: new("upstream-call")})
+		call.Header().Set("Authorization", "Bearer "+callbackKey)
+		response, err := callback.CallCustomTool(ctx, call)
+		if err != nil {
+			return err
+		}
+		text = agentID + " received " + response.Msg.GetResult().GetFields()["value"].GetStringValue()
+	}
+	if err := stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Result{Result: &sdkv1.RunStreamResult{
+		RunId: runID, AgentId: agentID, Status: sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED,
+		Result: &sdkv1.RunResult{RunId: runID, AgentId: agentID, Status: sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED,
+			Result: text, Usage: &sdkv1.TokenUsage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}},
+	}}}); err != nil {
+		return err
+	}
+	return stream.Send(&sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Done{Done: &sdkv1.RunStreamDone{RunId: runID, AgentId: agentID}}})
+}
+
+/**
+ * @brief 获取已创建 Agent 对应的渠道名称。
+ * @return 按创建顺序排列的渠道名称独立副本。
+ */
+func (b *cursorRoutingBridge) createdAgents() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.created)
+}
+
+/**
+ * @brief 验证原生 Cursor 工具结果通过代理回到原渠道与模型，且受普通候选约束。
+ * @param t 当前测试上下文。
+ */
+func TestProxy_CursorToolContinuationRouting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Cursor Bridge discovery fixture uses a shell executable")
+	}
+	type scenario struct {
+		name, path, first, continuation, callPath, resultPath string
+		constraints                                           string
+	}
+	chat := scenario{
+		name: "chat", path: "/v1/chat/completions",
+		first:        `{"model":"custom-model","messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`,
+		continuation: `{"model":"custom-model","messages":[{"role":"assistant","tool_calls":[{"id":%q,"type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":%q,"content":"tool-output"}]}`,
+		callPath:     "choices.0.message.tool_calls.0.id", resultPath: "choices.0.message.content",
+	}
+	for _, scenario := range []scenario{
+		chat,
+		{
+			name: "messages", path: "/v1/messages",
+			first:        `{"model":"custom-model","max_tokens":128,"messages":[{"role":"user","content":"lookup"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]}`,
+			continuation: `{"model":"custom-model","max_tokens":128,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":%q,"name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":"tool-output"}]}]}`,
+			callPath:     `content.#(type=="tool_use").id`, resultPath: `content.#(type=="text").text`,
+		},
+		{
+			name: "responses", path: "/v1/responses",
+			first:        `{"model":"custom-model","input":"lookup","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`,
+			continuation: `{"model":"custom-model","input":[{"type":"function_call","call_id":%q,"name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":%q,"output":"tool-output"}]}`,
+			callPath:     `output.#(type=="function_call").call_id`, resultPath: `output.#(type=="message").content.0.text`,
+		},
+		{
+			name: "gemini", path: "/v1beta/models/custom-model:generateContent",
+			first:        `{"contents":[{"role":"user","parts":[{"text":"lookup"}]}],"tools":[{"functionDeclarations":[{"name":"lookup","parameters":{"type":"OBJECT"}}]}]}`,
+			continuation: `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","id":%q,"args":{}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","id":%q,"response":{"value":"tool-output"}}}]}]}`,
+			callPath:     `candidates.0.content.parts.#(functionCall.name=="lookup").functionCall.id`,
+			resultPath:   "candidates.0.content.parts.0.text",
+		},
+		{name: "independent_token", constraints: "token"},
+		{name: "explicit_channel", constraints: "channel"},
+		{name: "channel_cooldown", constraints: "cooldown"},
+		{name: "model_cooldown", constraints: "model_cooldown"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			if scenario.path == "" {
+				scenario.path, scenario.first, scenario.continuation = chat.path, chat.first, chat.continuation
+				scenario.callPath, scenario.resultPath = chat.callPath, chat.resultPath
+			}
+			modelEntries := []model.ModelEntry{
+				{Model: "custom-model", RedirectModel: "upstream-a"},
+				{Model: "custom-model", RedirectModel: "upstream-b"},
+			}
+			env, bridge := setupCursorRoutingTest(t, modelEntries)
+			headers := map[string]string{}
+			if scenario.constraints == "" {
+				headers["Session-Id"], headers["Thread-Id"] = "tool-session", "tool-thread"
+			}
+			if scenario.name == "messages" {
+				headers["X-Claude-Code-Agent-Id"] = "child"
+				headers["X-Claude-Code-Session-Id"] = "f6aee470-c917-4936-919e-c7ff5b15ad8e"
+			}
+			first := doProxyRequest(t, env.engine, scenario.path, json.RawMessage(scenario.first), headers)
+			id := gjson.GetBytes(first.Body.Bytes(), scenario.callPath).String()
+			if first.Code != http.StatusOK || id == "" {
+				t.Fatalf("first response HTTP %d, %s", first.Code, first.Body)
+			}
+			created := bridge.createdAgents()
+			if len(created) != 1 {
+				t.Fatalf("expected one Agent after the initial request, created = %v", created)
+			}
+			owner := created[0]
+			alternate := "route-a"
+			if owner == alternate {
+				alternate = "route-b"
+			}
+			switch scenario.constraints {
+			case "token":
+				injectAPIToken(env.server.authService, "another-api-key", 0, 2)
+				headers["Authorization"] = "Bearer another-api-key"
+			case "channel":
+				headers["x-ccload-channel"] = alternate
+			case "cooldown", "model_cooldown":
+				ctx := context.Background()
+				configs, err := env.store.ListConfigs(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				index := slices.IndexFunc(configs, func(cfg *model.Config) bool { return cfg.Name == owner })
+				if index < 0 {
+					t.Fatalf("owner %q not found", owner)
+				}
+				if scenario.constraints == "cooldown" {
+					err = env.store.SetChannelCooldown(ctx, configs[index].ID, time.Now().Add(time.Minute))
+				} else {
+					err = env.store.SetModelCooldown(ctx, configs[index].ID, "upstream-a", time.Now().Add(time.Minute))
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				env.server.invalidateCooldownCache()
+			}
+			payload := json.RawMessage(fmt.Sprintf(scenario.continuation, id, id))
+			if scenario.name == "messages" {
+				// Claude Code 也可在 metadata.user_id 中标识同一会话。
+				payload = setJSONValue(payload, "metadata.user_id", "user_session_"+headers["X-Claude-Code-Session-Id"])
+				delete(headers, "X-Claude-Code-Session-Id")
+			}
+			second := doProxyRequest(t, env.engine, scenario.path, payload, headers)
+			created = bridge.createdAgents()
+			wantText, wantCreated := owner+" received tool-output", []string{owner}
+			if scenario.constraints != "" {
+				wantText, wantCreated = "created fresh on "+alternate, []string{owner, alternate}
+			}
+			if text := gjson.GetBytes(second.Body.Bytes(), scenario.resultPath).String(); second.Code != http.StatusOK || !strings.Contains(text, wantText) || !slices.Equal(created, wantCreated) {
+				t.Fatalf("continuation HTTP %d, created = %v, body = %s", second.Code, created, second.Body)
+			}
+			if scenario.constraints == "" {
+				repeat := doProxyRequest(t, env.engine, scenario.path, payload, headers)
+				created = bridge.createdAgents()
+				if text := gjson.GetBytes(repeat.Body.Bytes(), scenario.resultPath).String(); repeat.Code != http.StatusOK || text != wantText || !slices.Equal(created, wantCreated) {
+					t.Fatalf("replay HTTP %d, created = %v, body = %s", repeat.Code, created, repeat.Body)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 建立使用真实 Cursor SDK runner 和本地模拟 Bridge 的两个等优先级渠道。
+ * @param t 当前测试上下文。
+ * @param modelEntries 两个渠道使用的模型配置。
+ * @return 代理测试环境。
+ * @return 用于观察所创建 Agent 的 Bridge。
+ */
+func setupCursorRoutingTest(t *testing.T, modelEntries []model.ModelEntry) (*proxyTestEnv, *cursorRoutingBridge) {
+	t.Helper()
+
+	dir := t.TempDir()
+	bridge := &cursorRoutingBridge{stopPath: filepath.Join(dir, "stop")}
+	runner := newCursorProxyTestRunner(t, dir, bridge)
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "route-a", models: "custom-model", modelEntries: modelEntries, priority: 100, authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"route-a","access_token":"test-session"}`},
+		{name: "route-b", models: "custom-model", modelEntries: modelEntries, priority: 100, authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"route-b","access_token":"test-session"}`},
+	}, map[int]string{0: "https://unused.invalid", 1: "https://unused.invalid"})
+	env.server.cursorRunner = runner
+	return env, bridge
 }
 
 /**
@@ -2616,7 +3436,7 @@ func TestProxy_CursorSDKRedactsEchoedUserAPIKey(t *testing.T) {
 					}
 					content += payload.Get("choices.0.delta.content").String()
 				}
-				if content != "ordinary assistant output with [redacted]" {
+				if content != "ordinary assistant output" {
 					t.Fatalf("assistant output=%q", content)
 				}
 			} else {
@@ -2639,19 +3459,21 @@ func TestProxy_CursorSDKRedactsEchoedUserAPIKey(t *testing.T) {
 				t.Fatalf("status=%d log=%q debug=%q want=%q", entry.StatusCode, entry.Message, debug.UpstreamError, wantMessage)
 			}
 			if streaming {
-				var statusReason, finalReason, finalCode string
+				var statusReason, finalReason, finalCode, finalSnapshot string
 				for frame := range bytes.SplitSeq(debug.RespBody, []byte("\n")) {
 					payload := gjson.ParseBytes(frame)
-					if field := payload.Get("sdk_message.message.message"); field.Exists() {
-						statusReason = field.String()
+					if payload.Get("sdk_message.type").String() == "status" {
+						statusReason = payload.Get("sdk_message.message.message").String()
 					}
 					if final := payload.Get("result.result"); final.Exists() {
 						finalReason = final.Get("error_message").String()
 						finalCode = final.Get("error_code").String()
+						finalSnapshot = final.Get("result").String()
 					}
 				}
 				if statusReason != "status rejected [redacted] for cursor-other-account" ||
-					finalReason != "result rejected [redacted] for cursor-other-account" || finalCode != "RATE_LIMIT_EXCEEDED" {
+					finalReason != "result rejected [redacted] for cursor-other-account" || finalCode != "RATE_LIMIT_EXCEEDED" ||
+					finalSnapshot != "ordinary assistant output with [redacted]" {
 					t.Fatalf("raw Bridge debug body=%s", debug.RespBody)
 				}
 			}
@@ -2670,19 +3492,31 @@ func TestProxy_CursorSDKRedactsEchoedUserAPIKey(t *testing.T) {
  */
 func TestProxy_CursorToolResultWithUserInput(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ name, path, payload, choice string }{
+	for _, tc := range []struct {
+		name, path, payload, choice string
+		toolsDeclared               bool
+	}{
 		{"messages", "/v1/messages", `{"model":"composer-2.5","max_tokens":128,"tool_choice":{"type":"none"},"messages":[
 			{"role":"assistant","content":[{"type":"tool_use","id":"call_mix","name":"lookup","input":{}}]},
-			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_mix","content":"known_value"},{"type":"text","text":"请用中文概括"}]}]}`, "none"},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_mix","content":"known_value"},{"type":"text","text":"请用中文概括"}]}]}`, "none", false},
 		{"chat", "/v1/chat/completions", `{"model":"composer-2.5","messages":[
 			{"role":"assistant","tool_calls":[{"id":"call_mix","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
-			{"role":"tool","tool_call_id":"call_mix","content":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "auto"},
+			{"role":"tool","tool_call_id":"call_mix","content":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "auto", false},
 		{"responses", "/v1/responses", `{"model":"composer-2.5","tool_choice":"none","input":[
 			{"type":"function_call","call_id":"call_mix","name":"lookup","arguments":"{}"},
-			{"type":"function_call_output","call_id":"call_mix","output":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "none"},
+			{"type":"function_call_output","call_id":"call_mix","output":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "none", false},
 		{"gemini", "/v1beta/models/composer-2.5:generateContent", `{"toolConfig":{"functionCallingConfig":{"mode":"NONE"}},"contents":[
 			{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_mix","args":{}}}]},
-			{"role":"user","parts":[{"functionResponse":{"id":"call_mix","name":"lookup","response":{"value":"known_value"}}},{"text":"请用中文概括"}]}]}`, "none"},
+			{"role":"user","parts":[{"functionResponse":{"id":"call_mix","name":"lookup","response":{"value":"known_value"}}},{"text":"请用中文概括"}]}]}`, "none", false},
+		{"responses named inherited tool", "/v1/responses", `{"model":"composer-2.5","tool_choice":{"type":"function","name":"lookup"},"input":[
+			{"type":"function_call","call_id":"call_mix","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_mix","output":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "lookup", false},
+		{"responses empty tools", "/v1/responses", `{"model":"composer-2.5","tools":[],"input":[
+			{"type":"function_call","call_id":"call_mix","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_mix","output":"known_value"},{"role":"user","content":"请用中文概括"}]}`, "auto", true},
+		{"gemini empty tools", "/v1beta/models/composer-2.5:generateContent", `{"tools":[],"contents":[
+			{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_mix","args":{}}}]},
+			{"role":"user","parts":[{"functionResponse":{"id":"call_mix","name":"lookup","response":{"value":"known_value"}}},{"text":"请用中文概括"}]}]}`, "auto", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2693,7 +3527,7 @@ func TestProxy_CursorToolResultWithUserInput(t *testing.T) {
 			var requests int
 			env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
 				requests++
-				if req.ToolChoice != tc.choice || len(req.ToolResults) != 1 || req.ToolResults[0].CallID != "call_mix" ||
+				if (req.Tools != nil) != tc.toolsDeclared || req.ToolChoice != tc.choice || len(req.ToolResults) != 1 || req.ToolResults[0].CallID != "call_mix" ||
 					!strings.Contains(req.ToolResults[0].Output, "known_value") || strings.Contains(req.ToolResults[0].Output, "请用中文概括") ||
 					strings.Count(req.Prompt, "请用中文概括") != 1 {
 					t.Errorf("tool_choice=%q results=%+v prompt=%q", req.ToolChoice, req.ToolResults, req.Prompt)
@@ -2706,4 +3540,89 @@ func TestProxy_CursorToolResultWithUserInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+/**
+ * @brief 验证 Responses 的内联截图保留在对应的 Cursor 工具结果中。
+ * @param t 测试生命周期。
+ */
+func TestProxy_CursorResponsesImageToolOutput(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor", upstreamProtocol: "openai", models: "composer-2.5",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"fixture","access_token":"session"}`,
+	}}, map[int]string{0: "https://unused.invalid"})
+	called := false
+	env.server.cursorRunner = cursorRunnerFunc(func(ctx context.Context, credential *cursorauth.Credential, req cursorauth.Request) (<-chan cursorauth.Event, error) {
+		called = true
+		if len(req.ToolResults) != 1 || req.ToolResults[0].CallID != "call_screen" || len(req.ToolResults[0].Content) != 2 {
+			t.Errorf("tool results = %+v", req.ToolResults)
+		}
+		return cursorUsageEventsRunner{{Text: "done", Done: true}}.Run(ctx, credential, req)
+	})
+	res := doProxyRequest(t, env.engine, "/v1/responses", json.RawMessage(`{
+		"model":"composer-2.5",
+		"input":[
+			{"type":"function_call","call_id":"call_screen","name":"screen","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_screen","output":[
+				{"type":"input_text","text":"screenshot"},
+				{"type":"input_image","image_url":"data:image/png;base64,aGk="}
+			]}
+		]
+	}`), nil)
+	if res.Code != http.StatusOK || !called {
+		t.Fatalf("HTTP %d: %s", res.Code, res.Body)
+	}
+}
+
+/**
+ * @brief 验证多协议附件无法交给 Cursor 时保留用户输入的语义，返回明确错误。
+ * @param t 测试上下文。
+ */
+func TestProxy_CursorUnsupportedAttachments(t *testing.T) {
+	const modelID = "cursor-local-model"
+	env := setupProxyTestEnv(t, []testChannel{{name: "cursor", upstreamProtocol: "openai", models: modelID, authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"session","api_key":"key"}`}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = cursorRunnerFunc(func(context.Context, *cursorauth.Credential, cursorauth.Request) (<-chan cursorauth.Event, error) {
+		t.Fatal("attachment was forwarded to Cursor")
+		return nil, nil
+	})
+	for _, tc := range []struct{ name, path, raw string }{
+		{"Chat audio", "/v1/chat/completions", `{"model":"cursor-local-model","messages":[{"role":"user","content":[{"type":"text","text":"listen"},{"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}]}]}`},
+		{"Responses file", "/v1/responses", `{"model":"cursor-local-model","input":[{"role":"user","content":[{"type":"input_text","text":"read"},{"type":"input_file","file_id":"file-example"}]}]}`},
+		{"Responses image ID", "/v1/responses", `{"model":"cursor-local-model","input":[{"role":"user","content":[{"type":"input_text","text":"inspect"},{"type":"input_image","file_id":"file-example"}]}]}`},
+		{"Anthropic image ID", "/v1/messages", `{"model":"cursor-local-model","max_tokens":200,"messages":[{"role":"user","content":[{"type":"text","text":"inspect"},{"type":"image","source":{"type":"file","file_id":"file-example"}}]}]}`},
+		{"Gemini audio", "/v1beta/models/cursor-local-model:generateContent", `{"contents":[{"role":"user","parts":[{"text":"listen"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRg=="}}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := doProxyRequest(t, env.engine, tc.path, json.RawMessage(tc.raw), nil)
+			if res.Code != http.StatusBadRequest || !strings.Contains(gjson.GetBytes(res.Body.Bytes(), "error.message").String(), "inline base64 images") {
+				t.Fatalf("HTTP %d: %s", res.Code, res.Body)
+			}
+		})
+	}
+	t.Run("Responses file reaches a compatible native route", func(t *testing.T) {
+		backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var raw json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+				t.Errorf("decode input: %v", err)
+			}
+			if got := gjson.GetBytes(raw, "input.0.content.1.file_id").Str; got != "file-example" {
+				t.Errorf("backup file id = %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"resp_backup","object":"response","status":"completed","output":[]}`))
+		}))
+		defer backup.Close()
+		fallback := setupProxyTestEnv(t, []testChannel{
+			{name: "cursor", upstreamProtocol: "openai", priority: 100, models: modelID, authType: model.AuthTypeCursorOAuth, oauthCredential: `{"access_token":"session","api_key":"key"}`},
+			{name: "native", upstreamProtocol: "codex", priority: 1, models: modelID},
+		}, map[int]string{0: "https://unused.invalid", 1: backup.URL})
+		fallback.server.cursorRunner = env.server.cursorRunner
+		const raw = `{"model":"cursor-local-model","input":[{"role":"user","content":[{"type":"input_text","text":"read"},{"type":"input_file","file_id":"file-example"}]}]}`
+		response := doProxyRequest(t, fallback.engine, "/v1/responses", json.RawMessage(raw), nil)
+		if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "id").Str != "resp_backup" {
+			t.Fatalf("HTTP %d: %s", response.Code, response.Body)
+		}
+	})
+
 }

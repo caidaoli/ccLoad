@@ -89,7 +89,7 @@ type reasoningTurn struct {
 	pendingCount int
 	toolTurns    int
 	force        bool
-	levels       []string ///< 逻辑业务模型的可判断等级；实际模型未收录时按它裁剪
+	levels       []string ///< 本轮候选可判断等级；实际模型未收录时也按它裁剪
 }
 
 func reasoningRank(effort string) int {
@@ -292,13 +292,22 @@ func (s *Server) reasoningTarget(r *proxyRequestContext) bool {
 	return cfg != nil && cfg.Enabled && containsExact(cfg.BusinessModels, r.originalModel)
 }
 
-func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContext, transcript, original []byte, explicit bool) {
+/**
+ * @brief 为一轮业务请求复用上次等级或执行新的动态判断。
+ * @param ctx 请求上下文，取消时停止等待判断。
+ * @param r 当前请求及思考状态。
+ * @param channels 已完成请求协议、权限与客户端指定渠道过滤的候选。
+ * @param transcript 用于判断的完整会话正文。
+ * @param original 仅含本轮输入的原请求正文。
+ * @param explicit 客户端是否通过明确的思考后缀选择等级或预算。
+ */
+func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContext, channels []*model.Config, transcript, original []byte, explicit bool) {
 	if !s.reasoningTarget(r) {
 		return
 	}
 	// A model without two known levels has nothing to choose between; the
 	// result could not be written, so the judge is not called at all.
-	levels := reasoningDecisionLevels(r.originalModel)
+	levels := s.reasoningDecisionLevels(r.originalModel, channels, r.clientProtocol)
 	if levels == nil {
 		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "unknown_model_capability"}}
 		return

@@ -13,6 +13,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 )
 
 type tokenLogMetadataErrorStore struct {
@@ -231,6 +232,67 @@ func TestDashboardTokenLogsPreserveDisplayOnlyUsageEstimate(t *testing.T) {
 	}
 	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.Cost != 0 {
 		t.Fatalf("estimate affected actual usage or cost: %+v", entry)
+	}
+}
+
+/**
+ * @brief 管理员与令牌日志均使用已保存的费用明细，旧日志继续按当前价格投影。
+ * @param t 测试上下文。
+ */
+func TestDashboardLogsPreferCostBreakdownSnapshot(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	const modelName = "gpt-5.6"
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "updated-price", URLs: model.ChannelURLs{{URL: "https://example.invalid"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: modelName, Pricing: channelPrice(15, 9)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &util.StandardCostBreakdown{
+		Input: util.CostComponent{PricePerMillion: 6, Quantity: 100_000, Cost: 0.6},
+		Total: 0.6,
+	}
+	legacy := &model.LogEntry{
+		Time: model.JSONTime{Time: time.Now()}, ChannelID: cfg.ID, Model: modelName, AuthTokenID: 42,
+		StatusCode: http.StatusOK, InputTokens: 100_000, Cost: snapshot.Total, CostMultiplier: 1,
+	}
+	current := *legacy
+	current.CostBreakdown = snapshot
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{legacy, &current}); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []model.WebRole{model.WebRoleAdmin, model.WebRoleAPIToken} {
+		t.Run(string(role), func(t *testing.T) {
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today", nil))
+			c.Set(webIdentityContextKey, WebIdentity{Role: role, AuthTokenID: 42})
+			server.HandleErrors(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+			}
+			var response struct {
+				Data []struct {
+					Cost          float64                     `json:"cost"`
+					CostBreakdown *util.StandardCostBreakdown `json:"cost_breakdown"`
+				} `json:"data"`
+			}
+			mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+			if len(response.Data) != 2 {
+				t.Fatalf("logs=%d, want 2", len(response.Data))
+			}
+			breakdowns := make(map[float64]util.StandardCostBreakdown)
+			for _, entry := range response.Data {
+				if entry.Cost != snapshot.Total || entry.CostBreakdown == nil {
+					t.Fatalf("invalid cost or breakdown: %+v", entry)
+				}
+				breakdowns[entry.CostBreakdown.Input.PricePerMillion] = *entry.CostBreakdown
+			}
+			if breakdowns[6] != *snapshot || breakdowns[15].Total != 1.5 {
+				t.Fatalf("breakdowns = %+v, want snapshot and current catalog breakdown", breakdowns)
+			}
+		})
 	}
 }
 

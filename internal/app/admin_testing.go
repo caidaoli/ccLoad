@@ -3285,8 +3285,11 @@ func populateCursorTestUsageAndCost(result map[string]any, testReq *testutil.Tes
 	if forwarded.UsageEstimate != nil {
 		result["usage_estimate"] = forwarded.UsageEstimate
 	}
-	if cost, ok := channelTestCostFromUsage(testReq, testReq.Model, requestedServiceTier, forwarded); ok {
+	if cost, breakdown, ok := channelTestCostFromUsage(testReq, testReq.Model, requestedServiceTier, forwarded); ok {
 		result["cost_usd"] = cost
+		if breakdown != nil {
+			result["cost_breakdown"] = breakdown
+		}
 	}
 }
 
@@ -3303,7 +3306,7 @@ func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, reque
 	input, output, cacheRead, cacheCreation := parser.GetUsage()
 	cache5m, cache1h, observedServiceTier := parser.GetCacheBreakdown()
 	cache30m, cache12h := parser.GetOpenAICacheBreakdown()
-	return channelTestCostFromUsage(testReq, actualModel, requestedServiceTier, &fwResult{
+	cost, _, ok := channelTestCostFromUsage(testReq, actualModel, requestedServiceTier, &fwResult{
 		InputTokens:              input,
 		OutputTokens:             output,
 		CacheReadInputTokens:     cacheRead,
@@ -3316,6 +3319,7 @@ func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, reque
 		RateCard:                 openAIRateCard(testReq.CodexOAuth, parser.GetCodexHasCredits()),
 		ToolCostUSD:              parser.GetToolCostUSD(),
 	})
+	return cost, ok
 }
 
 /**
@@ -3325,14 +3329,15 @@ func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, reque
  * @param requestedServiceTier 请求声明的计费档位。
  * @param usage 真实 Token 与工具用量；nil 表示未发送请求。
  * @return 标准 Token 成本与工具成本之和。
+ * @return 多份 Cursor 用量的分项费用快照；其它用量返回 nil。
  * @return 存在可计费用量时为 true，否则为 false。
  */
-func channelTestCostFromUsage(testReq *testutil.TestChannelRequest, actualModel, requestedServiceTier string, usage *fwResult) (float64, bool) {
+func channelTestCostFromUsage(testReq *testutil.TestChannelRequest, actualModel, requestedServiceTier string, usage *fwResult) (float64, *util.StandardCostBreakdown, bool) {
 	if usage == nil {
-		return 0, false
+		return 0, nil, false
 	}
 	if usage.InputTokens+usage.OutputTokens+usage.CacheReadInputTokens+usage.CacheCreationInputTokens <= 0 {
-		return usage.ToolCostUSD, usage.ToolCostUSD > 0
+		return usage.ToolCostUSD, nil, usage.ToolCostUSD > 0
 	}
 	requestModel := testReq.RequestModel
 	if requestModel == "" {
@@ -3343,7 +3348,8 @@ func channelTestCostFromUsage(testReq *testutil.TestChannelRequest, actualModel,
 	}
 	billingModel := util.ResolveBillingModel(model.RoutingModelName(actualModel), model.RoutingModelName(requestModel))
 	serviceTier := resolveBillingServiceTier(requestedServiceTier, usage.ServiceTier)
-	return computeRequestCostWithPrice(billingModel, serviceTier, testReq.ChannelModelPrice, usage), true
+	cost, breakdown := calculateRequestCost(billingModel, serviceTier, testReq.ChannelModelPrice, usage)
+	return cost, breakdown, true
 }
 
 func testRequestThinkingEffort(testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan) string {

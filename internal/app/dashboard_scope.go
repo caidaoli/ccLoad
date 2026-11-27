@@ -66,12 +66,16 @@ type dashboardLogEntry struct {
 // logModelPriceFunc 返回当前可确定的渠道价格与 service_tier 价目；无法辨别选中行时不展示重算明细。
 type logModelPriceFunc func(entry *model.LogEntry) (*util.CustomModelPrice, util.OpenAIRateCard, bool)
 
-// logModelPrices 为一页日志预加载渠道配置，按渠道当前的模型价格重算成本明细。
-// 渠道已删除或读取失败时明细回退全局价格——明细只用于展示，日志成本已在写入时定格。
+/**
+ * @brief 为没有计费明细快照的日志加载当前渠道价目。
+ * @param ctx 查询渠道配置的上下文。
+ * @param logs 当前页的日志。
+ * @return 用于重现历史明细的价目解析器；渠道无法读取时按全局价目解析。
+ */
 func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) logModelPriceFunc {
 	configs := make(map[int64]*model.Config)
 	for _, entry := range logs {
-		if entry == nil || entry.ChannelID <= 0 || entry.Cost <= 0 {
+		if entry == nil || entry.CostBreakdown != nil || entry.ChannelID <= 0 || entry.Cost <= 0 {
 			continue
 		}
 		if _, loaded := configs[entry.ChannelID]; loaded {
@@ -123,8 +127,20 @@ func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) log
 	}
 }
 
+/**
+ * @brief 读取计费明细快照，旧日志沿用当前价目推算明细。
+ * @param entry 待投影的日志。
+ * @param modelPrice 没有明细快照时使用的价目解析器，可为 nil。
+ * @return 标准成本明细；没有快照且费用为零或渠道价目不确定时返回 nil。
+ */
 func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) *util.StandardCostBreakdown {
-	if entry == nil || entry.Cost <= 0 {
+	if entry == nil {
+		return nil
+	}
+	if entry.CostBreakdown != nil {
+		return entry.CostBreakdown
+	}
+	if entry.Cost <= 0 {
 		return nil
 	}
 	var price *util.CustomModelPrice

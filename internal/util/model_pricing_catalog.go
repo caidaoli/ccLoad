@@ -17,6 +17,7 @@ const BillingModelSearchCall = "search_call"
  */
 type ModelPricing struct {
 	isCustom           bool    ///< 当前价目来自全局自定义覆盖；不对外序列化。
+	tierThreshold      int     ///< 特定提供商的分档阈值；零表示沿用模型默认阈值。
 	InputPrice         float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
 	OutputPrice        float64 // 输出token价格（$/1M tokens, ≤200k context for Gemini）
 	TokenPricingTiers  []TokenPricingTier

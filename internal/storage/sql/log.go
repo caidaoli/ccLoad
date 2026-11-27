@@ -17,7 +17,7 @@ import (
 const minuteMs int64 = 60_000 // 用于 minute_bucket 计算
 
 /**
- * @brief 读取真实用量及独立的日志展示元数据
+ * @brief 读取真实用量、日志展示元数据和计费明细快照
  * @param scanner 按 logListQuery 列顺序提供数据的扫描器
  * @return 日志条目；扫描或 JSON 解码失败时返回 nil
  * @return 数据库扫描或展示元数据 JSON 解码失败时返回错误，否则返回 nil
@@ -45,6 +45,7 @@ func scanLogEntry(scanner interface {
 	var reasoningDecision sql.NullString
 	var privacyMasked sql.NullString
 	var usageEstimate sql.NullString
+	var costBreakdown sql.NullString
 	var inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheCreationTokens, cache5mTokens, cache1hTokens, cache30mTokens, cache12hTokens sql.NullInt64
 	var cost sql.NullFloat64
 	var costMultiplier sql.NullFloat64
@@ -52,7 +53,7 @@ func scanLogEntry(scanner interface {
 
 	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &actualModel, &responseModel, &logSource, &e.ChannelID,
 		&e.StatusCode, &e.Message, &duration, &isStreamingInt, &upstreamWebsocketInt, &firstByteTime, &apiKeyUsed, &apiKeyHash, &e.AuthTokenID, &clientProtocol, &upstreamProtocol, &clientIP, &baseURL, &serviceTier, &thinkingEffort,
-		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cache30mTokens, &cache12hTokens, &cost, &costMultiplier, &codexHasCredits, &reasoningDecision, &privacyMasked, &usageEstimate); err != nil {
+		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cache30mTokens, &cache12hTokens, &cost, &costMultiplier, &codexHasCredits, &reasoningDecision, &privacyMasked, &usageEstimate, &costBreakdown); err != nil {
 		return nil, err
 	}
 
@@ -69,6 +70,11 @@ func scanLogEntry(scanner interface {
 	if usageEstimate.Valid && usageEstimate.String != "" {
 		if err := json.Unmarshal([]byte(usageEstimate.String), &e.UsageEstimate); err != nil {
 			return nil, fmt.Errorf("decode log usage_estimate: %w", err)
+		}
+	}
+	if costBreakdown.Valid {
+		if err := json.Unmarshal([]byte(costBreakdown.String), &e.CostBreakdown); err != nil {
+			return nil, fmt.Errorf("decode log cost_breakdown: %w", err)
 		}
 	}
 	e.CodexHasCredits = codexHasCredits != 0
@@ -216,6 +222,14 @@ func (s *SQLStore) AddLogReplica(ctx context.Context, e *model.LogEntry) error {
 	return err
 }
 
+/**
+ * @brief 在同一事务写入单条日志及其额度变更。
+ * @param ctx 写库上下文。
+ * @param e 待写入的日志；nil 跳过写入。
+ * @param updateOAuthQuotaCost 是否对权威库应用 OAuth 额度变更。
+ * @return 已提交的额度变更；跳过或失败时为空。
+ * @return 日志编码或事务失败时返回错误，否则返回 nil。
+ */
 func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuotaCost bool) (OAuthQuotaLogEffects, error) {
 	if e == nil {
 		return OAuthQuotaLogEffects{}, nil
@@ -235,8 +249,14 @@ func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuo
 		if err := insertLogsWithDebug(ctx, s, tx, []*model.LogEntry{e}); err != nil {
 			return OAuthQuotaLogEffects{}, err
 		}
-	} else if _, err := s.execTx(ctx, tx, logsInsertColumns+logRowPlaceholders, logRowArgs(e)...); err != nil {
-		return OAuthQuotaLogEffects{}, err
+	} else {
+		args, err := logRowArgs(e)
+		if err != nil {
+			return OAuthQuotaLogEffects{}, err
+		}
+		if _, err := s.execTx(ctx, tx, logsInsertColumns+logRowPlaceholders, args...); err != nil {
+			return OAuthQuotaLogEffects{}, err
+		}
 	}
 	var effects OAuthQuotaLogEffects
 	if updateOAuthQuotaCost {
@@ -252,20 +272,20 @@ func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuo
 }
 
 /**
- * @brief 日志写入列，真实用量与估算 JSON 分列保存
+ * @brief 日志写入列，计费明细快照和估算 JSON 独立保存
  */
 const logsInsertColumns = `INSERT INTO logs(time, minute_bucket, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cache_30m_input_tokens, cache_12h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked, usage_estimate) VALUES `
+				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cache_30m_input_tokens, cache_12h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked, usage_estimate, cost_breakdown) VALUES `
 
 /**
  * @brief 单条日志写入占位符，与日志写入列顺序一致
  */
-const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 /**
  * @brief 单条日志写入参数数量
  */
-const logRowParams = 37
+const logRowParams = 38
 
 // BatchAddLogs 批量写入日志（单事务，多值 INSERT 提升刷盘吞吐）
 // 设计：
@@ -356,9 +376,16 @@ func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.Log
 	return out
 }
 
-// batchInsertPlainLogs 多值 INSERT 写入无 debug 数据的日志，按 batchSize 分块。
+/**
+ * @brief 用分块多值 INSERT 写入无调试数据的日志。
+ * @param ctx 写库上下文。
+ * @param s 目标存储，决定 SQL 方言。
+ * @param tx 调用方持有的写事务。
+ * @param logs 已过滤的待写入日志。
+ * @return 日志编码或写入失败时返回错误，否则返回 nil。
+ */
 func batchInsertPlainLogs(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*model.LogEntry) error {
-	// 单批最多 100 行（2500 占位符），兼容 SQLite 32766/MySQL 65535 上限。
+	// 单批最多 100 行，兼容 SQLite 32766/MySQL 65535 占位符上限。
 	const batchSize = 100
 	for offset := 0; offset < len(logs); offset += batchSize {
 		end := min(offset+batchSize, len(logs))
@@ -373,7 +400,11 @@ func batchInsertPlainLogs(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*
 				b.WriteByte(',')
 			}
 			b.WriteString(logRowPlaceholders)
-			args = append(args, logRowArgs(e)...)
+			rowArgs, err := logRowArgs(e)
+			if err != nil {
+				return err
+			}
+			args = append(args, rowArgs...)
 		}
 		if _, err := s.execTx(ctx, tx, b.String(), args...); err != nil {
 			return err
@@ -382,15 +413,25 @@ func batchInsertPlainLogs(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*
 	return nil
 }
 
-// insertLogsWithDebug 逐条插入需要关联 debug_logs 的日志。
-// Postgres 无 LastInsertId，走 RETURNING id。
+/**
+ * @brief 逐条插入日志，并将调试数据关联到各自的日志 ID。
+ * @param ctx 写库上下文。
+ * @param s 目标存储，PostgreSQL 通过 RETURNING 获取日志 ID。
+ * @param tx 调用方持有的写事务。
+ * @param logs 含调试数据的日志。
+ * @return 日志编码或写入失败时返回错误，否则返回 nil。
+ */
 func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*model.LogEntry) error {
 	insertSQL := logsInsertColumns + logRowPlaceholders
 	if s.IsPostgres() {
 		insertSQL += " RETURNING id"
 		for _, e := range logs {
+			args, err := logRowArgs(e)
+			if err != nil {
+				return err
+			}
 			var logID int64
-			if err := s.queryRowTx(ctx, tx, insertSQL, logRowArgs(e)...).Scan(&logID); err != nil {
+			if err := s.queryRowTx(ctx, tx, insertSQL, args...).Scan(&logID); err != nil {
 				return err
 			}
 			if _, err := s.execTx(ctx, tx, `
@@ -417,7 +458,11 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 	defer func() { _ = stmt.Close() }()
 
 	for _, e := range logs {
-		result, err := stmt.ExecContext(ctx, logRowArgs(e)...)
+		args, err := logRowArgs(e)
+		if err != nil {
+			return err
+		}
+		result, err := stmt.ExecContext(ctx, args...)
 		if err != nil {
 			return err
 		}
@@ -442,9 +487,10 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 /**
  * @brief 构造日志写入参数，展示估算不改写真实用量或费用
  * @param e 待写入的日志
- * @return 与日志写入列顺序一致的参数列表
+ * @return 与日志写入列顺序一致的参数列表；编码失败时返回 nil
+ * @return 计费明细无法编码为 JSON 时返回错误，否则返回 nil
  */
-func logRowArgs(e *model.LogEntry) []any {
+func logRowArgs(e *model.LogEntry) ([]any, error) {
 	t := e.Time.Time
 	if t.IsZero() {
 		t = time.Now()
@@ -473,6 +519,14 @@ func logRowArgs(e *model.LogEntry) []any {
 		encoded, _ := json.Marshal(e.UsageEstimate)
 		estimateJSON = string(encoded)
 	}
+	var breakdownJSON any
+	if e.CostBreakdown != nil {
+		encoded, err := json.Marshal(e.CostBreakdown)
+		if err != nil {
+			return nil, fmt.Errorf("encode log cost_breakdown: %w", err)
+		}
+		breakdownJSON = string(encoded)
+	}
 	return []any{
 		timeMs, minuteBucket, e.Model, e.ActualModel, e.ResponseModel,
 		model.NormalizeStoredLogSource(e.LogSource),
@@ -482,15 +536,15 @@ func logRowArgs(e *model.LogEntry) []any {
 		e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cache30mInputTokens, e.Cache12hInputTokens, e.Cost,
 		normalizeCostMultiplier(e.CostMultiplier),
-		e.CodexHasCredits, decisionJSON, privacyJSON, estimateJSON,
-	}
+		e.CodexHasCredits, decisionJSON, privacyJSON, estimateJSON, breakdownJSON,
+	}, nil
 }
 
 /**
- * @brief 日志列表投影，包含独立的估算用量展示元数据
+ * @brief 日志列表投影，包含独立的估算用量及计费明细快照
  */
 const logListQuery = `SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cache_30m_input_tokens, cache_12h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked, usage_estimate
+	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cache_30m_input_tokens, cache_12h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision, privacy_masked, usage_estimate, cost_breakdown
 	FROM logs`
 
 // ListLogs 查询日志列表

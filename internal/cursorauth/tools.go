@@ -20,12 +20,14 @@ type ToolCall struct {
 	Arguments json.RawMessage
 }
 
-// ToolResult is one client-executed result for a suspended native Cursor
-// custom-tool callback.
+/**
+ * @brief 客户端交给暂停中的 Cursor 原生工具回调的执行结果。
+ */
 type ToolResult struct {
-	CallID  string
-	Output  string
-	IsError bool
+	CallID  string ///< 下游工具调用 ID。
+	Output  string ///< 文本或 JSON 输出；含图片的内容通过 Content 保存。
+	Content []any  `json:",omitempty"` ///< 含图片的客户端内容块，按原顺序保存。
+	IsError bool   ///< 客户端是否报告工具执行失败。
 }
 
 /**
@@ -38,11 +40,15 @@ type Image struct {
 }
 
 /**
- * @brief 可跨请求恢复 Cursor Agent 的网关身份，由可信路由与认证结果构成。
+ * @brief Cursor Agent 的归属范围，包含网关认证身份和客户端声明的会话标识。
  */
 type SessionScope struct {
-	ChannelID int64 ///< 本次选中的持久化渠道 ID。
-	TokenID   int64 ///< 通过 ccLoad 认证的调用方令牌记录 ID。
+	ChannelID       int64  ///< 本次选中的持久化渠道 ID。
+	TokenID         int64  ///< 通过 ccLoad 认证的调用方令牌记录 ID。
+	SessionID       string ///< 客户端声明的 Session-Id。
+	ThreadID        string ///< 客户端声明的 Thread-Id。
+	ClaudeSessionID string ///< Messages 客户端声明的 Claude Code 会话。
+	ClaudeAgentID   string ///< Claude Code 子代理 ID，主代理为空。
 }
 
 /**
@@ -59,18 +65,23 @@ func (s SessionScope) reusable() bool {
  * 回调只接收上游已报告且未交给客户端请求的增量，须独立于 HTTP 请求及其取消生命周期。
  */
 type Request struct {
-	Model           string ///< 实际路由模型；仅交付工具结果时可留空以沿用原 Run 的模型。
-	Prompt          string
-	Images          []Image ///< Prompt 中 `[image]` 占位按序对应的图片
-	Effort          string  ///< 客户端请求体声明的思考等级（小写）；模型名后缀优先于该值
-	Tools           []Tool
-	ToolChoice      string
-	ToolResults     []ToolResult
-	SessionScope    SessionScope `json:"-"` ///< 仅由网关设置；缺少渠道或令牌时禁用跨请求恢复。
-	OnDetachedUsage func(Usage)  `json:"-"` ///< 工具会话迟到用量的接收方；nil 表示无接收方。
+	Model             string ///< 实际路由模型；仅交付工具结果时可留空以沿用原 Run 的模型。
+	Prompt            string
+	Images            []Image ///< Prompt 中 `[image]` 占位按序对应的图片
+	Effort            string  ///< 客户端请求体声明的思考等级（小写）；模型名后缀优先于该值
+	Tools             []Tool  ///< nil 表示省略声明；非 nil 的空列表表示禁用工具。
+	ToolChoice        string
+	ParallelToolCalls *bool ///< nil 表示续轮继承 Run 的设置，新轮默认允许并行。
+	ToolResults       []ToolResult
+	SessionScope      SessionScope `json:"-"` ///< 仅由网关设置；缺少渠道或令牌时禁用跨请求恢复。
+	OnDetachedUsage   func(Usage)  `json:"-"` ///< 工具会话迟到用量的接收方；nil 表示无接收方。
 
-	transcript      []transcriptEntry ///< 组成 Prompt 的逐条消息，用于普通续轮匹配已停放 Agent
-	hasToolSteering bool              ///< 在尾部工具结果处或其后还有额外的用户内容。
+	transcript         []transcriptEntry ///< 组成 Prompt 的逐条消息，用于普通续轮匹配已停放 Agent
+	instructionsDigest string            ///< 当前 system/developer 消息的内容摘要；无有效内容时为空。
+	instructionsSet    bool              ///< 区分省略指令与显式清空指令。
+	hasToolSteering    bool              ///< 在尾部工具结果处或其后还有额外的用户内容。
+	toolChoiceNamed    bool              ///< 选定了工具名，保留与 none、auto 等控制词同名的工具。
+	allowedToolNames   []string          ///< allowed_tools 指定的函数名；nil 表示未提供有效列表。
 }
 
 /**
@@ -85,9 +96,32 @@ type transcriptEntry struct {
 	plainAssistant bool    ///< 可与 SDK 回复正文直接匹配的纯文本 assistant 消息
 }
 
-// AllowsTools reports whether this turn exposes native custom tools.
+/**
+ * @brief 判断本轮请求是否显式开放客户端工具。
+ * @return 声明了工具且未禁用时为 true。
+ */
 func (r Request) AllowsTools() bool {
-	return r.ToolChoice != "none" && len(r.Tools) > 0
+	if !r.toolChoiceNamed {
+		switch r.ToolChoice {
+		case "none":
+			return false
+		case "allowed_tools":
+			return len(r.Tools) > 0 && len(r.allowedToolNames) > 0
+		}
+	}
+	return len(r.Tools) > 0
+}
+
+/**
+ * @brief 决定本轮是否只向客户端公开一个工具调用。
+ * @param inherited 原 Run 的串行设置，新建 Run 默认为 false。
+ * @return 实际串行设置，显式参数优先。
+ */
+func (r Request) serialTools(inherited bool) bool {
+	if r.ParallelToolCalls == nil {
+		return inherited
+	}
+	return !*r.ParallelToolCalls
 }
 
 /**
@@ -101,30 +135,69 @@ func ParseRequest(body []byte) Request {
 		return Request{}
 	}
 	request := Request{
-		Model:      strings.TrimSpace(asString(raw["model"])),
-		Tools:      parseClientTools(raw),
-		ToolChoice: parseToolChoice(raw["tool_choice"], raw["function_call"]),
+		Model: strings.TrimSpace(asString(raw["model"])),
+		Tools: parseClientTools(raw),
+	}
+	request.ToolChoice, request.toolChoiceNamed = parseToolChoice(raw["tool_choice"], raw["function_call"])
+	if parallel, ok := raw["parallel_tool_calls"].(bool); ok {
+		request.ParallelToolCalls = &parallel
+	} else if choice, ok := raw["tool_choice"].(map[string]any); ok {
+		if disabled, ok := choice["disable_parallel_tool_use"].(bool); ok {
+			parallel := !disabled
+			request.ParallelToolCalls = &parallel
+		}
+	}
+	if request.ToolChoice == "allowed_tools" && !request.toolChoiceNamed {
+		choice, _ := raw["tool_choice"].(map[string]any)
+		request.allowedToolNames = parseAllowedToolNames(choice)
 	}
 	messages := requestMessages(raw)
 	request.ToolResults, request.hasToolSteering = parseToolResults(messages)
 	request.Effort = requestEffort(raw)
+	var instructions []transcriptEntry
 	var system contentWriter
-	if text := system.content(raw["system"], false); text != "" {
-		request.transcript = append(request.transcript, transcriptEntry{
-			role: "system", body: text, text: text, images: system.images,
-		})
+	if rawSystem, provided := raw["system"]; provided && rawSystem != nil {
+		request.instructionsSet = true
+		if text := system.content(rawSystem, false); text != "" {
+			entry := transcriptEntry{role: "system", body: text, text: text, images: system.images}
+			instructions = append(instructions, entry)
+			request.transcript = append(request.transcript, entry)
+		}
 	}
 	for _, rawMessage := range messages {
 		message, _ := rawMessage.(map[string]any)
 		if message == nil {
 			continue
 		}
-		if entry, ok := parseTranscriptEntry(message, false); ok {
+		entry, ok := parseTranscriptEntry(message, false)
+		if ok {
 			request.transcript = append(request.transcript, entry)
 		}
+		switch entry.role {
+		case "system", "developer":
+			request.instructionsSet = true
+			if ok {
+				instructions = append(instructions, entry)
+			}
+		}
 	}
+	request.instructionsDigest = transcriptDigest(instructions)
 	request.Prompt, request.Images = renderTranscript(request.transcript)
 	return request
+}
+
+/**
+ * @brief 读取用于 Cursor 续轮选路的工具结果，按推理入口相同的尾部规则提取。
+ * @param body Anthropic Messages 或 OpenAI Chat 形态的 JSON 请求体。
+ * @return 尾部工具结果；非法请求或没有结果时为 nil。
+ */
+func ParseRequestToolResults(body []byte) []ToolResult {
+	var raw map[string]any
+	if json.Unmarshal(body, &raw) != nil {
+		return nil
+	}
+	results, _ := parseToolResults(requestMessages(raw))
+	return results
 }
 
 /**
@@ -244,53 +317,97 @@ func parseClientTools(raw map[string]any) []Tool {
 	return tools
 }
 
-func parseToolChoice(choice any, legacy any) string {
+/**
+ * @brief 解析工具选择策略，保留具名函数与控制词的区别。
+ * @param choice 当前协议的 tool_choice 字段。
+ * @param legacy 旧版 OpenAI function_call 字段。
+ * @return 工具名或控制词；省略时为 auto。
+ * @return 已选择区分大小写的工具名时为 true。
+ */
+func parseToolChoice(choice any, legacy any) (string, bool) {
 	switch typed := choice.(type) {
 	case string:
-		value := strings.ToLower(strings.TrimSpace(typed))
-		switch value {
+		value := strings.TrimSpace(typed)
+		switch keyword := strings.ToLower(value); keyword {
 		case "none", "auto", "required", "any":
-			if value == "any" {
-				return "required"
+			if keyword == "any" {
+				return "required", false
 			}
-			return value
+			return keyword, false
 		default:
 			if value != "" {
-				return value
+				return value, true
 			}
 		}
 	case map[string]any:
+		kind := strings.ToLower(asString(typed["type"]))
+		switch kind {
+		case "none", "auto", "allowed_tools":
+			return kind, false
+		case "any", "required":
+			return "required", false
+		case "", "function", "tool", "custom":
+		default:
+			return "", true
+		}
 		if name := strings.TrimSpace(asString(typed["name"])); name != "" {
-			return name
+			return name, true
 		}
 		if function, _ := typed["function"].(map[string]any); function != nil {
 			if name := strings.TrimSpace(asString(function["name"])); name != "" {
-				return name
+				return name, true
 			}
 		}
-		switch strings.ToLower(asString(typed["type"])) {
-		case "none":
-			return "none"
-		case "auto":
-			return "auto"
-		case "any", "required":
-			return "required"
-		}
+		return "", true
 	}
 	if legacy != nil {
 		switch typed := legacy.(type) {
 		case string:
 			value := strings.ToLower(strings.TrimSpace(typed))
 			if value == "none" {
-				return "none"
+				return "none", false
 			}
 		case map[string]any:
-			if name := strings.TrimSpace(asString(typed["name"])); name != "" {
-				return name
-			}
+			return strings.TrimSpace(asString(typed["name"])), true
 		}
 	}
-	return "auto"
+	return "auto", false
+}
+
+/**
+ * @brief 读取 Chat 或 Responses 允许调用的自定义函数列表。
+ * @param choice 已解码的 allowed_tools 选择对象。
+ * @return 允许的函数名；列表或模式无效、包含非自定义函数时为 nil。
+ */
+func parseAllowedToolNames(choice map[string]any) []string {
+	if nested, ok := choice["allowed_tools"].(map[string]any); ok {
+		choice = nested
+	}
+	switch asString(choice["mode"]) {
+	case "auto", "required":
+	default:
+		return nil
+	}
+	items, ok := choice["tools"].([]any)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		object, _ := item.(map[string]any)
+		if asString(object["type"]) != "function" || asString(object["namespace"]) != "" {
+			return nil
+		}
+		if nested, ok := object["function"].(map[string]any); ok {
+			object = nested
+		}
+		name := strings.TrimSpace(asString(object["name"]))
+		if name == "" || asString(object["namespace"]) != "" {
+			return nil
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 /**
@@ -346,7 +463,7 @@ func parseTranscriptEntry(message map[string]any, skipToolResults bool) (transcr
 		body = strings.TrimSpace(body)
 	}
 	if body == "" {
-		return transcriptEntry{}, false
+		return transcriptEntry{role: role}, false
 	}
 	text := body
 	if role != "" {
@@ -363,7 +480,7 @@ func parseTranscriptEntry(message map[string]any, skipToolResults bool) (transcr
  * @param messages 按对话顺序排列的客户端消息。
  * @return 去重后的尾部工具结果；上一轮 assistant 之前的调用不恢复。
  * @return 从首条结果起还有额外用户内容时为 true。
- * @details system 消息是续接元数据，可以夹在结果和用户消息之间。
+ * @details system 和 developer 消息不会切断同一工具批次。
  */
 func parseToolResults(messages []any) ([]ToolResult, bool) {
 	var trailing []ToolResult
@@ -373,7 +490,7 @@ func parseToolResults(messages []any) ([]ToolResult, bool) {
 		batch := toolResultsFromMessage(message)
 		if len(batch) == 0 {
 			switch strings.ToLower(strings.TrimSpace(asString(message["role"]))) {
-			case "system", "user":
+			case "system", "developer", "user":
 				continue
 			}
 			break
@@ -416,11 +533,8 @@ func toolResultsFromMessage(message map[string]any) []ToolResult {
 	role := strings.ToLower(strings.TrimSpace(asString(message["role"])))
 	typeName := strings.ToLower(strings.TrimSpace(asString(message["type"])))
 	if role == "tool" || role == "function" || typeName == "function_call_output" {
-		results = append(results, ToolResult{
-			CallID:  firstNonEmpty(asString(message["tool_call_id"]), asString(message["call_id"]), asString(message["id"])),
-			Output:  stringifyToolOutput(firstNonNil(message["content"], message["output"])),
-			IsError: asBool(message["is_error"]),
-		})
+		id := firstNonEmpty(asString(message["tool_call_id"]), asString(message["call_id"]), asString(message["id"]))
+		results = append(results, parseToolResult(id, firstNonNil(message["content"], message["output"]), asBool(message["is_error"])))
 	}
 	content, _ := message["content"].([]any)
 	for _, rawBlock := range content {
@@ -428,13 +542,31 @@ func toolResultsFromMessage(message map[string]any) []ToolResult {
 		if block == nil || !strings.EqualFold(asString(block["type"]), "tool_result") {
 			continue
 		}
-		results = append(results, ToolResult{
-			CallID:  firstNonEmpty(asString(block["tool_use_id"]), asString(block["call_id"])),
-			Output:  stringifyToolOutput(block["content"]),
-			IsError: asBool(block["is_error"]),
-		})
+		id := firstNonEmpty(asString(block["tool_use_id"]), asString(block["call_id"]))
+		results = append(results, parseToolResult(id, block["content"], asBool(block["is_error"])))
 	}
 	return results
+}
+
+/**
+ * @brief 提取工具输出，保留实际包含图片的结构化内容块。
+ * @param id 客户端工具调用 ID。
+ * @param output 已解码的工具输出。
+ * @param isError 客户端是否报告工具执行失败。
+ * @return 含图片时保留全部内容块，其余输出沿用文本或 JSON 表示。
+ */
+func parseToolResult(id string, output any, isError bool) ToolResult {
+	result := ToolResult{CallID: id, IsError: isError}
+	if blocks, ok := output.([]any); ok && slices.ContainsFunc(blocks, func(value any) bool {
+		block, _ := value.(map[string]any)
+		_, isImage := imageFromContentBlock(block)
+		return isImage
+	}) {
+		result.Content = blocks
+	} else {
+		result.Output = stringifyToolOutput(output)
+	}
+	return result
 }
 
 func firstNonNil(values ...any) any {
@@ -529,17 +661,9 @@ func (w *contentWriter) content(value any, preserveText bool) string {
  */
 func (w *contentWriter) block(block map[string]any) (string, bool) {
 	switch strings.ToLower(asString(block["type"])) {
-	case "image":
-		source, _ := block["source"].(map[string]any)
-		return w.image(Image{
-			Data: asString(source["data"]), MimeType: asString(source["media_type"]), URL: asString(source["url"]),
-		}), false
-	case "image_url":
-		url := asString(block["image_url"])
-		if object, ok := block["image_url"].(map[string]any); ok {
-			url = asString(object["url"])
-		}
-		return w.image(imageFromURL(url)), false
+	case "image", "image_url", "input_image":
+		image, _ := imageFromContentBlock(block)
+		return w.image(image), false
 	case "tool_use":
 		return formatToolUseLine(asString(block["id"]), asString(block["name"]), rawJSON(block["input"])), false
 	case "tool_result":
@@ -552,6 +676,27 @@ func (w *contentWriter) block(block map[string]any) (string, bool) {
 		return formatToolUseLine(asString(block["id"]), asString(block["name"]), rawJSON(block["arguments"])), false
 	default:
 		return asString(block["text"]), true
+	}
+}
+
+/**
+ * @brief 解析客户端内容块中的内联图片或远程图片地址。
+ * @param block Anthropic 或 OpenAI 内容块。
+ * @return 图片源，没有有效字段时为零值。
+ * @return 内容块声明了图片时为 true。
+ */
+func imageFromContentBlock(block map[string]any) (Image, bool) {
+	switch strings.ToLower(asString(block["type"])) {
+	case "image":
+		source, _ := block["source"].(map[string]any)
+		return Image{Data: asString(source["data"]), MimeType: asString(source["media_type"]), URL: asString(source["url"])}, true
+	case "image_url", "input_image":
+		if object, ok := block["image_url"].(map[string]any); ok {
+			return imageFromURL(asString(object["url"])), true
+		}
+		return imageFromURL(asString(block["image_url"])), true
+	default:
+		return Image{}, false
 	}
 }
 

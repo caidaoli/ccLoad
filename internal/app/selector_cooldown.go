@@ -622,8 +622,23 @@ func (s *Server) keyModelScopeAllowsRow(cfg *modelpkg.Config, key *modelpkg.APIK
 	return false
 }
 
-func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config, requested, requestProtocol string, session *responsesExecutionSession, apiKeys []*modelpkg.APIKey) (modelRoutingSelection, error) {
+/**
+ * @brief 从当前渠道选出可用模型行，普通请求沿用执行会话绑定或组内轮转。
+ * @param ctx 当前请求上下文。
+ * @param cfg 当前候选渠道。
+ * @param requested 请求的逻辑模型。
+ * @param requestProtocol 客户端协议。
+ * @param session Responses 执行会话；无会话时为 nil。
+ * @param apiKeys 本渠道的独立 Key；OAuth 渠道为 nil。
+ * @param cursorModel 已验证工具续轮的实际模型；非空时只接受可用且匹配的模型行，不推进轮转。
+ * @return 选中的模型行；无法选择时为零值。
+ * @return 无可用行时为 errNoAvailableModelRow，无授权 Key 时为 ErrNoAPIKeyForModel；严格选行时保留冷却查询错误。
+ */
+func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config, requested, requestProtocol string, session *responsesExecutionSession, apiKeys []*modelpkg.APIKey, cursorModel string) (modelRoutingSelection, error) {
 	if requested == "" || requested == "*" {
+		if cursorModel != "" {
+			return modelRoutingSelection{}, errNoAvailableModelRow
+		}
 		return modelRoutingSelection{logicalModel: requested, entry: modelpkg.ModelEntry{Model: requested}, wildcard: true}, nil
 	}
 	rows := s.configuredModelRows(cfg, requested)
@@ -632,7 +647,7 @@ func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config
 	}
 	allCooldowns, err := s.getAllModelCooldowns(ctx)
 	if err != nil {
-		if cfg.AntigravityCredits {
+		if cfg.AntigravityCredits || cursorModel != "" {
 			return modelRoutingSelection{}, err
 		}
 		log.Printf("[ERROR] 获取模型冷却状态失败，跳过选行冷却过滤: %v", err)
@@ -656,12 +671,19 @@ func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config
 		}
 		available[i] = readyAt.IsZero()
 		hasAvailable = hasAvailable || available[i]
+		if cursorModel != "" && available[i] && !cooldowns[cursorModel].After(now) &&
+			cursorModel == s.resolveFinalUpstreamModel(cfg, selected, requestProtocol) {
+			return selected, nil
+		}
 		if cfg.CooldownFallback {
 			if bestFallback < 0 || readyAt.Before(earliest) {
 				bestFallback, earliest = i, readyAt
 			}
 			continue
 		}
+	}
+	if cursorModel != "" {
+		return modelRoutingSelection{}, errNoAvailableModelRow
 	}
 	if apiKeys != nil && !hasAuthorized {
 		return modelRoutingSelection{}, ErrNoAPIKeyForModel

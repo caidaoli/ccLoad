@@ -252,7 +252,8 @@ func (sr *chatStreamResult) costUSD(testReq *testutil.TestChannelRequest) (float
 		actualModel = testReq.Model
 	}
 	if sr.upstreamProtocol == "cursor-sdk-bridge" {
-		return channelTestCostFromUsage(testReq, actualModel, sr.requestedServiceTier, sr.forwarded)
+		cost, _, ok := channelTestCostFromUsage(testReq, actualModel, sr.requestedServiceTier, sr.forwarded)
+		return cost, ok
 	}
 	return channelTestCostUSD(testReq, actualModel, sr.requestedServiceTier, sr.usageParser)
 }

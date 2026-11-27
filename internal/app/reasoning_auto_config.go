@@ -123,15 +123,15 @@ func (s *Server) validateReasoningAutoModels(ctx context.Context, cfg model.Reas
 		return nil
 	}
 	for _, name := range cfg.BusinessModels {
-		if reasoningDecisionLevels(name) == nil {
-			return fmt.Errorf("business model %q has no known reasoning levels", name)
-		}
 		channels, err := s.store.GetEnabledChannelsByModel(ctx, name)
 		if err != nil {
 			return fmt.Errorf("load business model %q: %w", name, err)
 		}
 		if len(channels) == 0 {
 			return fmt.Errorf("business model %q has no enabled chat channel", name)
+		}
+		if s.reasoningDecisionLevels(name, channels, "") == nil {
+			return fmt.Errorf("business model %q has no known reasoning levels", name)
 		}
 	}
 	channels, err := s.store.GetEnabledSystemOneChannelsByModel(ctx, cfg.DecisionModel)

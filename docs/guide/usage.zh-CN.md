@@ -302,9 +302,11 @@ curl -X POST http://localhost:8080/admin/channels \
 
 ### Cursor
 
-在渠道管理中选择 **Cursor** 并导入 Cursor User API Key。ccLoad 会用它换取控制面会话；不提供无法用于推理的浏览器登录和 `accessToken` 导入。身份和额度刷新走 `api2.cursor.sh`；模型目录直接读取 SDK Bridge 的 `ListModels`，保存 Cursor 返回的模型 ID，并补充 SDK 支持的 `-fast` 形式，不生成思考等级变体。启动时只要存在 Cursor 渠道，ccLoad 就会在后台查找并探活已有 `cursor-sdk-bridge`；没有可用 Bridge 时下载官方锁定版本、校验内置 SHA-256，并原子安装到 `cursor-sdk/bin/<version>`：设置 `SQLITE_PATH` 时位于数据库旁，否则使用操作系统用户缓存，最后才回退系统临时目录。该过程不阻塞 HTTP 服务启动，不需要安装 Cursor CLI；手动或离线安装可从 [Cursor SDK Bridge 官方发布页](https://github.com/cursor/sdk-bridge/releases)下载。
+在渠道管理中选择 **Cursor** 并导入 Cursor User API Key。ccLoad 会用它换取控制面会话；不提供无法用于推理的浏览器登录和 `accessToken` 导入。身份和额度刷新走 `api2.cursor.sh`；模型目录直接读取 SDK Bridge 的 `ListModels`，保留原生模型 ID，并按账号目录提供速度和上下文选项。例如，`composer-2.5-slow` 选择标准速度，`claude-haiku-5-5@300k` 选择 300k 上下文。上下文与速度的组合必须由目录明确列出。导入或在渠道管理中「获取模型」后，Codex 和 Gemini 的模型列表会显示账号目录声明的标称上下文，例如 `@300k` 显示 `300000`。旧渠道可获取一次模型以补齐窗口和思考档位。Codex 显示模型支持的档位，自动思考从可用路由共同支持的档位中选择。同名路由的窗口不一致或缺少记录时，使用原有静态目录值。启动时只要存在 Cursor 渠道，ccLoad 就会在后台查找并探活已有 `cursor-sdk-bridge`；没有可用 Bridge 时下载官方锁定版本、校验内置 SHA-256，并原子安装到 `cursor-sdk/bin/<version>`：设置 `SQLITE_PATH` 时位于数据库旁，否则使用操作系统用户缓存，最后才回退系统临时目录。该过程不阻塞 HTTP 服务启动，不需要安装 Cursor CLI；手动或离线安装可从 [Cursor SDK Bridge 官方发布页](https://github.com/cursor/sdk-bridge/releases)下载。
 
-SDK Agent 只开放 Cursor 的 `mcp` capability group：SDK custom tools 通过 Cursor 合成的 `custom-user-tools` MCP server 暴露，网关本机的 shell、文件等其他内建工具仍被禁用。客户端函数通过 `LocalAgentOptions.custom_tools` 注册；ccLoad 在经过鉴权的 loopback 地址提供 `SdkCustomToolCallbackService`，把原生回调转换为 Anthropic `tool_use` 或 OpenAI `tool_calls`，并挂起对应 Agent，直到客户端下一轮交回匹配结果。同一 Cursor 渠道的并发请求按 `agent_id` 隔离会话、按 `call_id` 路由回调。
+SDK Agent 只开放 Cursor 的 `mcp` capability group：SDK custom tools 通过 Cursor 合成的 `custom-user-tools` MCP server 暴露，网关本机的 shell、文件等其他内建工具仍被禁用。客户端函数通过 `LocalAgentOptions.custom_tools` 注册；ccLoad 在经过鉴权的 loopback 地址提供 `SdkCustomToolCallbackService`，把原生回调转换为 Anthropic `tool_use` 或 OpenAI `tool_calls`，并挂起对应 Agent，直到客户端下一轮交回匹配结果。在同一 Cursor 渠道上并行运行主代理和子代理时，每个线程应持续发送自己的 `Thread-Id`，并沿用首次请求的 `Session-Id`。Claude Code Messages 也识别其原生会话标识和 `X-Claude-Code-Agent-Id`。只有标识与原调用一致，才能交回工具结果或重放回复。单纯交回工具结果时，省略工具列表会继承当前权限，显式空列表会关闭后续工具调用。客户端可在工具结果的内容块中附带内联截图和文字。
+
+使用 Responses 的 `previous_response_id` 时，两次请求都传相同的 `Session-Id`；并行子线程各自传稳定的 `Thread-Id`。也可发送完整历史并移除 `previous_response_id`。Cursor 支持 `/v1/responses/compact` 生成和恢复 ccLoad 摘要。并行工具的结果应整批交回，遗漏时可补齐后用原调用 ID 重试。如果客户端每次只能执行一个工具，可设置 `parallel_tool_calls: false`；Anthropic Messages 使用 `tool_choice.disable_parallel_tool_use: true`。
 
 渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
 

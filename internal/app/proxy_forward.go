@@ -1736,6 +1736,8 @@ func (s *Server) handleSuccessResponse(
 	}
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite) ||
 		(reqCtx.isStreaming && !deferredWriter.Committed() && parser.GetLastError() != nil)
+	var nonStreamResponsesTurn responsesWebsocketTurnResult
+	var hasNonStreamResponsesTurn bool
 	if reqCtx.isStreaming {
 		if abortedBeforeCommit {
 			streamErr = nil
@@ -1750,6 +1752,9 @@ func (s *Server) handleSuccessResponse(
 		}
 	} else if !deferredWriter.Committed() && streamErr == nil {
 		reqCtx.advisor.observeJSON(deferredWriter.buffer.Bytes())
+		if reqCtx.transformPlan.ClientProtocol == protocol.Codex && reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyResponses {
+			nonStreamResponsesTurn, hasNonStreamResponsesTurn = responsesHTTPJSONTurn(deferredWriter.buffer.Bytes())
+		}
 		// Non-stream responses are atomic: any bytes read successfully are
 		// committed together. Empty-body validation is handled before this path
 		// by probeEmptyOKResponse; preserving the existing passthrough behavior
@@ -1792,6 +1797,9 @@ func (s *Server) handleSuccessResponse(
 	}
 	streamComplete = parser.IsStreamComplete()
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
+	if hasNonStreamResponsesTurn && !result.HasResponsesTurnResult {
+		result.ResponsesTurnResult, result.HasResponsesTurnResult = nonStreamResponsesTurn, true
+	}
 	if errors.Is(streamErr, util.ErrUpstreamPromptBlocked) {
 		if result.ResponseCommitted {
 			if writeErr := writeGeminiPromptBlockStreamError(w, reqCtx.transformPlan.ClientProtocol, responsesStreamCursor{}, streamErr.Error()); writeErr != nil {
@@ -1987,8 +1995,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			result.Body = []byte(err.Error())
 			return result, reqCtx.Duration().Seconds(), fmt.Errorf("%w: %w", util.ErrUpstreamInvalidResponse, err)
 		}
-		result.ResponsesTurnResult = responsesWebsocketTurnFromResponse(gjson.ParseBytes(translatedBody))
-		result.HasResponsesTurnResult = true
+	}
+	if reqCtx.transformPlan.ClientProtocol == protocol.Codex && reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyResponses {
+		result.ResponsesTurnResult, result.HasResponsesTurnResult = responsesHTTPJSONTurn(translatedBody)
+		result.ResponsesTurnResult.localResponseID = result.HasResponsesTurnResult &&
+			(upstreamProtocol != util.ProtocolCodex || reqCtx.responsesCompaction != nil)
 	}
 
 	reqCtx.antigravityReplay.captureJSON(translatedBody)
@@ -2061,8 +2072,6 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	parser.antigravityFilter = reqCtx.antigravityOAuth
 	// Usage belongs to the upstream; continuation IDs and output belong to the
 	// Responses events actually sent to the client after translation.
-	var translatedTurn responsesWebsocketTurnResult
-	var hasTranslatedTurn bool
 	var responsesCursor responsesStreamCursor
 	var translatedComplete bool
 	var codeBuddyDone bool
@@ -2079,14 +2088,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			eventType = cmp.Or(event.Get("type").Str, eventType)
 			terminalType := responsesTerminalType(eventType, event)
 			if codexClient {
-				responsesCursor.observe(data)
-				if isSuccessfulResponsesTerminal(terminalType) {
-					translatedComplete = true
-					if response := event.Get("response"); response.IsObject() {
-						translatedTurn = responsesWebsocketTurnFromResponse(response)
-						hasTranslatedTurn = true
-					}
-				}
+				responsesCursor.observe(event, terminalType)
+				translatedComplete = translatedComplete || isSuccessfulResponsesTerminal(terminalType)
 			}
 			if terminalType == "response.failed" || eventType == "error" || isErrorPayload(string(data), upstreamProtocol == util.ProtocolCodex) {
 				translatedError = bytes.Clone(data)
@@ -2365,7 +2368,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	}
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
-		result.ResponsesTurnResult, result.HasResponsesTurnResult = translatedTurn, hasTranslatedTurn
+		result.ResponsesTurnResult, result.HasResponsesTurnResult = responsesCursor.turn, responsesCursor.turn.completedResponseID != ""
+		result.ResponsesTurnResult.localResponseID = result.HasResponsesTurnResult && upstreamProtocol != util.ProtocolCodex
 	}
 	if (reqCtx.transformPlan.ClientProtocol == protocol.Codex || reqCtx.transformPlan.ClientProtocol == protocol.OpenAI) &&
 		result.ResponseCommitted && !translatedComplete && translatedError == nil {
@@ -3006,15 +3010,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			return nil, 0, &protocol.RequestTranslationError{From: plan.ClientProtocol, To: plan.UpstreamProtocol, Err: err}
 		}
 		plan.TranslatedBody = expanded
-		if plan.NeedsTransform {
-			for _, item := range gjson.GetBytes(expanded, "input").Array() {
-				if typ := item.Get("type").String(); typ == "compaction" || typ == "compaction_summary" {
-					return nil, 0, &protocol.RequestTranslationError{
-						From: plan.ClientProtocol, To: plan.UpstreamProtocol,
-						Err: errors.New("cannot restore foreign compaction history for protocol conversion; use its original Responses provider or resend the full conversation"),
-					}
-				}
-			}
+		if plan.NeedsTransform && hasForeignResponsesCompaction(expanded) {
+			return nil, 0, &protocol.RequestTranslationError{From: plan.ClientProtocol, To: plan.UpstreamProtocol, Err: errForeignResponsesCompaction}
 		}
 		if native != nil {
 			incremental, err := expandResponsesCompaction(native.incrementalBody)
@@ -3049,7 +3046,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		strings.TrimSpace(gjson.GetBytes(plan.TranslatedBody, "previous_response_id").String()) != "" {
 		return nil, 0, &protocol.RequestTranslationError{
 			From: plan.ClientProtocol, To: plan.UpstreamProtocol,
-			Err: errors.New("previous response is not available for protocol conversion; resend the full conversation input without previous_response_id"),
+			Err: errResponsesPreviousResponseUnavailable,
 		}
 	}
 	// 1. 创建请求上下文（处理超时）
@@ -5493,8 +5490,10 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	// 仅本地排队的 Trial 复用原模型，唤醒不得推进模型组轮转。
 	selectedModel, pinned := zaiStartPinnedModel(reqCtx, cfg.ID)
 	var selectErr error
-	if !pinned {
-		selectedModel, selectErr = s.selectChannelModelRow(ctx, cfg, reqCtx.originalModel, string(reqCtx.clientProtocol), reqCtx.routingSession, apiKeys)
+	if reqCtx.cursorToolRoute.channelID == cfg.ID {
+		selectedModel = reqCtx.cursorToolRoute.model
+	} else if !pinned {
+		selectedModel, selectErr = s.selectChannelModelRow(ctx, cfg, reqCtx.originalModel, string(reqCtx.clientProtocol), reqCtx.routingSession, apiKeys, "")
 	}
 	if selectErr != nil {
 		return nil, selectErr

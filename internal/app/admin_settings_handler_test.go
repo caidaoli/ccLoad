@@ -963,6 +963,36 @@ func TestReasoningAutoSettingsValidateModelAndPersist(t *testing.T) {
 	if w.Code != http.StatusOK || server.reasoningAuto.Load().DecisionModel != "jev-latest" {
 		t.Fatalf("legacy model policy status=%d body=%s", w.Code, w.Body.String())
 	}
+
+	cursor := newCursorOAuthChannel("cursor business", `{"type":"cursor","access_token":"session","api_key":"key",
+		"effort_levels":{"native-cursor@1m":["low","xhigh"],"native-cursor-without-effort":[]}}`, []string{"cursor-alias", "gpt-5.6-sol"})
+	cursor.ModelEntries[0].RedirectModel = "native-cursor@1m"
+	cursor.ModelEntries[1].RedirectModel = "native-cursor-without-effort"
+	if _, err := server.store.CreateConfig(ctx, cursor); err != nil {
+		t.Fatal(err)
+	}
+	cursorPolicy := strings.Replace(policy, `"gpt-5.5"`, `"cursor-alias"`, 1)
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, cursorPolicy)
+	if w.Code != http.StatusOK || !slices.Equal(server.reasoningAuto.Load().BusinessModels, []string{"cursor-alias"}) {
+		t.Fatalf("Cursor alias policy status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, strings.Replace(policy, `"gpt-5.5"`, `"gpt-5.6-sol"`, 1))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no known reasoning levels") {
+		t.Fatalf("Cursor unsupported model policy status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/reasoning-auto/prompts", nil)
+	server.HandleReasoningPrompts(c)
+	var options struct {
+		Data struct {
+			BusinessModels []string `json:"business_models"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &options)
+	if w.Code != http.StatusOK || !slices.Equal(options.Data.BusinessModels, []string{"cursor-alias", "gpt-5.5"}) {
+		t.Fatalf("Cursor business options status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 /**

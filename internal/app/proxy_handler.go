@@ -618,9 +618,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	var routingSession *responsesExecutionSession
 	var executionSessionRequestBody []byte
 	var nativeRequestBody []byte
-	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
+	var responsesReplayLocalID bool
+	var cursorToolReplay, cursorToolReplayCandidate *cursorResponsesHTTPToolReplay
+	if clientProtocol == protocol.Codex && requestMethod == http.MethodPost &&
 		requestFamily == protocol.RequestFamilyResponses {
 		sessionID := responsesExecutionSessionID(c.Request.Header)
+		previousID := strings.TrimSpace(parseJSONBytesNoCopy(all).Get("previous_response_id").String())
 		// Ordinary HTTP requests only need process-local state when the client supplied
 		// the explicit Session-Id contract. Cache routing hints are not conversation IDs.
 		if tokenHashStr != "" && sessionID != "" {
@@ -638,27 +641,50 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			}
 			defer executionSession.releaseTurn()
 			routingSession = executionSession
-			replayBody, incrementalBody, localContinuation, errNormalize :=
-				executionSession.transcript.normalizeHTTPRequests(all)
-			if errNormalize != nil {
-				writeLocalProxyError(c, http.StatusBadRequest, errNormalize.Error())
-				return
-			}
-			if !localContinuation {
-				executionSession = nil
+			if replay := executionSession.cursorHTTPToolReplay; replay != nil && previousID == replay.previousID {
+				if len(replay.body) == 0 || !time.Now().Before(replay.expires) ||
+					replay.request != cursorResponsesReplayRequest(c.Request, incoming.body) {
+					writeLocalProxyError(c, http.StatusBadRequest, errResponsesPreviousResponseUnavailable.Error())
+					return
+				}
+				cursorToolReplay = replay
 			} else {
-				executionSessionRequestBody = replayBody
-				// HTTP may continue an already established upstream websocket, but it must
-				// never create one. Without an attached socket, preserve HTTP wire semantics.
-				if _, connected := executionSession.upstream.targetSnapshot(); connected {
-					all = replayBody
-					nativeRequestBody = incrementalBody
+				replayBody, incrementalBody, localContinuation, errNormalize :=
+					executionSession.transcript.normalizeHTTPRequests(all)
+				if errNormalize != nil {
+					writeLocalProxyError(c, http.StatusBadRequest, errNormalize.Error())
+					return
+				}
+				if !localContinuation {
+					executionSession = nil
+				} else {
+					executionSessionRequestBody = replayBody
+					responsesReplayLocalID = executionSession.transcript.lastResponseIDLocal && previousID != ""
+					if strings.HasPrefix(previousID, cursorResponsesIDPrefix) &&
+						len(executionSession.transcript.pendingToolCallIDs) > 0 && !responsesCompactionRequested(effectiveRequestPath, all) {
+						cursorToolReplayCandidate = &cursorResponsesHTTPToolReplay{
+							previousID: previousID,
+							request:    cursorResponsesReplayRequest(c.Request, incoming.body),
+						}
+					}
+					// HTTP may continue an already established upstream websocket, but it must
+					// never create one. Without an attached socket, preserve HTTP wire semantics.
+					if _, connected := executionSession.upstream.targetSnapshot(); isStreaming && connected {
+						all = replayBody
+						nativeRequestBody = incrementalBody
+					}
 				}
 			}
+		}
+		if executionSession == nil && strings.HasPrefix(previousID, cursorResponsesIDPrefix) {
+			writeLocalProxyError(c, http.StatusBadRequest, errResponsesPreviousResponseUnavailable.Error())
+			return
 		}
 	}
 
 	var reqCtx *proxyRequestContext
+	var replayWriter *cursorResponsesReplayWriter
+	var privacyOutput *privacyResponseWriter
 	privacySession := s.privacySession(c)
 	beforePrivacy := all
 	all, err = maskPrivacyBody(privacySession, beforePrivacy, c.Request.Header.Get("Content-Type"))
@@ -675,18 +701,22 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		writeLocalProxyError(c, http.StatusBadRequest, errPrivacyMasking.Error())
 		return
 	}
-	if privacySession != nil {
-		output := newPrivacyResponseWriter(c.Writer, privacySession)
-		c.Writer = &privacyGinWriter{ResponseWriter: c.Writer, output: output}
+	if cursorToolReplayCandidate != nil {
+		replayWriter = &cursorResponsesReplayWriter{ResponseWriter: c.Writer}
+		c.Writer = replayWriter
+	}
+	if privacySession != nil && cursorToolReplay == nil {
+		privacyOutput = newPrivacyResponseWriter(c.Writer, privacySession)
+		c.Writer = &privacyGinWriter{ResponseWriter: c.Writer, output: privacyOutput}
 		defer func() {
-			if finishErr := output.Finish(); finishErr != nil {
+			if finishErr := privacyOutput.Finish(); finishErr != nil {
 				log.Print("[WARN] privacy response restoration failed")
 			}
 			var requestID int64
 			if reqCtx != nil {
 				requestID = reqCtx.activeReqID
 			}
-			s.privacyStats.finish(output, requestID)
+			s.privacyStats.finish(privacyOutput, requestID)
 		}()
 	}
 
@@ -715,7 +745,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 
-	if len(cands) == 0 {
+	if len(cands) == 0 && cursorToolReplay == nil {
 		if requestFamily == protocol.RequestFamilyAlphaSearch {
 			writeEmptyAlphaSearchResponse(c.Writer)
 			return
@@ -768,6 +798,20 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			return
 		}
 	}
+	if cursorToolReplay != nil {
+		if !s.cursorResponsesReplayRouteAllowed(ctx, cands, originalModel, string(clientProtocol), cursorToolReplay) {
+			writeLocalProxyError(c, http.StatusBadRequest, errResponsesPreviousResponseUnavailable.Error())
+			return
+		}
+		contentType := "application/json"
+		if isStreaming {
+			contentType = "text/event-stream"
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+		}
+		c.Data(http.StatusOK, contentType, cursorToolReplay.body)
+		return
+	}
 	var sessionAffinityKey string
 	var sessionAffinity sessionAffinityTarget
 	var hasSessionAffinity bool
@@ -814,6 +858,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		reqCtx.routingSession = routingSession
 	}
 	reqCtx.responsesReplayBody = executionSessionRequestBody
+	reqCtx.responsesReplayLocalID = responsesReplayLocalID
+	reqCtx.cursorHTTPToolReplay = cursorToolReplayCandidate
 	if len(reqCtx.responsesReplayBody) > 0 {
 		reqCtx.responsesReplayBody, err = privacySession.MaskJSON(reqCtx.responsesReplayBody)
 		if err != nil {
@@ -836,7 +882,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 				transcript = local
 			}
 		}
-		s.prepareReasoningTurn(ctx, reqCtx, transcript, originalReasoningBody, reasoningExplicit)
+		s.prepareReasoningTurn(ctx, reqCtx, cands, transcript, originalReasoningBody, reasoningExplicit)
 		ctx = withReasoningRequest(ctx, reqCtx)
 	}
 	reqCtx.observer = &ForwardObserver{
@@ -865,6 +911,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
+			if replay := lastResult.responsesTurn.cursorHTTPToolReplay; replay != nil {
+				if privacyOutput == nil || privacyOutput.Finish() == nil {
+					replay.body = replayWriter.body
+				}
+				replay.expires = time.Now().Add(cursorResponsesReplayTTL)
+			}
 			if privacySession != nil && len(lastResult.responsesTurn.completedOutput) > 0 {
 				if restored, restoreErr := privacySession.RestoreJSON(lastResult.responsesTurn.completedOutput); restoreErr == nil {
 					lastResult.responsesTurn.completedOutput = restored
@@ -1014,6 +1066,7 @@ func (s *Server) runProxyAttemptPass(
 	stopAfterFailure func(current, next *model.Config, result *proxyResult) bool,
 ) (lastResult *proxyResult, succeeded bool) {
 	sawAlphaSearchUnsupported := false
+	cands = s.preferCursorToolRoute(ctx, cands, reqCtx)
 	// Session affinity may reorder candidates; paid attempts must still come last.
 	ordered := make([]*model.Config, 0, len(cands))
 	for _, cfg := range cands {

@@ -7,6 +7,72 @@ import (
 	"time"
 )
 
+/**
+ * @brief 验证同一个 HTTP 请求的固定费只取一次。
+ * @param t 测试上下文。
+ */
+func TestCalculateIncrementalCostBreakdownChargesFixedCostOnce(t *testing.T) {
+	breakdown := CalculateIncrementalCostBreakdownWithPrice("grok-2-image-1212", "", OpenAIRateCardAPI, time.Time{}, nil,
+		[]TokenCostUsage{{InputTokens: 100}, {InputTokens: 200, OutputTokens: 50}})
+	if breakdown.Total != 0.07 || breakdown.Input.Quantity != 300 || breakdown.Output.Quantity != 50 {
+		t.Fatalf("incremental breakdown=%+v, want a single $0.07 fee and aggregate tokens", breakdown)
+	}
+}
+
+/**
+ * @brief 按 Cursor 价目验证不同速度、256K 档位与渠道价格覆盖。
+ * @param t 测试上下文。
+ */
+func TestCalculateCursorCostBreakdown(t *testing.T) {
+	usage := TokenCostUsage{InputTokens: 1_000, OutputTokens: 1_000, CacheReadTokens: 1_000}
+	for _, tc := range []struct {
+		model string
+		want  float64
+	}{
+		{"composer-2.5-slow", 0.0032},
+		{"composer-2.5-fast", 0.0185},
+		{"grok-4.6", 0.0085},
+		{"grok-4.6-fast", 0.017},
+		{"grok-4.7@500k-slow", 0.0085},
+		{"Grok-4.7@500k-Fast", 0.017},
+		{"grok-4.7-fast@500k", 0.017},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			got, ok := CalculateCursorCostBreakdown(tc.model, CursorPricingModel(tc.model), nil, []TokenCostUsage{usage})
+			if !ok || math.Abs(got.Total-tc.want) > 1e-12 {
+				t.Fatalf("Cursor cost=%g, found=%v, want %g", got.Total, ok, tc.want)
+			}
+		})
+	}
+	short := TokenCostUsage{InputTokens: 220_000, CacheReadTokens: 36_000, OutputTokens: 1_000}
+	long := short
+	long.CacheReadTokens++
+	got, ok := CalculateCursorCostBreakdown("grok-4.7@500k", "grok-4.7-fast", nil, []TokenCostUsage{short, long})
+	want := (220_000*4.0 + 36_000*1.0 + 1_000*12.0 + 220_000*6.0 + 36_001*1.5 + 1_000*18.0) / 1_000_000
+	if !ok || math.Abs(got.Total-want) > 1e-12 {
+		t.Fatalf("Cursor incremental cost=%g, found=%v, want %g", got.Total, ok, want)
+	}
+	input, output, cache := 0.4, 1.2, 0.0
+	custom := &CustomModelPrice{InputPrice: &input, OutputPrice: &output, CacheReadPrice: &cache}
+	got, ok = CalculateCursorCostBreakdown("grok-4.7@500k-fast", "grok-4.7-fast", custom, []TokenCostUsage{usage})
+	if !ok || math.Abs(got.Total-0.0016) > 1e-12 || got.CacheRead.Cost != 0 {
+		t.Fatalf("Cursor channel override=%+v, found=%v, want $0.0016 with free cache read", got, ok)
+	}
+	if _, ok := CalculateCursorCostBreakdown("gpt-6-luna", "gpt-6-luna", nil, []TokenCostUsage{usage}); ok {
+		t.Fatal("Cursor reference pricing matched a third-party model")
+	}
+	if err := InstallCustomModelPricing(map[string]ModelPricing{"composer-2.5": {
+		InputPrice: 0.70, OutputPrice: 0.80, HasCacheReadPrice: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = InstallCustomModelPricing(nil) })
+	got, ok = CalculateCursorCostBreakdown("composer-2.5", "composer-2.5-fast", nil, []TokenCostUsage{usage})
+	if !ok || math.Abs(got.Total-0.0015) > 1e-12 {
+		t.Fatalf("Cursor global override=%+v, found=%v, want $0.0015", got, ok)
+	}
+}
+
 // ============================================================================
 // 成本计算器测试
 // ============================================================================

@@ -16,10 +16,19 @@ var errResponsesWebsocketPreviousResponseNotFound = errors.New(
 	"previous response is not available on this websocket; resend the full conversation input without previous_response_id",
 )
 
+/**
+ * @brief 标记本地转换没有可核对的 Responses 续接历史。
+ */
+var errResponsesPreviousResponseUnavailable = errors.New("previous response is not available for protocol conversion; resend the full conversation input without previous_response_id")
+
+/**
+ * @brief 跟踪一个执行会话最后一轮的请求、输出和续接状态。
+ */
 type responsesWebsocketSession struct {
 	lastRequest               []byte
 	lastResponseOutput        []byte
 	lastResponseID            string
+	lastResponseIDLocal       bool ///< 上轮终态的 ID 只能由本地会话恢复。
 	pendingToolCallIDs        []string
 	replacementReplayRequired bool
 	maxBodyBytes              int64
@@ -100,11 +109,14 @@ func (s *responsesWebsocketSession) normalizeFullReplacement(payload []byte) ([]
 	return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
 }
 
-// normalizeRequests 同时生成两份请求：
-//   - replayRequest 始终包含完整 transcript，可安全发送到任意新 transport；
-//   - incrementalRequest 仅包含本轮 input，并用 previous_response_id 续接当前原生 WS。
-//
-// 连接是否仍可复用由上游 session 在选定渠道、Key 和 URL 后决定。这里不猜 transport 状态。
+/**
+ * @brief 生成 Responses 的完整回放正文和可用于原生 WebSocket 的续接正文。
+ * @param payload 本轮 WebSocket 事件。
+ * @return 含完整会话历史的正文，失败时为 nil。
+ * @return 同连接续接正文；上轮 ID 仅在本地有效时使用完整回放，失败时为 nil。
+ * @return 请求无效或恢复失败时返回错误；未知上一轮 ID 可用 errors.Is 匹配 errResponsesWebsocketPreviousResponseNotFound。
+ * @note 连接是否可复用由上游会话在确定渠道、Key 和 URL 后决定。
+ */
 func (s *responsesWebsocketSession) normalizeRequests(payload []byte) (replayRequest, incrementalRequest []byte, err error) {
 	requestType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
@@ -124,7 +136,7 @@ func (s *responsesWebsocketSession) normalizeRequests(payload []byte) (replayReq
 		s.replacementReplayRequired = false
 		return replayRequest, bytes.Clone(replayRequest), nil
 	}
-	if len(s.lastRequest) == 0 {
+	if len(s.lastRequest) == 0 || s.lastResponseIDLocal {
 		return replayRequest, bytes.Clone(replayRequest), nil
 	}
 
@@ -156,10 +168,14 @@ func (s *responsesWebsocketSession) requireReplacementReplay() {
 	}
 }
 
-// normalizeHTTPRequests keeps ordinary Responses HTTP semantics intact:
-// no previous_response_id starts a replacement response, while a continuation
-// may replay to another protocol/transport only when this process owns the
-// referenced transcript. The caller keeps the original native HTTP wire body.
+/**
+ * @brief 恢复当前执行会话可核对的 HTTP Responses 历史。
+ * @param payload 客户端原始 HTTP 请求。
+ * @return 完整回放请求，保留 HTTP 的流式选择；无法恢复时为 nil。
+ * @return 已建立的原生 WebSocket 可用的流式增量请求；无法恢复时为 nil。
+ * @return 当前进程可维护本轮历史时为 true。
+ * @return 已知会话中的续接无效或请求无法规范化时返回错误。
+ */
 func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
 	replayRequest, incrementalRequest []byte, localContinuation bool, err error,
 ) {
@@ -175,29 +191,42 @@ func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
 		}
 	}
 	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
-	if previousID != "" && len(s.lastRequest) == 0 {
+	if previousID != "" && previousID != s.lastResponseID {
 		return nil, nil, false, nil
 	}
 	if previousID == "" {
 		replayRequest, err = normalizeInitialResponsesWebsocketRequest(websocketPayload, s.maxBodyBytes)
-		if err != nil {
-			return nil, nil, false, err
-		}
-		return replayRequest, bytes.Clone(replayRequest), true, nil
-	}
-	if !gjson.GetBytes(websocketPayload, "instructions").Exists() {
-		instructions := gjson.GetBytes(s.lastRequest, "instructions")
-		if instructions.Exists() {
-			websocketPayload, err = sjson.SetRawBytes(websocketPayload, "instructions", []byte(instructions.Raw))
-			if err != nil {
-				return nil, nil, false, fmt.Errorf("inherit HTTP instructions: %w", err)
+		incrementalRequest = replayRequest
+	} else {
+		if !gjson.GetBytes(websocketPayload, "instructions").Exists() {
+			instructions := gjson.GetBytes(s.lastRequest, "instructions")
+			if instructions.Exists() {
+				websocketPayload, err = sjson.SetRawBytes(websocketPayload, "instructions", []byte(instructions.Raw))
+				if err != nil {
+					return nil, nil, false, fmt.Errorf("inherit HTTP instructions: %w", err)
+				}
 			}
 		}
+		replayRequest, incrementalRequest, err = s.normalizeRequests(websocketPayload)
 	}
-	replayRequest, incrementalRequest, err = s.normalizeRequests(websocketPayload)
-	return replayRequest, incrementalRequest, err == nil, err
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !isStreamingRequest("/v1/responses", payload) {
+		replayRequest, err = sjson.SetBytes(replayRequest, "stream", false)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("restore HTTP streaming mode: %w", err)
+		}
+	}
+	return replayRequest, incrementalRequest, true, nil
 }
 
+/**
+ * @brief 保存下一轮可恢复的响应 ID 来源、输入和已交付的输出。
+ * @param request 当前轮完整回放正文。
+ * @param result 下游已收到的终态或需要保留已交付工具的中断结果。
+ * @note 调用方持有当前执行会话的轮次锁。
+ */
 func (s *responsesWebsocketSession) commit(request []byte, result responsesWebsocketTurnResult) {
 	if s == nil {
 		return
@@ -216,6 +245,7 @@ func (s *responsesWebsocketSession) commit(request []byte, result responsesWebso
 		s.lastResponseOutput = bytes.Clone(result.completedOutput)
 	}
 	s.lastResponseID = strings.TrimSpace(result.completedResponseID)
+	s.lastResponseIDLocal = result.localResponseID
 	s.pendingToolCallIDs = append([]string(nil), result.pendingToolCallIDs...)
 }
 
@@ -234,6 +264,22 @@ func responsesWebsocketTurnFromResponse(response gjson.Result) responsesWebsocke
 		completedOutput:     output,
 		pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
 	}
+}
+
+/**
+ * @brief 提取 HTTP JSON 中可用于会话续接的 Responses 终态。
+ * @param body 已生成或读完的下游 JSON 响应正文。
+ * @return 已完成或不完整的响应及输出；其他 JSON 或无有效响应 ID 时为空。
+ * @return 捕获到可续接终态时为 true。
+ */
+func responsesHTTPJSONTurn(body []byte) (responsesWebsocketTurnResult, bool) {
+	response := parseJSONBytesNoCopy(body)
+	status := response.Get("status").String()
+	if (status != "completed" && status != "incomplete") || response.Get("id").Type != gjson.String || !json.Valid(body) {
+		return responsesWebsocketTurnResult{}, false
+	}
+	turn := responsesWebsocketTurnFromResponse(response)
+	return turn, turn.completedResponseID != ""
 }
 
 func normalizeInitialResponsesWebsocketRequest(payload []byte, maxBodyBytes int64) ([]byte, error) {

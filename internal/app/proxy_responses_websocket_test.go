@@ -1481,8 +1481,17 @@ func (c *responsesWebsocketWriteReturnGate) Write(payload []byte) (int, error) {
 
 func TestResponsesWebsocketInterruptDuringHTTPFrameWrite(t *testing.T) {
 	t.Parallel()
-	for _, localInterrupt := range []bool{true, false} {
-		t.Run(fmt.Sprintf("local_interrupt=%v", localInterrupt), func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		localInterrupt bool
+		privacy        bool
+	}{
+		{name: "local interrupt", localInterrupt: true},
+		{name: "disconnect"},
+		{name: "local interrupt with privacy", localInterrupt: true, privacy: true},
+		{name: "disconnect with privacy", privacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			peers := make(chan *websocket.Conn, 1)
 			stopPeer := make(chan struct{})
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -1526,7 +1535,11 @@ func TestResponsesWebsocketInterruptDuringHTTPFrameWrite(t *testing.T) {
 			defer interrupt.end()
 			bridge := newResponsesWebsocketBridgeWriter(conn, 0)
 			bridge.interrupt = interrupt
-			writer, stopWriteCancel := newCancelableResponseWriter(ctx, bridge)
+			var target http.ResponseWriter = bridge
+			if tc.privacy {
+				target = newPrivacyResponseWriter(bridge, privacyOutputTestSession(t))
+			}
+			writer, stopWriteCancel := newCancelableResponseWriter(ctx, target)
 			defer stopWriteCancel()
 			if _, err := writer.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n")); err != nil {
 				t.Fatal(err)
@@ -1545,7 +1558,7 @@ func TestResponsesWebsocketInterruptDuringHTTPFrameWrite(t *testing.T) {
 				t.Fatal("frame write did not reach return barrier")
 			}
 			payload := []byte(`{"type":"response.interrupt","response_id":"resp-1"}`)
-			if localInterrupt {
+			if tc.localInterrupt {
 				if !interrupt.deliver(payload) {
 					t.Fatal("active local interrupt was not accepted")
 				}
@@ -1560,7 +1573,7 @@ func TestResponsesWebsocketInterruptDuringHTTPFrameWrite(t *testing.T) {
 				t.Fatalf("already delivered frame write failed: %v", err)
 			}
 			_, err = writeResponsesWebsocketLocalInterrupt(conn, payload, []byte("[]"))
-			if !localInterrupt {
+			if !tc.localInterrupt {
 				if err == nil {
 					t.Fatal("ordinary context cancellation did not close the active websocket write")
 				}

@@ -183,20 +183,14 @@ func (s *Server) HandleReasoningPrompts(c *gin.Context) {
 	}
 	models := make(map[string][]string)
 	decision, business := []string{}, []string{}
-	checked := make(map[string]struct{})
+	businessChannels := make(map[string][]*model.Config)
 	for _, channel := range channels {
 		if !channel.Enabled {
 			continue
 		}
 		if !channel.IsSystemOne() {
 			for _, logical := range channel.GetModels() {
-				if _, ok := checked[logical]; ok {
-					continue
-				}
-				checked[logical] = struct{}{}
-				if reasoningDecisionLevels(logical) != nil {
-					business = append(business, logical)
-				}
+				businessChannels[logical] = append(businessChannels[logical], channel)
 			}
 			continue
 		}
@@ -210,6 +204,11 @@ func (s *Server) HandleReasoningPrompts(c *gin.Context) {
 					models[logical] = append(models[logical], template.ID)
 				}
 			}
+		}
+	}
+	for logical, routes := range businessChannels {
+		if s.reasoningDecisionLevels(logical, routes, "") != nil {
+			business = append(business, logical)
 		}
 	}
 	for _, templates := range models {

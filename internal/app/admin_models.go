@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,12 +40,18 @@ const batchModelRefreshTimeout = 30 * time.Second
 // Per-key discovery probes this many keys of one channel at a time.
 const modelFetchKeyConcurrency = 4
 
-type modelFetchKeyMode int
+/**
+ * @brief 模型发现的探测范围和保存约束。
+ */
+type modelFetchMode int
 
+/**
+ * @brief 读取、合并和覆盖刷新使用的模型发现策略。
+ */
 const (
-	modelFetchFirstAvailableKey modelFetchKeyMode = iota
-	modelFetchPerAvailableKey
-	modelFetchAllKeys
+	modelFetchFirstAvailableKey modelFetchMode = iota ///< 默认读取，探测首个可用 Key。
+	modelFetchPerAvailableKey                         ///< 逐 Key 读取或合并，探测所有可用 Key。
+	modelFetchForReplace                              ///< 覆盖刷新，包含范围为空的 Key，Cursor 要求实时目录。
 )
 
 // ============================================================
@@ -66,13 +73,24 @@ type FetchModelsRequest struct {
 	CustomRequestRules     *model.CustomRequestRules `json:"custom_request_rules,omitempty"` ///< 复用渠道规则；模型发现仅应用请求头改写
 }
 
-// FetchModelsResponse 获取模型列表响应
+/**
+ * @brief 模型发现结果及保存时所需的来源信息。
+ */
 type FetchModelsResponse struct {
-	Models    []model.ModelEntry   `json:"models"`          // 模型列表（包含redirect_model便于编辑）
-	Protocol  string               `json:"protocol"`        // 成功请求使用的实际上游协议
-	Source    string               `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
-	Debug     *FetchModelsDebug    `json:"debug,omitempty"` // 调试信息（仅开发环境）
-	KeyModels []FetchKeyModelsItem `json:"key_models,omitempty"`
+	Models        []model.ModelEntry       `json:"models"`          // 模型列表（包含redirect_model便于编辑）
+	Protocol      string                   `json:"protocol"`        // 成功请求使用的实际上游协议
+	Source        string                   `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
+	Debug         *FetchModelsDebug        `json:"debug,omitempty"` // 调试信息（仅开发环境）
+	KeyModels     []FetchKeyModelsItem     `json:"key_models,omitempty"`
+	cursorCatalog *cursorDiscoverySnapshot ///< 实时 Cursor 目录来源，仅供批量刷新检查。
+}
+
+/**
+ * @brief 批量保存 Cursor 模型时核对实时探测所依据的凭证和目录。
+ */
+type cursorDiscoverySnapshot struct {
+	apiKeyHash [sha256.Size]byte       ///< 探测所用 User API Key 的指纹。
+	catalog    cursorauth.ModelCatalog ///< 探测后保存的目录元数据。
 }
 
 // FetchKeyModelsItem identifies keys by row index and never exposes the credential.
@@ -299,11 +317,11 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		}
 		item.ChannelName = cfg.Name
 
-		keyMode := modelFetchPerAvailableKey
+		fetchMode := modelFetchPerAvailableKey
 		if mode == "replace" {
-			keyMode = modelFetchAllKeys
+			fetchMode = modelFetchForReplace
 		}
-		resp, err := s.fetchModelsForChannel(fetchCtx, cfg, overrideProtocol, keyMode)
+		resp, err := s.fetchModelsForChannel(fetchCtx, cfg, overrideProtocol, fetchMode)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()
@@ -325,7 +343,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 		item.Fetched = len(fetched)
-		item, persisted := s.applyFetchedModels(ctx, item, fetched, resp.KeyModels, mode, normalization)
+		item, persisted := s.applyFetchedModels(ctx, item, fetched, resp, mode, normalization)
 		if partialKeyFailure {
 			item.Warning = "部分 API Key 模型探测失败，失败 Key 保留原范围，其已有模型仍留在渠道中"
 		}
@@ -452,15 +470,37 @@ func modelsRetainedFromFailedProbes(
 	return retained, nil
 }
 
+/**
+ * @brief 趁渠道与探测凭证仍匹配时，合并或覆盖模型配置。
+ * @param ctx 本次保存操作的取消与截止时间上下文。
+ * @param item 单渠道刷新结果，已填入渠道 ID 和探测统计。
+ * @param fetched 待保存的归一化模型条目。
+ * @param response 探测结果，保存时用来核对仍在使用的凭证。
+ * @param mode merge 或 replace。
+ * @param normalization 保存前使用的模型名归一化选项。
+ * @return 更新、无变化或失败的单渠道结果。
+ * @return 确实写入渠道模型或 Key 范围时为 true。
+ */
 func (s *Server) applyFetchedModels(
 	ctx context.Context, item BatchRefreshModelsItem, fetched []model.ModelEntry,
-	probes []FetchKeyModelsItem, mode string, normalization modelNormalizationOptions,
+	response *FetchModelsResponse, mode string, normalization modelNormalizationOptions,
 ) (BatchRefreshModelsItem, bool) {
 	for {
 		cfg, err := s.store.GetConfig(ctx, item.ChannelID)
 		if err != nil {
 			item.Status, item.Error = "failed", "读取渠道失败: "+err.Error()
 			return item, false
+		}
+		if discovery := response.cursorCatalog; discovery != nil {
+			credential, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if !cfg.UsesCursorOAuth() || parseErr != nil || sha256.Sum256([]byte(credential.APIKey)) != discovery.apiKeyHash {
+				item.Status, item.Error = "failed", "Cursor 凭证已变更，请重试"
+				return item, false
+			}
+			if !cursorCatalogMatches(credential, discovery.catalog.ContextWindows, discovery.catalog.EffortLevels, discovery.catalog.DefaultEfforts) {
+				item.Status, item.Error = "failed", "Cursor 模型目录已并发更新，请重试"
+				return item, false
+			}
 		}
 		expected := cfg.Clone()
 		var keys []*model.APIKey
@@ -471,7 +511,7 @@ func (s *Server) applyFetchedModels(
 				return item, false
 			}
 		}
-		keyModels := bindKeyModelsToCurrentKeys(keys, probes)
+		keyModels := bindKeyModelsToCurrentKeys(keys, response.KeyModels)
 		modelEntriesChanged := false
 		if (normalization.lowercaseModels || normalization.stripModelSourcePrefix) && mode == "merge" {
 			normalizedExisting := normalizeExistingModelEntriesForRefresh(cfg.ModelEntries, normalization)
@@ -923,7 +963,7 @@ func normalizeModelFetchKeys(apiKeys []string) []string {
  * @param ctx 本次操作的取消与截止时间上下文。
  * @param cfg 本次操作使用的渠道配置及私有凭证快照。
  * @param overrideProtocol 显式模型发现协议；空值使用渠道默认协议。
- * @param keyMode 模型发现使用的 Key 选择策略。
+ * @param mode 模型发现的探测范围；覆盖刷新要求 Cursor 返回实时目录。
  * @return 模型目录；失败时为 nil。
  * @return 渠道缺失、协议不支持、凭证不可用或上游请求失败时返回错误。
  * @note API Key 请求应用渠道请求头规则；OAuth 沿用提供商专属身份，可能刷新凭证。
@@ -932,7 +972,7 @@ func (s *Server) fetchModelsForChannel(
 	ctx context.Context,
 	cfg *model.Config,
 	overrideProtocol string,
-	keyMode modelFetchKeyMode,
+	mode modelFetchMode,
 ) (*FetchModelsResponse, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
@@ -965,7 +1005,7 @@ func (s *Server) fetchModelsForChannel(
 		return sortOAuthFetchModels(s.fetchZAIOAuthModels(ctx, cfg, overrideProtocol))
 	}
 	if cfg.UsesCursorOAuth() {
-		return sortOAuthFetchModels(s.fetchCursorOAuthModels(ctx, cfg, overrideProtocol))
+		return sortOAuthFetchModels(s.fetchCursorOAuthModels(ctx, cfg, overrideProtocol, mode == modelFetchForReplace))
 	}
 	if cfg.UsesVertexOAuth() {
 		return sortOAuthFetchModels(s.fetchVertexOAuthModels(ctx, cfg, overrideProtocol))
@@ -982,9 +1022,9 @@ func (s *Server) fetchModelsForChannel(
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	client := s.modelDiscoveryClient(cfg)
-	if keyMode != modelFetchFirstAvailableKey {
+	if mode != modelFetchFirstAvailableKey {
 		var probeKeys []*model.APIKey
-		if keyMode == modelFetchAllKeys {
+		if mode == modelFetchForReplace {
 			probeKeys = modelScopeProbeAPIKeys(keys, time.Now())
 		} else {
 			probeKeys = availableModelFetchAPIKeys(keys, time.Now())
@@ -1161,10 +1201,21 @@ func (s *Server) zaiCodingPlanModels(ctx context.Context, cfg *model.Config, cre
 	return nil, err
 }
 
+/**
+ * @brief 获取 Cursor SDK 模型目录，覆盖刷新仅接受实时目录。
+ * @param ctx 本次目录查询的取消与截止时间上下文。
+ * @param cfg 包含 Cursor User API Key 的渠道配置。
+ * @param overrideProtocol 可选协议，仅支持 Anthropic 或 OpenAI。
+ * @param requireLiveCatalog 为 true 时拒绝查询失败或返回空目录。
+ * @return 模型目录及来源；失败时为 nil。
+ * @return 协议、凭证或保存失败时返回错误；要求实时目录时也返回查询错误。
+ * @note 成功查询实时目录时保存上下文上限，内置目录不改动已保存的上限。
+ */
 func (s *Server) fetchCursorOAuthModels(
 	ctx context.Context,
 	cfg *model.Config,
 	overrideProtocol string,
+	requireLiveCatalog bool,
 ) (*FetchModelsResponse, error) {
 	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
 	if overrideProtocol != "" {
@@ -1177,15 +1228,25 @@ func (s *Server) fetchCursorOAuthModels(
 		}
 	}
 
-	names, source := cursorauth.DefaultModels, "predefined"
 	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
 		return nil, fmt.Errorf("模型发现: 解析 Cursor 凭证失败: %w", err)
 	}
-	if live, listErr := s.listCursorSDKModels(ctx, credential); listErr != nil {
-		log.Printf("[WARN] Cursor SDK 模型目录不可用，回退 default (channel=%d): %v", cfg.ID, listErr)
-	} else if len(live) > 0 {
-		names, source = live, "api"
+	catalog, listErr := s.listCursorSDKModels(ctx, credential)
+	names := catalog.Models
+	source := "api"
+	var discovery *cursorDiscoverySnapshot
+	if listErr != nil {
+		if requireLiveCatalog {
+			return nil, fmt.Errorf("获取 Cursor SDK 模型目录失败: %w", listErr)
+		}
+		log.Printf("[WARN] Cursor SDK 模型目录不可用，回退内置列表 (channel=%d): %v", cfg.ID, listErr)
+		names, source = cursorauth.DefaultModels, "predefined"
+	} else {
+		if err := s.persistCursorCatalog(ctx, cfg.ID, credential, catalog); err != nil {
+			return nil, fmt.Errorf("保存 Cursor 模型目录失败: %w", err)
+		}
+		discovery = &cursorDiscoverySnapshot{apiKeyHash: sha256.Sum256([]byte(credential.APIKey)), catalog: catalog}
 	}
 	models := make([]model.ModelEntry, len(names))
 	for i, name := range names {
@@ -1200,7 +1261,7 @@ func (s *Server) fetchCursorOAuthModels(
 		discoveredProtocol = util.ProtocolOpenAI
 	}
 	return &FetchModelsResponse{
-		Models: models, Protocol: discoveredProtocol, Source: source,
+		Models: models, Protocol: discoveredProtocol, Source: source, cursorCatalog: discovery,
 		Debug: &FetchModelsDebug{
 			NormalizedProtocol: discoveredProtocol,
 			Fetcher:            "cursor_sdk_catalog", ChannelURL: channelURL,

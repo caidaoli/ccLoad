@@ -952,3 +952,191 @@ func TestProxyGemini_ListModelsTokenLimits(t *testing.T) {
 		}
 	}
 }
+
+/**
+ * @brief 验证 Codex 和 Gemini 根据令牌可用的 Cursor 目标返回窗口和 Codex 思考档位。
+ * @param t 测试上下文。
+ */
+func TestProxyGemini_CursorCatalogContextWindows(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	t.Cleanup(cleanup)
+	server.authService = newTestAuthService(t)
+	const (
+		variant    = "claude-haiku-5-5@300k"
+		alias      = "cursor-haiku-alias"
+		unknown    = "cursor-manual@900k"
+		override   = "cursor-rule-target"
+		credential = `{"type":"cursor","access_token":"access-session","api_key":"cursor-key",
+			"default_efforts":{"claude-haiku-5-5@300k":"high"},
+			"context_windows":{"CLAUDE-HAIKU-5-5@300K":300000,"claude-haiku-5-5@1m":1000000},
+			"effort_levels":{"Claude-Haiku-5-5@300k":["none","minimal","low","high"],"claude-haiku-5-5@1m":["medium","max"]}}`
+		otherAccount = `{"type":"cursor","access_token":"other-session","api_key":"other-key",
+			"context_windows":{"claude-haiku-5-5@500k":500000},"effort_levels":{"claude-haiku-5-5@500k":["high","max"]}}`
+	)
+	createChannel := func(config *model.Config) int64 {
+		t.Helper()
+		saved, err := store.CreateConfig(t.Context(), config)
+		if err != nil {
+			t.Fatalf("create channel %s: %v", config.Name, err)
+		}
+		return saved.ID
+	}
+	primary := newCursorOAuthChannel("cursor primary", credential, []string{variant, unknown})
+	primary.ModelEntries = append(primary.ModelEntries,
+		model.ModelEntry{Model: alias, RedirectModel: variant},
+		model.ModelEntry{Model: alias, RedirectModel: "claude-haiku-5-5@1m", Disabled: true},
+		model.ModelEntry{Model: "cursor-disabled", RedirectModel: variant, Disabled: true},
+	)
+	primaryID := createChannel(primary)
+	other := newCursorOAuthChannel("cursor other account", otherAccount, []string{variant})
+	other.ModelEntries[0].RedirectModel = "claude-haiku-5-5@500k"
+	otherID := createChannel(other)
+	withRule := newCursorOAuthChannel("cursor override", credential, []string{override})
+	withRule.ModelEntries[0].RedirectModel = variant
+	withRule.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "model", Value: json.RawMessage(`"claude-haiku-5-5@1m"`)},
+	}}
+	withRuleID := createChannel(withRule)
+	ordinaryID := createChannel(&model.Config{
+		Name: "ordinary", Enabled: true, URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"openai"}}},
+		ModelEntries: []model.ModelEntry{{Model: variant, RedirectModel: "gpt-5.6-sol"}},
+	})
+
+	type metadata struct {
+		codex, gemini int
+		defaultLevel  string
+		levels        []string
+	}
+	primaryMetadata := metadata{300000, 300000, "high", []string{"none", "minimal", "low", "high"}}
+	unknownMetadata := metadata{128000, 0, "none", []string{"none"}}
+	var cursorETag string
+	for _, tc := range []struct {
+		name       string
+		mode       string
+		channelIDs []int64
+		want       map[string]metadata
+	}{
+		{"cursor only", model.ChannelRestrictionModeDeny, []int64{otherID, withRuleID, ordinaryID}, map[string]metadata{
+			variant: primaryMetadata, alias: primaryMetadata, unknown: unknownMetadata,
+		}},
+		{"ordinary only", model.ChannelRestrictionModeAllow, []int64{ordinaryID}, map[string]metadata{
+			variant: unknownMetadata,
+		}},
+		{"mixed providers", model.ChannelRestrictionModeAllow, []int64{primaryID, ordinaryID}, map[string]metadata{
+			variant: {128000, 0, "low", []string{"low", "high"}}, alias: primaryMetadata, unknown: unknownMetadata,
+		}},
+		{"different cursor accounts", model.ChannelRestrictionModeAllow, []int64{primaryID, otherID}, map[string]metadata{
+			variant: {128000, 0, "high", []string{"high"}}, alias: primaryMetadata, unknown: unknownMetadata,
+		}},
+		{"request body override", model.ChannelRestrictionModeAllow, []int64{withRuleID}, map[string]metadata{
+			override: {1000000, 300000, "medium", []string{"medium", "max"}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenHash := model.HashToken(tc.name)
+			restriction := mustChannelRestriction(t, tc.mode, tc.channelIDs...)
+			server.authService.authTokensMux.Lock()
+			server.authService.authTokenChannels[tokenHash] = restriction
+			server.authService.authTokensMux.Unlock()
+
+			requestCodex := func(etag string) *httptest.ResponseRecorder {
+				req := newRequest(http.MethodGet, "/v1/models?client_version=0.155.0", nil)
+				req.Header.Set("User-Agent", "codex-cli/0.155.0")
+				req.Header.Set("If-None-Match", etag)
+				client, response := newTestContext(t, req)
+				client.Set("token_hash", tokenHash)
+				server.handleListOpenAIModels(client)
+				return response
+			}
+			codex := requestCodex("")
+			if codex.Code != http.StatusOK {
+				t.Fatalf("Codex status=%d, body=%s", codex.Code, codex.Body.String())
+			}
+			var manifest struct {
+				Models []struct {
+					Slug          string   `json:"slug"`
+					ContextWindow int      `json:"context_window"`
+					DefaultLevel  string   `json:"default_reasoning_level"`
+					Modalities    []string `json:"input_modalities"`
+					Levels        []struct {
+						Effort string `json:"effort"`
+					} `json:"supported_reasoning_levels"`
+				} `json:"models"`
+			}
+			mustUnmarshalJSON(t, codex.Body.Bytes(), &manifest)
+			if len(manifest.Models) != len(tc.want) {
+				t.Fatalf("unexpected Codex manifest: %s", codex.Body.String())
+			}
+			for _, entry := range manifest.Models {
+				want, ok := tc.want[entry.Slug]
+				if entry.Slug == alias && !slices.Contains(entry.Modalities, "image") {
+					t.Errorf("Cursor alias %s modalities = %v, want image", alias, entry.Modalities)
+				}
+				if !ok || entry.ContextWindow != want.codex {
+					t.Errorf("Codex model %q: context_window=%d, expected %d (listed=%t)", entry.Slug, entry.ContextWindow, want.codex, ok)
+				}
+				var levels []string
+				for _, level := range entry.Levels {
+					levels = append(levels, level.Effort)
+				}
+				if !slices.Equal(levels, want.levels) || entry.DefaultLevel != want.defaultLevel {
+					t.Errorf("Codex model %q: levels=%v, default=%q; expected %v, %q", entry.Slug, levels, entry.DefaultLevel, want.levels, want.defaultLevel)
+				}
+			}
+			if tc.name == "cursor only" {
+				cursorETag = codex.Header().Get("ETag")
+				if cursorETag == "" {
+					t.Fatal("missing Cursor catalog ETag")
+				}
+				if cached := requestCodex(cursorETag); cached.Code != http.StatusNotModified || cached.Body.Len() != 0 {
+					t.Fatalf("unchanged Cursor catalog: status=%d, body=%s", cached.Code, cached.Body.String())
+				}
+			}
+			if tc.name == "mixed providers" {
+				changed := requestCodex(cursorETag)
+				if changed.Code != http.StatusOK || changed.Header().Get("ETag") == cursorETag {
+					t.Fatalf("same visible slugs with different windows reused Cursor ETag: status=%d", changed.Code)
+				}
+			}
+
+			client, gemini := newTestContext(t, newRequest(http.MethodGet, "/v1beta/models", nil))
+			client.Set("token_hash", tokenHash)
+			server.handleListGeminiModels(client)
+			if gemini.Code != http.StatusOK {
+				t.Fatalf("Gemini status=%d, body=%s", gemini.Code, gemini.Body.String())
+			}
+			var catalog struct {
+				Models []struct {
+					Name             string          `json:"name"`
+					InputTokenLimit  json.RawMessage `json:"inputTokenLimit"`
+					OutputTokenLimit json.RawMessage `json:"outputTokenLimit"`
+				} `json:"models"`
+			}
+			mustUnmarshalJSON(t, gemini.Body.Bytes(), &catalog)
+			if len(catalog.Models) != len(tc.want) {
+				t.Fatalf("unexpected Gemini catalog: %s", gemini.Body.String())
+			}
+			for _, entry := range catalog.Models {
+				id, prefixed := strings.CutPrefix(entry.Name, "models/")
+				want, ok := tc.want[id]
+				if !prefixed || !ok {
+					t.Errorf("unexpected Gemini model %q", entry.Name)
+				}
+				if entry.OutputTokenLimit != nil {
+					t.Errorf("Gemini model %q: unexpected outputTokenLimit=%s", entry.Name, entry.OutputTokenLimit)
+				}
+				if want.gemini == 0 {
+					if entry.InputTokenLimit != nil {
+						t.Errorf("Gemini model %q: unexpected inputTokenLimit=%s", entry.Name, entry.InputTokenLimit)
+					}
+					continue
+				}
+				var input int
+				mustUnmarshalJSON(t, entry.InputTokenLimit, &input)
+				if input != want.gemini {
+					t.Errorf("Gemini model %q: inputTokenLimit=%d, want %d", entry.Name, input, want.gemini)
+				}
+			}
+		})
+	}
+}

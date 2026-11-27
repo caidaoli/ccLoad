@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -20,9 +21,8 @@ import (
  */
 type sdkRunState struct {
 	agentID               string
-	apiKey                string ///< 当前凭证，用于遮蔽 ERROR 终态额外正文。
 	runID                 string
-	text                  string
+	finalText             string ///< SDK 终态快照；是否为正文取决于最终运行状态。
 	resultSeen            bool
 	doneSeen              bool
 	status                sdkv1.RunLifecycleStatus
@@ -49,7 +49,7 @@ func (s *sdkRunState) consume(message *sdkv1.RunStreamMessage) ([]Event, error) 
 		}
 		return s.consumeSDKMessage(envelope.SdkMessage)
 	case *sdkv1.RunStreamMessage_Result:
-		return s.consumeResult(envelope.Result)
+		return nil, s.consumeResult(envelope.Result)
 	case *sdkv1.RunStreamMessage_Done:
 		return nil, s.consumeDone(envelope.Done)
 	case *sdkv1.RunStreamMessage_InteractionUpdate, *sdkv1.RunStreamMessage_Step:
@@ -134,8 +134,7 @@ func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, err
 		if delta == "" {
 			continue
 		}
-		s.text += delta
-		events = append(events, Event{Delta: delta, Text: s.text})
+		events = append(events, Event{Delta: delta})
 	}
 	return events, nil
 }
@@ -174,17 +173,14 @@ func genericCursorRunError(message string) bool {
 
 /**
  * @brief 判定终态正文是否为已流出的末段，保留原始输出字节。
- * @param streamed 已发出的完整正文。
+ * @param streamed 当前 HTTP 轮已发出的正文。
  * @param final SDK 终态携带的正文。
  * @return 原样后缀或仅首尾空白不同的完整末段返回 true。
  */
 func cursorFinalTextAlreadyEmitted(streamed, final string) bool {
-	if strings.HasSuffix(streamed, final) {
-		return true
-	}
 	tail := strings.TrimSpace(final)
 	if tail == "" {
-		return false
+		return final == "" || strings.HasSuffix(streamed, final)
 	}
 	prefix, matched := strings.CutSuffix(strings.TrimSpace(streamed), tail)
 	if !matched || prefix == "" {
@@ -197,30 +193,45 @@ func cursorFinalTextAlreadyEmitted(streamed, final string) bool {
 }
 
 /**
- * @brief 记录终态及用量，保留已收到的正文，并补齐终态携带的后续文本。
- * @param result 上游终态信封。
- * @details ERROR 在尚无正文且缺少具体错误说明时以 result 文本作为诊断。
- * @return 需要补发的正文增量；没有可交付增量时为 nil。
- * @return 终态结构、会话身份或成功正文不一致时返回错误。
+ * @brief 比对成功终态和当前 HTTP 轮的正文，保留已经交付的字节。
+ * @param streamed 本轮已经交付的正文，不含任何工具结果之前的轮次。
+ * @param final 通过 SDK 成功终态确认的正文快照。
+ * @return 终态新增的正文；没有增量时为空。
+ * @return 非空快照与流出的正文冲突时返回错误。
  */
-func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, error) {
+func cursorFinalTextDelta(streamed, final string) (string, error) {
+	if cursorFinalTextAlreadyEmitted(streamed, final) {
+		return "", nil
+	}
+	if delta, ok := strings.CutPrefix(final, streamed); ok {
+		return delta, nil
+	}
+	return "", errors.New("cursor run final text diverged from its assistant stream")
+}
+
+/**
+ * @brief 校验终态并暂存快照和用量，等待完整终态序列确认。
+ * @param result 上游终态信封。
+ * @return 终态结构、会话身份或状态不一致时返回错误。
+ */
+func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) error {
 	if result == nil {
-		return nil, errors.New("cursor run returned an empty result envelope")
+		return errors.New("cursor run returned an empty result envelope")
 	}
 	if s.resultSeen {
-		return nil, errors.New("cursor run returned more than one result envelope")
+		return errors.New("cursor run returned more than one result envelope")
 	}
 	if _, err := s.recordRunID(result.GetRunId()); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.setAgentID(result.GetAgentId()); err != nil {
-		return nil, err
+		return err
 	}
 	s.resultSeen = true
 	s.status = result.GetStatus()
 	final := result.GetResult()
 	if final == nil {
-		return nil, errors.New("cursor run terminal result is missing RunResult")
+		return errors.New("cursor run terminal result is missing RunResult")
 	}
 	outerCode, innerCode := strings.TrimSpace(result.GetErrorCode()), strings.TrimSpace(final.GetErrorCode())
 	s.errorCode = cmp.Or(outerCode, innerCode)
@@ -233,14 +244,14 @@ func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, err
 		s.errorMessage = finalMessage
 	}
 	if _, err := s.recordRunID(final.GetRunId()); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.setAgentID(final.GetAgentId()); err != nil {
-		return nil, err
+		return err
 	}
 	if innerStatus := final.GetStatus(); innerStatus != sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_UNSPECIFIED {
 		if s.status != sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_UNSPECIFIED && s.status != innerStatus {
-			return nil, errors.New("cursor run result statuses disagree")
+			return errors.New("cursor run result statuses disagree")
 		}
 		s.status = innerStatus
 	}
@@ -251,38 +262,13 @@ func (s *sdkRunState) consumeResult(result *sdkv1.RunStreamResult) ([]Event, err
 		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED,
 		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_EXPIRED:
 	default:
-		return nil, fmt.Errorf("cursor run result has non-terminal status %s", s.status.String())
+		return fmt.Errorf("cursor run result has non-terminal status %s", s.status.String())
 	}
 	if s.onTerminal != nil {
 		s.onTerminal(s.runID)
 	}
-	finalText := final.GetResult()
-	switch {
-	case s.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR && s.text == "" && genericCursorRunError(s.errorMessage):
-		if detail := strings.TrimSpace(finalText); !genericCursorRunError(detail) {
-			s.errorMessage = detail
-		}
-		return nil, nil
-	case cursorFinalTextAlreadyEmitted(s.text, finalText):
-		return nil, nil
-	case strings.HasPrefix(finalText, s.text):
-		if s.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR {
-			finalText = redactSDKDiagnostic(finalText, s.apiKey)
-			if !strings.HasPrefix(finalText, s.text) {
-				// A credential spans the already-emitted prefix and this result.
-				return nil, nil
-			}
-		}
-		delta := finalText[len(s.text):]
-		s.text = finalText
-		return []Event{{Delta: delta, Text: s.text, terminalText: true}}, nil
-	case s.status != sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED:
-		// A failed result may omit the final assistant text. Keep the partial
-		// stream and report the actual Run error instead of a divergence.
-		return nil, nil
-	default:
-		return nil, errors.New("cursor run final text diverged from its assistant stream")
-	}
+	s.finalText = final.GetResult()
+	return nil
 }
 
 /**
@@ -386,17 +372,18 @@ func (s *sdkRunState) setAgentID(agentID string) error {
 /**
  * @brief 在 SDK 流结束时识别传输错误和结构化业务拒绝。
  * @param streamErr Connect 流错误；正常读完流时为 nil。
- * @return 成功终态返回 nil，已识别的 SDK 拒绝返回 BridgeError，其余失败返回原始或协议错误。
+ * @param streamed 已经交付的当前轮正文。
+ * @return 成功终态返回 nil，缺少终态帧时包装 io.ErrUnexpectedEOF，已识别的 SDK 拒绝返回 BridgeError。
  */
-func (s *sdkRunState) finalError(streamErr error) error {
+func (s *sdkRunState) finalError(streamErr error, streamed string) error {
 	if streamErr != nil {
 		return classifyBridgeError(streamErr)
 	}
 	if !s.resultSeen {
-		return errors.New("cursor run stream closed before result")
+		return fmt.Errorf("cursor run stream closed before result: %w", io.ErrUnexpectedEOF)
 	}
 	if !s.doneSeen {
-		return errors.New("cursor run stream closed before done")
+		return fmt.Errorf("cursor run stream closed before done: %w", io.ErrUnexpectedEOF)
 	}
 	switch s.status {
 	case sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED:
@@ -404,7 +391,13 @@ func (s *sdkRunState) finalError(streamErr error) error {
 	case sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR,
 		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED,
 		sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_EXPIRED:
-		message := cmp.Or(s.errorMessage, s.errorCode, s.status.String())
+		message := s.errorMessage
+		if s.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR && streamed == "" && genericCursorRunError(message) {
+			if detail := strings.TrimSpace(s.finalText); !genericCursorRunError(detail) {
+				message = detail
+			}
+		}
+		message = cmp.Or(message, s.errorCode, s.status.String())
 		bridgeErr := &BridgeError{
 			SDKCode: cursorRunErrorCode(s.errorCode, message), Message: message,
 			contextLengthExceeded: s.contextLengthExceeded,

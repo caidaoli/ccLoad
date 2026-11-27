@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 
@@ -432,6 +433,84 @@ func TestReasoningAutoSkipsModelWithoutKnownLevels(t *testing.T) {
 	})
 	if decision := entry.ReasoningDecision; decision.Status != "skipped" || decision.Reason != "unknown_model_capability" {
 		t.Fatalf("reasoning decision=%+v, want skipped unknown_model_capability", decision)
+	}
+}
+
+/**
+ * @brief 验证动态思考使用可见 Cursor 目标的等级，并按账号能力写入 SDK 请求。
+ * @param t 测试生命周期。
+ */
+func TestReasoningAutoCursorCatalogUsesVisibleRedirects(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "xhigh")
+	const target = "cursor-reasoning@1m-fast"
+	credential, err := (&cursorauth.Credential{AccessToken: "session", APIKey: "cursor-key", EffortLevels: map[string][]string{
+		target: {"low", "xhigh"}, "cursor-disabled-row": {"low"}, "cursor-without-effort": {},
+	}}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{
+		{name: "cursor", authType: model.AuthTypeCursorOAuth, oauthCredential: credential, upstreamProtocol: "openai", priority: 100,
+			modelEntries: []model.ModelEntry{
+				{Model: "private-chat", RedirectModel: target},
+				{Model: "private-chat", RedirectModel: "cursor-disabled-row", Disabled: true},
+				{Model: "gpt-5.6-sol", RedirectModel: "cursor-without-effort"},
+			}},
+		{name: "static", upstreamProtocol: "openai", models: "private-chat"},
+	}, []string{"https://unused.invalid", "https://unused.invalid"})
+	runner := &fakeCursorRunner{text: "answer"}
+	env.server.cursorRunner = runner
+
+	body := map[string]any{"model": "private-chat", "thinking": map[string]any{"type": "adaptive"}, "output_config": map[string]any{"effort": "low"},
+		"messages": []map[string]string{{"role": "user", "content": "Prove that all interleavings are safe."}}}
+	headers := map[string]string{"anthropic-version": "2023-06-01"}
+	reasoningAutoRequest(t, env, "/v1/messages", body, headers)
+	if len(judge.snapshot()) != 0 || runner.model != target || runner.request.Effort != "low" {
+		t.Fatalf("mixed routes sent model=%q effort=%q and %d judgments", runner.model, runner.request.Effort, len(judge.snapshot()))
+	}
+	headers["X-Ccload-Channel"] = "cursor"
+	reasoningAutoRequest(t, env, "/v1/messages", body, headers)
+	if decisions := judge.snapshot(); len(decisions) != 1 || !slices.Equal(decisions[0].Levels, []string{"low", "xhigh"}) {
+		t.Fatalf("decision request = %+v, want low and xhigh", decisions)
+	}
+	if runner.model != target || runner.request.Effort != "xhigh" {
+		t.Fatalf("SDK received model=%q effort=%q, want %q xhigh", runner.model, runner.request.Effort, target)
+	}
+	body["model"] = "gpt-5.6-sol"
+	reasoningAutoRequest(t, env, "/v1/messages", body, headers)
+	if len(judge.snapshot()) != 1 || runner.model != "cursor-without-effort" || runner.request.Effort != "low" {
+		t.Fatalf("model without effort sent model=%q effort=%q and %d judgments", runner.model, runner.request.Effort, len(judge.snapshot()))
+	}
+}
+
+/**
+ * @brief 会话换用较窄的 Cursor 候选集合时，复用等级也受共同档位限制。
+ * @param t 测试生命周期。
+ */
+func TestReasoningAutoCursorCatalogClampsReusedEffort(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "xhigh")
+	const wide = `{"type":"cursor","access_token":"session-wide","api_key":"key-wide","effort_levels":{"gpt-5.6-sol":["low","high","xhigh"]}}`
+	const narrow = `{"type":"cursor","access_token":"session-narrow","api_key":"key-narrow","effort_levels":{"gpt-5.6-sol":["low","high"]}}`
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{
+		{name: "wide", authType: model.AuthTypeCursorOAuth, oauthCredential: wide, upstreamProtocol: "openai", models: "gpt-5.6-sol", priority: 100},
+		{name: "narrow", authType: model.AuthTypeCursorOAuth, oauthCredential: narrow, upstreamProtocol: "openai", models: "gpt-5.6-sol"},
+	}, []string{"https://unused.invalid", "https://unused.invalid"})
+	var efforts []string
+	env.server.cursorRunner = cursorRunnerFunc(func(_ context.Context, credential *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
+		if credential.APIKey != "key-wide" {
+			t.Fatalf("selected Cursor credential %q, want wide channel", credential.APIKey)
+		}
+		efforts = append(efforts, request.Effort)
+		return cursorUsageEventsRunner{{SentEffort: &request.Effort}, {Text: "answer", Done: true}}.Run(t.Context(), credential, request)
+	})
+	headers := map[string]string{"Session-Id": "cursor-limits-reused", "X-Ccload-Channel": "wide"}
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Check every writer."), headers)
+	delete(headers, "X-Ccload-Channel")
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoToolBody("All writers enumerated."), headers)
+	if len(judge.snapshot()) != 1 || !slices.Equal(efforts, []string{"xhigh", "high"}) {
+		t.Fatalf("received efforts %v and %d judgment requests; want xhigh then reused high", efforts, len(judge.snapshot()))
 	}
 }
 

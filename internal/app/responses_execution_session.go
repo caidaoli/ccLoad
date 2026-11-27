@@ -77,17 +77,18 @@ func (e *responsesExecutionLimitError) Unwrap() error {
 // responsesExecutionSession owns conversation state. Neither transcript nor
 // upstream transport belongs to a particular downstream TCP/WebSocket connection.
 type responsesExecutionSession struct {
-	turn               chan struct{}
-	transcript         *responsesWebsocketSession
-	upstream           *codexUpstreamWebsocketSession
-	routeMu            sync.RWMutex
-	preferredChannelID int64
-	modelRows          map[sessionModelGroup]modelRoutingSelection
-	lastActualModel    string
-	lastAccess         time.Time
-	active             int
-	storeKey           string
-	transient          bool
+	turn                 chan struct{}
+	transcript           *responsesWebsocketSession
+	cursorHTTPToolReplay *cursorResponsesHTTPToolReplay ///< 受 turn 保护，与 transcript 一起更新。
+	upstream             *codexUpstreamWebsocketSession
+	routeMu              sync.RWMutex
+	preferredChannelID   int64
+	modelRows            map[sessionModelGroup]modelRoutingSelection
+	lastActualModel      string
+	lastAccess           time.Time
+	active               int
+	storeKey             string
+	transient            bool
 
 	subjectFingerprint string
 	sessionFingerprint string
@@ -318,6 +319,13 @@ func (s *responsesExecutionSessionStore) transcriptBudgetLimit() int64 {
 	return limit
 }
 
+/**
+ * @brief 提交执行会话终态，在共享预算内保留可重放的 Cursor HTTP 工具响应。
+ * @param session 当前执行会话；nil 时跳过。
+ * @param request 下一轮续接所需的完整请求。
+ * @param result 当前轮终态及可选 HTTP 重放响应。
+ * @note 调用方持有该会话的回合占用，直到终态和重放记录一起提交。
+ */
 func (s *responsesExecutionSessionStore) commit(
 	session *responsesExecutionSession,
 	request []byte,
@@ -329,6 +337,16 @@ func (s *responsesExecutionSessionStore) commit(
 	session.commit(request, result)
 
 	s.mu.Lock()
+	replay := result.cursorHTTPToolReplay
+	if replay != nil && len(replay.body) > 0 {
+		size := int64(cap(replay.body))
+		if s.transcriptBytesLocked()+size <= s.transcriptBudgetLimit() {
+			session.transcriptBytes.Add(size)
+		} else {
+			replay.body = nil
+		}
+	}
+	session.cursorHTTPToolReplay = replay
 	evicted, _ := s.trimTranscriptBudgetLocked()
 	s.mu.Unlock()
 	closeResponsesExecutionSessions(evicted)

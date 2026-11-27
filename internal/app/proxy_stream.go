@@ -27,8 +27,21 @@ type cancelableResponseWriter struct {
 	headerErr error // 最近一次 WriteHeader 被取消守卫拒绝的原因；由响应写入协程读写。
 }
 
+/**
+ * @brief 在下游响应已经开始时，用请求取消打断阻塞的写入。
+ * @param ctx 下游请求或回合上下文。
+ * @param target 下游 HTTP 响应或 Responses WebSocket 桥接写入器。
+ * @return 继承下游响应头和写入能力的取消感知写入器。
+ * @return 注销并等待取消回调的清理函数；须在本次尝试结束前调用。
+ * @details 本地 WebSocket 回合中断保留连接，以便下发 incomplete 并接续下一轮。
+ */
 func newCancelableResponseWriter(ctx context.Context, target http.ResponseWriter) (*cancelableResponseWriter, func()) {
 	w := &cancelableResponseWriter{ResponseWriter: target, ctx: ctx}
+	bridgeTarget := target
+	if privacy, ok := target.(*privacyResponseWriter); ok {
+		bridgeTarget = privacy.Unwrap()
+	}
+	bridge, ws := bridgeTarget.(*responsesWebsocketBridgeWriter)
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(done)
@@ -37,7 +50,7 @@ func newCancelableResponseWriter(ctx context.Context, target http.ResponseWriter
 		if !w.started {
 			return
 		}
-		if bridge, ok := target.(*responsesWebsocketBridgeWriter); ok {
+		if ws {
 			// A local interrupt cancels only this turn. Keep the socket for its
 			// synthetic incomplete event and the next turn; the existing write
 			// deadline still bounds any frame already being written.

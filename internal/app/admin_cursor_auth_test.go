@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +18,7 @@ import (
 
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
 
 	"github.com/gin-gonic/gin"
@@ -59,6 +63,74 @@ func TestHandleImportCursorCredentialRejectsCLIAuthJSON(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证导入保存发现的窗口和档位，按 API Key 变更清除过期目录。
+ * @param t 测试上下文。
+ */
+func TestHandleImportCursorCredentialBindsModelCatalogToAPIKey(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.cursorService = cursorauth.NewService(&http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		var payload string
+		switch request.URL.Path {
+		case cursorauth.ExchangeAPIKeyPath:
+			payload = `{"accessToken":"cursor-session","refreshToken":"cursor-refresh"}`
+		case cursorauth.GetMeRPC:
+			payload = `{"authId":"account-1","email":"cursor@example.invalid"}`
+		default:
+			return nil, fmt.Errorf("unexpected Cursor RPC %s", request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
+	})})
+	windows := map[string]int{"composer-2.5@300k": 300000}
+	levels := map[string][]string{"composer-2.5@300k": {}}
+	runner := &fakeCursorRunner{catalog: cursorauth.ModelCatalog{
+		Models: []string{"composer-2.5@300k"}, ContextWindows: windows, EffortLevels: levels,
+	}}
+	server.cursorRunner = runner
+	var channelID int64
+	for _, tc := range []struct {
+		name, apiKey string
+		created      bool
+		catalogErr   error
+		wantWindows  map[string]int
+		wantLevels   map[string][]string
+	}{
+		{name: "new account", apiKey: "original-key", created: true, wantWindows: windows, wantLevels: levels},
+		{name: "restore same key without catalog", apiKey: "original-key", catalogErr: errors.New("bridge unavailable"), wantWindows: windows, wantLevels: levels},
+		{name: "rotate key without catalog", apiKey: "rotated-key", catalogErr: errors.New("bridge unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner.err = tc.catalogErr
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/cursor/credentials/import", map[string]string{"api_key": tc.apiKey}))
+			server.HandleImportCursorCredential(c)
+			response := mustParseAPIResponse[cursorCredentialImportResponse](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || !response.Success || response.Data.Created != tc.created {
+				t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+			}
+			if tc.created {
+				channelID = response.Data.ChannelID
+			} else if response.Data.ChannelID != channelID {
+				t.Fatalf("reauthorization replaced channel %d with %d", channelID, response.Data.ChannelID)
+			}
+			cfg, err := store.GetConfig(t.Context(), channelID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential.APIKey != tc.apiKey || !maps.Equal(credential.ContextWindows, tc.wantWindows) {
+				t.Fatalf("imported context windows = %v, want %v for the imports' key", credential.ContextWindows, tc.wantWindows)
+			}
+			if !maps.EqualFunc(credential.EffortLevels, tc.wantLevels, slices.Equal) {
+				t.Fatalf("imported effort levels = %v, want %v for the imported key", credential.EffortLevels, tc.wantLevels)
+			}
+		})
+	}
+}
+
 func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	t.Parallel()
 	channel := newCursorOAuthChannel("Cursor-user@example.com", `{"type":"cursor","access_token":"tok"}`, nil)
@@ -82,10 +154,19 @@ func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证管理端实时发现保留原始模型 ID，并给历史渠道补充账号窗口和档位。
+ * @param t 测试上下文。
+ */
 func TestFetchCursorOAuthModelsUsesSDKCatalog(t *testing.T) {
-	server, _, cleanup := setupAdminTestServer(t)
+	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	runner := &fakeCursorRunner{models: []string{"default", "grok-4.6", "composer-2.5", "composer-2.5-fast"}}
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	windows := map[string]int{"composer-2.5": 200000, "composer-2.5-fast": 200000}
+	levels := map[string][]string{"grok-4.6": {"low", "high", "xhigh"}, "composer-2.5": {}}
+	runner := &fakeCursorRunner{catalog: cursorauth.ModelCatalog{
+		Models: []string{"default", "grok-4.6", "composer-2.5", "composer-2.5-fast"}, ContextWindows: windows, EffortLevels: levels,
+	}}
 	server.cursorRunner = runner
 	raw, err := (&cursorauth.Credential{
 		Type: cursorauth.ChannelType, AccessToken: "access-token", APIKey: "user-api-key",
@@ -93,13 +174,20 @@ func TestFetchCursorOAuthModelsUsesSDKCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := newCursorOAuthChannel("Cursor-test", raw, []string{"stale-thinking-high"})
-
-	response, err := server.fetchCursorOAuthModels(context.Background(), cfg, "")
+	cfg, err := store.CreateConfig(t.Context(), newCursorOAuthChannel("Cursor-catalog", raw, []string{"stale-thinking-high"}))
 	if err != nil {
-		t.Fatalf("fetchCursorOAuthModels() error = %v", err)
+		t.Fatal(err)
 	}
-	want := []string{"default", "grok-4.6", "composer-2.5", "composer-2.5-fast"}
+	path := fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID)
+	c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+	server.HandleFetchModels(c)
+	result := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if w.Code != http.StatusOK || !result.Success || strings.Contains(w.Body.String(), "user-api-key") {
+		t.Fatalf("discovery status=%d body=%s", w.Code, w.Body.String())
+	}
+	response := result.Data
+	want := []string{"composer-2.5", "composer-2.5-fast", "default", "grok-4.6"}
 	if len(response.Models) != len(want) {
 		t.Fatalf("models = %+v, want %v", response.Models, want)
 	}
@@ -113,6 +201,172 @@ func TestFetchCursorOAuthModelsUsesSDKCatalog(t *testing.T) {
 	}
 	if runner.apiKey != "user-api-key" {
 		t.Fatalf("SDK catalog API key = %q", runner.apiKey)
+	}
+	stored, err := store.GetConfig(t.Context(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := cursorauth.ParseCredential([]byte(stored.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(credential.ContextWindows, windows) || !maps.EqualFunc(credential.EffortLevels, levels, slices.Equal) {
+		t.Fatalf("stored windows = %v, levels = %v, want %v and %v", credential.ContextWindows, credential.EffortLevels, windows, levels)
+	}
+	if !reflect.DeepEqual(stored.ModelEntries, cfg.ModelEntries) {
+		t.Errorf("discovery changed saved models to %+v", stored.ModelEntries)
+	}
+}
+
+/**
+ * @brief 验证 Cursor 批量覆盖仅采用实时模型目录，读取目录仍可展示预置模型。
+ * @param t 测试上下文。
+ */
+func TestBatchReplaceCursorModelsRequiresLiveCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		catalog           cursorauth.ModelCatalog
+		catalogErr        error
+		concurrentKey     string
+		concurrentWindows map[string]int
+		concurrentLevels  map[string][]string
+		wantError         string
+	}{
+		{name: "upstream failure", catalogErr: errors.New("account catalog unavailable"), wantError: "account catalog unavailable"},
+		{name: "empty catalog", wantError: "模型列表为空"},
+		{name: "live catalog", catalog: cursorauth.ModelCatalog{
+			Models: []string{"account-model"}, ContextWindows: map[string]int{},
+		}},
+		{
+			name: "API key changed after discovery", concurrentKey: "replacement-key", wantError: "Cursor 凭证已变更",
+			catalog: cursorauth.ModelCatalog{
+				Models: []string{"account-model"}, ContextWindows: map[string]int{"account-model": 300000},
+			},
+		},
+		{
+			name: "context windows changed after discovery", wantError: "Cursor 模型目录已并发更新",
+			concurrentWindows: map[string]int{"account-model": 200000},
+			catalog: cursorauth.ModelCatalog{
+				Models: []string{"account-model"}, ContextWindows: map[string]int{"account-model": 300000},
+			},
+		},
+		{
+			name: "effort levels changed after discovery", wantError: "Cursor 模型目录已并发更新",
+			concurrentWindows: map[string]int{"account-model": 300000},
+			concurrentLevels:  map[string][]string{"account-model": {"low"}},
+			catalog: cursorauth.ModelCatalog{
+				Models: []string{"account-model"}, ContextWindows: map[string]int{"account-model": 300000},
+				EffortLevels: map[string][]string{"account-model": {"high"}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			t.Cleanup(cleanup)
+			server.channelCache = storage.NewChannelCache(store, time.Minute)
+			server.cursorRunner = &fakeCursorRunner{catalog: tc.catalog, err: tc.catalogErr}
+			priorWindows := map[string]int{"manual-target": 300000}
+			priorLevels := map[string][]string{"manual-target": {"high"}}
+			raw, err := (&cursorauth.Credential{
+				Type: cursorauth.ChannelType, AccessToken: "access-token", APIKey: "user-api-key", ContextWindows: priorWindows,
+				EffortLevels: priorLevels,
+			}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := newCursorOAuthChannel("Cursor-test", raw, []string{"manual-alias"})
+			cfg.ModelEntries[0].RedirectModel = "manual-target"
+			cfg.ScheduledCheckModel = "manual-alias"
+			cfg, err = store.CreateConfig(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if len(tc.catalog.Models) == 0 {
+				path := fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID)
+				c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+				c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+				server.HandleFetchModels(c)
+				resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+				if w.Code != http.StatusOK || !resp.Success || resp.Data.Source != "predefined" || len(resp.Data.Models) != len(cursorauth.DefaultModels) {
+					t.Fatalf("discovery status=%d body=%s", w.Code, w.Body.String())
+				}
+			}
+			wantWindows := priorWindows
+			wantLevels := priorLevels
+			if tc.concurrentKey != "" || tc.concurrentWindows != nil {
+				wantWindows = tc.concurrentWindows
+				wantLevels = tc.concurrentLevels
+				server.store = &modelScopeEditStore{Store: store, edit: func(ctx context.Context) error {
+					current, err := store.GetConfig(ctx, cfg.ID)
+					if err != nil {
+						return err
+					}
+					credential, err := cursorauth.ParseCredential([]byte(current.OAuthCredential))
+					if err != nil {
+						return err
+					}
+					if tc.concurrentKey != "" {
+						credential.APIKey = tc.concurrentKey
+					}
+					credential.ContextWindows = tc.concurrentWindows
+					credential.EffortLevels = tc.concurrentLevels
+					payload, err := credential.JSON()
+					if err != nil {
+						return err
+					}
+					updated, err := store.CompareAndSwapOAuthCredential(ctx, cfg.ID, model.AuthTypeCursorOAuth, current.OAuthCredential, payload)
+					if err == nil && !updated {
+						return errors.New("expected concurrent credential change to succeed")
+					}
+					return err
+				}}
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", BatchRefreshModelsRequest{
+				ChannelIDs: []int64{cfg.ID}, Mode: "replace",
+			}))
+			server.HandleBatchRefreshModels(c)
+			resp := mustParseAPIResponse[struct {
+				Results []BatchRefreshModelsItem `json:"results"`
+			}](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || !resp.Success || len(resp.Data.Results) != 1 {
+				t.Fatalf("replace status=%d body=%s", w.Code, w.Body.String())
+			}
+			item := resp.Data.Results[0]
+			stored, err := store.GetConfig(t.Context(), cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := cursorauth.ParseCredential([]byte(stored.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantError != "" {
+				if item.Status != "failed" || !strings.Contains(item.Error, tc.wantError) {
+					t.Errorf("replace result = %+v, want failed with %q", item, tc.wantError)
+				}
+				if !reflect.DeepEqual(stored.ModelEntries, cfg.ModelEntries) || stored.ScheduledCheckModel != cfg.ScheduledCheckModel {
+					t.Errorf("replace changed saved models to %+v and scheduled model to %q", stored.ModelEntries, stored.ScheduledCheckModel)
+				}
+				if !maps.Equal(credential.ContextWindows, wantWindows) {
+					t.Errorf("failed refresh left context windows %v, want %v", credential.ContextWindows, wantWindows)
+				}
+				if !maps.EqualFunc(credential.EffortLevels, wantLevels, slices.Equal) {
+					t.Errorf("failed refresh left effort levels %v, want %v", credential.EffortLevels, wantLevels)
+				}
+				return
+			}
+			if item.Status != "updated" || len(stored.ModelEntries) != 1 || stored.ModelEntries[0].Model != "account-model" {
+				t.Fatalf("replace result = %+v, saved models = %+v", item, stored.ModelEntries)
+			}
+			if !maps.Equal(credential.ContextWindows, tc.catalog.ContextWindows) {
+				t.Errorf("replace context windows = %v, want %v", credential.ContextWindows, tc.catalog.ContextWindows)
+			}
+			if !maps.EqualFunc(credential.EffortLevels, tc.catalog.EffortLevels, slices.Equal) {
+				t.Errorf("replace effort levels = %v, want %v", credential.EffortLevels, tc.catalog.EffortLevels)
+			}
+		})
 	}
 }
 
@@ -429,12 +683,18 @@ func cursorTestHTTPResponse(request *http.Request, status int, body string) *htt
 	}
 }
 
+/**
+ * @brief 验证重新签发 Cursor 会话仍保留同一 API Key 的上下文上限。
+ * @param t 测试上下文。
+ */
 func TestHandleRefreshCursorCredentialRemintsFromAPIKey(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
+	windows := map[string]int{"composer-2.5": 200000}
 	raw, err := (&cursorauth.Credential{
 		Type: cursorauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
 		APIKey: "user-api-key", Email: "refresh@example.com", UserID: "auth-1",
+		ContextWindows: windows,
 	}).JSON()
 	if err != nil {
 		t.Fatal(err)
@@ -486,6 +746,9 @@ func TestHandleRefreshCursorCredentialRemintsFromAPIKey(t *testing.T) {
 	persistedCredential, err := cursorauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if err != nil || persistedCredential.AccessToken != "at-new" || persistedCredential.RefreshToken != "rt-new" {
 		t.Fatalf("persisted credential = (%#v, %v)", persistedCredential, err)
+	}
+	if !maps.Equal(persistedCredential.ContextWindows, windows) {
+		t.Errorf("refreshed context windows = %v, want %v", persistedCredential.ContextWindows, windows)
 	}
 }
 

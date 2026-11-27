@@ -188,7 +188,7 @@ func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[s
 }
 
 /**
- * @brief 幂等补齐日志表字段，旧日志的展示元数据保持 NULL
+ * @brief 幂等补齐日志表字段，旧日志的展示元数据和计费明细快照保持 NULL
  * @param ctx 迁移上下文
  * @param db 迁移目标数据库
  * @param dialect 目标 SQL 方言
@@ -196,14 +196,10 @@ func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[s
  * @note 修改目标数据库的日志表结构
  */
 func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	if err := ensureColumn(ctx, db, dialect, "logs", "reasoning_decision", "TEXT NULL", "TEXT NULL"); err != nil {
-		return err
-	}
-	if err := ensureColumn(ctx, db, dialect, "logs", "privacy_masked", "TEXT NULL", "TEXT NULL"); err != nil {
-		return err
-	}
-	if err := ensureColumn(ctx, db, dialect, "logs", "usage_estimate", "TEXT NULL", "TEXT NULL"); err != nil {
-		return err
+	for _, column := range []string{"reasoning_decision", "privacy_masked", "usage_estimate", "cost_breakdown"} {
+		if err := ensureColumn(ctx, db, dialect, "logs", column, "TEXT NULL", "TEXT NULL"); err != nil {
+			return err
+		}
 	}
 	for _, column := range []string{"cache_30m_input_tokens", "cache_12h_input_tokens"} {
 		if err := ensureColumn(ctx, db, dialect, "logs", column, "BIGINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"); err != nil {

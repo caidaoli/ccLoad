@@ -433,9 +433,14 @@ func responsesWebsocketInterruptResponseID(payload []byte) string {
 	return strings.TrimSpace(responseID.String())
 }
 
-// writeResponsesWebsocketLocalInterrupt 以 response.incomplete（reason=interrupted）
-// 结束本地取消的回合，与上游确认中断的事件同形；output 只含已完成的 item，
-// 客户端随后可以在同一连接继续下一回合。
+/**
+ * @brief 以可在当前执行会话续接的 response.incomplete 结束本地取消。
+ * @param conn 下游 WebSocket 连接。
+ * @param interruptPayload 含被取消响应 ID 的中断事件。
+ * @param output 已交付的完整输出条目。
+ * @return 已发送的完成信息，响应 ID 由本地续接；失败时为零值。
+ * @return 编码或写出失败时返回错误。
+ */
 func writeResponsesWebsocketLocalInterrupt(
 	conn *websocket.Conn,
 	interruptPayload []byte,
@@ -456,6 +461,7 @@ func writeResponsesWebsocketLocalInterrupt(
 	return responsesWebsocketTurnResult{
 		completedOutput:     output,
 		completedResponseID: responseID,
+		localResponseID:     true,
 		pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
 	}, nil
 }
@@ -504,14 +510,19 @@ func closeResponsesWebsocketPolicyViolation(conn *websocket.Conn, reason string)
 	)
 }
 
+/**
+ * @brief 保存客户端可见的 Responses 终态及会话续轮信息。
+ */
 type responsesWebsocketTurnResult struct {
-	completedOutput     []byte
-	completedResponseID string
-	pendingToolCallIDs  []string
-	interrupted         bool
-	privacyOutput       *privacyResponseWriter
-	privacyRequestID    int64
-	privacyStats        *privacyStats
+	completedOutput      []byte
+	completedResponseID  string
+	localResponseID      bool                           ///< 本地生成或转换的 ID 无法续接原生 Responses 上游。
+	cursorHTTPToolReplay *cursorResponsesHTTPToolReplay ///< 最后一轮 HTTP Cursor 工具续轮的可重放响应。
+	pendingToolCallIDs   []string
+	interrupted          bool
+	privacyOutput        *privacyResponseWriter
+	privacyRequestID     int64
+	privacyStats         *privacyStats
 }
 
 func (r responsesWebsocketTurnResult) finishPrivacy() {
@@ -772,7 +783,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		sessionAffinity:    sessionAffinity,
 	}
 	if s.reasoningTarget(reqCtx) {
-		s.prepareReasoningTurn(ctx, reqCtx, requestBody, clientPayload, hasExplicitThinkingSuffix(reasoningModel))
+		s.prepareReasoningTurn(ctx, reqCtx, candidates, requestBody, clientPayload, hasExplicitThinkingSuffix(reasoningModel))
 	}
 	ctx = withReasoningRequest(ctx, reqCtx)
 	reqCtx.observer = &ForwardObserver{
@@ -888,7 +899,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return responsesWebsocketTurnResult{
 			completedOutput:     bytes.Clone(bridgeWriter.completedOutput),
 			completedResponseID: bridgeWriter.completedResponseID,
-			pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(bridgeWriter.completedOutput),
+			localResponseID: lastResult.responsesTurn.localResponseID &&
+				lastResult.responsesTurn.completedResponseID == bridgeWriter.completedResponseID,
+			pendingToolCallIDs: responsesWebsocketPendingToolCallIDs(bridgeWriter.completedOutput),
 		}, nil
 	}
 	s.annotatePoolCooldownRetryAfter(ctx, reqCtx, lastResult)
@@ -1040,7 +1053,7 @@ func writeResponsesWebsocketSyntheticPrewarm(
 		return responsesWebsocketTurnResult{}, err
 	}
 	return responsesWebsocketTurnResult{
-		completedOutput: []byte("[]"), completedResponseID: responseID,
+		completedOutput: []byte("[]"), completedResponseID: responseID, localResponseID: true,
 	}, nil
 }
 

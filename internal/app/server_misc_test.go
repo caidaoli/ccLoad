@@ -57,7 +57,7 @@ func TestStartCursorSDKBridgeIsNonBlockingAndAutomaticallyPublishesRunner(t *tes
 	runnerStarted := make(chan struct{})
 	runnerPath := make(chan string, 1)
 	var calls atomic.Int32
-	readyRunner := &fakeCursorRunner{models: []string{"grok-4.6"}}
+	readyRunner := &fakeCursorRunner{catalog: cursorauth.ModelCatalog{Models: []string{"grok-4.6"}}}
 	server := &Server{
 		baseCtx: ctx,
 		ensureCursorBridge: func(ctx context.Context) (string, error) {

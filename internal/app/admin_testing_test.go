@@ -8915,7 +8915,7 @@ func TestCursorAdminStreamFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newInMemoryServer(t)
 			cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
-			srv.cursorRunner = cursorUsageEventsRunner{{Ping: true}, {Done: true, Err: &cursorauth.BridgeError{SDKCode: tc.code, RetryAfter: wait, Message: tc.message}}}
+			srv.cursorRunner = cursorUsageEventsRunner{{Delta: "partial"}, {Done: true, Err: &cursorauth.BridgeError{SDKCode: tc.code, RetryAfter: wait, Message: tc.message}}}
 			start := time.Now()
 			result := srv.executeChannelTestWithCooldown(t.Context(), cfg, cooldown.NoKeyIndex, "", &testutil.TestChannelRequest{Model: "grok-4.6", ClientProtocol: util.ProtocolAnthropic, Content: "hello", Stream: true}, tc.persist)
 			if result["success"] != false || result["status_code"] != tc.status || result["response_committed"] != true ||
@@ -8990,6 +8990,13 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 				},
 			},
 			{
+				name: "distinct low-tier increments stay below the context threshold", wantInput: 300_000, wantOutput: 2_000,
+				events: cursorUsageEventsRunner{
+					{Usage: &cursorauth.Usage{InputTokens: 150_000, OutputTokens: 1_000}},
+					{Text: "actual answer", Done: true, Usage: &cursorauth.Usage{InputTokens: 150_000, OutputTokens: 1_000}},
+				},
+			},
+			{
 				name: "interrupted stream retains real consumption", wantInput: 1000, wantOutput: 200,
 				events: cursorUsageEventsRunner{
 					{Delta: "partial", Text: "partial"},
@@ -9004,6 +9011,8 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 				srv := newInMemoryServer(t)
 				cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
 				cfg.ModelEntries[0].Pricing = channelPrice(1, 2)
+				cfg.ModelEntries[0].Pricing.InputPriceHigh = new(3.0)
+				cfg.ModelEntries[0].Pricing.OutputPriceHigh = new(4.0)
 				if _, err := srv.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 					t.Fatal(err)
 				}
@@ -9070,6 +9079,10 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 				entry := logs[0]
 				if entry.InputTokens != tc.wantInput || entry.OutputTokens != tc.wantOutput || math.Abs(entry.Cost-wantCost) > 1e-12 {
 					t.Fatalf("log=%+v, want actual tokens=%d/%d cost=%v", entry, tc.wantInput, tc.wantOutput, wantCost)
+				}
+				if (entry.CostBreakdown != nil) != (wantCost > 0) ||
+					(entry.CostBreakdown != nil && math.Abs(entry.CostBreakdown.Total-wantCost) > 1e-12) {
+					t.Fatalf("cost breakdown=%+v, want snapshot=%v cost=%v", entry.CostBreakdown, wantCost > 0, wantCost)
 				}
 				if (entry.UsageEstimate != nil) != tc.wantEstimated {
 					t.Fatalf("usage_estimate=%+v, want present=%v", entry.UsageEstimate, tc.wantEstimated)

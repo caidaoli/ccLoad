@@ -458,7 +458,7 @@ func (s *Server) updateTokenStatsForProxy(
 	if res != nil && res.zaiModel != "" {
 		billingModel = resolveProxyBillingModel(requestPath, res.zaiModel, requestModel)
 	}
-	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, reqCtx.attemptModelPrice, outcome, duration, reqCtx.isStreaming, res, billingModel)
+	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, reqCtx.attemptModelPrice, outcome, duration, reqCtx.isStreaming, res, billingModel, nil)
 }
 
 // failureTokenStatsOutcome 499 不计成功/失败次数，与 logs 聚合排除 499 一致。
@@ -692,17 +692,20 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	}
 }
 
-// updateTokenStatsAsync 异步更新Token统计（DRY原则：消除重复代码）
-// 参数:
-//   - tokenHash: Token哈希值
-//   - costMultiplier: 渠道成本倍率（0=免费，<0 视为 1），影响 AddCostToCache 的累加口径
-//   - outcome: 计入成功/失败/取消哪个计数器
-//   - duration: 请求耗时
-//   - isStreaming: 是否流式请求
-//   - res: 转发结果（提取 token 数量与首字节时间）
-//   - actualModel: 实际模型名称（用于计费）
-//   - modelPrice: 渠道模型价格（nil 按全局价格计费），须与日志成本同源
-func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, modelPrice *util.CustomModelPrice, outcome model.TokenStatsOutcome, duration float64, isStreaming bool, res *fwResult, actualModel string) {
+/**
+ * @brief 根据请求结果异步累计令牌用量、请求统计和费用。
+ * @param tokenHash 令牌哈希；空字符串不累计。
+ * @param costMultiplier 渠道成本倍率；0 为免费，负数按 1。
+ * @param modelPrice 渠道价格覆盖；nil 时用全局或系统目录。
+ * @param outcome 成功、失败或取消。
+ * @param duration 请求耗时（秒）。
+ * @param isStreaming 是否流式请求。
+ * @param res 含真实用量及首字节耗时的转发结果；nil 时无消费。
+ * @param actualModel 用于计费与诊断的模型。
+ * @param loggedCost 本次日志采用的标准成本；nil 时按转发结果计算。
+ * @note 关停期间同步落库；计费请求排队保留有限等待时间。
+ */
+func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, modelPrice *util.CustomModelPrice, outcome model.TokenStatsOutcome, duration float64, isStreaming bool, res *fwResult, actualModel string, loggedCost *float64) {
 	if tokenHash == "" || s.tokenStatsCh == nil {
 		return
 	}
@@ -725,7 +728,11 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		reasoningTokens = int64(res.ReasoningTokens)
 		cacheReadTokens = int64(res.CacheReadInputTokens)
 		cacheCreationTokens = int64(res.CacheCreationInputTokens)
-		costUSD = computeRequestCostWithPrice(actualModel, res.ServiceTier, modelPrice, res)
+		if loggedCost != nil {
+			costUSD = *loggedCost
+		} else {
+			costUSD = computeRequestCostWithPrice(actualModel, res.ServiceTier, modelPrice, res)
+		}
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {

@@ -122,6 +122,71 @@ var (
 	geminiNonTextKeys = []string{"inlineData", "inline_data", "fileData", "file_data"}
 )
 
+/**
+ * @brief 在转换器折叠原始附件前识别 Cursor Local Agent 无法读取的媒体。
+ * @param client 源协议，空协议及 Chat、Anthropic 均使用 messages。
+ * @param body 客户端协议的原始输入。
+ * @return 首个不支持的附件类型；纯文本或可传递的图片返回空串。
+ */
+func cursorUnsupportedAttachment(client protocol.Protocol, body []byte) string {
+	root := gjson.ParseBytes(body)
+	var unsupported string
+	inspect := func(part gjson.Result) bool {
+		typ := part.Get("type").Str
+		switch typ {
+		case "document", "file", "input_file", "input_audio", "video_url", "input_video":
+			unsupported = typ
+		case "input_image", "image_url":
+			if part.Get("file_id").Exists() && !part.Get("image_url").Exists() {
+				unsupported = "file-backed image"
+			}
+		case "image":
+			if part.Get("source.type").Str == "file" || part.Get("source.file_id").Exists() {
+				unsupported = "file-backed image"
+			}
+		}
+		return unsupported != ""
+	}
+	if client == protocol.Gemini {
+		inspectGemini := func(part gjson.Result) bool {
+			for _, key := range geminiNonTextKeys {
+				data := part.Get(key)
+				if !data.Exists() {
+					continue
+				}
+				mime := data.Get("mimeType").Str
+				if mime == "" {
+					mime = data.Get("mime_type").Str
+				}
+				if !strings.HasPrefix(strings.ToLower(mime), "image/") {
+					unsupported = key
+					return true
+				}
+			}
+			return false
+		}
+		visitGeminiParts(root, inspectGemini)
+		return unsupported
+	}
+	messages := root.Get("messages")
+	if client == protocol.Codex {
+		messages = root.Get("input")
+	}
+	forEachJSONValue(messages, 0, func(message gjson.Result) bool {
+		switch message.Get("type").Str {
+		case "function_call_output", "custom_tool_call_output":
+			return forEachJSONValue(message.Get("output"), 0, inspect)
+		}
+		return forEachJSONValue(message.Get("content"), 0, func(part gjson.Result) bool {
+			if part.Get("type").Str == "tool_result" {
+				return forEachJSONValue(part.Get("content"), 0, inspect)
+			}
+			return inspect(part)
+		})
+	})
+	return unsupported
+}
+
 // requestHasNonTextContent 判断请求体是否含图片/文件等非文本内容。
 // 调用方已按 clientProtocol 完成协议校验，这里按协议走各自的字段路径：
 //
@@ -195,16 +260,28 @@ func hasNonTextType(body []byte, path string, tags map[string]bool) bool {
 // functionResponse.parts 承载工具返回的截图/文件（形状同顶层 part），与 Anthropic
 // tool_result 嵌套 content 对应，同样计入。
 func hasGeminiNonTextPart(body []byte) bool {
-	return forEachJSONValue(gjson.GetBytes(body, "contents.#.parts"), 0, func(part gjson.Result) bool {
-		if geminiMediaPart(part) {
-			return true
-		}
-		for _, path := range []string{"functionResponse.parts", "function_response.parts"} {
-			if forEachJSONValue(part.Get(path), 0, geminiMediaPart) {
+	return visitGeminiParts(gjson.ParseBytes(body), geminiMediaPart)
+}
+
+/**
+ * @brief 检查 Gemini 的消息和函数结果中的媒体块。
+ * @param root Gemini 请求对象。
+ * @param visit 检查一个 part，命中时结束遍历。
+ * @return 是否找到匹配的 part。
+ */
+func visitGeminiParts(root gjson.Result, visit func(gjson.Result) bool) bool {
+	return forEachJSONValue(root.Get("contents"), 0, func(content gjson.Result) bool {
+		return forEachJSONValue(content.Get("parts"), 0, func(part gjson.Result) bool {
+			if visit(part) {
 				return true
 			}
-		}
-		return false
+			for _, path := range []string{"functionResponse.parts", "function_response.parts"} {
+				if forEachJSONValue(part.Get(path), 0, visit) {
+					return true
+				}
+			}
+			return false
+		})
 	})
 }
 

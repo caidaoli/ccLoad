@@ -280,6 +280,11 @@ func estimateContentBlocks(content any) int {
 	}
 }
 
+/**
+ * @brief 本地估算中每张图片的输入 token 数。
+ */
+const estimatedTokensPerImage = 1500
+
 // estimateContentBlock 估算单个内容块的token数量
 // 支持的内容类型：
 // - text: 文本块
@@ -305,7 +310,7 @@ func estimateContentBlock(block any) int {
 	case "image":
 		// 图片：官方文档显示约1000-2000 tokens
 		// 参考: https://docs.anthropic.com/en/docs/build-with-claude/vision
-		return 1500
+		return estimatedTokensPerImage
 
 	case "document":
 		source, _ := blockMap["source"].(map[string]any)

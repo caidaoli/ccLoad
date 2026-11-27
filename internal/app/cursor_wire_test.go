@@ -29,7 +29,7 @@ type fakeCursorRunner struct {
 	toolCalls []cursorauth.ToolCall
 	err       error
 	eventErr  error
-	models    []string
+	catalog   cursorauth.ModelCatalog
 	apiKey    string
 	usage     *cursorauth.Usage
 	replayed  bool
@@ -38,8 +38,12 @@ type fakeCursorRunner struct {
 	request   cursorauth.Request
 }
 
+/**
+ * @brief 模拟下游连接在部分 SSE 帧被接收后断开。
+ */
 type failingCursorResponseWriter struct {
-	header http.Header
+	header              http.Header ///< 当前 HTTP 响应头。
+	writesBeforeFailure int         ///< 断开前可成功接收的写入次数。
 }
 
 type blockingCursorRunner struct {
@@ -91,7 +95,17 @@ func (w *failingCursorResponseWriter) Header() http.Header {
 
 func (*failingCursorResponseWriter) WriteHeader(int) {}
 
-func (*failingCursorResponseWriter) Write([]byte) (int, error) {
+/**
+ * @brief 在连接失效前接收响应字节。
+ * @param p 待发送的响应字节。
+ * @return 接收字节数；连接失效时为零。
+ * @return 连接失效时返回 broken pipe，否则为 nil。
+ */
+func (w *failingCursorResponseWriter) Write(p []byte) (int, error) {
+	if w.writesBeforeFailure > 0 {
+		w.writesBeforeFailure--
+		return len(p), nil
+	}
 	return 0, errors.New("broken pipe")
 }
 
@@ -123,6 +137,9 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, requ
 	for _, payload := range raw {
 		events <- cursorauth.Event{RawResponse: append([]byte(nil), payload...)}
 	}
+	if r.text != "" && r.eventErr == nil {
+		events <- cursorauth.Event{Delta: r.text, Text: r.text}
+	}
 	for i := 0; i < r.pings; i++ {
 		events <- cursorauth.Event{Ping: true}
 	}
@@ -130,9 +147,6 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, requ
 		events <- cursorauth.Event{Text: r.text, Done: true, Err: r.eventErr, Usage: r.usage}
 		close(events)
 		return events, nil
-	}
-	if r.text != "" {
-		events <- cursorauth.Event{Delta: r.text, Text: r.text}
 	}
 	for i := range r.toolCalls {
 		call := r.toolCalls[i]
@@ -143,12 +157,19 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, requ
 	return events, nil
 }
 
-func (r *fakeCursorRunner) ListModels(_ context.Context, apiKey string) ([]string, error) {
+/**
+ * @brief 返回测试账号目录并记录目录所用的 Key。
+ * @param _ 未使用的测试上下文。
+ * @param apiKey 模型发现使用的 User API Key。
+ * @return 配置的测试目录；失败时为零值。
+ * @return 配置的测试错误，默认 nil。
+ */
+func (r *fakeCursorRunner) ListModels(_ context.Context, apiKey string) (cursorauth.ModelCatalog, error) {
 	r.apiKey = apiKey
 	if r.err != nil {
-		return nil, r.err
+		return cursorauth.ModelCatalog{}, r.err
 	}
-	return append([]string(nil), r.models...), nil
+	return r.catalog, nil
 }
 
 func TestForwardCursorAgentWritesAnthropicMessage(t *testing.T) {
@@ -269,17 +290,24 @@ func TestForwardCursorAgentAppearsInActiveRequestsEndpoint(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 首字、流式总时长、空闲与非流式总时长分别使用对应的超时设置。
+ * @param t 测试上下文。
+ */
 func TestForwardCursorAgentHonorsConfiguredTimeouts(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 	tests := []struct {
-		name        string
-		streaming   bool
-		synchronous bool
-		firstByte   time.Duration
-		streamTotal time.Duration
-		nonStream   time.Duration
-		wantStatus  int
-		wantError   string
+		name         string
+		streaming    bool
+		synchronous  bool
+		ping         bool
+		firstByte    time.Duration
+		streamTotal  time.Duration
+		idle         time.Duration
+		idleOverride time.Duration
+		nonStream    time.Duration
+		wantStatus   int
+		wantError    string
 	}{
 		{
 			name: "stream first byte", streaming: true, firstByte: timeout,
@@ -294,6 +322,14 @@ func TestForwardCursorAgentHonorsConfiguredTimeouts(t *testing.T) {
 			wantStatus: util.StatusStreamIncomplete, wantError: "upstream stream timeout",
 		},
 		{
+			name: "stream idle after heartbeat", streaming: true, ping: true, idle: timeout,
+			wantStatus: util.StatusStreamIncomplete, wantError: "upstream stream idle timeout",
+		},
+		{
+			name: "OpenAI idle override", streaming: true, idle: time.Second, idleOverride: timeout,
+			wantStatus: util.StatusStreamIncomplete, wantError: "upstream stream idle timeout",
+		},
+		{
 			name: "non-stream total", nonStream: timeout,
 			wantStatus: http.StatusGatewayTimeout, wantError: "upstream timeout",
 		},
@@ -301,7 +337,7 @@ func TestForwardCursorAgentHonorsConfiguredTimeouts(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var runner cursorauth.Runner = &blockingCursorRunner{
-				started: make(chan struct{}), release: make(chan struct{}),
+				started: make(chan struct{}), release: make(chan struct{}), ping: test.ping,
 			}
 			if test.synchronous {
 				runner = synchronousBlockingCursorRunner{}
@@ -311,6 +347,8 @@ func TestForwardCursorAgentHonorsConfiguredTimeouts(t *testing.T) {
 			srv.firstByteTimeout = test.firstByte
 			srv.streamTimeout = test.streamTotal
 			srv.nonStreamTimeout = test.nonStream
+			srv.streamIdleTimeout = test.idle
+			srv.protocolTimeouts = map[string]protocolTimeoutConfig{string(protocol.OpenAI): {StreamIdleTimeout: test.idleOverride}}
 			body := []byte(`{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}]}`)
 			if test.streaming {
 				body = []byte(`{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
@@ -385,6 +423,39 @@ func TestForwardCursorAgentDebugPreservesRawSDKEvents(t *testing.T) {
 	}
 	if !strings.Contains(reqCtx.debugData.RespHeaders, "application/x-ndjson") {
 		t.Fatalf("raw debug response headers = %s", reqCtx.debugData.RespHeaders)
+	}
+}
+
+/**
+ * @brief 缺少 SDK 用量时，图片按张计入客户端输入估算，文本中的图片占位符不会按图片计数。
+ * @param t 测试上下文。
+ */
+func TestProxyCursorEstimatesInlineImages(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-images", models: "composer-2.5", upstreamProtocol: "openai",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: `{"api_key":"test-key","access_token":"test-session"}`,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = cursorUsageEventsRunner{{Done: true, Text: "ok"}}
+	text := map[string]any{"type": "text", "text": "[image]"}
+	image := map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64,aW1n"}}
+	var inputs []int
+	for _, content := range [][]any{{text, text}, {text, image}, {image, image}} {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "composer-2.5", "messages": []any{map[string]any{"role": "user", "content": content}},
+		}, nil)
+		var body struct {
+			Usage struct {
+				PromptTokens int `json:"prompt_tokens"`
+			} `json:"usage"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body)
+		}
+		inputs = append(inputs, body.Usage.PromptTokens)
+	}
+	if inputs[0] <= 0 || inputs[1]-inputs[0] != 1500 || inputs[2]-inputs[1] != 1500 {
+		t.Fatalf("estimated prompt tokens for zero, one and two images = %v", inputs)
 	}
 }
 
@@ -565,10 +636,10 @@ func TestForwardCursorResponsesStreamsRunningStatusAsPing(t *testing.T) {
 }
 
 /**
- * @brief 验证运行心跳解除首字节超时，但首内容计时仍等待真实文本。
+ * @brief 验证空流心跳不提交响应，首输出仍受首字超时约束。
  * @param t 测试上下文。
  */
-func TestForwardCursorAgentRunningPingStopsFirstByteTimeout(t *testing.T) {
+func TestForwardCursorAgentRunningPingLeavesFirstByteTimeoutActive(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 	runner := &blockingCursorRunner{
 		started: make(chan struct{}), release: make(chan struct{}), ping: true,
@@ -576,13 +647,7 @@ func TestForwardCursorAgentRunningPingStopsFirstByteTimeout(t *testing.T) {
 	srv := newInMemoryServer(t)
 	srv.cursorRunner = runner
 	srv.firstByteTimeout = timeout
-	done := make(chan struct{})
-	go func() {
-		<-runner.started
-		time.Sleep(60 * time.Millisecond)
-		close(runner.release)
-		close(done)
-	}()
+	rec := httptest.NewRecorder()
 	result, err := srv.forwardCursorAgent(
 		context.Background(),
 		&model.Config{ID: 24, Name: "Cursor-ping-timeout", AuthType: model.AuthTypeCursorOAuth},
@@ -593,17 +658,13 @@ func TestForwardCursorAgentRunningPingStopsFirstByteTimeout(t *testing.T) {
 			body:        []byte(`{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 			isStreaming: true, skipProxyLog: true,
 		},
-		httptest.NewRecorder(),
+		rec,
 	)
-	<-done
 	if err != nil {
 		t.Fatalf("forwardCursorAgent() error = %v", err)
 	}
-	if result == nil || !result.succeeded {
-		t.Fatalf("result = %+v, running ping should keep the first-byte timer from firing", result)
-	}
-	if result.firstByteTime < timeout.Seconds() {
-		t.Fatalf("firstByteTime = %.6f, want the delayed assistant text rather than the initial ping", result.firstByteTime)
+	if result == nil || result.succeeded || result.status != util.StatusFirstByteTimeout || result.firstByteTime != 0 || rec.Body.Len() != 0 || rec.Flushed {
+		t.Fatalf("result = %+v body = %s, want an uncommitted first-byte timeout", result, rec.Body)
 	}
 }
 
@@ -723,30 +784,38 @@ func TestTryCursorOAuthChannelSkipsUnsupportedFamilies(t *testing.T) {
 	}
 }
 
-func TestForwardCursorResponsesTreatsWriteFailureAsClientDisconnect(t *testing.T) {
+/**
+ * @brief 下游断开时，原生与转换流的正文及终态写入均按客户端取消处理。
+ * @param t 测试上下文。
+ */
+func TestForwardCursorAgentTreatsWriteFailureAsClientDisconnect(t *testing.T) {
 	t.Parallel()
-	srv := newInMemoryServer(t)
-	srv.cursorRunner = &fakeCursorRunner{text: "hello"}
-	originalBody := []byte(`{"model":"composer-2.5","input":[{"role":"user","content":"hello"}],"stream":true}`)
-	translatedBody, err := srv.protocolRegistry.TranslateRequest(
-		protocol.Codex, protocol.OpenAI, "composer-2.5", originalBody, true,
-	)
-	if err != nil {
-		t.Fatalf("translate request: %v", err)
-	}
-	result, err := srv.forwardCursorAgent(
-		context.Background(),
-		&model.Config{ID: 12, AuthType: model.AuthTypeCursorOAuth},
-		&cursorauth.Credential{APIKey: "key"},
-		&proxyRequestContext{
-			originalModel: "composer-2.5", clientProtocol: protocol.Codex,
-			requestPath: "/v1/responses", body: originalBody, translatedBody: translatedBody,
-			isStreaming: true, skipProxyLog: true,
-		},
-		&failingCursorResponseWriter{},
-	)
-	if err != nil || result == nil || result.status != StatusClientClosedRequest || !result.isClientCanceled {
-		t.Fatalf("result=%+v err=%v", result, err)
+	for _, tc := range []struct {
+		name                string
+		clientProtocol      protocol.Protocol
+		path                string
+		body                string
+		writesBeforeFailure int
+	}{
+		{"Responses output", protocol.Codex, "/v1/responses", `{"model":"composer-2.5","input":"hello","stream":true}`, 0},
+		{"Chat output", protocol.OpenAI, "/v1/chat/completions", `{"model":"composer-2.5","messages":[{"role":"user","content":"hello"}],"stream":true}`, 0},
+		{"Chat terminal", protocol.OpenAI, "/v1/chat/completions", `{"model":"composer-2.5","messages":[{"role":"user","content":"hello"}],"stream":true}`, 1},
+		{"Anthropic message start", protocol.Anthropic, "/v1/messages", `{"model":"composer-2.5","messages":[{"role":"user","content":"hello"}],"stream":true}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			srv.cursorRunner = &fakeCursorRunner{text: "hello"}
+			result, err := srv.forwardCursorAgent(t.Context(),
+				&model.Config{ID: 12, AuthType: model.AuthTypeCursorOAuth},
+				&cursorauth.Credential{APIKey: "key"},
+				&proxyRequestContext{originalModel: "composer-2.5", clientProtocol: tc.clientProtocol,
+					requestPath: tc.path, body: []byte(tc.body), isStreaming: true, skipProxyLog: true},
+				&failingCursorResponseWriter{writesBeforeFailure: tc.writesBeforeFailure})
+			if err != nil || result == nil || result.status != StatusClientClosedRequest || !result.isClientCanceled ||
+				!result.succeeded || result.nextAction != cooldown.ActionReturnClient || !result.forwarded.ResponseCommitted {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
 	}
 }
 
@@ -916,32 +985,16 @@ func TestForwardCursorResponsesKeepsOriginalSDKErrorAfterPing(t *testing.T) {
 			if result.firstByteTime != 0 {
 				t.Fatalf("firstByteTime = %.6f, ping without assistant content must not be timed", result.firstByteTime)
 			}
-			seenOriginal := false
-			for line := range strings.SplitSeq(rec.Body.String(), "\n") {
-				if !strings.HasPrefix(line, "data: ") {
-					continue
-				}
-				var event struct {
-					Type     string `json:"type"`
-					Message  string `json:"message"`
-					Response struct {
-						Error struct {
-							Code string `json:"code"`
-						} `json:"error"`
-					} `json:"response"`
-				}
-				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
-					t.Fatal(err)
-				}
-				if event.Type == "error" && event.Message == "upstream SDK temporarily unavailable" {
-					seenOriginal = true
-				}
-				if event.Response.Error.Code == "invalid_tool_arguments" {
-					t.Errorf("SDK failure was incorrectly replaced with tool input failure: %s", line)
-				}
+			if result.succeeded || result.forwarded.ResponseCommitted || rec.Body.Len() != 0 || rec.Flushed {
+				t.Fatalf("result=%+v body=%s, heartbeats alone must not commit the attempt", result, rec.Body)
 			}
-			if !seenOriginal {
-				t.Errorf("original SDK error missing from client stream: %s", rec.Body.String())
+			var failure struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(result.body, &failure); err != nil || failure.Error.Message != "upstream SDK temporarily unavailable" {
+				t.Fatalf("SDK failure body=%s err=%v", result.body, err)
 			}
 		})
 	}

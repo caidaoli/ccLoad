@@ -264,6 +264,16 @@ func cliproxyOpenAIResponseToCodexStream(ctx context.Context, model string, orig
 	return cliproxyTranslateOpenAIToCodexStream(ctx, model, original, translated, raw, param)
 }
 
+/**
+ * @brief 将 Chat Completions 响应及缓存创建用量转换到 Responses。
+ * @param ctx 当前响应上下文。
+ * @param model 目标模型 ID。
+ * @param original 客户端请求正文。
+ * @param translated 上游请求正文。
+ * @param raw Chat Completions 的 JSON 响应。
+ * @return Responses JSON。
+ * @return 上游响应无效或转换失败时返回错误。
+ */
 func cliproxyOpenAIResponseToCodexNonStream(ctx context.Context, model string, original, translated, raw []byte) ([]byte, error) {
 	raw = cliproxyNormalizeOpenAIChatCacheUsage(raw)
 	var state any
@@ -271,7 +281,25 @@ func cliproxyOpenAIResponseToCodexNonStream(ctx context.Context, model string, o
 	if err != nil {
 		return nil, err
 	}
+	if cacheCreation := cliproxyChatCacheCreation(ojson.GetBytes(raw, "usage")); cacheCreation != "" {
+		translatedResponse, _ = sjson.SetRawBytes(translatedResponse, "usage.cache_creation_input_tokens", []byte(cacheCreation))
+	}
 	return cliproxyJSONResponseWithState("openai response to codex", raw, translatedResponse, state)
+}
+
+/**
+ * @brief 读取 Chat 缓存创建总量，优先使用已有顶层字段。
+ * @param usage Chat Completions 的用量对象。
+ * @return 数值的原始 JSON；缺少有效字段时为空。
+ */
+func cliproxyChatCacheCreation(usage ojson.Result) string {
+	if value := usage.Get("cache_creation_input_tokens"); value.Type == ojson.Number {
+		return value.Raw
+	}
+	if value := usage.Get("prompt_tokens_details.cached_creation_tokens"); value.Type == ojson.Number {
+		return value.Raw
+	}
+	return ""
 }
 
 // Normalize DeepSeek's cache-read extension at the ccLoad boundary, before any
@@ -676,9 +704,13 @@ type cliproxyOpenAIToAnthropicStreamState struct {
 	response  bool
 }
 
+/**
+ * @brief OpenAI 到 Responses 转换中需要跨 SSE 事件保留的状态。
+ */
 type cliproxyOpenAIToCodexStreamState struct {
-	chat     any
-	response bool
+	chat          any
+	response      bool
+	cacheCreation string ///< 最近一次收到的 Chat 缓存创建总量；空字符串表示未报告。
 }
 
 func (s *cliproxyOpenAIToCodexStreamState) ToolInputError() error {
@@ -696,6 +728,17 @@ func (s *cliproxyOpenAIToCodexStreamState) FinalizeToolInput() [][]byte {
 	return chunks
 }
 
+/**
+ * @brief 将 Chat SSE 转为 Responses SSE，保留终态缓存创建用量。
+ * @param ctx 当前响应上下文。
+ * @param model 目标模型 ID。
+ * @param original 客户端请求正文。
+ * @param translated 上游请求正文。
+ * @param raw 当前上游 SSE 事件；空切片请求流结束处理。
+ * @param param 当前转换流的状态。
+ * @return 已封装的 Responses SSE 事件。
+ * @return 上游 SSE 格式、协议转换或工具输入错误。
+ */
 func cliproxyTranslateOpenAIToCodexStream(ctx context.Context, model string, original, translated, raw []byte, param *any) ([][]byte, error) {
 	data, err := cliproxySSEDataEvent(raw)
 	if err != nil {
@@ -727,11 +770,24 @@ func cliproxyTranslateOpenAIToCodexStream(ctx context.Context, model string, ori
 		if !state.response && root.Get("choices.0.delta.content").String() == "\u200b" {
 			return nil, nil
 		}
+		if cacheCreation := cliproxyChatCacheCreation(root.Get("usage")); cacheCreation != "" {
+			state.cacheCreation = strings.Clone(cacheCreation)
+		}
 	}
 	if state.response {
 		return nil, nil
 	}
 	chunks, err := openairesponses.ConvertOpenAIChatCompletionsResponseToOpenAIResponsesWithError(ctx, model, original, translated, data, &state.chat)
+	if state.cacheCreation != "" {
+		// The snapshot emits terminal events as one event line and one JSON data line.
+		for index, chunk := range chunks {
+			prefix, payload, _ := bytes.Cut(chunk, []byte("\ndata: "))
+			switch string(prefix) {
+			case "event: response.completed", "event: response.incomplete":
+				chunks[index], _ = sjson.SetRawBytes(bytes.TrimSpace(payload), "response.usage.cache_creation_input_tokens", []byte(state.cacheCreation))
+			}
+		}
+	}
 	framed, frameErr := cliproxyFrameStreamChunks(cliproxyStreamCodex, chunks)
 	return framed, errors.Join(err, frameErr, state.ToolInputError())
 }

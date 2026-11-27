@@ -305,11 +305,120 @@ func CalculateStandardCostBreakdownWithPrice(
 		cache5mTokens,
 		cache1hTokens, cache30mTokens, cache12hTokens,
 	)
+	return scaleOpenAICostBreakdown(breakdown, model, serviceTier, rateCard, billedAt)
+}
+
+/**
+ * @brief 已归一化的单轮计费用量；缓存写入未细分时采用通用短写费率。
+ */
+type TokenCostUsage struct {
+	InputTokens      int ///< 不含缓存的输入量。
+	OutputTokens     int ///< 输出量，包含思考 Token。
+	CacheReadTokens  int ///< 读取缓存的输入量。
+	CacheWriteTokens int ///< 未细分时长的缓存写入量。
+}
+
+/**
+ * @brief 对同一请求内的已知上游用量轮次分别选档并汇总费用。
+ * @param model 计费模型名称。
+ * @param serviceTier 请求使用的统一服务档位。
+ * @param rateCard API 或 Codex OAuth 的倍率价目。
+ * @param billedAt 计费时刻，用于限时倍率。
+ * @param price 渠道价格覆盖，nil 时沿用全局或系统目录。
+ * @param increments 互不重叠的真实计费用量，缺少轮次边界的终态余量保持为一个分项。
+ * @return 合计费用和各项加权单价；未知模型返回零费用，固定费用最多收取一次。
+ */
+func CalculateIncrementalCostBreakdownWithPrice(
+	model, serviceTier string, rateCard OpenAIRateCard, billedAt time.Time,
+	price *CustomModelPrice, increments []TokenCostUsage,
+) StandardCostBreakdown {
+	override := resolveModelPriceOverride(model, price)
+	fast := serviceTier == "fast" && IsFastModeModel(model)
+	var pricing ModelPricing
+	var ok bool
+	if fast && override == nil {
+		pricing, ok = LookupSystemModelPricing(model)
+	} else {
+		pricing, ok = resolveCostPricing(model, override)
+	}
+	if !ok {
+		return StandardCostBreakdown{}
+	}
+	sum := calculateIncrementalCostBreakdown(model, pricing, increments)
+	if fast {
+		return scaleFastModeCostBreakdown(sum)
+	}
+	return scaleOpenAICostBreakdown(sum, model, serviceTier, rateCard, billedAt)
+}
+
+/**
+ * @brief 按同一价目分别计算各上游轮次并累加分项。
+ * @param model 决定隐式费率和默认分档阈值的计费模型。
+ * @param pricing 已选中的价目。
+ * @param increments 本次请求收到的互不重叠真实用量。
+ * @return 合计费用和各分项加权单价；固定费用每次请求最多收取一次。
+ */
+func calculateIncrementalCostBreakdown(model string, pricing ModelPricing, increments []TokenCostUsage) StandardCostBreakdown {
+	fixedCost := pricing.FixedCostPerRequest
+	pricing.FixedCostPerRequest = 0
+	var sum StandardCostBreakdown
+	add := func(dst *CostComponent, src CostComponent) {
+		dst.Quantity += src.Quantity
+		dst.Cost += src.Cost
+	}
+	for _, usage := range increments {
+		breakdown := calculateCostBreakdownDetailed(model, &pricing,
+			usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, 0, 0, 0)
+		add(&sum.Input, breakdown.Input)
+		add(&sum.Output, breakdown.Output)
+		add(&sum.CacheRead, breakdown.CacheRead)
+		add(&sum.CacheWrite, breakdown.CacheWrite)
+	}
+	components := []*CostComponent{&sum.Input, &sum.Output, &sum.CacheRead, &sum.CacheWrite}
+	for _, component := range components {
+		if component.Quantity > 0 {
+			component.PricePerMillion = component.Cost * 1_000_000 / float64(component.Quantity)
+		}
+		sum.Total += component.Cost
+	}
+	if sum.Total == 0 && fixedCost > 0 {
+		sum.Total = fixedCost
+	}
+	return sum
+}
+
+/**
+ * @brief 按 OpenAI 价目卡对整个请求应用统一服务倍率。
+ * @param breakdown 已选上下文档位的分项费用。
+ * @param model 计费模型名称。
+ * @param serviceTier 请求使用的服务档位。
+ * @param rateCard API 或 Codex OAuth 的倍率价目。
+ * @param billedAt 计费时刻，用于限时倍率。
+ * @return 含实际服务倍率的成本明细。
+ */
+func scaleOpenAICostBreakdown(breakdown StandardCostBreakdown, model, serviceTier string, rateCard OpenAIRateCard, billedAt time.Time) StandardCostBreakdown {
 	multiplier := OpenAIServiceTierMultiplier(model, serviceTier, rateCard, billedAt)
 	if multiplier != 1 {
 		breakdown.ServiceTierMultiplier = multiplier
 	}
 	return scaleCostBreakdown(breakdown, multiplier)
+}
+
+/**
+ * @brief 取得用于计算的原始价格，按覆盖、目录和模糊匹配的顺序查找。
+ * @param model 计费模型名称。
+ * @param override 已解析的渠道模型价格；nil 时查目录。
+ * @return 模型价目。
+ * @return 是否找到可用价格。
+ */
+func resolveCostPricing(model string, override *ModelPricing) (ModelPricing, bool) {
+	if override != nil {
+		return *override, true
+	}
+	if pricing, ok := getPricing(model); ok {
+		return pricing, true
+	}
+	return fuzzyMatchModel(model)
 }
 
 // resolveModelPriceOverride 把渠道模型价格转换为计费价目。自定义只替换价目，
@@ -354,19 +463,9 @@ func calculateCostBreakdownDetailed(model string, override *ModelPricing, inputT
 		return StandardCostBreakdown{}
 	}
 
-	var pricing ModelPricing
-	if override != nil {
-		pricing = *override
-	} else {
-		var ok bool
-		pricing, ok = getPricing(model)
-		if !ok {
-			// 尝试模糊匹配(例如:claude-3-opus-xxx → claude-3-opus)
-			pricing, ok = fuzzyMatchModel(model)
-			if !ok {
-				return StandardCostBreakdown{} // 未知模型
-			}
-		}
+	pricing, ok := resolveCostPricing(model, override)
+	if !ok {
+		return StandardCostBreakdown{}
 	}
 
 	breakdown := StandardCostBreakdown{}
@@ -375,7 +474,10 @@ func calculateCostBreakdownDetailed(model string, override *ModelPricing, inputT
 	// 默认仅按非缓存输入判断；按完整 prompt 分档的模型（CacheReadCountsTowardTier=true，
 	// 如 Claude 长上下文、OpenAI context tier、MiMo）把缓存读与缓存写一并计入。
 	// Gemini 长上下文只看非缓存 prompt size，缓存读不得推高分档（否则 256K 缓存读会误触高档 input 价）。
-	tierThreshold := getTierThresholdForModel(model)
+	tierThreshold := pricing.tierThreshold
+	if tierThreshold == 0 {
+		tierThreshold = getTierThresholdForModel(model)
+	}
 	tierInputTokens := inputTokens
 	if pricing.CacheReadCountsTowardTier {
 		tierInputTokens += cacheReadTokens + cache5mTokens + cache1hTokens + cache30mTokens + cache12hTokens

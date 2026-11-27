@@ -3,9 +3,11 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -124,7 +126,7 @@ func (s *Server) tryCursorOAuthChannel(
  * @details 普通轮优先展示独立 usage；没有独立报告时使用非零终态补差。全零补差不代表当前轮已有报告。
  * SDK 独立 usage 和终态补差都可能包含历史工具轮；恢复轮的客户端用量始终按本次请求估算。
  * 没有可归账的真实用量时，日志与客户端共用当前轮估算。
- * @details 首内容耗时至少记为 1ns，避免时钟精度使已收到内容与尚未收到内容共用零值；心跳不计入首内容。
+ * @details 使用 Chat 线协议的超时配置。首内容耗时至少记为 1ns；提交前的心跳仅重置空闲计时。
  * @note 写入客户端响应、代理日志和令牌统计；旧工具轮重放不重复记账、冷却或切换渠道。
  */
 func (s *Server) forwardCursorAgent(
@@ -144,14 +146,50 @@ func (s *Server) forwardCursorAgent(
 	if requestedModel == "" {
 		requestedModel = reqCtx.originalModel
 	}
-	// Effort is written in the client's own shape; translation then carries it
-	// into the chat body ParseRequest reads.
-	clientBody := applyThinkingSuffixForModel(reqCtx.body, reqCtx.clientProtocol, protocol.OpenAI, requestedModel, modelID)
-	clientBody = applyAutomaticReasoning(clientBody, reqCtx, protocol.OpenAI, modelID)
-	body := clientBody
-	// The SDK only reads chat-shaped requests. Always translate from the client
-	// body: proxy setup seeds translatedBody with the untranslated request.
 	translatedClient := cursorTranslatedClientProtocol(reqCtx.requestPath)
+	originalResponseBody := reqCtx.body
+	clientBody := reqCtx.body
+	streaming := reqCtx.isStreaming
+	var compaction *responsesCompactionRequest
+	if translatedClient == protocol.Codex {
+		var err error
+		clientBody, compaction, err = prepareCursorResponsesRequest(ctx, reqCtx)
+		if err != nil {
+			if errors.Is(err, errPrivacyMasking) {
+				s.privacyStats.blocked.Add(1)
+				return cursorErrorResult(cfg, http.StatusBadRequest, err.Error(), cooldown.ActionReturnClient, format, ""), nil
+			}
+			result := cursorErrorResult(cfg, http.StatusBadRequest, err.Error(), cooldown.ActionRetryChannel, format, "")
+			result.protocolCapabilityMissing, result.requestScopedProtocolMiss = true, true
+			return result, nil
+		}
+		if compaction != nil {
+			originalResponseBody = clientBody
+			streaming = false
+		}
+	}
+	clientBody = applyThinkingSuffixForModel(clientBody, reqCtx.clientProtocol, protocol.OpenAI, requestedModel, modelID)
+	var levels []string
+	var knownLevels bool
+	if reqCtx.reasoning != nil {
+		levels, knownLevels = cursorCatalogEffortLevels(credential, modelID)
+		if !knownLevels {
+			clientBody = applyAutomaticReasoning(clientBody, reqCtx, protocol.OpenAI, modelID)
+		}
+	}
+	if attachment := cursorUnsupportedAttachment(translatedClient, clientBody); attachment != "" {
+		message := fmt.Sprintf("Cursor Local Agent cannot read %s; use text or inline base64 images", attachment)
+		if reqCtx.cursorToolRoute.channelID != 0 {
+			return cursorErrorResult(cfg, http.StatusBadRequest, message, cooldown.ActionReturnClient, format, ""), nil
+		}
+		result := cursorErrorResult(cfg, http.StatusBadRequest, message, cooldown.ActionSkipChannel, format, "")
+		result.candidateSkipped, result.header = true, nil
+		return result, nil
+	}
+
+	body := clientBody
+	// The SDK only reads chat-shaped requests. Start from the client protocol
+	// body (full replay for a locally known Responses continuation).
 	if translatedClient != "" {
 		if s.protocolRegistry == nil {
 			return cursorErrorResult(
@@ -167,25 +205,50 @@ func (s *Server) forwardCursorAgent(
 			protocol.OpenAI,
 			reqCtx.originalModel,
 			clientBody,
-			reqCtx.isStreaming,
+			streaming,
 		)
 		if err != nil {
 			return cursorErrorResult(cfg, http.StatusBadRequest, err.Error(), cooldown.ActionReturnClient, format, ""), nil
 		}
+		// The translators omit empty tool declarations. On a live Cursor Run an
+		// explicit empty set revokes tools, while an omitted set inherits them.
+		source := gjson.ParseBytes(clientBody)
+		if !gjson.GetBytes(translatedBody, "tools").Exists() && (source.Get("tools").IsArray() ||
+			(translatedClient == protocol.Codex && source.Get(`input.#(type=="additional_tools").tools`).IsArray())) {
+			translatedBody = setJSONRaw(translatedBody, "tools", "[]")
+		}
+		if translatedClient == protocol.Codex && !gjson.GetBytes(translatedBody, "tool_choice").Exists() {
+			choice := source.Get("tool_choice")
+			if choice.IsObject() && (choice.Get("namespace").Str != "" || choice.Get("function.namespace").Str != "" || choice.Get("custom.namespace").Str != "") {
+				return cursorErrorResult(cfg, http.StatusBadRequest, "namespaced tool_choice requires tool definitions", cooldown.ActionReturnClient, format, ""), nil
+			}
+			if choice.IsObject() || choice.Str == "none" || choice.Str == "required" {
+				translatedBody = setJSONRaw(translatedBody, "tool_choice", choice.Raw)
+			}
+		}
+		if translatedClient == protocol.Codex {
+			parallel := source.Get("parallel_tool_calls")
+			if parallel.Type == gjson.True || parallel.Type == gjson.False {
+				translatedBody = setJSONRaw(translatedBody, "parallel_tool_calls", parallel.Raw)
+			}
+		}
 		reqCtx.translatedBody = translatedBody
 		body = translatedBody
 	}
-	originalResponseBody := reqCtx.body
 	request := cursorauth.ParseRequest(body)
 	// 部分客户端协议以删除等级字段表达 (none)，SDK 需要显式关闭。
 	if _, suffix, ok := model.ParseThinkingSuffix(requestedModel); ok && suffix.Mode == thinking.ModeNone {
 		request.Effort = "none"
 	}
-	if translatedClient == protocol.Codex && gjson.GetBytes(clientBody, "tool_choice").String() == "none" {
-		// Responses 与 chat 的转换在没有工具声明时会省略 tool_choice，续接仍需保留显式禁用。
-		request.ToolChoice = "none"
+	if knownLevels {
+		if effort := automaticReasoningEffort(reqCtx, protocol.OpenAI, modelID, levels, true); effort != "" {
+			request.Effort, reqCtx.reasoningExpected = effort, effort
+		}
 	}
-	request.SessionScope = cursorauth.SessionScope{ChannelID: cfg.ID, TokenID: reqCtx.tokenID}
+	request.SessionScope = reqCtx.cursorSessionScope(cfg.ID)
+	if compaction != nil {
+		request.SessionScope = cursorauth.SessionScope{}
+	}
 	if request.Prompt == "" && len(request.ToolResults) == 0 {
 		return cursorErrorResult(cfg, http.StatusBadRequest, "cursor prompt is required", cooldown.ActionReturnClient, format, ""), nil
 	}
@@ -211,9 +274,6 @@ func (s *Server) forwardCursorAgent(
 		defer s.activeRequests.Remove(activeReqID)
 	}
 	debugCapture := s.captureCursorSDKRequest(reqCtx, modelID, request.Prompt)
-	if debugCapture != nil {
-		w = debugCapture.wrapTranslatedResponseWriter(w)
-	}
 	if s.activeRequests != nil {
 		s.activeRequests.SetDebugCapture(reqCtx.activeReqID, debugCapture)
 	}
@@ -239,20 +299,26 @@ func (s *Server) forwardCursorAgent(
 		return finishStartFailure(result, err), nil
 	}
 
-	streaming := reqCtx.isStreaming
-	timeoutCtx := newRequestContextForStreaming(ctx, streaming, protocolTimeoutConfig{
-		FirstByteTimeout: s.firstByteTimeout,
-		StreamTimeout:    s.streamTimeout,
-		NonStreamTimeout: s.nonStreamTimeout,
-	})
+	timeouts := s.resolveProtocolTimeouts(protocol.TransformPlan{UpstreamProtocol: protocol.OpenAI})
+	timeoutCtx := newRequestContextForStreaming(ctx, streaming, timeouts)
 	defer timeoutCtx.cleanup()
 	classifyFailure := func(runErr error, replayed bool) (*proxyResult, error) {
 		timedOut := timeoutCtx.firstByteTimeoutTriggered() || timeoutCtx.streamTimeoutTriggered() ||
 			(!streaming && timeoutCtx.ctx.Err() != nil &&
 				errors.Is(context.Cause(timeoutCtx.ctx), context.DeadlineExceeded))
-		if timedOut {
+		if timedOut && ctx.Err() == nil {
 			failed, _, timeoutErr := s.handleRequestError(timeoutCtx, cfg, runErr)
-			return cursorErrorResult(cfg, failed.Status, timeoutErr.Error(), cooldown.ActionRetryChannel, format, ""), timeoutErr
+			code := ""
+			if failed.Status == util.StatusStreamIncomplete {
+				code = responsesWebsocketInterruptedCode
+			}
+			result := cursorErrorResult(cfg, failed.Status, timeoutErr.Error(), cooldown.ActionRetryChannel, format, code)
+			if !replayed && !reqCtx.deferCursorCooldown {
+				input := cooldownInputForModel(networkErrorInput(cfg.ID, cooldown.NoKeyIndex, failed.Status), modelID)
+				input.ModelScoped = util.IsModelScopedNetworkError(timeoutErr)
+				result.nextAction = s.applyCooldownDecision(ctx, cfg, input)
+			}
+			return result, timeoutErr
 		}
 		return s.cursorFailureResult(ctx, cfg, modelID, runErr, replayed, reqCtx.deferCursorCooldown, format), runErr
 	}
@@ -289,15 +355,32 @@ func (s *Server) forwardCursorAgent(
 		return finishStartFailure(result, failureErr), nil
 	}
 
-	msgID := "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	clientWriter := w
+	if reqCtx.isStreaming {
+		// The upstream timer stops the run; the client can still receive the
+		// terminal SSE error. A client cancellation interrupts downstream writes.
+		cancelableWriter, stopWrites := newCancelableResponseWriter(ctx, w)
+		defer stopWrites()
+		w = cancelableWriter
+	}
+	w = debugCapture.wrapTranslatedResponseWriter(w)
+
+	id := strings.ReplaceAll(uuid.NewString(), "-", "")
+	msgID := "msg_" + id
+	openAIID := "chatcmpl-" + msgID
+	if translatedClient == protocol.Codex {
+		openAIID = cursorResponsesIDPrefix + id
+	}
 	var responseTransformState any
-	var responseTransformErr error
+	var responseErr error
 	var responsesCursor responsesStreamCursor
 	if streaming && translatedClient != "" && s.protocolRegistry != nil {
-		_, responseTransformErr = s.protocolRegistry.TranslateResponseStream(ctx, protocol.OpenAI, translatedClient,
+		_, responseErr = s.protocolRegistry.TranslateResponseStream(ctx, protocol.OpenAI, translatedClient,
 			modelID, originalResponseBody, body, nil, &responseTransformState)
+		if responseErr != nil {
+			cancelRun()
+		}
 	}
-	var out bytes.Buffer
 	var thinking strings.Builder
 	var content []map[string]any
 	var anthropicStream cursorAnthropicStream
@@ -306,14 +389,27 @@ func (s *Server) forwardCursorAgent(
 	wroteHeader := false
 	streamedPlain := 0
 	var calls []cursorauth.ToolCall
-	flush := func() {
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
+	flush := func() error {
+		if err := context.Cause(ctx); err != nil {
+			return fmt.Errorf("client disconnected: %w", err)
 		}
+		if err := http.NewResponseController(clientWriter).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("client disconnected: %w", err)
+		}
+		return nil
 	}
-	ensureStream := func() {
-		if !streaming || wroteHeader {
-			return
+	writePayload := func(payload []byte) error {
+		if _, err := w.Write(payload); err != nil {
+			return fmt.Errorf("client disconnected: %w", err)
+		}
+		return nil
+	}
+	ensureStream := func() error {
+		if cause := context.Cause(timeoutCtx.ctx); cause != nil {
+			return cause
+		}
+		if wroteHeader {
+			return nil
 		}
 		disableResponseWriteTimeout(w, "Cursor SDK stream")
 		header := w.Header()
@@ -321,46 +417,38 @@ func (s *Server) forwardCursorAgent(
 		header.Set("Cache-Control", "no-cache")
 		header.Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
+		if err := responseHeaderWriteError(w); err != nil {
+			return fmt.Errorf("client disconnected: %w", err)
+		}
 		wroteHeader = true
 		if format == "anthropic" {
-			_, _ = w.Write(cursorAnthropicStart(msgID, modelID))
+			return writePayload(cursorAnthropicStart(msgID, modelID))
 		}
+		return nil
 	}
-	writeStream := func(chunk, kind string) {
-		if !streaming || chunk == "" || responseTransformErr != nil {
-			return
+	writeStream := func(chunk, kind string) error {
+		if err := ensureStream(); err != nil {
+			return err
 		}
-		ensureStream()
 		var payload []byte
 		if format == "anthropic" {
 			payload = anthropicStream.delta(chunk, kind)
 		} else if kind == "thinking" {
-			payload = cursorOpenAIChunk(msgID, modelID, "", chunk, "", nil)
+			payload = cursorOpenAIChunk(openAIID, modelID, "", chunk, "", nil)
 		} else {
-			payload = cursorOpenAIChunk(msgID, modelID, chunk, "", "", nil)
+			payload = cursorOpenAIChunk(openAIID, modelID, chunk, "", "", nil)
 		}
 		if translatedClient != "" {
-			responseTransformErr = writeCursorTranslatedStream(
+			if err := writeCursorTranslatedStream(
 				ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body, payload, &responseTransformState,
 				&responsesCursor,
-			)
-			if responseTransformErr != nil {
-				cancelRun()
+			); err != nil {
+				return err
 			}
-		} else {
-			_, _ = w.Write(payload)
+		} else if err := writePayload(payload); err != nil {
+			return err
 		}
-		flush()
-	}
-	writePing := func() {
-		if !streaming || responseTransformErr != nil {
-			return
-		}
-		ensureStream()
-		// Registry translation swallows SSE comments; write the keepalive
-		// directly so clients still see traffic before the first token.
-		_, _ = w.Write(cursorStreamPing(format))
-		flush()
+		return flush()
 	}
 
 	appendContent := func(chunk, kind string) {
@@ -375,10 +463,14 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	var runErr error
+	done := false
 	var usage *cursorauth.Usage
 	var turnUsage, billableUsage cursorauth.Usage
+	var usageIncrements []util.TokenCostUsage
+	billingModel := util.CursorPricingModel(modelID)
 	replayed := false
 	for event := range events {
+		timeoutCtx.touchStreamIdle()
 		if event.SentEffort != nil && reqCtx.reasoning != nil && ctx.Err() == nil {
 			reqCtx.commitSentReasoning(*event.SentEffort, "unsupported_model_effort")
 		}
@@ -386,7 +478,40 @@ func (s *Server) forwardCursorAgent(
 			_, _ = debugCapture.respBuf.Write(event.RawResponse)
 			_, _ = debugCapture.respBuf.Write([]byte("\n"))
 		}
-		if firstByte == 0 && (event.Delta != "" || event.ThinkingDelta != "" || event.Text != "" || event.ToolCall != nil || (event.Done && event.Err == nil)) {
+		if event.Usage != nil && *event.Usage != (cursorauth.Usage{}) {
+			if !event.Replayed {
+				if event.BillingModel != "" {
+					billingModel = event.BillingModel
+				}
+				billableUsage.Add(event.Usage)
+				increments := event.UsageIncrements
+				if len(increments) == 0 {
+					increments = []cursorauth.Usage{*event.Usage}
+				}
+				for _, increment := range increments {
+					usageIncrements = append(usageIncrements, util.TokenCostUsage{
+						InputTokens: increment.InputTokens, OutputTokens: increment.OutputTokens,
+						CacheReadTokens: increment.CacheReadTokens, CacheWriteTokens: increment.CacheWriteTokens,
+					})
+				}
+			}
+			if !event.Done {
+				turnUsage.Add(event.Usage)
+				usage = &turnUsage
+			} else if usage == nil {
+				usage = event.Usage
+			}
+		}
+		replayed = replayed || event.Replayed
+		done = done || event.Done
+		if runErr == nil {
+			runErr = event.Err
+		}
+		// Drain reported usage after cancellation, including the terminal increment.
+		if runErr != nil || responseErr != nil || timeoutCtx.ctx.Err() != nil {
+			continue
+		}
+		if firstByte == 0 && (event.Delta != "" || event.ThinkingDelta != "" || event.Text != "" || event.ToolCall != nil || event.Done) {
 			firstByte = positiveDuration(time.Since(started))
 			timeoutCtx.stopFirstByteTimer()
 			if s.activeRequests != nil {
@@ -397,8 +522,7 @@ func (s *Server) forwardCursorAgent(
 		if event.Text != "" {
 			full = event.Text
 		} else if event.Delta != "" {
-			out.WriteString(event.Delta)
-			full = out.String()
+			full += event.Delta
 		}
 		thinking.WriteString(event.ThinkingDelta)
 		appendContent(event.ThinkingDelta, "thinking")
@@ -410,36 +534,24 @@ func (s *Server) forwardCursorAgent(
 		if s.activeRequests != nil {
 			s.activeRequests.AddBytes(reqCtx.activeReqID, int64(len(textDelta)+len(event.ThinkingDelta)))
 		}
-		if event.Err != nil {
-			runErr = event.Err
-		}
-		if event.Usage != nil && *event.Usage != (cursorauth.Usage{}) {
-			if !event.Replayed {
-				billableUsage.Add(event.Usage)
-			}
-			if !event.Done {
-				turnUsage.Add(event.Usage)
-				usage = &turnUsage
-			} else if usage == nil {
-				usage = event.Usage
-			}
-		}
-		replayed = replayed || event.Replayed
 		if event.ToolCall != nil {
 			calls = append(calls, *event.ToolCall)
 		}
-		if event.Ping && responseTransformErr == nil {
-			timeoutCtx.stopFirstByteTimer()
-			writePing()
+		// A heartbeat before the first output preserves the option to fail over.
+		if event.Ping && wroteHeader {
+			responseErr = writePayload(cursorStreamPing(format))
+			if responseErr == nil {
+				responseErr = flush()
+			}
 		}
-		if streaming && event.ThinkingDelta != "" && responseTransformErr == nil {
-			writeStream(event.ThinkingDelta, "thinking")
+		if streaming && event.ThinkingDelta != "" && responseErr == nil {
+			responseErr = writeStream(event.ThinkingDelta, "thinking")
 		}
-		if streaming && event.Delta != "" && responseTransformErr == nil {
-			writeStream(event.Delta, "text")
+		if streaming && event.Delta != "" && responseErr == nil {
+			responseErr = writeStream(event.Delta, "text")
 			streamedPlain += len(event.Delta)
 		}
-		if responseTransformErr != nil {
+		if responseErr != nil {
 			cancelRun()
 		}
 	}
@@ -448,6 +560,21 @@ func (s *Server) forwardCursorAgent(
 	if usage == nil || len(request.ToolResults) > 0 {
 		estimatedUsage = estimatedCursorResponseUsage(estimateCursorInputTokens(request), full, thinking.String(), calls)
 		usage = estimatedUsage
+	}
+	recordUsage := func(result *fwResult, outcome model.TokenStatsOutcome, errMsg string) {
+		applyCursorUsage(result, billableUsage, estimatedUsage)
+		result.cursorUsageIncrements = usageIncrements
+		result.cursorBillingModel = billingModel
+		if strings.HasSuffix(billingModel, "-fast") {
+			result.ServiceTier = "fast"
+		}
+		if !reqCtx.skipProxyLog && !replayed {
+			entry := buildProxyLogEntry(reqCtx, cfg, modelID, "cursor-oauth", result.Status, duration, result, errMsg)
+			cost := entry.Cost
+			s.AddLogAsync(entry)
+			s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, reqCtx.attemptModelPrice,
+				outcome, duration, reqCtx.isStreaming, result, modelID, &cost)
+		}
 	}
 	finishRunFailure := func(runErr error) (*proxyResult, error) {
 		result, runErr := classifyFailure(runErr, replayed)
@@ -458,20 +585,29 @@ func (s *Server) forwardCursorAgent(
 		status := result.status
 		clientDisconnected := status == StatusClientClosedRequest
 		if streaming && wroteHeader && !clientDisconnected {
+			var writeErr error
 			switch format {
 			case "responses":
 				// Preserve the run failure; EOF validation would replace it with a
 				// missing-terminator error. Conversion failures were already emitted.
 				if protocol.ResponseToolInputError(responseTransformState) == nil {
 					code := gjson.GetBytes(result.body, "error.code").String()
-					_, _ = w.Write(cursorResponsesStreamError(runErr.Error(), code, responsesCursor.nextSequence))
+					writeErr = writePayload(cursorResponsesStreamError(runErr.Error(), code, responsesCursor.nextSequence))
 				}
 			case "anthropic":
-				_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", result.body)
+				writeErr = writePayload(fmt.Appendf(nil, "event: error\ndata: %s\n\n", result.body))
 			default:
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", result.body)
+				writeErr = writePayload(fmt.Appendf(nil, "data: %s\n\n", result.body))
 			}
-			flush()
+			if writeErr == nil {
+				writeErr = flush()
+			}
+			if writeErr != nil {
+				runErr = writeErr
+				result = s.cursorFailureResult(ctx, cfg, modelID, writeErr, replayed, reqCtx.deferCursorCooldown, format)
+				result.cursorRunReplayed = replayed
+				status, clientDisconnected = result.status, true
+			}
 		}
 		result.duration = duration
 		result.firstByteTime = firstByte.Seconds()
@@ -480,15 +616,11 @@ func (s *Server) forwardCursorAgent(
 			Status: status, Header: result.header, Body: result.body, FirstByteTime: firstByte.Seconds(),
 			ResponseCommitted: wroteHeader,
 		}
-		applyCursorUsage(failed, billableUsage, estimatedUsage)
+		recordUsage(failed, failureTokenStatsOutcome(status), runErr.Error())
 		result.forwarded = failed
-		if !reqCtx.skipProxyLog && !replayed {
-			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, runErr.Error())
-			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), duration, failed, modelID)
-		}
 		result.proxyLogWritten = !reqCtx.skipProxyLog && !replayed
 		result.isClientCanceled = clientDisconnected
-		if streaming && wroteHeader && !clientDisconnected {
+		if wroteHeader {
 			// The SSE envelope is already on the wire; the attempt loop must not
 			// write a second JSON body.
 			result.succeeded = true
@@ -496,11 +628,15 @@ func (s *Server) forwardCursorAgent(
 		}
 		return result, nil
 	}
-	if responseTransformErr != nil {
-		runErr = responseTransformErr
+	if responseErr != nil {
+		runErr = responseErr
 	}
 	if runErr == nil && timeoutCtx.ctx.Err() != nil {
 		runErr = context.Cause(timeoutCtx.ctx)
+	}
+	// Tool batch delivery is also a valid end to a single attached request.
+	if runErr == nil && !done && len(calls) == 0 {
+		runErr = fmt.Errorf("cursor run stream closed before terminal event: %w", io.ErrUnexpectedEOF)
 	}
 	if runErr != nil {
 		return finishRunFailure(runErr)
@@ -510,76 +646,150 @@ func (s *Server) forwardCursorAgent(
 
 	var responseBody []byte
 	var header http.Header
+	var responsesTurn responsesWebsocketTurnResult
+	var hasResponsesTurn bool
 	if streaming {
+		if err := ensureStream(); err != nil {
+			return finishRunFailure(err)
+		}
+		if len(plain) > streamedPlain {
+			if err := writeStream(plain[streamedPlain:], "text"); err != nil {
+				return finishRunFailure(err)
+			}
+			streamedPlain = len(plain)
+		}
 		if format == "anthropic" {
-			ensureStream()
-			if streamedPlain == 0 && plain != "" {
-				writeStream(plain, "text")
-			}
-			_, _ = w.Write(anthropicStream.finish(calls, usage))
+			responseErr = writePayload(anthropicStream.finish(calls, usage))
 		} else {
-			ensureStream()
-			if len(plain) > streamedPlain {
-				writeStream(plain[streamedPlain:], "text")
-				streamedPlain = len(plain)
-			}
-			finish := cursorOpenAIFinish(msgID, modelID, plain, calls, streamedPlain > 0, usage)
-			if translatedClient != "" {
-				responseTransformErr = writeCursorTranslatedStream(
+			finish := cursorOpenAIFinish(openAIID, modelID, plain, calls, streamedPlain > 0, usage)
+			finish = append(finish, "data: [DONE]\n\n"...)
+			if translatedClient == "" {
+				responseErr = writePayload(finish)
+			} else {
+				responseErr = writeCursorTranslatedStream(
 					ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body, finish, &responseTransformState,
 					&responsesCursor,
 				)
-				if responseTransformErr == nil {
-					responseTransformErr = writeCursorTranslatedStream(
-						ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body,
-						[]byte("data: [DONE]\n\n"), &responseTransformState, &responsesCursor,
-					)
-				}
-			} else {
-				_, _ = w.Write(finish)
-				_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			}
 		}
-		if responseTransformErr != nil {
-			return finishRunFailure(responseTransformErr)
+		if responseErr == nil {
+			responseErr = flush()
 		}
-		flush()
+		if responseErr != nil {
+			return finishRunFailure(responseErr)
+		}
 		responseBody = []byte(plain)
 		header = w.Header()
+		responsesTurn = responsesCursor.turn
+		hasResponsesTurn = responsesTurn.completedResponseID != ""
 	} else {
 		if format == "anthropic" {
 			responseBody = cursorAnthropicMessage(msgID, modelID, content, calls, usage)
 		} else {
-			responseBody = cursorOpenAIMessage(msgID, modelID, plain, thinking.String(), calls, usage)
+			responseBody = cursorOpenAIMessage(openAIID, modelID, plain, thinking.String(), calls, usage)
 		}
 		if translatedClient != "" {
-			responseBody, responseTransformErr = s.protocolRegistry.TranslateResponseNonStream(
+			responseBody, responseErr = s.protocolRegistry.TranslateResponseNonStream(
 				ctx, protocol.OpenAI, translatedClient, modelID, originalResponseBody, body, responseBody,
 			)
 		}
-		if responseTransformErr != nil {
-			return finishRunFailure(responseTransformErr)
+		if responseErr != nil {
+			return finishRunFailure(responseErr)
 		}
-		header = make(http.Header)
+		header = w.Header()
 		header.Set("Content-Type", "application/json")
-		writeResponseWithHeaders(w, http.StatusOK, header, responseBody)
+		if compaction != nil {
+			responseBody, responseErr = buildResponsesCompactionResponse(responseBody, compaction.compactEndpoint)
+			if responseErr != nil {
+				return finishRunFailure(responseErr)
+			}
+		}
+		if translatedClient == protocol.Codex {
+			responsesTurn, hasResponsesTurn = responsesHTTPJSONTurn(responseBody)
+		}
+		if compaction != nil && compaction.stream {
+			frames, err := responsesCompactionStream(responseBody)
+			if err != nil {
+				return finishRunFailure(err)
+			}
+			responseBody = bytes.Join(frames, nil)
+			header.Set("Content-Type", "text/event-stream")
+		}
+		disableResponseWriteTimeout(w, "Cursor SDK response")
+		w.WriteHeader(http.StatusOK)
+		if err := responseHeaderWriteError(w); err != nil {
+			return finishRunFailure(fmt.Errorf("client disconnected: %w", err))
+		}
+		wroteHeader = true
+		if err := writePayload(responseBody); err != nil {
+			return finishRunFailure(err)
+		}
+		if compaction != nil && compaction.stream {
+			if err := flush(); err != nil {
+				return finishRunFailure(err)
+			}
+		}
 	}
 
 	channelID := cfg.ID
+	responsesTurn.localResponseID = hasResponsesTurn
+	if replay := reqCtx.cursorHTTPToolReplay; replay != nil && hasResponsesTurn && modelID != "" {
+		replay.channelID = channelID
+		replay.key = sha256.Sum256([]byte(credential.APIKey))
+		replay.actualModel = modelID
+		responsesTurn.cursorHTTPToolReplay = replay
+	}
 	finishCursorSDKDebug(reqCtx, debugCapture, http.StatusOK, responseBody, nil)
 	forwarded := &fwResult{
 		Status: http.StatusOK, Header: header, Body: responseBody, FirstByteTime: firstByte.Seconds(),
+		ResponseCommitted: wroteHeader, ResponsesTurnResult: responsesTurn, HasResponsesTurnResult: hasResponsesTurn,
 	}
-	applyCursorUsage(forwarded, billableUsage, estimatedUsage)
-	if !reqCtx.skipProxyLog && !replayed {
-		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, forwarded, "")
-		s.updateTokenStatsForProxy(reqCtx, model.TokenStatsSuccess, duration, forwarded, modelID)
-	}
+	recordUsage(forwarded, model.TokenStatsSuccess, "")
 	return &proxyResult{
 		status: http.StatusOK, header: header, body: responseBody, channelID: &channelID,
 		forwarded: forwarded,
 		duration:  duration, firstByteTime: firstByte.Seconds(), succeeded: true,
 		nextAction: cooldown.ActionReturnClient, proxyLogWritten: !reqCtx.skipProxyLog && !replayed,
+		responsesTurn: forwarded.ResponsesTurnResult, hasResponsesTurn: forwarded.HasResponsesTurnResult,
+	}, nil
+}
+
+/**
+ * @brief 恢复 Responses 历史并生成 Cursor 所需的无工具摘要请求。
+ * @param ctx 当前代理上下文，含请求的隐私脱敏会话。
+ * @param reqCtx 当前 HTTP 或 WebSocket 轮次；已有的完整历史由执行会话提供。
+ * @return 可转换为 Chat 的完整 Responses 请求，输入无效时为 nil。
+ * @return 压缩响应需要恢复的客户端传输设置；正常请求为 nil。
+ * @return 续接历史不可用、外部压缩无法恢复或请求无效时返回错误。
+ */
+func prepareCursorResponsesRequest(ctx context.Context, reqCtx *proxyRequestContext) ([]byte, *responsesCompactionRequest, error) {
+	body := cursorClientRequestBody(reqCtx)
+	if strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != "" {
+		return nil, nil, errResponsesPreviousResponseUnavailable
+	}
+	expanded, err := expandResponsesCompaction(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if hasForeignResponsesCompaction(expanded) {
+		return nil, nil, errForeignResponsesCompaction
+	}
+	if !bytes.Equal(expanded, body) {
+		expanded, err = privacySessionFromContext(ctx).MaskJSON(expanded)
+		if err != nil {
+			return nil, nil, errPrivacyMasking
+		}
+	}
+	if !responsesCompactionRequested(reqCtx.requestPath, reqCtx.body) {
+		return expanded, nil, nil
+	}
+	summary, err := prepareResponsesCompactionSummary(expanded)
+	if err != nil {
+		return nil, nil, err
+	}
+	return summary, &responsesCompactionRequest{
+		stream:          reqCtx.isStreaming,
+		compactEndpoint: strings.HasSuffix(strings.TrimRight(reqCtx.requestPath, "/"), "/responses/compact"),
 	}, nil
 }
 
@@ -697,7 +907,7 @@ func cursorResponseFormat(reqCtx *proxyRequestContext) string {
  * @param deferCooldown 是否由管理测试在外层统一处理持久化。
  * @param format 下游协议名称。
  * @return 含代理状态、响应正文和后续路由动作的失败结果。
- * @details 仅临时限流使用 SDK 结构化恢复时间；用量上限按现有指数退避，忽略报错里的日期。
+ * @details 缺终态的 EOF 按流中断冷却模型。仅临时限流使用 SDK 结构化恢复时间；用量上限按现有指数退避。
  */
 func (s *Server) cursorFailureResult(ctx context.Context, cfg *model.Config, modelID string, err error, replayed, deferCooldown bool, format string) *proxyResult {
 	now := time.Now()
@@ -708,6 +918,8 @@ func (s *Server) cursorFailureResult(ctx context.Context, cfg *model.Config, mod
 	switch {
 	case isClientDisconnectError(err):
 		status, action = StatusClientClosedRequest, cooldown.ActionReturnClient
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+		status, code = util.StatusStreamIncomplete, responsesWebsocketInterruptedCode
 	case errors.Is(err, cursorauth.ErrAgentMissing):
 		status, action, skipped = http.StatusServiceUnavailable, cooldown.ActionSkipChannel, true
 	case errors.Is(err, cursorauth.ErrMissingAPIKey):
@@ -730,7 +942,7 @@ func (s *Server) cursorFailureResult(ctx context.Context, cfg *model.Config, mod
 	result := cursorErrorResult(cfg, status, err.Error(), action, format, code)
 	result.candidateSkipped = skipped
 	result.protocolCapabilityMissing = accountCapabilityMissing
-	if replayed || status != http.StatusTooManyRequests {
+	if replayed || (status != http.StatusTooManyRequests && status != util.StatusStreamIncomplete) {
 		return result
 	}
 	in := cooldownInputForModel(httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, status, result.body, nil), modelID)
@@ -783,6 +995,8 @@ func cursorErrorResult(cfg *model.Config, status int, message string, action coo
 			kind = "permission_error"
 		case http.StatusTooManyRequests:
 			kind = "rate_limit_error"
+		case util.StatusStreamIncomplete:
+			kind = "server_error"
 		}
 		detail := map[string]any{"message": message, "type": kind}
 		if code != "" {
@@ -986,7 +1200,7 @@ func cursorOpenAIChunk(id, modelID, content, thinking, finish string, usage *cur
 		finishReason = finish
 	}
 	payloadObject := map[string]any{
-		"id": "chatcmpl-" + id, "object": "chat.completion.chunk",
+		"id": id, "object": "chat.completion.chunk",
 		"created": time.Now().Unix(), "model": modelID,
 		"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finishReason}},
 	}
@@ -1024,7 +1238,7 @@ func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, t
 			}},
 		}
 		payload, _ := json.Marshal(map[string]any{
-			"id": "chatcmpl-" + id, "object": "chat.completion.chunk",
+			"id": id, "object": "chat.completion.chunk",
 			"created": time.Now().Unix(), "model": modelID,
 			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}},
 		})
@@ -1075,7 +1289,7 @@ func cursorOpenAIMessage(id, modelID, text, thinking string, calls []cursorauth.
 		message["tool_calls"] = toolCalls
 	}
 	body, _ := json.Marshal(map[string]any{
-		"id": "chatcmpl-" + id, "object": "chat.completion",
+		"id": id, "object": "chat.completion",
 		"created": time.Now().Unix(), "model": modelID,
 		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}},
 		"usage":   cursorOpenAIUsage(usage),
@@ -1163,7 +1377,7 @@ func estimateCursorInputTokens(request cursorauth.Request) int {
 			InputSchema: schema,
 		})
 	}
-	return max(1, estimateTokens(&count))
+	return max(1, estimateTokens(&count)+len(request.Images)*estimatedTokensPerImage)
 }
 
 /**
@@ -1206,7 +1420,7 @@ func openaiToolCallID(id string) string {
  * @param translatedRequest 转换后的 Chat 请求。
  * @param raw 待转换的上游 Chat SSE 帧。
  * @param state 转换器的跨帧状态。
- * @param responsesCursor 已写入的 Responses 帧位置。
+ * @param responsesCursor 已写入的 Responses 帧位置与成功终态。
  * @return 转换或写入失败时返回错误；全部成功时为 nil。
  */
 func writeCursorTranslatedStream(
@@ -1251,8 +1465,9 @@ func writeCursorTranslatedStream(
 				return fmt.Errorf("client disconnected: %w", err)
 			}
 			if client == protocol.Codex {
-				_, data := parseSSEEventChunk(chunk)
-				responsesCursor.observe(data)
+				eventType, data := parseSSEEventChunk(chunk)
+				event := parseJSONBytesNoCopy(data)
+				responsesCursor.observe(event, responsesTerminalType(eventType, event))
 			}
 		}
 		if err != nil {

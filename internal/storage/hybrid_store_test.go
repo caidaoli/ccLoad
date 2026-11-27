@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/privacy"
 	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/util"
 )
 
 func createTestSQLiteStore(t *testing.T) *sqlstore.SQLStore {
@@ -1137,15 +1138,17 @@ func TestHybridStoreDecisionMetadataReplicated(t *testing.T) {
 	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", ClientEffort: "xhigh", CostUnknown: true}
 	masked := &privacy.Counts{Word: 3}
 	estimate := &model.TokenUsageEstimate{InputTokens: 200, OutputTokens: 30}
+	breakdown := &util.StandardCostBreakdown{Input: util.CostComponent{Quantity: 20, PricePerMillion: 5000, Cost: 0.1}, Total: 0.1}
 	entry := &model.LogEntry{Time: model.JSONTime{Time: time.Now()}, ClientProtocol: "system_one", ReasoningDecision: metadata,
-		PrivacyMasked: masked, UsageEstimate: estimate, Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20}
+		PrivacyMasked: masked, UsageEstimate: estimate, Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20, CostBreakdown: breakdown}
 	if err := hybrid.AddLog(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
 	replicated := func(logs []*model.LogEntry) bool {
 		return len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata &&
 			logs[0].PrivacyMasked != nil && *logs[0].PrivacyMasked == *masked &&
-			logs[0].UsageEstimate != nil && *logs[0].UsageEstimate == *estimate && logs[0].InputTokens == 20 && logs[0].Cost == 0.1
+			logs[0].UsageEstimate != nil && *logs[0].UsageEstimate == *estimate &&
+			logs[0].CostBreakdown != nil && *logs[0].CostBreakdown == *breakdown && logs[0].InputTokens == 20 && logs[0].Cost == 0.1
 	}
 	filter := &model.LogFilter{ClientProtocol: "system_one"}
 	logs, err := hybrid.ListLogs(ctx, time.Time{}, 10, 0, filter)

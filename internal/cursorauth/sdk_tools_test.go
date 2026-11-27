@@ -2,6 +2,7 @@ package cursorauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -67,12 +68,14 @@ type nativeToolAgentHandler struct {
 	getRuns          map[string]int
 	usage            map[string]*sdkv1.TokenUsage
 	turns            int
+	toolNames        []string ///< 可选的逐轮模拟工具名。
 	turnDelay        time.Duration
 	turnUsage        map[string]any
 	toolTurnText     string                                                                                             ///< 每批工具回调之前的可选回复正文。
 	toolBeforeStream bool                                                                                               ///< 首个工具回调在任何流式响应前到达。
 	sent             []string                                                                                           ///< 按序记录的 Send 消息正文
 	whileToolPending func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage], string, string) (bool, error) ///< true 表示已经发送终态
+	finishTurn       func(*connect.ServerStream[sdkv1.RunStreamMessage], string, string) error                          ///< 可选的最后一轮 SDK 帧。
 }
 
 /**
@@ -134,6 +137,9 @@ func (h *nativeToolAgentHandler) Send(
 	turns := 0
 	if len(customTools) > 0 {
 		turns = max(1, h.turns)
+		if len(h.toolNames) > 0 {
+			turns = len(h.toolNames)
+		}
 	}
 	for turn := range turns {
 		if h.turnDelay > 0 {
@@ -167,8 +173,12 @@ func (h *nativeToolAgentHandler) Send(
 		}
 		// The bridge-scoped ID may repeat across Agents and tool turns.
 		callID := "bridge-call"
+		toolName := "lookup"
+		if len(h.toolNames) > 0 {
+			toolName = h.toolNames[turn]
+		}
 		toolRequest := connect.NewRequest(&sdkv1.CallCustomToolRequest{
-			AgentId: agentID, ToolName: "lookup", ToolCallId: &callID,
+			AgentId: agentID, ToolName: toolName, ToolCallId: &callID,
 			Args: mustStruct(map[string]any{"session": agentID}),
 		})
 		toolRequest.Header().Set("Authorization", "Bearer "+callbackToken)
@@ -199,6 +209,9 @@ func (h *nativeToolAgentHandler) Send(
 		h.mu.Lock()
 		h.results[agentID] = result
 		h.mu.Unlock()
+	}
+	if h.finishTurn != nil {
+		return h.finishTurn(stream, agentID, runID)
 	}
 	text := fmt.Sprintf("%s:%v", agentID, result["value"])
 	if err := stream.Send(nativeSDKMessage("thinking", map[string]any{
@@ -305,12 +318,18 @@ func newNativeToolTestRunner(t *testing.T) (*SDKRunner, *nativeToolAgentHandler)
 	return runner, agent
 }
 
-func TestSDKRunnerNativeToolsKeepConcurrentSessionsIsolated(t *testing.T) {
+/**
+ * @brief 同一客户端会话的并行线程各自收取工具调用和结果。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerNativeToolsKeepConcurrentThreadsIsolated(t *testing.T) {
 	runner, handler := newNativeToolTestRunner(t)
 	credential := &Credential{APIKey: "shared-channel-key"}
-	newRequest := func(prompt string) Request {
+	newRequest := func(prompt, threadID string) Request {
+		scope := testCursorSessionScope
+		scope.SessionID, scope.ThreadID = "session", threadID
 		return Request{
-			Model: "model-1", Prompt: prompt, ToolChoice: "auto", SessionScope: testCursorSessionScope,
+			Model: "model-1", Prompt: prompt, ToolChoice: "auto", SessionScope: scope,
 			Tools: []Tool{{
 				Name: "lookup", Description: "lookup by session",
 				Parameters: []byte(`{"type":"object","properties":{"session":{"type":"string"}},"required":["session"]}`),
@@ -318,24 +337,21 @@ func TestSDKRunnerNativeToolsKeepConcurrentSessionsIsolated(t *testing.T) {
 		}
 	}
 
-	first, err := runner.Run(context.Background(), credential, newRequest("first"))
-	if err != nil {
-		t.Fatalf("first Run() error = %v", err)
-	}
-	second, err := runner.Run(context.Background(), credential, newRequest("second"))
-	if err != nil {
-		t.Fatalf("second Run() error = %v", err)
-	}
-	firstCall := readNativeToolCall(t, first)
-	secondCall := readNativeToolCall(t, second)
+	first, second := newRequest("first", "thread-a"), newRequest("second", "thread-b")
+	firstEvents := mustRun(t, runner, credential, first)
+	secondEvents := mustRun(t, runner, credential, second)
+	firstCall := readNativeToolCall(t, firstEvents)
+	secondCall := readNativeToolCall(t, secondEvents)
 	if firstCall.ID == secondCall.ID || firstCall.Name != "lookup" || secondCall.Name != "lookup" {
 		t.Fatalf("calls were not isolated: first=%+v second=%+v", firstCall, secondCall)
 	}
 
-	secondText := resumeNativeToolCall(t, runner, credential, secondCall.ID, "second-result")
-	firstText := resumeNativeToolCall(t, runner, credential, firstCall.ID, "first-result")
+	secondResult := Request{SessionScope: second.SessionScope, ToolResults: []ToolResult{{CallID: secondCall.ID, Output: "second-result"}}}
+	firstResult := Request{SessionScope: first.SessionScope, ToolResults: []ToolResult{{CallID: firstCall.ID, Output: "first-result"}}}
+	secondText := drainRun(t, mustRun(t, runner, credential, secondResult)).Text
+	firstText := drainRun(t, mustRun(t, runner, credential, firstResult)).Text
 	if firstText != "agent-1:first-result" || secondText != "agent-2:second-result" {
-		t.Fatalf("cross-session result routing: first=%q second=%q", firstText, secondText)
+		t.Fatalf("thread results: first=%q second=%q", firstText, secondText)
 	}
 
 	handler.mu.Lock()
@@ -354,6 +370,10 @@ func TestSDKRunnerNativeToolsKeepConcurrentSessionsIsolated(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 已认证的旧客户端省略会话和线程头时仍可提交工具结果并重放最终响应。
+ * @param t 测试上下文。
+ */
 func TestSDKRunnerReplaysCompletedNativeToolTurn(t *testing.T) {
 	runner, _ := newNativeToolTestRunner(t)
 	credential := &Credential{APIKey: "channel-key"}
@@ -393,6 +413,191 @@ func TestSDKRunnerReplaysCompletedNativeToolTurn(t *testing.T) {
 }
 
 /**
+ * @brief 已完成的工具续轮只用本轮正文对齐终态，重试保持正文和思考的原始顺序。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerReplaysCurrentToolTurnOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		delta  string
+		want   []string
+		failed bool
+	}{
+		{"prefix from previous turn", "", []string{"thinking:Before.", "thinking:After.", "text:Disconnecting now.", "done"}, false},
+		{"prefix from current turn", "Discon", []string{"thinking:Before.", "text:Discon", "thinking:After.", "text:necting now.", "done"}, false},
+		{"partial text and failure", "Disconnect", []string{"thinking:Before.", "text:Disconnect", "thinking:After.", "error:cursor SDK_ERROR_CODE_RATE_LIMIT_EXCEEDED: Upstream busy"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner, handler := newNativeToolTestRunner(t)
+			handler.toolTurnText = "Disconnect"
+			handler.finishTurn = func(stream *connect.ServerStream[sdkv1.RunStreamMessage], agentID, runID string) error {
+				thinking := func(value string) *sdkv1.RunStreamMessage {
+					return nativeSDKMessage("thinking", map[string]any{"agent_id": agentID, "run_id": runID, "text": value})
+				}
+				frames := []*sdkv1.RunStreamMessage{thinking("Before.")}
+				if tc.delta != "" {
+					frames = append(frames, nativeSDKMessage("assistant", map[string]any{
+						"agent_id": agentID, "run_id": runID,
+						"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": tc.delta}}},
+					}))
+				}
+				result := runResult(agentID, runID, sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Disconnecting now.")
+				if tc.failed {
+					const status = sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR
+					result = runResult(agentID, runID, status, "Disconnect while leaking diagnostic text")
+					result.GetResult().ErrorCode = new("RATE_LIMIT_EXCEEDED")
+					result.GetResult().GetResult().ErrorMessage = new("Upstream busy")
+				}
+				for _, frame := range append(frames, thinking("After."), result, runDone(agentID, runID)) {
+					if err := stream.Send(frame); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			credential := &Credential{APIKey: "channel-key"}
+			call := readNativeToolCall(t, mustRun(t, runner, credential, Request{
+				Model: "model-1", Prompt: "lookup", SessionScope: testCursorSessionScope,
+				Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+			}))
+			request := Request{
+				ToolResults: []ToolResult{{CallID: call.ID, Output: "value"}}, SessionScope: testCursorSessionScope,
+			}
+			for _, replay := range []bool{false, true} {
+				var got []string
+				var text strings.Builder
+				for event := range mustRun(t, runner, credential, request) {
+					if event.Replayed != replay || (replay && (event.Usage != nil || len(event.UsageIncrements) != 0 || event.SentEffort != nil)) {
+						t.Fatalf("replay=%t, event=%+v", replay, event)
+					}
+					switch {
+					case event.ThinkingDelta != "":
+						got = append(got, "thinking:"+event.ThinkingDelta)
+					case event.Delta != "":
+						text.WriteString(event.Delta)
+						got = append(got, "text:"+event.Delta)
+					case event.Done:
+						if event.Text != text.String() {
+							t.Fatalf("terminal text=%q, emitted=%q", event.Text, text.String())
+						}
+						if event.Err != nil {
+							got = append(got, "error:"+event.Err.Error())
+						} else {
+							got = append(got, "done")
+						}
+					}
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Fatalf("replay=%t, events=%q, want %q", replay, got, tc.want)
+				}
+			}
+			if handler.nextID.Load() != 1 {
+				t.Fatalf("created agents = %d, want 1", handler.nextID.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 工具结果重试按调用 ID 恢复尚未执行的下一批工具，不重复消费或发起 SDK Send。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerReplaysNextPendingNativeToolBatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	runner, handler := newNativeToolTestRunner(t)
+	handler.turns = 3
+	handler.toolTurnText = "Checking lookup. "
+	const toolTurnTokens = 12
+	handler.turnUsage = map[string]any{"inputTokens": 10, "outputTokens": 2, "totalTokens": toolTurnTokens}
+	credential := &Credential{APIKey: "channel-key"}
+	scope := testCursorSessionScope
+	scope.SessionID, scope.ThreadID = "session", "thread"
+	request := func(body string) Request {
+		req := ParseRequest([]byte(body))
+		req.SessionScope = scope
+		return req
+	}
+	result := func(callID, value string) Request {
+		return request(fmt.Sprintf(`{"model":"model-1","messages":[{"role":"tool","tool_call_id":%q,"content":%q}]}`, callID, value))
+	}
+	run := func(req Request) <-chan Event {
+		t.Helper()
+		events, err := runner.Run(ctx, credential, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return events
+	}
+	readPending := func(events <-chan Event, replayed bool, wantThinking string, wantTokens int) ToolCall {
+		t.Helper()
+		var calls []ToolCall
+		var text, thinking strings.Builder
+		var tokens int
+		for event := range events {
+			if event.Err != nil || event.Done || event.Replayed != replayed ||
+				(replayed && (event.Usage != nil || len(event.UsageIncrements) != 0 || event.SentEffort != nil)) {
+				t.Fatalf("unexpected pending tool event: %+v", event)
+			}
+			if event.ToolCall != nil {
+				calls = append(calls, *event.ToolCall)
+			}
+			text.WriteString(event.Delta)
+			thinking.WriteString(event.ThinkingDelta)
+			if event.Usage != nil {
+				tokens += event.Usage.TotalTokens
+			}
+		}
+		if len(calls) != 1 || tokens != wantTokens || text.String() != handler.toolTurnText || thinking.String() != wantThinking {
+			t.Fatalf("tool response = %+v, tokens = %d, text = %q, thinking = %q", calls, tokens, text.String(), thinking.String())
+		}
+		return calls[0]
+	}
+	start := request(`{"model":"model-1","messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
+	firstCall := readPending(run(start), false, "Check 1.", toolTurnTokens)
+	firstResult := request(fmt.Sprintf(`{"model":"model-1","messages":[{"role":"user","content":"lookup"},{"role":"tool","tool_call_id":%q,"content":"first-result"}]}`, firstCall.ID))
+	compacted := result(firstCall.ID, "first-result")
+	secondTurn := run(firstResult)
+	concurrentRetry := run(compacted)
+	secondCall := readPending(secondTurn, false, "Check 2.", toolTurnTokens)
+	for _, events := range []<-chan Event{concurrentRetry, run(compacted)} {
+		if call := readPending(events, true, "Check 2.", 0); !reflect.DeepEqual(call, secondCall) {
+			t.Fatalf("replay tool call = %+v, want %+v", call, secondCall)
+		}
+	}
+	thirdCall := readPending(run(result(secondCall.ID, "second-result")), false, "Check 3.", toolTurnTokens)
+	if firstCall.ID == secondCall.ID || secondCall.ID == thirdCall.ID || firstCall.ID == thirdCall.ID {
+		t.Fatalf("expected distinct downstream call IDs, got %q, %q, and %q", firstCall.ID, secondCall.ID, thirdCall.ID)
+	}
+	advancedRetry := run(compacted)
+	if event := <-advancedRetry; !event.Done || !event.Replayed || event.ToolCall != nil || event.Usage != nil || !errors.Is(event.Err, ErrToolTurnInProgress) {
+		t.Fatalf("retry after next result was submitted = %+v", event)
+	}
+	if event, ok := <-advancedRetry; ok {
+		t.Fatalf("unexpected event after replay conflict: %+v", event)
+	}
+	terminal := drainRun(t, run(result(thirdCall.ID, "last-result")))
+	if terminal.Text != "agent-1:last-result" || terminal.Replayed || terminal.Usage == nil {
+		t.Fatalf("original terminal = %+v", terminal)
+	}
+	stale := run(compacted)
+	if retry := <-stale; !retry.Replayed || !retry.Done || !errors.Is(retry.Err, ErrToolTurnInProgress) || retry.Text != "" || retry.ToolCall != nil || retry.Usage != nil {
+		t.Fatalf("stale replay after Run completion = %+v", retry)
+	}
+	if event, ok := <-stale; ok {
+		t.Fatalf("unexpected event after stale replay conflict: %+v", event)
+	}
+	if retry := drainRun(t, run(result(thirdCall.ID, "last-result"))); !retry.Replayed || retry.Text != terminal.Text || retry.Usage != nil {
+		t.Fatalf("replay of completed turn = %+v", retry)
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.nextID.Load() != 1 || len(handler.sent) != 1 {
+		t.Fatalf("created agents = %d, Send calls = %d, want 1 of each", handler.nextID.Load(), len(handler.sent))
+	}
+}
+
+/**
  * @brief 原生恢复交付已有工具结果，显式禁用随后的回调与待发调用；省略配置则继续透传。
  * @param t 测试上下文。
  */
@@ -406,6 +611,8 @@ func TestSDKRunnerHonorsToolChoiceOnNativeResume(t *testing.T) {
 		{"OpenAI", `{"tool_choice":"none","messages":[{"role":"tool","tool_call_id":%q,"content":"first-result"}]}`, true, false},
 		{"Anthropic", `{"tool_choice":{"type":"none"},"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"content":"first-result"}]}]}`, true, true},
 		{"legacy", `{"function_call":"none","messages":[{"role":"function","id":%q,"content":"first-result"}]}`, true, false},
+		{"empty tools", `{"tools":[],"messages":[{"role":"tool","tool_call_id":%q,"content":"first-result"}]}`, true, false},
+		{"empty functions", `{"functions":[],"messages":[{"role":"tool","tool_call_id":%q,"content":"first-result"}]}`, true, false},
 		{"omitted", `{"messages":[{"role":"tool","tool_call_id":%q,"content":"first-result"}]}`, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -458,10 +665,12 @@ func TestSDKRunnerHonorsToolChoiceOnNativeResume(t *testing.T) {
 				return
 			}
 			var terminal Event
+			var thinking strings.Builder
 			for event := range events {
 				if event.ToolCall != nil {
 					t.Fatalf("disabled tool call reached the client: %+v", event.ToolCall)
 				}
+				thinking.WriteString(event.ThinkingDelta)
 				if event.Done {
 					terminal = event
 				}
@@ -484,10 +693,231 @@ func TestSDKRunnerHonorsToolChoiceOnNativeResume(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if event := <-replay; !event.Replayed || event.ToolCall != nil || event.Err != terminal.Err {
-				t.Fatalf("replay = %+v, want saved terminal error without a tool call", event)
+			var replayThinking strings.Builder
+			var replayTerminal Event
+			for event := range replay {
+				if !event.Replayed || event.ToolCall != nil {
+					t.Fatalf("unexpected replay event: %+v", event)
+				}
+				replayThinking.WriteString(event.ThinkingDelta)
+				if event.Done {
+					replayTerminal = event
+				}
+			}
+			if !replayTerminal.Done || replayTerminal.Err != terminal.Err || replayThinking.String() != thinking.String() {
+				t.Fatalf("replay thinking=%q terminal=%+v, want thinking=%q and error %v", replayThinking.String(), replayTerminal, thinking.String(), terminal.Err)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 验证具名选择与工具列表收紧原 Run 权限，并约束后续回调和重放。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerNarrowsNativeToolPolicy(t *testing.T) {
+	for _, restriction := range []struct {
+		name string
+		json string
+	}{
+		{"subset", `"tools":[{"type":"function","function":{"name":"none","parameters":{"type":"object"}}}]`},
+		{"OpenAI named", `"tool_choice":{"type":"function","function":{"name":"none"}}`},
+		{"Anthropic named", `"tool_choice":{"type":"tool","name":"none"}`},
+		{"legacy named", `"function_call":{"name":"none"}`},
+		{"Chat allowed_tools", `"tool_choice":{"type":"allowed_tools","allowed_tools":{"mode":"auto","tools":[{"type":"function","function":{"name":"none"}}]}}`},
+		{"Responses allowed_tools", `"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"none"}]}`},
+	} {
+		t.Run(restriction.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			runner, handler := newNativeToolTestRunner(t)
+			handler.toolNames = []string{"lookup", "none", "lookup"}
+			credential := &Credential{APIKey: "channel-key"}
+			run := func(body string) <-chan Event {
+				t.Helper()
+				req := ParseRequest([]byte(body))
+				req.SessionScope = testCursorSessionScope
+				events, err := runner.Run(ctx, credential, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return events
+			}
+			const declarations = `"tools":[{"name":"lookup","input_schema":{"type":"object"}},{"name":"none","input_schema":{"type":"object"}}]`
+			first := readNativeToolCall(t, run(`{`+declarations+`,"messages":[{"role":"user","content":"lookup"}]}`))
+			if first.Name != "lookup" {
+				t.Fatalf("initial callback = %q, want lookup", first.Name)
+			}
+			queuedError := make(chan error, 1)
+			callbackURL, callbackToken := handler.control.callback()
+			callback := sdkv1connect.NewSdkCustomToolCallbackServiceClient(http.DefaultClient, callbackURL)
+			request := connect.NewRequest(&sdkv1.CallCustomToolRequest{AgentId: "agent-1", ToolName: "lookup"})
+			request.Header().Set("Authorization", "Bearer "+callbackToken)
+			go func() {
+				_, err := callback.CallCustomTool(ctx, request)
+				queuedError <- err
+			}()
+			session := runner.sessionByAgentID("agent-1")
+			for len(session.events) == 0 {
+				select {
+				case <-ctx.Done():
+					t.Fatal("the forbidden callback did not reach the paused run")
+				case <-time.After(time.Millisecond):
+				}
+			}
+
+			resultMessage := fmt.Sprintf(`"messages":[{"role":"tool","tool_call_id":%q,"content":"first-result"}]`, first.ID)
+			resumeBody := "{" + restriction.json + "," + resultMessage + "}"
+			events := run(resumeBody)
+			conflict := ParseRequest([]byte("{" + declarations + "," + resultMessage + "}"))
+			conflict.SessionScope = testCursorSessionScope
+			if duplicate, err := runner.Run(ctx, credential, conflict); duplicate != nil || !errors.Is(err, ErrToolTurnInProgress) {
+				t.Fatalf("retry with an expanded policy returned events=%v, error=%v, want conflict", duplicate, err)
+			}
+			forbidden := ParseRequest(fmt.Appendf(nil, `{"tool_choice":"none",%s}`, resultMessage))
+			forbidden.SessionScope = testCursorSessionScope
+			if duplicate, err := runner.Run(ctx, credential, forbidden); duplicate != nil || !errors.Is(err, ErrToolTurnInProgress) {
+				t.Fatalf("retry disabling the next callback returned events=%v, error=%v, want conflict", duplicate, err)
+			}
+			second := readNativeToolCall(t, events)
+			if second.Name != "none" {
+				t.Fatalf("resume callback = %+v, want the permitted tool", second)
+			}
+			if err := <-queuedError; connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatalf("queued callback error = %v, want permission denied", err)
+			}
+			for _, body := range []string{resumeBody, "{" + resultMessage + "}"} {
+				if replay := readNativeToolCall(t, run(body)); !reflect.DeepEqual(replay, second) {
+					t.Fatalf("replayed callback = %+v, want %+v", replay, second)
+				}
+			}
+
+			var terminal Event
+			for event := range run(fmt.Sprintf(`{"messages":[{"role":"tool","tool_call_id":%q,"content":"second-result"}]}`, second.ID)) {
+				if event.ToolCall != nil {
+					t.Fatalf("omitting tools reopened a forbidden callback: %+v", event)
+				}
+				if event.Done {
+					terminal = event
+				}
+			}
+			if !terminal.Done || connect.CodeOf(terminal.Err) != connect.CodePermissionDenied {
+				t.Fatalf("last turn = %+v, want the forbidden callback denied", terminal)
+			}
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if got := handler.results["agent-1"]["value"]; got != "second-result" || handler.nextID.Load() != 1 {
+				t.Fatalf("original run received %v across %d agents", got, handler.nextID.Load())
+			}
+		})
+	}
+}
+
+/**
+ * @brief 校验新名称或不同定义不能替换原 Run 的工具，且原结果仍可正常提交。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerRejectsNativeToolPolicyChangesBeforeResolving(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	runner, handler := newNativeToolTestRunner(t)
+	credential := &Credential{APIKey: "channel-key"}
+	start, err := runner.Run(ctx, credential, Request{
+		Prompt: "lookup", SessionScope: testCursorSessionScope,
+		Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := readNativeToolCall(t, start)
+	for _, policy := range []string{
+		`"tools":[{"name":"newTool","input_schema":{"type":"object"}}]`,
+		`"tools":[{"name":"lookup","input_schema":{"type":"object","required":["changed"]}}]`,
+		`"tool_choice":{"type":"function","function":{"name":"newTool"}}`,
+		`"tool_choice":{"type":"function","function":{}}`,
+		`"tool_choice":{"type":"web_search"}`,
+		`"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"web_search"}]}`,
+		`"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"lookup","namespace":"remote"}]}`,
+	} {
+		changed := ParseRequest(fmt.Appendf(nil, `{%s,"messages":[{"role":"tool","tool_call_id":%q,"content":"rejected"}]}`, policy, call.ID))
+		changed.SessionScope = testCursorSessionScope
+		if events, err := runner.Run(ctx, credential, changed); events != nil || !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("changed native policy %s returned events=%v, error=%v, want invalid request", policy, events, err)
+		}
+	}
+	if got := resumeNativeToolCall(t, runner, credential, call.ID, "accepted"); got != "agent-1:accepted" || handler.nextID.Load() != 1 {
+		t.Fatalf("retry after policy errors returned %q across %d agents", got, handler.nextID.Load())
+	}
+}
+
+/**
+ * @brief 混合续轮继承原 Run 收紧后的权限，启动重试仍沿用同一权限。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerMixedTurnInheritsNarrowedToolPolicy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	runner, handler := newNativeToolTestRunner(t)
+	handler.toolNames = []string{"lookup", "keep"}
+	credential := &Credential{APIKey: "channel-key"}
+	run := func(body []byte) (<-chan Event, error) {
+		request := ParseRequest(body)
+		request.SessionScope = testCursorSessionScope
+		return runner.Run(ctx, credential, request)
+	}
+	initial, err := run([]byte(`{"messages":[{"role":"user","content":"lookup"}],
+		"tools":[{"name":"lookup","input_schema":{"type":"object"}},{"name":"keep","input_schema":{"type":"object"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := readNativeToolCall(t, initial)
+	narrowed, err := run(fmt.Appendf(nil, `{"tool_choice":{"type":"tool","name":"keep"},
+		"messages":[{"role":"tool","tool_call_id":%q,"content":"first"}]}`, first.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := readNativeToolCall(t, narrowed)
+	original := runner.sessionByAgentID("agent-1")
+	const mixed = `"messages":[{"role":"tool","tool_call_id":%q,"content":"second"},{"role":"user","content":"follow-up"}]`
+	malformed := fmt.Appendf(nil, `{"tool_choice":{"type":"tool","name":"lookup"},`+mixed+`}`, second.ID)
+	if events, err := run(malformed); events != nil || !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("mixed request selecting a withdrawn tool returned events=%v, error=%v", events, err)
+	}
+
+	handler.mu.Lock()
+	handler.createErr = connect.NewError(connect.CodeUnavailable, errors.New("temporary create failure"))
+	handler.mu.Unlock()
+	valid := fmt.Appendf(nil, `{`+mixed+`}`, second.ID)
+	if events, err := run(valid); events != nil || err == nil {
+		t.Fatalf("failed replacement returned events=%v, error=%v", events, err)
+	}
+
+	events, err := run(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal Event
+	for event := range events {
+		if event.ToolCall != nil {
+			t.Fatalf("mixed replacement exposed a withdrawn tool: %+v", event)
+		}
+		if event.Done {
+			terminal = event
+		}
+	}
+	if !terminal.Done || connect.CodeOf(terminal.Err) != connect.CodePermissionDenied {
+		t.Fatalf("mixed replacement = %+v, want lookup denied", terminal)
+	}
+	select {
+	case <-original.done:
+	case <-ctx.Done():
+		t.Fatal("original run did not finish")
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	registered := handler.creates["agent-2"].GetOptions().GetLocal().GetCustomTools()
+	if len(registered) != 1 || registered["keep"] == nil || handler.results["agent-1"]["value"] != "second" {
+		t.Fatalf("mixed replacement registered %v, original results = %v", slices.Sorted(maps.Keys(registered)), handler.results)
 	}
 }
 
@@ -496,6 +926,8 @@ func TestSDKRunnerHonorsToolChoiceOnNativeResume(t *testing.T) {
  * @param t 测试上下文。
  */
 func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
+	scope := testCursorSessionScope
+	scope.SessionID, scope.ThreadID = "session", "thread"
 	for _, tc := range []struct {
 		name      string
 		body      string
@@ -551,7 +983,7 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 			key := &Credential{APIKey: "channel-key"}
 			settled := make(chan Usage, 1)
 			first, err := runner.Run(ctx, key, Request{
-				Model: "model-1", Prompt: "lookup", SessionScope: testCursorSessionScope,
+				Model: "model-1", Prompt: "lookup", SessionScope: scope,
 				Tools:           []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
 				OnDetachedUsage: func(usage Usage) { settled <- usage },
 			})
@@ -560,7 +992,7 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 			}
 			call := readNativeToolCall(t, first)
 			request := ParseRequest(fmt.Appendf(nil, tc.body, call.ID))
-			request.SessionScope = testCursorSessionScope
+			request.SessionScope = scope
 			if tc.failsOnce {
 				handler.mu.Lock()
 				handler.createErr = connect.NewError(connect.CodeUnavailable, errors.New("temporary create failure"))
@@ -622,7 +1054,7 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 				}
 				continued, err := runner.Run(ctx, key, Request{
 					ToolResults:  []ToolResult{{CallID: followUp.ID, Output: "replacement result"}},
-					SessionScope: testCursorSessionScope,
+					SessionScope: scope,
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -641,13 +1073,13 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 				t.Fatalf("replacement terminal = %+v, want %q", terminal, want)
 			}
 			replay, err := runner.Run(ctx, key, request)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if tc.wantTools {
-				want = handler.toolTurnText + want
-			}
-			if terminal := drainRun(t, replay); !terminal.Replayed || terminal.Text != want || terminal.Usage != nil {
+				if replay != nil || !errors.Is(err, ErrToolTurnInProgress) {
+					t.Fatalf("stale mixed request replay = %v, %v", replay, err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			} else if terminal := drainRun(t, replay); !terminal.Replayed || terminal.Text != want || terminal.Usage != nil {
 				t.Fatalf("mixed request replay = %+v", terminal)
 			}
 			for deleted := ""; deleted != "agent-1"; {
@@ -780,6 +1212,47 @@ func TestSDKRunnerScopesNativeToolResumeAndReplay(t *testing.T) {
 }
 
 /**
+ * @brief 原生工具续轮的模型查询要求客户端会话、线程及 Claude Code 代理身份完全匹配。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerToolContinuationModelMatchesClientIdentity(t *testing.T) {
+	const model = "model-1"
+	credential := &Credential{APIKey: "channel-key"}
+	scope := testCursorSessionScope
+	scope.SessionID, scope.ThreadID = "session-a", "thread-a"
+	scope.ClaudeSessionID, scope.ClaudeAgentID = "claude-session-a", "claude-agent-a"
+	session := &sdkSession{scope: scope, apiKey: credential.APIKey, model: model}
+	runner := &SDKRunner{
+		calls:          map[string]*pendingToolCall{"pending": {session: session}},
+		completedCalls: map[string]*sdkSession{"completed": session},
+	}
+	for _, tc := range []struct {
+		name, sessionID, threadID, claudeSessionID, claudeAgentID, wantModel string
+	}{
+		{"matching identity", "session-a", "thread-a", "claude-session-a", "claude-agent-a", model},
+		{"different session", "session-b", "thread-a", "claude-session-a", "claude-agent-a", ""},
+		{"different thread", "session-a", "thread-b", "claude-session-a", "claude-agent-a", ""},
+		{"different Claude session", "session-a", "thread-a", "claude-session-b", "claude-agent-a", ""},
+		{"different Claude agent", "session-a", "thread-a", "claude-session-a", "claude-agent-b", ""},
+		{"Claude main agent", "session-a", "thread-a", "claude-session-a", "", ""},
+		{"missing session", "", "thread-a", "claude-session-a", "claude-agent-a", ""},
+		{"missing thread", "session-a", "", "claude-session-a", "claude-agent-a", ""},
+		{"missing client identity", "", "", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := scope
+			candidate.SessionID, candidate.ThreadID = tc.sessionID, tc.threadID
+			candidate.ClaudeSessionID, candidate.ClaudeAgentID = tc.claudeSessionID, tc.claudeAgentID
+			for _, callID := range []string{"pending", "completed"} {
+				if got := runner.ToolContinuationModel(candidate, credential, []ToolResult{{CallID: callID}}); got != tc.wantModel {
+					t.Fatalf("%s call model = %q, want %q", callID, got, tc.wantModel)
+				}
+			}
+		})
+	}
+}
+
+/**
  * @brief 未认证的调用正常收到工具事件，无法恢复的 Run 随后立即清理。
  * @param t 测试上下文。
  */
@@ -803,6 +1276,192 @@ func TestSDKRunnerDeletesUnscopedToolSession(t *testing.T) {
 	case <-deleted:
 	case <-ctx.Done():
 		t.Fatal("unscoped Agent was not deleted after delivering its tool call")
+	}
+}
+
+/**
+ * @brief 相同历史的普通续轮按客户端会话、线程或 Claude Code 主/子代理分别复用 Agent。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerSeparatesParkedAgentSessionsAndThreads(t *testing.T) {
+	runner, handler := newNativeToolTestRunner(t)
+	var sentAgentIDs []string
+	handler.finishTurn = func(stream *connect.ServerStream[sdkv1.RunStreamMessage], agentID, runID string) error {
+		handler.mu.Lock()
+		sentAgentIDs = append(sentAgentIDs, agentID)
+		handler.mu.Unlock()
+		if err := stream.Send(runResult(agentID, runID, sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "same answer")); err != nil {
+			return err
+		}
+		return stream.Send(runDone(agentID, runID))
+	}
+	credential := &Credential{APIKey: "key"}
+	start := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"same question"}]}`))
+	scopes := []SessionScope{
+		{SessionID: "session-a", ThreadID: "thread-a"},
+		{SessionID: "session-a", ThreadID: "thread-b"},
+		{SessionID: "session-b", ThreadID: "thread-a"},
+		{ClaudeSessionID: "claude-session-a"},
+		{ClaudeSessionID: "claude-session-a", ClaudeAgentID: "claude-agent-a"},
+		{ClaudeSessionID: "claude-session-a", ClaudeAgentID: "claude-agent-b"},
+		{ClaudeSessionID: "claude-session-b"},
+	}
+	for index := range scopes {
+		scopes[index].ChannelID, scopes[index].TokenID = testCursorSessionScope.ChannelID, testCursorSessionScope.TokenID
+		start.SessionScope = scopes[index]
+		drainRun(t, mustRun(t, runner, credential, start))
+		waitParkedAgents(t, runner, index+1)
+	}
+	followUp := ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"same question"},
+		{"role":"assistant","content":"same answer"},{"role":"user","content":"follow-up"}]}`))
+	for _, scope := range scopes {
+		followUp.SessionScope = scope
+		drainRun(t, mustRun(t, runner, credential, followUp))
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	count := len(scopes)
+	if got := handler.nextID.Load(); int(got) != count || len(sentAgentIDs) != 2*count || !slices.Equal(sentAgentIDs[:count], sentAgentIDs[count:]) {
+		t.Fatalf("created %d agents, sends targeted %q, want %d distinct agents followed by the same agents", got, sentAgentIDs, count)
+	}
+	for _, message := range handler.sent[count:] {
+		if message != "user: follow-up" {
+			t.Fatalf("follow-up Send = %q, want only the new message", message)
+		}
+	}
+}
+
+/**
+ * @brief 校验重复指令继续原 Run，变更指令先完成回调再发送到新 Run。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerAppliesChangedToolTurnInstructions(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		resume        string
+		newDirective  string
+		wantSameAgent bool
+	}{
+		{"repeated system", `{"role":"system","content":"original"},%s`, "", true},
+		{"omitted system", `%s`, "", true},
+		{"changed system", `{"role":"system","content":"updated system"},%s`, "system: updated system", false},
+		{"developer after result", `{"role":"system","content":"original"},%s,{"role":"developer","content":"updated developer"}`, "developer: updated developer", false},
+		{"cleared system", `{"role":"system","content":""},%s`, "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner, handler := newNativeToolTestRunner(t)
+			handler.deleted = make(chan string, 2)
+			credential := &Credential{APIKey: "key"}
+			start := ParseRequest([]byte(`{"model":"model-1","messages":[{"role":"system","content":"original"},{"role":"user","content":"lookup"}],
+				"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`))
+			start.SessionScope = testCursorSessionScope
+			call := readNativeToolCall(t, mustRun(t, runner, credential, start))
+			output := fmt.Sprintf(`{"role":"tool","tool_call_id":%q,"content":"result"}`, call.ID)
+			resume := ParseRequest([]byte(`{"tool_choice":"none","messages":[` + fmt.Sprintf(tt.resume, output) + `]}`))
+			resume.SessionScope = start.SessionScope
+			terminal := drainRun(t, mustRun(t, runner, credential, resume))
+			want := "agent-1:result"
+			if !tt.wantSameAgent {
+				want = "agent-2:<nil>"
+				timeout := time.After(5 * time.Second)
+				for deleted := ""; deleted != "agent-1"; {
+					select {
+					case deleted = <-handler.deleted:
+					case <-timeout:
+						t.Fatal("original Agent did not finish after callback delivery")
+					}
+				}
+			}
+			if terminal.Text != want {
+				t.Fatalf("got %q, want %q", terminal.Text, want)
+			}
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if handler.results["agent-1"]["value"] != "result" {
+				t.Fatalf("original callbacks = %v", handler.results)
+			}
+			if !tt.wantSameAgent && (len(handler.sent) != 2 || !strings.Contains(handler.sent[1], tt.newDirective) ||
+				(tt.name == "cleared system" && strings.Contains(handler.sent[1], "system: original"))) {
+				t.Fatalf("new Run Send = %q", handler.sent)
+			}
+		})
+	}
+}
+
+/**
+ * @brief 检查并行工具结果须整批提交，显式串行时后续调用逐轮交付。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerHandlesConcurrentToolCallbacks(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		option string
+		serial bool
+	}{
+		{"parallel batch", "", false},
+		{"serial OpenAI", `,"parallel_tool_calls":false`, true},
+		{"serial Anthropic", `,"tool_choice":{"type":"auto","disable_parallel_tool_use":true}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner, handler := newNativeToolTestRunner(t)
+			credential := &Credential{APIKey: "key"}
+			secondResult := make(chan any, 1)
+			handler.whileToolPending = func(ctx context.Context, _ *connect.ServerStream[sdkv1.RunStreamMessage], agentID, _ string) (bool, error) {
+				url, token := handler.control.callback()
+				callback := sdkv1connect.NewSdkCustomToolCallbackServiceClient(http.DefaultClient, url)
+				request := connect.NewRequest(&sdkv1.CallCustomToolRequest{AgentId: agentID, ToolName: "other"})
+				request.Header().Set("Authorization", "Bearer "+token)
+				response, err := callback.CallCustomTool(ctx, request)
+				if err == nil {
+					secondResult <- response.Msg.GetResult().AsMap()["value"]
+				}
+				return false, err
+			}
+			start := ParseRequest([]byte(`{"model":"model-1","messages":[{"role":"user","content":"lookup"}],
+				"tools":[{"name":"lookup","input_schema":{"type":"object"}},{"name":"other","input_schema":{"type":"object"}}]` + tt.option + `}`))
+			start.SessionScope = testCursorSessionScope
+			toolResults := func(events <-chan Event) []ToolResult {
+				t.Helper()
+				var results []ToolResult
+				for event := range events {
+					if event.Done {
+						t.Fatalf("wanted tool calls, got terminal %+v", event)
+					}
+					if event.ToolCall != nil {
+						results = append(results, ToolResult{CallID: event.ToolCall.ID, Output: event.ToolCall.Name + " result"})
+					}
+				}
+				return results
+			}
+			first := toolResults(mustRun(t, runner, credential, start))
+			resume := Request{SessionScope: start.SessionScope}
+			if tt.serial {
+				if len(first) != 1 {
+					t.Fatalf("first serial turn calls = %+v", first)
+				}
+				resume.ToolResults = first
+				second := toolResults(mustRun(t, runner, credential, resume))
+				if len(second) != 1 || second[0].CallID == first[0].CallID {
+					t.Fatalf("second serial turn calls = %+v, first = %+v", second, first)
+				}
+				resume.ToolResults = second
+			} else {
+				if len(first) != 2 {
+					t.Fatalf("parallel turn calls = %+v", first)
+				}
+				resume.ToolResults = []ToolResult{{CallID: first[0].CallID, Output: "partial result must not be committed"}}
+				if events, err := runner.Run(t.Context(), credential, resume); events != nil || !errors.Is(err, ErrInvalidRequest) {
+					t.Fatalf("partial tool submission = %v, %v", events, err)
+				}
+				resume.ToolResults = first
+			}
+			if terminal := drainRun(t, mustRun(t, runner, credential, resume)); terminal.Text != "agent-1:lookup result" {
+				t.Fatalf("terminal = %+v", terminal)
+			}
+			if got := <-secondResult; got != "other result" {
+				t.Fatalf("other callback result = %v", got)
+			}
+		})
 	}
 }
 
@@ -961,6 +1620,84 @@ func TestSDKRunnerIgnoresURLImagesAlreadyInActiveHistory(t *testing.T) {
 }
 
 /**
+ * @brief 验证客户端内联工具图片按顺序送达原 Run，远程图片失败后原调用仍可续接。
+ * @param t 测试上下文。
+ */
+func TestSDKRunnerNativeToolResultImages(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, result string
+		isError      bool
+		image        map[string]any
+	}{
+		{"messages", `{"role":"user","content":[{"type":"tool_result","tool_use_id":%q,"is_error":true,"content":[
+			{"type":"text","text":"before"},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}},
+			{"type":"text","text":"after"}]}]}`, true,
+			map[string]any{"type": "image", "data": "aGk=", "mimeType": "image/png"}},
+		{"chat", `{"role":"tool","tool_call_id":%q,"content":[
+			{"type":"text","text":"before"},
+			{"type":"image_url","image_url":{"url":"data:;base64,aGk"}},
+			{"type":"text","text":"after"}]}`, false,
+			map[string]any{"type": "image", "data": "aGk"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runner, handler := newNativeToolTestRunner(t)
+			credential := &Credential{APIKey: "channel-key"}
+			call := readNativeToolCall(t, mustRun(t, runner, credential, Request{
+				Model: "model-1", Prompt: "lookup", SessionScope: testCursorSessionScope,
+				Tools: []Tool{{Name: "lookup", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			}))
+			if tc.name == "chat" {
+				for _, invalid := range []struct {
+					url       string
+					suffix    string
+					wantError error
+					message   string
+				}{
+					{"https://example.com/result.png", "", ErrInvalidRequest, ErrURLImageUnsupported.Error()},
+					{"https://example.com/result.png", `,{"role":"user","content":"new turn"}`, ErrURLImageUnsupported, ErrURLImageUnsupported.Error()},
+					{"data:image/png;base64,aG?=", "", ErrInvalidRequest, "tool result image must contain valid base64 data"},
+					{"data:image/png;base64,", "", ErrInvalidRequest, "tool result image must contain valid base64 data"},
+				} {
+					request := ParseRequest(fmt.Appendf(nil, `{"messages":[{"role":"tool","tool_call_id":%q,"content":[
+						{"type":"image_url","image_url":{"url":"data:image/png;base64,aGk="}},
+						{"type":"image_url","image_url":{"url":%q}}]}%s]}`, call.ID, invalid.url, invalid.suffix))
+					request.SessionScope = testCursorSessionScope
+					events, err := runner.Run(t.Context(), credential, request)
+					if events != nil || !errors.Is(err, invalid.wantError) || !strings.Contains(err.Error(), invalid.message) {
+						t.Fatalf("Run() events=%v err=%v, want %v containing %q", events, err, invalid.wantError, invalid.message)
+					}
+				}
+			}
+			request := ParseRequest(fmt.Appendf(nil, `{"messages":[%s]}`, fmt.Sprintf(tc.result, call.ID)))
+			request.SessionScope = testCursorSessionScope
+			var done bool
+			for event := range mustRun(t, runner, credential, request) {
+				if event.Err != nil || event.Replayed {
+					t.Fatalf("native tool result event=%+v", event)
+				}
+				done = done || event.Done
+			}
+			if !done {
+				t.Fatal("native tool turn did not finish")
+			}
+			want := map[string]any{"isError": tc.isError, "content": []any{
+				map[string]any{"type": "text", "text": "before"},
+				tc.image,
+				map[string]any{"type": "text", "text": "after"},
+			}}
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if got := handler.results["agent-1"]; !reflect.DeepEqual(got, want) || len(handler.creates) != 1 {
+				t.Fatalf("callback result=%v, want %v, agents=%d", got, want, len(handler.creates))
+			}
+		})
+	}
+}
+
+/**
  * @brief 工具暂停时只转交真实 SDK 用量，无报告时不补估算或查询累计快照。
  * @param t 测试上下文。
  */
@@ -1110,22 +1847,23 @@ func TestSDKSessionBatchesConcurrentNativeToolCalls(t *testing.T) {
 	session.abort(context.Canceled)
 }
 
+/**
+ * @brief 同批结果有一项无法提交时，其余回调不被交付。
+ * @param t 测试上下文。
+ */
 func TestResolveToolResultsIsAtomic(t *testing.T) {
 	session := &sdkSession{}
 	first := &pendingToolCall{session: session, result: make(chan toolCallbackResult, 1)}
-	second := &pendingToolCall{session: session, result: make(chan toolCallbackResult, 1), resolved: true}
+	second := &pendingToolCall{session: &sdkSession{}, result: make(chan toolCallbackResult, 1)}
 	runner := &SDKRunner{calls: map[string]*pendingToolCall{"call-a": first, "call-b": second}}
 	err := runner.resolveToolResults(session, []ToolResult{
 		{CallID: "call-a", Output: "a"}, {CallID: "call-b", Output: "b"},
-	}, false)
+	}, nil, "")
 	if err == nil {
 		t.Fatal("resolveToolResults() unexpectedly succeeded")
 	}
-	first.mu.Lock()
-	firstResolved := first.resolved
-	first.mu.Unlock()
-	if firstResolved || len(first.result) != 0 {
-		t.Fatalf("first result was partially committed: resolved=%v queued=%d", firstResolved, len(first.result))
+	if runner.calls["call-a"] != first || len(first.result) != 0 {
+		t.Fatalf("first result was partially committed: queued=%d", len(first.result))
 	}
 }
 

@@ -1,12 +1,14 @@
 package app
 
 import (
-	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 
 	"github.com/gin-gonic/gin"
@@ -16,51 +18,80 @@ import (
 // Gemini API 特殊处理
 // ============================================================================
 
-func (s *Server) filterVisibleModelsForRequest(c *gin.Context, _ string, models []string) []string {
-	if s.authService == nil {
-		return models
+/**
+ * @brief 从同一份渠道快照取得令牌可见的模型和提供这些模型的渠道。
+ * @param c 模型列表请求，包含可选的令牌身份。
+ * @return 已应用模型权限的公开模型名。
+ * @return 已应用渠道权限的启用渠道，供协议目录读取对应模型元数据。
+ * @return 渠道读取失败时返回底层错误。
+ */
+func (s *Server) visibleModelCatalog(c *gin.Context) ([]string, []*model.Config, error) {
+	channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
+	if err != nil {
+		return nil, nil, err
 	}
-
-	tokenHash, _ := c.Get("token_hash")
-	tokenHashStr, _ := tokenHash.(string)
-	if tokenHashStr == "" {
-		return models
+	tokenHash := c.GetString("token_hash")
+	if s.authService == nil || tokenHash == "" {
+		return modelNamesFromChannels(channels), channels, nil
 	}
-
-	if restriction, hasRestriction := s.authService.getChannelRestriction(tokenHashStr); hasRestriction {
-		channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
-		if err != nil {
-			return nil
-		}
-		modelSet := make(map[string]struct{})
-		for _, cfg := range channels {
-			if cfg == nil || !restriction.Allows(cfg.ID) {
-				continue
-			}
-			for _, modelName := range cfg.GetModels() {
-				modelSet[modelName] = struct{}{}
-			}
-		}
-		models = make([]string, 0, len(modelSet))
-		for modelName := range modelSet {
-			models = append(models, modelName)
-		}
-	}
-
-	return s.authService.FilterAllowedModels(tokenHashStr, models)
+	channels, _ = s.authService.FilterAllowedChannels(tokenHash, channels)
+	return s.authService.FilterAllowedModels(tokenHash, modelNamesFromChannels(channels)), channels, nil
 }
 
-// handleListGeminiModels 处理 GET /v1beta/models 请求，返回本地 Gemini 模型列表
-// 从proxy.go提取，遵循SRP原则
-func (s *Server) handleListGeminiModels(c *gin.Context) {
-	ctx := c.Request.Context()
+/**
+ * @brief 读取 Cursor 渠道凭证中的目录快照，无需请求上游。
+ * @param cfg 已启用的渠道。
+ * @return 该渠道的 Cursor 凭证；非 Cursor 渠道或凭证无法解析时为 nil。
+ */
+func cursorCatalogCredential(cfg *model.Config) *cursorauth.Credential {
+	if !cfg.UsesCursorOAuth() {
+		return nil
+	}
+	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return nil
+	}
+	return credential
+}
 
-	models, err := s.getAllEnabledModels(ctx)
+/**
+ * @brief 汇总同一 Gemini 模型名在可见渠道上的 Cursor 窗口。
+ * @param channels 通过令牌渠道限制的配置。
+ * @return 公开模型名到窗口 token 数的映射；记录缺失或各目标不一致时取零。
+ */
+func (s *Server) geminiCursorContextWindows(channels []*model.Config) map[string]int {
+	windows := make(map[string]int)
+	for _, cfg := range channels {
+		catalog := cursorCatalogCredential(cfg)
+		for _, name := range cfg.GetModels() {
+			if catalog == nil {
+				windows[name] = 0
+				continue
+			}
+			for _, selected := range s.enumerateModelRows(cfg, name) {
+				target := s.resolveFinalUpstreamModel(cfg, selected, string(protocol.Gemini))
+				limit, _ := cursorCatalogValue(catalog.ContextWindows, target)
+				if previous, seen := windows[name]; seen && previous != limit {
+					limit = 0
+				}
+				windows[name] = limit
+			}
+		}
+	}
+	return windows
+}
+
+/**
+ * @brief 输出 GET /v1beta/models 的本地目录及可确认的 token 上限。
+ * @param c 当前 Gemini 请求。
+ */
+func (s *Server) handleListGeminiModels(c *gin.Context) {
+	models, channels, err := s.visibleModelCatalog(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
-	models = s.filterVisibleModelsForRequest(c, "gemini", models)
+	windows := s.geminiCursorContextWindows(channels)
 	sort.Strings(models)
 
 	// 构造 Gemini API 响应格式
@@ -75,6 +106,9 @@ func (s *Server) handleListGeminiModels(c *gin.Context) {
 	modelList := make([]ModelInfo, 0, len(models))
 	for _, model := range models {
 		inputLimit, outputLimit := geminiModelTokenLimits(model)
+		if window := windows[model]; window > 0 {
+			inputLimit = window
+		}
 		modelList = append(modelList, ModelInfo{
 			Name:                       "models/" + model,
 			DisplayName:                formatModelDisplayName(model),
@@ -124,29 +158,21 @@ func detectModelsClientProtocol(c *gin.Context) string {
 	return "openai"
 }
 
-// handleListOpenAIModels 处理 GET /v1/models 请求，根据请求类型返回对应渠道的模型列表
+/**
+ * @brief 根据客户端协议及 client_version 返回令牌可见的模型。
+ * @param c 当前模型列表请求。
+ */
 func (s *Server) handleListOpenAIModels(c *gin.Context) {
-	ctx := c.Request.Context()
-
 	clientProtocol := detectModelsClientProtocol(c)
-	models, err := s.getAllEnabledModels(ctx)
+	models, channels, err := s.visibleModelCatalog(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
 	}
-	models = s.filterVisibleModelsForRequest(c, clientProtocol, models)
-	var serviceTiers map[string]json.RawMessage
-	if c.Query("client_version") != "" {
-		models, serviceTiers, err = s.filterCodexResponsesModels(c, models)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
-			return
-		}
-	}
 	sort.Strings(models)
-
 	if c.Query("client_version") != "" {
-		handleListCodexModels(c, models, clientProtocol == "codex", serviceTiers)
+		filtered, metadata := s.filterCodexResponsesModels(channels, models)
+		handleListCodexModels(c, filtered, clientProtocol == "codex", metadata)
 		return
 	}
 

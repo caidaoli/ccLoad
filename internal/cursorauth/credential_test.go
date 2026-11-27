@@ -2,6 +2,9 @@ package cursorauth
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -62,9 +65,80 @@ func TestMergeRefreshKeepsIdentityAndRotatesToken(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证模型窗口与思考档位仅在同一 API Key 未提供新快照时沿用。
+ * @param t 测试上下文。
+ */
+func TestMergeRefreshModelCatalog(t *testing.T) {
+	t.Parallel()
+	prior := map[string]int{"model@300k": 300000}
+	latest := map[string]int{"model@1m": 1000000}
+	priorLevels := map[string][]string{"model@300k": {"low"}}
+	latestLevels := map[string][]string{"model@1m": {"high"}}
+	priorDefault := map[string]string{"model@300k": "low"}
+	latestDefault := map[string]string{"model@1m": "high"}
+	current := &Credential{AccessToken: "old", APIKey: "key", ContextWindows: prior, EffortLevels: priorLevels, DefaultEfforts: priorDefault}
+	for _, tc := range []struct {
+		name                   string
+		apiKey                 string
+		windows                map[string]int
+		levels                 map[string][]string
+		want                   map[string]int
+		wantLevels             map[string][]string
+		defaults, wantDefaults map[string]string
+	}{
+		{name: "preserve with inherited key", want: prior, wantLevels: priorLevels, wantDefaults: priorDefault},
+		{name: "preserve with explicit key", apiKey: " key ", want: prior, wantLevels: priorLevels, wantDefaults: priorDefault},
+		{name: "discard with replaced key", apiKey: "different"},
+		{name: "replace with new account snapshot", apiKey: "different", windows: latest, levels: latestLevels, want: latest, wantLevels: latestLevels, defaults: latestDefault, wantDefaults: latestDefault},
+		{name: "discard with explicit empty snapshot", windows: map[string]int{}, want: map[string]int{}},
+		{name: "replace with capability-only snapshot", levels: latestLevels, wantLevels: latestLevels},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refreshed := &Credential{AccessToken: "new", APIKey: tc.apiKey, ContextWindows: tc.windows, EffortLevels: tc.levels, DefaultEfforts: tc.defaults}
+			merged, err := current.MergeRefresh(refreshed)
+			if err != nil {
+				t.Fatalf("MergeRefresh() error = %v", err)
+			}
+			if (merged.ContextWindows == nil) != (tc.want == nil) || !maps.Equal(merged.ContextWindows, tc.want) {
+				t.Fatalf("merged windows = %#v, want %#v", merged.ContextWindows, tc.want)
+			}
+			if merged.ContextWindows != nil {
+				merged.ContextWindows["other"] = 1
+			}
+			if current.ContextWindows["other"] != 0 || refreshed.ContextWindows["other"] != 0 {
+				t.Fatal("merged catalog shares storage with an input credential")
+			}
+			if !maps.Equal(merged.DefaultEfforts, tc.wantDefaults) {
+				t.Fatalf("merged default efforts = %v, want %v", merged.DefaultEfforts, tc.wantDefaults)
+			}
+			if merged.DefaultEfforts != nil {
+				merged.DefaultEfforts["other"] = "max"
+				if current.DefaultEfforts["other"] != "" || refreshed.DefaultEfforts["other"] != "" {
+					t.Fatal("merged defaults share storage with an input credential")
+				}
+			}
+			if !maps.EqualFunc(merged.EffortLevels, tc.wantLevels, slices.Equal) {
+				t.Fatalf("merged effort levels = %#v, want %#v", merged.EffortLevels, tc.wantLevels)
+			}
+			for id, levels := range merged.EffortLevels {
+				levels[0] = "max"
+				if tc.wantLevels[id][0] == "max" {
+					t.Fatal("merged effort levels share storage with an input credential")
+				}
+			}
+		})
+	}
+}
+
 func TestCredentialJSONRoundTrip(t *testing.T) {
 	t.Parallel()
-	credential := &Credential{AccessToken: "tok", Email: "user@example.com", LastRefresh: "2026-01-02T03:04:05+08:00"}
+	credential := &Credential{
+		AccessToken: "tok", Email: "user@example.com", LastRefresh: "2026-01-02T03:04:05+08:00",
+		ContextWindows: map[string]int{"model@300k": 300000},
+		DefaultEfforts: map[string]string{"model@300k": "high"},
+		EffortLevels:   map[string][]string{"model@300k": {"none", "high"}, "opaque": {}},
+	}
 	payload, err := credential.JSON()
 	if err != nil {
 		t.Fatalf("JSON() error = %v", err)
@@ -73,8 +147,22 @@ func TestCredentialJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCredential() error = %v", err)
 	}
-	if parsed.LastRefresh != "2026-01-01T19:04:05Z" || parsed.AccessToken != "tok" {
+	if parsed.LastRefresh != "2026-01-01T19:04:05Z" || parsed.AccessToken != "tok" ||
+		!maps.Equal(parsed.ContextWindows, credential.ContextWindows) || !maps.Equal(parsed.DefaultEfforts, credential.DefaultEfforts) ||
+		!maps.EqualFunc(parsed.EffortLevels, credential.EffortLevels, slices.Equal) || parsed.EffortLevels["opaque"] == nil {
 		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
+/**
+ * @brief 验证超过凭证读取限制的模型窗口快照不能持久化。
+ * @param t 测试上下文。
+ */
+func TestCredentialJSONRejectsOversizeCatalog(t *testing.T) {
+	t.Parallel()
+	credential := &Credential{AccessToken: "tok", ContextWindows: map[string]int{strings.Repeat("m", maxCredentialSize): 300000}}
+	if _, err := credential.JSON(); err == nil {
+		t.Fatal("JSON() accepted a catalog exceeding the credential size limit")
 	}
 }
 

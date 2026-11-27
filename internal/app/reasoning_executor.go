@@ -312,7 +312,7 @@ func (s *Server) attemptReasoningDecision(ctx context.Context, channel *model.Co
 	if err != nil {
 		return result, cooldown.ActionSkipChannel, err
 	}
-	row, err := s.selectChannelModelRow(ctx, channel, cfg.DecisionModel, string(protocol.SystemOne), nil, keys)
+	row, err := s.selectChannelModelRow(ctx, channel, cfg.DecisionModel, string(protocol.SystemOne), nil, keys, "")
 	if err != nil {
 		return result, cooldown.ActionSkipChannel, err
 	}

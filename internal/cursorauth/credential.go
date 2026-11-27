@@ -5,28 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
 
-// Credential is the private Cursor payload persisted on a channel.
-//
-// AccessToken is the session JWT the CLI stores in auth.json and the only
-// secret required for control-plane RPCs. RefreshToken is kept alongside it
-// because that is how the CLI persists the pair; Cursor does not currently
-// expose a documented refresh endpoint for this flow, so a rejected session
-// is re-minted from APIKey when one was imported, otherwise the administrator
-// must sign in again.
+/**
+ * @brief 渠道私有存储的 Cursor 凭证和模型目录元数据。
+ * @details AccessToken 用于控制面 RPC。Cursor 未提供该会话的公开刷新接口，失效时用 APIKey 重新换取。
+ */
 type Credential struct {
-	Type         string          `json:"type"`
-	AccessToken  string          `json:"access_token"`
-	RefreshToken string          `json:"refresh_token,omitempty"`
-	APIKey       string          `json:"api_key,omitempty"`
-	UserID       string          `json:"user_id,omitempty"`
-	Email        string          `json:"email,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	LastRefresh  string          `json:"last_refresh,omitempty"`
-	OAuthUsage   json.RawMessage `json:"oauth_usage,omitempty"`
+	Type           string              `json:"type"`                      ///< 凭证类型。
+	AccessToken    string              `json:"access_token"`              ///< Cursor CLI 会话 JWT。
+	RefreshToken   string              `json:"refresh_token,omitempty"`   ///< CLI 持久化的配套刷新令牌。
+	APIKey         string              `json:"api_key,omitempty"`         ///< User API Key，用于 SDK 调用及会话重铸。
+	UserID         string              `json:"user_id,omitempty"`         ///< Cursor 用户 ID。
+	Email          string              `json:"email,omitempty"`           ///< Cursor 账号邮箱。
+	Name           string              `json:"name,omitempty"`            ///< Cursor 账号显示名。
+	LastRefresh    string              `json:"last_refresh,omitempty"`    ///< 以 RFC 3339 UTC 记录的上次会话刷新时间。
+	OAuthUsage     json.RawMessage     `json:"oauth_usage,omitempty"`     ///< 最近一次采集的当前周期用量。
+	ContextWindows map[string]int      `json:"context_windows,omitempty"` ///< 同一 API Key 最近确认的模型窗口，以 token 计。
+	EffortLevels   map[string][]string `json:"effort_levels,omitempty"`   ///< 同一 API Key 最近确认的思考档位；空列表为无档位，缺失为未知。
+	DefaultEfforts map[string]string   `json:"default_efforts,omitempty"` ///< 同一账号目录明确标记的默认思考档位。
 }
 
 // Identity is the account this credential belongs to.
@@ -113,7 +114,13 @@ func (i Identity) Matches(other Identity) bool {
 	return i.Email != "" && other.Email != "" && strings.EqualFold(i.Email, other.Email)
 }
 
-// MergeRefresh keeps identity metadata that a re-resolved credential omits.
+/**
+ * @brief 合并刷新结果，保留该次刷新未覆盖的身份和目录信息。
+ * @param refreshed 刷新后的凭证；nil 表示没有刷新结果。
+ * @return 规范化后的新凭证；失败时为 nil。
+ * @return 任一凭证为空或合并后凭证无效时返回错误。
+ * @details 只有同一 API Key 的刷新可以沿用目录；新快照同时替换窗口与档位。
+ */
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	if c == nil || refreshed == nil {
 		return nil, errors.New("cursor refresh credential is nil")
@@ -129,14 +136,44 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	preserve(&merged.UserID, c.UserID)
 	preserve(&merged.Email, c.Email)
 	preserve(&merged.Name, c.Name)
-	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
+	merged.OAuthUsage = c.OAuthUsage
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}
-	return &merged, nil
+	if merged.ContextWindows == nil && merged.EffortLevels == nil && merged.DefaultEfforts == nil &&
+		merged.APIKey != "" && merged.APIKey == strings.TrimSpace(c.APIKey) {
+		merged.ContextWindows = c.ContextWindows
+		merged.EffortLevels = c.EffortLevels
+		merged.DefaultEfforts = c.DefaultEfforts
+	}
+	return merged.Clone(), nil
 }
 
-// JSON returns the canonical private database payload.
+/**
+ * @brief 复制 Cursor 凭证、额度以及目录快照，避免调用方修改共享状态。
+ * @return 独立凭证副本；源凭证为 nil 时返回 nil。
+ */
+func (c *Credential) Clone() *Credential {
+	if c == nil {
+		return nil
+	}
+	clone := *c
+	clone.OAuthUsage = slices.Clone(c.OAuthUsage)
+	clone.ContextWindows = maps.Clone(c.ContextWindows)
+	clone.EffortLevels = maps.Clone(c.EffortLevels)
+	clone.DefaultEfforts = maps.Clone(c.DefaultEfforts)
+	for id, levels := range clone.EffortLevels {
+		clone.EffortLevels[id] = slices.Clone(levels)
+	}
+	return &clone
+}
+
+/**
+ * @brief 编码可由 ParseCredential 读取的私有凭证。
+ * @return 存入数据库的规范化 JSON；失败时为空字符串。
+ * @return 凭证无效、编码失败或超出大小限制时返回错误。
+ * @note 规范化时修改凭证。
+ */
 func (c *Credential) JSON() (string, error) {
 	if err := c.Normalize(); err != nil {
 		return "", err
@@ -144,6 +181,9 @@ func (c *Credential) JSON() (string, error) {
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return "", fmt.Errorf("encode cursor credential: %w", err)
+	}
+	if len(raw) > maxCredentialSize {
+		return "", fmt.Errorf("cursor credential exceeds %d bytes", maxCredentialSize)
 	}
 	return string(raw), nil
 }

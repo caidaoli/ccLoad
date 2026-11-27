@@ -8,7 +8,7 @@
 
 - Antigravity 通过 SOCKS5 查询项目 ID 或订阅时，握手受共享查询的截止时间约束。单个等待者取消后，其他等待者仍可取得结果。查询超时会关闭仍在握手的套接字，同一连接池的其他请求可继续使用。
 
-- **日志展示估算**：`logs.usage_estimate` 为可空 JSON 文本，字段为 `input_tokens`、`output_tokens`；SQLite、PostgreSQL、MySQL 的建表、迁移、单条/批量写入及混合复制必须保留。旧日志为空，不回填推测值；实际 token 与费用列、聚合查询不使用此字段。
+- **日志展示估算**：`logs.usage_estimate` 为可空 JSON 文本，字段为 `input_tokens`、`output_tokens`；SQLite、PostgreSQL、MySQL 的建表、迁移、单条/批量写入及混合复制必须保留。旧日志为空，不回填推测值；实际 token 与费用列、聚合查询不使用此字段。Cursor 多轮计费明细保存在可空的 `logs.cost_breakdown`；有快照时直接展示当时的分项费用，历史日志沿用原有明细计算。
 
 - **系统设置与热更新**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读取配置；唯一写入口 `POST /admin/settings/batch` 由 `settingsUpdateMu` 串行化保存。`model_multimodal_fallback`、`model_custom_pricing`、`reasoning_auto` 和 `privacy_redaction` 由 `commitSettingUpdates` 在持久化成功后发布运行态快照，避免数据库终值与运行态错序；一次提交只含这些键时免重启，同时包含其他键则调用 `go s.triggerRestart()`，2 秒后重启生效。后端 `hotReloadedSettingKeys` 与前端 `hotReloadSettingKeys` 必须同步。其余设置继续使用启动缓存，不能在保存时顺手刷新。重启回调属于 `Server` 实例并由锁保护，禁止恢复为包级可变全局。
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全属这一类,保持环境变量;运行期策略才进系统设置
@@ -63,7 +63,7 @@
 
 - **模型发现请求头**：普通 API Key 渠道获取、单 Key 探测及批量刷新模型时默认发送 `User-Agent: ccLoad/<版本号>`，再应用渠道 `custom_request_rules.headers`，认证头仍受既有黑名单保护。新增或编辑预览提交当前未保存的 `custom_request_rules` 并复用渠道校验；GET 模型请求不应用 body 规则。显式删除 UA 时不允许 Go 自动补回默认 UA。OAuth 模型发现保留各提供商的专属身份。上游 Cloudflare 验证通过响应头及正文分类，在最终错误中保留验证原因和 HTTP 状态，不回显验证页 HTML。
 
-- **批量模型刷新**：`merge` 保留渠道已有模型行，`replace` 移除未返回的模型（仍保留失败 Key 所需模型及已配置的多目标组）。只有 Key 范围变化也返回 `updated` 并失效缓存。并发：前端每渠道单独请求、最多 4 个渠道同时在途；后端单渠道内逐 Key 探测最多 4 个并发（`modelFetchKeyConcurrency`），结果仍按 Key 顺序聚合，与串行一致；30 秒超时由该渠道全部 Key 共享。
+- **批量模型刷新**：`merge` 保留渠道已有模型行，`replace` 移除未返回的模型（仍保留失败 Key 所需模型及已配置的多目标组）。Cursor 渠道的覆盖刷新必须得到非空实时目录，Bridge 不可用时保留原配置并报告失败；只读发现仍可展示内置目录。只有 Key 范围变化也返回 `updated` 并失效缓存。并发：前端每渠道单独请求、最多 4 个渠道同时在途；后端单渠道内逐 Key 探测最多 4 个并发（`modelFetchKeyConcurrency`），结果仍按 Key 顺序聚合，与串行一致；30 秒超时由该渠道全部 Key 共享。
   - 重算范围：`replace` 按每个成功探测的 Key 重算 `allowed_models`、`detected_models` 和空范围状态；`merge` 只重算 `model_scope_auto=true` 的 Key，不受限 Key 与手工白名单是策略而非探测产物，保持不变。重算以本次探测为准，不与旧范围取并集。失败或未探测 Key 保留原范围，模型名归一化时仍按原能力边界重映射。
   - 结果归属：探测结果按探测时的行 ID 与凭据重新绑定到写库前读取的 Key 行；同一凭据可配置多行，各行探测状态独立。探测期间被删除、重写或改值的 Key 视为未探测，不按 `key_index` 或凭据套用其他行的结果。
   - 匹配规则：按实际路由的最终上游模型匹配，包含自定义 body `model` 规则，Gemini 路径保持自身模型语义；编辑器探测（`editorFinalUpstreamModels`）使用同一规则。手工编辑渠道模型表保留已有探测范围；新模型不在该范围内时，需重新探测并应用 Key 范围。

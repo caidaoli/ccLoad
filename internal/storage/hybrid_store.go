@@ -135,7 +135,7 @@ func execAnalytics(h *HybridStore, op string, fn func(*sqlstore.SQLStore) error)
 }
 
 /**
- * @brief 复制日志及展示元数据，剔除仅允许本地保存的 DebugData
+ * @brief 复制日志、展示元数据及计费明细快照，剔除仅允许本地保存的 DebugData
  * @param e 待复制日志，可为 nil
  * @return 独立的日志同步快照；输入为 nil 时返回 nil
  */
@@ -155,6 +155,10 @@ func cloneLogEntryForSync(e *model.LogEntry) *model.LogEntry {
 	if e.UsageEstimate != nil {
 		estimate := *e.UsageEstimate
 		clone.UsageEstimate = &estimate
+	}
+	if e.CostBreakdown != nil {
+		breakdown := *e.CostBreakdown
+		clone.CostBreakdown = &breakdown
 	}
 	// 同步到主库时丢弃 DebugData：调试原始请求/响应体仅保留在 SQLite，
 	// 避免膨胀主库；但 logs 表主数据仍需正常同步

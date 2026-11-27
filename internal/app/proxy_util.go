@@ -182,18 +182,31 @@ func writeAnthropicStreamErrorEvent(w http.ResponseWriter, status int, message s
 	}
 }
 
-// responsesStreamCursor 记录已发给 Responses 客户端的转换流位置，补写终态时沿用。
+/**
+ * @brief 记录转换流的事件位置和可供下一轮恢复的 Responses 终态。
+ */
 type responsesStreamCursor struct {
-	responseID   string
-	nextSequence int64
+	responseID   string                       ///< 最先观察到的响应 ID，补写失败事件时沿用。
+	nextSequence int64                        ///< 补写事件的下一个序号。
+	turn         responsesWebsocketTurnResult ///< 转换后的成功终态，供执行会话续轮。
 }
 
-func (c *responsesStreamCursor) observe(data []byte) {
-	if seq := gjson.GetBytes(data, "sequence_number"); seq.Exists() {
+/**
+ * @brief 从下游 Responses 事件更新流位置并保存成功终态。
+ * @param event 已转换的 Responses 事件；不保留其输入缓冲。
+ * @param terminalType 规范化终态名，普通事件为空。
+ */
+func (c *responsesStreamCursor) observe(event gjson.Result, terminalType string) {
+	if seq := event.Get("sequence_number"); seq.Exists() {
 		c.nextSequence = seq.Int() + 1
 	}
 	if c.responseID == "" {
-		c.responseID = gjson.GetBytes(data, "response.id").String()
+		c.responseID = strings.Clone(event.Get("response.id").String())
+	}
+	if isSuccessfulResponsesTerminal(terminalType) {
+		if response := event.Get("response"); response.IsObject() {
+			c.turn = responsesWebsocketTurnFromResponse(response)
+		}
 	}
 }
 
@@ -317,6 +330,8 @@ type fwResult struct {
 	OutputTokens             int
 	ReasoningTokens          int
 	UsageEstimate            *model.TokenUsageEstimate ///< 真实用量缺失时的展示估算，不参与统计或计费
+	cursorUsageIncrements    []util.TokenCostUsage     ///< Cursor 已知计费轮次，按各自上下文选档。
+	cursorBillingModel       string                    ///< Cursor 自有模型与有效速度；为空时使用通用价目。
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
@@ -416,6 +431,7 @@ type proxyRequestContext struct {
 	attemptCostMultiplier   float64                // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
 	attemptModelPrice       *util.CustomModelPrice // 当前渠道此模型的价格（nil 按全局价格计费）
 	attemptModel            modelRoutingSelection  // 本次渠道尝试固定的配置行
+	cursorToolRoute         cursorToolRoute        ///< 工具续轮应优先尝试的可用渠道与模型行。
 	debugData               *model.DebugLogEntry   // Debug日志数据（debug开启时填充）
 	privacyMasked           privacy.Counts         // 当前尝试实际外发的脱敏占位符计数
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
@@ -431,8 +447,10 @@ type proxyRequestContext struct {
 	sessionAffinity         sessionAffinityTarget      // 请求开始时的会话绑定，channelID=0 表示无
 	nativeCodexWS           *codexUpstreamWebsocketSession
 	nativeCodexBody         []byte
-	responsesReplayBody     []byte // HTTP Responses 的完整 transcript，供跨协议或本地压缩恢复使用
-	initialPrewarm          bool   ///< 下游 WebSocket 首轮仅预热，HTTP 上游不能承接。
+	responsesReplayBody     []byte                         // HTTP Responses 的完整 transcript，供跨协议或本地压缩恢复使用
+	responsesReplayLocalID  bool                           ///< 客户端引用了本地 ID，发给原生 Responses 候选前也需完整回放。
+	cursorHTTPToolReplay    *cursorResponsesHTTPToolReplay ///< 已验证本地历史后的 HTTP 工具续轮，可在成功后记录重放。
+	initialPrewarm          bool                           ///< 下游 WebSocket 首轮仅预热，HTTP 上游不能承接。
 }
 
 // countTokens reports the auxiliary count_tokens request: it is never billed,
@@ -1062,7 +1080,7 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 
 	bodyToSend = reqCtx.body
 	if reqCtx.clientProtocol == protocol.Codex && len(reqCtx.responsesReplayBody) > 0 &&
-		(upstreamProtocol != protocol.Codex || hasLocalResponsesCompaction(reqCtx.responsesReplayBody)) {
+		(upstreamProtocol != protocol.Codex || reqCtx.responsesReplayLocalID || hasLocalResponsesCompaction(reqCtx.responsesReplayBody)) {
 		bodyToSend = reqCtx.responsesReplayBody
 	}
 	requestedModel := reqCtx.requestedModel
@@ -1455,7 +1473,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
 			// alpha/search 固定按 search_call 计费。
-			entry.Cost = computeRequestCostWithPrice(billingModel, res.ServiceTier, p.ModelPrice, res)
+			entry.Cost, entry.CostBreakdown = calculateRequestCost(billingModel, res.ServiceTier, p.ModelPrice, res)
 		}
 	}
 	if p.Result != nil {
@@ -1483,18 +1501,48 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 	return truncateErr(fmt.Sprintf("%s [%s]", message, strategy))
 }
 
-// computeRequestCostWithPrice 是请求总成本的唯一口径：标准 token 成本加服务端工具成本（Responses 图像、Anthropic web_search）。
-// price 非空时用渠道模型价格替代标准 token 价格；工具费率只来自系统目录，不受渠道价格影响。
-// OpenAI service_tier 是价格倍率，不改变按 token 数选择的长上下文分档；
-// 非 OpenAI 白名单模型即使响应携带 service_tier 也不加倍率。
+/**
+ * @brief 给用量统计和额度计算取标准请求总成本。
+ * @param model 计费模型。
+ * @param serviceTier 本次统一服务档位。
+ * @param price 渠道模型价格覆盖，nil 时沿用全局或系统目录。
+ * @param res 转发结果，nil 时无用量。
+ * @return 包含标准 Token 和工具费用的总成本，单位为美元。
+ */
 func computeRequestCostWithPrice(model string, serviceTier string, price *util.CustomModelPrice, res *fwResult) float64 {
+	cost, _ := calculateRequestCost(model, serviceTier, price, res)
+	return cost
+}
+
+/**
+ * @brief 按真实 Token 与服务端工具消费计算一次请求的标准成本。
+ * @param model 计费模型。
+ * @param serviceTier 请求使用的统一服务档位。
+ * @param price 渠道模型价格覆盖，nil 时沿用全局或系统目录。
+ * @param res 转发结果，nil 时没有用量。
+ * @return 标准总成本，工具费率独立于渠道价格。
+ * @return Cursor 自有模型和逐轮费用的分项快照；能由日志统计量重算时返回 nil。
+ */
+func calculateRequestCost(model, serviceTier string, price *util.CustomModelPrice, res *fwResult) (float64, *util.StandardCostBreakdown) {
 	if res == nil {
-		return 0
+		return 0, nil
 	}
 	if res.ImageUsage != nil {
 		if cost := util.CalculateImageGenerationToolCost(model, *res.ImageUsage); cost > 0 {
-			return cost
+			return cost, nil
 		}
+	}
+	if res.cursorBillingModel != "" && len(res.cursorUsageIncrements) > 0 {
+		breakdown, ok := util.CalculateCursorCostBreakdown(model, res.cursorBillingModel, price, res.cursorUsageIncrements)
+		if ok {
+			return breakdown.Total, &breakdown
+		}
+	}
+	if len(res.cursorUsageIncrements) > 1 {
+		breakdown := util.CalculateIncrementalCostBreakdownWithPrice(
+			model, serviceTier, res.RateCard, time.Now(), price, res.cursorUsageIncrements,
+		)
+		return breakdown.Total, &breakdown
 	}
 	return util.CalculateStandardCostBreakdownWithPrice(
 		model,
@@ -1507,7 +1555,7 @@ func computeRequestCostWithPrice(model string, serviceTier string, price *util.C
 		res.CacheReadInputTokens,
 		res.Cache5mInputTokens,
 		res.Cache1hInputTokens, res.Cache30mInputTokens, res.Cache12hInputTokens,
-	).Total + res.ToolCostUSD
+	).Total + res.ToolCostUSD, nil
 }
 
 // openAIRateCard 选择 service_tier 倍率价目：Codex OAuth 按本次是否落入购买积分区分

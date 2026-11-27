@@ -13,30 +13,39 @@ import (
 	"time"
 
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
 
-// filterCodexResponsesModels uses configured route capabilities without probing upstreams.
-func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []string) ([]string, map[string]json.RawMessage, error) {
-	if len(visibleModels) == 0 {
-		return visibleModels, nil, nil
-	}
-	channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
-	if err != nil {
-		return nil, nil, err
-	}
+/**
+ * @brief 一个公开 Responses 模型的路由元数据。
+ */
+type codexModelMetadata struct {
+	serviceTiers    json.RawMessage ///< 路由声明的服务等级，未知时为 JSON null。
+	contextWindow   int             ///< 所有候选路由共同支持的上下文窗口，未知时为 0。
+	reasoningLevels []string        ///< 实际路由共同可用的等级。
+	cursorOnly      bool            ///< 所有候选均能由 Cursor Local Agent 传递内联图片。
+	defaultEffort   string          ///< 全部候选一致声明的默认思考档位。
+	cursorReasoning bool            ///< 至少有一个候选含 Cursor 账号目录的证据。
+}
 
-	tokenHash, _ := c.Get("token_hash")
-	tokenHashStr, _ := tokenHash.(string)
-	var restriction model.ChannelRestriction
-	var hasRestriction bool
-	if s.authService != nil && tokenHashStr != "" {
-		restriction, hasRestriction = s.authService.getChannelRestriction(tokenHashStr)
+/**
+ * @brief 按已配置的 Responses 路由筛选模型并汇总目录信息，无需请求上游。
+ * @param channels 当前令牌可访问的已启用渠道。
+ * @param visibleModels 当前令牌可访问的公开模型名。
+ * @return 至少有一个文本 Responses 路由的公开模型名。
+ * @return 按公开模型名索引的路由元数据；没有候选时可为 nil。
+ * @details Cursor 上下文窗口仅在所有候选路由都有相同目录值时声明，思考等级限定为共同支持的等级。
+ */
+func (s *Server) filterCodexResponsesModels(channels []*model.Config, visibleModels []string) ([]string, map[string]codexModelMetadata) {
+	if len(visibleModels) == 0 {
+		return visibleModels, nil
 	}
 
 	visible := make(map[string]struct{}, len(visibleModels))
@@ -44,20 +53,16 @@ func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []stri
 		visible[modelID] = struct{}{}
 	}
 
-	available := make(map[string]struct{}, len(visibleModels))
-	tiers := make(map[string]json.RawMessage, len(visibleModels))
+	metadata := make(map[string]codexModelMetadata, len(visibleModels))
 	targets := make(map[string]string, len(visibleModels))
-	conflicts := make(map[string]bool, len(visibleModels))
 	for _, cfg := range channels {
-		if cfg == nil || (hasRestriction && !restriction.Allows(cfg.ID)) {
-			continue
-		}
 		cfg = s.withOAuthBaseURLOverride(cfg)
 		routes := s.codexResponsesRoutes(cfg)
 		if len(routes) == 0 {
 			continue
 		}
 		var sources []codexRouteTierSource
+		var cursor *cursorauth.Credential
 		for _, modelID := range cfg.GetModels() {
 			if _, ok := visible[modelID]; !ok || modelID == "*" {
 				continue
@@ -70,14 +75,39 @@ func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []stri
 					}
 					if sources == nil {
 						sources = codexRouteTierSources(cfg, routes)
+						cursor = cursorCatalogCredential(cfg)
 					}
 					declared := sources[i].serviceTiers(actualModel)
-					if _, seen := available[modelID]; !seen {
-						tiers[modelID], targets[modelID] = declared, actualModel
-					} else if targets[modelID] != actualModel || !bytes.Equal(tiers[modelID], declared) {
-						conflicts[modelID] = true
+					var window int
+					var cursorModel, defaultEffort string
+					if cursor != nil {
+						cursorModel = s.resolveFinalUpstreamModel(cfg, selected, string(protocol.Codex))
+						window, _ = cursorCatalogValue(cursor.ContextWindows, cursorModel)
+						defaultEffort, _ = cursorCatalogValue(cursor.DefaultEfforts, cursorModel)
 					}
-					available[modelID] = struct{}{}
+					entry, seen := metadata[modelID]
+					if !seen {
+						entry = codexModelMetadata{serviceTiers: declared, contextWindow: window, defaultEffort: defaultEffort, cursorOnly: cfg.UsesCursorOAuth()}
+						targets[modelID] = actualModel
+					} else {
+						entry.cursorOnly = entry.cursorOnly && cfg.UsesCursorOAuth()
+						if entry.defaultEffort != defaultEffort {
+							entry.defaultEffort = ""
+						}
+						if targets[modelID] != actualModel || !bytes.Equal(entry.serviceTiers, declared) {
+							entry.serviceTiers = json.RawMessage("null")
+						}
+						if entry.contextWindow != window {
+							entry.contextWindow = 0
+						}
+					}
+					levels, known := cursorCatalogEffortLevels(cursor, cursorModel)
+					entry.cursorReasoning = entry.cursorReasoning || known
+					if !known {
+						levels, _ = reasoningModelLevels(actualModel, route.upstream)
+					}
+					entry.reasoningLevels = intersectReasoningLevels(entry.reasoningLevels, levels)
+					metadata[modelID] = entry
 				}
 			}
 		}
@@ -85,14 +115,11 @@ func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []stri
 
 	filtered := make([]string, 0, len(visibleModels))
 	for _, modelID := range visibleModels {
-		if _, ok := available[modelID]; ok {
+		if _, ok := metadata[modelID]; ok {
 			filtered = append(filtered, modelID)
-			if conflicts[modelID] {
-				tiers[modelID] = json.RawMessage("null")
-			}
 		}
 	}
-	return filtered, tiers, nil
+	return filtered, metadata
 }
 
 type codexResponsesRoute struct {
@@ -189,10 +216,17 @@ func codexResponsesTextModel(modelID string) bool {
 	return true
 }
 
-func handleListCodexModels(c *gin.Context, modelIDs []string, multiAgent bool, serviceTiers map[string]json.RawMessage) {
+/**
+ * @brief 写出 Codex 模型目录并处理 ETag 条件请求。
+ * @param c 当前 HTTP 请求和响应。
+ * @param modelIDs 可以提供 Responses 的公开模型名。
+ * @param multiAgent 是否为 Codex 客户端声明多代理能力。
+ * @param metadata 按公开模型名索引的路由元数据。
+ */
+func handleListCodexModels(c *gin.Context, modelIDs []string, multiAgent bool, metadata map[string]codexModelMetadata) {
 	models := make([]map[string]any, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
-		models = append(models, codexModelDescriptor(modelID, multiAgent, serviceTiers[modelID]))
+		models = append(models, codexModelDescriptor(modelID, multiAgent, metadata[modelID]))
 	}
 	body, err := json.Marshal(struct {
 		Models []map[string]any `json:"models"`
@@ -224,8 +258,15 @@ func matchesCodexModelsETag(header, etag string) bool {
 	return false
 }
 
-// serviceTiers keeps unknown (null), empty, and declared lists distinct.
-func codexModelDescriptor(modelID string, multiAgent bool, serviceTiers json.RawMessage) map[string]any {
+/**
+ * @brief 为公开模型生成 Codex 目录项。
+ * @param modelID 对客户端公开的模型名。
+ * @param multiAgent 是否声明多代理能力。
+ * @param metadata 已从候选路由确认的服务等级、上下文窗口和思考等级。
+ * @return Codex 模型目录项；`service_tiers` 保留未知、空列表与已声明列表的区别。
+ */
+func codexModelDescriptor(modelID string, multiAgent bool, metadata codexModelMetadata) map[string]any {
+	serviceTiers := metadata.serviceTiers
 	if len(serviceTiers) == 0 {
 		serviceTiers = json.RawMessage("null")
 	}
@@ -235,14 +276,17 @@ func codexModelDescriptor(modelID string, multiAgent bool, serviceTiers json.Raw
 		info = cliproxyregistry.LookupModelInfo(modelID)
 	}
 	preset := codexModelPresets[modelID]
-	defaultReasoning, reasoningLevels := codexModelReasoningLevels(openAIInfo, preset)
-	contextWindow := 128000
-	if info != nil && info.ContextLength > 0 {
-		contextWindow = info.ContextLength
-	} else if preset.contextWindow > 0 {
-		contextWindow = preset.contextWindow
+	defaultReasoning, reasoningLevels := codexModelReasoningLevels(openAIInfo, preset, metadata)
+	contextWindow := metadata.contextWindow
+	if contextWindow == 0 {
+		contextWindow = 128000
+		if info != nil && info.ContextLength > 0 {
+			contextWindow = info.ContextLength
+		} else if preset.contextWindow > 0 {
+			contextWindow = preset.contextWindow
+		}
 	}
-	supportsImage := preset.supportsImage
+	supportsImage := metadata.cursorOnly || preset.supportsImage
 	if info != nil {
 		if slices.Contains(info.InputModalities, "image") {
 			supportsImage = true
@@ -328,13 +372,24 @@ var codexModelPresets = map[string]codexModelPreset{
 	"gpt-4o":        {contextWindow: 128000, supportsImage: true},
 }
 
-func codexModelReasoningLevels(info *cliproxyregistry.ModelInfo, preset codexModelPreset) (string, []map[string]string) {
+/**
+ * @brief 生成 Codex 可选档位列表及其显示默认值。
+ * @param info 公开模型名对应的 OpenAI 内置目录项，未收录时为 nil。
+ * @param preset 公开模型名的补充静态目录。
+ * @param metadata 可见路由中的 Cursor 账号等级证据。
+ * @return 优先取候选一致的目录默认值，再选 medium 或首个可用档位；无档位时为 none。
+ * @return Codex 思考等级对象列表；没有共同等级时只列 none。
+ */
+func codexModelReasoningLevels(info *cliproxyregistry.ModelInfo, preset codexModelPreset, metadata codexModelMetadata) (string, []map[string]string) {
 	fallback := []map[string]string{{"effort": "none", "description": "No reasoning effort"}}
 	var supported []string
 	if info != nil && info.Thinking != nil {
 		supported = info.Thinking.Levels
 	} else {
 		supported = preset.reasoningLevels
+	}
+	if metadata.cursorReasoning {
+		supported = metadata.reasoningLevels
 	}
 
 	descriptions := map[string]string{
@@ -344,18 +399,25 @@ func codexModelReasoningLevels(info *cliproxyregistry.ModelInfo, preset codexMod
 		"xhigh":  "Extra-high reasoning depth for difficult tasks",
 		"max":    "Maximum reasoning depth for the hardest tasks",
 	}
+	if metadata.cursorReasoning {
+		descriptions[string(thinking.LevelNone)] = "No reasoning effort"
+		descriptions[string(thinking.LevelMinimal)] = "Minimal reasoning for simple tasks"
+	}
 	levels := make([]map[string]string, 0, len(supported))
 	defaultLevel := ""
 	for _, level := range supported {
 		if description, ok := descriptions[level]; ok {
 			levels = append(levels, map[string]string{"effort": level, "description": description})
-			if defaultLevel == "" || level == "medium" {
+			if defaultLevel == "" || (defaultLevel == "none" && level != "none") || level == "medium" {
 				defaultLevel = level
 			}
 		}
 	}
 	if len(levels) == 0 {
 		return "none", fallback
+	}
+	if metadata.defaultEffort != "" && slices.Contains(supported, metadata.defaultEffort) {
+		defaultLevel = metadata.defaultEffort
 	}
 	return defaultLevel, levels
 }

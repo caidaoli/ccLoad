@@ -158,14 +158,30 @@ func (s *Server) buildCursorCredential(
 	return credential, nil
 }
 
+/**
+ * @brief 导入 Cursor 渠道凭证，并同时保存 SDK 账号目录的上下文上限和思考档位。
+ * @param ctx 导入请求上下文。
+ * @param credential 已校验的 Cursor 私有凭证。
+ * @param proxyURL 账号控制面请求使用的代理地址。
+ * @return 保存后的渠道。
+ * @return 新建渠道时为 true。
+ * @return 渠道保存失败时返回错误。
+ * @note SDK 目录不可用时仍可导入凭证，新渠道使用内置模型。
+ */
 func (s *Server) commitCursorCredential(
 	ctx context.Context,
 	credential *cursorauth.Credential,
 	proxyURL string,
 ) (*model.Config, bool, error) {
-	cfg, created, err := createOrUpdateCursorChannel(
-		ctx, s.store, credential, s.cursorChannelModels(ctx, credential), proxyURL,
-	)
+	catalog, err := s.listCursorSDKModels(ctx, credential)
+	if err != nil {
+		log.Printf("[WARN] Cursor SDK 模型目录不可用，新渠道使用内置列表: %v", err)
+	} else {
+		credential.ContextWindows = catalog.ContextWindows
+		credential.EffortLevels = catalog.EffortLevels
+		credential.DefaultEfforts = catalog.DefaultEfforts
+	}
+	cfg, created, err := createOrUpdateCursorChannel(ctx, s.store, credential, catalog.Models, proxyURL)
 	if err != nil {
 		return nil, false, err
 	}
@@ -177,29 +193,32 @@ func (s *Server) commitCursorCredential(
 	return cfg, created, nil
 }
 
-func (s *Server) cursorChannelModels(ctx context.Context, credential *cursorauth.Credential) []string {
-	models, err := s.listCursorSDKModels(ctx, credential)
-	if err != nil || len(models) == 0 {
-		if err != nil {
-			log.Printf("[WARN] Cursor SDK 模型目录不可用，新渠道使用 default: %v", err)
-		}
-		return cursorauth.DefaultModels
-	}
-	return models
-}
-
+/**
+ * @brief 使用已校验的 Cursor User API Key 查询实时目录。
+ * @param ctx 目录查询的上下文。
+ * @param credential 包含查询所用 API Key 的归一化凭证。
+ * @return SDK 模型目录；失败时返回零值。
+ * @return 缺少 API Key 时返回 ErrMissingAPIKey；目录为空、SDK 不可用或查询失败时返回对应错误。
+ */
 func (s *Server) listCursorSDKModels(
 	ctx context.Context,
 	credential *cursorauth.Credential,
-) ([]string, error) {
-	if credential == nil || strings.TrimSpace(credential.APIKey) == "" {
-		return nil, cursorauth.ErrMissingAPIKey
+) (cursorauth.ModelCatalog, error) {
+	if credential.APIKey == "" {
+		return cursorauth.ModelCatalog{}, cursorauth.ErrMissingAPIKey
 	}
 	lister, ok := s.cursorRunnerSnapshot().(cursorauth.ModelLister)
-	if !ok || lister == nil {
-		return nil, errors.New("cursor SDK model catalog is unavailable")
+	if !ok {
+		return cursorauth.ModelCatalog{}, errors.New("cursor SDK model catalog is unavailable")
 	}
-	return lister.ListModels(ctx, credential.APIKey)
+	catalog, err := lister.ListModels(ctx, credential.APIKey)
+	if err != nil {
+		return cursorauth.ModelCatalog{}, err
+	}
+	if len(catalog.Models) == 0 {
+		return cursorauth.ModelCatalog{}, errors.New("返回的模型列表为空")
+	}
+	return catalog, nil
 }
 
 func createOrUpdateCursorChannel(
