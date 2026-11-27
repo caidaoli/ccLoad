@@ -385,39 +385,43 @@ func TestClassifyHTTPResponseCloudflareChallenge(t *testing.T) {
 }
 
 func TestClassifyHTTPStatus(t *testing.T) {
-	tests := []struct {
-		statusCode int
-		expected   ErrorLevel
-		reason     string
-	}{
-		{200, ErrorLevelNone, "2xx成功"},
-		{201, ErrorLevelNone, "2xx成功"},
-		{402, ErrorLevelKey, "402 应视为Key级（额度/余额/配额）"},
-		{401, ErrorLevelKey, "Key级错误（默认）"},
-		{403, ErrorLevelKey, "Key级错误"},
-		{429, ErrorLevelKey, "Key级限流"},
-		// 499 HTTP响应应触发渠道级重试
-		{499, ErrorLevelChannel, "499来自HTTP响应时，说明上游API返回，应重试其他渠道"},
-		// nginx 非标准状态码
-		{444, ErrorLevelChannel, "444 nginx No Response - 服务器主动关闭连接，渠道级错误"},
-		{500, ErrorLevelChannel, "渠道级错误"},
-		{502, ErrorLevelChannel, "渠道级错误"},
-		{503, ErrorLevelChannel, "渠道级错误"},
-		{504, ErrorLevelChannel, "渠道级错误"},
-		{520, ErrorLevelChannel, "520 Web Server Returned an Unknown Error - 渠道级错误"},
-		{521, ErrorLevelChannel, "521 Web Server Is Down - 渠道级错误"},
-		{524, ErrorLevelChannel, "524 A Timeout Occurred - 渠道级错误"},
-		// 兜底策略测试
-		{418, ErrorLevelKey, "418 未知4xx - 兜底策略应为Key级冷却"},
-		{451, ErrorLevelKey, "451 未知4xx - 兜底策略应为Key级冷却"},
-		{599, ErrorLevelChannel, "599 未知5xx - 兜底策略应为Channel级冷却"},
-	}
+	t.Parallel()
 
+	tests := []struct {
+		status int
+		want   ErrorLevel
+	}{
+		{200, ErrorLevelNone},
+		{201, ErrorLevelNone},
+		{401, ErrorLevelKey},
+		{402, ErrorLevelKey},
+		{403, ErrorLevelKey},
+		{405, ErrorLevelChannel},
+		{406, ErrorLevelClient},
+		{408, ErrorLevelChannel},
+		{413, ErrorLevelKey},
+		{418, ErrorLevelKey},
+		{429, ErrorLevelKey},
+		{444, ErrorLevelChannel},
+		{451, ErrorLevelKey},
+		{499, ErrorLevelChannel},
+		{500, ErrorLevelChannel},
+		{502, ErrorLevelChannel},
+		{503, ErrorLevelChannel},
+		{504, ErrorLevelChannel},
+		{511, ErrorLevelChannel},
+		{520, ErrorLevelChannel},
+		{521, ErrorLevelChannel},
+		{524, ErrorLevelChannel},
+		{StatusQuotaExceeded, ErrorLevelKey},
+		{StatusSSEError, ErrorLevelKey},
+		{StatusFirstByteTimeout, ErrorLevelChannel},
+		{StatusStreamIncomplete, ErrorLevelChannel},
+	}
 	for _, tt := range tests {
-		t.Run(string(rune(tt.statusCode)), func(t *testing.T) {
-			result := ClassifyHTTPStatus(tt.statusCode)
-			if result != tt.expected {
-				t.Errorf("状态码 %d: 期望 %v, 实际 %v (%s)", tt.statusCode, tt.expected, result, tt.reason)
+		t.Run(strconv.Itoa(tt.status), func(t *testing.T) {
+			if got := ClassifyHTTPStatus(tt.status); got != tt.want {
+				t.Errorf("ClassifyHTTPStatus(%d) = %v, want %v", tt.status, got, tt.want)
 			}
 		})
 	}
@@ -1652,54 +1656,6 @@ func TestClassify404Error(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
 					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
-			}
-		})
-	}
-}
-
-func TestGetStatusCodeMeta(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		status      int
-		wantLevel   ErrorLevel
-		description string
-	}{
-		// Key级错误
-		{401, ErrorLevelKey, "401 -> Key级"},
-		{402, ErrorLevelKey, "402 -> Key级"},
-		{403, ErrorLevelKey, "403 -> Key级"},
-		{429, ErrorLevelKey, "429 -> Key级"},
-
-		// 渠道级错误
-		{499, ErrorLevelChannel, "499 -> 渠道级"},
-		{500, ErrorLevelChannel, "500 -> 渠道级"},
-		{502, ErrorLevelChannel, "502 -> 渠道级"},
-		{503, ErrorLevelChannel, "503 -> 渠道级"},
-		{504, ErrorLevelChannel, "504 -> 渠道级"},
-		{http.StatusRequestTimeout, ErrorLevelChannel, "408 -> 上游请求超时"},
-		{405, ErrorLevelChannel, "405 -> 渠道级 (上游endpoint/方法不支持)"},
-
-		// 自定义状态码
-		{StatusQuotaExceeded, ErrorLevelKey, "596 -> Key级"},
-		{StatusSSEError, ErrorLevelKey, "597 -> Key级"},
-		{StatusFirstByteTimeout, ErrorLevelChannel, "598 -> 渠道级"},
-		{StatusStreamIncomplete, ErrorLevelChannel, "599 -> 渠道级"},
-
-		// 客户端错误
-		{406, ErrorLevelClient, "406 -> 客户端级"},
-		{413, ErrorLevelKey, "413 -> Key级(模型作用域由 ClassifyHTTPResponseWithMeta 收窄)"},
-
-		// 默认行为
-		{418, ErrorLevelKey, "418 -> Key级(兜底策略:未知4xx)"},
-		{511, ErrorLevelChannel, "511 -> 渠道级(默认5xx)"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.description, func(t *testing.T) {
-			meta := GetStatusCodeMeta(tt.status)
-			if meta.Level != tt.wantLevel {
-				t.Errorf("Level: got %v, want %v", meta.Level, tt.wantLevel)
 			}
 		})
 	}

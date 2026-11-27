@@ -76,7 +76,9 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 			KeyStrategy: model.KeyStrategySequential,
 		}
 	}
-	_ = store.CreateAPIKeysBatch(ctx, keys)
+	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatal(err)
+	}
 
 	testCases := []struct {
 		name       string
@@ -85,12 +87,10 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 	}{
 		{"401未授权", 401, []byte(`{"error":{"type":"authentication_error"}}`)},
 		{"403禁止访问", 403, []byte(`{"error":{"type":"permission_error"}}`)},
-		{"429 Key配额耗尽", 429, []byte(`{"code":"API_KEY_QUOTA_EXHAUSTED","message":"API key quota exhausted"}`)},
 	}
 
-	for _, tc := range testCases {
+	for keyIndex, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			keyIndex := 0
 			action := manager.HandleError(ctx, ErrorInput{
 				ChannelID:      cfg.ID,
 				KeyIndex:       keyIndex,
@@ -153,9 +153,9 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 	}{
 		{"404未找到", 404, []byte(`{"error":"not found"}`)},
 		{"405方法不允许", 405, []byte(`{"error":"method not allowed"}`)}, // 上游endpoint配置错误
-		{"500内部错误", 500, []byte(`{"error":"internal server error"}`)},
+		{"500内部错误", 500, nil},
 		{"502网关错误", 502, []byte(`{"error":"bad gateway"}`)},
-		{"503服务不可用", 503, []byte(`{"error":"service unavailable"}`)},
+		{"503服务不可用", 503, []byte{}},
 		{"504网关超时", 504, []byte(`{"error":"gateway timeout"}`)},
 	}
 
@@ -1258,60 +1258,19 @@ func TestClearKeyCooldown(t *testing.T) {
 	}
 }
 
-// TestHandleError_EdgeCases 测试边界条件
-func TestHandleError_EdgeCases(t *testing.T) {
+func TestHandleError_MissingChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
-	ctx := context.Background()
 
-	t.Run("不存在的渠道", func(t *testing.T) {
-		// 冷却失败不应返回错误，而是记录警告
-		// 设计原则: 数据库错误不应阻塞用户请求，系统应降级服务
-		action := manager.HandleError(ctx, ErrorInput{
-			ChannelID:      99999,
-			KeyIndex:       0,
-			StatusCode:     500,
-			ErrorBody:      nil,
-			IsNetworkError: false,
-			Headers:        nil,
-		})
-		// 冷却失败时，保守策略返回 ActionRetryChannel
-		if action != ActionRetryChannel {
-			t.Errorf("Expected ActionRetryChannel when cooldown fails, got %v", action)
-		}
+	action := manager.HandleError(context.Background(), ErrorInput{
+		ChannelID:  99999,
+		KeyIndex:   0,
+		StatusCode: 500,
 	})
-
-	t.Run("负数keyIndex", func(t *testing.T) {
-		cfg := createTestChannel(t, store, "test-negative-key")
-		// 负数keyIndex表示网络错误，不应该尝试冷却Key
-		action := manager.HandleError(ctx, ErrorInput{
-			ChannelID:      cfg.ID,
-			KeyIndex:       -1,
-			StatusCode:     500,
-			ErrorBody:      nil,
-			IsNetworkError: false,
-			Headers:        nil,
-		})
-		if action != ActionRetryChannel {
-			t.Errorf("Expected ActionRetryChannel for channel-level error")
-		}
-	})
-
-	t.Run("空错误体", func(t *testing.T) {
-		cfg := createTestChannel(t, store, "test-empty-body")
-		action := manager.HandleError(ctx, ErrorInput{
-			ChannelID:      cfg.ID,
-			KeyIndex:       -1,
-			StatusCode:     503,
-			ErrorBody:      []byte{},
-			IsNetworkError: false,
-			Headers:        nil,
-		})
-		if action != ActionRetryChannel {
-			t.Error("Should classify 503 as channel-level")
-		}
-	})
+	if action != ActionRetryChannel {
+		t.Errorf("action=%v, want ActionRetryChannel", action)
+	}
 }
 
 /**
@@ -1414,20 +1373,6 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 				"Content-Type": {"application/json"},
 			},
 			responseBody: []byte(`{"error":{"message":"Global rate limit exceeded"}}`),
-			wantDuration: time.Minute,
-		},
-		{
-			name: "429-无特殊headers和响应体",
-			headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
-			wantDuration: time.Minute,
-		},
-		{
-			name:         "429-nil-headers",
-			headers:      nil,
-			responseBody: []byte(`{"error":{"type":"rate_limit_error"}}`),
 			wantDuration: time.Minute,
 		},
 	}

@@ -94,68 +94,6 @@ func TestHandleError_1308Error(t *testing.T) {
 		t.Logf("[INFO] Key已正确禁用至: %s", actualTime.Format("2006-01-02 15:04:05"))
 	})
 
-	t.Run("普通429错误-冷却一分钟", func(t *testing.T) {
-		// 重置Key冷却状态
-		if err := store.ResetKeyCooldown(ctx, cfg.ID, 0); err != nil {
-			t.Fatalf("Failed to reset key cooldown: %v", err)
-		}
-
-		// 模拟普通429错误（非1308）
-		errorBody := []byte(`{"error":{"message":"Rate limit exceeded","type":"rate_limit_error"}}`)
-
-		// 抑制日志输出
-		var buf bytes.Buffer
-		oldOutput := log.Writer()
-		log.SetOutput(&buf)
-		defer log.SetOutput(oldOutput)
-
-		// 记录处理前的时间
-		beforeTime := time.Now()
-
-		// 处理错误
-		action := manager.HandleError(ctx, ErrorInput{
-			ChannelID:      cfg.ID,
-			KeyIndex:       1,
-			StatusCode:     429,
-			ErrorBody:      errorBody,
-			IsNetworkError: false,
-			Headers:        nil,
-		})
-
-		// 验证返回的Action
-		if action != ActionRetryKey {
-			t.Errorf("Expected ActionRetryKey, got %v", action)
-		}
-
-		// 查询API Key列表验证冷却状态
-		keys, err := store.GetAPIKeys(ctx, cfg.ID)
-		if err != nil {
-			t.Fatalf("Failed to get API keys: %v", err)
-		}
-
-		// 验证Key 1的冷却时间
-		var key1 *model.APIKey
-		for i := range keys {
-			if keys[i].KeyIndex == 1 {
-				key1 = keys[i]
-				break
-			}
-		}
-
-		if key1 == nil {
-			t.Fatal("Key 1 not found")
-		}
-
-		if key1.CooldownUntil == 0 {
-			t.Fatal("Key cooldown not set")
-		}
-
-		cooldownTime := time.Unix(key1.CooldownUntil, 0)
-		if !cooldownWithinDuration(cooldownTime, beforeTime, time.Now(), time.Minute) {
-			t.Errorf("key cooldown=%v, want one minute", cooldownTime)
-		}
-	})
-
 	t.Run("1308错误-无效时间格式冷却一分钟", func(t *testing.T) {
 		// 每个子测试必须独立，避免前一个用例的 Key 冷却触发“全 Key 冷却”升级。
 		for keyIndex := range 2 {

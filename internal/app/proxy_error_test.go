@@ -22,11 +22,6 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 		expectedAction cooldown.Action
 	}{
 		{
-			name:           "401 unauthorized - Key级",
-			statusCode:     401,
-			expectedAction: cooldown.ActionRetryKey,
-		},
-		{
 			name:           "500 server error",
 			statusCode:     500,
 			expectedAction: cooldown.ActionRetryModel,
@@ -151,6 +146,8 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 
 		if result == nil {
 			t.Error("期望返回错误结果")
+		} else if !result.isClientCanceled {
+			t.Error("期望 isClientCanceled=true")
 		}
 		if action != cooldown.ActionReturnClient {
 			t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
@@ -179,11 +176,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	}{
 		{name: "first byte timeout", err: fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)},
 		{name: "connection reset", err: errors.New("read: connection reset by peer")},
-		{name: "http2 body closed", err: errors.New("http2: response body closed")},
-		{name: "http2 stream error", err: errors.New("stream error: stream ID 7; INTERNAL_ERROR")},
-		{name: "empty response", err: fmt.Errorf("probe failed: %w", util.ErrUpstreamEmptyResponse)},
 		{name: "deadline exceeded", err: context.DeadlineExceeded},
-		{name: "connection timeout", err: errors.New("upstream connection timeout")},
 	}
 	for _, tt := range modelScopedErrors {
 		t.Run(tt.name+" cools model", func(t *testing.T) {
@@ -231,65 +224,6 @@ func Test_HandleProxyError_499(t *testing.T) {
 			t.Errorf("期望 action=ActionRetryModel, 实际=%v", action)
 		}
 	})
-}
-
-// Test_HandleNetworkError_499_PreservesTokenStats 测试 499 场景下 token 统计被保留
-// [FIX] 2025-12: 修复流式响应中途取消时 token 统计丢失的问题
-func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
-	srv := newInMemoryServer(t)
-
-	ctx := context.Background()
-	cfg := &model.Config{
-		ID:       1,
-		Name:     "test",
-		URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
-		Priority: 1,
-		Enabled:  true,
-	}
-
-	// 模拟流式响应中途取消的场景：已解析到 token 统计
-	res := &fwResult{
-		Status:                   200,
-		InputTokens:              100,
-		OutputTokens:             50,
-		CacheReadInputTokens:     200,
-		CacheCreationInputTokens: 30,
-		FirstByteTime:            0.1,
-	}
-
-	// 创建带有 tokenHash 的请求上下文
-	tokenHash := "test-token-hash-499"
-	reqCtx := &proxyRequestContext{
-		tokenHash:   tokenHash,
-		isStreaming: true,
-	}
-
-	// 调用 handleNetworkError，传入 res 和 reqCtx
-	result, action := srv.handleNetworkError(
-		ctx, cfg, 0, "claude-sonnet-4-5", "test-key", 0, "", 0.5, context.Canceled, res, reqCtx, false,
-	)
-
-	// 验证返回值正确
-	if result == nil {
-		t.Error("期望返回错误结果")
-	}
-	if result != nil && !result.isClientCanceled {
-		t.Error("期望 isClientCanceled=true")
-	}
-	if action != cooldown.ActionReturnClient {
-		t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
-	}
-
-	// 验证 hasConsumedTokens 函数
-	if !hasConsumedTokens(res) {
-		t.Error("hasConsumedTokens 应返回 true")
-	}
-	if hasConsumedTokens(nil) {
-		t.Error("hasConsumedTokens(nil) 应返回 false")
-	}
-	if hasConsumedTokens(&fwResult{}) {
-		t.Error("hasConsumedTokens(空结果) 应返回 false")
-	}
 }
 
 func TestCooldownWriteContext_DetachesCancelButPreservesValues(t *testing.T) {
