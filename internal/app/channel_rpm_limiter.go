@@ -238,10 +238,12 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 			return nil, readErr
 		}
 		if len(body) > 0 {
-			if target.provider == model.AuthTypeQoderOAuth {
-				plainReq = logicalReq
-			} else if target.provider != "" {
-				plainReq = cloneRequestWithBody(req, body)
+			if s.compressionFallbackActive(target) {
+				if target.provider == model.AuthTypeQoderOAuth {
+					plainReq = logicalReq
+				} else if target.provider != "" {
+					plainReq = cloneRequestWithBody(req, body)
+				}
 			}
 			compressRequestBody(req, encoding, body)
 		} else {
@@ -256,7 +258,11 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	resp, err := s.sendInferenceRequest(cfg, req)
 	verifyPlain := encoding == "" && target.provider != ""
 	onRead, _ := req.Context().Value(inferenceProbeReadKey{}).(func())
-	if err == nil && plainReq != nil && inferenceCompressionRejected(cfg, resp, onRead) && req.Context().Err() == nil {
+	rejected, ambiguous := false, false
+	if err == nil && plainReq != nil {
+		rejected, ambiguous = inferenceCompressionRejected(cfg, resp, onRead)
+	}
+	if rejected && req.Context().Err() == nil {
 		// Both uploads share a concurrency slot. Each actual POST consumes its own RPM.
 		if s.reserveChannelRPM(cfg).allowed {
 			_ = resp.Body.Close()
@@ -266,6 +272,12 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 			}
 			if err == nil {
 				resp, err = s.sendInferenceRequest(cfg, plainReq)
+			}
+			if err == nil && ambiguous {
+				if _, plainAmbiguous := inferenceCompressionRejected(cfg, resp, onRead); plainAmbiguous {
+					// The plain upload hit the same rejection, so compression was not the cause.
+					s.compressionFallbackPaused.Store(target, time.Now().Add(compressionFallbackPause))
+				}
 			}
 			verifyPlain = true
 		} else {
@@ -295,6 +307,31 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		}
 	}
 	return resp, nil
+}
+
+/**
+ * @brief 压缩请求遭 Qoder 流内 403、明文重发也同样被拒后，暂停该目标压缩回退的时长。
+ * @details 拒绝与编码无关时（如账号被风控），每个请求都回退会使上游调用翻倍；
+ * 到期后恢复探测，以便上游此后真的拒收压缩时仍能回退。
+ */
+const compressionFallbackPause = 10 * time.Minute
+
+/**
+ * @brief 判断压缩被拒时是否探测并以明文重发。
+ * @param target 压缩回退目标。
+ * @return 未暂停或暂停已到期时为 true。
+ * @note 并发安全；到期时删除暂停记录。
+ */
+func (s *Server) compressionFallbackActive(target requestCompressionTarget) bool {
+	until, paused := s.compressionFallbackPaused.Load(target)
+	if !paused {
+		return true
+	}
+	if time.Now().Before(until.(time.Time)) {
+		return false
+	}
+	s.compressionFallbackPaused.CompareAndDelete(target, until)
+	return true
 }
 
 /**

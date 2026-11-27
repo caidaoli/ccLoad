@@ -703,6 +703,52 @@ func TestQoderInferenceCompressionFallback(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 明文重发也被拒时暂停压缩回退，避免每个请求都翻倍发送；到期后恢复回退。
+ * @param t 测试上下文。
+ */
+func TestQoderCompressionFallbackPausesWhenPlainAlsoRejected(t *testing.T) {
+	credential := qoderIntegrationCredential(t, "cn", "dt-forbidden-secret")
+	env := setupProxyTestEnv(t, []testChannel{{name: "qoder-forbidden", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
+	var mu sync.Mutex
+	var encodings []string
+	qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/algo/api/v2/model/list" {
+			return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+		}
+		mu.Lock()
+		encodings = append(encodings, r.Header.Get("Content-Encoding"))
+		mu.Unlock()
+		response := qoderIntegrationResponse(r, 200, "data: {\"statusCodeValue\":403,\"body\":{\"message\":\"Forbidden\"}}\n\n")
+		response.Header.Set("Content-Type", "text/event-stream")
+		return response, nil
+	})
+	send := func() {
+		t.Helper()
+		req := newJSONRequest(t, "POST", "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": []any{map[string]string{"role": "user", "content": "hello"}}, "stream": true})
+		req.Header.Set("Authorization", "Bearer test-api-key")
+		w := httptest.NewRecorder()
+		env.engine.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("proxy status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	send()
+	send()
+	send()
+	if got, want := strings.Join(encodings, ","), "zstd,,zstd,zstd"; got != want {
+		t.Fatalf("upstream Content-Encoding sequence = %q, want %q", got, want)
+	}
+	env.server.compressionFallbackPaused.Range(func(key, _ any) bool {
+		env.server.compressionFallbackPaused.Store(key, time.Now().Add(-time.Second))
+		return true
+	})
+	send()
+	if got, want := strings.Join(encodings, ","), "zstd,,zstd,zstd,zstd,"; got != want {
+		t.Fatalf("after pause expiry Content-Encoding sequence = %q, want %q", got, want)
+	}
+}
+
 func TestQoderProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
 	credential := qoderIntegrationCredential(t, "cn", "dt-rejected-secret")
 	env := setupProxyTestEnv(t, []testChannel{{name: "qoder-refresh", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})

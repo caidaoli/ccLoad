@@ -23,15 +23,16 @@ const inferenceCompressionProbeSize = 16 << 10
  * @param resp 已完成提供商响应归一化的 HTTP 响应，探测后保留已读内容和读取错误。
  * @param onRead 每次收到字节时通知上游有活动；无空闲计时器时为 nil。
  * @return 命中编码拒绝或实测的提供商拒绝时为 true。
+ * @return 拒绝仅为 Qoder 流内 403 时为 true；该拒绝也可能来自账号或签名本身，无法据此确认压缩是原因。
  * @note 首个模型帧（含角色/用量元数据）即交回正常转发，避免延迟首包并避免重放已开始生成的请求。
  */
-func inferenceCompressionRejected(cfg *model.Config, resp *http.Response, onRead func()) bool {
+func inferenceCompressionRejected(cfg *model.Config, resp *http.Response, onRead func()) (bool, bool) {
 	status := resp.StatusCode
 	if status == http.StatusUnsupportedMediaType {
-		return true
+		return true, false
 	}
 	if status != http.StatusBadRequest && status != http.StatusForbidden && (status < 200 || status >= 300) {
-		return false
+		return false, false
 	}
 	original := resp.Body
 	var prefix []byte
@@ -47,7 +48,7 @@ func inferenceCompressionRejected(cfg *model.Config, resp *http.Response, onRead
 		prefix = append(prefix, buf[:n]...)
 		readErr = err
 		if err != nil && err != io.EOF {
-			return false
+			return false, false
 		}
 		if !sse {
 			sse, _ = classifySSEPrefix(prefix)
@@ -68,7 +69,7 @@ func inferenceCompressionRejected(cfg *model.Config, resp *http.Response, onRead
 					continue
 				}
 				if !json.Valid(data) {
-					return false
+					return false, false
 				}
 				root := gjson.ParseBytes(data)
 				if isHeartbeatEventType(root.Get("type").Str) {
@@ -82,14 +83,14 @@ func inferenceCompressionRejected(cfg *model.Config, resp *http.Response, onRead
 				return rejectsInferenceEncoding(cfg, status, false, "", gjson.ParseBytes(data))
 			}
 			if err == io.EOF && status >= 400 {
-				return isInferenceEncodingRejection("", strings.ToLower(string(data)))
+				return isInferenceEncodingRejection("", strings.ToLower(string(data))), false
 			}
 		}
 		if err != nil || n == 0 {
 			break
 		}
 	}
-	return false
+	return false, false
 }
 
 /**
@@ -100,17 +101,18 @@ func inferenceCompressionRejected(cfg *model.Config, resp *http.Response, onRead
  * @param event SSE 事件名；HTTP JSON 未声明事件。
  * @param root 完整 JSON 负载。
  * @return 错误明确指向编码，或符合实测的流内权限拒绝。
+ * @return 命中的是流内权限拒绝而非明确的编码错误时为 true。
  */
-func rejectsInferenceEncoding(cfg *model.Config, status int, sse bool, event string, root gjson.Result) bool {
+func rejectsInferenceEncoding(cfg *model.Config, status int, sse bool, event string, root gjson.Result) (bool, bool) {
 	if root.Get("choices").IsArray() {
-		return false
+		return false, false
 	}
 	var node gjson.Result
 	var businessCode int64
 	if cfg.UsesCodeBuddyOAuth() {
 		node, businessCode = codeBuddyBusinessNode(root, 6)
 		if businessCode != 0 && businessCode != 11101 {
-			return false
+			return false, false
 		}
 	}
 	errNode := root.Get("error")
@@ -120,22 +122,22 @@ func rejectsInferenceEncoding(cfg *model.Config, status int, sse bool, event str
 			status = int(errNode.Get("status").Int())
 		}
 		if status == 0 && event != "error" && businessCode == 0 && !isErrorPayload(root.Raw, false) {
-			return false
+			return false, false
 		}
 	}
 	switch status {
 	case http.StatusUnsupportedMediaType:
-		return true
+		return true, false
 	case 0, http.StatusBadRequest, http.StatusForbidden:
 	default:
-		return false
+		return false, false
 	}
 	if sse && cfg.UsesQoderOAuth() && status == http.StatusForbidden && errNode.Get("code").Str == "permission_denied" {
 		message := strings.TrimSpace(errNode.Get("message").Str)
 		envelope := gjson.Parse(message)
 		if strings.EqualFold(message, "signature invalid") || strings.EqualFold(message, http.StatusText(http.StatusForbidden)) ||
 			envelope.Get("statusCode").Str == "FORBIDDEN" && envelope.Get("statusCodeValue").Int() == http.StatusForbidden {
-			return true
+			return true, true
 		}
 	}
 	for _, detail := range [...]gjson.Result{node, errNode, root} {
@@ -144,11 +146,11 @@ func rejectsInferenceEncoding(cfg *model.Config, status int, sse bool, event str
 			if isInferenceEncodingRejection(detail.Get("code").Str, message) ||
 				businessCode == 11101 && strings.Contains(message, "unmarshal chat params failed") &&
 					strings.Contains(message, "invalid character") && strings.Contains(message, "looking for beginning of value") {
-				return true
+				return true, false
 			}
 		}
 	}
-	return false
+	return false, false
 }
 
 /**

@@ -141,6 +141,7 @@ type Server struct {
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning sync.Map // channel ID -> in-flight detection
 	plainRequestTargets           sync.Map ///< requestCompressionTarget -> bool：true 为已确认使用明文，false 为等待下一次 RPM 准入来验证明文。
+	compressionFallbackPaused     sync.Map ///< requestCompressionTarget -> time.Time：明文也遭同样拒绝后暂停回退的截止时刻。
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh                   chan tokenStatsUpdate
