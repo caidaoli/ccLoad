@@ -6,6 +6,7 @@ ccLoad 是 Claude/OpenAI/Gemini/Codex 多协议 API 网关，负责渠道选择�
 
 - 按下表读取与当前改动有关的契约。新增或修正规则写入对应专题，根文件只保留通用约束与入口。
 - 对照、移植或同步 CLIProxyAPI 新版本用 `/sync-cliproxy-core`（Codex 用 `$sync-cliproxy-core`），覆盖转换快照和 executor/auth/handlers 运行时修复。
+- 修复或改动代理、冷却、协议转换、provider wire 与认证行为前，先在 CLIProxyAPI（必要时 sub2api）最新稳定 tag 中查找同类实现；上游已有修复且不在当前基线内时，走上述 skill 同步到包含它的 tag，不单独挑拣移植。
 - 上游参照源码优先用本机 checkout：CLIProxyAPI `~/Source/go/CLIProxyAPI`、sub2api `~/Source/go/sub2api`（`~/Source` 即 `~/Share/Source`）。checkout 不钉提交，对照时按专题文档或 `internal/protocol/cliproxy/UPSTREAM.md` 记录的提交用 `git -C <repo> show <commit>:<path>` 读，不读 HEAD；本机不存在时按记录的仓库与提交获取。
 
 ## 命令与验证
