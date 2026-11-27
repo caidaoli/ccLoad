@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/util"
@@ -34,6 +36,7 @@ const (
 	DefaultUpstreamURL   = "https://api.anthropic.com"
 	defaultTokenTimeout  = 60 * time.Second
 	maxTokenResponseSize = 1 << 20
+	unsentRetryDelay     = time.Second ///< 请求未写出时重试前的等待，避开同一瞬时的握手故障
 )
 
 // PKCE is one S256 verifier/challenge pair.
@@ -193,6 +196,43 @@ func (s *Service) validate() error {
 	return nil
 }
 
+/**
+ * @brief 向令牌端点发送一次 JSON POST；请求未写出即失败时重试一次
+ * @param ctx 请求上下文；取消时停止重试
+ * @param body 已编码的令牌请求体
+ * @return 令牌端点响应，调用方须关闭 Body
+ * @return 传输失败时返回包装后的错误
+ * @details refresh token 一次性有效：请求一旦写出，丢失响应也可能已被消费，
+ * 重放会把网络抖动变成 invalid_grant，所以只重试拨号、TLS 握手等写出前的失败。
+ */
+func (s *Service) postToken(ctx context.Context, body []byte) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		var wrote atomic.Bool
+		trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { wrote.Store(true) }}
+		request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, s.TokenURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("build Anthropic token request: %w", err)
+		}
+		request.Header.Set("Accept", "application/json, text/plain, */*")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("User-Agent", "axios/1.13.6")
+		response, err := s.Client.Do(request)
+		if err == nil {
+			return response, nil
+		}
+		if attempt > 0 || wrote.Load() {
+			return nil, fmt.Errorf("anthropic token request: %w", err)
+		}
+		timer := time.NewTimer(unsentRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("anthropic token request: %w", err)
+		case <-timer.C:
+		}
+	}
+}
+
 func (s *Service) requestToken(ctx context.Context, payload map[string]string) (*Credential, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
@@ -206,16 +246,9 @@ func (s *Service) requestToken(ctx context.Context, payload map[string]string) (
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, s.TokenURL, bytes.NewReader(body))
+	response, err := s.postToken(requestCtx, body)
 	if err != nil {
-		return nil, fmt.Errorf("build Anthropic token request: %w", err)
-	}
-	request.Header.Set("Accept", "application/json, text/plain, */*")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", "axios/1.13.6")
-	response, err := s.Client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic token request: %w", err)
+		return nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxTokenResponseSize))

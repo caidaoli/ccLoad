@@ -3,10 +3,13 @@ package anthropicauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -68,5 +71,58 @@ func TestExchangeAndRefreshUseJSONAndRotatedRefreshToken(t *testing.T) {
 	refresh := <-requests
 	if refresh["grant_type"] != "refresh_token" || refresh["refresh_token"] != "old-refresh" || len(refresh) != 3 {
 		t.Fatalf("refresh payload = %v", refresh)
+	}
+}
+
+func TestRefreshRetriesOnceWhenRequestWasNotSent(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600}`)
+	}))
+	defer server.Close()
+
+	var dials atomic.Int32
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			return nil, errors.New("uTLS handshake: EOF")
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	service := NewService(&http.Client{Transport: transport})
+	service.TokenURL = server.URL
+
+	credential, err := service.Refresh(context.Background(), "old-refresh")
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if credential.RefreshToken != "rotated-refresh" || dials.Load() != 2 || requests.Load() != 1 {
+		t.Fatalf("refresh token=%q dials=%d requests=%d", credential.RefreshToken, dials.Load(), requests.Load())
+	}
+}
+
+func TestRefreshDoesNotReplayAfterRequestWasSent(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.ReadAll(r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	service := NewService(server.Client())
+	service.TokenURL = server.URL
+	if _, err := service.Refresh(context.Background(), "single-use-refresh"); err == nil {
+		t.Fatal("Refresh() error = nil, want transport error")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("token endpoint requests = %d, want 1", got)
 	}
 }

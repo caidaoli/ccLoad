@@ -208,6 +208,7 @@
 
 ## Anthropic / Claude Code
 
+- **凭证刷新**（`anthropic_credentials.go`、`anthropicauth/service.go`）：请求取凭证时在 `expired` 前 5 分钟单飞刷新，无后台任务；401 用被拒 token 强制刷新并重试一次。refresh token 一次性有效，令牌请求只在写出前失败（拨号、uTLS 握手）时等 1 秒重试一次；已写出后的传输或解码错误可能已消费 token，不重放，与 CLIProxyAPI `isClaudeRefreshRetryable` 一致。
 - **advisor 历史归属**（`anthropic_advisor.go`，参照 CLIProxyAPI `91a3f455e`）：Messages 响应中的工具 ID 按下游令牌和本次实际 API Key 或 OAuth 账号登记。同账号正常刷新并补齐身份信息时保留原归属。JSON message 与 SSE message_start 会确认最终出站历史；count_tokens 只使用已知归属。切换凭证时在渠道正文规则之前清理其他凭证的 advisor 块、嵌套加密结果及删空的消息，保留普通工具调用的结果配对。归属表在进程内保存最多 4096 项，空闲 24 小时过期，重启后依据新的成功响应重新识别。
 - **advisor 模型后缀**（CLIProxyAPI `8bdffcadc`）：Anthropic Messages（流式/非流式）与 count_tokens 在渠道 BodyRules 前，按 ccLoad 的已知等级/特殊值/非负预算规则去除 `advisor_*` 工具各自 `model` 的思考后缀；未知括号后缀与非 advisor 工具原样保留，不借用顶层模型。API Key、OAuth 与原生调用方共用，渠道规则覆盖优先，重试沿用最终 wire，不再次改写。
 - **工具属性名回退**（`anthropic_request.go:normalizeAnthropicToolPropertyNames`，CLIProxyAPI `f0c9c2d01`）：Claude 拒收不匹配 `^[a-zA-Z0-9_.-]{1,64}$` 的 `input_schema` 属性名，原样发出必然 400，删工具又会让客户端每轮重发后仍不可用。Messages 与 count_tokens 在 advisor 后缀之后、MCP 别名与渠道 BodyRules 之前，把 `tools[]` 及 `tool_addition` 内联定义中命中的客户端工具（无 type 或 `type=custom`）改为：description 追加上游逐字前缀与原 schema 原文，`input_schema` 置 `{"type":"object"}`，删除 `strict`；历史 `tool_use` 与响应不改写。仅在 JSON Schema 子 schema 位置检查属性名，enum/const 等数据值不算；递归超过 256 层按回退处理。服务端工具、Z.ai Coding Plan 与已应用渠道规则的重试 wire 不处理。
