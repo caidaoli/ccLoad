@@ -578,14 +578,70 @@ async function continueOpenCodeChannel(event) {
 }
 
 /**
+ * @brief 决策渠道预设：URL 与 decision-auto 的目标模型，模型前缀决定后端决策协议与端点
+ * @details custom 不预填 URL 和目标模型，仍保留 decision-auto 行供用户补全。
+ */
+const decisionChannelPresets = {
+  typesafe: { name: 'TypeSafe', url: 'https://api.typesafe.ai', model: 'jev-1.14.0' },
+  gemini: { name: 'Gemini-Decision', url: 'https://generativelanguage.googleapis.com', model: 'gemini-decision-1' },
+  openai: { name: 'OpenAI-Decision', url: 'https://api.openai.com', model: 'gpt-6-luna' },
+  aliyun: { name: 'Aliyun-Decision', url: 'https://dashscope.aliyuncs.com', model: 'decision-model-preview' },
+  vllm_sr: { name: 'vllm-sr', url: 'https://app.vllm-sr.ai', model: 'vllm-sr/d3-ultra' },
+  custom: { name: '', url: '', model: '' }
+};
+
+/**
+ * @brief 打开决策渠道预设对话框，每次打开重置为 TypeSafe 并清空 Key
+ */
+function openDecisionChannelDialog() {
+  const dialog = document.getElementById('decisionChannelDialog');
+  const form = document.getElementById('decisionChannelForm');
+  if (!dialog.dataset.bound) {
+    form.addEventListener('submit', continueDecisionChannel);
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) closeDecisionChannelDialog();
+    });
+    dialog.dataset.bound = '1';
+  }
+  document.getElementById('decisionChannelPreset').value = 'typesafe';
+  document.getElementById('decisionChannelKey').value = '';
+  if (!dialog.open) dialog.showModal();
+}
+
+/**
+ * @brief 关闭决策渠道预设对话框，不改动渠道编辑器
+ */
+function closeDecisionChannelDialog() {
+  const dialog = document.getElementById('decisionChannelDialog');
+  if (dialog.open) dialog.close();
+}
+
+/**
+ * @brief 确认决策预设：打开 system_one 渠道编辑器并预填 URL、Key 与 decision-auto 映射
+ * @param event 表单提交事件
+ * @return 编辑器初始化完成的 Promise；对话框已关闭或预设未知时不做任何事
+ * @note 预填内容属于初始状态，不标记为未保存修改。
+ */
+async function continueDecisionChannel(event) {
+  event.preventDefault();
+  const dialog = document.getElementById('decisionChannelDialog');
+  const presetName = document.getElementById('decisionChannelPreset').value;
+  const apiKey = document.getElementById('decisionChannelKey').value.trim();
+  if (!dialog.open || !Object.hasOwn(decisionChannelPresets, presetName)) return;
+  closeDecisionChannelDialog();
+  await showAddModal('system_one', presetName, apiKey);
+}
+
+/**
  * @brief 打开新建渠道表单；OAuth 渠道通过登录或导入创建。
  * @param authType 新建入口指定的认证方式，创建后不可改。
- * @param channelPreset 可选的渠道预设名称。
+ * @param channelPreset 可选的渠道预设名称；system_one 查决策预设，其余查 OpenCode 预设。
+ * @param apiKey 可选的首个 API Key。
  * @return 表单初始化完成的 Promise。
  */
-async function showAddModal(authType = 'api_key', channelPreset = '') {
+async function showAddModal(authType = 'api_key', channelPreset = '', apiKey = '') {
   channelEditorLoadVersion++;
-  const preset = openCodeChannelPresets[channelPreset];
+  const preset = (authType === 'system_one' ? decisionChannelPresets : openCodeChannelPresets)[channelPreset];
   copyingChannelId = null;
   editingChannelId = null;
   channelEditorETag = null;
@@ -611,7 +667,7 @@ async function showAddModal(authType = 'api_key', channelPreset = '') {
   document.getElementById('channelScheduledCheckStartTime').value = '00:00';
 	await ensureProtocolTransformModeCombobox('auto');
 
-  redirectTableData = [];
+  redirectTableData = editingChannelAuthType === 'system_one' && preset ? [{ model: 'decision-auto', redirect_model: preset.model }] : [];
   selectedModelIndices.clear();
   currentModelFilter = '';
   const modelFilterInput = document.getElementById('modelFilterInput');
@@ -626,7 +682,7 @@ async function showAddModal(authType = 'api_key', channelPreset = '') {
   renderInlineURLTable();
   clearChannelDuplicateHint();
 
-  inlineKeyTableData = [makeInlineKeyRow()];
+  inlineKeyTableData = [makeInlineKeyRow(apiKey)];
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
@@ -4299,6 +4355,9 @@ if (typeof module !== 'undefined' && module.exports) {
     openOpenCodeChannelDialog,
     closeOpenCodeChannelDialog,
     continueOpenCodeChannel,
+    openDecisionChannelDialog,
+    closeDecisionChannelDialog,
+    continueDecisionChannel,
     testRedirectModel,
     toggleModelDisabledState
   };

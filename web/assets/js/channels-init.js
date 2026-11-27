@@ -172,7 +172,8 @@ function initChannelsPageActions() {
         'show-add-modal': () => showAddModal(),
         'open-opencode-channel': () => openOpenCodeChannelDialog(),
         'close-opencode-channel': () => closeOpenCodeChannelDialog(),
-        'show-add-system-one-modal': () => showAddModal('system_one'),
+        'open-decision-channel': () => openDecisionChannelDialog(),
+        'close-decision-channel': () => closeDecisionChannelDialog(),
         'retry-load-channels': (button) => {
           button.disabled = true;
           void reloadChannelsList();

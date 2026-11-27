@@ -47,6 +47,7 @@ type usageAccumulator struct {
 	imageGenerationToolModel string
 	toolUsageSeen            bool
 	imageFallbackItemCosts   map[string]float64
+	unknownUsageLogged       bool ///< 未知 usage 格式每个响应只告警一次，流式分块逐个携带 usage 时避免刷屏
 }
 
 /**
@@ -633,7 +634,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 			return nil
 		}
 		if eventType == "error" || eventType == "response.failed" || isErrorPayload(data, p.upstreamProtocol == util.ProtocolCodex) {
-			log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
+			log.Printf("[WARN] [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 			p.geminiFilterNotice = ""
 			p.recordError([]byte(data))
 			return nil
@@ -696,7 +697,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// - OpenAI Responses：event/type=response.failed，error 嵌在 response.error
 	// 兼容不带 event 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
 	if effectiveType == "error" || terminalType == "response.failed" || isErrorPayload(data, p.upstreamProtocol == util.ProtocolCodex) {
-		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
+		log.Printf("[WARN] [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 		p.geminiFilterNotice = ""
 		errorData := []byte(data)
 		if payloadType == "" && (effectiveType == "error" || effectiveType == "response.done" || terminalType == "response.failed") {
@@ -711,7 +712,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	}
 
 	if !p.hasStreamOutput && isEmptyResponsesIncomplete(effectiveType, data) {
-		log.Printf("[WARN]  [SSE错误事件] 上游 response.incomplete 无任何输出(0 tokens)，按流中断处理: %s", data)
+		log.Printf("[WARN] [SSE错误事件] 上游 response.incomplete 无任何输出(0 tokens)，按流中断处理: %s", data)
 		p.lastError = []byte(responsesEmptyIncompleteErrorPayload)
 		return nil
 	}
@@ -2061,7 +2062,8 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, upstreamProtocol str
 		} else if hasAnthropicUsageFields(usage) {
 			// OpenAI Responses API使用类似Anthropic的字段
 			u.applyAnthropicOrResponsesUsage(usage)
-		} else {
+		} else if !u.unknownUsageLogged {
+			u.unknownUsageLogged = true
 			log.Printf("[WARN] OpenAI 渠道返回未知的 usage 格式，keys: %v", getUsageKeys(usage))
 		}
 

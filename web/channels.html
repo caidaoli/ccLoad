@@ -176,7 +176,7 @@
                         <span class="channel-page-menu__desc" data-i18n="channels.menu.loomyDesc">短信登录，支持每日签到</span>
                       </span>
                     </button>
-                    <button id="addSystemOneChannelBtn" data-action="show-add-system-one-modal" type="button" class="channel-page-menu__item channel-page-menu__item--wide" role="menuitem"
+                    <button id="addSystemOneChannelBtn" data-action="open-decision-channel" type="button" class="channel-page-menu__item channel-page-menu__item--wide" role="menuitem"
                       data-i18n-title="channels.menu.systemOneChannelDesc" title="System One 决策接口，动态思考判断专用">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="system_one" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
@@ -271,6 +271,42 @@
             </div>
             <div class="oauth-actions">
               <button type="button" class="btn btn-secondary" data-action="close-opencode-channel"
+                data-i18n="common.cancel">取消</button>
+              <button type="submit" class="btn btn-primary" data-i18n="channels.openCode.continue">继续</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="decisionChannelDialog" class="oauth-dialog oauth-dialog--compact"
+          aria-labelledby="decisionChannelDialogTitle" aria-describedby="decisionChannelDialogDescription">
+          <div class="oauth-dialog-header">
+            <div class="oauth-dialog-heading">
+              <h2 id="decisionChannelDialogTitle" data-i18n="channels.decision.dialogTitle">添加决策渠道</h2>
+              <p id="decisionChannelDialogDescription" class="oauth-dialog-description"
+                data-i18n="channels.decision.dialogDescription">选择决策服务并填写 API Key，继续后自动配置 decision-auto 模型映射。</p>
+            </div>
+            <button type="button" class="close-btn" data-action="close-decision-channel"
+              data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+          </div>
+          <form id="decisionChannelForm" class="oauth-dialog-body">
+            <div class="oauth-field">
+              <label for="decisionChannelPreset" data-i18n="channels.decision.providerLabel">决策服务</label>
+              <select id="decisionChannelPreset" name="decision_preset" class="form-input">
+                <option value="typesafe" data-description="https://api.typesafe.ai · jev-1.14.0">TypeSafe</option>
+                <option value="gemini" data-description="https://generativelanguage.googleapis.com · gemini-decision-1">Gemini</option>
+                <option value="openai" data-description="https://api.openai.com · gpt-6-luna">OpenAI</option>
+                <option value="aliyun" data-i18n="channels.decision.aliyun" data-description="https://dashscope.aliyuncs.com · decision-model-preview">阿里云</option>
+                <option value="vllm_sr" data-description="https://app.vllm-sr.ai · vllm-sr/d3-ultra">vllm-sr</option>
+                <option value="custom" data-i18n="channels.decision.custom"
+                  data-i18n-description="channels.decision.customDesc" data-description="手动填写 URL 与 decision-auto 的目标模型">自定义</option>
+              </select>
+            </div>
+            <div class="oauth-field">
+              <label for="decisionChannelKey">API Key</label>
+              <input id="decisionChannelKey" type="password" class="form-input" autocomplete="off" spellcheck="false" required>
+            </div>
+            <div class="oauth-actions">
+              <button type="button" class="btn btn-secondary" data-action="close-decision-channel"
                 data-i18n="common.cancel">取消</button>
               <button type="submit" class="btn btn-primary" data-i18n="channels.openCode.continue">继续</button>
             </div>

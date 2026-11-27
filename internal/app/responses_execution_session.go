@@ -398,17 +398,6 @@ func logResponsesExecutionSessionEvent(
 	)
 }
 
-func logResponsesExecutionSessionRemovals(reason string, sessions []*responsesExecutionSession) {
-	for _, session := range sessions {
-		logResponsesExecutionSessionEvent(
-			reason,
-			session.subjectFingerprint,
-			session.sessionFingerprint,
-			responsesExecutionFingerprint(session.transcript.lastResponseID),
-		)
-	}
-}
-
 // acquire returns a private transient session unless the client supplied an
 // explicit stable Session-Id. This prevents unrelated requests sharing a model or IP
 // from ever sharing conversation state.
@@ -444,7 +433,6 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 			unit:    "bytes",
 		}
 		s.mu.Unlock()
-		logResponsesExecutionSessionRemovals("ttl_expired", expired)
 		closeResponsesExecutionSessions(append(expired, evicted...))
 		logResponsesExecutionSessionEvent(
 			"capacity_budget",
@@ -467,7 +455,6 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 					unit:    "sessions",
 				}
 				s.mu.Unlock()
-				logResponsesExecutionSessionRemovals("ttl_expired", expired)
 				closeResponsesExecutionSessions(append(expired, evicted...))
 				logResponsesExecutionSessionEvent(
 					"capacity_session",
@@ -498,7 +485,6 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 	session.active++
 	session.lastAccess = now
 	s.mu.Unlock()
-	logResponsesExecutionSessionRemovals("ttl_expired", expired)
 	closeResponsesExecutionSessions(append(expired, evicted...))
 
 	var once sync.Once
@@ -679,7 +665,6 @@ func (s *responsesExecutionSessionStore) cleanup(now time.Time) {
 	s.closeDetachedTransportsLocked(now)
 	evicted, _ := s.trimTranscriptBudgetLocked()
 	s.mu.Unlock()
-	logResponsesExecutionSessionRemovals("ttl_expired", expired)
 	closeResponsesExecutionSessions(append(expired, evicted...))
 }
 

@@ -1734,6 +1734,91 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
   }
 });
 
+test('decision chooser prefills the system_one editor with URL, key and decision-auto mapping', async () => {
+  const fixture = installEditChannelGlobals({ id: 1, urls: [] });
+  const previous = new Map();
+  const setGlobal = (name, value) => {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const submitted = [];
+  try {
+    const dialog = fixture.getElement('decisionChannelDialog');
+    dialog.open = false;
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; };
+    dialog.addEventListener = () => {};
+    const formEvents = {};
+    fixture.getElement('decisionChannelForm').addEventListener = (name, handler) => { formEvents[name] = handler; };
+    const selection = fixture.getElement('decisionChannelPreset');
+    const keyInput = fixture.getElement('decisionChannelKey');
+    fixture.getElement('channelForm').reset = () => {};
+    setGlobal('emptyInlineURLConfig', () => ({ url: '', exact: false, protocols: [] }));
+    setGlobal('makeInlineKeyRow', apiKey => normalizeInlineKeyRow({ api_key: apiKey }));
+    setGlobal('getValidInlineURLConfigs', () => normalizeInlineURLConfigs(global.inlineURLTableData));
+    setGlobal('getValidInlineKeyRows', () => global.inlineKeyTableData.filter(row => row.api_key).map(normalizeInlineKeyRow));
+    setGlobal('getInlineKeyRows', () => global.inlineKeyTableData);
+    setGlobal('countConfiguredInlineKeys', countConfiguredInlineKeys);
+    setGlobal('isOpenCodeChannel', isOpenCodeChannel);
+    setGlobal('fetchAPIWithAuth', async (url, options) => {
+      if (url === '/admin/channels/check-duplicate') return { success: true, data: { duplicates: [] } };
+      submitted.push({ url, body: JSON.parse(options.body) });
+      return { success: false, error: 'captured' };
+    });
+    const { saveChannel, openDecisionChannelDialog, closeDecisionChannelDialog, continueDecisionChannel } = loadChannelsModals();
+    // 预设带 decision-auto 行，走非空模型表格分支。
+    global.document.createDocumentFragment = () => ({ appendChild() {} });
+
+    fixture.getElement('channelName').value = 'existing draft';
+    openDecisionChannelDialog();
+    selection.value = 'gemini';
+    keyInput.value = 'typed';
+    closeDecisionChannelDialog();
+    await continueDecisionChannel({ preventDefault() {} });
+    assert.equal(fixture.getElement('channelName').value, 'existing draft');
+
+    for (const [preset, name, url, target] of [
+      ['typesafe', 'TypeSafe', 'https://api.typesafe.ai', 'jev-1.14.0'],
+      ['gemini', 'Gemini-Decision', 'https://generativelanguage.googleapis.com', 'gemini-decision-1'],
+      ['openai', 'OpenAI-Decision', 'https://api.openai.com', 'gpt-6-luna'],
+      ['aliyun', 'Aliyun-Decision', 'https://dashscope.aliyuncs.com', 'decision-model-preview'],
+      ['vllm_sr', 'vllm-sr', 'https://app.vllm-sr.ai', 'vllm-sr/d3-ultra']
+    ]) {
+      openDecisionChannelDialog();
+      assert.equal(selection.value, 'typesafe');
+      assert.equal(keyInput.value, '');
+      selection.value = preset;
+      keyInput.value = ' sk-decision ';
+      await formEvents.submit({ preventDefault() {} });
+      assert.equal(dialog.open, false);
+      await saveChannel({ preventDefault() {} });
+      const request = submitted.at(-1);
+      assert.equal(request.url, '/admin/channels');
+      assert.equal(request.body.name, name);
+      assert.equal(request.body.auth_type, 'system_one');
+      assert.deepEqual(request.body.urls.map(entry => entry.url), [url]);
+      assert.equal(request.body.api_keys[0].api_key, 'sk-decision');
+      assert.deepEqual(request.body.models.map(({ model, redirect_model }) => ({ model, redirect_model })),
+        [{ model: 'decision-auto', redirect_model: target }]);
+    }
+
+    openDecisionChannelDialog();
+    selection.value = 'custom';
+    keyInput.value = 'sk-custom';
+    await formEvents.submit({ preventDefault() {} });
+    assert.equal(fixture.getElement('channelName').value, '');
+    assert.equal(global.inlineURLTableData[0].url, '');
+    assert.equal(global.inlineKeyTableData[0].api_key, 'sk-custom');
+    assert.deepEqual(global.redirectTableData, [{ model: 'decision-auto', redirect_model: '' }]);
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+    fixture.restore();
+  }
+});
+
 test('saving rejects invalid daily schedules and focuses the field with an inline error', async () => {
   const channel = { id: 80, name: 'invalid-schedule', auth_type: 'api_key', urls: [{ url: 'https://example.com' }], models: [] };
   const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
