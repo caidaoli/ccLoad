@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -219,8 +220,9 @@ func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
 		if clone.Body == nil {
 			clone.Body = http.NoBody
 		}
-		// 与 chatgpt.com 一致：服务端解码 zstd 请求体。Content-Encoding 保留给测试断言线上编码。
-		if strings.EqualFold(clone.Header.Get("Content-Encoding"), "zstd") {
+		// 模拟 Codex 和 CodeBuddy 上游解码。其他 gzip 请求由相应测试处理。
+		encoding := strings.ToLower(clone.Header.Get("Content-Encoding"))
+		if encoding == "zstd" || (encoding == "gzip" && clone.Header.Get("X-CodeBuddy-Request") == "1") {
 			body, err := readTestUpstreamRequestBody(clone)
 			if err != nil {
 				panic(err)
@@ -246,8 +248,21 @@ func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
 	}
 }
 
-// readTestUpstreamRequestBody 读取测试上游收到的请求体，Codex OAuth 的 zstd 请求体按上游语义解码。
+/**
+ * @brief 读取模拟上游收到的正文并按请求头解码。
+ * @param r 模拟传输边界收到的请求。
+ * @return 解码后的正文，未压缩时返回原文。
+ * @return 读取或解码失败时的错误。
+ */
 func readTestUpstreamRequestBody(r *http.Request) ([]byte, error) {
+	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		decoder, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = decoder.Close() }()
+		return io.ReadAll(decoder)
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil || !strings.EqualFold(r.Header.Get("Content-Encoding"), "zstd") {
 		return body, err

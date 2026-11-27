@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -241,9 +242,10 @@ func TestProxyCodeBuddyRequestCompatibility(t *testing.T) {
 			}}, wantMessages...)
 			requests := make(chan []byte, 1)
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
+				body, err := readGzipCodeBuddyTestRequest(r)
 				if err != nil {
 					t.Errorf("read upstream request: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
 				requests <- body
@@ -645,7 +647,7 @@ func TestProxyCodeBuddyCommaRetryChannelAndOriginScope(t *testing.T) {
 	}, map[string]string{"antigravity_sensitive_words": `[]`})
 	var requests [][]byte
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body, err := io.ReadAll(r.Body)
+		body, err := readTestUpstreamRequestBody(r)
 		if err != nil {
 			return nil, err
 		}
@@ -703,6 +705,269 @@ func TestProxyCodeBuddyCommaRetryChannelAndOriginScope(t *testing.T) {
 	if gjson.GetBytes(requests[before], "messages.0.content").String() != original {
 		t.Fatalf("strategy escaped its upstream origin scope: %s", requests[before])
 	}
+}
+
+/**
+ * @brief 验证 HTTP 415 的明文回放和按渠道与 origin 记忆降级的契约。
+ * @param t 测试上下文。
+ */
+func TestProxyCodeBuddyCompressionFallbackScope(t *testing.T) {
+	t.Parallel()
+	credential, err := (&codebuddyauth.Credential{AccessToken: "access", BaseURL: codebuddyauth.InternationalBaseURL}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = codebuddyauth.InternationalCompletionsURL
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "first", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential},
+		{name: "second", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential},
+	}, map[int]string{0: endpoint + "#", 1: endpoint + "#"})
+	var attempts []codeBuddyCompressionTestAttempt
+	env.server.client = codeBuddyCompressionTestClient(&attempts, func(w http.ResponseWriter, attempt int) {
+		if attempt == 1 {
+			writeCodeBuddyCompressionTestFailure(w, http.StatusUnsupportedMediaType)
+			return
+		}
+		writeCodeBuddyCommaRetrySuccess(w)
+	})
+	configs, err := env.store.ListConfigs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"model": "hy3", "messages": []map[string]string{{"role": "user", "content": "preserve this prompt"}}}
+	for _, step := range []struct {
+		channel string   ///< 本轮指定的渠道。
+		url     string   ///< 本轮实际请求地址。
+		want    []string ///< 每次出站的编码，空串表示明文。
+	}{
+		{channel: "first", url: endpoint, want: []string{"gzip", ""}},
+		{channel: "first", url: endpoint, want: []string{""}},
+		{channel: "second", url: endpoint, want: []string{"gzip"}},
+		{channel: "first", url: codebuddyauth.InternationalBaseURL + "/gateway/chat", want: []string{""}},
+		{channel: "first", url: "https://custom.example/gateway/chat", want: []string{"gzip"}},
+	} {
+		if step.url != endpoint {
+			for _, cfg := range configs {
+				if cfg.Name == step.channel {
+					cfg.URLs[0].URL = step.url
+					if _, err := env.store.UpdateConfig(t.Context(), cfg.ID, cfg); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			env.server.InvalidateChannelListCache()
+		}
+		before := len(attempts)
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", request, map[string]string{"X-CCLoad-Channel": step.channel})
+		if response.Code != http.StatusOK || gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String() != "ok" || len(attempts)-before != len(step.want) {
+			t.Fatalf("channel=%s url=%s status=%d attempts=%d body=%s", step.channel, step.url, response.Code, len(attempts)-before, response.Body.String())
+		}
+		for i, encoding := range step.want {
+			attempt := attempts[before+i]
+			if attempt.encoding != encoding || attempt.url != step.url || attempt.auth != "Bearer access" {
+				t.Fatalf("channel=%s attempt=%d got URL=%s auth=%q encoding=%q, want URL=%s auth=%q encoding=%q", step.channel, i+1, attempt.url, attempt.auth, attempt.encoding, step.url, "Bearer access", encoding)
+			}
+			if got := gjson.GetBytes(attempt.body, "messages.1.content").String(); got != "preserve this prompt" {
+				t.Fatalf("upstream user message = %q, body=%s", got, attempt.body)
+			}
+		}
+		if len(step.want) == 2 && !bytes.Equal(attempts[before].body, attempts[before+1].body) {
+			t.Fatalf("body changed on replay: first=%s replay=%s", attempts[before].body, attempts[before+1].body)
+		}
+	}
+}
+
+/**
+ * @brief 验证失败回放不影响下轮首发，认证、限流、普通请求错误和已输出的 SSE 错误保留原行为。
+ * @param t 测试上下文。
+ */
+func TestProxyCodeBuddyCompressionFallbackRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name        string ///< 场景名称。
+		status      int    ///< 下游收到的 HTTP 状态。
+		calls       int    ///< 本轮的出站请求数。
+		errorBody   string ///< 首次失败的服务端 JSON，空串使用状态描述。
+		replayError bool   ///< 明文回放返回 HTTP 200 封装的错误。
+		stream      bool   ///< 是否在生成输出后发出流内错误。
+	}{
+		{name: "replay also rejected", status: http.StatusUnsupportedMediaType, calls: 2},
+		{name: "replay error inside HTTP 200", status: http.StatusBadGateway, calls: 2, replayError: true},
+		{name: "replay error after partial output", status: http.StatusOK, calls: 2, stream: true},
+		{name: "generic bad request", status: http.StatusBadRequest, calls: 1},
+		{name: "unrelated 11101", status: http.StatusBadRequest, calls: 1, errorBody: `{"code":11101,"msg":"model is required"}`},
+		{name: "unauthorized", status: http.StatusUnauthorized, calls: 1},
+		{name: "rate limited", status: http.StatusTooManyRequests, calls: 1},
+		{name: "SSE 415 after output", status: http.StatusOK, calls: 1, stream: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			credential, err := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: codebuddyauth.CompletionsURL + "#"})
+			var attempts []codeBuddyCompressionTestAttempt
+			env.server.client = codeBuddyCompressionTestClient(&attempts, func(w http.ResponseWriter, attempt int) {
+				if attempt > tc.calls {
+					writeCodeBuddyCommaRetrySuccess(w)
+					return
+				}
+				if tc.calls == 2 && attempt == 1 {
+					writeCodeBuddyCompressionTestFailure(w, http.StatusUnsupportedMediaType)
+					return
+				}
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+`{"id":"partial","model":"hy3","choices":[{"index":0,"delta":{"content":"already sent"}}]}`+"\n\ndata: "+`{"type":"error","status":415,"error":{"code":"unsupported_media_type","message":"gzip is not supported"}}`+"\n\n")
+					return
+				}
+				if tc.replayError {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+`{"error":{"type":"invalid_request_error","message":"invalid params"}}`+"\n\n")
+					return
+				}
+				if tc.errorBody != "" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.errorBody)
+					return
+				}
+				writeCodeBuddyCompressionTestFailure(w, tc.status)
+			})
+			request := map[string]any{"model": "hy3", "stream": tc.stream, "messages": []map[string]string{{"role": "user", "content": "hello"}}}
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", request, nil)
+			if response.Code != tc.status || len(attempts) != tc.calls {
+				t.Fatalf("status=%d attempts=%d body=%s", response.Code, len(attempts), response.Body.String())
+			}
+			if attempts[0].encoding != "gzip" {
+				t.Fatalf("first attempt encoding=%q, want gzip", attempts[0].encoding)
+			}
+			if tc.stream {
+				parser := newSSEUsageParser("openai")
+				if err := parser.Feed(response.Body.Bytes()); err != nil || !parser.HasStreamOutput() || parser.GetLastError() == nil {
+					t.Fatalf("partial stream or its error was lost: err=%v body=%s", err, response.Body.String())
+				}
+			}
+			if tc.calls == 2 {
+				if attempts[1].encoding != "" || !bytes.Equal(attempts[0].body, attempts[1].body) {
+					t.Fatalf("failed replay changed request: encoding=%q first=%s replay=%s", attempts[1].encoding, attempts[0].body, attempts[1].body)
+				}
+				response = doProxyRequest(t, env.engine, "/v1/chat/completions", request, nil)
+				if response.Code != http.StatusOK || len(attempts) != 3 {
+					t.Fatalf("next request after failed replay: status=%d attempts=%d body=%s", response.Code, len(attempts), response.Body.String())
+				}
+				if attempts[2].encoding != "gzip" {
+					t.Fatalf("next request after failed replay used encoding %q, want gzip", attempts[2].encoding)
+				}
+			}
+		})
+	}
+}
+
+/**
+ * @brief 验证只有一个 RPM 名额时原样返回 HTTP 415，并在下个窗口试用明文。
+ * @param t 测试上下文。
+ */
+func TestProxyCodeBuddyCompressionFallbackAcrossRPMWindows(t *testing.T) {
+	t.Parallel()
+	credential, err := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: codebuddyauth.CompletionsURL + "#"})
+	configs, err := env.store.ListConfigs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := configs[0]
+	cfg.RPMLimit = 1
+	if _, err := env.store.UpdateConfig(t.Context(), cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	var ticks atomic.Int64
+	limiter := env.server.channelRPMLimiter
+	limiter.mu.Lock()
+	limiter.now = func() time.Time { return time.Unix(ticks.Load(), 0) }
+	limiter.mu.Unlock()
+	var attempts []codeBuddyCompressionTestAttempt
+	env.server.client = codeBuddyCompressionTestClient(&attempts, func(w http.ResponseWriter, attempt int) {
+		if attempt == 1 {
+			writeCodeBuddyCompressionTestFailure(w, http.StatusUnsupportedMediaType)
+			return
+		}
+		writeCodeBuddyCommaRetrySuccess(w)
+	})
+	request := map[string]any{"model": "hy3", "messages": []map[string]string{{"role": "user", "content": "hello"}}}
+	for i, status := range []int{http.StatusUnsupportedMediaType, http.StatusOK, http.StatusOK} {
+		encoding := ""
+		if i == 0 {
+			encoding = "gzip"
+		}
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", request, nil)
+		if response.Code != status || len(attempts) != i+1 {
+			t.Fatalf("RPM window %d status=%d requests=%d body=%s", i, response.Code, len(attempts), response.Body.String())
+		}
+		if attempts[i].encoding != encoding {
+			t.Fatalf("RPM window %d encoding=%q, want %q", i, attempts[i].encoding, encoding)
+		}
+		ticks.Add(int64(time.Minute / time.Second))
+	}
+}
+
+/**
+ * @brief 记录测试上游收到的 CodeBuddy 出站请求。
+ */
+type codeBuddyCompressionTestAttempt struct {
+	url      string ///< 完整出站地址。
+	auth     string ///< 出站认证头。
+	encoding string ///< 出站 Content-Encoding。
+	body     []byte ///< 按编码解压后的原始正文。
+}
+
+/**
+ * @brief 在传输边界解码并记录出站请求，再模拟上游响应。
+ * @param attempts 按发送顺序记录请求。
+ * @param respond 按从一开始的请求次数生成响应。
+ * @return 记录 CodeBuddy 请求的测试客户端。
+ */
+func codeBuddyCompressionTestClient(attempts *[]codeBuddyCompressionTestAttempt, respond func(http.ResponseWriter, int)) *http.Client {
+	return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		defer func() { _ = r.Body.Close() }()
+		wire, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		if r.ContentLength != int64(len(wire)) {
+			return nil, fmt.Errorf("Content-Length = %d, received %d bytes", r.ContentLength, len(wire))
+		}
+		payload := r.Clone(r.Context())
+		payload.Body = io.NopCloser(bytes.NewReader(wire))
+		body, err := readTestUpstreamRequestBody(payload)
+		if err != nil {
+			return nil, err
+		}
+		*attempts = append(*attempts, codeBuddyCompressionTestAttempt{
+			url: r.URL.String(), auth: r.Header.Get("Authorization"),
+			encoding: r.Header.Get("Content-Encoding"), body: body,
+		})
+		recorder := httptest.NewRecorder()
+		respond(recorder, len(*attempts))
+		response := recorder.Result()
+		response.Request = r
+		return response, nil
+	})}
+}
+
+/**
+ * @brief 模拟上游拒绝生成请求时的 HTTP JSON 响应。
+ * @param w 上游 HTTP 响应写入器。
+ * @param status 要返回的 HTTP 状态。
+ */
+func writeCodeBuddyCompressionTestFailure(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"error":{"message":%q}}`, http.StatusText(status))
 }
 
 /**
@@ -1098,7 +1363,7 @@ func TestProxyCodeBuddyCanceledStreamKeepsBusyCooldown(t *testing.T) {
 }
 
 /**
- * @brief 创建 CodeBuddy 的代理测试环境并收集实际出站请求。
+ * @brief 创建 CodeBuddy 国内代理测试环境并收集解压后的出站请求。
  * @param t 当前测试上下文。
  * @param rules 渠道请求体规则；nil 表示无额外规则。
  * @param respond 按从一开始的请求次数生成上游响应。
@@ -1111,7 +1376,7 @@ func setupCodeBuddyCommaRetryTest(t *testing.T, rules *model.CustomRequestRules,
 	requests := make(chan []byte, 16)
 	var attempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		body, err := readGzipCodeBuddyTestRequest(r)
 		if err != nil {
 			t.Errorf("read upstream request: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -1128,8 +1393,40 @@ func setupCodeBuddyCommaRetryTest(t *testing.T, rules *model.CustomRequestRules,
 	env := setupProxyTestEnvWithSettings(t, []testChannel{{
 		name: "codebuddy-comma", upstreamProtocol: "openai", models: "hy3,deepseek-v4.1-flash",
 		authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential, customRequestRules: rules,
-	}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"}, map[string]string{"antigravity_sensitive_words": `[]`})
+	}}, map[int]string{0: codebuddyauth.CompletionsURL + "#"}, map[string]string{"antigravity_sensitive_words": `[]`})
+	env.server.client = codeBuddyTestUpstreamClient(upstream, codebuddyauth.CompletionsURL)
 	return env, requests
+}
+
+/**
+ * @brief 检查实际出站 URL，并将请求送到测试上游。
+ * @param upstream 处理出站请求的测试服务器。
+ * @param endpoint 代理应当使用的 URL。
+ * @return 不访问外部网络的客户端。
+ */
+func codeBuddyTestUpstreamClient(upstream *testHTTPServer, endpoint string) *http.Client {
+	return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != endpoint {
+			return nil, fmt.Errorf("upstream request URL = %s, want %s", r.URL, endpoint)
+		}
+		local := r.Clone(r.Context())
+		local.URL.Scheme = "http"
+		local.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(local)
+	})}
+}
+
+/**
+ * @brief 检查测试上游实际收到 gzip 请求，并返回 JSON 字节。
+ * @param r 共享测试上游已解码的请求。
+ * @return 明文请求体。
+ * @return 编码不匹配或正文读取失败时返回错误。
+ */
+func readGzipCodeBuddyTestRequest(r *http.Request) ([]byte, error) {
+	if actual := r.Header.Get("Content-Encoding"); actual != "gzip" {
+		return nil, fmt.Errorf("Content-Encoding = %q, want gzip", actual)
+	}
+	return io.ReadAll(r.Body)
 }
 
 /**

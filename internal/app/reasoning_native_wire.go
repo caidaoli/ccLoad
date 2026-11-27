@@ -93,15 +93,6 @@ func reasoningDecisionBody(provider, actualModel, transcript string, levels []st
 const reasoningDecisionCompressMinBytes = 4 << 10
 
 /**
- * @brief 已确认拒收压缩决策请求的目标；同一渠道不同域名或提供商的网关能力互不相同
- */
-type reasoningCompressionTarget struct {
-	channelID int64  ///< 决策渠道
-	host      string ///< 实际请求的域名与端口
-	provider  string ///< 实际模型的提供商，决定尝试的编码
-}
-
-/**
  * @brief 按实际模型的提供商选择达到门槛的决策请求体编码
  * @param provider 实际模型的提供商
  * @param header 已应用渠道请求规则的请求头
@@ -509,9 +500,9 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, base
 	// upstream response, so a decision can be inspected like any other call.
 	debug := s.captureDebugRequest(req, body)
 	defer func() { result.debug = debug.buildEntry(nil) }()
-	target := reasoningCompressionTarget{channelID: cfg.ID, host: req.URL.Host, provider: provider}
+	target := requestCompressionTarget{channelID: cfg.ID, origin: req.URL.Scheme + "://" + req.URL.Host, provider: provider}
 	encoding := reasoningDecisionEncoding(provider, req.Header, body)
-	if _, plain := s.reasoningPlainTargets.Load(target); plain {
+	if _, plain := s.plainRequestTargets.Load(target); plain {
 		encoding = ""
 	}
 	outbound := req
@@ -610,7 +601,7 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, base
 		return result, err
 	}
 	if retriedPlain {
-		s.reasoningPlainTargets.Store(target, struct{}{})
+		s.plainRequestTargets.Store(target, true)
 	}
 	return result, nil
 }

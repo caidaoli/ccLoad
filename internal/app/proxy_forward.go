@@ -3187,6 +3187,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// HTTP 上游请求在返回前跟随 reqCtx 取消；读到终止事件后摘离，后台排空不被随后的取消打断。
 	// 从 req.Context() 派生，保留构建阶段挂上的请求值（如 Z.ai 套餐标记）。
 	upstreamCtx, detachUpstream := newDetachableUpstreamContext(req.Context())
+	if (reqCtx.codeBuddyOAuth || reqCtx.qoderOAuth) && reqCtx.streamIdleTimer != nil {
+		upstreamCtx = context.WithValue(upstreamCtx, inferenceProbeReadKey{}, reqCtx.touchStreamIdle)
+	}
 	if native != nil && native.session != nil {
 		wsReplayBody = stripInjectedCodexOAuthInstructionsForWebsocket(
 			cfg, replaySourceBody, replayBody,
@@ -3292,6 +3295,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 
 	// 2.6 Debug捕获：记录真正发出的请求，而不是未采用的 replay/incremental 候选。
 	debugReq := req
+	if cfg.UsesCodeBuddyOAuth() && resp != nil && resp.Request != nil {
+		debugReq = resp.Request
+	}
 	debugBody := sentBody
 	var websocketDebug codexWebsocketDebugSnapshot
 	debugEnabled := s.configService.GetBool("debug_log_enabled", false)

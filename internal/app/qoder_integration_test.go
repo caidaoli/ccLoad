@@ -26,6 +26,7 @@ import (
 	"ccLoad/internal/testutil"
 
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 )
 
@@ -415,6 +416,10 @@ func TestQoderProxyStreamAndNonStreamKeepToolsAndUsage(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证代理和管理测试先处理 COSY 系统提示词，再压缩已签名的请求。
+ * @param t 测试上下文。
+ */
 func TestQoderSystemSensitiveWordsOnWire(t *testing.T) {
 	const messagesJSON = `[
 		{"role":"system","content":"Claude API unchanged"},
@@ -443,9 +448,15 @@ func TestQoderSystemSensitiveWordsOnWire(t *testing.T) {
 				var chatCalls atomic.Int32
 				qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
 					if r.URL.Path == "/algo/api/v2/model/list" {
+						if encoding := r.Header.Get("Content-Encoding"); encoding != "" || r.ContentLength != 0 {
+							t.Errorf("catalog Content-Encoding = %q, Content-Length = %d", encoding, r.ContentLength)
+						}
 						return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
 					}
 					chatCalls.Add(1)
+					if got := r.Header.Get("Content-Encoding"); got != "zstd" {
+						t.Fatalf("inference Content-Encoding = %q, want zstd", got)
+					}
 					decoded := qoderIntegrationDecodeSignedRequest(t, r)
 					var actual struct {
 						Messages []map[string]any `json:"messages"`
@@ -510,11 +521,31 @@ func TestQoderSystemSensitiveWordsOnWire(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 解出 COSY 信封并验证签名和摘要覆盖传输解压后的字节。
+ * @param t 测试上下文。
+ * @param req 出站推理请求。
+ * @return COSY JSON 信封。
+ */
 func qoderIntegrationDecodeSignedRequest(t *testing.T, req *http.Request) []byte {
 	t.Helper()
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if req.ContentLength != int64(len(body)) {
+		t.Errorf("inference Content-Length = %d, wire size = %d", req.ContentLength, len(body))
+	}
+	if req.Header.Get("Content-Encoding") == "zstd" {
+		decoder, err := zstd.NewReader(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer decoder.Close()
+		body, err = decoder.DecodeAll(body, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	parts := strings.Split(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer COSY."), ".")
 	if len(parts) != 2 {
@@ -523,11 +554,11 @@ func qoderIntegrationDecodeSignedRequest(t *testing.T, req *http.Request) []byte
 	path := strings.TrimPrefix(req.URL.Path, "/algo")
 	signature := md5.Sum([]byte(parts[0] + "\n" + req.Header.Get("Cosy-Key") + "\n" + req.Header.Get("Cosy-Date") + "\n" + string(body) + "\n" + path))
 	if parts[1] != hex.EncodeToString(signature[:]) || req.Header.Get("Cosy-Sigpath") != path {
-		t.Error("COSY signature does not cover the actual HTTP body and path")
+		t.Error("COSY signature does not cover the encoded body and path")
 	}
 	bodyHash := md5.Sum(body)
 	if req.Header.Get("Cosy-Bodyhash") != hex.EncodeToString(bodyHash[:]) || req.Header.Get("Cosy-Bodylength") != strconv.Itoa(len(body)) {
-		t.Error("COSY body digest/length do not match the actual HTTP body")
+		t.Error("COSY body digest/length do not match the encoded body")
 	}
 	const alphabet = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!"
 	const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -549,6 +580,127 @@ func qoderIntegrationDecodeSignedRequest(t *testing.T, req *http.Request) []byte
 		t.Fatal(err)
 	}
 	return decoded
+}
+
+/**
+ * @brief Qoder 推理返回压缩拒绝时重新签名并保留推理内容，成功后直接发送明文。
+ * @param t 测试上下文。
+ */
+func TestQoderInferenceCompressionFallback(t *testing.T) {
+	const sseForbidden = "data: {\"statusCodeValue\":403,\"body\":{\"message\":\"Forbidden\"}}\n\n"
+	const sseSignatureInvalid = `data: {"statusCode":"FORBIDDEN","statusCodeValue":403,"body":"{\"message\":\"signature invalid\"}"}` + "\n\n"
+	for _, tc := range []struct {
+		name, region, host string
+		admin              bool
+		rejection          string
+		content, finish    string
+		wantEncodings      []string
+	}{
+		{"proxy SSE forbidden", "cn", "gateway.qoder.com.cn", false, sseForbidden, "replayed", "stop", []string{"zstd", "", ""}},
+		{"proxy SSE signature invalid", "global", "api3.qoder.sh", false, sseSignatureInvalid, "replayed", "stop", []string{"zstd", "", ""}},
+		{"proxy empty length", "global", "api3.qoder.sh", false, sseSignatureInvalid, "", "length", []string{"zstd", "", ""}},
+		{"proxy empty content filter", "global", "api3.qoder.sh", false, sseSignatureInvalid, "", "content_filter", []string{"zstd", "", ""}},
+		{"admin HTTP 415", "global", "api3.qoder.sh", true, sseForbidden, "replayed", "stop", []string{"zstd", "", "zstd", "", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credential := qoderIntegrationCredential(t, tc.region, "dt-compression")
+			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://" + tc.host + "/v1/chat/completions"})
+			var encodings []string
+			var compressedBody gjson.Result
+			var compressedHeaders http.Header
+			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/algo/api/v2/model/list":
+					return qoderIntegrationResponse(r, http.StatusOK, `{"chat":[{"key":"native-key","display_name":"Qwen Test","enable":true}]}`), nil
+				case "/algo/api/v2/service/pro/sse/agent_chat_generation":
+					if r.URL.Host != tc.host {
+						t.Errorf("inference host = %q, want %q", r.URL.Host, tc.host)
+					}
+				default:
+					t.Fatalf("unexpected upstream request: %s", r.URL)
+				}
+				encoding := r.Header.Get("Content-Encoding")
+				encodings = append(encodings, encoding)
+				wire := gjson.ParseBytes(qoderIntegrationDecodeSignedRequest(t, r))
+				if encoding == "zstd" {
+					compressedBody = wire
+					compressedHeaders = r.Header.Clone()
+				} else if compressedHeaders != nil {
+					for _, field := range []string{"request_id", "chat_record_id"} {
+						if id := wire.Get(field).Str; id == "" || id == compressedBody.Get(field).Str {
+							t.Errorf("plain replay did not generate a new COSY %s", field)
+						}
+					}
+					for _, header := range []string{"Authorization", "X-Request-Id"} {
+						if id := r.Header.Get(header); id == "" || id == compressedHeaders.Get(header) {
+							t.Errorf("plain replay did not renew %s", header)
+						}
+					}
+					for _, field := range []string{"session_id", "task_id", "request_set_id", "business", "model_config", "system", "messages", "parameters", "chat_context"} {
+						if result := wire.Get(field); !result.Exists() || result.Raw != compressedBody.Get(field).Raw {
+							t.Errorf("plain replay changed COSY %s", field)
+						}
+					}
+					compressedHeaders = nil
+				}
+				if tc.admin && encoding == "zstd" {
+					return qoderIntegrationResponse(r, http.StatusUnsupportedMediaType, `{"message":"Unsupported Content-Encoding"}`), nil
+				}
+				sseAnswer := fmt.Sprintf(`{"id":"chat-replayed","choices":[{"index":0,"delta":{"content":%q},"finish_reason":%q}]}`, tc.content, tc.finish)
+				body := qoderIntegrationEvent(json.RawMessage(sseAnswer)) + "data: {\"statusCodeValue\":200,\"body\":\"[DONE]\"}\n\n"
+				if encoding == "zstd" || tc.admin && len(encodings) == 2 {
+					body = "data: {\"isQueued\":false}\n\n" + tc.rejection
+				}
+				response := qoderIntegrationResponse(r, http.StatusOK, body)
+				response.Header.Set("Content-Type", "text/event-stream")
+				return response, nil
+			})
+			if tc.admin {
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil || len(configs) != 1 {
+					t.Fatalf("configs=%d err=%v", len(configs), err)
+				}
+				id := configs[0].ID
+				for _, wantSuccess := range []bool{false, true, true} {
+					c, w := qoderIntegrationContext(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", id), &testutil.TestChannelRequest{Model: "QwenTest", ClientProtocol: "openai", Content: "test"}, id)
+					env.server.HandleChannelTest(c)
+					success := gjson.GetBytes(w.Body.Bytes(), "data.success")
+					if w.Code != http.StatusOK || !success.Exists() || success.Bool() != wantSuccess {
+						t.Fatalf("channel test status=%d want success=%t body=%s", w.Code, wantSuccess, w.Body.String())
+					}
+				}
+			} else {
+				for range 2 {
+					w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "stream": true, "messages": []any{map[string]string{"role": "user", "content": "test"}}}, nil)
+					var content, finish string
+					var done int
+					for line := range strings.SplitSeq(w.Body.String(), "\n") {
+						payload, ok := strings.CutPrefix(line, "data: ")
+						if !ok {
+							continue
+						}
+						if payload == "[DONE]" {
+							done++
+							continue
+						}
+						if !gjson.Valid(payload) || gjson.Get(payload, "error").Exists() {
+							t.Fatalf("unexpected SSE payload: %s", payload)
+						}
+						content += gjson.Get(payload, "choices.0.delta.content").String()
+						if reason := gjson.Get(payload, "choices.0.finish_reason").String(); reason != "" {
+							finish = reason
+						}
+					}
+					if w.Code != http.StatusOK || content != tc.content || finish != tc.finish || done != 1 {
+						t.Fatalf("proxy status=%d content=%q finish=%q done=%d body=%s", w.Code, content, finish, done, w.Body.String())
+					}
+				}
+			}
+			if !reflect.DeepEqual(encodings, tc.wantEncodings) {
+				t.Errorf("upstream Content-Encoding sequence = %q, want %q", encodings, tc.wantEncodings)
+			}
+		})
+	}
 }
 
 func TestQoderProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
@@ -602,7 +754,7 @@ func TestQoderProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {
  * @param t 测试上下文。
  */
 func TestQoderProxyDoesNotReplayAfterCommittedOutput(t *testing.T) {
-	for _, failure := range []string{"truncated", "unauthorized", "output after finish"} {
+	for _, failure := range []string{"truncated", "unauthorized", "forbidden", "output after finish"} {
 		t.Run(failure, func(t *testing.T) {
 			primary := qoderIntegrationCredential(t, "cn", "dt-primary-secret")
 			fallback := qoderIntegrationCredential(t, "cn", "dt-fallback-secret")
@@ -629,6 +781,11 @@ func TestQoderProxyDoesNotReplayAfterCommittedOutput(t *testing.T) {
 				switch failure {
 				case "unauthorized":
 					body += `data: {"statusCodeValue":403,"body":{"code":105,"message":"expired"}}` + "\n\n"
+				case "forbidden":
+					if got := r.Header.Get("Content-Encoding"); got != "zstd" {
+						t.Errorf("inference Content-Encoding = %q, want zstd", got)
+					}
+					body += `data: {"statusCodeValue":403,"body":{"message":"Forbidden"}}` + "\n\n"
 				case "output after finish":
 					body += qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}})
 					body += qoderIntegrationEvent(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "late text"}}}})

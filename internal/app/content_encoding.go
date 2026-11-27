@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"ccLoad/internal/model"
+
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 )
@@ -28,6 +30,57 @@ const zstdContentEncodingMaxWindow = 8 << 20
 // 帧校验和。EncodeAll 可并发调用。
 var requestZstdEncoder, _ = zstd.NewWriter(nil,
 	zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(3)), zstd.WithEncoderCRC(false))
+
+/**
+ * @brief 在探测阶段读取响应字节时，沿用代理流的空闲超时计时。
+ */
+type inferenceProbeReadKey struct{}
+
+/**
+ * @brief 标识需要验证或已确认使用明文的渠道、源站和提供商。
+ */
+type requestCompressionTarget struct {
+	channelID int64  ///< 渠道配置 ID。
+	origin    string ///< 实际出站协议、主机与端口。
+	provider  string ///< 决策提供商或推理渠道认证类型。
+}
+
+/**
+ * @brief 为最终出站请求选择 OAuth 推理压缩方式及可学习的回退目标。
+ * @param cfg 渠道配置。
+ * @param req 已完成规则、隐私处理和签名的请求。
+ * @return 要使用的 HTTP 编码，空串表示直接发送。
+ * @return 允许尝试明文的目标；编码为空且目标非零时，验证上次因 RPM 不足而推迟的明文请求。
+ */
+func (s *Server) oauthInferenceEncoding(cfg *model.Config, req *http.Request) (string, requestCompressionTarget) {
+	if req.Method != http.MethodPost || req.GetBody == nil || req.Header.Get("Content-Encoding") != "" {
+		return "", requestCompressionTarget{}
+	}
+	provider := cfg.GetAuthType()
+	var encoding string
+	switch provider {
+	case model.AuthTypeCodexOAuth:
+		if strings.HasSuffix(strings.TrimRight(req.URL.Path, "/"), "/responses") {
+			return "zstd", requestCompressionTarget{}
+		}
+		return "", requestCompressionTarget{}
+	case model.AuthTypeCodeBuddyOAuth:
+		encoding = "gzip"
+	case model.AuthTypeQoderOAuth:
+		encoding = "zstd"
+	default:
+		return "", requestCompressionTarget{}
+	}
+	target := requestCompressionTarget{channelID: cfg.ID, origin: req.URL.Scheme + "://" + req.URL.Host, provider: provider}
+	if plain, marked := s.plainRequestTargets.Load(target); marked {
+		if plain == false {
+			s.plainRequestTargets.CompareAndDelete(target, false)
+			return "", target
+		}
+		return "", requestCompressionTarget{}
+	}
+	return encoding, target
+}
 
 /**
  * @brief 以 gzip 或 zstd 压缩出站请求体并原位替换

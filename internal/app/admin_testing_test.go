@@ -335,19 +335,38 @@ func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证管理测试的上游请求编码及 CodeBuddy 聊天模板兼容性。
+ * @param t 测试上下文。
+ */
 func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 	t.Parallel()
-	for _, effort := range []string{"", "low", "none", "high"} {
+	for _, tc := range []struct {
+		name     string ///< 测试的出站地址类型。
+		baseURL  string ///< 凭证发行地址，空串沿用国内站。
+		endpoint string ///< 管理测试配置的精确 URL。
+		effort   string ///< 渠道覆盖的思考档位，空串沿用默认值。
+	}{
+		{name: "domestic", endpoint: codebuddyauth.CompletionsURL + "?source=admin"},
+		{name: "international", baseURL: codebuddyauth.InternationalBaseURL, endpoint: codebuddyauth.InternationalCompletionsURL, effort: "low"},
+		{name: "custom", endpoint: "https://custom.example/v2/chat/completions", effort: "none"},
+		{name: "other domestic path", endpoint: codebuddyauth.BaseURL + "/custom/chat", effort: "high"},
+	} {
 		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("effort=%s/stream=%v", effort, stream), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
 				t.Parallel()
 				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					body, _ := io.ReadAll(r.Body)
+					body, err := readGzipCodeBuddyTestRequest(r)
+					if err != nil {
+						t.Errorf("read upstream request: %v", err)
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
 					if !gjson.GetBytes(body, "stream").Bool() {
 						t.Error("admin upstream not streaming")
 					}
 					actual := gjson.GetBytes(body, "reasoning_effort").String()
-					want := effort
+					want := tc.effort
 					if want == "" {
 						want = "high"
 					}
@@ -357,6 +376,8 @@ func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 					messages := gjson.GetBytes(body, "messages").Array()
 					if len(messages) == 0 {
 						t.Error("missing messages")
+						w.WriteHeader(http.StatusInternalServerError)
+						return
 					}
 					if role := messages[0].Get("role").String(); role != "system" {
 						t.Errorf("first message role = %q, want system", role)
@@ -377,11 +398,15 @@ func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 				}))
 				defer upstream.Close()
 				srv := newInMemoryServer(t)
-				credential, _ := (&codebuddyauth.Credential{AccessToken: "access", RefreshToken: "refresh"}).JSON()
+				srv.client = codeBuddyTestUpstreamClient(upstream, tc.endpoint)
+				credential, err := (&codebuddyauth.Credential{AccessToken: "access", RefreshToken: "refresh", BaseURL: tc.baseURL}).JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
 				cfg := newCodeBuddyChannel("CodeBuddy", credential)
-				cfg.URLs[0].URL = upstream.URL + "/v2/chat/completions"
-				if effort != "" {
-					cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "reasoning_effort", Value: json.RawMessage(fmt.Sprintf("%q", effort))}}}
+				cfg.URLs[0].URL = tc.endpoint
+				if tc.effort != "" {
+					cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "reasoning_effort", Value: json.RawMessage(fmt.Sprintf("%q", tc.effort))}}}
 				}
 				result := srv.testChannelAPI(context.Background(), cfg, "access", &testutil.TestChannelRequest{Model: "hy3", ClientProtocol: "openai", Stream: stream, Content: "You are Claude Code, Anthropic's official CLI for Claude.\nMain branch (you will usually use this for PRs)"})
 				if result["success"] != true {
@@ -393,6 +418,51 @@ func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+/**
+ * @brief 验证管理侧遇到 CodeBuddy 请求解码错误后重放相同正文，并将成功降级复用到普通代理。
+ * @param t 测试上下文。
+ */
+func TestCodeBuddyAdminCompressionFallback(t *testing.T) {
+	t.Parallel()
+	credential, err := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = "https://custom.example/gateway/chat"
+	env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: endpoint + "#"})
+	configs, err := env.store.ListConfigs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts []codeBuddyCompressionTestAttempt
+	env.server.client = codeBuddyCompressionTestClient(&attempts, func(w http.ResponseWriter, attempt int) {
+		if attempt == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"code":11101,"msg":"unmarshal chat params failed: invalid character '\u001f' looking for beginning of value"}`)
+			return
+		}
+		writeCodeBuddyCommaRetrySuccess(w)
+	})
+	result := env.server.testChannelAPI(t.Context(), configs[0], "access",
+		&testutil.TestChannelRequest{Model: "hy3", ClientProtocol: "openai", Content: "hello"})
+	if result["success"] != true || len(attempts) != 2 {
+		t.Fatalf("channel test result=%+v attempts=%d", result, len(attempts))
+	}
+	if attempts[0].encoding != "gzip" || attempts[1].encoding != "" || !bytes.Equal(attempts[0].body, attempts[1].body) {
+		t.Fatalf("channel test did not replay the same body uncompressed: first encoding=%q body=%s; replay encoding=%q body=%s", attempts[0].encoding, attempts[0].body, attempts[1].encoding, attempts[1].body)
+	}
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "hy3", "messages": []map[string]string{{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || len(attempts) != 3 {
+		t.Fatalf("proxy after channel-test fallback: status=%d attempts=%d body=%s", response.Code, len(attempts), response.Body.String())
+	}
+	if attempts[2].encoding != "" {
+		t.Fatalf("proxy did not reuse channel-test fallback: encoding=%q", attempts[2].encoding)
 	}
 }
 

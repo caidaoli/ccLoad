@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -591,31 +590,4 @@ func (c *codexNonStreamCollector) patchedTerminal() []byte {
 		return c.terminal
 	}
 	return patched
-}
-
-// compressCodexOAuthResponsesBody 对齐官方 Codex（rust-v0.157.1 core/src/client.rs
-// responses_request_compression）：ChatGPT 登录的流式 /responses HTTP 请求默认以 zstd
-// 压缩请求体（enable_request_compression，Stable 且默认开启）。WebSocket 帧与
-// /responses/compact 不压缩。req 原位替换为压缩字节，uTLS 重试经 GetBody 重放；
-// 调用方保留的明文 body 继续用于调试日志与失败重放。
-func compressCodexOAuthResponsesBody(cfg *model.Config, req *http.Request) error {
-	if cfg == nil || !cfg.UsesCodexOAuth() || req == nil || req.Method != http.MethodPost ||
-		req.GetBody == nil || req.Header.Get("Content-Encoding") != "" ||
-		!strings.HasSuffix(strings.TrimRight(req.URL.Path, "/"), "/responses") {
-		return nil
-	}
-	reader, err := req.GetBody()
-	if err != nil {
-		return fmt.Errorf("read Codex request body for zstd: %w", err)
-	}
-	body, err := io.ReadAll(reader)
-	_ = reader.Close()
-	if err != nil {
-		return fmt.Errorf("read Codex request body for zstd: %w", err)
-	}
-	if len(body) == 0 {
-		return nil
-	}
-	compressRequestBody(req, "zstd", body)
-	return nil
 }

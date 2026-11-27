@@ -209,6 +209,7 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		req = signed
 		captureAccioWireRequest(req)
 	}
+	logicalReq := req
 	if cfg.UsesQoderOAuth() {
 		signed, wireErr := s.prepareQoderWire(cfg, req)
 		if wireErr != nil {
@@ -227,23 +228,57 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		}
 		req = signed
 	}
-	if errCompress := compressCodexOAuthResponsesBody(cfg, req); errCompress != nil {
-		release()
-		return nil, errCompress
+	encoding, target := s.oauthInferenceEncoding(cfg, req)
+	var plainReq *http.Request
+	if encoding != "" {
+		body, readErr := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if readErr != nil {
+			release()
+			return nil, readErr
+		}
+		if len(body) > 0 {
+			if target.provider == model.AuthTypeQoderOAuth {
+				plainReq = logicalReq
+			} else if target.provider != "" {
+				plainReq = cloneRequestWithBody(req, body)
+			}
+			compressRequestBody(req, encoding, body)
+		} else {
+			req.Body = http.NoBody
+		}
 	}
 	if errCompress := compressAnthropicFirstPartyBody(req); errCompress != nil {
 		release()
 		return nil, errCompress
 	}
 	reasoningBusinessSending(req.Context(), reasoningBody)
-	resp, err := s.getClientForChannel(cfg).Do(req)
+	resp, err := s.sendInferenceRequest(cfg, req)
+	verifyPlain := encoding == "" && target.provider != ""
+	onRead, _ := req.Context().Value(inferenceProbeReadKey{}).(func())
+	if err == nil && plainReq != nil && inferenceCompressionRejected(cfg, resp, onRead) && req.Context().Err() == nil {
+		// Both uploads share a concurrency slot. Each actual POST consumes its own RPM.
+		if s.reserveChannelRPM(cfg).allowed {
+			_ = resp.Body.Close()
+			if cfg.UsesQoderOAuth() {
+				// Qoder rejects the previous request ID and COSY signature as a duplicate.
+				plainReq, err = s.prepareQoderWire(cfg, logicalReq)
+			}
+			if err == nil {
+				resp, err = s.sendInferenceRequest(cfg, plainReq)
+			}
+			verifyPlain = true
+		} else {
+			// Leave the real rejection readable. Try plain on the next admitted request.
+			s.plainRequestTargets.LoadOrStore(target, false)
+		}
+	}
 	if err != nil {
 		release()
 		return nil, err
 	}
-	if resp == nil || resp.Body == nil {
-		release()
-		return resp, nil
+	if verifyPlain {
+		observePlainInferenceResponse(cfg, resp, func() { s.plainRequestTargets.Store(target, true) })
 	}
 	if cfg.UsesAccioOAuth() {
 		modelName, _ := req.Context().Value(accioModelContextKey{}).(string)
@@ -253,18 +288,32 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 			return nil, normalizeErr
 		}
 	}
-	if cfg.UsesQoderOAuth() {
-		tools, _ := req.Context().Value(qoderToolsContextKey{}).([]map[string]any)
-		if normalizeErr := normalizeQoderResponse(resp, tools); normalizeErr != nil {
-			_ = resp.Body.Close()
-			release()
-			return nil, normalizeErr
-		}
-	}
 	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
 	if cfg.UsesLoomySession() {
 		if err := normalizeLoomyResponse(resp); err != nil {
 			return nil, err
+		}
+	}
+	return resp, nil
+}
+
+/**
+ * @brief 发送一次最终请求，并将 Qoder 拒绝及成功流还原为代理可识别的响应。
+ * @param cfg 渠道配置。
+ * @param req 已签名、按本次尝试选好编码的请求。
+ * @return 返回的响应体由调用方关闭。
+ * @return 传输或响应归一化失败时返回错误。
+ */
+func (s *Server) sendInferenceRequest(cfg *model.Config, req *http.Request) (*http.Response, error) {
+	resp, err := s.getClientForChannel(cfg).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.UsesQoderOAuth() {
+		tools, _ := req.Context().Value(qoderToolsContextKey{}).([]map[string]any)
+		if normalizeErr := normalizeQoderResponse(resp, tools); normalizeErr != nil {
+			_ = resp.Body.Close()
+			return nil, normalizeErr
 		}
 	}
 	return resp, nil

@@ -53,7 +53,8 @@ type usageAccumulator struct {
  * @brief 增量解析上游 SSE 的用量、错误和语义终态
  */
 type sseUsageParser struct {
-	advisor *anthropicAdvisorAttempt ///< 当前上游 Messages 尝试的 advisor 归属记录。
+	advisor      *anthropicAdvisorAttempt     ///< 当前上游 Messages 尝试的 advisor 归属记录。
+	observeEvent func(string, map[string]any) ///< 可选观察器，只接收通过解析的非心跳 JSON 事件。
 	usageAccumulator
 
 	// 内部状态（增量解析）
@@ -646,6 +647,9 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	effectiveType := cmp.Or(payloadType, eventType)
 	if isHeartbeatEventType(effectiveType) {
 		return nil
+	}
+	if p.observeEvent != nil {
+		p.observeEvent(data, event)
 	}
 	p.responsesSSE = p.responsesSSE || isCodexSSEEventType(effectiveType)
 	if p.advisor != nil && (event["type"] == "message_start" || event["type"] == "content_block_start") {
