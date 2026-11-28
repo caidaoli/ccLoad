@@ -237,9 +237,6 @@ func newCodexUpstreamWebsocketSession(
 	maxAge time.Duration,
 	failureTracker *codexWebsocketFailureTracker,
 ) *codexUpstreamWebsocketSession {
-	if maxBodyBytes <= 0 {
-		maxBodyBytes = config.DefaultMaxBodyBytes
-	}
 	return &codexUpstreamWebsocketSession{
 		readNotify:      make(chan struct{}, 1),
 		readSpaceNotify: make(chan struct{}, 1),

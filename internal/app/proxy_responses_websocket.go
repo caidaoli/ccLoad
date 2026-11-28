@@ -1149,9 +1149,6 @@ type responsesWebsocketBridgeWriter struct {
 }
 
 func newResponsesWebsocketBridgeWriter(conn *websocket.Conn, maxBodyBytes int64) *responsesWebsocketBridgeWriter {
-	if maxBodyBytes <= 0 {
-		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
-	}
 	return &responsesWebsocketBridgeWriter{
 		conn:               conn,
 		header:             make(http.Header),

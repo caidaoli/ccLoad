@@ -1101,7 +1101,7 @@ func TestReasoningDecisionErrorRespectsTimeoutBudget(t *testing.T) {
 		{name: "second-judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge", priority: -10},
 	}, []string{business.server.URL, second.server.URL})
 	editReasoningAuto(env.server, func(cfg *model.ReasoningAutoConfig) { cfg.TimeoutMS = 100 })
-	env.server.cooldownManager = cooldown.NewManager(slowReasoningCooldownStore{env.store}, env.server)
+	env.server.cooldownManager = cooldown.NewManager(slowReasoningCooldownStore{env.store})
 	start := time.Now()
 	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("simple task"), nil)
 	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {

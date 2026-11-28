@@ -113,8 +113,7 @@ func prioritizeDeclaredProtocolURLs(sorted []sortedURL, configured model.Channel
 	return prioritizeProtocolURLs(sorted, configured, false)
 }
 
-// orderURLsWithSelector 返回用于故障切换的URL尝试顺序。
-// 当 selector 可用且存在多个URL时，优先用加权随机选首跳，其余URL按排序结果兜底。
+// orderURLsWithSelector 返回用于故障切换的URL尝试顺序：首跳加权随机，其余按排序结果兜底。
 // 单 URL 和多 URL 全禁用时均保留原候选兜底；Antigravity 使用独立的严格过滤路径。
 func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string) []sortedURL {
 	if len(urls) == 0 {
@@ -131,28 +130,7 @@ func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string
 		return ordered
 	}
 
-	sortedURLs := selector.SortURLs(channelID, urls)
-	if len(sortedURLs) <= 1 {
-		return sortedURLs
-	}
-
-	preferredURL, _ := selector.SelectURL(channelID, urls)
-	for i, entry := range sortedURLs {
-		if entry.url != preferredURL {
-			continue
-		}
-		if i == 0 {
-			return sortedURLs
-		}
-
-		reordered := make([]sortedURL, 0, len(sortedURLs))
-		reordered = append(reordered, entry)
-		reordered = append(reordered, sortedURLs[:i]...)
-		reordered = append(reordered, sortedURLs[i+1:]...)
-		return reordered
-	}
-
-	return sortedURLs
+	return selector.SortURLs(channelID, urls)
 }
 
 // orderChannelAttemptURLs is the single ordering policy used by proxy and

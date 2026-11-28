@@ -179,103 +179,6 @@ func (s *URLSelector) RemoveChannel(channelID int64) {
 	s.PruneChannel(channelID, nil)
 }
 
-// SelectURL 从候选URL中选择最优的
-// 返回选中的URL和在原列表中的索引
-func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
-	if len(urls) == 0 {
-		return "", -1
-	}
-	if len(urls) == 1 {
-		return urls[0], 0
-	}
-
-	now := time.Now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	type candidate struct {
-		url     string
-		idx     int
-		latency float64 // -1 表示无数据
-		cooled  bool
-	}
-
-	candidates := make([]candidate, 0, len(urls))
-	for i, u := range urls {
-		key := urlKey{channelID: channelID, url: u}
-		// 跳过手动禁用的URL
-		if s.disabled[key] {
-			continue
-		}
-		c := candidate{url: u, idx: i, latency: -1}
-
-		if e, ok := s.latencies[key]; ok {
-			c.latency = e.value
-		}
-		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
-			c.cooled = true
-		}
-		candidates = append(candidates, c)
-	}
-
-	// 所有URL都被禁用：退化到原始列表（兜底，避免死锁）
-	if len(candidates) == 0 {
-		return urls[0], 0
-	}
-
-	// 分离可用和冷却中的候选
-	var available, cooled []candidate
-	for _, c := range candidates {
-		if c.cooled {
-			cooled = append(cooled, c)
-		} else {
-			available = append(available, c)
-		}
-	}
-
-	// 如果所有URL都冷却了，退化到全部候选（兜底）
-	if len(available) == 0 {
-		available = cooled
-	}
-
-	// 未探索URL优先：随机选一个未探索的
-	var unknown, known []candidate
-	for _, c := range available {
-		if c.latency < 0 {
-			unknown = append(unknown, c)
-		} else {
-			known = append(known, c)
-		}
-	}
-	if len(unknown) > 0 {
-		pick := unknown[rand.IntN(len(unknown))]
-		return pick.url, pick.idx
-	}
-	// 所有URL已探索：加权随机（权重=1/latency），延迟越低概率越高
-	totalWeight := 0.0
-	weights := make([]float64, len(known))
-	for i, c := range known {
-		latency := c.latency
-		if latency <= 0 || math.IsNaN(latency) || math.IsInf(latency, 0) {
-			latency = 0.1
-		}
-		weights[i] = 1.0 / latency
-		totalWeight += weights[i]
-	}
-	if totalWeight <= 0 || math.IsNaN(totalWeight) || math.IsInf(totalWeight, 0) {
-		pick := known[rand.IntN(len(known))]
-		return pick.url, pick.idx
-	}
-	r := rand.Float64() * totalWeight
-	for i, w := range weights {
-		r -= w
-		if r <= 0 {
-			return known[i].url, known[i].idx
-		}
-	}
-	return known[len(known)-1].url, known[len(known)-1].idx
-}
-
 // RecordLatency 记录URL的首字节时间，更新EWMA
 func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Duration) {
 	key := urlKey{channelID: channelID, url: url}
@@ -525,11 +428,55 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		return 0
 	})
 
+	// 首组（首个候选所在的冷却分组）含未探索URL时，打乱后的首位已是均匀随机首跳；
+	// 全部已探索时按 1/latency 加权随机选首跳，其余保持排序结果兜底。
+	if candidates[0].latency >= 0 {
+		group := candidates
+		for i, c := range candidates {
+			if c.cooled != candidates[0].cooled {
+				group = candidates[:i]
+				break
+			}
+		}
+		if pick := weightedLatencyPick(len(group), func(i int) float64 { return group[i].latency }); pick > 0 {
+			first := candidates[pick]
+			copy(candidates[1:pick+1], candidates[:pick])
+			candidates[0] = first
+		}
+	}
+
 	result := make([]sortedURL, len(candidates))
 	for i, c := range candidates {
 		result[i] = sortedURL{url: c.url, idx: c.idx}
 	}
 	return result
+}
+
+/**
+ * @brief 按 1/latency 加权随机选取下标，延迟越低概率越高
+ * @param n 候选数，须大于 0
+ * @param latency 返回第 i 个候选的延迟（毫秒）；非正或非有限值按 0.1 处理
+ * @return 选中的候选下标
+ */
+func weightedLatencyPick(n int, latency func(int) float64) int {
+	totalWeight := 0.0
+	weights := make([]float64, n)
+	for i := range n {
+		ms := latency(i)
+		if ms <= 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
+			ms = 0.1
+		}
+		weights[i] = 1.0 / ms
+		totalWeight += weights[i]
+	}
+	r := rand.Float64() * totalWeight
+	for i, w := range weights {
+		r -= w
+		if r <= 0 {
+			return i
+		}
+	}
+	return n - 1
 }
 
 // DisableURL 手动禁用指定 URL；普通渠道仍保留全部禁用时的兜底，

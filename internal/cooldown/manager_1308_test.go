@@ -36,7 +36,7 @@ func TestHandleError_1308Error(t *testing.T) {
 	_ = store.CreateAPIKeysBatch(ctx, keys)
 
 	// 创建Manager
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	const clockFormat = "2006-01-02 15:04:05"
 	expectedTime := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 	resetBody := fmt.Appendf(nil, `{"type":"error","error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 %s 重置。"},"request_id":"xxx"}`, expectedTime.Format(clockFormat))

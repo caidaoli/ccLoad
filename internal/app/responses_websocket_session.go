@@ -35,9 +35,6 @@ type responsesWebsocketSession struct {
 }
 
 func newResponsesWebsocketSession(maxBodyBytes int64) *responsesWebsocketSession {
-	if maxBodyBytes <= 0 {
-		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
-	}
 	return &responsesWebsocketSession{lastResponseOutput: []byte("[]"), maxBodyBytes: maxBodyBytes}
 }
 

@@ -1038,7 +1038,7 @@ func TestHandleBatchSetEnabled(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 
 	ctx := context.Background()
 	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URLs: model.ChannelURLs{{URL: "https://x"}}, Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
@@ -1204,7 +1204,7 @@ func TestHandleBatchClearCooldowns(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 	server.urlSelector = NewURLSelector()
 
 	ctx := context.Background()

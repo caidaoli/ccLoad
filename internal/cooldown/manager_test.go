@@ -18,7 +18,7 @@ import (
 func TestHandleError_ClientError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	// 创建测试渠道
@@ -62,7 +62,7 @@ func TestHandleError_ClientError(t *testing.T) {
 func TestHandleError_KeyLevelError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	// 创建多Key渠道（3个Key）
@@ -122,7 +122,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 func TestHandleErrorCallerConfirmedModelScopedHTTP(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	cfg := createTestChannel(t, store, "test-provider-model-scope")
 	action := manager.DecideAction(context.Background(), ErrorInput{
 		ChannelID: cfg.ID, KeyIndex: NoKeyIndex, Model: "test-model",
@@ -141,7 +141,7 @@ func TestHandleErrorCallerConfirmedModelScopedHTTP(t *testing.T) {
 func TestHandleError_ChannelLevelError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-channel-error")
@@ -189,7 +189,7 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 func TestHandleError_HTTPModelAvailabilityScope(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	createChannel := func(t *testing.T, name string) *model.Config {
@@ -301,7 +301,7 @@ func TestHandleError_HTTPModelAvailabilityScope(t *testing.T) {
 func TestHandleError_Generic429CoolsOnlyCurrentKey(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -361,7 +361,7 @@ func TestHandleError_Generic429CoolsOnlyCurrentKey(t *testing.T) {
 func TestHandleError_FableLimitWithout5hHeadersKeepsSiblingModelAvailable(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name: "fable-limit", URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}}, Enabled: true,
@@ -405,7 +405,7 @@ func TestHandleError_FableLimitWithout5hHeadersKeepsSiblingModelAvailable(t *tes
 func TestHandleError_XAIFreeUsageExhaustedCoolsModelFor24Hours(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -471,7 +471,7 @@ func TestHandleError_XAIAccountFreeUsageExhaustedCoolsCredential(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := time.Now()
-			action := NewManager(store, nil).HandleError(ctx, ErrorInput{
+			action := NewManager(store).HandleError(ctx, ErrorInput{
 				ChannelID: cfg.ID, Model: "grok-4.5", ChannelModels: []string{"grok-4.5", "grok-4.6"},
 				KeyIndex: NoKeyIndex, StatusCode: status,
 				ErrorBody: []byte(`{"error":{"code":"subscription:free-usage-exhausted","message":"You've used all the included free usage for this account."}}`),
@@ -496,7 +496,7 @@ func TestHandleError_XAIAccountFreeUsageExhaustedCoolsCredential(t *testing.T) {
 func TestHandleError_ModelCooldownUsesExponentialBackoff(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -541,7 +541,7 @@ func TestHandleError_ModelCooldownUsesExponentialBackoff(t *testing.T) {
 func TestHandleError_HTTP400CoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -585,7 +585,7 @@ func TestHandleError_HTTP400CoolsOnlyCurrentModel(t *testing.T) {
 func TestHandleError_HTTP413CoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -629,7 +629,7 @@ func TestHandleError_HTTP413CoolsOnlyCurrentModel(t *testing.T) {
 func TestHandleError_Upstream499CoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -673,7 +673,7 @@ func TestHandleError_Upstream499CoolsOnlyCurrentModel(t *testing.T) {
 func TestHandleError_SSEChannelErrorCoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -717,7 +717,7 @@ func TestHandleError_SSEChannelErrorCoolsOnlyCurrentModel(t *testing.T) {
 func TestHandleError_StreamFailuresCoolOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -872,7 +872,7 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 
 			input := tt.input
 			input.ChannelID = cfg.ID
-			manager := NewManager(store, nil)
+			manager := NewManager(store)
 			if got := manager.CanFallbackToOtherKey(input); got != tt.wantKeyFallback {
 				t.Fatalf("CanFallbackToOtherKey()=%v, want %v", got, tt.wantKeyFallback)
 			}
@@ -930,7 +930,7 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 func TestHandleError_HTTP5xxCoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -985,7 +985,7 @@ func TestHandleError_HTTP5xxCoolsOnlyCurrentModel(t *testing.T) {
 func TestHandleError_LastModelCooldownPromotesChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -1006,11 +1006,12 @@ func TestHandleError_LastModelCooldownPromotesChannel(t *testing.T) {
 	}
 
 	action := manager.HandleError(ctx, ErrorInput{
-		ChannelID:  cfg.ID,
-		Model:      "model-b",
-		KeyIndex:   0,
-		StatusCode: 500,
-		ErrorBody:  []byte(`{"error":"internal server error"}`),
+		ChannelID:     cfg.ID,
+		Model:         "model-b",
+		ChannelModels: []string{"model-a", "model-b"},
+		KeyIndex:      0,
+		StatusCode:    500,
+		ErrorBody:     []byte(`{"error":"internal server error"}`),
 	})
 
 	if action != ActionRetryChannel {
@@ -1031,7 +1032,7 @@ func TestHandleError_LastModelCooldownPromotesChannel(t *testing.T) {
 func TestHandleError_LastKeyCooldownPromotesChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-all-keys-cooled")
@@ -1072,7 +1073,7 @@ func TestHandleError_LastKeyCooldownPromotesChannel(t *testing.T) {
 func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	// 创建单Key渠道
@@ -1110,7 +1111,7 @@ func TestHandleError_SingleKeyUpgrade(t *testing.T) {
 func TestHandleError_NetworkError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-network-error")
@@ -1172,7 +1173,7 @@ func TestHandleError_NetworkError(t *testing.T) {
 func TestClearChannelCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-clear-channel")
@@ -1210,7 +1211,7 @@ func TestClearChannelCooldown(t *testing.T) {
 func TestClearKeyCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-clear-key")
@@ -1261,7 +1262,7 @@ func TestClearKeyCooldown(t *testing.T) {
 func TestHandleError_MissingChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 
 	action := manager.HandleError(context.Background(), ErrorInput{
 		ChannelID:  99999,
@@ -1280,7 +1281,7 @@ func TestHandleError_MissingChannel(t *testing.T) {
 func TestHandleError_RateLimitClassification(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	// 创建多Key渠道
@@ -1435,7 +1436,7 @@ func TestHandleError_RateLimitClassification(t *testing.T) {
 func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-structured-429-quota")
@@ -1512,7 +1513,7 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	body := []byte(`{"error":{"code":"model_cooldown","message":"All credentials for model gpt-5.5 are cooling down via provider codex","model":"gpt-5.5","provider":"codex","reset_seconds":13792,"reset_time":"3h49m51s"}}`)
@@ -1643,7 +1644,7 @@ func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, cleanup := setupTestStore(t)
 			defer cleanup()
-			manager := NewManager(store, nil)
+			manager := NewManager(store)
 			ctx := t.Context()
 			cfg, err := store.CreateConfig(ctx, &model.Config{
 				Name: "test-codex-usage-frequency-limit", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
@@ -1709,7 +1710,7 @@ func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
 func TestHandleError_GeminiResourceExhaustedRetryIn(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	body := []byte(`{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.5-flash\nPlease retry in 17.409754061s.","status":"RESOURCE_EXHAUSTED"}}`)
@@ -1797,7 +1798,7 @@ func TestHandleError_GeminiResourceExhaustedRetryIn(t *testing.T) {
 func TestHandleError_FreeTierBudgetExceededWrappedIn500CoolsKeyThirtyMinutes(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-free-tier-budget-exceeded")
@@ -1850,7 +1851,7 @@ func TestHandleError_FreeTierBudgetExceededWrappedIn500CoolsKeyThirtyMinutes(t *
 func TestHandleError_FreeTierBudgetExceededSSEErrorCoolsKeyThirtyMinutes(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-free-tier-budget-exceeded-sse")
@@ -1903,7 +1904,7 @@ func TestHandleError_FreeTierBudgetExceededSSEErrorCoolsKeyThirtyMinutes(t *test
 func TestHandleError_Structured429QuotaSingleKeyPromotesChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-single-key-structured-429-quota")
@@ -1948,7 +1949,7 @@ func TestHandleError_Structured429QuotaSingleKeyPromotesChannel(t *testing.T) {
 func TestHandleError_TokenHarborRollingFreeAllowancePromotesSingleKeyChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-token-harbor-rolling-free-allowance")
@@ -1994,7 +1995,7 @@ func TestHandleError_TokenHarborRollingFreeAllowancePromotesSingleKeyChannel(t *
 func TestHandleError_ChineseRelativeQuotaCooldown(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-chinese-relative-quota")
@@ -2051,7 +2052,7 @@ func TestHandleError_ChineseRelativeQuotaCooldown(t *testing.T) {
 func TestHandleError_GlobalFixedWindowQuotaCoolsKeyUntilRetryClock(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -2121,7 +2122,7 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsKeyUntilRetryClock(t *testing.T)
 func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-usage-limit-multi-key")
@@ -2173,7 +2174,7 @@ func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 func TestHandleError_AntigravityQuotaUsesMetadataModelAndResetTimestamp(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -2234,7 +2235,7 @@ func TestHandleError_AntigravityQuotaUsesMetadataModelAndResetTimestamp(t *testi
 func TestHandleError_UsageLimitReachedWithoutKeyCoolsModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -2290,7 +2291,7 @@ func TestHandleError_UsageLimitReachedWithoutKeyCoolsModel(t *testing.T) {
 func TestHandleError_UsageLimitReachedSingleKeyCoolsChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-usage-limit-single-key")
@@ -2412,7 +2413,7 @@ func createTestChannel(t *testing.T, store storage.Store, name string) *model.Co
 func TestHandleError_WebsocketConnectionLimitWithoutKey(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-ws-conn-limit")
@@ -2451,7 +2452,7 @@ func TestHandleError_WebsocketConnectionLimitWithoutKey(t *testing.T) {
 func TestHandleError_CloudflareChallengeCoolsChannelWithoutKeys(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 
 	cfg := createTestChannel(t, store, "test-cf-challenge")
@@ -2505,7 +2506,7 @@ func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, cleanup := setupTestStore(t)
 			defer cleanup()
-			manager := NewManager(store, nil)
+			manager := NewManager(store)
 			ctx := context.Background()
 			cfg := createTestChannel(t, store, "test-keyless-"+tc.name)
 
@@ -2540,7 +2541,7 @@ func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
 func TestHandleError_CapacityRetryAfterWithoutKeyCoolsReportingModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name: "capacity-retry-after", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
@@ -2584,7 +2585,7 @@ func TestHandleError_Ordinary429RetryAfterWithoutKeyPreservesBackoff(t *testing.
 		t.Run(retryAfter, func(t *testing.T) {
 			store, cleanup := setupTestStore(t)
 			defer cleanup()
-			manager := NewManager(store, nil)
+			manager := NewManager(store)
 			ctx := context.Background()
 			cfg, err := store.CreateConfig(ctx, &model.Config{
 				Name: "ordinary-rate-limit", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,

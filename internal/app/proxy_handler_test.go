@@ -31,6 +31,7 @@ import (
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 	srv := &Server{
+		bodyLimits:        newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes),
 		requestBodyMemory: requestBodyMemoryBudget{limit: config.DefaultRequestBodyMemoryBudgetBytes},
 		concurrencySem:    make(chan struct{}, 1),
 		activeRequests:    newActiveRequestManager(),
@@ -216,7 +217,7 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 			c, _ := newTestContext(t, req)
 
-			incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
+			incoming, err := parseIncomingRequest(c, newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes), testRequestBodyMemory(t))
 
 			if tt.expectError && err == nil {
 				t.Errorf("期望错误但未发生")
@@ -597,7 +598,7 @@ func TestParseIncomingRequest_MultipartModel(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
+	incoming, err := parseIncomingRequest(c, newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes), testRequestBodyMemory(t))
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
@@ -613,7 +614,7 @@ func TestParseIncomingRequest_RejectsMalformedMultipartFraming(t *testing.T) {
 	req := newRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString("not a multipart payload"))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
 	c, _ := newTestContext(t, req)
-	if _, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t)); err == nil {
+	if _, err := parseIncomingRequest(c, newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes), testRequestBodyMemory(t)); err == nil {
 		t.Fatal("malformed multipart framing was accepted")
 	}
 }
@@ -626,7 +627,7 @@ func TestParseIncomingRequest_ImagesJSON(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
+	incoming, err := parseIncomingRequest(c, newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes), testRequestBodyMemory(t))
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
@@ -655,7 +656,7 @@ func TestParseIncomingRequest_ImagesLargerBodyAllowed(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c, requestBodyLimits{}, testRequestBodyMemory(t))
+	incoming, err := parseIncomingRequest(c, newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes), testRequestBodyMemory(t))
 	if err != nil {
 		t.Fatalf("images 路径 15MB 请求体不应报错, 实际: %v", err)
 	}

@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -292,30 +291,11 @@ type requestBodyLimits struct {
 	images   int64
 }
 
-func normalizeMaxBodyBytes(maxBodyBytes int64) int64 {
-	if maxBodyBytes <= 0 {
-		return config.DefaultMaxBodyBytes
-	}
-	return maxBodyBytes
-}
-
 func newRequestBodyLimits(maxBody, maxImageBody int) requestBodyLimits {
-	if maxBody <= 0 {
-		maxBody = config.DefaultMaxBodyBytes
-	}
-	if maxImageBody <= 0 {
-		maxImageBody = config.DefaultMaxImageBodyBytes
-	}
 	return requestBodyLimits{standard: int64(maxBody), images: int64(maxImageBody)}
 }
 
 func (l requestBodyLimits) maxForPath(requestPath string) int64 {
-	if l.standard <= 0 {
-		l.standard = config.DefaultMaxBodyBytes
-	}
-	if l.images <= 0 {
-		l.images = config.DefaultMaxImageBodyBytes
-	}
 	if requestBodyLimitSetting(requestPath) == "max_image_body_bytes" {
 		return l.images
 	}

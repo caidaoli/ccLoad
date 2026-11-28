@@ -309,7 +309,7 @@ func TestHandleError_ConfiguredCooldownDetectionOverridesBuiltin(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	cfg := createTestChannel(t, store, "configured-detection")
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 
 	before := time.Now()
 	action := manager.HandleError(ctx, ErrorInput{
@@ -372,7 +372,7 @@ func TestHandleError_ReusesConfiguredDetection(t *testing.T) {
 		ChannelID: cfg.ID, KeyIndex: 0, Model: "test-model", StatusCode: 502, UpstreamStatusCode: 200,
 		ErrorBody: body, CooldownDetectionRules: rules, ConfiguredDetection: &evaluation,
 	}
-	manager := NewManager(store, nil)
+	manager := NewManager(store)
 	if got := manager.DecideAction(ctx, in); got != ActionRetryKey {
 		t.Fatalf("DecideAction() = %v, want ActionRetryKey", got)
 	}
@@ -435,7 +435,7 @@ func TestHandleError_ConfiguredCooldownDetectionStoresSelectedScope(t *testing.T
 			}
 
 			before := time.Now()
-			action := NewManager(store, nil).HandleError(ctx, ErrorInput{
+			action := NewManager(store).HandleError(ctx, ErrorInput{
 				ChannelID:  cfg.ID,
 				KeyIndex:   0,
 				Model:      tt.model,

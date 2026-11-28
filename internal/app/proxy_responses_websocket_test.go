@@ -519,7 +519,7 @@ func TestResponsesWebsocketBridgeWriterRejectsInvalidJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	writer := newResponsesWebsocketBridgeWriter(conn, 0)
+	writer := newResponsesWebsocketBridgeWriter(conn, config.DefaultMaxBodyBytes)
 	_, writeErr := writer.Write([]byte("data: " + string(truncated) + "\n\n"))
 	if writeErr == nil {
 		t.Fatal("truncated response.completed SSE must fail Write")
@@ -542,7 +542,7 @@ func TestResponsesWebsocketBridgeWriterRejectsInvalidJSON(t *testing.T) {
 // request-side transcript limit, instead of accumulating without bound.
 func TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes(t *testing.T) {
 	t.Parallel()
-	writer := newResponsesWebsocketBridgeWriter(newBridgeWriterTestConn(t), 0)
+	writer := newResponsesWebsocketBridgeWriter(newBridgeWriterTestConn(t), config.DefaultMaxBodyBytes)
 
 	text := strings.Repeat("x", 512*1024)
 	var failed error
@@ -1533,7 +1533,7 @@ func TestResponsesWebsocketInterruptDuringHTTPFrameWrite(t *testing.T) {
 			interrupt := &responsesWebsocketInterrupt{}
 			interrupt.begin(cancel, nil)
 			defer interrupt.end()
-			bridge := newResponsesWebsocketBridgeWriter(conn, 0)
+			bridge := newResponsesWebsocketBridgeWriter(conn, config.DefaultMaxBodyBytes)
 			bridge.interrupt = interrupt
 			var target http.ResponseWriter = bridge
 			if tc.privacy {

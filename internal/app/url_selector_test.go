@@ -8,11 +8,6 @@ import (
 func TestURLSelector_EmptyURLs(t *testing.T) {
 	sel := NewURLSelector()
 
-	url, idx := sel.SelectURL(1, nil)
-	if url != "" || idx != -1 {
-		t.Fatalf("expected empty selection for empty urls, got (%q, %d)", url, idx)
-	}
-
 	sorted := sel.SortURLs(1, nil)
 	if len(sorted) != 0 {
 		t.Fatalf("expected empty sorted urls, got %v", sorted)
@@ -47,7 +42,7 @@ func TestURLSelector_ColdStart_Distributes(t *testing.T) {
 	// 冷启动时应随机分布到所有URL，而非永远选第一个
 	seen := map[string]int{}
 	for range 100 {
-		url, _ := sel.SelectURL(1, urls)
+		url := sel.SortURLs(1, urls)[0].url
 		seen[url]++
 	}
 	for _, u := range urls {
@@ -67,7 +62,7 @@ func TestURLSelector_WeightedRandom(t *testing.T) {
 
 	fastCount := 0
 	for range 1000 {
-		url, _ := sel.SelectURL(1, urls)
+		url := sel.SortURLs(1, urls)[0].url
 		if url == "https://fast.com" {
 			fastCount++
 		}
@@ -85,7 +80,7 @@ func TestURLSelector_AllCooledDown_ReturnsBest(t *testing.T) {
 	sel.CooldownURL(1, "https://b.com")
 
 	// 所有URL都冷却时，仍然返回一个URL（兜底）
-	url, _ := sel.SelectURL(1, urls)
+	url := sel.SortURLs(1, urls)[0].url
 	if url == "" {
 		t.Error("all cooled: should still return a URL as fallback")
 	}
@@ -100,7 +95,7 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 	sel.CooldownURL(1, "https://a.com")
 
 	// 冷却期间：a被排除，只能选b
-	url, _ := sel.SelectURL(1, urls)
+	url := sel.SortURLs(1, urls)[0].url
 	if url != "https://b.com" {
 		t.Errorf("during cooldown: expected b, got %s", url)
 	}
@@ -110,7 +105,7 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 	time.Sleep(15 * time.Millisecond)
 	aCount := 0
 	for range 200 {
-		url, _ = sel.SelectURL(1, urls)
+		url = sel.SortURLs(1, urls)[0].url
 		if url == "https://a.com" {
 			aCount++
 		}
@@ -134,10 +129,10 @@ func TestURLSelector_IndependentChannels(t *testing.T) {
 	// 50ms vs 500ms → 快的占 1/50 / (1/50+1/500) = 90.9%
 	ch2a, ch1b := 0, 0
 	for range 200 {
-		if url, _ := sel.SelectURL(2, urls); url == "https://a.com" {
+		if url := sel.SortURLs(2, urls)[0].url; url == "https://a.com" {
 			ch2a++
 		}
-		if url, _ := sel.SelectURL(1, urls); url == "https://b.com" {
+		if url := sel.SortURLs(1, urls)[0].url; url == "https://b.com" {
 			ch1b++
 		}
 	}
@@ -159,7 +154,7 @@ func TestURLSelector_ExploreFirst(t *testing.T) {
 	// 未探索URL应该被优先选择（b或c），而非已知的a
 	seen := map[string]int{}
 	for range 50 {
-		url, _ := sel.SelectURL(1, urls)
+		url := sel.SortURLs(1, urls)[0].url
 		seen[url]++
 	}
 	if seen["https://a.com"] > 0 {
@@ -203,7 +198,7 @@ func TestURLSelector_SubMillisecondLatencyWeightedRandom(t *testing.T) {
 	fastCount := 0
 	rounds := 200
 	for range rounds {
-		url, _ := sel.SelectURL(1, urls)
+		url := sel.SortURLs(1, urls)[0].url
 		if url == "https://fast.com" {
 			fastCount++
 		}

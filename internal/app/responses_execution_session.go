@@ -266,9 +266,6 @@ func newResponsesExecutionSessionStore(
 	maxBodyBytes int64,
 	upstreamConnectionMaxAge time.Duration,
 ) *responsesExecutionSessionStore {
-	if maxBodyBytes <= 0 {
-		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
-	}
 	return &responsesExecutionSessionStore{
 		sessions:                 make(map[string]*responsesExecutionSession),
 		configService:            cfg,

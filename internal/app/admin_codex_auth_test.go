@@ -240,7 +240,7 @@ func anthropicResetTestResponse(request *http.Request, status int, body string) 
 
 func configureAnthropicResetTestClient(server *Server, store storage.Store, transport oauthUsageRoundTripper) {
 	server.client = &http.Client{Transport: transport}
-	server.cooldownManager = cooldown.NewManager(store, nil)
+	server.cooldownManager = cooldown.NewManager(store)
 	server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store,
 		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil)
 }
@@ -6423,7 +6423,7 @@ func TestHandleCreateCodexPersonalAccessTokenPersistsStaticCredential(t *testing
 
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 	service := codexauth.NewService(whoami.Client())
 	service.WhoAmIURL = whoami.URL
 	server.codexService = service
@@ -7588,7 +7588,7 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 	if err := store.SetModelCooldown(context.Background(), channel.ID, "gpt-5.4", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 
 	var detailRequests, consumeRequests atomic.Int32
 	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {

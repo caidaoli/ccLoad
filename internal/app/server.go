@@ -495,8 +495,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	s.vertexCredentials = newVertexCredentialManager(s.getClientForChannel)
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
-	// 传入Server作为configGetter，利用缓存层查询渠道配置
-	s.cooldownManager = cooldown.NewManager(store, s)
+	s.cooldownManager = cooldown.NewManager(store)
 
 	// 初始化Key选择器（移除store依赖，避免重复查询）
 	s.keySelector = NewKeySelector()
@@ -1129,15 +1128,22 @@ func (s *Server) getChannelCache() *storage.ChannelCache {
 	return s.channelCache
 }
 
+/**
+ * @brief 经渠道缓存读取，未装配缓存时直接读存储
+ * @tparam T 读取结果类型
+ * @param s 服务实例
+ * @param readCache 缓存读取；缓存内部已在刷新失败时降级查库
+ * @param readStore 未装配缓存时的存储读取
+ * @return 读取结果
+ * @return 缓存或存储的读取错误，不再重复查库
+ */
 func readThroughChannelCache[T any](
 	s *Server,
 	readCache func(*storage.ChannelCache) (T, error),
 	readStore func() (T, error),
 ) (T, error) {
 	if cache := s.getChannelCache(); cache != nil {
-		if value, err := readCache(cache); err == nil {
-			return value, nil
-		}
+		return readCache(cache)
 	}
 	return readStore()
 }
@@ -1659,7 +1665,13 @@ func buildChannelProxyTransport(rawProxyURL string, skipTLSVerify bool, channelC
 	return base, nil
 }
 
-// GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
+/**
+ * @brief 获取渠道配置，优先走渠道缓存
+ * @param ctx 请求上下文
+ * @param channelID 渠道 ID
+ * @return 渠道配置
+ * @return 渠道不存在或读取失败时的存储错误
+ */
 func (s *Server) GetConfig(ctx context.Context, channelID int64) (*model.Config, error) {
 	if cache := s.getChannelCache(); cache != nil {
 		return cache.GetConfig(ctx, channelID)

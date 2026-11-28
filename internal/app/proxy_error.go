@@ -251,7 +251,7 @@ func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput
 	}
 	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
 	in.ChannelKeyCount = cfg.KeyCount
-	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {
+	if len(in.ChannelModels) == 0 {
 		in.ChannelModels = s.channelModelCooldownKeys(cfg)
 	}
 	return in

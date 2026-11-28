@@ -1485,6 +1485,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			return
 		}
 	}
+	req.APIKeys = req.normalizeAPIKeys()
 	if existing.UsesOAuth() {
 		if req.AuthType != existing.GetAuthType() {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel auth_type is read-only")
@@ -1495,12 +1496,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		// 只校验形状不校验具体值：后台自动刷新会在编辑器打开期间轮换 AT，
 		// 比对当前掩码值会把正常保存误判成改写凭证（保存报 409）。
 		// 掩码不可逆，任何掩码形状的值都无法还原成可用凭证。
-		submittedKeys := req.normalizeAPIKeys()
-		if len(submittedKeys) > 1 {
+		if len(req.APIKeys) > 1 {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel accepts at most one synthetic API key row")
 			return
 		}
-		if len(submittedKeys) == 1 && !util.IsMaskedAPIKey(submittedKeys[0].APIKey) {
+		if len(req.APIKeys) == 1 && !util.IsMaskedAPIKey(req.APIKeys[0].APIKey) {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel API keys are read-only")
 			return
 		}
@@ -1522,14 +1522,10 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		req.Weight = &weight
 	}
 	if !existing.UsesOAuth() {
-		submittedKeys := req.normalizeAPIKeys()
-		preserveOmittedAPIKeyMetadata(submittedKeys, oldKeys)
-		req.APIKeys = submittedKeys
-		req.APIKey = strings.Join(apiKeyStrings(submittedKeys), ",")
+		preserveOmittedAPIKeyMetadata(req.APIKeys, oldKeys)
 	}
 	// Normalize submitted scopes before validation so a stale editor cannot
 	// resurrect models that were removed from the channel in the meantime.
-	req.APIKeys = req.normalizeAPIKeys()
 	normalizeAPIKeyScopesForModels(req.APIKeys, req.Models)
 	req.APIKey = strings.Join(apiKeyStrings(req.APIKeys), ",")
 
@@ -1570,8 +1566,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	newKeys := req.normalizeAPIKeys()
-	normalizeAPIKeyScopesForModels(newKeys, req.Models)
+	newKeys := req.APIKeys
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
 		keyStrategy = channelKeyStrategy(oldKeys)
@@ -1608,14 +1603,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 
 	// OAuth 渠道倍率经合成 Key 行回传；未提交时保留现值，避免 UpdateConfig 无条件覆盖成 0。
 	if existing.UsesOAuth() {
-		submitted := req.normalizeAPIKeys()
-		if len(submitted) == 0 || submitted[0].CostMultiplier == nil {
+		if len(req.APIKeys) == 0 || req.APIKeys[0].CostMultiplier == nil {
 			multiplier := existing.CostMultiplier
-			if len(submitted) == 0 {
+			if len(req.APIKeys) == 0 {
 				req.APIKeys = []ChannelAPIKeyRequest{{CostMultiplier: &multiplier}}
 			} else {
-				submitted[0].CostMultiplier = &multiplier
-				req.APIKeys = submitted
+				req.APIKeys[0].CostMultiplier = &multiplier
 			}
 		}
 	}

@@ -166,14 +166,6 @@ func TestMaxProxyBodyBytesUsesSeparateImageLimit(t *testing.T) {
 	if got := limits.maxForPath("/v1/images/generations"); got != 8192 {
 		t.Fatalf("maxProxyBodyBytes(/v1/images/generations)=%d, want 8192", got)
 	}
-
-	limits = newRequestBodyLimits(0, -5)
-	if got := limits.maxForPath("/v1/messages"); got != int64(config.DefaultMaxBodyBytes) {
-		t.Fatalf("non-positive limit=%d, want default %d", got, config.DefaultMaxBodyBytes)
-	}
-	if got := limits.maxForPath("/v1/images/edits"); got != int64(config.DefaultMaxImageBodyBytes) {
-		t.Fatalf("non-positive image limit=%d, want default %d", got, config.DefaultMaxImageBodyBytes)
-	}
 }
 
 func TestNewServerParallelConstructionKeepsRuntimeConfigIsolated(t *testing.T) {

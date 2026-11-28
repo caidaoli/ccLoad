@@ -35,8 +35,8 @@ const NoKeyIndex = -1
  */
 type ErrorInput struct {
 	ChannelID          int64
-	Model              string   // 实际发送给上游的模型名
-	ChannelModels      []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
+	Model              string   ///< 实际发送给上游的模型名，调用方已去除首尾空白
+	ChannelModels      []string ///< 该渠道可实际发送的模型键（已去空白、去重、非空），用于判断模型资源是否全部冷却
 	ChannelKeyCount    int      ///< 渠道快照中的启用 Key 数，包含正在冷却的 Key。
 	KeyIndex           int
 	StatusCode         int
@@ -54,18 +54,11 @@ type ErrorInput struct {
 	ConfiguredDetection    *DetectionEvaluation ///< 已确认有效的规则匹配结果；非 nil 时复用规则及原始冷却截止时间
 }
 
-// ConfigGetter 获取渠道配置的接口（支持缓存）
-// 设计原则：接口隔离，cooldown包不依赖具体的cache实现
-type ConfigGetter interface {
-	GetConfig(ctx context.Context, channelID int64) (*model.Config, error)
-}
-
 // Manager 冷却管理器
 // 统一管理 Key、模型和渠道冷却逻辑
 // 遵循SRP原则：专注于冷却决策和执行
 type Manager struct {
-	store        storage.Store
-	configGetter ConfigGetter // 可选：优先使用缓存层（性能提升~60%）
+	store storage.Store
 }
 
 type cooldownDecision struct {
@@ -117,13 +110,13 @@ func (m *Manager) Evaluate(in ErrorInput) Decision {
 	return result
 }
 
-// NewManager 创建冷却管理器实例
-// configGetter: 可选参数，传入nil时降级到store.GetConfig
-func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
-	return &Manager{
-		store:        store,
-		configGetter: configGetter,
-	}
+/**
+ * @brief 创建冷却管理器实例。
+ * @param store 冷却状态存储。
+ * @return 冷却管理器。
+ */
+func NewManager(store storage.Store) *Manager {
+	return &Manager{store: store}
 }
 
 /**
@@ -147,7 +140,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		// 继续在同一渠道里换Key只是在浪费重试预算、扩大故障面。
 		errLevel = util.ErrorLevelChannel
 		if in.ModelScoped || util.IsModelScopedStreamFailure(statusCode) {
-			decision.model = strings.TrimSpace(in.Model)
+			decision.model = in.Model
 			if decision.model != "" {
 				decision.modelScoped = true
 			}
@@ -189,7 +182,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		if in.KeyIndex == NoKeyIndex && classification.HasKeyCooldownUntil && !classification.CredentialScoped {
 			decision.model = strings.TrimSpace(classification.Model)
 			if decision.model == "" {
-				decision.model = strings.TrimSpace(in.Model)
+				decision.model = in.Model
 			}
 			if decision.model != "" {
 				decision.modelScoped = true
@@ -203,7 +196,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		if classification.ModelScoped {
 			decision.model = strings.TrimSpace(classification.Model)
 			if decision.model == "" {
-				decision.model = strings.TrimSpace(in.Model)
+				decision.model = in.Model
 			}
 			if decision.model != "" {
 				decision.modelScoped = true
@@ -216,13 +209,13 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			!decision.hasChannelCooldownUntil &&
 			decision.channelCooldownReason == "" &&
 			util.IsModelScopedHTTPStatus(statusCode) {
-			decision.model = strings.TrimSpace(in.Model)
+			decision.model = in.Model
 			if decision.model != "" {
 				decision.modelScoped = true
 			}
 		}
-		if in.ModelScoped && strings.TrimSpace(in.Model) != "" {
-			decision.model = strings.TrimSpace(in.Model)
+		if in.ModelScoped && in.Model != "" {
+			decision.model = in.Model
 			decision.modelScoped = true
 		}
 	}
@@ -298,7 +291,7 @@ func configuredCooldownDecision(in ErrorInput, now time.Time) (cooldownDecision,
 			keyCooldownReason:   reason,
 		}, true
 	case model.CooldownScopeModel:
-		modelName := strings.TrimSpace(in.Model)
+		modelName := in.Model
 		if modelName == "" {
 			return cooldownDecision{}, false
 		}
@@ -552,10 +545,7 @@ func (m *Manager) allEnabledKeysCooldownUntil(ctx context.Context, channelID int
 }
 
 func (m *Manager) allConfiguredModelsCooldownUntil(ctx context.Context, in ErrorInput, now time.Time) (time.Time, bool) {
-	models := normalizeModelKeys(in.ChannelModels)
-	if len(models) == 0 {
-		models = m.configuredModelKeys(ctx, in.ChannelID)
-	}
+	models := in.ChannelModels
 	if len(models) == 0 {
 		return time.Time{}, false
 	}
@@ -577,51 +567,6 @@ func (m *Manager) allConfiguredModelsCooldownUntil(ctx context.Context, in Error
 		}
 	}
 	return earliest, !earliest.IsZero()
-}
-
-func (m *Manager) configuredModelKeys(ctx context.Context, channelID int64) []string {
-	var (
-		cfg *model.Config
-		err error
-	)
-	if m.configGetter != nil {
-		cfg, err = m.configGetter.GetConfig(ctx, channelID)
-	} else {
-		cfg, err = m.store.GetConfig(ctx, channelID)
-	}
-	if err != nil || cfg == nil {
-		if err != nil {
-			log.Printf("[WARN] 查询渠道模型失败 (channel=%d): %v", channelID, err)
-		}
-		return nil
-	}
-
-	models := make([]string, 0, len(cfg.ModelEntries))
-	for _, entry := range cfg.ModelEntries {
-		modelName := strings.TrimSpace(entry.RedirectModel)
-		if modelName == "" {
-			modelName = strings.TrimSpace(entry.Model)
-		}
-		models = append(models, modelName)
-	}
-	return normalizeModelKeys(models)
-}
-
-func normalizeModelKeys(models []string) []string {
-	seen := make(map[string]struct{}, len(models))
-	normalized := make([]string, 0, len(models))
-	for _, modelName := range models {
-		modelName = strings.TrimSpace(modelName)
-		if modelName == "" {
-			continue
-		}
-		if _, exists := seen[modelName]; exists {
-			continue
-		}
-		seen[modelName] = struct{}{}
-		normalized = append(normalized, modelName)
-	}
-	return normalized
 }
 
 // ClearChannelCooldown 清除渠道冷却状态

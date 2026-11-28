@@ -1650,7 +1650,7 @@ func TestHandleUpdateChannel_ClearAllCooldownsShouldTakeEffectImmediately(t *tes
 	defer cleanup()
 
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 
 	ctx := context.Background()
 
@@ -1770,7 +1770,7 @@ func TestHandleUpdateChannel_EnableClearsAllCooldownsImmediately(t *testing.T) {
 	defer cleanup()
 
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -3082,7 +3082,7 @@ func TestChannelRequestValidate(t *testing.T) {
 func TestHandleChannelAPIKeyPriorities(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 	server.channelManagement = newChannelManagementService(store, func(*model.Config) *http.Client { return server.client })
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
 	ctx := context.Background()
@@ -3177,7 +3177,7 @@ func TestHandleCreateChannelRejectsInvalidKeyPriority(t *testing.T) {
 func TestHandleChannelWeights(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	server.cooldownManager = cooldown.NewManager(store, server)
+	server.cooldownManager = cooldown.NewManager(store)
 	server.channelManagement = newChannelManagementService(store, func(*model.Config) *http.Client { return server.client })
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
 	ctx := context.Background()
