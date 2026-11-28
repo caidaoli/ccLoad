@@ -480,13 +480,49 @@ func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config
 	return config, nil
 }
 
-// CompareAndSwapOAuthCredential replaces the complete private credential only
-// when both its provider and previous payload still match.
+/**
+ * @brief 仅在认证类型与旧凭证匹配时替换完整 OAuth 凭证。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedAuthType 预期的 OAuth 认证类型。
+ * @param expectedCredential 预期的旧凭证原文。
+ * @param nextCredential 待写入的新凭证原文。
+ * @return 成功替换时为 true；渠道不存在或身份已变化时为 false。
+ * @return 凭证非法、取消或数据库失败时返回错误。
+ */
 func (s *SQLStore) CompareAndSwapOAuthCredential(
 	ctx context.Context,
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
 ) (bool, error) {
+	return s.compareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential, false)
+}
+
+/**
+ * @brief 在同一事务中替换 Accio 授权凭证并清理旧账号的额度和渠道冷却。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedCredential 预期的旧凭证原文。
+ * @param nextCredential 重授权后的完整凭证原文。
+ * @return 成功重授权时为 true；渠道不存在或身份已变化时为 false。
+ * @return 凭证非法、取消或数据库失败时返回错误。
+ */
+func (s *SQLStore) ReauthorizeAccioCredential(ctx context.Context, channelID int64, expectedCredential, nextCredential string) (bool, error) {
+	return s.compareAndSwapOAuthCredential(ctx, channelID, model.AuthTypeAccioOAuth, expectedCredential, nextCredential, true)
+}
+
+/**
+ * @brief 锁定渠道后比较并替换凭证，同时处理明确重授权要求的冷却清理。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedAuthType 预期的 OAuth 认证类型。
+ * @param expectedCredential 预期的旧凭证原文。
+ * @param nextCredential 待写入的新凭证原文。
+ * @param reauthorizeAccio true 时清理 Accio 账号及渠道冷却，普通令牌刷新保留冷却。
+ * @return 成功替换时为 true；渠道不存在或身份已变化时为 false。
+ * @return 凭证非法、取消或数据库失败时返回错误。
+ */
+func (s *SQLStore) compareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string, reauthorizeAccio bool) (bool, error) {
 	authType := model.NormalizeAuthType(expectedAuthType)
 	if authType == "" || model.UsesAPIKeyCredentials(authType) {
 		return false, errors.New("OAuth auth type is invalid")
@@ -510,10 +546,17 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 		if currentAuthType != authType || currentCredential != expectedCredential {
 			return nil
 		}
-		if _, updateErr := s.execTx(ctx, tx, `
-			UPDATE channels SET oauth_credential = ?, updated_at = ? WHERE id = ?
-		`, nextCredential, timeToUnix(time.Now()), channelID); updateErr != nil {
+		query := `UPDATE channels SET oauth_credential = ?, updated_at = ?`
+		if reauthorizeAccio {
+			query += `, cooldown_until = 0, cooldown_duration_ms = 0`
+		}
+		if _, updateErr := s.execTx(ctx, tx, query+` WHERE id = ?`, nextCredential, timeToUnix(time.Now()), channelID); updateErr != nil {
 			return updateErr
+		}
+		if reauthorizeAccio {
+			if _, err := s.execTx(ctx, tx, `DELETE FROM channel_model_cooldowns WHERE channel_id = ? AND cooldown_duration_ms < 0`, channelID); err != nil {
+				return fmt.Errorf("clear Accio quota cooldowns: %w", err)
+			}
 		}
 		matched = true
 		return nil

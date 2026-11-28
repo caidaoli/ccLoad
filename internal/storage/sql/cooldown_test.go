@@ -133,6 +133,180 @@ func TestCooldown_ChannelCooldownIfOAuthCredential(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证同轮 Accio 冷却只查询一次，确认窗口只校准该轮模型的到期时间。
+ * @param t 测试上下文。
+ */
+func TestCooldown_AccioQuotaWindow(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := t.Context()
+	const credential = `{"type":"accio","region":"global","access_token":"old","user_id":"account"}`
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "Accio", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second).Add(time.Millisecond)
+	provisional, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, "first", now)
+	if err != nil || !probe || !provisional.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("begin=(%v, %v, %v)", provisional, probe, err)
+	}
+	joined, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, "second", now.Add(time.Second))
+	if err != nil || probe || !joined.Equal(provisional) {
+		t.Fatalf("join=(%v, %v, %v), want existing window %v and no probe", joined, probe, err, provisional)
+	}
+	if err := store.SetModelCooldown(ctx, channel.ID, "ordinary", provisional); err != nil {
+		t.Fatal(err)
+	}
+	if until, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, "replaced", now); err != nil || probe || !until.Equal(provisional) {
+		t.Fatalf("begin model cooled again by ordinary failure: (%v, %v, %v)", until, probe, err)
+	}
+	if err := store.SetModelCooldown(ctx, channel.ID, "replaced", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if until, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, "replaced", now); err != nil || probe || !until.IsZero() {
+		t.Fatalf("preserve longer model cooldown: begin=(%v, %v, %v)", until, probe, err)
+	}
+	channels, err := store.GetAllChannelCooldowns(ctx)
+	if err != nil || !channels[channel.ID].IsZero() {
+		t.Fatalf("temporary model cooldown affected channel: %v, %v", channels, err)
+	}
+	resetAt := now.Add(3 * time.Minute).Truncate(time.Second)
+	if ok, err := store.ConfirmAccioQuotaWindow(ctx, channel.ID, credential, "first", provisional, resetAt); err != nil || !ok {
+		t.Fatalf("confirm=(%v, %v)", ok, err)
+	}
+	models, err := store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]time.Time{
+		"first": resetAt, "second": resetAt, model.AccioQuotaWindowModel: resetAt,
+		"ordinary": provisional.Truncate(time.Second), "replaced": now.Add(time.Hour).Truncate(time.Second),
+	} {
+		if got := models[channel.ID][name]; !got.Equal(want) {
+			t.Errorf("model %q cooldown=%v, want %v", name, got, want)
+		}
+	}
+	channels, err = store.GetAllChannelCooldowns(ctx)
+	if err != nil || !channels[channel.ID].Equal(resetAt) {
+		t.Fatalf("confirmed channel cooldown=%v, want %v: %v", channels[channel.ID], resetAt, err)
+	}
+	if until, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, "third", now); err != nil || probe || !until.IsZero() {
+		t.Fatalf("begin in confirmed window=(%v, %v, %v)", until, probe, err)
+	}
+	if err := store.ResetAllCooldowns(ctx, channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	models, err = store.GetAllModelCooldowns(ctx)
+	if err != nil || len(models[channel.ID]) != 0 {
+		t.Fatalf("manual reset left model or account cooldowns: %v, %v", models, err)
+	}
+}
+
+/**
+ * @brief 验证重建同秒窗口、更新凭证和清理模型均使旧查询失效。
+ * @param t 测试上下文。
+ */
+func TestCooldown_AccioQuotaWindowRejectsStaleResults(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := t.Context()
+	const oldCredential = `{"region":"global","access_token":"old"}`
+	const newCredential = `{"region":"global","access_token":"new"}`
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "Accio", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: oldCredential,
+		URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	oldUntil, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, oldCredential, "first", now)
+	if err != nil || !probe {
+		t.Fatalf("begin old round=(%v, %v, %v)", oldUntil, probe, err)
+	}
+	if err := store.ResetAllCooldowns(ctx, channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	newUntil, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, oldCredential, "first", now.Add(time.Millisecond))
+	if err != nil || !probe || newUntil.Unix() != oldUntil.Unix() {
+		t.Fatalf("begin same-second replacement=(%v, %v, %v), old until %v", newUntil, probe, err, oldUntil)
+	}
+	resetAt := now.Add(time.Hour)
+	if ok, err := store.ConfirmAccioQuotaWindow(ctx, channel.ID, oldCredential, "first", oldUntil, resetAt); err != nil || ok {
+		t.Fatalf("previous round overwrote same-second replacement: (%v, %v)", ok, err)
+	}
+	if ok, err := store.ReauthorizeAccioCredential(ctx, channel.ID, oldCredential, newCredential); err != nil || !ok {
+		t.Fatalf("reauthorize=(%v, %v)", ok, err)
+	}
+	if ok, err := store.ConfirmAccioQuotaWindow(ctx, channel.ID, oldCredential, "first", newUntil, resetAt); err != nil || ok {
+		t.Fatalf("old credential overwrote reauthorized channel: (%v, %v)", ok, err)
+	}
+	newUntil, probe, err = store.BeginAccioQuotaCooldown(ctx, channel.ID, newCredential, "first", now.Add(2*time.Millisecond))
+	if err != nil || !probe {
+		t.Fatalf("begin reauthorized round=(%v, %v, %v)", newUntil, probe, err)
+	}
+	if err := store.ResetModelCooldown(ctx, channel.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.ConfirmAccioQuotaWindow(ctx, channel.ID, newCredential, "first", newUntil, resetAt); err != nil || ok {
+		t.Fatalf("stale query restored cleared model: (%v, %v)", ok, err)
+	}
+}
+
+/**
+ * @brief 验证额度元数据更新不改变身份，重新授权清额度冷却并保留普通模型冷却。
+ * @param t 测试上下文。
+ */
+func TestCooldown_AccioQuotaWindowPreservesIndependentCooldowns(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := t.Context()
+	const credential = `{"region":"global","access_token":"old"}`
+	const metadataChange = `{"oauth_usage":"new usage","access_token":"old","region":"global"}`
+	const reauthorized = `{"region":"global","access_token":"new"}`
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "Accio", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	independent := now.Add(time.Hour)
+	independentChannel := now.Add(7 * time.Minute)
+	if err := store.SetModelCooldown(ctx, channel.ID, "ordinary", independent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChannelCooldown(ctx, channel.ID, independentChannel); err != nil {
+		t.Fatal(err)
+	}
+	provisional, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, "first", now)
+	if err != nil || !probe {
+		t.Fatalf("begin=(%v, %v, %v)", provisional, probe, err)
+	}
+	if ok, err := store.CompareAndSwapOAuthCredential(ctx, channel.ID, channel.AuthType, credential, metadataChange); err != nil || !ok {
+		t.Fatalf("update metadata=(%v, %v)", ok, err)
+	}
+	if ok, err := store.ConfirmAccioQuotaWindow(ctx, channel.ID, credential, "first", provisional, now.Add(3*time.Minute)); err != nil || !ok {
+		t.Fatalf("metadata update prevented confirm: (%v, %v)", ok, err)
+	}
+	channelCooldowns, err := store.GetAllChannelCooldowns(ctx)
+	if err != nil || !channelCooldowns[channel.ID].Equal(independentChannel) {
+		t.Fatalf("independent channel cooldown=%v, want %v: %v", channelCooldowns[channel.ID], independentChannel, err)
+	}
+	if ok, err := store.ReauthorizeAccioCredential(ctx, channel.ID, metadataChange, reauthorized); err != nil || !ok {
+		t.Fatalf("reauthorize=(%v, %v)", ok, err)
+	}
+	models, err := store.GetAllModelCooldowns(ctx)
+	if err != nil || len(models[channel.ID]) != 1 || !models[channel.ID]["ordinary"].Equal(independent) {
+		t.Fatalf("model cooldowns after reauthorization: %v, %v", models[channel.ID], err)
+	}
+}
+
 func TestCooldown_KeyCooldown(t *testing.T) {
 	t.Parallel()
 

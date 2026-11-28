@@ -29,7 +29,12 @@ type APIError struct {
 
 func (e *APIError) Error() string { return e.Message }
 
-// ClassifyError handles HTTP errors and business errors inside HTTP 200 SSE.
+/**
+ * @brief 归一化 HTTP 错误与 HTTP 200 内的原生业务错误，保留上游错误消息。
+ * @param status 实际 HTTP 状态码。
+ * @param body 原生错误响应体或单个 SSE 事件数据。
+ * @return 含对外状态及错误类型的错误，始终非 nil。
+ */
 func ClassifyError(status int, body []byte) *APIError {
 	var root map[string]any
 	_ = json.Unmarshal(body, &root)
@@ -60,10 +65,19 @@ func ClassifyError(status int, body []byte) *APIError {
 	switch {
 	case status == 401 || status == 403 || businessStatus == 401 || businessStatus == 403 || containsHint(lower, []string{"unauthorized", "not logged in", "invalid token", "token expired", "invalid_token"}):
 		result.StatusCode, result.Type, result.Code = 401, "authentication_error", "authentication_error"
-	case status == 429 || businessStatus == 429 || containsHint(lower, []string{"积分", "余额", "额度", "quota", "insufficient", "credit", "exceeded", "limit reached", "rate limit", "too many requests"}):
+	case status == 429 || businessStatus == 429 || IsQuotaExhaustedMessage(message) || containsHint(lower, []string{"积分", "余额", "额度", "quota", "insufficient", "credit", "exceeded", "limit reached", "rate limit", "too many requests"}):
 		result.StatusCode, result.Type, result.Code = 429, "rate_limit_error", "rate_limit_exceeded"
 	}
 	return result
+}
+
+/**
+ * @brief 识别 Accio 明确报告额度耗尽的错误消息。
+ * @param message JSON 解码后的 Accio 错误消息。
+ * @return 忽略首尾空白和大小写后恰为 quota exhausted 时返回 true；普通限流返回 false。
+ */
+func IsQuotaExhaustedMessage(message string) bool {
+	return strings.EqualFold(strings.TrimSpace(message), "quota exhausted")
 }
 
 func containsHint(text string, hints []string) bool {

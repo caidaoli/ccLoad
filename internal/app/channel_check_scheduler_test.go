@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/testutil"
+
+	"github.com/gin-gonic/gin"
 )
 
 func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, keys ...*model.APIKey) *model.Config {
@@ -592,6 +596,77 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 	if eligibleAuth != "Bearer sk-available" {
 		t.Fatalf("expected available key selected, got %q", eligibleAuth)
 	}
+}
+
+/**
+ * @brief 验证 Accio 确认额度窗口期间跳过自动检测，手动检测和窗口到期后的自动检测仍可发送。
+ * @param t 测试上下文。
+ */
+func TestScheduledChannelCheckSkipsConfirmedAccioQuotaWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := newInMemoryServer(t)
+		ctx := t.Context()
+		var requests []string
+		accioTestClient(srv, func(r *http.Request) (*http.Response, error) {
+			requests = append(requests, r.URL.Path)
+			switch r.URL.Path {
+			case "/api/llm/config":
+				return accioTestResponse(r, http.StatusOK, accioTestCatalog), nil
+			case "/api/adk/llm/generateContent":
+				return accioTestResponse(r, http.StatusOK, accioTestCompletion), nil
+			default:
+				t.Errorf("unexpected Accio endpoint %s", r.URL.Path)
+				return accioTestResponse(r, http.StatusNotFound, "{}"), nil
+			}
+		})
+		credential := accioTestCredential(t, "global", "scheduled-accio-token")
+		cfg := createScheduledCheckChannel(t, srv, &model.Config{
+			Name: "scheduled-accio", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: credential,
+			URLs:    model.ChannelURLs{{URL: "https://phoenix-gw.alibaba.com/v1/chat/completions", Protocols: []string{"openai"}}},
+			Enabled: true, ScheduledCheckEnabled: true, ScheduledCheckModel: "accio-test",
+			ModelEntries: []model.ModelEntry{{Model: "accio-test"}, {Model: "another-accio-model"}},
+		})
+		now := time.Now()
+		const window = 30 * time.Second
+		temporary, query, err := srv.store.BeginAccioQuotaCooldown(ctx, cfg.ID, credential, "another-accio-model", now)
+		if err != nil || !query {
+			t.Fatalf("begin quota cooldown: query=%v, err=%v", query, err)
+		}
+		confirmed, err := srv.store.ConfirmAccioQuotaWindow(ctx, cfg.ID, credential, "another-accio-model", temporary, now.Add(window))
+		if err != nil || !confirmed {
+			t.Fatalf("confirm quota window: confirmed=%v, err=%v", confirmed, err)
+		}
+		// The detection worker may have captured cfg before the channel cooldown changed.
+		srv.runScheduledChannelCheck(ctx, cfg, nil, "hello")
+		if len(requests) != 0 {
+			t.Fatalf("scheduled check sent requests during quota cooldown: %v", requests)
+		}
+
+		id := strconv.FormatInt(cfg.ID, 10)
+		c, response := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/test", map[string]any{
+			"model": "accio-test", "client_protocol": "openai", "content": "hi",
+		}))
+		c.Params = gin.Params{{Key: "id", Value: id}}
+		srv.HandleChannelTest(c)
+		result := mustParseAPIResponse[struct {
+			Success bool `json:"success"` ///< 手动检测是否成功。
+		}](t, response.Body.Bytes())
+		if response.Code != http.StatusOK || !result.Data.Success || len(requests) != 2 {
+			t.Fatalf("explicit test during quota cooldown: requests=%v, status=%d, body=%s", requests, response.Code, response.Body.String())
+		}
+		srv.runScheduledChannelCheck(ctx, cfg, nil, "hello")
+		logs, err := srv.store.ListLogs(ctx, now.Add(-time.Second), 10, 0, &model.LogFilter{LogSource: model.LogSourceScheduledCheck})
+		if len(requests) != 2 || err != nil || len(logs) != 0 {
+			t.Fatalf("scheduled check during quota cooldown: requests=%v, logs=%+v, err=%v", requests, logs, err)
+		}
+
+		time.Sleep(window)
+		srv.runScheduledChannelCheck(ctx, cfg, nil, "hello")
+		logs, err = srv.store.ListLogs(ctx, now, 10, 0, &model.LogFilter{LogSource: model.LogSourceScheduledCheck})
+		if len(requests) != 3 || requests[2] != "/api/adk/llm/generateContent" || err != nil || len(logs) != 1 || logs[0].StatusCode != http.StatusOK {
+			t.Fatalf("scheduled check after quota reset: requests=%v, logs=%+v, err=%v", requests, logs, err)
+		}
+	})
 }
 
 func TestScheduledCheckSkipsModelVariantWithoutCompatibleKey(t *testing.T) {

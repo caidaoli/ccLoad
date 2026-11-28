@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -78,6 +79,14 @@ func (s *Server) applyCooldownDecision(
 	defer cancel()
 
 	in = s.completeCooldownInput(cfg, in)
+	if cfg.UsesAccioOAuth() && in.StatusCode == http.StatusTooManyRequests &&
+		accioauth.IsQuotaExhaustedMessage(gjson.GetBytes(in.ErrorBody, "error.message").String()) {
+		decision := s.cooldownManager.Evaluate(in)
+		if decision.Action == cooldown.ActionRetryModel && decision.Until.IsZero() {
+			s.startAccioQuotaCooldown(cooldownCtx, cfg, decision.Model)
+			return decision.Action
+		}
+	}
 	if cfg.UsesAntigravityOAuth() && in.StatusCode == http.StatusTooManyRequests &&
 		!in.ModelCooldownUntil.IsZero() && !in.ModelCooldownUntil.After(time.Now()) {
 		decision := s.cooldownManager.Evaluate(in)

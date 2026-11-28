@@ -13,8 +13,9 @@ import (
 	modelpkg "ccLoad/internal/model"
 )
 
-// ChannelCache 高性能渠道缓存层
-// 内存查询比数据库查询快 1000 倍+
+/**
+ * @brief 缓存渠道、密钥及冷却快照，数据库查询在缓存锁外执行。
+ */
 type ChannelCache struct {
 	store            Store
 	channelsByModel  map[string][]*modelpkg.Config // model → channels
@@ -38,6 +39,7 @@ type ChannelCache struct {
 		channelLastUpdate time.Time
 		keyLastUpdate     time.Time
 		modelLastUpdate   time.Time
+		generation        uint64 ///< 冷却失效时递增，拒绝失效前开始的快照加载。
 		ttl               time.Duration
 	}
 }
@@ -62,6 +64,7 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 			channelLastUpdate time.Time
 			keyLastUpdate     time.Time
 			modelLastUpdate   time.Time
+			generation        uint64
 			ttl               time.Duration
 		}{
 			channels: make(map[int64]time.Time),
@@ -240,7 +243,9 @@ func (c *ChannelCache) refreshCache(ctx context.Context, generation uint64) (boo
 	return true, nil
 }
 
-// InvalidateCache 手动失效缓存
+/**
+ * @brief 使渠道配置快照失效，并丢弃失效前开始的渠道及模型冷却加载。
+ */
 func (c *ChannelCache) InvalidateCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -306,27 +311,34 @@ func (c *ChannelCache) cachedAPIKeys(ctx context.Context, channelID int64) ([]*m
 	return keys, nil
 }
 
-// GetAllChannelCooldowns 缓存优先的渠道冷却查询
+/**
+ * @brief 查询渠道冷却，首次加载遇到失效时再查询一次。
+ * @param ctx 请求上下文；取消时结束数据库查询或失效后的重新读取。
+ * @return 可独立修改的渠道冷却快照；查询失败时为 nil。
+ * @return 查询或上下文取消错误；成功时为 nil。
+ * @note 重查结果仅供当前请求使用，避免连续失效使查询反复重试。
+ */
 func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
-	// 检查冷却缓存是否有效
 	c.mutex.RLock()
 	if time.Since(c.cooldownCache.channelLastUpdate) <= c.cooldownCache.ttl {
-		// 有效缓存，返回副本
 		result := make(map[int64]time.Time, len(c.cooldownCache.channels))
 		maps.Copy(result, c.cooldownCache.channels)
 		c.mutex.RUnlock()
 		return result, nil
 	}
+	generation, cooldownGeneration := c.generation, c.cooldownCache.generation
 	c.mutex.RUnlock()
 
-	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllChannelCooldowns(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 存到缓存；对外总是返回副本，避免调用方修改污染缓存。
 	c.mutex.Lock()
+	if c.generation != generation || c.cooldownCache.generation != cooldownGeneration {
+		c.mutex.Unlock()
+		return c.store.GetAllChannelCooldowns(ctx)
+	}
 	c.cooldownCache.channels = cooldowns
 	c.cooldownCache.channelLastUpdate = time.Now()
 	c.mutex.Unlock()
@@ -374,7 +386,13 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 	return result, nil
 }
 
-// GetAllModelCooldowns 缓存优先的模型冷却查询。
+/**
+ * @brief 查询模型冷却，首次加载遇到失效时再查询一次。
+ * @param ctx 请求上下文；取消时结束数据库查询或失效后的重新读取。
+ * @return 可独立修改的模型冷却快照；查询失败时为 nil。
+ * @return 查询或上下文取消错误；成功时为 nil。
+ * @note 重查结果仅供当前请求使用，避免连续失效使查询反复重试。
+ */
 func (c *ChannelCache) GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
 	c.mutex.RLock()
 	if time.Since(c.cooldownCache.modelLastUpdate) <= c.cooldownCache.ttl {
@@ -382,6 +400,7 @@ func (c *ChannelCache) GetAllModelCooldowns(ctx context.Context) (map[int64]map[
 		c.mutex.RUnlock()
 		return result, nil
 	}
+	generation, cooldownGeneration := c.generation, c.cooldownCache.generation
 	c.mutex.RUnlock()
 
 	cooldowns, err := c.store.GetAllModelCooldowns(ctx)
@@ -390,6 +409,10 @@ func (c *ChannelCache) GetAllModelCooldowns(ctx context.Context) (map[int64]map[
 	}
 
 	c.mutex.Lock()
+	if c.generation != generation || c.cooldownCache.generation != cooldownGeneration {
+		c.mutex.Unlock()
+		return c.store.GetAllModelCooldowns(ctx)
+	}
 	c.cooldownCache.models = cooldowns
 	c.cooldownCache.modelLastUpdate = time.Now()
 	c.mutex.Unlock()
@@ -425,11 +448,14 @@ func (c *ChannelCache) InvalidateAllAPIKeysCache() {
 	c.apiKeysAllGen++
 }
 
-// InvalidateCooldownCache 手动失效冷却缓存
+/**
+ * @brief 让冷却快照失效，并拒绝失效前开始加载的渠道和模型快照。
+ */
 func (c *ChannelCache) InvalidateCooldownCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.cooldownCache.channelLastUpdate = time.Time{}
 	c.cooldownCache.keyLastUpdate = time.Time{}
 	c.cooldownCache.modelLastUpdate = time.Time{}
+	c.cooldownCache.generation++
 }

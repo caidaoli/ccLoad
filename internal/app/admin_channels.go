@@ -502,11 +502,8 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config, metadata 
 	oc.CodeBuddyEnterprise = metadata.codeBuddyEnterprise
 	oc.CodeBuddyInternational = metadata.codeBuddyInternational
 
-	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
-	if until, cooled := ectx.channelCooldownsMap[cfg.ID]; cooled && until.After(ectx.now) {
-		oc.CooldownUntil = &until
-		oc.CooldownRemainingMS = int64(until.Sub(ectx.now) / time.Millisecond)
-	}
+	modelCooldowns := ectx.modelCooldownsMap[cfg.ID]
+	oc.applyChannelCooldown(ectx.channelCooldownsMap[cfg.ID], modelCooldowns, ectx.now)
 
 	// 健康度模式：使用预计算的有效优先级和成功率
 	if ectx.healthEnabled {
@@ -543,9 +540,25 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config, metadata 
 		keyCooldowns = append(keyCooldowns, keyInfo)
 	}
 	oc.KeyCooldowns = keyCooldowns
-	oc.ModelCooldowns = activeModelCooldownInfos(ectx.modelCooldownsMap[cfg.ID], ectx.now)
+	oc.ModelCooldowns = activeModelCooldownInfos(modelCooldowns, ectx.now)
 	applyProtocolProbeRetrySummary(&oc, ectx.protocolProbeRetries[cfg.ID], ectx.now)
 	return oc
+}
+
+/**
+ * @brief 展示渠道实际受限的最晚时间，包含 Accio 已确认的账号额度窗口。
+ * @param until 普通渠道冷却的截止时间。
+ * @param modelCooldowns 已读取的渠道模型冷却及账号额度窗口。
+ * @param now 列表或详情的展示时间。
+ */
+func (channel *ChannelWithCooldown) applyChannelCooldown(until time.Time, modelCooldowns map[string]time.Time, now time.Time) {
+	if quotaUntil := accioQuotaWindowUntil(channel.Config, modelCooldowns); quotaUntil.After(until) {
+		until = quotaUntil
+	}
+	if until.After(now) {
+		channel.CooldownUntil = &until
+		channel.CooldownRemainingMS = until.Sub(now).Milliseconds()
+	}
 }
 
 func applyProtocolProbeRetrySummary(channel *ChannelWithCooldown, summary protocolProbeRetrySummary, now time.Time) {
@@ -753,10 +766,16 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 	return metadata
 }
 
+/**
+ * @brief 返回管理接口展示的实际上游模型冷却。
+ * @param cooldowns 渠道的模型冷却和内部额度窗口。
+ * @param now 判断冷却是否仍有效的时间。
+ * @return 按模型名称排序的有效冷却。
+ */
 func activeModelCooldownInfos(cooldowns map[string]time.Time, now time.Time) []ModelCooldownInfo {
 	infos := make([]ModelCooldownInfo, 0, len(cooldowns))
 	for modelName, until := range cooldowns {
-		if !until.After(now) {
+		if modelName == model.AccioQuotaWindowModel || !until.After(now) {
 			continue
 		}
 		u := until
@@ -977,7 +996,11 @@ func (s *Server) buildChannelDetail(ctx context.Context, cfg *model.Config, apiK
 	}
 	detail.ManagementAccount = s.managementAccountView(cfg)
 	detail.KeyStrategy = channelKeyStrategy(apiKeys)
-	detail.ModelCooldowns = activeModelCooldownInfos(mergeAntigravityStandardQuota(allModelCooldowns[cfg.ID], cfg, now), now)
+	modelCooldowns := mergeAntigravityStandardQuota(allModelCooldowns[cfg.ID], cfg, now)
+	if cfg.UsesAccioOAuth() {
+		detail.applyChannelCooldown(time.Unix(cfg.CooldownUntil, 0), modelCooldowns, now)
+	}
+	detail.ModelCooldowns = activeModelCooldownInfos(modelCooldowns, now)
 	applyProtocolProbeRetrySummary(&detail, s.protocolCapabilities.unsupportedRetrySummaries(now)[cfg.ID], now)
 	return detail, nil
 }

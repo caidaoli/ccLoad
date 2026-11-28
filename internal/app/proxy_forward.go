@@ -6020,12 +6020,7 @@ func sameOAuthCredentialMaterial(authType, a, b string) bool {
 		return err == nil && left.Site == right.Site && left.APIKey == right.APIKey &&
 			left.AccessToken == right.AccessToken && left.JWTToken == right.JWTToken
 	case model.AuthTypeAccioOAuth:
-		left, err := accioauth.ParseCredential([]byte(a))
-		if err != nil {
-			return false
-		}
-		right, err := accioauth.ParseCredential([]byte(b))
-		return err == nil && sameAccioAuthentication(left, right)
+		return accioauth.SameCredentialAuthentication(a, b)
 	case model.AuthTypeQoderOAuth:
 		left, err := qoderauth.ParseCredential([]byte(a))
 		if err != nil {

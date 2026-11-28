@@ -31,6 +31,31 @@ type Credential struct {
 	OAuthUsage   string `json:"oauth_usage,omitempty"`
 }
 
+/**
+ * @brief 核对账号与令牌是否仍是发起请求时的认证材料，忽略额度、昵称等可变元数据。
+ * @param other 另一份已解析的凭证。
+ * @return 地区、账号与令牌都相同时返回 true。
+ */
+func (c *Credential) SameAuthentication(other *Credential) bool {
+	return c.Type == other.Type && c.Region == other.Region && c.UserID == other.UserID &&
+		c.AccessToken == other.AccessToken && c.RefreshToken == other.RefreshToken
+}
+
+/**
+ * @brief 按账号与令牌核对序列化凭证，兼容存储快照与代理端的规范化格式。
+ * @param a 已保存的凭证 JSON。
+ * @param b 发起请求时的凭证 JSON。
+ * @return 两份凭证均有效且认证材料一致时返回 true。
+ */
+func SameCredentialAuthentication(a, b string) bool {
+	left, err := ParseCredential([]byte(a))
+	if err != nil {
+		return false
+	}
+	right, err := ParseCredential([]byte(b))
+	return err == nil && left.SameAuthentication(right)
+}
+
 // ParseCredential accepts canonical JSON and the official desktop token fields.
 // Region must be supplied explicitly; a token does not identify its edition.
 func ParseCredential(raw []byte) (*Credential, error) {

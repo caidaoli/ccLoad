@@ -90,15 +90,11 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	if err != nil {
 		return nil, err
 	}
-	channels = state.channels
-	if len(channels) == 0 {
-		return channels, nil
+	if len(state.channels) == 0 {
+		return state.channels, nil
 	}
-	channelCooldowns, keyCooldowns := state.channelCooldowns, state.keyCooldowns
-	rowReadiness, now := state.rowReadiness, state.now
-
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
-	filtered := s.filterCooledChannels(channels, requestModel, channelCooldowns, keyCooldowns, rowReadiness, now)
+	filtered := s.filterCooledChannels(state, requestModel)
 	if len(filtered) == 0 {
 		if !allowAllCooledFallback {
 			return nil, nil
@@ -114,7 +110,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 			return nil, nil
 		}
 
-		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, rowReadiness, now)
+		best, readyIn := s.pickBestChannelWhenAllCooled(state, true)
 		if best != nil {
 			log.Printf("[INFO] 所有渠道冷却中，兜底使用渠道 %d（%.1fs 后就绪）", best.ID, readyIn.Seconds())
 			return []*modelpkg.Config{cooldownFallbackCandidate(best)}, nil
@@ -124,23 +120,37 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
 	if s.healthCache != nil && s.healthCache.Config().Enabled {
-		return s.sortChannelsByHealth(filtered, keyCooldowns, now), nil
+		return s.sortChannelsByHealth(filtered, state.keyCooldowns, state.now), nil
 	}
 
 	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
-	return s.balanceSamePriorityChannels(filtered, keyCooldowns, now), nil
+	return s.balanceSamePriorityChannels(filtered, state.keyCooldowns, state.now), nil
 }
 
 /**
  * @brief 共享真实选路的候选硬约束与渠道、模型和凭据冷却快照
  */
 type channelCooldownState struct {
-	channels         []*modelpkg.Config          ///< 已通过令牌、成本、时段和模型授权的候选
-	channelCooldowns map[int64]time.Time         ///< 渠道冷却截止时间
-	keyCooldowns     map[int64]map[int]time.Time ///< 凭据冷却截止时间
-	rowReadiness     map[int64]time.Time         ///< 授权模型行与凭据组合的最早恢复时间
-	now              time.Time                   ///< 本次计算使用的同一时刻
-	loaded           bool                        ///< 所有冷却及凭据状态均已加载，未使用选路的读取失败降级
+	channels         []*modelpkg.Config             ///< 已通过令牌、成本、时段和模型授权的候选
+	channelCooldowns map[int64]time.Time            ///< 渠道冷却截止时间
+	keyCooldowns     map[int64]map[int]time.Time    ///< 凭据冷却截止时间
+	modelCooldowns   map[int64]map[string]time.Time ///< 上游模型及已确认的 Accio 账号额度窗口冷却截止时间
+	rowReadiness     map[int64]time.Time            ///< 授权模型行与凭据组合的最早恢复时间
+	now              time.Time                      ///< 本次计算使用的同一时刻
+	loaded           bool                           ///< 所有冷却及凭据状态均已加载，未使用选路的读取失败降级
+}
+
+/**
+ * @brief 读取 Accio 已确认的账号额度窗口
+ * @param cfg 候选渠道
+ * @param cooldowns 此渠道的模型冷却快照
+ * @return 账号额度窗口截止时刻，非 Accio 或无记录时为零值
+ */
+func accioQuotaWindowUntil(cfg *modelpkg.Config, cooldowns map[string]time.Time) time.Time {
+	if cfg.UsesAccioOAuth() {
+		return cooldowns[modelpkg.AccioQuotaWindowModel]
+	}
+	return time.Time{}
 }
 
 /**
@@ -213,22 +223,23 @@ func (s *Server) loadChannelCooldownState(ctx context.Context, channels []*model
 		loaded = false
 	}
 
-	modelCooldowns := make(map[int64]map[string]time.Time)
-	if requestModel != "" && requestModel != "*" {
+	checkModelRows := requestModel != "" && requestModel != "*"
+	var modelCooldowns map[int64]map[string]time.Time
+	if checkModelRows || slices.ContainsFunc(channels, (*modelpkg.Config).UsesAccioOAuth) {
 		modelCooldowns, err = s.getAllModelCooldowns(ctx)
 		if err != nil {
 			if paid {
 				return channelCooldownState{}, err
 			}
 			log.Printf("[ERROR] 获取模型冷却状态失败，跳过模型冷却过滤（降级模式）: %v", err)
-			modelCooldowns = make(map[int64]map[string]time.Time)
+			modelCooldowns = nil
 			loaded = false
 		}
 	}
 
 	// Compute actual row/Key combinations once for both filtering and fallback.
 	rowReadiness := make(map[int64]time.Time, len(channels))
-	if requestModel != "" && requestModel != "*" {
+	if checkModelRows {
 		eligible := channels[:0]
 		for _, cfg := range channels {
 			var keys []*modelpkg.APIKey
@@ -279,7 +290,7 @@ func (s *Server) loadChannelCooldownState(ctx context.Context, channels []*model
 
 	return channelCooldownState{
 		channels: channels, channelCooldowns: channelCooldowns, keyCooldowns: keyCooldowns,
-		rowReadiness: rowReadiness, now: now, loaded: loaded,
+		modelCooldowns: modelCooldowns, rowReadiness: rowReadiness, now: now, loaded: loaded,
 	}, nil
 }
 
@@ -334,10 +345,10 @@ func (s *Server) annotatePoolCooldownRetryAfter(ctx context.Context, reqCtx *pro
 		if len(state.channels) == 0 {
 			continue
 		}
-		if len(s.filterCooledChannels(state.channels, reqCtx.originalModel, state.channelCooldowns, state.keyCooldowns, state.rowReadiness, state.now)) > 0 {
+		if len(s.filterCooledChannels(state, reqCtx.originalModel)) > 0 {
 			return
 		}
-		_, readyIn := s.pickBestChannelWhenAllCooled(state.channels, state.channelCooldowns, state.keyCooldowns, state.rowReadiness, state.now)
+		_, readyIn := s.pickBestChannelWhenAllCooled(state, false)
 		deadline := state.now.Add(readyIn)
 		if earliest.IsZero() || deadline.Before(earliest) {
 			earliest = deadline
@@ -368,16 +379,22 @@ func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {
 	return clone
 }
 
-// pickBestChannelWhenAllCooled 全冷却时选择最佳渠道。
-// 返回最佳渠道和距离恢复的剩余时间。
-// 选择规则：最早恢复 > 有效优先级高 > 基础优先级高
-func (s *Server) pickBestChannelWhenAllCooled(
-	channels []*modelpkg.Config,
-	channelCooldowns map[int64]time.Time,
-	keyCooldowns map[int64]map[int]time.Time,
-	rowReadiness map[int64]time.Time,
-	now time.Time,
-) (*modelpkg.Config, time.Duration) {
+/**
+ * @brief 按最早恢复、有效优先级、基础优先级排序选择全冷却候选
+ * @param state 冷却状态和合格渠道
+ * @param probing 兜底试探时为 true，此时排除已确认 Accio 额度耗尽的渠道
+ * @return 最佳渠道，没有合格候选时为 nil
+ * @return 最佳渠道距离恢复的剩余时间，没有合格候选时为零
+ * @note 兜底试探时可原地压缩 state.channels，调用方不再使用该切片
+ */
+func (s *Server) pickBestChannelWhenAllCooled(state channelCooldownState, probing bool) (*modelpkg.Config, time.Duration) {
+	now := state.now
+	channels := state.channels
+	if probing {
+		channels = slices.DeleteFunc(channels, func(cfg *modelpkg.Config) bool {
+			return accioQuotaWindowUntil(cfg, state.modelCooldowns[cfg.ID]).After(now)
+		})
+	}
 	if len(channels) == 0 {
 		return nil, 0
 	}
@@ -393,10 +410,13 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	// 计算渠道的恢复时间
 	getReadyAt := func(ch *modelpkg.Config) time.Time {
 		readyAt := now
-		if until, ok := channelCooldowns[ch.ID]; ok && until.After(readyAt) {
+		if until := state.channelCooldowns[ch.ID]; until.After(readyAt) {
 			readyAt = until
 		}
-		if until, ok := rowReadiness[ch.ID]; ok {
+		if until := accioQuotaWindowUntil(ch, state.modelCooldowns[ch.ID]); until.After(readyAt) {
+			readyAt = until
+		}
+		if until, ok := state.rowReadiness[ch.ID]; ok {
 			if until.After(readyAt) {
 				readyAt = until
 			}
@@ -404,7 +424,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		}
 		// Key全冷却时，取最早解禁时间
 		if ch.KeyCount > 0 {
-			if keyMap := keyCooldowns[ch.ID]; keyMap != nil && len(keyMap) >= ch.KeyCount {
+			if keyMap := state.keyCooldowns[ch.ID]; keyMap != nil && len(keyMap) >= ch.KeyCount {
 				var earliest time.Time
 				hasAvailableKey := false
 				for _, until := range keyMap {
@@ -425,12 +445,6 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		return readyAt
 	}
 
-	// 过滤nil并找最优
-	valid := slices.DeleteFunc(slices.Clone(channels), func(ch *modelpkg.Config) bool { return ch == nil })
-	if len(valid) == 0 {
-		return nil, 0
-	}
-
 	getEffPriority := func(ch *modelpkg.Config) float64 {
 		if healthEnabled {
 			return healthSnapshot.effectivePriority(ch, healthCfg)
@@ -438,7 +452,7 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		return float64(ch.Priority)
 	}
 
-	best := slices.MinFunc(valid, func(a, b *modelpkg.Config) int {
+	best := slices.MinFunc(channels, func(a, b *modelpkg.Config) int {
 		// 1. 最早恢复优先（时间小的排前面）
 		if getReadyAt(a) != getReadyAt(b) {
 			if getReadyAt(a).Before(getReadyAt(b)) {
@@ -462,37 +476,30 @@ func (s *Server) pickBestChannelWhenAllCooled(
 
 /**
  * @brief 过滤渠道、模型行或全部 Key 仍处于冷却中的候选
- * @param channels 请求私有的候选切片
+ * @param state 冷却状态和请求私有的候选切片
  * @param requestModel 路由模型；空值或星号跳过模型行适用性检查
- * @param channelCooldowns 渠道冷却截止时间
- * @param keyCooldowns 各渠道 Key 的冷却截止时间
- * @param rowReadiness 已授权模型行与 Key 组合的最早恢复时间；零值表示已就绪
- * @param now 本轮选路的当前时间
  * @return 原地压缩后的可用候选
  * @note 调用方仅使用返回切片；返回空时入参完整，可供全冷却兜底复用
  */
-func (s *Server) filterCooledChannels(
-	channels []*modelpkg.Config,
-	requestModel string,
-	channelCooldowns map[int64]time.Time,
-	keyCooldowns map[int64]map[int]time.Time,
-	rowReadiness map[int64]time.Time,
-	now time.Time,
-) []*modelpkg.Config {
-	filtered := channels[:0]
-	for _, cfg := range channels {
+func (s *Server) filterCooledChannels(state channelCooldownState, requestModel string) []*modelpkg.Config {
+	now := state.now
+	filtered := state.channels[:0]
+	for _, cfg := range state.channels {
+		if accioQuotaWindowUntil(cfg, state.modelCooldowns[cfg.ID]).After(now) {
+			continue
+		}
 		if requestModel != "*" && requestModel != "" && len(s.applicableModelRows(cfg, requestModel, now)) == 0 {
 			continue
 		}
 		// 1. 检查渠道级冷却
-		if cooldownUntil, exists := channelCooldowns[cfg.ID]; exists {
+		if cooldownUntil, exists := state.channelCooldowns[cfg.ID]; exists {
 			if cooldownUntil.After(now) {
 				continue
 			}
 		}
 
 		// 2. 检查当前请求是否存在模型、协议与 Key 均可用的组合
-		if until, exists := rowReadiness[cfg.ID]; exists {
+		if until, exists := state.rowReadiness[cfg.ID]; exists {
 			if !until.After(now) {
 				filtered = append(filtered, cfg)
 			}
@@ -500,7 +507,7 @@ func (s *Server) filterCooledChannels(
 		}
 
 		// 3. 检查是否所有Key都在冷却
-		keyMap, hasCooldownKeys := keyCooldowns[cfg.ID]
+		keyMap, hasCooldownKeys := state.keyCooldowns[cfg.ID]
 		if hasCooldownKeys && cfg.KeyCount > 0 {
 			if len(keyMap) >= cfg.KeyCount {
 				hasAvailableKey := false
@@ -632,29 +639,39 @@ func (s *Server) keyModelScopeAllowsRow(cfg *modelpkg.Config, key *modelpkg.APIK
  * @param apiKeys 本渠道的独立 Key；OAuth 渠道为 nil。
  * @param cursorModel 已验证工具续轮的实际模型；非空时只接受可用且匹配的模型行，不推进轮转。
  * @return 选中的模型行；无法选择时为零值。
- * @return 无可用行时为 errNoAvailableModelRow，无授权 Key 时为 ErrNoAPIKeyForModel；严格选行时保留冷却查询错误。
+ * @return 无可用行或 Accio 账号窗口未恢复时为 errNoAvailableModelRow，无授权 Key 时为 ErrNoAPIKeyForModel；严格选行时保留冷却查询错误。
  */
 func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config, requested, requestProtocol string, session *responsesExecutionSession, apiKeys []*modelpkg.APIKey, cursorModel string) (modelRoutingSelection, error) {
-	if requested == "" || requested == "*" {
-		if cursorModel != "" {
-			return modelRoutingSelection{}, errNoAvailableModelRow
-		}
-		return modelRoutingSelection{logicalModel: requested, entry: modelpkg.ModelEntry{Model: requested}, wildcard: true}, nil
-	}
-	rows := s.configuredModelRows(cfg, requested)
-	if len(rows) == 0 {
+	wildcard := requested == "" || requested == "*"
+	if wildcard && cursorModel != "" {
 		return modelRoutingSelection{}, errNoAvailableModelRow
 	}
-	allCooldowns, err := s.getAllModelCooldowns(ctx)
-	if err != nil {
-		if cfg.AntigravityCredits || cursorModel != "" {
-			return modelRoutingSelection{}, err
+	var rows []modelRoutingSelection
+	if !wildcard {
+		rows = s.configuredModelRows(cfg, requested)
+		if len(rows) == 0 {
+			return modelRoutingSelection{}, errNoAvailableModelRow
 		}
-		log.Printf("[ERROR] 获取模型冷却状态失败，跳过选行冷却过滤: %v", err)
-		allCooldowns = nil
 	}
-	cooldowns := allCooldowns[cfg.ID]
+	var cooldowns map[string]time.Time
+	if !wildcard || cfg.UsesAccioOAuth() {
+		allCooldowns, err := s.getAllModelCooldowns(ctx)
+		if err != nil {
+			if cfg.AntigravityCredits || cursorModel != "" {
+				return modelRoutingSelection{}, err
+			}
+			log.Printf("[ERROR] 获取模型冷却状态失败，跳过选行冷却过滤: %v", err)
+		} else {
+			cooldowns = allCooldowns[cfg.ID]
+		}
+	}
 	now := time.Now()
+	if accioQuotaWindowUntil(cfg, cooldowns).After(now) {
+		return modelRoutingSelection{}, errNoAvailableModelRow
+	}
+	if wildcard {
+		return modelRoutingSelection{logicalModel: requested, entry: modelpkg.ModelEntry{Model: requested}, wildcard: true}, nil
+	}
 	available := make([]bool, len(rows))
 	hasAvailable := false
 	hasAuthorized := false

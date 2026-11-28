@@ -102,7 +102,25 @@ func (s *Server) runScheduledChannelChecks(ctx context.Context, now time.Time) e
 	return nil
 }
 
+/**
+ * @brief 执行一个已到期的渠道检测并记录结果；Accio 账号额度窗口生效期间跳过。
+ * @param ctx 控制本次检测生命周期的上下文。
+ * @param cfg 扫描计划时的渠道配置快照。
+ * @param apiKeys 普通渠道可用于检测的凭据；OAuth 渠道独立加载凭据。
+ * @param content 发送给上游模型的检测内容。
+ */
 func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config, apiKeys []*model.APIKey, content string) {
+	if cfg.UsesAccioOAuth() {
+		cooldowns, err := s.getAllModelCooldowns(ctx)
+		if err != nil {
+			if isExpectedScheduledCheckStop(err) {
+				return
+			}
+			log.Printf("[WARN] [channel-check] 渠道 #%d %s 读取 Accio 账号额度窗口失败: %v", cfg.ID, cfg.Name, err)
+		} else if accioQuotaWindowUntil(cfg, cooldowns[cfg.ID]).After(time.Now()) {
+			return
+		}
+	}
 	modelName, skipReason := selectScheduledCheckModel(cfg)
 	if skipReason != "" {
 		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%s", cfg.ID, cfg.Name, skipReason)

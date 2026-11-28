@@ -662,6 +662,61 @@ func (h *HybridStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]tim
 	return h.sqlite.GetAllChannelCooldowns(ctx)
 }
 
+/**
+ * @brief 在本地登记 Accio 临时额度冷却，登记成功时排队同步渠道。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedCredential 预期的完整凭证原文。
+ * @param actualModel 发生额度错误的上游模型。
+ * @param now 本轮错误的时间基准。
+ * @return 临时截止时间，含轮次精度；未登记临时冷却时为零值。
+ * @return 创建新窗口并应查询额度时为 true。
+ * @return 模型非法、取消或本地存储失败时返回错误。
+ */
+func (h *HybridStore) BeginAccioQuotaCooldown(ctx context.Context, channelID int64, expectedCredential, actualModel string, now time.Time) (time.Time, bool, error) {
+	until, probe, err := h.sqlite.BeginAccioQuotaCooldown(ctx, channelID, expectedCredential, actualModel, now)
+	if err == nil && !until.IsZero() {
+		h.markChannelDirty(channelID, false)
+	}
+	return until, probe, err
+}
+
+/**
+ * @brief 在本地确认 Accio 账号额度窗口，确认后排队同步渠道。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedCredential 预期的完整凭证原文。
+ * @param actualModel 发起额度查询的上游模型。
+ * @param provisionalUntil 临时冷却的原始结束时间，含轮次信息。
+ * @param resetAt 官方的额度恢复时间。
+ * @return 确认成功为 true；凭证或轮次已变化时为 false。
+ * @return 模型非法、取消或本地存储失败时返回错误。
+ */
+func (h *HybridStore) ConfirmAccioQuotaWindow(ctx context.Context, channelID int64, expectedCredential, actualModel string, provisionalUntil, resetAt time.Time) (bool, error) {
+	matched, err := h.sqlite.ConfirmAccioQuotaWindow(ctx, channelID, expectedCredential, actualModel, provisionalUntil, resetAt)
+	if err == nil && matched {
+		h.markChannelDirty(channelID, false)
+	}
+	return matched, err
+}
+
+/**
+ * @brief 在本地重授权 Accio 凭证并清理额度状态，成功后排队同步渠道。
+ * @param ctx 存储操作上下文。
+ * @param channelID 目标渠道 ID。
+ * @param expectedCredential 预期的旧凭证原文。
+ * @param nextCredential 重授权后的完整凭证原文。
+ * @return 成功重授权时为 true；凭证已变化时为 false。
+ * @return 凭证非法、取消或本地存储失败时返回错误。
+ */
+func (h *HybridStore) ReauthorizeAccioCredential(ctx context.Context, channelID int64, expectedCredential, nextCredential string) (bool, error) {
+	matched, err := h.sqlite.ReauthorizeAccioCredential(ctx, channelID, expectedCredential, nextCredential)
+	if err == nil && matched {
+		h.markChannelDirty(channelID, false)
+	}
+	return matched, err
+}
+
 func (h *HybridStore) FetchChannelInfoBatch(ctx context.Context, channelIDs map[int64]bool) (map[int64]model.ChannelInfo, error) {
 	return h.sqlite.FetchChannelInfoBatch(ctx, channelIDs)
 }

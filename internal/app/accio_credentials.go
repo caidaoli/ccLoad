@@ -73,7 +73,7 @@ func (m *accioCredentialManager) credential(ctx context.Context, cfg *model.Conf
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			if !sameAccioAuthentication(current, latestCredential) {
+			if !current.SameAuthentication(latestCredential) {
 				return latestCredential, nil
 			}
 			if refreshErr != nil {
@@ -115,10 +115,4 @@ func (m *accioCredentialManager) credential(ctx context.Context, cfg *model.Conf
 		copy := *result.Val.(*accioauth.Credential)
 		return &copy, nil
 	}
-}
-
-// sameAccioAuthentication deliberately excludes mutable account metadata.
-func sameAccioAuthentication(a, b *accioauth.Credential) bool {
-	return a.Type == b.Type && a.Region == b.Region && a.UserID == b.UserID &&
-		a.AccessToken == b.AccessToken && a.RefreshToken == b.RefreshToken
 }

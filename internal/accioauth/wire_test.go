@@ -609,6 +609,40 @@ func TestClassifyError(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证 HTTP 和 SSE 保留额度耗尽错误，且普通 429 仍可区分。
+ * @param t 测试上下文。
+ */
+func TestAccioQuotaExhaustionSignal(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		exhausted  bool
+	}{
+		{name: "account quota", body: `{"errorMessage":" Quota exhausted "}`, exhausted: true},
+		{name: "escaped quota", body: `{"error":{"message":"\u0071uota exhausted"}}`, exhausted: true},
+		{name: "sentinel", body: `{"error_code":555,"error_message":"blocked by sentinel rate limit"}`},
+		{name: "generic quota", body: `{"errorMessage":"quota exceeded"}`},
+		{name: "rate limit with quota detail", body: `{"errorMessage":"sentinel rate limit: quota exhausted"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := ClassifyError(http.StatusTooManyRequests, []byte(tc.body))
+			if failure.StatusCode != http.StatusTooManyRequests || failure.Code != "rate_limit_exceeded" || failure.Type != "rate_limit_error" || IsQuotaExhaustedMessage(failure.Message) != tc.exhausted {
+				t.Fatalf("incorrect HTTP failure: %#v", failure)
+			}
+			input := "data: " + tc.body + "\n\n"
+			chunks, done, err := readADKStream(t, io.NopCloser(strings.NewReader(input)))
+			if err != nil || done || len(chunks) != 1 {
+				t.Fatalf("expected SSE error: %v %v %v", chunks, done, err)
+			}
+			failureFrame, _ := chunks[0]["error"].(map[string]any)
+			message, _ := failureFrame["message"].(string)
+			if chunks[0]["status"] != float64(http.StatusTooManyRequests) || failureFrame["code"] != "rate_limit_exceeded" || failureFrame["type"] != "rate_limit_error" || message != failure.Message || IsQuotaExhaustedMessage(message) != tc.exhausted {
+				t.Fatalf("incorrect SSE failure: %v", chunks[0])
+			}
+		})
+	}
+}
+
 type adkByteReader struct{ text string }
 
 func (r *adkByteReader) Read(p []byte) (int, error) {

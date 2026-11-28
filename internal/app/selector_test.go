@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/model"
@@ -236,6 +238,74 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 	if len(modelBCandidates) != 1 || modelBCandidates[0].ID != primary.ID {
 		t.Fatalf("model-b should keep the same channel available, got %+v", modelBCandidates)
 	}
+}
+
+/**
+ * @brief 验证 Accio 仅在额度窗口得到确认后停止全冷却兜底，到期后恢复路由。
+ * @param t Go 测试上下文。
+ */
+func TestSelectRouteCandidates_AccioQuotaWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+		ctx := t.Context()
+		server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+		credential := accioTestCredential(t, "global", "selector-accio-token")
+		accio, err := store.CreateConfig(ctx, &model.Config{
+			Name: "accio", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: credential, Priority: 100, Enabled: true,
+			URLs:         model.ChannelURLs{{URL: "https://accio.example.com"}},
+			ModelEntries: []model.ModelEntry{{Model: "shared"}, {Model: "accio-only"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		alternate, err := store.CreateConfig(ctx, &model.Config{
+			Name: "alternate", Priority: 50, Enabled: true,
+			URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+			ModelEntries: []model.ModelEntry{{Model: "shared"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		temporary, query, err := store.BeginAccioQuotaCooldown(ctx, accio.ID, credential, "shared", now)
+		if err != nil || !query {
+			t.Fatalf("temporary model cooldown: query=%v, err=%v", query, err)
+		}
+		if err := store.SetChannelCooldown(ctx, alternate.ID, now.Add(20*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		softFallback, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared", "openai")
+		if err != nil || len(softFallback) != 1 || softFallback[0].ID != accio.ID || !softFallback[0].CooldownFallback {
+			t.Fatalf("temporary model cooldown: candidates=%+v, err=%v", softFallback, err)
+		}
+
+		const resetAfter = 30 * time.Second
+		if confirmed, err := store.ConfirmAccioQuotaWindow(ctx, accio.ID, credential, "shared", temporary, now.Add(resetAfter)); err != nil || !confirmed {
+			t.Fatalf("account window: confirmed=%v, err=%v", confirmed, err)
+		}
+		candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared", "openai")
+		if err != nil || len(candidates) != 1 || candidates[0].ID != alternate.ID || !candidates[0].CooldownFallback {
+			t.Fatalf("mixed cooldowns: candidates=%+v, err=%v", candidates, err)
+		}
+		candidates, err = server.selectCandidatesByClientProtocol(ctx, "openai")
+		if err != nil || len(candidates) != 1 || candidates[0].ID != alternate.ID || !candidates[0].CooldownFallback {
+			t.Fatalf("wildcard: candidates=%+v, err=%v", candidates, err)
+		}
+		candidates, err = server.selectCandidatesByModelAndClientProtocol(ctx, "accio-only", "openai")
+		if err != nil || len(candidates) != 0 {
+			t.Fatalf("only confirmed Accio window: candidates=%+v, err=%v", candidates, err)
+		}
+		if _, err := server.selectChannelModelRow(ctx, softFallback[0], "shared", "openai", nil, nil, ""); !errors.Is(err, errNoAvailableModelRow) {
+			t.Fatalf("stale fallback during confirmed window: %v", err)
+		}
+
+		time.Sleep(resetAfter)
+		candidates, err = server.selectCandidatesByModelAndClientProtocol(ctx, "accio-only", "openai")
+		if err != nil || len(candidates) != 1 || candidates[0].ID != accio.ID || candidates[0].CooldownFallback {
+			t.Fatalf("expired account window: candidates=%+v, err=%v", candidates, err)
+		}
+	})
 }
 
 func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(t *testing.T) {

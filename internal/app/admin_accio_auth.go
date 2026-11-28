@@ -236,15 +236,12 @@ func (s *Server) commitAccioCredential(ctx context.Context, credential *accioaut
 		if err != nil {
 			return nil, false, err
 		}
-		updated, updateErr := s.store.CompareAndSwapOAuthCredential(ctx, existing.ID, model.AuthTypeAccioOAuth, existing.OAuthCredential, payload)
+		updated, updateErr := s.store.ReauthorizeAccioCredential(ctx, existing.ID, existing.OAuthCredential, payload)
 		if updateErr != nil {
 			return nil, false, updateErr
 		}
 		if !updated {
 			return nil, false, errors.New("accio credential changed concurrently; retry authorization")
-		}
-		if err := s.store.ResetChannelCooldown(ctx, existing.ID); err != nil {
-			return nil, false, err
 		}
 		cfg, err = s.store.UpdateChannelEnabled(ctx, existing.ID, true)
 		if err != nil {

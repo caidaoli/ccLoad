@@ -14286,6 +14286,7 @@ func TestProxy_TerminalRateLimitPoolRetryAfter(t *testing.T) {
 			{name: "earliest attempted channel", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 2},
 			{name: "fallback has no usable credential", status: 429, firstDelay: 89, wantSeconds: 89, wantCalls: 1},
 			{name: "already cooled model key and channel", status: 429, firstDelay: 120, wantSeconds: 30, wantCalls: 1},
+			{name: "confirmed Accio window recovers first", status: 429, firstDelay: 120, wantSeconds: 20, wantCalls: 1},
 			{name: "candidate recovered during request", status: 429, firstDelay: 120, wantSeconds: 777, wantCalls: 1},
 			{name: "requested channel", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
 			{name: "token channel restriction", status: 429, firstDelay: 40, wantSeconds: 40, wantCalls: 1},
@@ -14340,6 +14341,12 @@ func TestProxy_TerminalRateLimitPoolRetryAfter(t *testing.T) {
 					channels[1].authType = model.AuthTypeCodexOAuth
 					channels[1].oauthCredential = "{}"
 				}
+				if tc.name == "confirmed Accio window recovers first" {
+					channels[1].authType = model.AuthTypeAccioOAuth
+					channels[1].oauthCredential = accioTestCredential(t, "global", "pool-accio-token")
+					channels[1].upstreamProtocol = util.ProtocolOpenAI
+					channels[1].modelEntries = append(channels[1].modelEntries, model.ModelEntry{Model: "another-accio-model"})
+				}
 				if tc.name == "fuzzy Antigravity ordinary candidate available" || tc.name == "cooled Credits candidate recovers first" {
 					credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "pool-antigravity")))
 					if err != nil {
@@ -14363,6 +14370,28 @@ func TestProxy_TerminalRateLimitPoolRetryAfter(t *testing.T) {
 				env = setupProxyTestEnv(t, channels, map[int]string{0: upstream.URL, 1: upstream.URL})
 				headers := map[string]string{"User-Agent": "openai-python/2.21.0"}
 				switch tc.name {
+				case "confirmed Accio window recovers first":
+					client := env.server.client
+					accioTestClient(env.server, func(r *http.Request) (*http.Response, error) {
+						if !strings.HasPrefix(r.URL.String(), upstream.URL+"/") {
+							t.Errorf("unexpected Accio request during confirmed window: %s", r.URL.Path)
+							return accioTestResponse(r, http.StatusBadGateway, "{}"), nil
+						}
+						return client.Do(r)
+					})
+					credential := channels[1].oauthCredential
+					now := time.Now()
+					temporary, query, err := env.store.BeginAccioQuotaCooldown(ctx, 2, credential, "another-accio-model", now)
+					if err != nil || !query {
+						t.Fatalf("temporary model cooldown: query=%v, err=%v", query, err)
+					}
+					confirmed, err := env.store.ConfirmAccioQuotaWindow(ctx, 2, credential, "another-accio-model", temporary, now.Add(20*time.Second))
+					if err != nil || !confirmed {
+						t.Fatalf("Accio quota window: confirmed=%v, err=%v", confirmed, err)
+					}
+					if err := env.store.ResetChannelCooldown(ctx, 2); err != nil {
+						t.Fatal(err)
+					}
 				case "already cooled model key and channel", "candidate recovered during request":
 					for _, err := range []error{
 						env.store.SetModelCooldown(ctx, 2, "actual-second", time.Now().Add(15*time.Second)),

@@ -153,6 +153,13 @@ func (s *Server) tryAccioOAuthChannel(ctx context.Context, cfg *model.Config, re
 	})
 }
 
+/**
+ * @brief 将 Accio 的原生响应转为 Chat SSE 或归一化错误，保留明确额度耗尽信号。
+ * @param resp 实际上游响应；缺失响应或响应体时直接返回。
+ * @param modelName 写入转换后 SSE 的模型名。
+ * @return 读取或编码错误体失败时返回错误，否则为 nil。
+ * @note 就地更新响应头和响应体；归一化非 SSE 错误时关闭原始响应体。
+ */
 func normalizeAccioResponse(resp *http.Response, modelName string) error {
 	if resp == nil || resp.Body == nil {
 		return nil
@@ -186,8 +193,9 @@ func normalizeAccioResponse(resp *http.Response, modelName string) error {
 			if len(raw) > 1<<20 {
 				return errors.New("accio error response exceeds limit")
 			}
-			failure = accioauth.ClassifyError(resp.StatusCode, raw)
-			if successful {
+			if !successful {
+				failure = accioauth.ClassifyError(resp.StatusCode, raw)
+			} else {
 				// A successful inference must be SSE. JSON can instead carry a
 				// business rejection; classify it without echoing arbitrary messages.
 				failure = &accioauth.APIError{StatusCode: http.StatusBadGateway, Type: "upstream_error", Code: "invalid_upstream_response", Message: "Accio returned a non-SSE inference response"}
@@ -206,9 +214,12 @@ func normalizeAccioResponse(resp *http.Response, modelName string) error {
 						root.Get("errorMessage").String() != "" || root.Get("error_message").String() != ""
 					if businessError {
 						failure = accioauth.ClassifyError(resp.StatusCode, raw)
-						failure.Message = fmt.Sprintf("Accio upstream rejected request (HTTP %d)", resp.StatusCode)
-						if n, err := strconv.Atoi(code.String()); err == nil && n >= 0 && n <= 999999 {
+						if failure.StatusCode == http.StatusTooManyRequests && accioauth.IsQuotaExhaustedMessage(failure.Message) {
+							failure.Message = "quota exhausted"
+						} else if n, err := strconv.Atoi(code.String()); err == nil && n >= 0 && n <= 999999 {
 							failure.Message = fmt.Sprintf("Accio upstream rejected request (HTTP %d, business code %d)", resp.StatusCode, n)
+						} else {
+							failure.Message = fmt.Sprintf("Accio upstream rejected request (HTTP %d)", resp.StatusCode)
 						}
 					}
 				}

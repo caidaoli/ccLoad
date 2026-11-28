@@ -394,6 +394,14 @@ func (s *SQLStore) modelCooldownUpsert(channelID int64, model string, until time
 		return "", nil, err
 	}
 	now := time.Now()
+	return s.modelCooldownUpsertSQL(), []any{channelID, model, timeToUnix(until), util.CalculateCooldownDuration(until, now), timeToUnix(now)}, nil
+}
+
+/**
+ * @brief 构造普通模型和内部额度状态共用的冷却写入语句。
+ * @return 适配当前数据库方言的 upsert 语句。
+ */
+func (s *SQLStore) modelCooldownUpsertSQL() string {
 	query := `
 		INSERT INTO channel_model_cooldowns
 			(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
@@ -414,7 +422,7 @@ func (s *SQLStore) modelCooldownUpsert(channelID int64, model string, until time
 				updated_at = excluded.updated_at
 		`
 	}
-	return query, []any{channelID, model, timeToUnix(until), util.CalculateCooldownDuration(until, now), timeToUnix(now)}, nil
+	return query
 }
 
 // ResetModelCooldown 清除指定渠道模型的冷却状态。

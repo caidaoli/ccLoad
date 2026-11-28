@@ -8,6 +8,7 @@
 
 ## Accio
 
+- 推理 429 明确报 `quota exhausted` 时，有效的自定义冷却规则优先。默认先冷却当前实际上游模型 10 分钟，同一渠道在该轮只在后台请求一次 `GET /api/entitlement/quota`。若 `usagePercent == 100` 且 `refreshCountdownSeconds` 给出有效的未来截止时间，按该时刻校准同轮模型并冷却整个账号；确认的窗口到期前不参与全冷却兜底。其他查询结果保留临时冷却，`blocked by sentinel rate limit` 继续走普通 429 退避。
 - 所有出站接口统一使用不含 ccLoad 标识的标准 Chrome UA，共用 JSON Content-Type/Accept、`Accept-Language/x-language: en`、`x-platform: desktop`、`x-os`（macOS 为 `macos`）、`x-app-version: 0.34.4` 与地区头；推理另设 SSE Accept、`version: 0.34.4` 和 `appKey: OneChat`。2026-11-07 国际版同账号同出口对照：推理 `undici` 返回 `Bxpunish: 1` HTML，仅换 UA 可恢复 SSE，只改版本或 appKey 仍被拦截；不再保留 `undici` 或 Go 默认 UA。控制面错误展示真实 HTTP 状态与数字业务码，重试分类仍用归一状态，不回显原始响应消息。
 - Accio 先将 `system` / `developer` 文本中的 `Claude`、`Codex` 大小写敏感替换为 `Accio`，再复用 `antigravity_sensitive_words`。后者仅处理 `system` / `developer` 消息字符串和 text 内容块；在渠道请求体规则之后、ADK 编码之前插入零宽字符，正常代理与管理测试共用入口。空数组只禁用零宽处理，名称替换仍生效；敏感词配置修改后重启生效。
 - `accio_oauth` 对 Registry 暴露逻辑 OpenAI Chat。支持显式 `region=cn|global` 的 PKCE 网页授权及 canonical/官方 camelCase JSON 凭据导入，无签到；按地区与用户标识账号。重新导入保留模型配置，目录批量导入按身份去重。

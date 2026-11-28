@@ -60,6 +60,38 @@ func (s *blockingChannelStore) GetEnabledSystemOneChannelsByModel(ctx context.Co
 	return channels, err
 }
 
+/**
+ * @brief 在存储读出冷却快照后、交给缓存前模拟介入的写入与失效。
+ */
+type cooldownReadStore struct {
+	storage.Store
+	afterRead func() ///< 存储返回快照后执行的操作。
+}
+
+/**
+ * @brief 查询渠道冷却并在交回快照前运行测试操作。
+ * @param ctx 请求上下文；取消时结束查询。
+ * @return 真实存储返回的快照；查询失败时为 nil。
+ * @return 真实存储返回的错误；成功时为 nil。
+ */
+func (s *cooldownReadStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
+	cooldowns, err := s.Store.GetAllChannelCooldowns(ctx)
+	s.afterRead()
+	return cooldowns, err
+}
+
+/**
+ * @brief 查询模型冷却并在交回快照前运行测试操作。
+ * @param ctx 请求上下文；取消时结束查询。
+ * @return 真实存储返回的快照；查询失败时为 nil。
+ * @return 真实存储返回的错误；成功时为 nil。
+ */
+func (s *cooldownReadStore) GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
+	cooldowns, err := s.Store.GetAllModelCooldowns(ctx)
+	s.afterRead()
+	return cooldowns, err
+}
+
 func TestChannelCache_InvalidationRejectsInFlightChannelRefresh(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -131,6 +163,83 @@ func TestChannelCache_InvalidationRejectsInFlightChannelRefresh(t *testing.T) {
 				t.Fatalf("subsequent read = (%+v, %v), want disabled channel excluded", channels, err)
 			}
 		})
+	}
+}
+
+/**
+ * @brief 验证旧冷却快照无法进入缓存，连续失效时当前调用仍使用一次重读的结果。
+ * @param t 测试上下文。
+ */
+func TestChannelCache_InvalidationRejectsInFlightCooldownRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func(context.Context, *storage.ChannelCache, int64) (time.Time, error)
+	}{
+		{"channel", func(ctx context.Context, cache *storage.ChannelCache, id int64) (time.Time, error) {
+			windows, err := cache.GetAllChannelCooldowns(ctx)
+			return windows[id], err
+		}},
+		{"model", func(ctx context.Context, cache *storage.ChannelCache, id int64) (time.Time, error) {
+			windows, err := cache.GetAllModelCooldowns(ctx)
+			return windows[id]["m1"], err
+		}},
+	} {
+		for _, invalidation := range []struct {
+			name   string
+			run    func(*storage.ChannelCache)
+			repeat bool
+		}{
+			{"cooldowns", (*storage.ChannelCache).InvalidateCooldownCache, false},
+			{"channels", (*storage.ChannelCache).InvalidateCache, false},
+			{"repeated", (*storage.ChannelCache).InvalidateCooldownCache, true},
+		} {
+			t.Run(tc.name+"/"+invalidation.name, func(t *testing.T) {
+				ctx := t.Context()
+				store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "cooldown_generation.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = store.Close() }()
+				cfg, err := store.CreateConfig(ctx, &model.Config{
+					Name: "cooldown-channel", Enabled: true,
+					URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, ModelEntries: []model.ModelEntry{{Model: "m1"}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				setCooldowns := func(until time.Time) {
+					t.Helper()
+					if err := store.SetChannelCooldown(ctx, cfg.ID, until); err != nil {
+						t.Fatal(err)
+					}
+					if err := store.SetModelCooldown(ctx, cfg.ID, "m1", until); err != nil {
+						t.Fatal(err)
+					}
+				}
+				storedUntil := time.Now().Truncate(time.Second).Add(time.Minute)
+				retryUntil := storedUntil.Add(time.Minute)
+				latestUntil := retryUntil
+				if invalidation.repeat {
+					latestUntil = retryUntil.Add(time.Minute)
+				}
+				setCooldowns(storedUntil)
+				readStore := &cooldownReadStore{Store: store}
+				cache := storage.NewChannelCache(readStore, time.Minute)
+				readStore.afterRead = func() {
+					if storedUntil.Before(latestUntil) {
+						storedUntil = storedUntil.Add(time.Minute)
+						setCooldowns(storedUntil)
+						invalidation.run(cache)
+					}
+				}
+				if until, err := tc.read(ctx, cache, cfg.ID); err != nil || !until.Equal(retryUntil) {
+					t.Errorf("in-flight read = (%v, %v), want %v", until, err, retryUntil)
+				}
+				if until, err := tc.read(ctx, cache, cfg.ID); err != nil || !until.Equal(latestUntil) {
+					t.Fatalf("subsequent read = (%v, %v), want %v", until, err, latestUntil)
+				}
+			})
+		}
 	}
 }
 

@@ -386,6 +386,32 @@ func TestUsage(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 单独查询额度时验证请求路径及百分比、重置倒计时。
+ * @param t 测试上下文。
+ */
+func TestFetchQuota(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAccioRequestHeaders(t, r, "GLOBAL", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/api/entitlement/quota" || r.URL.Query().Get("accessToken") != "access" {
+			t.Errorf("unexpected quota request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"usagePercent":100,"refreshCountdownSeconds":1234.5}}`)
+	}))
+	defer server.Close()
+	s := NewService(server.Client())
+	s.BaseURL = server.URL
+	usage, err := s.FetchQuota(context.Background(), &Credential{Region: "global", AccessToken: "access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.UsagePercent != 100 || usage.RemainingPercent != 0 || usage.Unit != "%" || usage.RefreshCountdownSeconds == nil || *usage.RefreshCountdownSeconds != 1234.5 || usage.Subscription != nil {
+		t.Fatalf("bad quota: %#v", usage)
+	}
+}
+
 func TestUsageMissingSubscriptionAndInvalidQuota(t *testing.T) {
 	for _, quota := range []string{`{"usagePercent":0}`, `{}`, `{"usagePercent":101}`, `{"usagePercent":-1}`, `{"usagePercent":1,"refreshCountdownSeconds":-1}`} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

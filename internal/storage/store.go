@@ -175,6 +175,40 @@ type Store interface {
 	 */
 	SetModelCooldownIfOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, model string, until time.Time) (bool, error)
 	/**
+	 * @brief 暂停发生额度错误的 Accio 模型，同轮只授权一个调用方查询账号额度。
+	 * @param ctx 存储操作上下文。
+	 * @param channelID 目标渠道 ID。
+	 * @param expectedCredential 预期的完整凭证原文。
+	 * @param actualModel 发生额度错误的上游模型。
+	 * @param now 本轮错误的时间基准。
+	 * @return 临时窗口截止时间，含轮次精度；未登记临时冷却时为零值。
+	 * @return 创建新窗口并应查询额度时为 true。
+	 * @return 模型非法、取消或存储失败时返回错误。
+	 */
+	BeginAccioQuotaCooldown(ctx context.Context, channelID int64, expectedCredential, actualModel string, now time.Time) (time.Time, bool, error)
+	/**
+	 * @brief 只对身份与轮次仍匹配的临时窗口确认 Accio 账号额度冷却。
+	 * @param ctx 存储操作上下文。
+	 * @param channelID 目标渠道 ID。
+	 * @param expectedCredential 预期的完整凭证原文。
+	 * @param actualModel 发起本轮额度查询的上游模型。
+	 * @param provisionalUntil BeginAccioQuotaCooldown 返回的原始时间，不得舍入。
+	 * @param resetAt 已确认的额度恢复时间。
+	 * @return 确认成功为 true；凭证或轮次已变化时为 false。
+	 * @return 模型非法、取消或存储失败时返回错误。
+	 */
+	ConfirmAccioQuotaWindow(ctx context.Context, channelID int64, expectedCredential, actualModel string, provisionalUntil, resetAt time.Time) (bool, error)
+	/**
+	 * @brief 仅在旧凭证仍匹配时重授权 Accio，并清除该账号的额度及渠道冷却。
+	 * @param ctx 存储操作上下文。
+	 * @param channelID 目标渠道 ID。
+	 * @param expectedCredential 预期的完整凭证原文。
+	 * @param nextCredential 用户重新授权后的完整凭证原文。
+	 * @return 成功重授权时为 true；凭证已变化时为 false。
+	 * @return 凭证非法、取消或存储失败时返回错误。
+	 */
+	ReauthorizeAccioCredential(ctx context.Context, channelID int64, expectedCredential, nextCredential string) (bool, error)
+	/**
 	 * @brief 身份仍匹配时按当前存储策略原子递增模型冷却。
 	 * @param ctx 存储操作上下文。
 	 * @param channelID 目标渠道 ID。

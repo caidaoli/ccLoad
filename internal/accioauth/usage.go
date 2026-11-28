@@ -28,13 +28,29 @@ type Subscription struct {
 	Unit           string          `json:"unit,omitempty"`
 }
 
-// FetchUsage queries quota and optional subscription. Subscription failures leave
-// the quota available, except authentication failures requiring a token refresh.
-func (s *Service) FetchUsage(ctx context.Context, credential *Credential) (*Usage, error) {
+/**
+ * @brief 仅查询账号的百分比额度及可选的重置倒计时。
+ * @param ctx 请求上下文；取消时中止请求。
+ * @param credential 当前 Accio 账号凭证。
+ * @return 不含订阅信息的额度；失败时为 nil。
+ * @return 凭证、额度或传输无效时返回错误；上游拒绝为 *HTTPError；成功时为 nil。
+ */
+func (s *Service) FetchQuota(ctx context.Context, credential *Credential) (*Usage, error) {
 	c, err := authCopy(credential)
 	if err != nil {
 		return nil, err
 	}
+	return s.fetchQuota(ctx, c)
+}
+
+/**
+ * @brief 解码账号的百分比额度及以秒计的重置倒计时。
+ * @param ctx 请求上下文；取消时中止请求。
+ * @param c 已归一化的 Accio 账号凭证。
+ * @return 额度记录；失败时为 nil。
+ * @return 额度或传输无效时返回错误；上游拒绝为 *HTTPError；成功时为 nil。
+ */
+func (s *Service) fetchQuota(ctx context.Context, c *Credential) (*Usage, error) {
 	data, err := s.authDo(ctx, c, http.MethodGet, "/api/entitlement/quota", nil)
 	if err != nil {
 		return nil, err
@@ -48,7 +64,26 @@ func (s *Service) FetchUsage(ctx context.Context, credential *Credential) (*Usag
 	if usage.RefreshCountdownSeconds != nil && *usage.RefreshCountdownSeconds < 0 {
 		return nil, errors.New("invalid Accio quota reset countdown")
 	}
-	data, err = s.authDo(ctx, c, http.MethodGet, "/api/entitlement/currentSubscription", nil)
+	return usage, nil
+}
+
+/**
+ * @brief 查询百分比额度并附加可用的订阅信息。
+ * @param ctx 请求上下文；取消时中止请求。
+ * @param credential 当前 Accio 账号凭证。
+ * @return 额度与可选订阅；失败时为 nil。
+ * @return 额度查询失败、订阅认证失败或取消时返回错误；上游拒绝为 *HTTPError；成功时为 nil。
+ */
+func (s *Service) FetchUsage(ctx context.Context, credential *Credential) (*Usage, error) {
+	c, err := authCopy(credential)
+	if err != nil {
+		return nil, err
+	}
+	usage, err := s.fetchQuota(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	data, err := s.authDo(ctx, c, http.MethodGet, "/api/entitlement/currentSubscription", nil)
 	if err != nil {
 		var upstream *HTTPError
 		if errors.As(err, &upstream) && upstream.StatusCode == http.StatusUnauthorized || ctx.Err() != nil {

@@ -25,6 +25,11 @@ var ErrChannelNotFound = errors.New("not found")
 var ErrChannelEditConflict = errors.New("channel edit conflict")
 
 /**
+ * @brief Accio 账号额度窗口在模型冷却表中的保留键；普通模型名禁止换行。
+ */
+const AccioQuotaWindowModel = "\n"
+
+/**
  * @brief 定义渠道认证机制与协议转换模式。
  */
 const (

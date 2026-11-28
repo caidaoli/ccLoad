@@ -283,6 +283,79 @@ func TestAdminChannelsAntigravityStandardQuota(t *testing.T) {
 	}
 }
 
+/**
+ * @brief 验证渠道列表和详情显示 Accio 账号窗口或更晚的独立渠道冷却。
+ * @param t 测试上下文。
+ */
+func TestAdminChannelsAccioQuotaWindow(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := t.Context()
+	const name = "accio-model"
+	credential := accioTestCredential(t, "global", "access")
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "accio-account", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: credential, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, ModelEntries: []model.ModelEntry{{Model: name}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	provisional, probe, err := store.BeginAccioQuotaCooldown(ctx, channel.ID, credential, name, now)
+	if err != nil || !probe {
+		t.Fatalf("begin=(%v, %v, %v)", provisional, probe, err)
+	}
+	resetAt := now.Add(time.Hour)
+	if confirmed, err := store.ConfirmAccioQuotaWindow(ctx, channel.ID, credential, name, provisional, resetAt); err != nil || !confirmed {
+		t.Fatalf("confirm=(%v, %v)", confirmed, err)
+	}
+	if err := store.ResetChannelCooldown(ctx, channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name string
+		want time.Time
+	}{
+		{"only account window", resetAt},
+		{"longer separate cooldown", resetAt.Add(time.Hour)},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			if scenario.want.After(resetAt) {
+				if err := store.SetChannelCooldown(ctx, channel.ID, scenario.want); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertView := func(got ChannelWithCooldown) {
+				t.Helper()
+				if got.CooldownUntil == nil || !got.CooldownUntil.Equal(scenario.want) || got.CooldownRemainingMS <= 0 {
+					t.Fatalf("channel cooldown=%v remaining=%d, want until %v", got.CooldownUntil, got.CooldownRemainingMS, scenario.want)
+				}
+				if len(got.ModelCooldowns) != 1 || got.ModelCooldowns[0].Model != name ||
+					got.ModelCooldowns[0].CooldownUntil == nil || !got.ModelCooldowns[0].CooldownUntil.Equal(resetAt) {
+					t.Fatalf("model cooldowns=%+v, want only %s until %v", got.ModelCooldowns, name, resetAt)
+				}
+			}
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?status=cooldown", nil))
+			server.HandleChannels(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("list: status=%d body=%s", w.Code, w.Body.String())
+			}
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if len(list.Data) != 1 || list.Data[0].ID != channel.ID {
+				t.Fatalf("list=%s, want channel %d", w.Body.String(), channel.ID)
+			}
+			assertView(list.Data[0])
+
+			c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+strconv.FormatInt(channel.ID, 10), nil))
+			server.handleGetChannel(c, channel.ID)
+			if w.Code != http.StatusOK {
+				t.Fatalf("detail: status=%d body=%s", w.Code, w.Body.String())
+			}
+			assertView(mustParseAPIResponse[ChannelWithCooldown](t, w.Body.Bytes()).Data)
+		})
+	}
+}
+
 func TestHandleListChannelsIncludesProtocolProbeRetry(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

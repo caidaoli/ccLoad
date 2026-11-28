@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ccLoad/internal/accioauth"
@@ -1219,6 +1220,173 @@ func TestAccioAdminQuotaExhaustedDetails(t *testing.T) {
 	}
 	if data.Get("success").Bool() || data.Get("status_code").Int() != http.StatusOK || data.Get("error").String() != "quota exhausted" || data.Get("api_error.error.status").Int() != 429 || data.Get("cooldown_action").String() != "model_cooldown_applied" {
 		t.Fatalf("incorrect quota classification: %s", data.Raw)
+	}
+}
+
+/**
+ * @brief 验证代理请求先写模型冷却，再按 Accio 额度查询校准账号的恢复时间。
+ * @param t 测试上下文。
+ */
+func TestAccioProxyQuotaCooldown(t *testing.T) {
+	const quotaError = `{"error_code":429,"error_message":"quota exhausted"}`
+	const sentinelError = `{"error_code":555,"error_message":"blocked by sentinel rate limit"}`
+	const catalog = `{"data":[{"modelList":[{"modelCode":"accio-test-code","modelName":"accio-test","protocol":"openai"},{"modelCode":"spare-model-code","modelName":"spare-model","protocol":"openai"}]}]}`
+	for _, tc := range []struct {
+		name, quotaBody string
+		quotaStatus     int
+		resetAfter      time.Duration
+		jsonStatus      int
+		committed       bool
+		secondFailure   bool
+	}{
+		{name: "http-longer", jsonStatus: http.StatusTooManyRequests, quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":100,"refreshCountdownSeconds":900}}`, resetAfter: 15 * time.Minute, secondFailure: true},
+		{name: "json-business-429", jsonStatus: http.StatusOK, quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":100,"refreshCountdownSeconds":5}}`, resetAfter: 5 * time.Second},
+		{name: "sse-shorter", quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":100,"refreshCountdownSeconds":5}}`, resetAfter: 5 * time.Second},
+		{name: "sse-after-content", committed: true, quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":100,"refreshCountdownSeconds":5}}`, resetAfter: 5 * time.Second},
+		{name: "quota-not-full", quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":99,"refreshCountdownSeconds":900}}`},
+		{name: "invalid-deadline", quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":100,"refreshCountdownSeconds":1e20}}`},
+		{name: "zero-countdown", quotaStatus: http.StatusOK, quotaBody: `{"data":{"usagePercent":100,"refreshCountdownSeconds":0}}`},
+		{name: "quota-query-failed", quotaStatus: http.StatusBadGateway, quotaBody: `{}`},
+		{name: "sentinel"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "accio", authType: model.AuthTypeAccioOAuth, oauthCredential: accioTestCredential(t, "global", "accio-proxy-access"), models: "accio-test,spare-model", upstreamProtocol: "openai"}}, map[int]string{0: "https://phoenix-gw.alibaba.com/v1/chat/completions"}, map[string]string{"cooldown_fallback_enabled": "true"})
+				configs, err := env.store.ListConfigs(ctx)
+				if err != nil || len(configs) != 1 {
+					t.Fatalf("configs=%d err=%v", len(configs), err)
+				}
+				id := configs[0].ID
+				quotaGate, releaseQuota := context.WithCancel(ctx)
+				defer releaseQuota()
+				var chats int
+				var queries atomic.Int32
+				var upstreamRecovered bool
+				accioTestClient(env.server, func(r *http.Request) (*http.Response, error) {
+					switch r.URL.Path {
+					case "/api/llm/config":
+						return accioTestResponse(r, http.StatusOK, catalog), nil
+					case "/api/entitlement/quota":
+						queries.Add(1)
+						if r.Method != http.MethodGet || r.URL.Query().Get("accessToken") != "accio-proxy-access" {
+							t.Error("quota query did not use the rejected request's Accio account")
+						}
+						timeout := time.NewTimer(time.Minute)
+						defer timeout.Stop()
+						select {
+						case <-quotaGate.Done():
+							return accioTestResponse(r, tc.quotaStatus, tc.quotaBody), nil
+						case <-r.Context().Done():
+							return nil, r.Context().Err()
+						case <-timeout.C:
+							return nil, context.DeadlineExceeded
+						}
+					case "/api/adk/llm/generateContent":
+						chats++
+						if upstreamRecovered {
+							return accioTestResponse(r, http.StatusOK, accioTestCompletion), nil
+						}
+						if tc.jsonStatus != 0 {
+							response := accioTestResponse(r, tc.jsonStatus, quotaError)
+							response.Header.Set("Content-Type", "application/json")
+							return response, nil
+						}
+						body := "data: " + quotaError + "\n\n"
+						if tc.quotaStatus == 0 {
+							body = "data: " + sentinelError + "\n\n"
+						}
+						if tc.committed {
+							body = "data: {\"content\":{\"parts\":[{\"text\":\"partial reply\"}]}}\n\n" + body
+						}
+						return accioTestResponse(r, http.StatusOK, body), nil
+					default:
+						t.Errorf("unexpected upstream request %s %s", r.Method, r.URL.Path)
+						return accioTestResponse(r, http.StatusNotFound, `{}`), nil
+					}
+				})
+				chat := func(name string, stream bool) *httptest.ResponseRecorder {
+					requestCtx, cancel := context.WithCancel(ctx)
+					defer cancel()
+					req := newJSONRequest(t, http.MethodPost, "/v1/chat/completions", map[string]any{"model": name, "messages": []any{map[string]string{"role": "user", "content": "hi"}}, "stream": stream})
+					req.Header.Set("Authorization", "Bearer test-api-key")
+					response := httptest.NewRecorder()
+					env.engine.ServeHTTP(response, req.WithContext(requestCtx))
+					return response
+				}
+				started := time.Now()
+				response := chat("accio-test", tc.committed || tc.jsonStatus == 0)
+				synctest.Wait()
+				if tc.committed {
+					events := accioTestEvents(t, response.Body.Bytes())
+					if response.Code != http.StatusOK || len(events) < 2 || events[len(events)-1].Get("error.code").String() != "rate_limit_exceeded" {
+						t.Fatalf("committed quota failure=%d %s", response.Code, response.Body.String())
+					}
+				} else if response.Code != http.StatusTooManyRequests || gjson.GetBytes(response.Body.Bytes(), "error.code").String() != "rate_limit_exceeded" {
+					t.Fatalf("quota failure=%d %s", response.Code, response.Body.String())
+				}
+				if !time.Now().Equal(started) || chats != 1 {
+					t.Fatalf("proxy waited for quota or replayed inference: duration=%v chats=%d", time.Since(started), chats)
+				}
+				provisional := 10 * time.Minute
+				wantQueries := int32(1)
+				if tc.quotaStatus == 0 {
+					provisional = time.Minute
+					wantQueries = 0
+				}
+				wantTemporaryUntil := started.Add(provisional).Truncate(time.Second)
+				windows, err := env.store.GetAllModelCooldowns(ctx)
+				if err != nil || len(windows[id]) != 1 || !windows[id]["accio-test"].Equal(wantTemporaryUntil) || queries.Load() != wantQueries {
+					t.Fatalf("provisional cooldowns=%v queries=%d err=%v, want only accio-test until %v and %d queries", windows[id], queries.Load(), err, wantTemporaryUntil, wantQueries)
+				}
+				if tc.secondFailure {
+					response := chat("spare-model", false)
+					synctest.Wait()
+					if response.Code != http.StatusTooManyRequests || chats != 2 || queries.Load() != 1 {
+						t.Fatalf("concurrent quota probe: response=%d chats=%d queries=%d body=%s", response.Code, chats, queries.Load(), response.Body.String())
+					}
+				}
+				time.Sleep(2500 * time.Millisecond)
+				sampled := time.Now()
+				releaseQuota()
+				synctest.Wait()
+				stored, err := env.store.GetConfig(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				upstreamRecovered = true
+				if tc.resetAfter == 0 {
+					windows, err := env.store.GetAllModelCooldowns(ctx)
+					if err != nil || stored.CooldownUntil != 0 || !windows[id]["accio-test"].Equal(wantTemporaryUntil) {
+						t.Fatalf("unconfirmed quota changed cooldown: channel=%d models=%v err=%v", stored.CooldownUntil, windows[id], err)
+					}
+					if response := chat("spare-model", false); response.Code != http.StatusOK || chats != 2 {
+						t.Fatalf("unconfirmed quota blocked a second model: %d %s", response.Code, response.Body.String())
+					}
+					return
+				}
+				wantReset := sampled.Add(tc.resetAfter).Truncate(time.Second).Add(time.Second)
+				if stored.CooldownUntil != wantReset.Unix() || queries.Load() != wantQueries {
+					t.Fatalf("account cooldown until=%d queries=%d, want until=%d queries=%d", stored.CooldownUntil, queries.Load(), wantReset.Unix(), wantQueries)
+				}
+				windows, err = env.store.GetAllModelCooldowns(ctx)
+				if err != nil || windows[id]["accio-test"].After(wantReset) {
+					t.Fatalf("provisional cooldown outlasted account reset: models=%v reset=%v err=%v", windows[id], wantReset, err)
+				}
+				inferences := chats
+				for _, name := range []string{"accio-test", "spare-model"} {
+					if response := chat(name, false); response.Code < 400 || chats != inferences {
+						t.Fatalf("confirmed quota retried model %s: %d %s", name, response.Code, response.Body.String())
+					}
+				}
+				if tc.resetAfter < provisional {
+					time.Sleep(time.Until(wantReset))
+					if response := chat("accio-test", false); response.Code != http.StatusOK || chats != inferences+1 {
+						t.Fatalf("account remained blocked after reset: %d %s", response.Code, response.Body.String())
+					}
+				}
+			})
+		})
 	}
 }
 
