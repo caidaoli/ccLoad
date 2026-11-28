@@ -35,11 +35,6 @@ type HybridStore struct {
 	closeOnce   sync.Once
 	primarySync *primaryWriteBehind
 
-	// OAuth credential writes are serialized so the SQLite projection cannot apply them out of order.
-	// Credential reads take the read lock to avoid observing an in-flight swap.
-	// Periodic quota costs are read directly from the authoritative SQLite ledger.
-	oauthCredentialMu sync.RWMutex
-
 	sqliteReadFailCount atomic.Uint64
 	analyticsPrimary    atomic.Bool
 	primaryReconcileMu  sync.Mutex
@@ -181,14 +176,10 @@ func cloneLogEntriesForSync(entries []*model.LogEntry) []*model.LogEntry {
 // === Channel Management ===
 
 func (h *HybridStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
-	h.oauthCredentialMu.RLock()
-	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.ListConfigs(ctx)
 }
 
 func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
-	h.oauthCredentialMu.RLock()
-	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.GetConfig(ctx, id)
 }
 
@@ -202,8 +193,6 @@ func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, e
  * @return 渠道不存在或快照无法读取时的错误。
  */
 func (h *HybridStore) GetChannelEditSnapshot(ctx context.Context, id int64) (*model.Config, []*model.APIKey, string, error) {
-	h.oauthCredentialMu.RLock()
-	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.GetChannelEditSnapshot(ctx, id)
 }
 
@@ -220,8 +209,6 @@ func (h *HybridStore) GetChannelEditSnapshot(ctx context.Context, id int64) (*mo
  * @return 版本冲突或存储错误。
  */
 func (h *HybridStore) UpdateChannelIfEditVersion(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool, expectedVersion string, mergeManagement func(string) (string, error)) (*model.Config, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
 	updated, err := h.sqlite.UpdateChannelIfEditVersion(ctx, id, upd, keys, replaceKeys, expectedVersion, mergeManagement)
 	if err == nil {
 		h.markChannelDirty(id, false)
@@ -230,10 +217,6 @@ func (h *HybridStore) UpdateChannelIfEditVersion(ctx context.Context, id int64, 
 }
 
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
-	if c != nil && c.UsesOAuth() {
-		h.oauthCredentialMu.Lock()
-		defer h.oauthCredentialMu.Unlock()
-	}
 	result, err := h.sqlite.CreateConfig(ctx, c)
 	if err != nil {
 		return nil, err
@@ -257,9 +240,6 @@ func (h *HybridStore) CompareAndSwapOAuthCredential(
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	updated, err := h.sqlite.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 	if err != nil {
 		return updated, err
@@ -276,8 +256,6 @@ func (h *HybridStore) CompareAndSwapOAuthUsage(
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
 	updated, err := h.sqlite.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 	if err == nil && updated {
 		h.markChannelDirty(channelID, false)
@@ -345,9 +323,6 @@ func (h *HybridStore) CompareAndSwapChannelManagement(
 	channelID int64,
 	expectedEnvelope, nextEnvelope string,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	updated, err := h.sqlite.CompareAndSwapChannelManagement(ctx, channelID, expectedEnvelope, nextEnvelope)
 	if err != nil || !updated {
 		return updated, err
@@ -357,8 +332,6 @@ func (h *HybridStore) CompareAndSwapChannelManagement(
 }
 
 func (h *HybridStore) ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
 	if err := h.sqlite.ResetOAuthQuotaCostUsage(ctx, channelID, resetAt); err != nil {
 		return err
 	}
@@ -371,9 +344,6 @@ func (h *HybridStore) DisableOAuthChannelIfCredentialMatches(
 	channelID int64,
 	expectedAuthType, expectedCredential string,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	disabled, err := h.sqlite.DisableOAuthChannelIfCredentialMatches(
 		ctx, channelID, expectedAuthType, expectedCredential,
 	)
@@ -391,9 +361,6 @@ func (h *HybridStore) UpdateModelStateIfSnapshotMatches(
 	scheduledCheckModel string,
 	maxConcurrency *int,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	updated, err := h.sqlite.UpdateModelStateIfSnapshotMatches(
 		ctx, expected, modelEntries, scheduledCheckModel, maxConcurrency,
 	)
@@ -418,10 +385,6 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 }
 
 func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error) {
-	if patch.ModelImportMode != "" {
-		h.oauthCredentialMu.Lock()
-		defer h.oauthCredentialMu.Unlock()
-	}
 	result, err := h.sqlite.BatchPatchConfigs(ctx, channelIDs, patch)
 	if err != nil {
 		return model.BatchConfigPatchResult{}, err
@@ -434,9 +397,6 @@ func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64,
 }
 
 func (h *HybridStore) BatchDeleteModels(ctx context.Context, operations []model.BatchModelDeleteOperation) (model.BatchModelDeleteResult, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	result, err := h.sqlite.BatchDeleteModels(ctx, operations)
 	if err != nil {
 		return model.BatchModelDeleteResult{}, err
@@ -448,9 +408,6 @@ func (h *HybridStore) BatchDeleteModels(ctx context.Context, operations []model.
 }
 
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	if err := h.sqlite.DeleteConfig(ctx, id); err != nil {
 		return err
 	}
@@ -462,9 +419,6 @@ func (h *HybridStore) DeleteConfigIfOAuthSnapshotMatches(
 	ctx context.Context,
 	expected *model.Config,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	deleted, err := h.sqlite.DeleteConfigIfOAuthSnapshotMatches(ctx, expected)
 	if err != nil || !deleted {
 		return deleted, err
@@ -477,9 +431,6 @@ func (h *HybridStore) DisableConfigIfOAuthSnapshotMatches(
 	ctx context.Context,
 	expected *model.Config,
 ) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
-
 	disabled, err := h.sqlite.DisableConfigIfOAuthSnapshotMatches(ctx, expected)
 	if err != nil || !disabled {
 		return disabled, err
@@ -489,14 +440,10 @@ func (h *HybridStore) DisableConfigIfOAuthSnapshotMatches(
 }
 
 func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
-	h.oauthCredentialMu.RLock()
-	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
 }
 
 func (h *HybridStore) GetEnabledSystemOneChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
-	h.oauthCredentialMu.RLock()
-	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.GetEnabledSystemOneChannelsByModel(ctx, modelName)
 }
 
@@ -846,7 +793,7 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	if e.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
-	effects, err := h.addLogsLocked([]*model.LogEntry{e}, func() (sqlstore.OAuthQuotaLogEffects, error) {
+	effects, err := h.addLogs(func() (sqlstore.OAuthQuotaLogEffects, error) {
 		return h.sqlite.AddLogWithOAuthQuotaCost(ctx, e)
 	})
 	if err != nil {
@@ -867,7 +814,7 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 			entry.Time = model.JSONTime{Time: now}
 		}
 	}
-	effects, err := h.addLogsLocked(logs, func() (sqlstore.OAuthQuotaLogEffects, error) {
+	effects, err := h.addLogs(func() (sqlstore.OAuthQuotaLogEffects, error) {
 		return h.sqlite.BatchAddLogsWithOAuthQuotaCost(ctx, logs)
 	})
 	if err != nil {
@@ -881,13 +828,13 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 	return nil
 }
 
-// addLogsLocked 只在日志会改写凭据（Codex 已购额度）时与凭据 CAS 串行；
-// 周期额度只写账本，不触碰凭据，无需等待被动采样。
-func (h *HybridStore) addLogsLocked(logs []*model.LogEntry, write func() (sqlstore.OAuthQuotaLogEffects, error)) (sqlstore.OAuthQuotaLogEffects, error) {
-	if sqlstore.LogsChargeOAuthCredits(logs) {
-		h.oauthCredentialMu.Lock()
-		defer h.oauthCredentialMu.Unlock()
-	}
+/**
+ * @brief 在 SQLite 写入日志及其额度副作用，并安排被改写凭据的渠道同步主库
+ * @param write 在单个 SQLite 事务内写日志并累计 Codex 已购额度的函数
+ * @return 额度账本切片与凭据被改写的渠道 ID
+ * @return SQLite 写入失败时返回 write 的错误
+ */
+func (h *HybridStore) addLogs(write func() (sqlstore.OAuthQuotaLogEffects, error)) (sqlstore.OAuthQuotaLogEffects, error) {
 	effects, err := write()
 	if err != nil {
 		return effects, err
@@ -1186,17 +1133,6 @@ func (h *HybridStore) LoadWebSessions(ctx context.Context) (map[string]model.Web
 // === Batch Operations ===
 
 func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
-	hasOAuth := false
-	for _, channel := range channels {
-		if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
-			hasOAuth = true
-			break
-		}
-	}
-	if hasOAuth {
-		h.oauthCredentialMu.Lock()
-		defer h.oauthCredentialMu.Unlock()
-	}
 	created, updated, err = h.sqlite.ImportChannelBatch(ctx, channels)
 	if err != nil {
 		return 0, 0, err
@@ -1273,8 +1209,6 @@ func (h *HybridStore) CreateConfigWithAPIKeys(ctx context.Context, c *model.Conf
 }
 
 func (h *HybridStore) UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
 	matched, err := h.sqlite.UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx, expected, modelEntries, scheduledCheckModel, keys, scopes)
 	if err == nil && matched {
 		h.markChannelDirty(expected.ID, false)

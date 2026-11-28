@@ -70,16 +70,9 @@ func withTransactionWithRetryPolicy(ctx context.Context, db *sql.DB, fn func(*sq
 	// 检查 context 是否有 deadline（用于限制总重试时间）
 	deadline, hasDeadline := ctx.Deadline()
 
-	maxRetries := policy.maxRetries
-	if maxRetries <= 0 {
-		maxRetries = defaultTransactionRetryPolicy.maxRetries
-	}
-	delay := policy.delay
-	if delay == nil {
-		delay = defaultTransactionRetryPolicy.delay
-	}
+	maxRetries, delay := policy.maxRetries, policy.delay
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		err := executeSingleTransaction(ctx, db, fn)
 
 		// 成功或非BUSY错误,立即返回

@@ -46,11 +46,6 @@ func isOAuthQuotaCreditLog(entry *model.LogEntry) bool {
 	return entry != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.CodexHasCredits
 }
 
-// LogsChargeOAuthCredits 报告这批日志是否会改写凭据（仅 Codex 已购额度）。
-func LogsChargeOAuthCredits(logs []*model.LogEntry) bool {
-	return slices.ContainsFunc(logs, isOAuthQuotaCreditLog)
-}
-
 // updateOAuthQuotaCreditsTx 仅将 Codex 已购额度成本累计进凭据；周期成本由账本承担。
 func (s *SQLStore) updateOAuthQuotaCreditsTx(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) ([]int64, error) {
 	credits := make(map[int64]int64)
