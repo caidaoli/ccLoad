@@ -219,18 +219,23 @@ func TestQoderRefreshConcurrentReauthorizationWins(t *testing.T) {
 	}
 }
 
-func TestQoderScheduledCheckinClaimsOncePerWindowWithoutOptIn(t *testing.T) {
+/**
+ * @brief 自动签到每窗口只领取一次；上游确认无每日活动后同窗口不再复查，手动签到不受影响。
+ * @param t 测试上下文。
+ */
+func TestQoderScheduledCheckinChecksOncePerWindow(t *testing.T) {
 	s := newInMemoryServer(t)
 	credential := qoderIntegrationCredential(t, "cn", "dt-scheduled-checkin")
 	cfg, err := s.store.CreateConfig(context.Background(), newQoderChannel("scheduled-checkin", qoderIntegrationJSON(t, credential)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var claims atomic.Int32
+	var claims, listings atomic.Int32
 	dailyAvailable := false
 	qoderIntegrationClient(s, func(r *http.Request) (*http.Response, error) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/me/campaigns"):
+			listings.Add(1)
 			rows := `{"campaignId":"sonus","title":"Sonus Credits","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMED","benefit":{"kind":"CREDITS"}}`
 			if dailyAvailable {
 				rows += `,{"campaignId":"daily","title":"Daily Credits","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE","benefit":{"kind":"CREDITS"}}`
@@ -244,11 +249,16 @@ func TestQoderScheduledCheckinClaimsOncePerWindowWithoutOptIn(t *testing.T) {
 	})
 	s.runDueQoderCheckins(context.Background())
 	dailyAvailable = true
-	for range 2 {
-		s.runDueQoderCheckins(context.Background())
+	s.runDueQoderCheckins(context.Background())
+	if listings.Load() != 1 || claims.Load() != 0 {
+		t.Fatalf("after unavailable: listings=%d claims=%d, want the window settled", listings.Load(), claims.Load())
 	}
+	if _, err := s.checkInQoder(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.runDueQoderCheckins(context.Background())
 	if claims.Load() != 1 {
-		t.Fatalf("scheduled claims=%d, want one per window", claims.Load())
+		t.Fatalf("claims=%d, want one per window", claims.Load())
 	}
 	stored, err := s.store.GetConfig(context.Background(), cfg.ID)
 	if err != nil {

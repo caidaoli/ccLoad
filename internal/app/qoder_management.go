@@ -80,7 +80,8 @@ type qoderCheckinResponse struct {
  * @param cfg Qoder 渠道及其账号配置。
  * @return 确认的活动状态和可用的余额快照。
  * @return 上游或凭据请求失败时返回错误，保存签到失败时附带已确认的活动状态。
- * @note 同进程同渠道的手动和定时签到串行执行；认证拒绝后可刷新一次。
+ * @note 同进程同渠道的手动和定时签到串行执行；认证拒绝后可刷新一次。上游确认本窗口无每日活动时记录该窗口，
+ *       调度器在同窗口内不再复查。
  */
 func (s *Server) checkInQoder(ctx context.Context, cfg *model.Config) (*qoderCheckinResponse, error) {
 	// A per-channel lock serializes manual and scheduled claims. Upstream campaign
@@ -101,6 +102,7 @@ func (s *Server) checkInQoder(ctx context.Context, cfg *model.Config) (*qoderChe
 	}
 	service := *s.qoderService
 	service.Client = s.getClientForChannel(cfg)
+	window := qoderauth.CheckinWindow(time.Now())
 	claimed, err := service.Checkin(ctx, credential)
 	var endpointErr *qoderauth.HTTPError
 	if errors.As(err, &endpointErr) && endpointErr.StatusCode == 401 {
@@ -113,6 +115,9 @@ func (s *Server) checkInQoder(ctx context.Context, cfg *model.Config) (*qoderChe
 		return nil, err
 	}
 	result := &qoderCheckinResponse{CheckinResult: claimed}
+	if claimed.Status == "unavailable" {
+		s.qoderUnavailableWindows.Store(cfg.ID, window.Unix())
+	}
 	if claimed.Status == "claimed" || claimed.Status == "already_claimed" {
 		if err = s.updateQoderCredential(ctx, cfg.ID, credential, claimed.UpdateCredential); err != nil {
 			return result, err
@@ -170,7 +175,7 @@ func (s *Server) HandleInstallQoderUMID(c *gin.Context) {
 }
 
 /**
- * @brief 扫描并签到本窗口尚未完成的已启用 Qoder 渠道。
+ * @brief 扫描并签到本窗口尚未完成、且上游未确认无活动的已启用 Qoder 渠道。
  * @param ctx 调度上下文，取消时停止分发。
  * @note 启动最多四个工作协程，等待本轮签到全部退出。
  */
@@ -202,6 +207,9 @@ func (s *Server) runDueQoderCheckins(ctx context.Context) {
 		}
 		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil || credential.LastCheckinAt >= window.Unix() {
+			continue
+		}
+		if settled, _ := s.qoderUnavailableWindows.Load(cfg.ID); settled == window.Unix() {
 			continue
 		}
 		select {

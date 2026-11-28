@@ -122,6 +122,7 @@ type Server struct {
 	qoderUMID                     *qoderumid.Manager
 	qoderModels                   sync.Map
 	qoderCheckins                 sync.Map
+	qoderUnavailableWindows       sync.Map ///< 渠道 ID → 上游确认无每日活动的签到窗口起点（Unix 秒），调度器同窗口不再复查。
 	codeBuddyService              *codebuddyauth.Service
 	loomyService                  *loomyauth.Service ///< 共享 Loomy 协议端点配置；渠道请求复制后应用自己的 HTTP 客户端。
 	loomyState                    loomyRuntimeState  ///< 服务实例内的挑战、限流、账号锁及自动尝试保护。
