@@ -84,7 +84,6 @@ type sdkSession struct {
 	deliveredToolCalls []string         ///< 已交给客户端并等待整批结果的调用 ID；受 turnMu 保护。
 	idleTimeout        time.Duration    ///< 工具轮之间等待下一请求的最长间隔。
 	idleTimer          *time.Timer      ///< 仅在无附着请求时运行，受 turnMu 保护。
-	onDetachedUsage    func(Usage)      ///< 工具轮解除附着时登记的用量接收方，受 turnMu 保护。
 	turnReply          []Event          ///< 最近可重放 HTTP 轮的有序输出，受 turnMu 保护。
 	nativeToolReply    *nativeToolReply ///< 生成当前响应的原生工具结果批次，受 turnMu 保护。
 }
@@ -95,6 +94,16 @@ type sdkSession struct {
 const (
 	sdkSessionIdleTimeout = 30 * time.Minute ///< 仅限制工具轮之间的等待，不限制活动请求。
 	sdkCompletedCallsTTL  = 3 * time.Minute  ///< 完成后短期保留调用标识，支持重复结果重放。
+)
+
+/**
+ * @brief 并行工具批次的交付时序。
+ * @details 本步 SDK 用量通常晚于工具回调到达；参照 pi-cursor-sdk 的 75ms 合批加 125ms 等待，
+ * 在解除附着前短暂等待，使其随发出工具调用的请求计费；超时后到达的用量排给恢复请求。
+ */
+const (
+	toolBatchWindow   = 10 * time.Millisecond  ///< 最后一个工具回调或本步用量之后的静默窗口。
+	toolTurnUsageWait = 200 * time.Millisecond ///< 首个工具回调后等待本步用量的上限。
 )
 
 /**
@@ -312,8 +321,8 @@ func (r *SDKRunner) runFreshTurn(ctx context.Context, apiKey, model string, requ
 		client: client, apiKey: apiKey, scope: request.SessionScope, model: model, customTools: customTools, toolsDigest: toolsDigest,
 		instructionsDigest: request.instructionsDigest,
 		serialTools:        request.serialTools(false),
-		transcriptDigest:   transcriptDigest(request.transcript), onDetachedUsage: request.OnDetachedUsage,
-		message: prompt, images: request.Images, effort: cursorSentEffort(selection), billingModel: billingModel,
+		transcriptDigest:   transcriptDigest(request.transcript),
+		message:            prompt, images: request.Images, effort: cursorSentEffort(selection), billingModel: billingModel,
 		captureTurnReply: captureTurnReply,
 	}
 	var agentID string
@@ -397,7 +406,6 @@ type sdkRunStart struct {
 	customTools        map[string]*sdkv1.CustomToolDefinition ///< Agent 创建时注册的客户端工具
 	toolsDigest        string                                 ///< customTools 摘要，参与停放键
 	transcriptDigest   string                                 ///< 当前请求完整消息摘要，参与停放键
-	onDetachedUsage    func(Usage)                            ///< 工具会话晚到用量的接收方
 	message            string                                 ///< 本次 Send 的提示词
 	images             []Image                                ///< 本次 Send 的图片
 	sendModel          *sdkv1.ModelSelection                  ///< 续用 Agent 时覆盖创建时的模型；新建时为 nil
@@ -480,7 +488,7 @@ func (r *SDKRunner) startRun(ctx context.Context, run sdkRunStart) (<-chan Event
 	}
 
 	effort := run.effort
-	events, err := session.nextTurn(ctx, run.onDetachedUsage, &effort, run.captureTurnReply, nil)
+	events, err := session.nextTurn(ctx, &effort, run.captureTurnReply, nil)
 	r.active.Add(1)
 	go r.consumeRun(session, stream, run.billingModel)
 	if session.parkedStart != nil {
@@ -1149,7 +1157,7 @@ func (r *SDKRunner) resumeToolTurn(ctx context.Context, apiKey, model string, re
 	switch turn.kind {
 	case cursorTurnResume:
 		session := turn.session
-		return session.nextTurn(ctx, request.OnDetachedUsage, nil, false, func() (*nativeToolReply, error) {
+		return session.nextTurn(ctx, nil, false, func() (*nativeToolReply, error) {
 			inherited := session.effectiveTools()
 			tools, err := customToolDefinitions(request, inherited)
 			if err != nil {
@@ -1376,16 +1384,15 @@ func (r *SDKRunner) resolveToolResults(session *sdkSession, results []ToolResult
 /**
  * @brief 将一个请求附着到 Agent，消费至终态或下一批客户端工具调用。
  * @param ctx 当前请求上下文；附着期间取消会终止 Agent。
- * @param onDetachedUsage 当前请求提供的迟到用量接收方；nil 表示无接收方。
  * @param sentEffort 新 Send 的实际思考档位；恢复工具轮时为 nil。
  * @param captureTurnReply 是否保留本轮响应供混合续轮重试。
  * @param before 提交工具结果并返回重放批次；提交成功后才完成附着，nil 表示无需提交。
  * @return 当前轮事件流；附着或提交失败时为 nil。
  * @return 已有附着请求或提交失败时返回错误，否则为 nil。
  * @note turnMu 保护附着与空闲计时器。已取消的 Run 由当前请求等待终态，关闭输出前解除请求取消绑定。
- * 无跨请求身份的 Run 在正常交付工具批次并解除附着后取消，剩余用量仍交给 onDetachedUsage。
+ * 无跨请求身份的 Run 在正常交付工具批次并解除附着后取消；未交付的用量随会话丢弃。
  */
-func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), sentEffort *string, captureTurnReply bool, before func() (*nativeToolReply, error)) (<-chan Event, error) {
+func (s *sdkSession) nextTurn(ctx context.Context, sentEffort *string, captureTurnReply bool, before func() (*nativeToolReply, error)) (<-chan Event, error) {
 	s.turnMu.Lock()
 	if s.attached {
 		s.turnMu.Unlock()
@@ -1404,7 +1411,6 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 	toolPolicy := s.toolPolicy
 	serialTools := s.serialTools
 	s.attached = true
-	s.onDetachedUsage = nil
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
 		s.idleTimer = nil
@@ -1421,7 +1427,6 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 			if s.ctx.Err() != nil || !stopCaller() {
 				return false
 			}
-			s.onDetachedUsage = onDetachedUsage
 			s.deliveredToolCalls = deliveredToolCalls
 			s.eventMu.Lock()
 			// Keep upstream text already queued for the next HTTP turn.
@@ -1457,6 +1462,8 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 		}()
 		var batchTimer *time.Timer
 		var batch <-chan time.Time
+		turnUsageSeen := false      // 本次附着已交付 SDK 逐步用量。
+		var usageDeadline time.Time // 首个工具回调后等待本步用量的截止时刻。
 		stopBatchTimer := func() {
 			if batchTimer != nil && !batchTimer.Stop() {
 				select {
@@ -1522,13 +1529,18 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 						ToolCall: event.ToolCall, Done: event.Done, Err: event.Err, Replayed: true,
 					})
 				}
+				stepUsage := !event.Done && hasTokenUsage(event.Usage)
+				turnUsageSeen = turnUsageSeen || stepUsage
 				if event.ToolCall != nil {
 					deliveredToolCalls = append(deliveredToolCalls, event.ToolCall.ID)
-					if !serialTools {
-						stopBatchTimer()
-						batchTimer = time.NewTimer(10 * time.Millisecond)
-						batch = batchTimer.C
+					if usageDeadline.IsZero() {
+						usageDeadline = time.Now().Add(toolTurnUsageWait)
 					}
+				}
+				if !serialTools && len(deliveredToolCalls) > 0 && (event.ToolCall != nil || stepUsage) {
+					stopBatchTimer()
+					batchTimer = time.NewTimer(toolBatchWindow)
+					batch = batchTimer.C
 				}
 				return true
 			case <-ctx.Done():
@@ -1552,11 +1564,17 @@ func (s *sdkSession) nextTurn(ctx context.Context, onDetachedUsage func(Usage), 
 					}
 				}
 			case <-batch:
+				batch = nil
+				// The step's usage usually follows its tool callbacks; wait briefly so it bills this turn.
+				if wait := time.Until(usageDeadline); !turnUsageSeen && wait > 0 {
+					batchTimer = time.NewTimer(wait)
+					batch = batchTimer.C
+					continue
+				}
 				detached = release(true)
 				if detached {
 					return
 				}
-				batch = nil
 			case <-s.done:
 				for {
 					select {
@@ -1650,42 +1668,18 @@ func (s *sdkSession) confirmParkedStart(err error) bool {
 }
 
 /**
- * @brief 发布会话终态，将剩余真实用量交给附着请求或最后一轮提供的迟到用量接收方。
+ * @brief 发布会话终态，剩余真实用量随终态交给附着请求；无人附着时随会话丢弃。
  * @param event 含终态补差的最终事件。
- * @note 会话取消后只调用一次；接收函数在锁外同步执行，计入 Run 的生命周期。
+ * @note 会话取消后只调用一次；与事件发布互斥，终态之后不再有事件入队。
  */
 func (s *sdkSession) finish(event Event) {
-	s.turnMu.Lock()
 	s.emitMu.Lock()
-	var settle func(Usage)
-	var detachedUsage Usage
-	if s.onDetachedUsage != nil {
-		settle = s.onDetachedUsage
-		takeUsage := func(event *Event) {
-			if event.Usage != nil {
-				detachedUsage.Add(event.Usage)
-				event.Usage = nil
-				event.UsageIncrements = nil
-			}
-		}
-		takeUsage(&event)
-		for range len(s.events) {
-			queued := <-s.events
-			takeUsage(&queued)
-			s.events <- queued
-		}
-	}
-	s.onDetachedUsage = nil
+	defer s.emitMu.Unlock()
 	s.eventMu.Lock()
 	s.terminal = &event
 	s.terminalAt = time.Now()
 	s.eventMu.Unlock()
 	close(s.done)
-	s.emitMu.Unlock()
-	s.turnMu.Unlock()
-	if hasTokenUsage(&detachedUsage) {
-		settle(detachedUsage)
-	}
 }
 
 func (s *sdkSession) terminalEvent() (Event, bool) {

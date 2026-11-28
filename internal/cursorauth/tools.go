@@ -61,8 +61,6 @@ func (s SessionScope) reusable() bool {
 
 /**
  * @brief Cursor SDK 接收的一轮客户端请求。
- * @details 工具 Run 在无附着请求时结束，才同步调用最后一次成功附着提供的 OnDetachedUsage，至多一次。
- * 回调只接收上游已报告且未交给客户端请求的增量，须独立于 HTTP 请求及其取消生命周期。
  */
 type Request struct {
 	Model             string ///< 实际路由模型；仅交付工具结果时可留空以沿用原 Run 的模型。
@@ -74,7 +72,6 @@ type Request struct {
 	ParallelToolCalls *bool ///< nil 表示续轮继承 Run 的设置，新轮默认允许并行。
 	ToolResults       []ToolResult
 	SessionScope      SessionScope `json:"-"` ///< 仅由网关设置；缺少渠道或令牌时禁用跨请求恢复。
-	OnDetachedUsage   func(Usage)  `json:"-"` ///< 工具会话迟到用量的接收方；nil 表示无接收方。
 
 	transcript         []transcriptEntry ///< 组成 Prompt 的逐条消息，用于普通续轮匹配已停放 Agent
 	instructionsDigest string            ///< 当前 system/developer 消息的内容摘要；无有效内容时为空。

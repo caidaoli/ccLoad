@@ -1264,7 +1264,6 @@ window.I18N_LOCALES['en'] = {
   'logs.sourceProxy': 'Request Logs',
   'logs.sourceDetection': 'Detection Logs',
   'logs.sourceCheckin': 'Check-ins',
-  'logs.sourceCursorDetachedUsage': 'Cursor usage adjustment',
   'logs.sourceCountTokens': 'Token Counting',
   'logs.sourceAll': 'All Logs',
   'logs.sourceScheduledCheckBadge': 'Scheduled',

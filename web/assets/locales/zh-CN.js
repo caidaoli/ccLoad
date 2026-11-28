@@ -1264,7 +1264,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.sourceProxy': '请求日志',
   'logs.sourceDetection': '检测日志',
   'logs.sourceCheckin': '签到',
-  'logs.sourceCursorDetachedUsage': 'Cursor 用量补记',
   'logs.sourceCountTokens': 'Token 计数',
   'logs.sourceAll': '全部日志',
   'logs.sourceScheduledCheckBadge': '定时',

@@ -8,13 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
@@ -329,16 +327,6 @@ func (s *Server) forwardCursorAgent(
 	runCtx, cancelRun := context.WithCancel(runBaseCtx)
 	defer cancelRun()
 	request.Model = modelID
-	request.OnDetachedUsage = s.cursorDetachedUsage(logEntryParams{
-		RequestModel:     reqCtx.requestLogModel(),
-		ActualModel:      modelID,
-		ChannelID:        cfg.ID,
-		AuthTokenID:      reqCtx.tokenID,
-		ClientProtocol:   reqCtx.clientProtocol,
-		UpstreamProtocol: reqCtx.upstreamProtocol,
-		CostMultiplier:   reqCtx.attemptCostMultiplier,
-		StartTime:        started,
-	})
 	events, err := runner.Run(runCtx, credential, request)
 	if errors.Is(err, cursorauth.ErrURLImageUnsupported) {
 		result := cursorErrorResult(cfg, http.StatusBadRequest, err.Error(), cooldown.ActionSkipChannel, format, "")
@@ -791,31 +779,6 @@ func prepareCursorResponsesRequest(ctx context.Context, reqCtx *proxyRequestCont
 		stream:          reqCtx.isStreaming,
 		compactEndpoint: strings.HasSuffix(strings.TrimRight(reqCtx.requestPath, "/"), "/responses/compact"),
 	}, nil
-}
-
-/**
- * @brief 按最后一次附着的请求身份保存 SDK 尚未交付的实际消费。
- * @param origin 渠道、模型和令牌快照，不持有 HTTP 请求或响应。
- * @return 会话收尾时调用的记账函数。
- */
-func (s *Server) cursorDetachedUsage(origin logEntryParams) func(cursorauth.Usage) {
-	return func(usage cursorauth.Usage) {
-		result := &fwResult{}
-		applyCursorUsage(result, usage, nil)
-		params := origin
-		params.Result = result
-		params.ErrMsg = "Cursor SDK usage for request started " + origin.StartTime.UTC().Format(time.RFC3339Nano)
-		params.StartTime = time.Now()
-		entry := buildLogEntry(params)
-		entry.LogSource = model.LogSourceCursorDetachedUsage
-		// Runner 关闭时异步请求日志队列可能已停，但 store 会等 Runner 退出才关闭。
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LogFlushTimeoutMs)*time.Millisecond)
-		defer cancel()
-		if err := s.store.AddLog(ctx, entry); err != nil {
-			log.Printf("[ERROR] Cursor detached usage write failed (channel=%d, token=%d, model=%q, usage=%+v): %v",
-				entry.ChannelID, entry.AuthTokenID, origin.ActualModel, usage, err)
-		}
-	}
 }
 
 func (s *Server) captureCursorSDKRequest(

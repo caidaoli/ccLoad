@@ -56,7 +56,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		}
 		qb.WhereIn("logs.channel_id", values)
 	}
-	qb.applyRequestMetricsFilter(filter)
+	qb.ApplyFilter(filter)
 	query, args := qb.BuildWithSuffix(`
 		GROUP BY bucket_ts, logs.channel_id
 		ORDER BY bucket_ts ASC

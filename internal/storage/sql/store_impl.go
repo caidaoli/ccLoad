@@ -84,7 +84,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 	if isEmpty {
 		return []model.HealthTimelineRow{}, nil
 	}
-	qb.applyRequestMetricsFilter(params.Filter)
+	qb.ApplyFilter(params.Filter)
 
 	query, args := qb.BuildWithSuffix("GROUP BY bucket_ts, channel_id, model ORDER BY bucket_ts ASC")
 	args = append([]any{params.BucketMs, params.BucketMs}, args...)

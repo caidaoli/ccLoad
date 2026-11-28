@@ -1543,30 +1543,11 @@ func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing
 
 	requestLog := waitForProxyLog(t, env, "grok-4.6")
 	assertCursorDisplayEstimate(t, response.Body.Bytes(), "openai", false, requestLog, 15)
-	if runner.request.OnDetachedUsage == nil {
-		t.Fatal("missing usage receiver for detached tool session")
-	}
-	runner.request.OnDetachedUsage(cursorauth.Usage{
-		InputTokens: 17, OutputTokens: 8, ReasoningTokens: 3, CacheReadTokens: 5, CacheWriteTokens: 4,
-	})
 	since := requestLog.Time.Add(-time.Second)
-	query, responseLog := newTestContext(t, newRequest(http.MethodGet, "/admin/logs?log_source=cursor_detached_usage", nil))
-	env.server.HandleErrors(query)
-	logs := mustParseAPIResponse[[]model.LogEntry](t, responseLog.Body.Bytes()).Data
-	if responseLog.Code != http.StatusOK || len(logs) != 1 {
-		t.Fatalf("detached usage log query = %d, %s", responseLog.Code, responseLog.Body.String())
-	}
-	record := logs[0]
-	if record.AuthTokenID != token.ID || record.ChannelID != requestLog.ChannelID || record.Model != requestLog.Model ||
-		record.LogSource != model.LogSourceCursorDetachedUsage || record.StatusCode != 0 || record.Cost != 0 || record.UsageEstimate != nil ||
-		record.InputTokens != 17 || record.OutputTokens != 8 || record.ReasoningTokens != 3 ||
-		record.CacheReadInputTokens != 5 || record.CacheCreationInputTokens != 4 || record.Cache5mInputTokens != 4 {
-		t.Fatalf("detached usage attribution or amounts = %+v", record)
-	}
 	stats, err := env.store.GetStats(ctx, since, time.Now(), &model.LogFilter{LogSource: model.LogSourceAll}, true)
 	if err != nil || len(stats) != 1 || stats[0].Total != 1 || stats[0].Success != 1 || stats[0].Error != 0 ||
 		stats[0].LastRequestID == nil || *stats[0].LastRequestID != requestLog.ID {
-		t.Fatalf("detached usage changed request statistics: %+v, err=%v", stats, err)
+		t.Fatalf("tool turn request statistics = %+v, err=%v", stats, err)
 	}
 	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		token, err = env.store.GetAuthTokenByValue(ctx, tokenHash)

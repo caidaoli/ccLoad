@@ -981,11 +981,9 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 				}
 			}
 			key := &Credential{APIKey: "channel-key"}
-			settled := make(chan Usage, 1)
 			first, err := runner.Run(ctx, key, Request{
 				Model: "model-1", Prompt: "lookup", SessionScope: scope,
-				Tools:           []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
-				OnDetachedUsage: func(usage Usage) { settled <- usage },
+				Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1088,14 +1086,6 @@ func TestSDKRunnerPreservesUserInputWithToolResults(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("original Agent was not deleted")
 				}
-			}
-			select {
-			case usage := <-settled:
-				if usage.TotalTokens != 150-toolTurnTokens {
-					t.Fatalf("original detached usage = %+v", usage)
-				}
-			default:
-				t.Fatal("original Agent deletion preceded usage settlement")
 			}
 			handler.mu.Lock()
 			defer handler.mu.Unlock()
@@ -1825,7 +1815,7 @@ func TestSDKSessionBatchesConcurrentNativeToolCalls(t *testing.T) {
 	session := &sdkSession{
 		ctx: ctx, cancel: cancel, events: make(chan Event, 4), done: make(chan struct{}),
 	}
-	events, err := session.nextTurn(context.Background(), nil, nil, false, nil)
+	events, err := session.nextTurn(context.Background(), nil, false, nil)
 	if err != nil {
 		t.Fatalf("nextTurn() error = %v", err)
 	}
@@ -1843,6 +1833,42 @@ func TestSDKSessionBatchesConcurrentNativeToolCalls(t *testing.T) {
 	}
 	if len(ids) != 2 || ids[0] != "call-a" || ids[1] != "call-b" {
 		t.Fatalf("batched calls = %v", ids)
+	}
+	session.abort(context.Canceled)
+}
+
+/**
+ * @brief 晚于工具回调到达的本步用量随发出工具调用的请求交付，而不是排给恢复请求。
+ * @param t 测试上下文。
+ */
+func TestSDKSessionToolBatchCarriesLateStepUsage(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	session := &sdkSession{ctx: ctx, cancel: cancel, events: make(chan Event, 4), done: make(chan struct{})}
+	events, err := session.nextTurn(t.Context(), nil, false, nil)
+	if err != nil {
+		t.Fatalf("nextTurn() error = %v", err)
+	}
+	if !session.emit(Event{ToolCall: &ToolCall{ID: "call-a", Name: "lookup", Arguments: []byte(`{}`)}}) {
+		t.Fatal("emit tool call failed")
+	}
+	time.Sleep(5 * toolBatchWindow)
+	want := Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
+	if !session.emit(Event{Usage: &want}) {
+		t.Fatal("emit usage failed")
+	}
+	var got Usage
+	calls := 0
+	for event := range events {
+		if event.ToolCall != nil {
+			calls++
+		}
+		if event.Usage != nil {
+			got.Add(event.Usage)
+		}
+	}
+	if calls != 1 || got != want {
+		t.Fatalf("tool turn calls = %d, usage = %+v, want %+v", calls, got, want)
 	}
 	session.abort(context.Canceled)
 }
@@ -1879,7 +1905,7 @@ func TestSDKSessionDeliversTerminalAfterFullEventBuffer(t *testing.T) {
 	}
 	wantErr := context.DeadlineExceeded
 	session.finish(Event{Text: "answer", Done: true, Err: wantErr, Usage: &Usage{TotalTokens: 7}})
-	events, err := session.nextTurn(context.Background(), nil, nil, false, nil)
+	events, err := session.nextTurn(context.Background(), nil, false, nil)
 	if err != nil {
 		t.Fatalf("nextTurn() error = %v", err)
 	}
@@ -1910,8 +1936,7 @@ func TestSDKSessionToolBatchWaitsForStoppingRun(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			session := &sdkSession{ctx: ctx, cancel: cancel, events: make(chan Event, 2), done: make(chan struct{})}
-			settlements := make(chan Usage, 1)
-			events, err := session.nextTurn(t.Context(), func(usage Usage) { settlements <- usage }, nil, false, nil)
+			events, err := session.nextTurn(t.Context(), nil, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1937,11 +1962,6 @@ func TestSDKSessionToolBatchWaitsForStoppingRun(t *testing.T) {
 			}
 			if _, open := <-events; open {
 				t.Fatal("events stayed open after terminal delivery")
-			}
-			select {
-			case usage := <-settlements:
-				t.Fatalf("attached run produced a detached settlement: %+v", usage)
-			default:
 			}
 		})
 	}
@@ -2068,169 +2088,95 @@ func TestSDKRunnerToolTurnsPreserveLifetimeAndIncrementalUsage(t *testing.T) {
 }
 
 /**
- * @brief 暂停后只结算已收到的增量及终态补差；恢复与后台结算各自只能领用一次。
+ * @brief 工具暂停后到达的用量与终态补差由恢复请求领用一次，重放不重复计费。
  * @param t 测试上下文。
  */
-func TestSDKRunnerSettlesDetachedToolUsage(t *testing.T) {
-	for _, mode := range []string{"terminal", "idle", "close", "resume"} {
-		t.Run(mode, func(t *testing.T) {
-			runner, handler := newNativeToolTestRunner(t)
-			if mode == "idle" {
-				runner.idleTimeout = 500 * time.Millisecond
-			}
-			handler.turnUsage = map[string]any{"inputTokens": 10, "outputTokens": 2, "totalTokens": 12}
-			cumulative := &sdkv1.TokenUsage{InputTokens: 17, OutputTokens: 7, CacheReadTokens: 2, TotalTokens: 26}
-			handler.usage["run-agent-1"] = cumulative
-			report := make(chan struct{})
-			handler.whileToolPending = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage], agentID, runID string) (bool, error) {
-				select {
-				case <-report:
-				case <-ctx.Done():
-					return false, ctx.Err()
-				}
-				err := stream.Send(nativeSDKMessage("usage", map[string]any{
-					"agent_id": agentID, "run_id": runID, "usage": map[string]any{
-						"inputTokens": 4, "outputTokens": 3, "cacheReadTokens": 2, "totalTokens": 9,
-					},
-				}))
-				if err == nil && mode == "resume" {
-					for range 80 {
-						if err := stream.Send(nativeSDKMessage("status", map[string]any{"status": "RUNNING"})); err != nil {
-							return false, err
-						}
-					}
-				}
-				if err != nil || mode != "terminal" {
-					return false, err
-				}
-				result := runResult(agentID, runID, sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "")
-				result.GetResult().GetResult().Usage = cumulative
-				if err := stream.Send(result); err != nil {
-					return true, err
-				}
-				return true, stream.Send(runDone(agentID, runID))
-			}
+func TestSDKRunnerResumeCarriesQueuedToolUsage(t *testing.T) {
+	runner, handler := newNativeToolTestRunner(t)
+	handler.turnUsage = map[string]any{"inputTokens": 10, "outputTokens": 2, "totalTokens": 12}
+	handler.usage["run-agent-1"] = &sdkv1.TokenUsage{InputTokens: 17, OutputTokens: 7, CacheReadTokens: 2, TotalTokens: 26}
+	report := make(chan struct{})
+	handler.whileToolPending = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage], agentID, runID string) (bool, error) {
+		select {
+		case <-report:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		err := stream.Send(nativeSDKMessage("usage", map[string]any{
+			"agent_id": agentID, "run_id": runID, "usage": map[string]any{
+				"inputTokens": 4, "outputTokens": 3, "cacheReadTokens": 2, "totalTokens": 9,
+			},
+		}))
+		for i := 0; err == nil && i < 80; i++ {
+			err = stream.Send(nativeSDKMessage("status", map[string]any{"status": "RUNNING"}))
+		}
+		return false, err
+	}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			detached := make(chan Usage, 2)
-			credential := &Credential{APIKey: "channel-key"}
-			request := Request{
-				Prompt: "lookup", Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
-				SessionScope: testCursorSessionScope, OnDetachedUsage: func(usage Usage) { detached <- usage },
-			}
-			firstCtx, cancelFirst := context.WithCancel(ctx)
-			defer cancelFirst()
-			events, err := runner.Run(firstCtx, credential, request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var initial Usage
-			var call ToolCall
-			for event := range events {
-				if event.Err != nil || event.Done {
-					t.Fatalf("tool turn ended early: %+v", event)
-				}
-				if event.ToolCall != nil {
-					call = *event.ToolCall
-				}
-				if event.Usage != nil {
-					initial.Add(event.Usage)
-				}
-			}
-			cancelFirst()
-			if call.ID == "" || initial != (Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) {
-				t.Fatalf("initial tool call = %+v, usage = %+v", call, initial)
-			}
-			session := runner.sessionByAgentID("agent-1")
-			close(report)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	credential := &Credential{APIKey: "channel-key"}
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	defer cancelFirst()
+	events, err := runner.Run(firstCtx, credential, Request{
+		Prompt: "lookup", Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+		SessionScope: testCursorSessionScope,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initial Usage
+	var call ToolCall
+	for event := range events {
+		if event.Err != nil || event.Done {
+			t.Fatalf("tool turn ended early: %+v", event)
+		}
+		if event.ToolCall != nil {
+			call = *event.ToolCall
+		}
+		if event.Usage != nil {
+			initial.Add(event.Usage)
+		}
+	}
+	cancelFirst()
+	if call.ID == "" || initial != (Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) {
+		t.Fatalf("initial tool call = %+v, usage = %+v", call, initial)
+	}
+	session := runner.sessionByAgentID("agent-1")
+	close(report)
+	// Fill the queue so the resume must drain queued usage before the terminal.
+	for len(session.events) < cap(session.events) {
+		select {
+		case <-ctx.Done():
+			t.Fatal("the late usage did not reach the SDK")
+		case <-time.After(time.Millisecond):
+		}
+	}
 
-			wantLate := Usage{InputTokens: 4, OutputTokens: 3, CacheReadTokens: 2, TotalTokens: 9}
-			if mode == "resume" || mode == "terminal" {
-				wantLate = Usage{InputTokens: 7, OutputTokens: 5, CacheReadTokens: 2, TotalTokens: 14}
-			}
-			if mode == "close" || mode == "resume" {
-				// Synchronize with late usage reaching the SDK, or the queue filling before a resume.
-				pending := 1
-				if mode == "resume" {
-					pending = cap(session.events)
-				}
-				for len(session.events) < pending {
-					select {
-					case <-ctx.Done():
-						t.Fatal("the late usage did not reach the SDK")
-					case <-time.After(time.Millisecond):
-					}
-				}
-			}
-			if mode == "close" {
-				close(runner.bridge.process.exited)
-				if err := runner.Close(ctx); err != nil {
-					t.Fatalf("Close() error = %v", err)
-				}
-			}
-			if mode == "resume" {
-				reply := Request{ToolResults: []ToolResult{{CallID: call.ID, Output: "ok"}}, SessionScope: testCursorSessionScope, OnDetachedUsage: request.OnDetachedUsage}
-				events, err := runner.Run(ctx, credential, reply)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var resumed Usage
-				for event := range events {
-					if event.Err != nil {
-						t.Fatal(event.Err)
-					}
-					if event.Usage != nil {
-						resumed.Add(event.Usage)
-					}
-				}
-				if resumed != wantLate {
-					t.Fatalf("resumed usage = %+v, want %+v", resumed, wantLate)
-				}
-				replay, err := runner.Run(ctx, credential, reply)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for event := range replay {
-					if !event.Replayed || event.Usage != nil {
-						t.Fatalf("replayed terminal = %+v", event)
-					}
-				}
-			} else {
-				select {
-				case usage := <-detached:
-					if usage != wantLate {
-						t.Fatalf("detached usage = %+v, want %+v", usage, wantLate)
-					}
-				case <-ctx.Done():
-					t.Fatal("missing detached usage")
-				}
-			}
-			if mode == "terminal" {
-				// A resume that selected this session before callback cleanup can still read its terminal.
-				lateEvents, err := session.nextTurn(ctx, request.OnDetachedUsage, nil, false, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var terminal Event
-				for event := range lateEvents {
-					if event.Usage != nil {
-						t.Fatalf("late resume repeated settled usage: %+v", event.Usage)
-					}
-					if event.Done {
-						terminal = event
-					}
-				}
-				if !terminal.Done || terminal.Err != nil {
-					t.Fatalf("late resume terminal = %+v", terminal)
-				}
-			}
-			runner.active.Wait()
-			select {
-			case usage := <-detached:
-				t.Fatalf("extra detached usage: %+v", usage)
-			default:
-			}
-		})
+	reply := Request{ToolResults: []ToolResult{{CallID: call.ID, Output: "ok"}}, SessionScope: testCursorSessionScope}
+	resumed, err := runner.Run(ctx, credential, reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Usage
+	for event := range resumed {
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+		if event.Usage != nil {
+			got.Add(event.Usage)
+		}
+	}
+	if want := (Usage{InputTokens: 7, OutputTokens: 5, CacheReadTokens: 2, TotalTokens: 14}); got != want {
+		t.Fatalf("resumed usage = %+v, want %+v", got, want)
+	}
+	replay, err := runner.Run(ctx, credential, reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for event := range replay {
+		if !event.Replayed || event.Usage != nil {
+			t.Fatalf("replayed terminal = %+v", event)
+		}
 	}
 }
