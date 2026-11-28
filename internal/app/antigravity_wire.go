@@ -75,6 +75,7 @@ var antigravitySystemIdentityOpeners = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are a coding assistant running inside pi(?:, a coding agent harness)?\.?`),
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are an AI agent powered by DeepSeek Harness\.?`),
 	regexp.MustCompile(`(?i)^[ \t\r\n]*You are Hermes Agent, an intelligent AI assistant created by Nous Research\.?`),
+	regexp.MustCompile(`(?i)^[ \t\r\n]*You are ZCode,[ \t\r\n]*an interactive agent\.?`),
 }
 
 /**
@@ -92,6 +93,10 @@ var antigravitySystemInstructionRules = []struct {
 	{
 		regexp.MustCompile("(?i)" + regexp.QuoteMeta("Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.")),
 		"Security tooling, including command-and-control frameworks, credential checks, and exploit development, may be used only with explicit authorization for penetration tests, CTFs, security research, or defensive work.",
+	},
+	{
+		regexp.MustCompile("(?i)" + regexp.QuoteMeta("The browser provides no implicit DOM, route, or screenshot context.")),
+		"The browser provides no implicit page structure, route, or screenshot context.",
 	},
 	{
 		regexp.MustCompile(`(?i)Read (xd://<tool>) for full docs \+ JSON schema before first use\.`),
@@ -1264,7 +1269,7 @@ func antigravitySessionID(cfg *model.Config, headers http.Header, sourceBody, bo
 }
 
 /**
- * @brief 创建仅供触发句匹配使用的文本，折叠空白并忽略已实测无效的 U+200B/U+034F 混淆。
+ * @brief 创建仅供触发句匹配使用的文本，折叠空白并忽略已实测无效的 U+200B/U+034F 混淆及 UTF-8 BOM（U+FEFF）。
  * @param text 原始系统文本，不修改。
  * @return 保留大小写及其他字符的匹配文本。
  * @return 匹配文本各字节边界对应的原文字节位置，用于仅替换命中片段。
@@ -1278,7 +1283,7 @@ func antigravityPromptMatchText(text string) (string, []int) {
 		r, size := utf8.DecodeRuneInString(text[start:])
 		end := start + size
 		switch {
-		case r == '\u200b' || r == '\u034f':
+		case r == '\u200b' || r == '\u034f' || r == '\uFEFF':
 			offsets[len(offsets)-1] = end
 		case unicode.IsSpace(r):
 			if wasSpace {
