@@ -40,7 +40,7 @@ type channelEditorData struct {
 	OAuthCredentialInfo *codexauth.IDTokenInfo       `json:"oauth_credential_info,omitempty"`
 	ModelStats          channelEditorModelStats      `json:"model_stats"`
 	URLStats            channelEditorURLStats        `json:"url_stats"`
-	Version             string                       `json:"version"` ///< 编辑版本，保存时作为强 ETag 放入 If-Match；放在响应体中，避免代理弱化 ETag 头后无法保存
+	Version             string                       `json:"version"` ///< 编辑版本，保存时加引号作为强 ETag 放入 If-Match；只放响应体，代理压缩会弱化或删除 ETag 头
 }
 
 /**
@@ -117,7 +117,6 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	}
 
 	c.Header("Cache-Control", "no-store")
-	c.Header("ETag", `"`+version+`"`)
 	RespondJSON(c, http.StatusOK, channelEditorData{
 		Channel:             detail,
 		Keys:                apiKeys,

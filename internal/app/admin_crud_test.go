@@ -1423,16 +1423,15 @@ func TestChannelEditorRejectsStaleSave(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodGet, "/admin/channels/"+id+"/editor", nil))
 		c.Params = params
 		server.HandleChannelEditor(c)
-		tag := w.Header().Get("ETag")
 		var payload struct {
 			Data struct {
 				Version string `json:"version"`
 			} `json:"data"`
 		}
-		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil || w.Code != http.StatusOK || tag == "" || tag != `"`+payload.Data.Version+`"` {
-			t.Fatalf("GET editor status=%d ETag=%q body=%s err=%v", w.Code, tag, w.Body.String(), err)
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil || w.Code != http.StatusOK || payload.Data.Version == "" {
+			t.Fatalf("GET editor status=%d body=%s err=%v", w.Code, w.Body.String(), err)
 		}
-		return tag
+		return `"` + payload.Data.Version + `"`
 	}
 	save := func(tag, name, modelName, key string, status int) {
 		t.Helper()

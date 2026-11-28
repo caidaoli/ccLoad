@@ -1059,7 +1059,7 @@ function installEditChannelGlobals(channel, {
           },
           version: editorVersion,
         };
-        return { res: { headers: { get: () => 'W/"weakened-by-proxy"' } }, payload: { success: true, data } };
+        return { res: {}, payload: { success: true, data } };
       }
       throw new Error(`unexpected fetch: ${url}`);
     },
@@ -2071,13 +2071,13 @@ test('a stale editor retains its draft until it is closed and reopened', async (
       if (!options) {
         assert.equal(url, `/admin/channels/${channel.id}/editor`);
         return {
-          res: { headers: new Headers({ ETag: `W/"${version}"` }) },
+          res: {},
           payload: { success: true, data: { channel, keys: [], version } }
         };
       }
       captured.push({ url, headers: options.headers, body: JSON.parse(options.body) });
       return {
-        res: { status: 412, headers: new Headers({ ETag: '"unused-latest"' }) },
+        res: { status: 412 },
         payload: { success: false, error: 'channel edit conflict' }
       };
     };
