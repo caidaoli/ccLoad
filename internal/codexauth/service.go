@@ -202,9 +202,6 @@ func (s *Service) ValidatePersonalAccessToken(ctx context.Context, accessToken s
 	if !strings.HasPrefix(accessToken, personalAccessTokenPrefix) {
 		return nil, errors.New("codex personal access token must start with at-")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	requestCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
 	defer cancel()
 
@@ -369,9 +366,6 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, journal Refr
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, errors.New("refresh token is required")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -449,9 +443,6 @@ func (s *Service) validate() error {
  * @return 请求、响应或校验错误；刷新时返回 RefreshPreSendError、RefreshOutcomeUnknownError 或明确拒绝错误
  */
 func (s *Service) requestToken(ctx context.Context, contentType string, payload []byte, refreshing bool) (*Credential, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	tokenCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
 	defer cancel()
 	tokenError := func(stage string, cause error) error {

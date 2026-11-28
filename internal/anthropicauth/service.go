@@ -241,9 +241,6 @@ func (s *Service) requestToken(ctx context.Context, payload map[string]string) (
 	if err != nil {
 		return nil, fmt.Errorf("encode Anthropic token request: %w", err)
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	requestCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
 	defer cancel()
 	response, err := s.postToken(requestCtx, body)

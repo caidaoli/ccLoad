@@ -298,9 +298,6 @@ func safeOAuthErrorCode(code string) string {
  * @return 请求构造、发送、读取或响应体超限错误。
  */
 func (s *Service) request(ctx context.Context, method, endpoint string, form url.Values, limit int64) ([]byte, int, time.Time, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	requestCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var body io.Reader

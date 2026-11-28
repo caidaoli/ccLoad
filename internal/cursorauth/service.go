@@ -200,8 +200,5 @@ func (s *Service) validate() error {
 }
 
 func requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	return context.WithTimeout(ctx, RequestTimeout)
 }

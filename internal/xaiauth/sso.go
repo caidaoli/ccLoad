@@ -29,9 +29,6 @@ func (s *Service) ConvertSSO(ctx context.Context, cookie string) (*Credential, e
 	if cookie == "" {
 		return nil, ErrSSOUnauthorized
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	conversionCtx, cancel := context.WithTimeout(ctx, SSOConversionTimeout)
 	defer cancel()
 	client := *s.client

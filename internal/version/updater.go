@@ -197,9 +197,6 @@ func (u *UpdateManager) CheckNow(ctx context.Context) error {
 	if u == nil {
 		return errors.New("update manager is nil")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	u.checkMu.Lock()
 	defer u.checkMu.Unlock()

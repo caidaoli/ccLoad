@@ -241,9 +241,6 @@ func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, m
 	if s == nil || client == nil {
 		return nil, errors.New("CodeBuddy service is unavailable")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(baseURL, "/")+path, bytes.NewReader(body))
