@@ -970,7 +970,7 @@ function installFetchKeyRateGlobals({
 
 function installEditChannelGlobals(channel, {
   editorError = null,
-  editorETag = '"channel-edit-initial"',
+  editorVersion = 'channel-edit-initial',
   editorKeys = [],
   codexCredential = null,
   codexCredentialInfo = null
@@ -1057,8 +1057,9 @@ function installEditChannelGlobals(channel, {
             available: true,
             items: [{ url: channel.urls[0].url, latency_ms: 125, requests: 1, failures: 0 }]
           },
+          version: editorVersion,
         };
-        return { res: { headers: { get: () => editorETag } }, payload: { success: true, data } };
+        return { res: { headers: { get: () => 'W/"weakened-by-proxy"' } }, payload: { success: true, data } };
       }
       throw new Error(`unexpected fetch: ${url}`);
     },
@@ -2042,7 +2043,7 @@ test('editing requires a version from the same editor response', async () => {
     name: 'no-version',
     urls: [{ url: 'https://unversioned.test', protocols: ['openai'] }]
   };
-  const fixture = installEditChannelGlobals(channel, { editorETag: null });
+  const fixture = installEditChannelGlobals(channel, { editorVersion: '' });
 
   try {
     const { editChannel } = loadChannelsModals();
@@ -2063,15 +2064,15 @@ test('a stale editor retains its draft until it is closed and reopened', async (
   const fixture = installEditChannelGlobals(channel);
   const captured = [];
   const descriptor = Object.getOwnPropertyDescriptor(global, 'getValidInlineURLConfigs');
-  let version = '"initial"';
+  let version = 'initial';
   try {
     global.getValidInlineURLConfigs = () => channel.urls;
     global.fetchAPIWithAuthRaw = async (url, options) => {
       if (!options) {
         assert.equal(url, `/admin/channels/${channel.id}/editor`);
         return {
-          res: { headers: new Headers({ ETag: version }) },
-          payload: { success: true, data: { channel, keys: [] } }
+          res: { headers: new Headers({ ETag: `W/"${version}"` }) },
+          payload: { success: true, data: { channel, keys: [], version } }
         };
       }
       captured.push({ url, headers: options.headers, body: JSON.parse(options.body) });
@@ -2096,7 +2097,7 @@ test('a stale editor retains its draft until it is closed and reopened', async (
     assert.equal(captured.length, 1, 'conflict must not blindly adopt the current version');
 
     await closeModal();
-    version = '"refreshed"';
+    version = 'refreshed';
     channel.name = 'saved by another editor';
     await editChannel(channel.id);
     assert.equal(fixture.getElement('channelName').value, channel.name);

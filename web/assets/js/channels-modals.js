@@ -709,12 +709,10 @@ async function showAddModal(authType = 'api_key', channelPreset = '', apiKey = '
 async function editChannel(id, { copy = false } = {}) {
   const loadVersion = ++channelEditorLoadVersion;
   let editorData;
-  let etag;
   try {
-    const { res, payload } = await fetchAPIWithAuthRaw(`/admin/channels/${id}/editor`);
+    const { payload } = await fetchAPIWithAuthRaw(`/admin/channels/${id}/editor`);
     if (!payload.success) throw new Error(payload.error || window.t('channels.loadChannelsFailed'));
     editorData = payload.data;
-    etag = res.headers.get('ETag');
   } catch (error) {
     if (loadVersion !== channelEditorLoadVersion) return;
     console.error('Failed to fetch channel editor data', error);
@@ -725,6 +723,8 @@ async function editChannel(id, { copy = false } = {}) {
 
   const channel = editorData && editorData.channel;
   const apiKeys = editorData && Array.isArray(editorData.keys) ? editorData.keys : null;
+  // 版本取自响应体：反向代理压缩时会把 ETag 头弱化为 W/"..."，无法通过强比较。
+  const etag = editorData && editorData.version ? `"${editorData.version}"` : null;
   if (!channel || apiKeys === null || (!copy && !etag)) {
     console.error('Incomplete channel editor snapshot');
     if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));

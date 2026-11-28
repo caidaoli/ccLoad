@@ -51,6 +51,7 @@ type channelEditorData struct {
 	OAuthCredentialInfo *codexauth.IDTokenInfo       `json:"oauth_credential_info,omitempty"`
 	ModelStats          channelEditorModelStats      `json:"model_stats"`
 	URLStats            channelEditorURLStats        `json:"url_stats"`
+	Version             string                       `json:"version"` ///< 编辑版本，保存时作为强 ETag 放入 If-Match；放在响应体中，避免代理弱化 ETag 头后无法保存
 }
 
 /**
@@ -202,5 +203,6 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		OAuthCredentialInfo: oauthCredentialInfo,
 		ModelStats:          modelStats,
 		URLStats:            urlStats,
+		Version:             version,
 	})
 }
