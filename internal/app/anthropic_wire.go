@@ -2132,7 +2132,7 @@ func anthropicAcceptableFingerprintUserAgent(userAgent string) bool {
 // account's durable platform. Historical software fields are never candidates.
 func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Config, incoming http.Header) *anthropicOAuthFingerprint {
 	fp := anthropicRequestFingerprint(incoming)
-	if s == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
+	if !cfg.UsesAnthropicOAuth() {
 		return &fp
 	}
 	key := anthropicOAuthFingerprintKey(cfg)

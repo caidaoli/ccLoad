@@ -225,9 +225,6 @@ func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
  * @note 调用方持有当前执行会话的轮次锁。
  */
 func (s *responsesWebsocketSession) commit(request []byte, result responsesWebsocketTurnResult) {
-	if s == nil {
-		return
-	}
 	s.lastRequest = bytes.Clone(request)
 	items := gjson.ParseBytes(result.completedOutput).Array()
 	if !result.interrupted && len(items) == 1 && items[0].Get("type").String() == "compaction" &&

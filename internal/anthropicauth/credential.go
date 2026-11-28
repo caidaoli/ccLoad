@@ -159,9 +159,6 @@ func parseInt64(raw json.RawMessage) (int64, error) {
 
 // Normalize validates and canonicalizes a credential in place.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("anthropic credential is nil")
-	}
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	if c.Type == "" || c.Type == "claude" || c.Type == "oauth" {
 		c.Type = ChannelType
@@ -273,9 +270,6 @@ func parseTimeValue(value any) (time.Time, error) {
 
 // Expiry returns the credential's absolute expiration time.
 func (c *Credential) Expiry() (time.Time, error) {
-	if c == nil {
-		return time.Time{}, errors.New("anthropic credential is nil")
-	}
 	return c.resolveExpiry()
 }
 
@@ -291,9 +285,6 @@ func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, erro
 // MergeRefresh preserves identity metadata and the previous refresh token only
 // when Anthropic legitimately omits them. A rotated refresh token always wins.
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
-	if c == nil || refreshed == nil {
-		return nil, errors.New("anthropic refresh credential is nil")
-	}
 	merged := *refreshed
 	preserve := func(target *string, old string) {
 		if strings.TrimSpace(*target) == "" {

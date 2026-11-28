@@ -332,9 +332,6 @@ func removeCodexSpawnAgentModelSections(description string) (string, string) {
 // codexMultiAgentV2Models returns the currently visible model names. Model
 // lookup is advisory; inability to read it must never break a proxy request.
 func (s *Server) codexMultiAgentV2Models(ctx context.Context) []string {
-	if s == nil || (s.channelCache == nil && s.store == nil) {
-		return nil
-	}
 	models, err := s.getAllEnabledModels(ctx)
 	if err != nil {
 		return nil

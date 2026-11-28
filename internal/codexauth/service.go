@@ -195,7 +195,7 @@ func NewService(client *http.Client) *Service {
 // to an at-* Codex token. PAT credentials intentionally contain no OAuth
 // refresh token or expiry metadata.
 func (s *Service) ValidatePersonalAccessToken(ctx context.Context, accessToken string) (*Credential, error) {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.WhoAmIURL) == "" {
+	if strings.TrimSpace(s.WhoAmIURL) == "" {
 		return nil, errors.New("codex personal access token validation is unavailable")
 	}
 	accessToken = strings.TrimSpace(accessToken)
@@ -420,12 +420,6 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, journal Refr
 }
 
 func (s *Service) validate() error {
-	if s == nil {
-		return errors.New("codex OAuth service is nil")
-	}
-	if s.Client == nil {
-		return errors.New("codex OAuth HTTP client is nil")
-	}
 	if strings.TrimSpace(s.AuthorizationURL) == "" || strings.TrimSpace(s.TokenURL) == "" ||
 		strings.TrimSpace(s.ClientID) == "" || strings.TrimSpace(s.RedirectURI) == "" {
 		return errors.New("codex OAuth service configuration is incomplete")

@@ -90,9 +90,6 @@ func detectionSkipLog(cfg *model.Config, logSource, modelName, reason string) *m
 }
 
 func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry) {
-	if s == nil || s.store == nil || entry == nil {
-		return
-	}
 	if err := s.store.AddLog(ctx, entry); err != nil {
 		log.Printf("[WARN] 检测日志写入失败: %v", err)
 		return

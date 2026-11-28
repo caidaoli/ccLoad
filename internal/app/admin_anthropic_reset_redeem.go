@@ -81,7 +81,7 @@ func (s *Server) HandleRedeemAnthropicResetCredits(c *gin.Context) {
 		return
 	}
 	credential, err := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
-	if err != nil || s.anthropicCredentials == nil {
+	if err != nil {
 		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic credential unavailable")
 		return
 	}

@@ -193,7 +193,7 @@ func (s *Service) do(
 }
 
 func (s *Service) validate() error {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.APIBaseURL) == "" {
+	if strings.TrimSpace(s.APIBaseURL) == "" {
 		return errors.New("cursor service is unavailable")
 	}
 	return nil

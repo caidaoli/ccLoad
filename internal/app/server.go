@@ -578,7 +578,7 @@ const cursorBridgeInitializationTimeout = 5 * time.Minute
 // StartCursorSDKBridge initializes the pinned companion in the background.
 // Non-Cursor deployments never perform installation or process startup work.
 func (s *Server) StartCursorSDKBridge() {
-	if s == nil || !s.cursorBridgeRequired.Load() || s.isShuttingDown.Load() {
+	if !s.cursorBridgeRequired.Load() || s.isShuttingDown.Load() {
 		return
 	}
 	s.cursorBridgeStartOnce.Do(func() {
@@ -627,9 +627,6 @@ func startCursorSDKRunner(ctx context.Context, path string) (cursorauth.Runner, 
 }
 
 func (s *Server) cursorRunnerSnapshot() cursorauth.Runner {
-	if s == nil {
-		return nil
-	}
 	s.cursorRunnerMu.RLock()
 	defer s.cursorRunnerMu.RUnlock()
 	return s.cursorRunner
@@ -659,17 +656,11 @@ func closeCursorRunner(runner cursorauth.Runner) {
 // HTTP server starts accepting requests. The returned value is always usable;
 // on failure it is the fixed production fallback.
 func (s *Server) RefreshAntigravityUserAgent(ctx context.Context) (string, error) {
-	if s == nil || s.antigravityService == nil {
-		return antigravityauth.DefaultUserAgent, errors.New("antigravity service is unavailable")
-	}
 	err := s.antigravityService.RefreshUserAgent(ctx)
 	return s.antigravityUserAgent(), err
 }
 
 func (s *Server) antigravityUserAgent() string {
-	if s == nil {
-		return antigravityauth.DefaultUserAgent
-	}
 	return s.antigravityService.RequestUserAgent()
 }
 
@@ -1116,9 +1107,6 @@ func (s *Server) disabledURLReloadLoop() {
 // ================== 缓存辅助函数 ==================
 
 func (s *Server) getChannelCache() *storage.ChannelCache {
-	if s == nil {
-		return nil
-	}
 	return s.channelCache
 }
 
@@ -1248,9 +1236,6 @@ func (c *credentialHTTPClientCache) getOrCreate(
 	key upstreamHTTPClientCacheKey,
 	create func() (*http.Client, error),
 ) (*http.Client, error) {
-	if c == nil {
-		return create()
-	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -1304,9 +1289,6 @@ func (c *credentialHTTPClientCache) getOrCreate(
 }
 
 func (c *credentialHTTPClientCache) closeAll() {
-	if c == nil {
-		return
-	}
 	c.mu.Lock()
 	c.closed = true
 	clients := make([]*http.Client, 0, len(c.entries))
@@ -1808,7 +1790,7 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 // GetReadTimeout 返回 HTTP ReadTimeout：读取请求头与请求体的整段上限。
 // 它决定慢速上传何时被传输层切断，与请求体大小上限是两件事。
 func (s *Server) GetReadTimeout() time.Duration {
-	if s == nil || s.httpReadTimeout <= 0 {
+	if s.httpReadTimeout <= 0 {
 		return config.DefaultHTTPReadTimeout
 	}
 	return s.httpReadTimeout
@@ -2137,9 +2119,7 @@ func (s *Server) stateCleanupLoop() {
 			// 避免渠道删除后计数器累积导致内存泄漏
 			s.keySelector.CleanupInactiveCounters(24 * time.Hour)
 			s.channelRPMLimiter.CleanupExpired()
-			if s.authService != nil {
-				s.authService.tokenRPMLimiter.CleanupExpired()
-			}
+			s.authService.tokenRPMLimiter.CleanupExpired()
 			s.sessionAffinity.cleanupExpired(time.Now())
 		}
 	}

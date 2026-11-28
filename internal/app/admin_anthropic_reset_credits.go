@@ -211,10 +211,6 @@ func (s *Server) HandleAnthropicResetCredits(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "user:profile scope required")
 		return
 	}
-	if s.anthropicCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic credential manager unavailable")
-		return
-	}
 	requestCtx, cancel := context.WithTimeout(c.Request.Context(), oauthUsageTimeout)
 	defer cancel()
 	cfg = s.withOAuthBaseURLOverride(cfg)

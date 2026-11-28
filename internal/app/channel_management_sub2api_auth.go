@@ -149,9 +149,6 @@ func (s *channelManagementService) PreviewSub2APILogin(
 	cfg *model.Config,
 	input *channelManagementInput,
 ) (*sub2APIManagementSession, error) {
-	if s == nil || input == nil {
-		return nil, errInvalidManagementRequest
-	}
 	profile := strings.TrimSpace(input.Profile)
 	if profile != model.ChannelManagementProfileSub2API && profile != model.ChannelManagementProfileSub2APIPro {
 		return nil, errInvalidManagementRequest

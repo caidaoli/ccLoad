@@ -124,9 +124,6 @@ func (site Site) Label() string { return site.config().label }
  * @note 不修改原服务；ZCode 公共端点及测试时钟始终保留。
  */
 func (s *Service) ForSite(site Site, client *http.Client) *Service {
-	if s == nil {
-		s = NewService(client)
-	}
 	if site == "" {
 		site = SiteZAI
 	}

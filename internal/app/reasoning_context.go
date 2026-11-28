@@ -709,7 +709,7 @@ func reasoningToolOutputFailed(item gjson.Result) bool {
 // A non-stream HTTP continuation may read locally owned WS history for the
 // decision, while its upstream request retains ordinary HTTP wire semantics.
 func (s *Server) localReasoningTranscript(r *proxyRequestContext) []byte {
-	if s.responsesExecutionSessions == nil || r.clientProtocol != protocol.Codex || gjson.GetBytes(r.body, "previous_response_id").String() == "" {
+	if r.clientProtocol != protocol.Codex || gjson.GetBytes(r.body, "previous_response_id").String() == "" {
 		return nil
 	}
 	identity := responsesExecutionSessionID(r.header)

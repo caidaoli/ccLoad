@@ -102,9 +102,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
 
 // Normalize validates secrets and normalizes expiry to seconds.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("missing Accio credential")
-	}
 	c.Type = strings.TrimSpace(c.Type)
 	if c.Type != "" && c.Type != ChannelType {
 		return errors.New("invalid Accio credential type")

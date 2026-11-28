@@ -19,7 +19,7 @@ type qoderCredentialManager struct {
 }
 
 func (m *qoderCredentialManager) credential(ctx context.Context, cfg *model.Config, force bool, rejected string) (*qoderauth.Credential, error) {
-	if m == nil || m.server == nil || m.server.qoderService == nil || m.server.oauthCredentialRefreshes == nil || cfg == nil || !cfg.UsesQoderOAuth() {
+	if !cfg.UsesQoderOAuth() {
 		return nil, errors.New("qoder credentials unavailable")
 	}
 	c, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))

@@ -46,7 +46,7 @@ func newVertexCredentialManager(clientFor func(*model.Config) *http.Client) *ver
 // it. On mint failure a still-valid, non-rejected cached token is returned
 // together with the error.
 func (m *vertexCredentialManager) accessToken(ctx context.Context, cfg *model.Config, rejectedAccessToken string) (string, error) {
-	if m == nil || cfg == nil || !cfg.UsesVertexOAuth() {
+	if !cfg.UsesVertexOAuth() {
 		return "", errors.New("vertex credential manager is unavailable")
 	}
 	if err := ctx.Err(); err != nil {
@@ -115,9 +115,6 @@ func (m *vertexCredentialManager) cached(cfg *model.Config) (vertexauth.Token, b
 }
 
 func (m *vertexCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()

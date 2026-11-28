@@ -49,9 +49,6 @@ func (m *httpProxyRequestMetrics) observeRequest(streaming bool, requestBodyByte
 }
 
 func (m *httpProxyRequestMetrics) finish(status, responseBodyBytes int) {
-	if m == nil || m.metrics == nil {
-		return
-	}
 	metrics := m.metrics
 	metrics.activeRequests.Add(-1)
 	metrics.completedRequests.Add(1)
@@ -77,9 +74,6 @@ func (m *httpProxyRequestMetrics) finish(status, responseBodyBytes int) {
 }
 
 func (m *httpProxyRuntimeMetrics) stats() httpProxyRuntimeStats {
-	if m == nil {
-		return httpProxyRuntimeStats{}
-	}
 	return httpProxyRuntimeStats{
 		ActiveRequests:       m.activeRequests.Load(),
 		CompletedRequests:    m.completedRequests.Load(),

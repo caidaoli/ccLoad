@@ -50,9 +50,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
 
 // Normalize validates the edition and secrets without guessing an account's region.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("missing Qoder credential")
-	}
 	c.Type = strings.TrimSpace(c.Type)
 	if c.Type != "" && c.Type != ChannelType {
 		return errors.New("invalid Qoder credential type")
@@ -89,9 +86,6 @@ func (c *Credential) Normalize() error {
 
 // JSON returns a validated canonical credential without mutating the receiver.
 func (c *Credential) JSON() (string, error) {
-	if c == nil {
-		return "", errors.New("missing Qoder credential")
-	}
 	normalized := *c
 	if err := normalized.Normalize(); err != nil {
 		return "", err
@@ -110,9 +104,6 @@ func (c *Credential) NeedsRefresh(now time.Time) bool {
  * @return The edition's inference origin, or empty for an invalid credential.
  */
 func (c *Credential) GatewayURL() string {
-	if c == nil {
-		return ""
-	}
 	switch c.Region {
 	case "cn":
 		return "https://gateway.qoder.com.cn"
@@ -125,9 +116,6 @@ func (c *Credential) GatewayURL() string {
 
 // OpenAPIURL selects the account/control-plane host for the credential's region.
 func (c *Credential) OpenAPIURL() string {
-	if c == nil {
-		return ""
-	}
 	switch c.Region {
 	case "cn":
 		return "https://openapi.qoder.com.cn"

@@ -81,7 +81,7 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 	forceRefresh bool,
 	rejectedAccessToken string,
 ) (*anthropicauth.Credential, error) {
-	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
+	if !cfg.UsesAnthropicOAuth() {
 		return nil, errors.New("anthropic credential manager is unavailable")
 	}
 	if ctx.Err() != nil {
@@ -253,9 +253,6 @@ func (m *anthropicCredentialManager) cache(channelID int64, credential *anthropi
 }
 
 func (m *anthropicCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()
@@ -266,7 +263,7 @@ func (m *anthropicCredentialManager) updateMetadata(
 	cfg *model.Config,
 	metadata anthropicCredentialMetadata,
 ) (bool, error) {
-	if m == nil || m.store == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
+	if !cfg.UsesAnthropicOAuth() {
 		return false, errors.New("anthropic credential manager is unavailable")
 	}
 	metadata.PlanType = strings.TrimSpace(metadata.PlanType)
@@ -342,7 +339,7 @@ func (m *anthropicCredentialManager) updatePassiveUsage(
 	cfg *model.Config,
 	update anthropicPassiveUsageUpdate,
 ) (bool, error) {
-	if m == nil || m.store == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
+	if !cfg.UsesAnthropicOAuth() {
 		return false, errors.New("anthropic credential manager is unavailable")
 	}
 	if update.FiveHour == nil && update.SevenDay == nil && update.SevenDayOverageIncluded == nil {

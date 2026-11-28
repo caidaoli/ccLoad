@@ -92,7 +92,7 @@ func (s *channelManagementService) checkInSub2APIPro(
 	cfg *model.Config,
 	envelope *model.ChannelManagementEnvelope,
 ) (*channelCheckinResult, *model.ChannelManagementBalanceSnapshot, error) {
-	if s == nil || cfg == nil || envelope == nil || envelope.Profile != model.ChannelManagementProfileSub2APIPro {
+	if envelope.Profile != model.ChannelManagementProfileSub2APIPro {
 		return nil, nil, errInvalidManagementRequest
 	}
 	checkedAt := s.now()
@@ -280,8 +280,7 @@ func (s *channelManagementService) refreshSub2APIBalance(
 	cfg *model.Config,
 	envelope *model.ChannelManagementEnvelope,
 ) (*model.ChannelManagementBalanceSnapshot, int, error) {
-	if s == nil || cfg == nil || envelope == nil ||
-		(envelope.Profile != model.ChannelManagementProfileSub2API && envelope.Profile != model.ChannelManagementProfileSub2APIPro) {
+	if envelope.Profile != model.ChannelManagementProfileSub2API && envelope.Profile != model.ChannelManagementProfileSub2APIPro {
 		return nil, 0, errInvalidManagementRequest
 	}
 	baseURL := strings.TrimRight(envelope.Settings.BaseURL, "/")

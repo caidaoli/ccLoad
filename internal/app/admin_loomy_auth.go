@@ -44,17 +44,13 @@ type loomyRuntimeState struct {
 /**
  * @brief 为渠道取得遵循其代理策略的 Loomy 协议客户端副本。
  * @param cfg 本次操作使用的渠道配置及私有凭证快照。
- * @return 遵循渠道代理策略的客户端副本；服务未初始化时为 nil。
- * @return 服务未初始化时返回错误；成功为 nil。
+ * @return 遵循渠道代理策略的客户端副本。
  * @note 只替换副本的 HTTP 客户端，不修改共享协议服务。
  */
-func (s *Server) loomyClient(cfg *model.Config) (*loomyauth.Service, error) {
-	if s.loomyService == nil {
-		return nil, errors.New("loomy service unavailable")
-	}
+func (s *Server) loomyClient(cfg *model.Config) *loomyauth.Service {
 	service := *s.loomyService
 	service.Client = s.getClientForChannel(cfg)
-	return &service, nil
+	return &service
 }
 
 /**
@@ -104,11 +100,7 @@ func (s *Server) HandleLoomySendCode(c *gin.Context) {
 		RespondError(c, 400, err)
 		return
 	}
-	service, err := s.loomyClient(&model.Config{ProxyURL: proxy})
-	if err != nil {
-		RespondError(c, 503, err)
-		return
-	}
+	service := s.loomyClient(&model.Config{ProxyURL: proxy})
 	// Reserve before sending so concurrent clicks cannot send unlimited SMS.
 	now := time.Now()
 	s.loomyState.loginMu.Lock()
@@ -193,11 +185,7 @@ func (s *Server) HandleLoomyLogin(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
-	service, err := s.loomyClient(&model.Config{ProxyURL: login.proxyURL})
-	if err != nil {
-		RespondError(c, 503, err)
-		return
-	}
+	service := s.loomyClient(&model.Config{ProxyURL: login.proxyURL})
 	credential, err := service.Login(ctx, login.phone, input.Code, login.msgID)
 	if err != nil {
 		RespondError(c, 502, err)
@@ -223,10 +211,7 @@ func (s *Server) HandleLoomyLogin(c *gin.Context) {
  *       替换会话、清理下次尝试时间并重新启用；登录代理只应用于最早创建的渠道，复制渠道保留各自代理。
  */
 func (s *Server) commitLoomyCredential(ctx context.Context, credential *loomyauth.Credential, proxy string) (*model.Config, bool, error) {
-	service, err := s.loomyClient(&model.Config{ProxyURL: proxy})
-	if err != nil {
-		return nil, false, err
-	}
+	service := s.loomyClient(&model.Config{ProxyURL: proxy})
 	names, err := service.FetchModels(ctx, credential.Session)
 	if err != nil {
 		return nil, false, err
@@ -413,10 +398,7 @@ func (s *Server) fetchLoomyModels(ctx context.Context, cfg *model.Config, overri
 	if err != nil {
 		return nil, err
 	}
-	service, err := s.loomyClient(cfg)
-	if err != nil {
-		return nil, err
-	}
+	service := s.loomyClient(cfg)
 	names, err := service.FetchModels(ctx, credential.Session)
 	if err != nil {
 		s.handleLoomyRejection(ctx, cfg, err)

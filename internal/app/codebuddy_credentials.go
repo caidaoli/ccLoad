@@ -29,7 +29,7 @@ type codeBuddyCredentialManager struct {
  * @note 刷新归服务器生命周期管理，同渠道上针对同一被拒令牌的刷新合并。
  */
 func (m *codeBuddyCredentialManager) credential(ctx context.Context, cfg *model.Config, force bool, rejected string) (*codebuddyauth.Credential, error) {
-	if m == nil || m.server == nil || m.server.codeBuddyService == nil || m.server.oauthCredentialRefreshes == nil || cfg == nil || !cfg.UsesCodeBuddyOAuth() {
+	if !cfg.UsesCodeBuddyOAuth() {
 		return nil, errors.New("CodeBuddy credentials unavailable")
 	}
 	c, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))

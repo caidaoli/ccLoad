@@ -49,9 +49,6 @@ func newAnthropicOAuthManager(
 		timeout: 30 * time.Minute, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
 		prepare: func(_ string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
-			if service == nil || store == nil {
-				return "", "", nil, nil, errors.New("oauth: Anthropic is unavailable")
-			}
 			state, err := anthropicauth.GenerateState()
 			if err != nil {
 				return "", "", nil, nil, err
@@ -225,10 +222,6 @@ func uniqueAnthropicChannelName(configs []*model.Config, credential *anthropicau
 
 // HandleStartAnthropicOAuth starts one hosted Anthropic PKCE login.
 func (s *Server) HandleStartAnthropicOAuth(c *gin.Context) {
-	if s.anthropicOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic OAuth is unavailable")
-		return
-	}
 	var request oauthLoginStartRequest
 	if !bindOAuthLoginStart(c, &request) {
 		return
@@ -248,10 +241,6 @@ func (s *Server) HandleStartAnthropicOAuth(c *gin.Context) {
 
 // HandleAnthropicOAuthStatus returns one Anthropic login state.
 func (s *Server) HandleAnthropicOAuthStatus(c *gin.Context) {
-	if s.anthropicOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic OAuth is unavailable")
-		return
-	}
 	status, ok := s.anthropicOAuth.status(c.Query("state"))
 	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "Anthropic OAuth session not found")
@@ -267,10 +256,6 @@ func (s *Server) HandleCancelAnthropicOAuth(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.anthropicOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic OAuth is unavailable")
-		return
-	}
 	if err := s.anthropicOAuth.cancel(request.State); err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return
@@ -283,10 +268,6 @@ func (s *Server) HandleSubmitAnthropicOAuthCode(c *gin.Context) {
 	var request anthropicOAuthCodeRequest
 	if err := BindAndValidate(c, &request); err != nil {
 		RespondError(c, http.StatusBadRequest, err)
-		return
-	}
-	if s.anthropicOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic OAuth is unavailable")
 		return
 	}
 	state, err := s.anthropicOAuth.submitAuthorizationCode(request.State, request.Code)
@@ -311,10 +292,6 @@ func (s *Server) HandleRefreshAnthropicCredential(c *gin.Context) {
 	}
 	if !cfg.UsesAnthropicOAuth() {
 		RespondErrorMsg(c, http.StatusConflict, "channel does not use Anthropic OAuth")
-		return
-	}
-	if s.anthropicCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic credential refresh is unavailable")
 		return
 	}
 	credential, err := s.anthropicCredentials.credential(c.Request.Context(), cfg, true)

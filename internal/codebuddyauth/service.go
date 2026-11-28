@@ -138,12 +138,9 @@ func acceptLanguageForBaseURL(baseURL string) string {
 // Refresh tokens belong only on the token refresh endpoint; chat and catalog
 // requests that carry X-Refresh-Token are a WAF/fingerprint tell.
 func ApplyCredentialHeaders(h http.Header, c *Credential) {
-	base := BaseURL
-	if c != nil {
-		base = c.Endpoint()
-		if c.IsInternational() {
-			base = ChatBaseURL(c)
-		}
+	base := c.Endpoint()
+	if c.IsInternational() {
+		base = ChatBaseURL(c)
 	}
 	ApplySourceHeadersForBaseURL(h, base)
 	h.Set("Authorization", "Bearer "+c.AccessToken)
@@ -238,9 +235,6 @@ func ApplyBillingHeaders(h http.Header, c *Credential) {
 }
 
 func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, method, path string, headers http.Header, body []byte) (json.RawMessage, error) {
-	if s == nil || client == nil {
-		return nil, errors.New("CodeBuddy service is unavailable")
-	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(baseURL, "/")+path, bytes.NewReader(body))
@@ -289,9 +283,6 @@ func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, m
 }
 
 func (s *Service) billingBaseURL() string {
-	if s == nil {
-		return BillingBaseURL
-	}
 	// A custom BaseURL is commonly injected by tests and embedders. Unless the
 	// billing endpoint was explicitly changed as well, keep those calls local.
 	if strings.TrimSpace(s.BillingBaseURL) == "" ||
@@ -302,23 +293,23 @@ func (s *Service) billingBaseURL() string {
 }
 
 func (s *Service) credentialBaseURL(c *Credential) string {
-	if c != nil && c.IsInternational() {
+	if c.IsInternational() {
 		return ChatBaseURL(c)
 	}
-	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
+	if strings.TrimSpace(c.BaseURL) != "" {
 		return c.Endpoint()
 	}
-	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+	if strings.TrimSpace(s.BaseURL) == "" {
 		return BaseURL
 	}
 	return s.BaseURL
 }
 
 func (s *Service) billingBaseURLForCredential(c *Credential) string {
-	if c != nil && c.IsInternational() {
+	if c.IsInternational() {
 		return ChatBaseURL(c)
 	}
-	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
+	if strings.TrimSpace(c.BaseURL) != "" {
 		return c.Endpoint()
 	}
 	return s.billingBaseURL()
@@ -327,9 +318,6 @@ func (s *Service) billingBaseURLForCredential(c *Credential) string {
 // FetchModels reads the account's live cloud product catalog, as CodeBuddy CLI
 // 2.148.0 CloudProductProvider does. It never falls back to a compiled catalog.
 func (s *Service) FetchModels(ctx context.Context, credential *Credential) ([]string, error) {
-	if credential == nil {
-		return nil, errors.New("CodeBuddy model discovery requires credentials")
-	}
 	c := *credential
 	if err := c.Normalize(); err != nil {
 		return nil, err
@@ -389,9 +377,6 @@ func (s *Service) FetchModels(ctx context.Context, credential *Credential) ([]st
 
 // DailyCheckin performs the CodeBuddy daily check-in.
 func (s *Service) DailyCheckin(ctx context.Context, credential *Credential) error {
-	if s == nil || credential == nil {
-		return errors.New("CodeBuddy credential is required")
-	}
 	if !credential.SupportsDailyCheckin() {
 		return ErrDailyCheckinUnsupported
 	}
@@ -424,9 +409,6 @@ type ResourceUsage struct {
  * @details 个人接口有 TotalCount 时按总数收齐。缺少总数时，以短页为结束标志，最多读取 20 个满页及一次探测页。
  */
 func (s *Service) UserResource(ctx context.Context, credential *Credential) (*ResourceUsage, error) {
-	if s == nil || credential == nil {
-		return nil, errors.New("CodeBuddy credential is required")
-	}
 	if credential.EnterpriseID != "" {
 		return s.enterpriseUserResource(ctx, credential)
 	}
@@ -583,17 +565,11 @@ type Login struct {
 
 // Start creates an isolated browser authorization session.
 func (s *Service) Start(ctx context.Context) (*Login, error) {
-	if s == nil {
-		return nil, errors.New("CodeBuddy service is unavailable")
-	}
 	return s.StartAt(ctx, s.BaseURL)
 }
 
 // StartAt creates an isolated browser authorization session for a public edition.
 func (s *Service) StartAt(ctx context.Context, baseURL string) (*Login, error) {
-	if s == nil || s.Client == nil {
-		return nil, errors.New("CodeBuddy service is unavailable")
-	}
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = BaseURL
 	}
@@ -638,7 +614,7 @@ func (s *Service) tokenCredential(raw []byte, current *Credential) (*Credential,
 		*c = *current
 	}
 	now := time.Now()
-	if s != nil && s.Now != nil {
+	if s.Now != nil {
 		now = s.Now()
 	}
 	c.AccessToken, c.ExpiresAt = tok.AccessToken, now.Unix()+tok.ExpiresIn
@@ -656,9 +632,6 @@ func (s *Service) tokenCredential(raw []byte, current *Credential) (*Credential,
 
 // Poll returns nil, nil only for the documented pending-login business code.
 func (s *Service) Poll(ctx context.Context, login *Login) (*Credential, error) {
-	if s == nil || login == nil || login.client == nil {
-		return nil, errors.New("CodeBuddy login session is unavailable")
-	}
 	baseURL := login.BaseURL
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = s.BaseURL
@@ -700,9 +673,6 @@ func (s *Service) Poll(ctx context.Context, login *Login) (*Credential, error) {
 
 // Refresh rotates tokens while retaining account identity and omitted fields.
 func (s *Service) Refresh(ctx context.Context, c *Credential) (*Credential, error) {
-	if s == nil || c == nil {
-		return nil, errors.New("CodeBuddy credential is required")
-	}
 	if c.RefreshToken == "" {
 		return nil, ErrCannotRefresh
 	}

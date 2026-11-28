@@ -13,13 +13,10 @@ import (
  * @param ctx 查询上下文，取消时中止上游请求。
  * @param cfg 当前渠道及凭证快照。
  * @return 套餐与付费额度汇总；整体失败时为 nil，付费额度局部失败写入 Warnings。
- * @return 管理器缺失时返回 errZAIUsageManagerUnavailable；凭证、套餐或额度查询整体失败时返回错误。
+ * @return 凭证、套餐或额度查询整体失败时返回错误。
  * @note 可能刷新凭证并更新套餐查询缓存。
  */
 func (s *Server) fetchZAIUsage(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
-	if s.zaiCredentials == nil {
-		return nil, errZAIUsageManagerUnavailable
-	}
 	credential, err := s.zaiCredentials.credential(ctx, cfg, false)
 	if err != nil {
 		return nil, oauthUsageCredentialRefreshError(err, "usage: Z.ai credential refresh failed")

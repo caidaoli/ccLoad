@@ -92,7 +92,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 	}
 	tokenHash, _ := c.Get("token_hash")
 	tokenHashString, _ := tokenHash.(string)
-	if s.authService == nil || !s.authService.IsTokenActive(tokenHashString) {
+	if !s.authService.IsTokenActive(tokenHashString) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired authorization"})
 		return
 	}
@@ -151,7 +151,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		return conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	})
 	startResponsesWebsocketPingLoop(connectionCtx, cancelConnection, conn, pingInterval, func() bool {
-		return s.authService != nil && s.authService.IsTokenActive(tokenHashString)
+		return s.authService.IsTokenActive(tokenHashString)
 	})
 	interrupt := &responsesWebsocketInterrupt{}
 	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn, idleTimeout, interrupt)
@@ -169,7 +169,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			return
 		case message = <-messages:
 		}
-		if s.authService == nil || !s.authService.IsTokenActive(tokenHashString) {
+		if !s.authService.IsTokenActive(tokenHashString) {
 			_ = closeResponsesWebsocketPolicyViolation(conn, "authorization expired or revoked")
 			return
 		}

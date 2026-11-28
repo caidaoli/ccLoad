@@ -55,9 +55,6 @@ type logRuntimeMetrics struct {
 }
 
 func (s *LogService) runtimeMetrics() logRuntimeMetrics {
-	if s == nil {
-		return logRuntimeMetrics{}
-	}
 	return logRuntimeMetrics{
 		DroppedEntries:           s.logDropCount.Load(),
 		PersistenceFailedEntries: s.logFailCount.Load(),

@@ -24,7 +24,7 @@ func (e *tokenRPMExceededError) retryAfterSeconds() int {
 }
 
 func (s *AuthService) reserveTokenRPM(tokenID int64) *tokenRPMExceededError {
-	if s == nil || tokenID <= 0 {
+	if tokenID <= 0 {
 		return nil
 	}
 	s.authTokensMux.RLock()

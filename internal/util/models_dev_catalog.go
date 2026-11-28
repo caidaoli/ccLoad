@@ -336,9 +336,6 @@ func validCatalogPrice(value float64) bool {
 
 // Model 返回指定模型的副本，避免调用方修改快照内部 slice。
 func (s *ModelCatalogSnapshot) Model(id string) (ModelCatalogEntry, bool) {
-	if s == nil {
-		return ModelCatalogEntry{}, false
-	}
 	id = strings.ToLower(strings.TrimSpace(id))
 	for _, entry := range s.Models {
 		if entry.ID == id {

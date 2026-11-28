@@ -177,16 +177,13 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 
 // CreateConfigWithAPIKeys commits a channel and its credentials together.
 func (s *SQLStore) CreateConfigWithAPIKeys(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error) {
-	if c == nil || !model.UsesAPIKeyCredentials(c.GetAuthType()) {
+	if !model.UsesAPIKeyCredentials(c.GetAuthType()) {
 		return nil, errors.New("API key channel is required")
 	}
 	return s.createConfig(ctx, c, keys)
 }
 
 func (s *SQLStore) createConfig(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error) {
-	if c == nil {
-		return nil, errors.New("config cannot be nil")
-	}
 	if err := c.NormalizeAvailableTime(); err != nil {
 		return nil, err
 	}

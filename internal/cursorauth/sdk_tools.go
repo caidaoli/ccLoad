@@ -94,7 +94,7 @@ func (s *toolCallbackService) CallCustomTool(
 	ctx context.Context,
 	request *connect.Request[sdkv1.CallCustomToolRequest],
 ) (*connect.Response[sdkv1.CallCustomToolResponse], error) {
-	if s == nil || s.runner == nil || request == nil || request.Msg == nil {
+	if request == nil || request.Msg == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("custom tool callback request is empty"))
 	}
 	message := request.Msg

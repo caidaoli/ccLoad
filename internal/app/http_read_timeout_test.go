@@ -19,10 +19,6 @@ import (
 
 func TestGetReadTimeoutFallsBackToBuiltInDefault(t *testing.T) {
 	t.Parallel()
-	var unset *Server
-	if unset.GetReadTimeout() != config.DefaultHTTPReadTimeout {
-		t.Fatalf("nil server read timeout = %v", unset.GetReadTimeout())
-	}
 	if (newTestServer(&Server{})).GetReadTimeout() != config.DefaultHTTPReadTimeout {
 		t.Fatalf("zero value read timeout = %v", (newTestServer(&Server{})).GetReadTimeout())
 	}

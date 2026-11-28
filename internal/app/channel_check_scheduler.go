@@ -54,9 +54,6 @@ func isExpectedScheduledCheckStop(err error) bool {
 }
 
 func (s *Server) runScheduledChannelChecks(ctx context.Context, now time.Time) error {
-	if s == nil || s.store == nil {
-		return nil
-	}
 
 	// Scanning must finish within this minute; delayed scans must not replay a slot.
 	scanCtx, cancel := context.WithDeadline(ctx, now.Truncate(time.Minute).Add(time.Minute))

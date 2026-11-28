@@ -1093,9 +1093,6 @@ func (s *Server) fetchCodeBuddyOAuthModels(ctx context.Context, cfg *model.Confi
 	if overrideProtocol != "" && util.NormalizeProtocol(overrideProtocol) != util.ProtocolOpenAI {
 		return nil, errors.New("CodeBuddy model discovery requires openai protocol")
 	}
-	if s.codeBuddyService == nil {
-		return nil, errors.New("CodeBuddy model discovery unavailable")
-	}
 	credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
 		return nil, err
@@ -1181,9 +1178,6 @@ func (s *Server) fetchZAIOAuthModels(
 // the account catalog (authoritative), then models.dev (keyless, tracks the
 // plan without a ccLoad release), and only then the built-in lineup.
 func (s *Server) zaiCodingPlanModels(ctx context.Context, cfg *model.Config, credential *zaiauth.Credential) ([]string, error) {
-	if s == nil || s.zaiService == nil {
-		return nil, errors.New("z.ai model discovery is unavailable")
-	}
 	service := s.zaiPlanService(cfg, credential)
 	models, err := service.ListModels(ctx, credential.APIKey)
 	if err == nil && len(models) > 0 {
@@ -1281,9 +1275,6 @@ func (s *Server) fetchCursorOAuthModels(
 func (s *Server) fetchAnthropicOAuthModels(ctx context.Context, cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
 	if overrideProtocol != "" && util.NormalizeProtocol(overrideProtocol) != util.ProtocolAnthropic {
 		return nil, fmt.Errorf("模型发现: Anthropic OAuth 仅支持 anthropic 协议")
-	}
-	if s.anthropicCredentials == nil {
-		return nil, errors.New("模型发现: Anthropic 凭证服务不可用")
 	}
 	credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
 	if err != nil {
@@ -1456,9 +1447,6 @@ func (s *Server) fetchCodexOAuthModels(
 	cfg *model.Config,
 	overrideProtocol string,
 ) (*FetchModelsResponse, error) {
-	if s == nil || s.codexCredentials == nil {
-		return nil, fmt.Errorf("模型发现: Codex 凭证服务不可用")
-	}
 	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
 	if overrideProtocol != "" {
 		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
@@ -1548,9 +1536,6 @@ func (s *Server) fetchAntigravityModelsWithURLFallback(
 	cfg *model.Config,
 	overrideProtocol string,
 ) (*FetchModelsResponse, error) {
-	if s == nil || s.antigravityCredentials == nil || s.antigravityService == nil {
-		return nil, fmt.Errorf("模型发现: Antigravity 服务不可用")
-	}
 	if len(cfg.URLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
 	}
@@ -1643,7 +1628,7 @@ func (s *Server) fetchAntigravityModelsWithURLFallback(
 
 // modelDiscoveryClient 返回渠道代理客户端。未配置代理时返回 nil，调用方继续使用默认客户端。
 func (s *Server) modelDiscoveryClient(cfg *model.Config) *http.Client {
-	if s == nil || cfg == nil || strings.TrimSpace(cfg.ProxyURL) == "" {
+	if strings.TrimSpace(cfg.ProxyURL) == "" {
 		return nil
 	}
 	return s.getClientForChannel(cfg)

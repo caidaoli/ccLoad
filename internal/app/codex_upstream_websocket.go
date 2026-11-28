@@ -277,9 +277,6 @@ func (e *codexWebsocketHTTPFallbackError) Unwrap() error {
 }
 
 func (s *codexUpstreamWebsocketSession) Close() {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	s.closeLocked()
 	s.clearAffinityLocked()
@@ -289,9 +286,6 @@ func (s *codexUpstreamWebsocketSession) Close() {
 // CloseTransport drops only the physical socket. The durable execution session
 // retains its last successful target so a later turn can prefer the same route.
 func (s *codexUpstreamWebsocketSession) CloseTransport() {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	s.closeLocked()
 	s.mu.Unlock()
@@ -424,9 +418,6 @@ type codexWebsocketRuntimeStats struct {
 }
 
 func (s *codexUpstreamWebsocketSession) runtimeStats() codexWebsocketRuntimeStats {
-	if s == nil {
-		return codexWebsocketRuntimeStats{}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return codexWebsocketRuntimeStats{
@@ -448,9 +439,6 @@ func (s *codexUpstreamWebsocketSession) recordReconnect(reason string) {
 }
 
 func (s *codexUpstreamWebsocketSession) debugSnapshot() codexWebsocketDebugSnapshot {
-	if s == nil {
-		return codexWebsocketDebugSnapshot{}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return codexWebsocketDebugSnapshot{
@@ -756,9 +744,6 @@ func (s *codexUpstreamWebsocketSession) setStreamingConn(conn *websocket.Conn) {
 // forwardInterrupt writes only to the active response's original socket.
 // Terminal or disconnected turns retain their existing completion/replay path.
 func (s *codexUpstreamWebsocketSession) forwardInterrupt(payload []byte) bool {
-	if s == nil {
-		return false
-	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	s.mu.Lock()
@@ -886,9 +871,6 @@ func codexWebsocketKeyHash(apiKey string) [sha256.Size]byte {
 }
 
 func (s *codexUpstreamWebsocketSession) targetSnapshot() (codexWebsocketTarget, bool) {
-	if s == nil {
-		return codexWebsocketTarget{}, false
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.conn == nil {
@@ -1192,9 +1174,6 @@ func (s *Server) codexWebsocketTimeouts() codexWebsocketTimeouts {
 	timeouts := codexWebsocketTimeouts{
 		idle: codexWebsocketReadTimeout,
 		ping: codexWebsocketPingInterval,
-	}
-	if s == nil {
-		return timeouts
 	}
 	if s.responsesWebsocketIdleTimeoutOverride > 0 {
 		timeouts.idle = s.responsesWebsocketIdleTimeoutOverride

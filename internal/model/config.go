@@ -939,9 +939,6 @@ func (c *Config) GetProtocolTransformMode() string {
 // NormalizeAvailableTime validates and canonicalizes an availability window.
 // An empty pair means all day. A window may cross midnight, for example 22:00-08:00.
 func (c *Config) NormalizeAvailableTime() error {
-	if c == nil {
-		return errors.New("config cannot be nil")
-	}
 	start := strings.TrimSpace(c.AvailableTimeStart)
 	end := strings.TrimSpace(c.AvailableTimeEnd)
 	if start == "" && end == "" {
@@ -966,7 +963,7 @@ func (c *Config) NormalizeAvailableTime() error {
 // IsAvailableAt reports whether the channel accepts traffic at local time t.
 // The interval is half-open; equal start/end is treated as all day.
 func (c *Config) IsAvailableAt(t time.Time) bool {
-	if c == nil || (c.AvailableTimeStart == "" && c.AvailableTimeEnd == "") {
+	if c.AvailableTimeStart == "" && c.AvailableTimeEnd == "" {
 		return true
 	}
 	start, startErr := time.Parse("15:04", c.AvailableTimeStart)
@@ -1040,9 +1037,6 @@ func (c *Config) buildIndexIfNeeded() {
 // EnabledModelEntries returns the enabled rows for an exact model or its
 // thinking-suffix alias, preserving the channel's configured order.
 func (c *Config) EnabledModelEntries(name string) []ModelEntry {
-	if c == nil {
-		return nil
-	}
 	c.buildIndexIfNeeded()
 	c.indexMu.RLock()
 	defer c.indexMu.RUnlock()

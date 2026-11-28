@@ -21,8 +21,7 @@ func (s *Server) rollbackCreatedChannel(ctx context.Context, channelID int64) {
 }
 
 func (s *Server) managementAccountView(cfg *model.Config) *channelManagementView {
-	if s == nil || s.channelManagement == nil || !supportsChannelManagement(cfg) ||
-		strings.TrimSpace(cfg.OAuthCredential) == "" {
+	if !supportsChannelManagement(cfg) || strings.TrimSpace(cfg.OAuthCredential) == "" {
 		return nil
 	}
 	view, err := s.channelManagement.View(cfg)
@@ -210,10 +209,6 @@ type sub2APILoginView struct {
 // token session without writing the channel. The editor displays the refresh
 // token and only persists it when the channel is saved.
 func (s *Server) HandleChannelManagementSub2APILogin(c *gin.Context) {
-	if s == nil || s.channelManagement == nil {
-		RespondErrorMsg(c, http.StatusInternalServerError, "uncertain")
-		return
-	}
 	var req sub2APILoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid_response")

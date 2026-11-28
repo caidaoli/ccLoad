@@ -2022,9 +2022,6 @@ func usageTokenCount(value any) (int, bool) {
 }
 
 func usageInt(m map[string]any, key string) int {
-	if m == nil {
-		return 0
-	}
 	val, _ := usageTokenCount(m[key])
 	return val
 }

@@ -102,9 +102,6 @@ type sessionModelGroup struct {
 }
 
 func (s *responsesExecutionSession) boundModelRow(channelID int64, name string) (modelRoutingSelection, bool) {
-	if s == nil {
-		return modelRoutingSelection{}, false
-	}
 	s.routeMu.RLock()
 	defer s.routeMu.RUnlock()
 	selected, ok := s.modelRows[sessionModelGroup{channelID: channelID, name: name}]
@@ -112,7 +109,7 @@ func (s *responsesExecutionSession) boundModelRow(channelID int64, name string) 
 }
 
 func (s *responsesExecutionSession) rememberModelRow(channelID int64, selected modelRoutingSelection) {
-	if s == nil || selected.wildcard {
+	if selected.wildcard {
 		return
 	}
 	s.routeMu.Lock()
@@ -124,16 +121,13 @@ func (s *responsesExecutionSession) rememberModelRow(channelID int64, selected m
 }
 
 func (s *responsesExecutionSession) forgetModelRow(channelID int64, name string) {
-	if s == nil {
-		return
-	}
 	s.routeMu.Lock()
 	delete(s.modelRows, sessionModelGroup{channelID: channelID, name: name})
 	s.routeMu.Unlock()
 }
 
 func (s *responsesExecutionSession) noteActualModel(actual string) {
-	if s == nil || actual == "" {
+	if actual == "" {
 		return
 	}
 	s.routeMu.Lock()
@@ -197,7 +191,7 @@ func (s *responsesExecutionSession) routeChannelSnapshot() (int64, bool) {
 }
 
 func (s *responsesExecutionSession) rememberPreferredChannel(channelID int64) {
-	if s == nil || channelID <= 0 {
+	if channelID <= 0 {
 		return
 	}
 	s.routeMu.Lock()
@@ -281,12 +275,9 @@ func (s *responsesExecutionSessionStore) sessionTTL() time.Duration {
 	if s.ttlOverride > 0 {
 		return s.ttlOverride
 	}
-	minutes := defaultResponsesExecutionSessionTTL
-	if s.configService != nil {
-		minutes = s.configService.GetInt(responsesWebsocketSessionTTLSetting, defaultResponsesExecutionSessionTTL)
-		if minutes <= 0 {
-			minutes = defaultResponsesExecutionSessionTTL
-		}
+	minutes := s.configService.GetInt(responsesWebsocketSessionTTLSetting, defaultResponsesExecutionSessionTTL)
+	if minutes <= 0 {
+		minutes = defaultResponsesExecutionSessionTTL
 	}
 	ttl, valid := settingDurationFromInt64(int64(minutes), time.Minute)
 	if !valid || ttl == 0 {
@@ -296,29 +287,23 @@ func (s *responsesExecutionSessionStore) sessionTTL() time.Duration {
 }
 
 func (s *responsesExecutionSessionStore) maxSessionsLimit() int {
-	if s.configService != nil {
-		n := s.configService.GetInt(responsesWebsocketMaxSessionsSetting, s.maxSessions)
-		if n > 0 {
-			return n
-		}
+	if n := s.configService.GetInt(responsesWebsocketMaxSessionsSetting, s.maxSessions); n > 0 {
+		return n
 	}
 	return s.maxSessions
 }
 
 func (s *responsesExecutionSessionStore) transcriptBudgetLimit() int64 {
 	limit := s.maxTranscriptBytes
-	if s.configService != nil {
-		n := s.configService.GetInt(responsesWebsocketMaxTranscriptBytesSetting, int(limit))
-		if n > 0 {
-			return int64(n)
-		}
+	if n := s.configService.GetInt(responsesWebsocketMaxTranscriptBytesSetting, int(limit)); n > 0 {
+		return int64(n)
 	}
 	return limit
 }
 
 /**
  * @brief 提交执行会话终态，在共享预算内保留可重放的 Cursor HTTP 工具响应。
- * @param session 当前执行会话；nil 时跳过。
+ * @param session 当前执行会话。
  * @param request 下一轮续接所需的完整请求。
  * @param result 当前轮终态及可选 HTTP 重放响应。
  * @note 调用方持有该会话的回合占用，直到终态和重放记录一起提交。
@@ -328,9 +313,6 @@ func (s *responsesExecutionSessionStore) commit(
 	request []byte,
 	result responsesWebsocketTurnResult,
 ) {
-	if session == nil {
-		return
-	}
 	session.commit(request, result)
 
 	s.mu.Lock()
@@ -691,9 +673,7 @@ func (s *Server) responsesExecutionSessionCleanupLoop() {
 		case <-s.shutdownCh:
 			return
 		case now := <-ticker.C:
-			if s.responsesExecutionSessions != nil {
-				s.responsesExecutionSessions.cleanup(now)
-			}
+			s.responsesExecutionSessions.cleanup(now)
 		}
 	}
 }

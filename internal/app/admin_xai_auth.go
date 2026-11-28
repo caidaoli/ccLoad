@@ -115,10 +115,6 @@ func (s *Server) HandleRefreshXAICredential(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusConflict, "channel does not use xAI OAuth")
 		return
 	}
-	if s.xaiCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "xAI credential refresh is unavailable")
-		return
-	}
 	credential, err := s.xaiCredentials.credential(c.Request.Context(), cfg, true)
 	if err != nil {
 		RespondError(c, http.StatusBadGateway, err)
@@ -163,9 +159,6 @@ func (s *Server) prepareXAICredentialImport(c *gin.Context) (*xaiCredentialImpor
 	request.Values = ""
 	if len(values) == 0 {
 		return nil, http.StatusBadRequest, errors.New("xAI credential import requires at least 1 item")
-	}
-	if s.client == nil || s.store == nil {
-		return nil, http.StatusServiceUnavailable, errors.New("xAI credential import is unavailable")
 	}
 	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
 	if err != nil {

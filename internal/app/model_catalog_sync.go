@@ -148,9 +148,6 @@ func modelCatalogSyncFailure(startedAt time.Time, stage string, err error) (Mode
 // Sync 从远端拉取并安装最新模型目录。
 func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, error) {
 	startedAt := time.Now()
-	if s == nil {
-		return modelCatalogSyncFailure(startedAt, "sync", fmt.Errorf("model catalog syncer is nil"))
-	}
 	if !s.running.CompareAndSwap(false, true) {
 		return newModelCatalogSyncResult(ModelCatalogSyncSkipped, startedAt), nil
 	}
@@ -206,9 +203,6 @@ func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, 
 
 // LoadCache 加载并安装最后一次成功的归一化模型目录快照。
 func (s *ModelCatalogSyncer) LoadCache() error {
-	if s == nil {
-		return fmt.Errorf("model catalog syncer is nil")
-	}
 	cachePath := strings.TrimSpace(s.cachePath)
 	if cachePath == "" {
 		return fmt.Errorf("model catalog cache path is empty")

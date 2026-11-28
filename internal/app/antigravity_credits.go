@@ -76,7 +76,7 @@ func (s *Server) appendAntigravityCreditsCandidates(ctx context.Context, ordinar
  * @return 候选存储读取失败
  */
 func (s *Server) antigravityCreditsCandidatePool(ctx context.Context, modelName string, body []byte) ([]*model.Config, error) {
-	if s.antigravityCredentials == nil || wantsAntigravityWebSearch(body) {
+	if wantsAntigravityWebSearch(body) {
 		return nil, nil
 	}
 	source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
@@ -106,7 +106,7 @@ func (s *Server) antigravityCreditsCandidatePool(ctx context.Context, modelName 
 }
 
 func (m *antigravityCredentialManager) standardQuotaUntil(cfg *model.Config, modelName string) time.Time {
-	if m == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
+	if !cfg.UsesAntigravityOAuth() {
 		return time.Time{}
 	}
 	credential, err := m.cachedOrParse(cfg)
@@ -117,9 +117,6 @@ func (m *antigravityCredentialManager) standardQuotaUntil(cfg *model.Config, mod
 }
 
 func (m *antigravityCredentialManager) updateQuotaState(ctx context.Context, cfg *model.Config, modelName string, until time.Time, insufficient bool) {
-	if m == nil {
-		return
-	}
 	credential, err := m.cachedOrParse(cfg)
 	if err != nil || credential.AccessToken != cfg.AntigravityAccessToken {
 		return

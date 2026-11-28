@@ -76,10 +76,6 @@ func (s *Server) HandleImportCursorCredential(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.store == nil || s.cursorService == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "cursor credential import is unavailable")
-		return
-	}
 	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
 	if err != nil {
 		RespondError(c, http.StatusBadRequest, err)
@@ -115,10 +111,6 @@ func (s *Server) HandleRefreshCursorCredential(c *gin.Context) {
 	}
 	if !cfg.UsesCursorOAuth() {
 		RespondErrorMsg(c, http.StatusConflict, "channel does not use Cursor OAuth")
-		return
-	}
-	if s.cursorCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Cursor credential refresh is unavailable")
 		return
 	}
 	credential, err := s.cursorCredentials.credential(c.Request.Context(), cfg, true)

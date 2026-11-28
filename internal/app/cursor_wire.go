@@ -55,9 +55,6 @@ func (s *Server) tryCursorOAuthChannel(
 			body: []byte(`{"error":{"message":"Cursor OAuth supports Anthropic messages, OpenAI chat completions, OpenAI responses, and Gemini generateContent","type":"invalid_request_error"}}`),
 		}, nil
 	}
-	if s.cursorCredentials == nil {
-		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
-	}
 	credential, err := s.cursorCredentials.credential(ctx, cfg, false)
 	cooldownCredential := func(refreshErr error) {
 		expected := cfg.OAuthCredential
@@ -776,9 +773,6 @@ func (s *Server) captureCursorSDKRequest(
 	reqCtx *proxyRequestContext,
 	modelID, prompt string,
 ) *debugCapture {
-	if reqCtx == nil {
-		return nil
-	}
 	payload, _ := json.Marshal(map[string]any{
 		"create_agent": map[string]any{
 			"model": map[string]any{"id": modelID},

@@ -93,9 +93,6 @@ func IsCredentialType(value string) bool {
 
 // Normalize validates the credential and canonicalizes it in place.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("vertex credential is nil")
-	}
 	serviceAccount, err := NormalizeServiceAccountMap(c.ServiceAccount)
 	if err != nil {
 		return err

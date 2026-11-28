@@ -60,8 +60,8 @@ func (s *Service) wireURL(c *Credential, path string) string {
  * @return Signed native request, or a request/configuration error.
  */
 func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []byte, model Model) (*http.Request, error) {
-	if c == nil || model.Key == "" {
-		return nil, errors.New("qoder: credential and model key are required")
+	if model.Key == "" {
+		return nil, errors.New("qoder: model key is required")
 	}
 	var input map[string]json.RawMessage
 	if err := json.Unmarshal(body, &input); err != nil {
@@ -901,7 +901,7 @@ func cosyEncode(plain []byte) []byte {
  * @return A signing error, or nil.
  */
 func cosySign(req *http.Request, c *Credential, body []byte) error {
-	if c == nil || c.UserID == "" || c.AccessToken == "" || c.MachineID == "" {
+	if c.UserID == "" || c.AccessToken == "" || c.MachineID == "" {
 		return errors.New("qoder: user ID, access token and machine ID are required for COSY")
 	}
 	randomKey := make([]byte, 8)

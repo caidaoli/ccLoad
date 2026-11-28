@@ -49,9 +49,6 @@ func newAccioOAuthManager(s *Server) *codexOAuthManager {
 		return result, nil
 	}
 	manager.prepare = func(redirectURI string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
-		if s == nil || s.accioService == nil || s.store == nil {
-			return "", "", nil, nil, errors.New("oauth: Accio is unavailable")
-		}
 		state, err := codexauth.GenerateState()
 		if err != nil {
 			return "", "", nil, nil, err
@@ -98,10 +95,6 @@ func (s *Server) HandleStartAccioOAuth(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.accioOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Accio OAuth is unavailable")
-		return
-	}
 	loginURL, state, err := s.accioOAuth.start(oauthLoginOptions{hint: request.Region})
 	if err != nil {
 		RespondError(c, http.StatusConflict, err)
@@ -112,10 +105,6 @@ func (s *Server) HandleStartAccioOAuth(c *gin.Context) {
 
 // HandleAccioOAuthStatus returns a browser login's current state.
 func (s *Server) HandleAccioOAuthStatus(c *gin.Context) {
-	if s.accioOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Accio OAuth is unavailable")
-		return
-	}
 	status, ok := s.accioOAuth.status(c.Query("state"))
 	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "Accio OAuth session not found")
@@ -131,10 +120,6 @@ func (s *Server) HandleCancelAccioOAuth(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.accioOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Accio OAuth is unavailable")
-		return
-	}
 	if err := s.accioOAuth.cancel(request.State); err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return
@@ -147,10 +132,6 @@ func (s *Server) HandleSubmitAccioOAuthCallback(c *gin.Context) {
 	var request codexOAuthCallbackRequest
 	if err := BindAndValidate(c, &request); err != nil {
 		RespondError(c, http.StatusBadRequest, err)
-		return
-	}
-	if s.accioOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Accio OAuth is unavailable")
 		return
 	}
 	state, err := s.accioOAuth.submitCallbackURL(request.CallbackURL)

@@ -150,7 +150,7 @@ func validateManifestModels(models []ManifestModel) error {
 // Quota epochs are ledger boundaries: a manual quota reset advances them without
 // changing capabilities, and identity restarts clear the snapshot explicitly.
 func (m *ModelManifest) Matches(credential *Credential, endpoint string) bool {
-	if m == nil || credential == nil {
+	if m == nil {
 		return false
 	}
 	return m.AccountID != "" &&

@@ -416,7 +416,7 @@ func parseModelCatalog(body []byte) ([]string, error) {
  * @return 请求失败、响应非法或所选站点目录为空时返回错误。
  */
 func (s *Service) ListCommunityModels(ctx context.Context) ([]string, error) {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.CommunityURL) == "" {
+	if strings.TrimSpace(s.CommunityURL) == "" {
 		return nil, errors.New("z.ai community catalog is unavailable")
 	}
 	requestCtx, cancel := requestContext(ctx)
@@ -852,10 +852,10 @@ func envelopeCodeSucceeded(code json.RawMessage) bool {
 
 /**
  * @brief 拒绝不完整的服务配置及未知站点。
- * @return 缺少客户端、端点或站点非法时返回错误。
+ * @return 缺少端点或站点非法时返回错误。
  */
 func (s *Service) validate() error {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.OAuthBaseURL) == "" ||
+	if strings.TrimSpace(s.OAuthBaseURL) == "" ||
 		strings.TrimSpace(s.BizBaseURL) == "" || strings.TrimSpace(s.ModelsURL) == "" {
 		return errors.New("z.ai service is unavailable")
 	}

@@ -158,11 +158,7 @@ func (s *Server) reasoningStateFor(r *proxyRequestContext) *reasoningState {
 		return &reasoningState{}
 	}
 	key := responsesExecutionSessionKey(r.tokenHash, string(r.clientProtocol)+"\x00"+identity+"\x00"+r.originalModel)
-	ttl := 15 * time.Minute
-	if s.responsesExecutionSessions != nil {
-		ttl = s.responsesExecutionSessions.sessionTTL()
-	}
-	return s.reasoningStates.get(key, time.Now(), ttl)
+	return s.reasoningStates.get(key, time.Now(), s.responsesExecutionSessions.sessionTTL())
 }
 
 type reasoningRequestContextKey struct{}

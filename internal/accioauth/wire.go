@@ -38,7 +38,7 @@ var sessionFields = [][]string{
  * @note 每次生成独立请求和消息 ID；ADK 始终返回 SSE。
  */
 func (s *Service) BuildChatRequest(ctx context.Context, c *Credential, body []byte, model Model) (*http.Request, error) {
-	if c == nil || c.AccessToken == "" || model.ID == "" {
+	if c.AccessToken == "" || model.ID == "" {
 		return nil, errors.New("accio: credential and model name are required")
 	}
 	var input map[string]any

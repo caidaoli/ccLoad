@@ -127,9 +127,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
 
 // Normalize validates and canonicalizes a credential in place.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("credential: Antigravity data is nil")
-	}
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	c.AccessToken = strings.TrimSpace(c.AccessToken)
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
@@ -169,7 +166,7 @@ func (c *Credential) Normalize() error {
 
 // Expiry returns the absolute access-token expiration time.
 func (c *Credential) Expiry() (time.Time, error) {
-	if c == nil || strings.TrimSpace(c.Expired) == "" {
+	if strings.TrimSpace(c.Expired) == "" {
 		return time.Time{}, errors.New("credential: Antigravity data is missing expired")
 	}
 	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(c.Expired))
@@ -190,9 +187,6 @@ func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, erro
 
 // MergeRefresh keeps stable identity fields and a rotated refresh token.
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
-	if c == nil || refreshed == nil {
-		return nil, errors.New("refresh: Antigravity credential is nil")
-	}
 	merged := *refreshed
 	if merged.RefreshToken == "" {
 		merged.RefreshToken = c.RefreshToken

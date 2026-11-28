@@ -549,18 +549,12 @@ func validateOptionalOAuthBaseURL(value string) error {
 // SetRestartFunc 注入当前 Server 的重启函数（由 main 包提供，避免循环依赖）。
 // 回调在锁外执行，允许重启流程并发访问 Server 而不会死锁。
 func (s *Server) SetRestartFunc(fn func()) {
-	if s == nil {
-		return
-	}
 	s.restartMu.Lock()
 	s.restartFunc = fn
 	s.restartMu.Unlock()
 }
 
 func (s *Server) restartFuncSnapshot() func() {
-	if s == nil {
-		return nil
-	}
 	s.restartMu.RLock()
 	fn := s.restartFunc
 	s.restartMu.RUnlock()

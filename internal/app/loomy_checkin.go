@@ -90,9 +90,6 @@ func (s *Server) loomyCheckinLoop() {
  * @note 调用与手动签到相同的业务路径，并在账号锁内重验资格；产生签到审计，错误记日志。
  */
 func (s *Server) runDueLoomyCheckins(ctx context.Context, now time.Time) {
-	if s.loomyService == nil {
-		return
-	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {
 		log.Printf("[WARN] Loomy 签到扫描失败: %v", err)
@@ -190,10 +187,7 @@ func (s *Server) checkInLoomy(ctx context.Context, source *model.Config, schedul
 			return nil, nil
 		}
 	}
-	service, err := s.loomyClient(cfg)
-	if err != nil {
-		return nil, err
-	}
+	service := s.loomyClient(cfg)
 	result := &loomyCheckinResult{Status: "failed", Onboarding: "not_attempted"}
 	// 写库失败时也保留本进程的下次计划时间，防止扫描器重复签到。
 	nextAttempt := nextLoomyCheckinAttempt(now)
@@ -332,10 +326,7 @@ func (s *Server) requestLoomyUsage(ctx context.Context, cfg *model.Config) (*oau
 	if err != nil {
 		return nil, err
 	}
-	service, err := s.loomyClient(cfg)
-	if err != nil {
-		return nil, err
-	}
+	service := s.loomyClient(cfg)
 	day := time.Now().In(loomyLocation).Format("2006-01-02")
 	balance, err := service.FetchBalance(ctx, credential.Session)
 	if err != nil {

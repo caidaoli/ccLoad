@@ -71,9 +71,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
 
 // Normalize canonicalizes and validates the credential in place.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("xAI credential is nil")
-	}
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	c.AccessToken = strings.TrimSpace(c.AccessToken)
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
@@ -185,9 +182,6 @@ func mathModf(value float64) (int64, float64) {
 
 // Expiry resolves the credential's absolute expiration time.
 func (c *Credential) Expiry() (time.Time, error) {
-	if c == nil {
-		return time.Time{}, errors.New("xAI credential is nil")
-	}
 	return c.resolveExpiry()
 }
 
@@ -202,9 +196,6 @@ func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, erro
 
 // MergeRefresh combines a token response with fields that the response legitimately omits.
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
-	if c == nil || refreshed == nil {
-		return nil, errors.New("xAI refresh credential is nil")
-	}
 	merged := *refreshed
 	freshIdentity, hasFreshIdentity := credentialIdentity(refreshed)
 	identity := freshIdentity
@@ -244,17 +235,11 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 
 // Identity derives email and subject using the canonical token precedence.
 func (c *Credential) Identity() Identity {
-	if c == nil {
-		return Identity{}
-	}
 	identity, _ := credentialIdentity(c)
 	return identity
 }
 
 func credentialIdentity(c *Credential) (Identity, bool) {
-	if c == nil {
-		return Identity{}, false
-	}
 	identity := Identity{}
 	idTokenIdentity := identityFromJWT(c.IDToken)
 	accessIdentity := identityFromJWT(c.AccessToken)

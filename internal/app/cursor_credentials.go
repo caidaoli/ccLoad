@@ -69,7 +69,7 @@ func (m *cursorCredentialManager) credentialForRejectedAccessToken(
 	forceRefresh bool,
 	rejectedAccessToken string,
 ) (*cursorauth.Credential, error) {
-	if m == nil || m.store == nil || cfg == nil || !cfg.UsesCursorOAuth() {
+	if !cfg.UsesCursorOAuth() {
 		return nil, errors.New("cursor credential manager is unavailable")
 	}
 	if ctx.Err() != nil {
@@ -237,9 +237,6 @@ func (m *cursorCredentialManager) cachedOrParse(cfg *model.Config) (*cursorauth.
 }
 
 func (m *cursorCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()

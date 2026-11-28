@@ -48,7 +48,7 @@ func (s *Server) persistDetectionAnthropicPassiveUsage(ctx context.Context, cfg 
 func (s *Server) observeAnthropicPassiveUsage(
 	cfg *model.Config, resp *http.Response, onUpdate func(anthropicPassiveUsageUpdate),
 ) {
-	if s == nil || s.anthropicCredentials == nil || cfg == nil || !cfg.UsesAnthropicOAuth() || resp == nil {
+	if !cfg.UsesAnthropicOAuth() {
 		return
 	}
 	statusOK := resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices
@@ -64,7 +64,7 @@ func (s *Server) observeAnthropicPassiveUsage(
 }
 
 func (s *Server) enqueueAnthropicPassiveUsage(channelID int64, update anthropicPassiveUsageUpdate) {
-	if s == nil || s.anthropicPassiveUsageCh == nil || channelID <= 0 || s.isShuttingDown.Load() {
+	if channelID <= 0 || s.isShuttingDown.Load() {
 		return
 	}
 	select {

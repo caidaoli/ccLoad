@@ -180,9 +180,6 @@ func (s *Server) HandleInstallQoderUMID(c *gin.Context) {
  * @note 启动最多四个工作协程，等待本轮签到全部退出。
  */
 func (s *Server) runDueQoderCheckins(ctx context.Context) {
-	if s == nil || s.store == nil {
-		return
-	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {
 		log.Printf("[WARN] Qoder 签到扫描失败: %v", err)

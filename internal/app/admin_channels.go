@@ -1422,7 +1422,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			if enabled {
 				s.clearAllChannelCooldowns(c.Request.Context(), id)
 			}
-			if upd.UsesXAIOAuth() && s.xaiCredentials != nil {
+			if upd.UsesXAIOAuth() {
 				s.xaiCredentials.invalidate(id)
 			}
 			// enabled 状态变更影响渠道选择，必须立即失效缓存
@@ -1647,7 +1647,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 	s.InvalidateChannelListCache()
 	s.InvalidateAPIKeysCache(id)
-	if existing.UsesXAIOAuth() && s.xaiCredentials != nil {
+	if existing.UsesXAIOAuth() {
 		s.xaiCredentials.invalidate(id)
 	}
 
@@ -1753,10 +1753,6 @@ func normalizeAPIKeyScopesForModels(keys []ChannelAPIKeyRequest, entries []model
 
 // resetAllChannelCooldowns 清除渠道、Key、模型和 URL 冷却，并立即失效相关缓存。
 func (s *Server) resetAllChannelCooldowns(ctx context.Context, channelID int64) error {
-	if s.cooldownManager == nil {
-		s.invalidateChannelRelatedCache(channelID)
-		return fmt.Errorf("cooldown manager is not initialized")
-	}
 	err := s.cooldownManager.ClearAllCooldowns(ctx, channelID)
 	if err == nil {
 		s.urlSelector.ClearCooldowns(channelID)
@@ -1767,10 +1763,6 @@ func (s *Server) resetAllChannelCooldowns(ctx context.Context, channelID int64) 
 
 // clearAllChannelCooldowns 用于配置更新后的尽力清理；失败不回滚已提交的配置。
 func (s *Server) clearAllChannelCooldowns(ctx context.Context, channelID int64) {
-	if s.cooldownManager == nil {
-		s.invalidateChannelRelatedCache(channelID)
-		return
-	}
 	if err := s.resetAllChannelCooldowns(ctx, channelID); err != nil {
 		log.Printf("[WARN] 清除渠道全部冷却状态失败 (channel=%d): %v", channelID, err)
 	}
@@ -1802,9 +1794,6 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 
 // cleanupOrphanedURLStates 清理数据库中已移除URL的禁用状态记录，失败仅警告不影响主流程
 func (s *Server) cleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) {
-	if s.store == nil {
-		return
-	}
 
 	if err := s.store.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
 		log.Printf("[WARN] 清理孤立URL状态失败 (channel=%d, urls=%d): %v", channelID, len(keepURLs), err)
@@ -2377,9 +2366,6 @@ func normalizeBatchChannelIDs(rawIDs []int64) []int64 {
 }
 
 func (s *Server) reloadAuthTokensAfterChannelDeletion() error {
-	if s.authService == nil {
-		return nil
-	}
 	if err := s.authService.ReloadAuthTokens(); err != nil {
 		return fmt.Errorf("reload API tokens after channel deletion: %w", err)
 	}
@@ -2447,23 +2433,13 @@ func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	s.keySelector.RemoveChannelCounter(id)
 	s.urlSelector.RemoveChannel(id)
 	s.channelRPMLimiter.Remove(id)
-	if s.codexCredentials != nil {
-		s.codexCredentials.invalidate(id)
-	}
-	if s.antigravityCredentials != nil {
-		s.antigravityCredentials.invalidate(id)
-	}
-	if cfg.UsesXAIOAuth() && s.xaiCredentials != nil {
+	s.codexCredentials.invalidate(id)
+	s.antigravityCredentials.invalidate(id)
+	if cfg.UsesXAIOAuth() {
 		s.xaiCredentials.invalidate(id)
 	}
-	if s.anthropicCredentials != nil {
-		s.anthropicCredentials.invalidate(id)
-	}
-	if s.zaiCredentials != nil {
-		s.zaiCredentials.invalidate(id)
-	}
+	s.anthropicCredentials.invalidate(id)
+	s.zaiCredentials.invalidate(id)
 	s.invalidateZAIPlans(id)
-	if s.vertexCredentials != nil {
-		s.vertexCredentials.invalidate(id)
-	}
+	s.vertexCredentials.invalidate(id)
 }

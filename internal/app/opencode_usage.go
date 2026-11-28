@@ -36,9 +36,6 @@ type opencodeGoUsagePayload struct {
 }
 
 func (s *Server) requestOpenCodeGoUsage(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
-	if s == nil || s.store == nil {
-		return nil, errors.New("usage: OpenCode Go store is unavailable")
-	}
 	keys, err := s.store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		return nil, fmt.Errorf("usage: load OpenCode Go API keys: %w", err)

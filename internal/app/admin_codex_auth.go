@@ -234,9 +234,6 @@ func newCodexOAuthManager(service *codexauth.Service, store storage.Store, inval
 		timeout: codexOAuthTimeout, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
 		prepare: func(redirectURI string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
-			if service == nil || store == nil {
-				return "", "", nil, nil, errors.New("oauth: Codex is unavailable")
-			}
 			state, err := codexauth.GenerateState()
 			if err != nil {
 				return "", "", nil, nil, err
@@ -277,9 +274,6 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 		timeout: codexOAuthTimeout, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
 		prepare: func(redirectURI string, options oauthLoginOptions) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
-			if service == nil || store == nil {
-				return "", "", nil, nil, errors.New("oauth: Antigravity is unavailable")
-			}
 			state, err := antigravityauth.GenerateState()
 			if err != nil {
 				return "", "", nil, nil, err
@@ -313,9 +307,6 @@ func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.
 }
 
 func (m *codexOAuthManager) start(options oauthLoginOptions) (string, string, error) {
-	if m == nil || m.prepare == nil {
-		return "", "", errors.New("oauth is unavailable")
-	}
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
 
@@ -453,7 +444,7 @@ func (m *codexOAuthManager) deliverCallback(session *codexOAuthSession, result c
 }
 
 func (m *codexOAuthManager) submitCallbackURL(rawURL string) (string, error) {
-	if m != nil && m.parseSubmittedURL != nil {
+	if m.parseSubmittedURL != nil {
 		m.mu.Lock()
 		m.pruneLocked()
 		session := m.active
@@ -988,10 +979,6 @@ func (s *Server) HandleCancelCodexOAuth(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.codexOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex OAuth is unavailable")
-		return
-	}
 	if err := s.codexOAuth.cancel(request.State); err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return
@@ -1005,10 +992,6 @@ func (s *Server) HandleSubmitCodexOAuthCallback(c *gin.Context) {
 	var request codexOAuthCallbackRequest
 	if err := BindAndValidate(c, &request); err != nil {
 		RespondError(c, http.StatusBadRequest, err)
-		return
-	}
-	if s.codexOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex OAuth is unavailable")
 		return
 	}
 	state, err := s.codexOAuth.submitCallbackURL(request.CallbackURL)
@@ -1025,10 +1008,6 @@ func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {
 	var request codexPersonalAccessTokenRequest
 	if err := BindAndValidate(c, &request); err != nil {
 		RespondError(c, http.StatusBadRequest, err)
-		return
-	}
-	if s.codexService == nil || s.store == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex personal access token authorization is unavailable")
 		return
 	}
 	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
@@ -1055,9 +1034,7 @@ func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if s.codexCredentials != nil {
-		s.codexCredentials.invalidate(channel.ID)
-	}
+	s.codexCredentials.invalidate(channel.ID)
 	s.clearCodexRejectedCredentialCooldown(c.Request.Context(), channel.ID)
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -1066,10 +1043,8 @@ func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {
 }
 
 func (s *Server) clearCodexRejectedCredentialCooldown(ctx context.Context, channelID int64) {
-	if s.cooldownManager != nil {
-		if err := s.cooldownManager.ClearChannelCooldown(ctx, channelID); err != nil {
-			log.Printf("[WARN] 清除 Codex 失效凭据渠道冷却失败 (channel=%d): %v", channelID, err)
-		}
+	if err := s.cooldownManager.ClearChannelCooldown(ctx, channelID); err != nil {
+		log.Printf("[WARN] 清除 Codex 失效凭据渠道冷却失败 (channel=%d): %v", channelID, err)
 	}
 	s.invalidateChannelRelatedCache(channelID)
 }
@@ -1098,10 +1073,6 @@ func (s *Server) HandleRefreshCodexCredential(c *gin.Context) {
 	}
 	if storedCredential.IsPersonalAccessToken() {
 		RespondErrorMsg(c, http.StatusConflict, "Codex personal access token cannot be refreshed")
-		return
-	}
-	if s.codexCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex credential refresh is unavailable")
 		return
 	}
 

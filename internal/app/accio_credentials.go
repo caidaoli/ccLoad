@@ -19,7 +19,7 @@ type accioCredentialManager struct {
 }
 
 func (m *accioCredentialManager) credential(ctx context.Context, cfg *model.Config, force bool, rejected string) (*accioauth.Credential, error) {
-	if m == nil || m.server == nil || m.server.accioService == nil || m.server.oauthCredentialRefreshes == nil || cfg == nil || !cfg.UsesAccioOAuth() {
+	if !cfg.UsesAccioOAuth() {
 		return nil, errors.New("accio credentials unavailable")
 	}
 	c, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))

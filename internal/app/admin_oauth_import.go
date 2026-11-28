@@ -606,10 +606,6 @@ func (s *Server) prepareOAuthCredentialImportFile(
 			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
 			return prepared
 		}
-		if s.antigravityService == nil {
-			prepared.Result.Status, prepared.Result.Error = "failed", "antigravity credential completion is unavailable"
-			return prepared
-		}
 		credential, err = s.antigravityService.CompleteCredential(ctx, credential)
 		if err != nil {
 			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
@@ -632,10 +628,6 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		}
 		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(xaiChannelBaseName(credential))]; exists {
 			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
-			return prepared
-		}
-		if s.client == nil {
-			prepared.Result.Status, prepared.Result.Error = "failed", "xAI credential completion is unavailable"
 			return prepared
 		}
 		credential, err = completeXAICredential(
@@ -669,10 +661,6 @@ func (s *Server) prepareOAuthCredentialImportFile(
 			return prepared
 		}
 		if needsRefresh {
-			if s.anthropicService == nil {
-				prepared.Result.Status, prepared.Result.Error = "failed", "Anthropic credential refresh is unavailable"
-				return prepared
-			}
 			credential, err = refreshImportedAnthropicCredential(ctx, s.store, s.anthropicService, credential)
 			if err != nil {
 				prepared.Result.Status, prepared.Result.Error = "failed", err.Error()

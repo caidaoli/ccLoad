@@ -188,7 +188,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*Credential
 }
 
 func (s *Service) validate() error {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.AuthorizationURL) == "" ||
+	if strings.TrimSpace(s.AuthorizationURL) == "" ||
 		strings.TrimSpace(s.TokenURL) == "" || strings.TrimSpace(s.ClientID) == "" ||
 		strings.TrimSpace(s.RedirectURI) == "" || strings.TrimSpace(s.Scope) == "" {
 		return errors.New("anthropic OAuth service is unavailable")

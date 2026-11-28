@@ -18,13 +18,24 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/accioauth"
+	"ccLoad/internal/anthropicauth"
+	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
+	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
+	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/privacy"
 	"ccLoad/internal/protocol"
 	protocolbuiltin "ccLoad/internal/protocol/builtin"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
@@ -652,10 +663,96 @@ func newTestServer(s *Server) *Server {
 	if s.privacyEngine == nil {
 		s.privacyEngine = privacy.NewEngine()
 	}
+	if s.privacyPolicy.Load() == nil {
+		policy, err := parsePrivacyPolicy("{}")
+		if err != nil {
+			panic(err)
+		}
+		s.privacyPolicy.Store(policy)
+	}
 	if s.protocolRegistry == nil {
 		reg := protocol.NewRegistry()
 		protocolbuiltin.Register(reg)
 		s.protocolRegistry = reg
+	}
+	if s.sessionAffinity == nil {
+		s.sessionAffinity = newSessionAffinityStore()
+	}
+	if s.channelConcurrencyLimiter == nil {
+		s.channelConcurrencyLimiter = newChannelConcurrencyLimiter()
+	}
+	if s.oauthCredentialRefreshes == nil {
+		s.oauthCredentialRefreshes = newOAuthCredentialRefreshTracker()
+	}
+	if s.channelManagement == nil {
+		s.channelManagement = newChannelManagementService(s.store, s.getClientForChannel)
+	}
+	if s.cooldownManager == nil {
+		s.cooldownManager = cooldown.NewManager(s.store)
+	}
+	if s.authService == nil {
+		s.authService = &AuthService{store: s.store}
+	}
+	invalidateChannelList := func(int64) { s.InvalidateChannelListCache() }
+	if s.codexService == nil {
+		s.codexService = codexauth.NewService(s.client)
+	}
+	if s.codexCredentials == nil {
+		s.codexCredentials = newCodexCredentialManager(s.codexService, s.store, s.getClientForChannel, invalidateChannelList)
+	}
+	if s.antigravityService == nil {
+		s.antigravityService = antigravityauth.NewService(s.antigravityClient)
+	}
+	if s.antigravityCredentials == nil {
+		s.antigravityCredentials = newAntigravityCredentialManager(s.antigravityService, s.store, s.getClientForChannel, invalidateChannelList)
+	}
+	if s.xaiService == nil {
+		s.xaiService = xaiauth.NewService(s.client)
+	}
+	if s.xaiCredentials == nil {
+		s.xaiCredentials = newXAICredentialManager(s.store, s.getClientForChannel, invalidateChannelList)
+	}
+	if s.anthropicService == nil {
+		s.anthropicService = anthropicauth.NewService(s.client)
+	}
+	if s.anthropicCredentials == nil {
+		s.anthropicCredentials = newAnthropicCredentialManager(s.anthropicService, s.store, s.getClientForChannel, invalidateChannelList)
+	}
+	if s.zaiService == nil {
+		s.zaiService = zaiauth.NewService(s.client)
+	}
+	if s.zaiCredentials == nil {
+		s.zaiCredentials = newZAICredentialManager(s.store, s.getClientForChannel, invalidateChannelList)
+	}
+	if s.cursorService == nil {
+		s.cursorService = cursorauth.NewService(s.client)
+	}
+	if s.cursorCredentials == nil {
+		s.cursorCredentials = newCursorCredentialManager(s.store, s.getClientForChannel, invalidateChannelList)
+	}
+	if s.vertexCredentials == nil {
+		s.vertexCredentials = newVertexCredentialManager(s.getClientForChannel)
+	}
+	if s.loomyService == nil {
+		s.loomyService = loomyauth.NewService(s.client)
+	}
+	if s.codeBuddyService == nil {
+		s.codeBuddyService = codebuddyauth.NewService(s.client)
+	}
+	if s.codeBuddyCredentials == nil {
+		s.codeBuddyCredentials = &codeBuddyCredentialManager{server: s}
+	}
+	if s.accioService == nil {
+		s.accioService = accioauth.NewService(s.client)
+	}
+	if s.accioCredentials == nil {
+		s.accioCredentials = &accioCredentialManager{server: s}
+	}
+	if s.qoderService == nil {
+		s.qoderService = qoderauth.NewService(s.client)
+	}
+	if s.qoderCredentials == nil {
+		s.qoderCredentials = &qoderCredentialManager{server: s}
 	}
 	return s
 }

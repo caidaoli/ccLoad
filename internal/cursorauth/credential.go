@@ -60,9 +60,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
 
 // Normalize validates and canonicalizes a credential in place.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("cursor credential is nil")
-	}
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	if c.Type == "" || c.Type == "cursor-cli" {
 		c.Type = ChannelType
@@ -95,9 +92,6 @@ func (c *Credential) Normalize() error {
 
 // Identity returns the account identity used to deduplicate channels.
 func (c *Credential) Identity() Identity {
-	if c == nil {
-		return Identity{}
-	}
 	return Identity{UserID: strings.TrimSpace(c.UserID), Email: strings.TrimSpace(c.Email)}
 }
 
@@ -118,13 +112,10 @@ func (i Identity) Matches(other Identity) bool {
  * @brief 合并刷新结果，保留该次刷新未覆盖的身份和目录信息。
  * @param refreshed 刷新后的凭证；nil 表示没有刷新结果。
  * @return 规范化后的新凭证；失败时为 nil。
- * @return 任一凭证为空或合并后凭证无效时返回错误。
+ * @return 合并后凭证无效时返回错误。
  * @details 只有同一 API Key 的刷新可以沿用目录；新快照同时替换窗口与档位。
  */
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
-	if c == nil || refreshed == nil {
-		return nil, errors.New("cursor refresh credential is nil")
-	}
 	merged := *refreshed
 	preserve := func(target *string, previous string) {
 		if strings.TrimSpace(*target) == "" {
@@ -151,12 +142,9 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 
 /**
  * @brief 复制 Cursor 凭证、额度以及目录快照，避免调用方修改共享状态。
- * @return 独立凭证副本；源凭证为 nil 时返回 nil。
+ * @return 独立凭证副本。
  */
 func (c *Credential) Clone() *Credential {
-	if c == nil {
-		return nil
-	}
 	clone := *c
 	clone.OAuthUsage = slices.Clone(c.OAuthUsage)
 	clone.ContextWindows = maps.Clone(c.ContextWindows)

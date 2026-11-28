@@ -65,7 +65,7 @@ func CompletionsURLForBaseURL(baseURL string) string {
 
 // Endpoint returns the control-plane endpoint associated with the credential.
 func (c *Credential) Endpoint() string {
-	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
+	if strings.TrimSpace(c.BaseURL) != "" {
 		return strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
 	}
 	return BaseURL
@@ -85,10 +85,8 @@ func ChatHost(c *Credential) string {
 	host := ""
 	if h := canonicalProductHost(issuerHost(c)); isKnownProductHost(h) {
 		host = h
-	} else if c != nil {
-		if u, err := url.Parse(c.Endpoint()); err == nil {
-			host = canonicalProductHost(u.Hostname())
-		}
+	} else if u, err := url.Parse(c.Endpoint()); err == nil {
+		host = canonicalProductHost(u.Hostname())
 	}
 	switch host {
 	case "www.codebuddy.ai", "www.workbuddy.ai":
@@ -132,7 +130,7 @@ func ChatBaseURL(c *Credential) string {
 // SupportsDailyCheckin reports whether the credential's edition supports the
 // CodeBuddy daily check-in operation.
 func (c *Credential) SupportsDailyCheckin() bool {
-	return c != nil && !c.IsInternational()
+	return !c.IsInternational()
 }
 
 // ParseCredential accepts canonical credentials and workbuddy.json exports.
@@ -173,12 +171,9 @@ func ParseCredential(raw []byte) (*Credential, error) {
 /**
  * @brief Validate credentials and normalize absolute expiry to Unix seconds before use or storage.
  * @details WorkBuddy exports and credentials saved from them may carry Unix milliseconds (13 or more digits).
- * @return nil on success, or an error for a nil credential, invalid type, header values, endpoint, missing token, or negative expiry.
+ * @return nil on success, or an error for an invalid type, header values, endpoint, missing token, or negative expiry.
  */
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("CodeBuddy credential is nil")
-	}
 	if c.Type != "" && c.Type != ChannelType && c.Type != "workbuddy" {
 		return errors.New("invalid CodeBuddy credential type")
 	}
@@ -222,9 +217,6 @@ func normalizeBaseURL(raw string) (string, error) {
 }
 
 func issuerHost(c *Credential) string {
-	if c == nil {
-		return ""
-	}
 	parts := strings.Split(c.AccessToken, ".")
 	if len(parts) < 2 {
 		return ""

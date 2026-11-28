@@ -40,9 +40,6 @@ func parsePrivacyPolicy(raw string) (*privacy.Policy, error) {
 // Token hashes isolate reversible mappings between gateway users.
 func (s *Server) privacySession(c *gin.Context) *privacy.Session {
 	policy := s.privacyPolicy.Load()
-	if policy == nil {
-		return nil
-	}
 	scope := c.GetString("token_hash")
 	if !policy.Enabled() && (scope == "" || !s.privacyEngine.HasMappings(scope)) {
 		return nil

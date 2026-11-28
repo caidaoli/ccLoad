@@ -257,10 +257,6 @@ func (s *Server) HandleImportVertexCredential(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.store == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "vertex credential import is unavailable")
-		return
-	}
 	cfg, created, err := s.commitVertexCredential(c.Request.Context(), credential, proxyURL)
 	if err != nil {
 		if errors.Is(err, errVertexCredentialUnusable) {

@@ -215,9 +215,6 @@ func zaiStartPlansUnavailable(plans *zaiauth.Plans) bool {
  *       管理检测与独立发送不受渠道停用、冷却或时段约束，只按余额资格准入。
  */
 func (s *Server) acquireZAIStart(req *http.Request, key [32]byte, name string) (func(), *http.Response, error) {
-	if s.channelCache == nil {
-		return s.zaiStart.acquire(req, key, nil)
-	}
 	configs, err := s.channelCache.GetEnabledChannelsSnapshotByModel(req.Context(), "*")
 	if err != nil {
 		return s.zaiStart.acquire(req, key, nil)

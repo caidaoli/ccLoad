@@ -260,9 +260,6 @@ func authTimestamp(data map[string]json.RawMessage, format lifetimeFormat) int64
 }
 
 func authCopy(c *Credential) (*Credential, error) {
-	if c == nil {
-		return nil, errors.New("missing Qoder credential")
-	}
 	copy := *c
 	if err := copy.Normalize(); err != nil {
 		return nil, err

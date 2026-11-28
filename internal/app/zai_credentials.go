@@ -75,7 +75,7 @@ func (m *zaiCredentialManager) credential(
 	cfg *model.Config,
 	forceRefresh bool,
 ) (*zaiauth.Credential, error) {
-	if m == nil || m.store == nil || cfg == nil || !cfg.UsesZAIOAuth() {
+	if !cfg.UsesZAIOAuth() {
 		return nil, errors.New("z.ai credential manager is unavailable")
 	}
 	if ctx.Err() != nil {
@@ -246,9 +246,6 @@ func (m *zaiCredentialManager) cachedOrParse(cfg *model.Config) (*zaiauth.Creden
 }
 
 func (m *zaiCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()

@@ -68,9 +68,6 @@ func (s *Server) managementCheckinLoop() {
  * @note 由固定时段调度器调用；会产生上游签到和审计记录，扫描失败仅记录日志。
  */
 func (s *Server) runDueCodeBuddyCheckins(ctx context.Context) {
-	if s == nil || s.store == nil || s.codeBuddyService == nil || s.codeBuddyCredentials == nil {
-		return
-	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {
 		log.Printf("[WARN] CodeBuddy 签到扫描失败: %v", err)
@@ -131,9 +128,6 @@ type codeBuddyCheckinResult struct {
 func (s *Server) checkInCodeBuddy(ctx context.Context, cfg *model.Config) (*codeBuddyCheckinResult, error) {
 	if cfg == nil || !cfg.UsesCodeBuddyOAuth() {
 		return nil, errOAuthUsageUnsupported
-	}
-	if s == nil || s.codeBuddyService == nil || s.codeBuddyCredentials == nil {
-		return nil, errCodeBuddyUsageManagerUnavailable
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, codeBuddyCheckinTimeout)
 	defer cancel()
@@ -213,10 +207,6 @@ func (s *Server) addCodeBuddyCheckinAuditLog(
 	result *codeBuddyCheckinResult,
 	operationErr error,
 ) error {
-	if s == nil || s.store == nil || cfg == nil {
-		return nil
-	}
-
 	status := ""
 	statusCode := http.StatusOK
 	var balance *channelCheckinAuditBalance
@@ -260,9 +250,6 @@ func codeBuddyCheckinSlot(now time.Time) string {
  * @note 使用业务日领取机制抑制重复调度；取消后等待 worker 结束，再用独立的五秒上下文释放本轮未完成 claim。渠道启用状态不阻止管理账户签到。
  */
 func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) error {
-	if s == nil || s.store == nil {
-		return nil
-	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {
 		return err
@@ -446,9 +433,6 @@ func (s *Server) runManagementCheckinJob(ctx context.Context, channelID int64) {
 }
 
 func (s *Server) writeManagementCheckinAudit(ctx context.Context, cfg *model.Config, result *channelCheckinResult, err error) {
-	if s == nil || s.store == nil || cfg == nil {
-		return
-	}
 	auditCtx := ctx
 	if auditCtx == nil || auditCtx.Err() != nil {
 		auditCtx = context.Background()

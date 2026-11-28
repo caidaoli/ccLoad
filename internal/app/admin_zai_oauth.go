@@ -117,7 +117,7 @@ type zaiOAuthManager struct {
 
 /**
  * @brief 创建 ZCode 授权会话管理器。
- * @param baseCtx 服务生命周期上下文；nil 使用后台上下文。
+ * @param baseCtx 服务生命周期上下文。
  * @param service 公共控制面客户端。
  * @param resolve 按所选站点派生付费 Key。
  * @param commit 保存账号的回调；无套餐也可提交。
@@ -159,9 +159,6 @@ func sleepWithContext(ctx context.Context, d time.Duration) {
  * @note 初始化成功后启动后台轮询协程。
  */
 func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string, options zaiOAuthOptions) (zaiOAuthStartResponse, error) {
-	if m == nil || m.service == nil || m.resolve == nil || m.commit == nil {
-		return zaiOAuthStartResponse{}, errors.New("z.ai OAuth is unavailable")
-	}
 	adminSessionHash = strings.TrimSpace(adminSessionHash)
 	if adminSessionHash == "" {
 		return zaiOAuthStartResponse{}, errors.New("z.ai OAuth requires an administrator session")
@@ -333,9 +330,6 @@ func (m *zaiOAuthManager) finish(session *zaiOAuthSession, status, errorMsg stri
 }
 
 func (m *zaiOAuthManager) status(adminSessionHash, state string) (zaiOAuthStatusResponse, bool) {
-	if m == nil {
-		return zaiOAuthStatusResponse{}, false
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredSessionsLocked()
@@ -354,9 +348,6 @@ func (m *zaiOAuthManager) statusLocked(session *zaiOAuthSession) zaiOAuthStatusR
 }
 
 func (m *zaiOAuthManager) cancel(adminSessionHash, state string) error {
-	if m == nil {
-		return errors.New("z.ai OAuth session not found")
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session := m.sessions[strings.TrimSpace(state)]
@@ -423,9 +414,6 @@ func (m *zaiOAuthManager) runJanitor() {
 }
 
 func (m *zaiOAuthManager) close() {
-	if m == nil {
-		return
-	}
 	m.closeOnce.Do(func() {
 		close(m.stopJanitor)
 		m.mu.Lock()
@@ -455,10 +443,6 @@ func (s *Server) HandleStartZAIOAuth(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusUnauthorized, "administrator session is unavailable")
 		return
 	}
-	if s.zaiOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "z.ai OAuth is unavailable")
-		return
-	}
 	var request zaiOAuthStartRequest
 	if !bindOAuthLoginStart(c, &request) {
 		return
@@ -483,7 +467,7 @@ func (s *Server) HandleStartZAIOAuth(c *gin.Context) {
 // HandleZAIOAuthStatus returns only sessions owned by the current administrator.
 func (s *Server) HandleZAIOAuthStatus(c *gin.Context) {
 	adminSessionHash, ok := xaiAdminSessionHash(c)
-	if !ok || s.zaiOAuth == nil {
+	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "z.ai OAuth session not found")
 		return
 	}
@@ -498,7 +482,7 @@ func (s *Server) HandleZAIOAuthStatus(c *gin.Context) {
 // HandleCancelZAIOAuth cancels one pending administrator-owned session.
 func (s *Server) HandleCancelZAIOAuth(c *gin.Context) {
 	adminSessionHash, ok := xaiAdminSessionHash(c)
-	if !ok || s.zaiOAuth == nil {
+	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "z.ai OAuth session not found")
 		return
 	}

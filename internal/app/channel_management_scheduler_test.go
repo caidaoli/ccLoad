@@ -1445,7 +1445,9 @@ func TestManagementCheckinSchedulerCancellationSkipsFalseAuditAndLoopStops(t *te
 		t.Fatalf("completed catch-up repeated POSTs: %d", posts.Load())
 	}
 
-	loop := newTestServer(&Server{baseCtx: context.Background(), shutdownCh: make(chan struct{})})
+	loopStore, cleanupLoopStore := setupTestStore(t)
+	defer cleanupLoopStore()
+	loop := newTestServer(&Server{store: loopStore, baseCtx: context.Background(), shutdownCh: make(chan struct{})})
 	loop.wg.Add(1)
 	loopDone := make(chan struct{})
 	go func() { loop.managementCheckinLoop(); close(loopDone) }()

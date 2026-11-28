@@ -31,7 +31,7 @@ func (s *Server) visibleModelCatalog(c *gin.Context) ([]string, []*model.Config,
 		return nil, nil, err
 	}
 	tokenHash := c.GetString("token_hash")
-	if s.authService == nil || tokenHash == "" {
+	if tokenHash == "" {
 		return modelNamesFromChannels(channels), channels, nil
 	}
 	channels, _ = s.authService.FilterAllowedChannels(tokenHash, channels)

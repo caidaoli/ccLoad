@@ -61,9 +61,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
  * @return 缺少两种认证材料、类型或字段格式非法时返回错误。
  */
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("z.ai credential is nil")
-	}
 	site, err := NormalizeSite(c.Site)
 	if err != nil {
 		return err
@@ -109,9 +106,6 @@ func (c *Credential) Normalize() error {
 
 // Identity returns the account identity used to deduplicate channels.
 func (c *Credential) Identity() Identity {
-	if c == nil {
-		return Identity{}
-	}
 	return Identity{UserID: strings.TrimSpace(c.UserID), Email: strings.TrimSpace(c.Email)}
 }
 
@@ -156,12 +150,9 @@ func DeriveDeviceID(identity Identity, fallback string) string {
  * @brief 合并新认证材料并保留渠道偏好、身份和额度快照。
  * @param refreshed 新的登录或重派生结果。
  * @return 独立的合并凭证。
- * @return 任一凭证为空、站点不同或结果非法时返回错误。
+ * @return 站点不同或结果非法时返回错误。
  */
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
-	if c == nil || refreshed == nil {
-		return nil, errors.New("z.ai refresh credential is nil")
-	}
 	currentSite, err := NormalizeSite(c.Site)
 	if err != nil {
 		return nil, err

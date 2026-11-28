@@ -687,7 +687,7 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	effectiveCostUSD := upd.costUSD * multiplier
 
 	// 内存缓存是费用限额的实时权威来源。DB 落盘失败不能让限额 fail-open。
-	if upd.costUSD > 0 && s.authService != nil {
+	if upd.costUSD > 0 {
 		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(effectiveCostUSD), upd.completedAt)
 	}
 

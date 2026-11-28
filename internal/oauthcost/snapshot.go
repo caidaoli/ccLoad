@@ -61,9 +61,6 @@ type Snapshot struct {
 // (limit_name, kind)，同一时长可以对应多个互不相干的窗口（Antigravity 的
 // gemini/3p 周额度、Anthropic 的三个 7 天窗口），只按时长归并必然错位。
 func (s *SnapshotSummary) Samples() []Sample {
-	if s == nil {
-		return nil
-	}
 	samples := make([]Sample, 0, len(s.Windows)+2)
 	for _, window := range s.Windows {
 		key := Key(window.LimitName, window.Kind)

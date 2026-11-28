@@ -63,7 +63,7 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 	forceRefresh bool,
 	rejectedAccessToken string,
 ) (*xaiauth.Credential, error) {
-	if m == nil || m.store == nil || cfg == nil || !cfg.UsesXAIOAuth() {
+	if !cfg.UsesXAIOAuth() {
 		return nil, errors.New("xAI credential manager is unavailable")
 	}
 	if ctx.Err() != nil {
@@ -231,9 +231,6 @@ func (m *xaiCredentialManager) cachedOrParse(cfg *model.Config) (*xaiauth.Creden
 }
 
 func (m *xaiCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()

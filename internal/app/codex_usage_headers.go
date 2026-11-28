@@ -43,7 +43,7 @@ func (s *Server) persistDetectionCodexPassiveUsage(ctx context.Context, cfg *mod
 }
 
 func (s *Server) observeCodexPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response, upstreamModel string, onUpdate func(codexPassiveUsageUpdate)) {
-	if s == nil || s.codexCredentials == nil || cfg == nil || !cfg.UsesCodexOAuth() || resp == nil {
+	if !cfg.UsesCodexOAuth() {
 		return
 	}
 	statusOK := resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices
@@ -72,16 +72,14 @@ func (s *Server) observeCodexPassiveUsage(ctx context.Context, cfg *model.Config
 		ReadCloser: resp.Body,
 		onUpdate: func(update codexPassiveUsageUpdate) {
 			update.AccountID, update.SourceEpoch = accountID, sourceEpoch
-			if onUpdate != nil {
-				onUpdate(update)
-			}
+			onUpdate(update)
 		},
 		identity: identity,
 	}
 }
 
 func (s *Server) enqueueCodexPassiveUsage(channelID int64, update codexPassiveUsageUpdate) {
-	if s == nil || s.codexPassiveUsageCh == nil || channelID <= 0 ||
+	if channelID <= 0 ||
 		(len(update.Windows) == 0 && len(update.ReplaceScopes) == 0) || s.isShuttingDown.Load() {
 		return
 	}

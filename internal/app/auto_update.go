@@ -114,9 +114,6 @@ func (s *Server) HandleManualUpdate(c *gin.Context) {
 }
 
 func (s *Server) activeRequestCount() int {
-	if s == nil {
-		return 0
-	}
 	// 自动更新关心的是所有已经进入代理处理流程的客户端请求，包含仍在等待
 	// Responses 会话锁的请求。activeRequests 只表示已经开始的上游尝试，不能
 	// 再拿来判断服务是否空闲。

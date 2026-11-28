@@ -42,7 +42,7 @@ func (c *Config) NormalizeScheduledCheckSchedule() error {
  * @return 渠道可检测且当前分钟命中计划时返回 true。
  */
 func (c *Config) ScheduledCheckDueAt(now time.Time) bool {
-	if c == nil || !c.Enabled || !c.ScheduledCheckEnabled || c.IsCoolingDown(now) || !c.IsAvailableAt(now) {
+	if !c.Enabled || !c.ScheduledCheckEnabled || c.IsCoolingDown(now) || !c.IsAvailableAt(now) {
 		return false
 	}
 	if ValidateScheduledCheckSchedule(c.ScheduledCheckIntervalMinutes, c.ScheduledCheckStartTime) != nil {

@@ -192,7 +192,7 @@ func (m *antigravityCredentialManager) resolveCredential(
 }
 
 func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Context, cfg *model.Config, forceRefresh bool, rejectedAccessToken string) (*antigravityauth.Credential, error) {
-	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
+	if !cfg.UsesAntigravityOAuth() {
 		return nil, errors.New("credential manager: Antigravity is unavailable")
 	}
 	if ctx.Err() != nil {
@@ -503,9 +503,6 @@ func (m *antigravityCredentialManager) cachedOrParse(cfg *model.Config) (*antigr
 }
 
 func (m *antigravityCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()

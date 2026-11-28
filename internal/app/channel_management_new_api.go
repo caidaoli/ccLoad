@@ -60,7 +60,7 @@ func (s *channelManagementService) refreshNewAPIBalance(
 	cfg *model.Config,
 	envelope *model.ChannelManagementEnvelope,
 ) (*model.ChannelManagementBalanceSnapshot, int, error) {
-	if s == nil || cfg == nil || envelope == nil || envelope.Profile != model.ChannelManagementProfileNewAPI {
+	if envelope.Profile != model.ChannelManagementProfileNewAPI {
 		return nil, 0, errInvalidManagementRequest
 	}
 	headers := newAPIHeaders(envelope.Settings.UserID, false)
@@ -117,7 +117,7 @@ func (s *channelManagementService) checkInNewAPI(
 	cfg *model.Config,
 	envelope *model.ChannelManagementEnvelope,
 ) (*channelCheckinResult, *model.ChannelManagementBalanceSnapshot, error) {
-	if s == nil || cfg == nil || envelope == nil || envelope.Profile != model.ChannelManagementProfileNewAPI {
+	if envelope.Profile != model.ChannelManagementProfileNewAPI {
 		return nil, nil, errInvalidManagementRequest
 	}
 	checkedAt := s.now()

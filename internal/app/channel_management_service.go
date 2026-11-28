@@ -263,7 +263,7 @@ func (s *channelManagementService) SaveSettings(
 	cfg *model.Config,
 	input *channelManagementInput,
 ) (*channelManagementView, error) {
-	if s == nil || s.store == nil || input == nil || !supportsChannelManagement(cfg) {
+	if input == nil || !supportsChannelManagement(cfg) {
 		return nil, errInvalidManagementRequest
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, s.operationTimeout)
@@ -408,7 +408,7 @@ func (s *channelManagementService) loadChannelManagement(
 	ctx context.Context,
 	channelID int64,
 ) (*model.Config, *model.ChannelManagementEnvelope, error) {
-	if s == nil || s.store == nil || channelID <= 0 {
+	if channelID <= 0 {
 		return nil, nil, errInvalidManagementRequest
 	}
 	cfg, err := s.store.GetConfig(ctx, channelID)
@@ -430,9 +430,6 @@ func (s *channelManagementService) persistChannelManagementState(
 	source *model.ChannelManagementEnvelope,
 	merge func(*model.ChannelManagementState),
 ) (*model.ChannelManagementEnvelope, error) {
-	if cfg == nil || source == nil || merge == nil {
-		return nil, errInvalidManagementRequest
-	}
 	currentCfg := cfg
 	current := source
 	for {
@@ -471,7 +468,7 @@ func (s *channelManagementService) persistChannelManagementState(
  * @note 获取后应立即 defer 释放。
  */
 func (s *channelManagementService) acquireChannel(ctx context.Context, channelID int64) (func(), error) {
-	if s == nil || channelID <= 0 {
+	if channelID <= 0 {
 		return nil, errInvalidManagementRequest
 	}
 	return acquireKeyedGate(ctx, &s.gates, channelID)
@@ -804,9 +801,6 @@ func (s *channelManagementService) doManagementHTTPRequest(
 }
 
 func (s *channelManagementService) managementClient(cfg *model.Config) (*http.Client, error) {
-	if s == nil || s.clientForChannel == nil || cfg == nil {
-		return nil, errInvalidManagementRequest
-	}
 	base := s.clientForChannel(cfg)
 	if base == nil {
 		return nil, errInvalidManagementRequest

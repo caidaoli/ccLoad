@@ -51,9 +51,6 @@ func (e *HTTPError) Error() string {
 func (e *HTTPError) RetryAfter() time.Time { return e.retryAfter }
 
 func authCopy(c *Credential) (*Credential, error) {
-	if c == nil {
-		return nil, errors.New("missing Accio credential")
-	}
 	copy := *c
 	if err := copy.Normalize(); err != nil {
 		return nil, err

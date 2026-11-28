@@ -99,9 +99,6 @@ func ParseCredential(raw []byte) (*Credential, error) {
 
 // Normalize validates and canonicalizes a credential in place.
 func (c *Credential) Normalize() error {
-	if c == nil {
-		return errors.New("codex credential is nil")
-	}
 	c.IDToken = strings.TrimSpace(c.IDToken)
 	c.AccessToken = strings.TrimSpace(c.AccessToken)
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
@@ -194,9 +191,6 @@ func (c *Credential) Normalize() error {
 // QuotaIdentity 返回上游额度的计数主体 "account_id|plan_type"。同一账号换套餐、同一渠道换账号，
 // 上游额度都不再是原来那一份。缺任一分量返回空串：本次没有观察到身份。
 func (c *Credential) QuotaIdentity() string {
-	if c == nil {
-		return ""
-	}
 	accountID := strings.TrimSpace(c.AccountID)
 	planType := strings.ToLower(strings.TrimSpace(c.PlanType))
 	if accountID == "" || planType == "" {
@@ -209,7 +203,7 @@ func (c *Credential) QuotaIdentity() string {
 // 套餐未知时仍独立比较账号；身份变化则开始新的计数纪元。返回是否开始了新纪元。
 func (c *Credential) ObserveQuotaIdentity(accountID, planType string, at time.Time) bool {
 	accountID, planType = strings.TrimSpace(accountID), strings.ToLower(strings.TrimSpace(planType))
-	if c == nil || accountID == "" || at.Before(c.QuotaCostUsage.EpochTime()) {
+	if accountID == "" || at.Before(c.QuotaCostUsage.EpochTime()) {
 		return false
 	}
 	if c.QuotaCostUsage == nil {
@@ -253,9 +247,6 @@ func (c *Credential) ObserveQuotaIdentity(accountID, planType string, at time.Ti
 // 额度端点触发或账号变化时缺套餐字段，待下一次 id_token 观察补记。旧额度快照一并丢弃；
 // 否则另一侧观察者会把同一次变化再重置一遍。
 func (c *Credential) RestartQuotaEpoch(identity string, at time.Time) {
-	if c == nil {
-		return
-	}
 	if at.Before(c.QuotaCostUsage.EpochTime()) {
 		return
 	}
@@ -279,7 +270,7 @@ func (c *Credential) RestartQuotaEpoch(identity string, at time.Time) {
 // RestartQuotaEpochFromPoll 重置计数，但保留旧声明身份，避免滞后的声明被补记后再次重置。
 // 这里只比较同来源的身份，不把 usage API 的套餐名称与 id_token 混用。
 func (c *Credential) RestartQuotaEpochFromPoll(at time.Time) {
-	if c == nil || at.Before(c.QuotaCostUsage.EpochTime()) {
+	if at.Before(c.QuotaCostUsage.EpochTime()) {
 		return
 	}
 	previous := c.QuotaIdentityBeforePoll
@@ -324,12 +315,12 @@ func adoptLegacyQuotaIdentity(usage *oauthcost.Usage, identity, accountID string
 // IsPersonalAccessToken reports whether this credential uses a static Codex
 // access token instead of the refreshable browser OAuth lifecycle.
 func (c *Credential) IsPersonalAccessToken() bool {
-	return c != nil && strings.TrimSpace(c.AuthMode) == AuthModePersonalAccessToken
+	return strings.TrimSpace(c.AuthMode) == AuthModePersonalAccessToken
 }
 
 // Expiry returns the absolute credential expiration time.
 func (c *Credential) Expiry() (time.Time, error) {
-	if c == nil || strings.TrimSpace(c.Expired) == "" {
+	if strings.TrimSpace(c.Expired) == "" {
 		return time.Time{}, errors.New("codex credential is missing expired")
 	}
 	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(c.Expired))
@@ -341,7 +332,7 @@ func (c *Credential) Expiry() (time.Time, error) {
 
 // DecodedIDToken returns readable metadata without changing the raw credential.
 func (c *Credential) DecodedIDToken() *IDTokenInfo {
-	if c == nil || strings.TrimSpace(c.IDToken) == "" {
+	if strings.TrimSpace(c.IDToken) == "" {
 		return nil
 	}
 	claims, err := parseIDToken(c.IDToken)
@@ -396,9 +387,6 @@ func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, erro
 // MergeRefresh preserves identity and a rotated refresh token when OpenAI omits
 // those fields from a refresh response.
 func (c *Credential) MergeRefresh(refreshed *Credential, now time.Time) (*Credential, error) {
-	if c == nil || refreshed == nil {
-		return nil, errors.New("codex refresh credential is nil")
-	}
 	if c.IsPersonalAccessToken() {
 		return nil, ErrPersonalAccessTokenCannotRefresh
 	}

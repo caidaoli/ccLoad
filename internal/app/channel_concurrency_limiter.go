@@ -105,9 +105,6 @@ func (s *Server) acquireChannelConcurrencySlot(cfg *model.Config) (release func(
 	if cfg == nil || cfg.MaxConcurrency <= 0 {
 		return func() {}, nil
 	}
-	if s == nil || s.channelConcurrencyLimiter == nil {
-		return func() {}, nil
-	}
 
 	release, active, limit, ok := s.channelConcurrencyLimiter.acquire(cfg.ID, cfg.MaxConcurrency)
 	if ok {
@@ -118,9 +115,6 @@ func (s *Server) acquireChannelConcurrencySlot(cfg *model.Config) (release func(
 
 func (s *Server) waitForChannelConcurrencySlot(ctx context.Context, cfg *model.Config) (func(), error) {
 	if cfg == nil || cfg.MaxConcurrency <= 0 {
-		return func() {}, nil
-	}
-	if s == nil || s.channelConcurrencyLimiter == nil {
 		return func() {}, nil
 	}
 	return s.channelConcurrencyLimiter.acquireContext(ctx, cfg.ID, cfg.MaxConcurrency)

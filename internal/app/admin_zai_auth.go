@@ -83,10 +83,6 @@ func (s *Server) HandleImportZAICredential(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.store == nil || s.zaiService == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "z.ai credential import is unavailable")
-		return
-	}
 	options, err := s.oauthLoginOptions(request.oauthLoginStartRequest, false)
 	if err != nil {
 		RespondError(c, http.StatusBadRequest, err)
@@ -137,10 +133,6 @@ func (s *Server) HandleRefreshZAICredential(c *gin.Context) {
 	}
 	if stored.AccessToken == "" {
 		RespondErrorMsg(c, http.StatusConflict, "z.ai Coding Plan key cannot be re-resolved without an account authorization")
-		return
-	}
-	if s.zaiCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Z.ai credential refresh is unavailable")
 		return
 	}
 	credential, err := s.zaiCredentials.credential(c.Request.Context(), cfg, true)

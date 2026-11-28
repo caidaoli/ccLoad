@@ -169,7 +169,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 	forceRefresh bool,
 	rejectedAccessToken string,
 ) (*codexauth.Credential, error) {
-	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesCodexOAuth() {
+	if !cfg.UsesCodexOAuth() {
 		return nil, errors.New("codex credential manager is unavailable")
 	}
 	if ctx.Err() != nil {
@@ -376,9 +376,6 @@ func (m *codexCredentialManager) earlyRefreshBackingOff(channelID int64, credent
  * @note 并发安全；更换 grant 后旧错误不适用。
  */
 func (m *codexCredentialManager) rejectedRefreshError(channelID int64, refreshToken string) error {
-	if m == nil {
-		return nil
-	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	state := m.refreshBackoff[channelID]
@@ -397,7 +394,7 @@ func (m *codexCredentialManager) rejectedRefreshError(channelID int64, refreshTo
  * @note 旧 grant 的迟到错误不会标记重新授权后的凭据。
  */
 func (m *codexCredentialManager) requiresReauthorization(ctx context.Context, cfg *model.Config) (bool, error) {
-	if m == nil || cfg == nil || !cfg.UsesCodexOAuth() {
+	if !cfg.UsesCodexOAuth() {
 		return false, nil
 	}
 	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -452,9 +449,6 @@ func (m *codexCredentialManager) cachedOrParse(cfg *model.Config) (*codexauth.Cr
 }
 
 func (m *codexCredentialManager) invalidate(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	delete(m.passiveSamples, channelID)
@@ -463,9 +457,6 @@ func (m *codexCredentialManager) invalidate(channelID int64) {
 }
 
 func (m *codexCredentialManager) invalidateCredentialCache(channelID int64) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	m.mu.Unlock()
@@ -488,7 +479,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 	cfg *model.Config,
 	update codexPassiveUsageUpdate,
 ) (bool, error) {
-	if m == nil || m.store == nil || cfg == nil || !cfg.UsesCodexOAuth() {
+	if !cfg.UsesCodexOAuth() {
 		return false, errors.New("codex credential manager is unavailable")
 	}
 	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {

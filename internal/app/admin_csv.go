@@ -1353,10 +1353,7 @@ func (s *Server) validateCSVImportOAuthCredential(
 		if err != nil {
 			return "", err
 		}
-		service, err := s.loomyClient(existing)
-		if err != nil {
-			return "", err
-		}
+		service := s.loomyClient(existing)
 		if _, err := service.FetchModels(ctx, credential.Session); err != nil {
 			return "", err
 		}

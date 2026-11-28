@@ -420,9 +420,6 @@ func (s *Server) attachChannelQuotaCosts(ctx context.Context, cfgs []*model.Conf
 }
 
 func (s *Server) resetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error {
-	if s == nil || s.store == nil {
-		return errors.New("OAuth quota cost persistence is unavailable")
-	}
 	if err := s.store.ResetOAuthQuotaCostUsage(ctx, channelID, resetAt); err != nil {
 		return err
 	}

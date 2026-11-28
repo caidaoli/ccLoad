@@ -219,10 +219,6 @@ func (s *Server) HandleResetCodexQuota(c *gin.Context) {
 		RespondError(c, http.StatusConflict, errOAuthUsageUnsupported)
 		return
 	}
-	if s.codexCredentials == nil {
-		RespondError(c, http.StatusServiceUnavailable, errCodexUsageManagerUnavailable)
-		return
-	}
 	if _, loaded := s.codexQuotaResetInFlight.LoadOrStore(id, struct{}{}); loaded {
 		RespondError(c, http.StatusConflict, errCodexQuotaResetInProgress)
 		return

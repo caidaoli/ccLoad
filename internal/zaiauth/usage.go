@@ -88,7 +88,7 @@ func (q QuotaLimit) Name() string {
  * @return 配置、认证、网络或响应解析失败时返回错误。
  */
 func (s *Service) FetchQuotaLimits(ctx context.Context, apiKey string) ([]QuotaLimit, error) {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.QuotaLimitURL) == "" {
+	if strings.TrimSpace(s.QuotaLimitURL) == "" {
 		return nil, errors.New("z.ai quota endpoint is unavailable")
 	}
 	apiKey = strings.TrimSpace(apiKey)

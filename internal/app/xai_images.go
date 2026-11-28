@@ -54,7 +54,7 @@ type xaiImagesStreamState struct {
 }
 
 func (s *xaiImagesStreamState) collectOutputItem(index *int64, item xaiImageGenerationOutput) {
-	if s == nil || item.Type != "image_generation_call" || strings.TrimSpace(item.Result) == "" {
+	if item.Type != "image_generation_call" || strings.TrimSpace(item.Result) == "" {
 		return
 	}
 	if index == nil {
@@ -68,9 +68,6 @@ func (s *xaiImagesStreamState) collectOutputItem(index *int64, item xaiImageGene
 }
 
 func (s *xaiImagesStreamState) outputs() []xaiImageGenerationOutput {
-	if s == nil {
-		return nil
-	}
 	indexes := make([]int64, 0, len(s.outputByIndex))
 	for index := range s.outputByIndex {
 		indexes = append(indexes, index)

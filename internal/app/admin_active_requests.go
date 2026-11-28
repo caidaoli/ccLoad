@@ -81,17 +81,12 @@ func (s *Server) HandleActiveRequests(c *gin.Context) {
 
 // HandleRuntimeMetrics 返回当前 ccLoad 进程的运行状态。
 func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
-	stats := responsesExecutionSessionStoreStats{}
-	if s.responsesExecutionSessions != nil {
-		stats = s.responsesExecutionSessions.stats()
-	}
-	if s.responsesWebsocketConnections != nil {
-		connections := s.responsesWebsocketConnections.stats()
-		stats.DownstreamConnections = connections.Active
-		stats.RejectedDownstreamConnections = connections.Rejected
-		stats.MaxDownstreamConnections = connections.Max
-		stats.MaxDownstreamConnectionsPerToken = connections.MaxPerSubject
-	}
+	stats := s.responsesExecutionSessions.stats()
+	connections := s.responsesWebsocketConnections.stats()
+	stats.DownstreamConnections = connections.Active
+	stats.RejectedDownstreamConnections = connections.Rejected
+	stats.MaxDownstreamConnections = connections.Max
+	stats.MaxDownstreamConnectionsPerToken = connections.MaxPerSubject
 	data := gin.H{
 		"process":             s.processRuntimeMetrics(time.Now()),
 		"http_proxy":          s.httpRuntime.stats(),
@@ -101,9 +96,7 @@ func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
 	if provider, ok := s.store.(storage.HybridRuntimeMetricsProvider); ok {
 		data["storage"] = provider.RuntimeMetrics()
 	}
-	if s.logService != nil {
-		data["logs"] = s.logService.runtimeMetrics()
-	}
+	data["logs"] = s.logService.runtimeMetrics()
 	RespondJSON(c, http.StatusOK, data)
 }
 

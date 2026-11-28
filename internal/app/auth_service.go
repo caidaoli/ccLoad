@@ -268,9 +268,6 @@ func (s *AuthService) Close() {
 // RegisterWebSessionRevokeHook registers a callback for deleted Web sessions.
 // Callbacks receive only the irreversible session hash and run without service locks held.
 func (s *AuthService) RegisterWebSessionRevokeHook(hook func(sessionHash string)) {
-	if s == nil || hook == nil {
-		return
-	}
 	s.sessionRevokeHooksMux.Lock()
 	s.sessionRevokeHooks = append(s.sessionRevokeHooks, hook)
 	s.sessionRevokeHooksMux.Unlock()
@@ -563,7 +560,7 @@ func (s *AuthService) resolveAuthToken(token string) (tokenHash string, expiresA
 // Missing tokens fail closed: the absence of restriction maps must never turn a
 // revoked token into an unrestricted token.
 func (s *AuthService) IsTokenActive(tokenHash string) bool {
-	if s == nil || strings.TrimSpace(tokenHash) == "" {
+	if strings.TrimSpace(tokenHash) == "" {
 		return false
 	}
 	if err := s.refreshAuthTokensIfStale(); err != nil {
@@ -992,7 +989,7 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 }
 
 func (s *AuthService) refreshAuthTokensIfStale() error {
-	if s == nil || s.store == nil {
+	if s.store == nil {
 		return nil
 	}
 	lastReload := s.authTokensReloadAt.Load()

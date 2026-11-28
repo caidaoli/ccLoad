@@ -37,7 +37,7 @@ func newSessionAffinityStore() *sessionAffinityStore {
 }
 
 func (s *sessionAffinityStore) lookup(key string, now time.Time) (sessionAffinityTarget, bool) {
-	if s == nil || key == "" {
+	if key == "" {
 		return sessionAffinityTarget{}, false
 	}
 	s.mu.Lock()
@@ -51,7 +51,7 @@ func (s *sessionAffinityStore) lookup(key string, now time.Time) (sessionAffinit
 
 // bind 覆盖写入并续期：绑定渠道冷却或失败后，会话随下一次成功迁移到新渠道。
 func (s *sessionAffinityStore) bind(key string, target sessionAffinityTarget, now time.Time) {
-	if s == nil || key == "" || target.channelID <= 0 {
+	if key == "" || target.channelID <= 0 {
 		return
 	}
 	s.mu.Lock()
@@ -60,9 +60,6 @@ func (s *sessionAffinityStore) bind(key string, target sessionAffinityTarget, no
 }
 
 func (s *sessionAffinityStore) cleanupExpired(now time.Time) {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, entry := range s.entries {

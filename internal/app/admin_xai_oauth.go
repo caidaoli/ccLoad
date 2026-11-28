@@ -101,9 +101,6 @@ func newXAIOAuthManager(
 }
 
 func (m *xaiOAuthManager) start(adminSessionHash string, options oauthLoginOptions) (xaiOAuthStartResponse, error) {
-	if m == nil || m.service == nil || m.complete == nil || m.commit == nil {
-		return xaiOAuthStartResponse{}, errors.New("xAI OAuth is unavailable")
-	}
 	adminSessionHash = strings.TrimSpace(adminSessionHash)
 	if adminSessionHash == "" {
 		return xaiOAuthStartResponse{}, errors.New("xAI OAuth requires an administrator session")
@@ -134,9 +131,6 @@ func (m *xaiOAuthManager) start(adminSessionHash string, options oauthLoginOptio
 }
 
 func (m *xaiOAuthManager) submitCallback(adminSessionHash, rawInput string) (xaiOAuthStatusResponse, error) {
-	if m == nil || m.service == nil || m.complete == nil || m.commit == nil {
-		return xaiOAuthStatusResponse{}, errors.New("xAI OAuth is unavailable")
-	}
 	adminSessionHash = strings.TrimSpace(adminSessionHash)
 	input := xaiauth.ParseAuthorizationInput(rawInput)
 	if strings.TrimSpace(input.Code) == "" {
@@ -210,9 +204,6 @@ func (m *xaiOAuthManager) submitCallback(adminSessionHash, rawInput string) (xai
 }
 
 func (m *xaiOAuthManager) status(adminSessionHash, state string) (xaiOAuthStatusResponse, bool) {
-	if m == nil {
-		return xaiOAuthStatusResponse{}, false
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredSessionsLocked()
@@ -230,9 +221,6 @@ func (m *xaiOAuthManager) statusLocked(session *xaiOAuthSession) xaiOAuthStatusR
 }
 
 func (m *xaiOAuthManager) cancel(adminSessionHash, state string) error {
-	if m == nil {
-		return errors.New("xAI OAuth session not found")
-	}
 	m.mu.Lock()
 	session := m.sessions[strings.TrimSpace(state)]
 	if session == nil || session.adminSessionHash != strings.TrimSpace(adminSessionHash) {
@@ -249,9 +237,6 @@ func (m *xaiOAuthManager) cancel(adminSessionHash, state string) error {
 }
 
 func (m *xaiOAuthManager) cancelByAdmin(adminSessionHash string) {
-	if m == nil {
-		return
-	}
 	m.mu.Lock()
 	session := m.sessions[m.activeByID[strings.TrimSpace(adminSessionHash)]]
 	if session == nil || !xaiOAuthSessionCancelable(session.status) {
@@ -313,9 +298,6 @@ func (m *xaiOAuthManager) runJanitor() {
 }
 
 func (m *xaiOAuthManager) close() {
-	if m == nil {
-		return
-	}
 	m.closeOnce.Do(func() {
 		close(m.stopJanitor)
 		m.mu.Lock()
@@ -350,10 +332,6 @@ func (s *Server) HandleStartXAIOAuth(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusUnauthorized, "administrator session is unavailable")
 		return
 	}
-	if s.xaiOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "xAI OAuth is unavailable")
-		return
-	}
 	var request oauthLoginStartRequest
 	if !bindOAuthLoginStart(c, &request) {
 		return
@@ -374,7 +352,7 @@ func (s *Server) HandleStartXAIOAuth(c *gin.Context) {
 // HandleXAIOAuthStatus returns only sessions owned by the current administrator.
 func (s *Server) HandleXAIOAuthStatus(c *gin.Context) {
 	adminSessionHash, ok := xaiAdminSessionHash(c)
-	if !ok || s.xaiOAuth == nil {
+	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "xAI OAuth session not found")
 		return
 	}
@@ -389,7 +367,7 @@ func (s *Server) HandleXAIOAuthStatus(c *gin.Context) {
 // HandleCancelXAIOAuth cancels one pending administrator-owned session.
 func (s *Server) HandleCancelXAIOAuth(c *gin.Context) {
 	adminSessionHash, ok := xaiAdminSessionHash(c)
-	if !ok || s.xaiOAuth == nil {
+	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "xAI OAuth session not found")
 		return
 	}
@@ -408,7 +386,7 @@ func (s *Server) HandleCancelXAIOAuth(c *gin.Context) {
 // HandleSubmitXAIOAuthCallback accepts a callback URL, query string, or bare code.
 func (s *Server) HandleSubmitXAIOAuthCallback(c *gin.Context) {
 	adminSessionHash, ok := xaiAdminSessionHash(c)
-	if !ok || s.xaiOAuth == nil {
+	if !ok {
 		RespondErrorMsg(c, http.StatusNotFound, "xAI OAuth session not found")
 		return
 	}

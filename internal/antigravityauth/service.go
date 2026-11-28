@@ -194,9 +194,6 @@ func NewService(client *http.Client) *Service {
  * @note Call before concurrent use. On error, the existing User-Agent is retained.
  */
 func (s *Service) RefreshUserAgent(ctx context.Context) error {
-	if s == nil || s.Client == nil {
-		return errors.New("antigravity manifest client is unavailable")
-	}
 	manifestURL := strings.TrimSpace(s.ManifestURL)
 	if manifestURL == "" {
 		return errors.New("antigravity manifest URL is empty")
@@ -250,7 +247,7 @@ func hubUserAgent(version string) string {
 
 // RequestUserAgent returns the discovered User-Agent or the production fallback.
 func (s *Service) RequestUserAgent() string {
-	if s == nil || strings.TrimSpace(s.UserAgent) == "" {
+	if strings.TrimSpace(s.UserAgent) == "" {
 		return DefaultUserAgent
 	}
 	return strings.TrimSpace(s.UserAgent)
@@ -599,9 +596,6 @@ func (s *Service) projectIDFromCodeAssist(ctx context.Context, accessToken strin
 // FetchAvailableModels returns the model identifiers exposed to one
 // Antigravity project by the Cloud Code internal API.
 func (s *Service) FetchAvailableModels(ctx context.Context, baseURL string, credential *Credential) ([]string, error) {
-	if s == nil || s.Client == nil {
-		return nil, errors.New("models: Antigravity service is unavailable")
-	}
 	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return nil, errors.New("models: Antigravity credential is missing access_token")
 	}
@@ -800,9 +794,6 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 }
 
 func (s *Service) validate() error {
-	if s == nil || s.Client == nil {
-		return errors.New("oauth: Antigravity service is unavailable")
-	}
 	if strings.TrimSpace(s.AuthorizationURL) == "" || strings.TrimSpace(s.TokenURL) == "" ||
 		strings.TrimSpace(s.UserInfoURL) == "" || strings.TrimSpace(s.DailyAPIBaseURL) == "" ||
 		strings.TrimSpace(s.ClientID) == "" || strings.TrimSpace(s.ClientSecret) == "" ||

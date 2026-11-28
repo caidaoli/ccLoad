@@ -680,9 +680,7 @@ func (s *Server) HandleZAIOptions(c *gin.Context) {
 			return
 		}
 		if updated {
-			if s.zaiCredentials != nil {
-				s.zaiCredentials.invalidate(id)
-			}
+			s.zaiCredentials.invalidate(id)
 			s.invalidateChannelRelatedCache(id)
 			s.InvalidateChannelListCache()
 			RespondJSON(c, http.StatusOK, gin.H{"free_first": *input.FreeFirst})
@@ -846,10 +844,7 @@ func (s *Server) sendZAIPlanRequest(cfg *model.Config, req *http.Request, send f
 	if err != nil {
 		return nil, err
 	}
-	target := zaiauth.StartPlanBaseURL + "/v1/messages"
-	if s.zaiService != nil {
-		target = strings.TrimRight(s.zaiService.OAuthBaseURL, "/") + "/zcode-plan/anthropic/v1/messages"
-	}
+	target := strings.TrimRight(s.zaiService.OAuthBaseURL, "/") + "/zcode-plan/anthropic/v1/messages"
 	trial.URL, err = url.Parse(target)
 	if err != nil {
 		return nil, err

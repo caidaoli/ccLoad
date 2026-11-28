@@ -158,7 +158,7 @@ func (s *Server) loadChannelCooldownState(ctx context.Context, channels []*model
 	if len(channels) == 0 {
 		return channelCooldownState{channels: channels, loaded: true}, nil
 	}
-	if tokenHash := channelRestrictionTokenFromContext(ctx); tokenHash != "" && s.authService != nil {
+	if tokenHash := channelRestrictionTokenFromContext(ctx); tokenHash != "" {
 		filtered, restricted := s.authService.FilterAllowedChannels(tokenHash, channels)
 		if restricted {
 			// 空集合必须保持为空，不能让越权渠道重新参与冷却兜底。

@@ -53,7 +53,7 @@ func (reqCtx *proxyRequestContext) cursorSessionScope(channelID int64) cursoraut
  */
 func (s *Server) preferCursorToolRoute(ctx context.Context, candidates []*model.Config, reqCtx *proxyRequestContext) []*model.Config {
 	reqCtx.cursorToolRoute = cursorToolRoute{}
-	if reqCtx.tokenID <= 0 || reqCtx.requestMethod != http.MethodPost || !cursorSupportsRequestFamily(reqCtx.requestPath) || s.cursorCredentials == nil {
+	if reqCtx.tokenID <= 0 || reqCtx.requestMethod != http.MethodPost || !cursorSupportsRequestFamily(reqCtx.requestPath) {
 		return candidates
 	}
 	if !slices.ContainsFunc(candidates, func(cfg *model.Config) bool { return cfg.UsesCursorOAuth() && !cfg.CooldownFallback }) {

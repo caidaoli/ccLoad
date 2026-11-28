@@ -295,10 +295,6 @@ func ClassifyError(status int, body []byte) *APIError {
  * @return 网络、目录格式或上游业务错误
  */
 func (s *Service) FetchCatalog(ctx context.Context, c *Credential) (*Catalog, error) {
-	if c == nil {
-		return nil, errors.New("qoder: credential is required")
-	}
-
 	base := s.BaseURL
 	if base == "" {
 		base = "https://api3.qoder.sh"

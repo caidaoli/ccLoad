@@ -12,10 +12,6 @@ import (
 // URL comes from the matching global OAuth setting. Cached channel snapshots
 // remain immutable.
 func (s *Server) withOAuthBaseURLOverride(cfg *model.Config) *model.Config {
-	if cfg == nil {
-		return cfg
-	}
-
 	var settingKey string
 	entry := model.ChannelURL{}
 	switch {

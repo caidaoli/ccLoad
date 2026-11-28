@@ -577,7 +577,7 @@ func TestHandleListChannelsFiltersByAuthenticationType(t *testing.T) {
 		},
 		{
 			Name: "codex-auth", URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex/responses"}},
-			AuthType: model.AuthTypeCodexOAuth, OAuthCredential: `{}`, Enabled: true,
+			AuthType: model.AuthTypeCodexOAuth, OAuthCredential: `{"access_token":"codex-access","refresh_token":"codex-refresh","expired":"2099-01-01T00:00:00Z"}`, Enabled: true,
 		},
 		{
 			Name: "antigravity-auth", URLs: model.ChannelURLs{{URL: "https://cloudcode-pa.googleapis.com"}},
@@ -2206,11 +2206,6 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 		t.Fatalf("created key detected targets = %#v", readResp.Data)
 	}
 
-	cooldownUntil := time.Now().Add(15 * time.Minute).Truncate(time.Second)
-	if err := store.SetKeyCooldown(ctx, channelID, 1, cooldownUntil); err != nil {
-		t.Fatalf("set key cooldown: %v", err)
-	}
-
 	updatePayload := ChannelRequest{
 		Name: "key-notes",
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
@@ -2247,9 +2242,6 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	}
 	if !slices.Equal(keys[0].DetectedModels, []string{"model-1"}) || !slices.Equal(keys[1].DetectedModels, []string{"model-1"}) {
 		t.Fatalf("key detected targets after omitted/explicit update = [%v, %v]", keys[0].DetectedModels, keys[1].DetectedModels)
-	}
-	if keys[1].CooldownUntil != cooldownUntil.Unix() {
-		t.Fatalf("key cooldown after note-only update=%d, want %d", keys[1].CooldownUntil, cooldownUntil.Unix())
 	}
 
 	legacyUpdate := ChannelRequest{

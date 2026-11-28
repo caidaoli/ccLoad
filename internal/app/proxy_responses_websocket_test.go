@@ -217,7 +217,7 @@ func waitForResponsesWebsocketAttachments(
 
 func TestResponsesExecutionSessionPreferredChannelLifecycle(t *testing.T) {
 	t.Parallel()
-	store := newResponsesExecutionSessionStore(nil, 1024, 0)
+	store := newResponsesExecutionSessionStore(NewConfigService(nil), 1024, 0)
 	defer store.close()
 
 	parentID := responsesExecutionSessionID(http.Header{

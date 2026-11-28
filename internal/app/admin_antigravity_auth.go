@@ -251,10 +251,6 @@ func (s *Server) HandleCancelAntigravityOAuth(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
-	if s.antigravityOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Antigravity OAuth is unavailable")
-		return
-	}
 	if err := s.antigravityOAuth.cancel(request.State); err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return
@@ -267,10 +263,6 @@ func (s *Server) HandleSubmitAntigravityOAuthCallback(c *gin.Context) {
 	var request codexOAuthCallbackRequest
 	if err := BindAndValidate(c, &request); err != nil {
 		RespondError(c, http.StatusBadRequest, err)
-		return
-	}
-	if s.antigravityOAuth == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Antigravity OAuth is unavailable")
 		return
 	}
 	state, err := s.antigravityOAuth.submitCallbackURL(request.CallbackURL)
@@ -295,10 +287,6 @@ func (s *Server) HandleRefreshAntigravityCredential(c *gin.Context) {
 	}
 	if !cfg.UsesAntigravityOAuth() {
 		RespondErrorMsg(c, http.StatusConflict, "channel does not use Antigravity OAuth")
-		return
-	}
-	if s.antigravityCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Antigravity credential refresh is unavailable")
 		return
 	}
 	credential, err := s.antigravityCredentials.credential(c.Request.Context(), cfg, true)

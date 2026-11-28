@@ -48,17 +48,10 @@ const (
 )
 
 var (
-	errOAuthUsageUnsupported            = errors.New("usage: channel does not use a supported OAuth provider")
-	errCodeBuddyUsageManagerUnavailable = errors.New("usage: CodeBuddy credential manager is unavailable")
-	errZAIUsageManagerUnavailable       = errors.New("usage: Z.ai credential manager is unavailable")
-	errCursorUsageManagerUnavailable    = errors.New("usage: Cursor credential manager is unavailable")
-	errCodexUsageManagerUnavailable     = errors.New("usage: Codex credential manager is unavailable")
-	errAnthropicManagerUnavailable      = errors.New("usage: Anthropic credential manager is unavailable")
-	errAntigravityManagerUnavailable    = errors.New("usage: Antigravity credential manager is unavailable")
-	errXAIUsageManagerUnavailable       = errors.New("usage: xAI credential manager is unavailable")
-	errXAIBillingBadCredential          = errors.New("usage: xAI credential was rejected")
-	errOAuthUsageChannelNotFound        = errors.New("channel not found")
-	errOAuthUsagePersistFailed          = errors.New("usage: persist OAuth quota failed")
+	errOAuthUsageUnsupported     = errors.New("usage: channel does not use a supported OAuth provider")
+	errXAIBillingBadCredential   = errors.New("usage: xAI credential was rejected")
+	errOAuthUsageChannelNotFound = errors.New("channel not found")
+	errOAuthUsagePersistFailed   = errors.New("usage: persist OAuth quota failed")
 )
 
 type oauthUsageBatchRequest struct {
@@ -1624,14 +1617,6 @@ func oauthUsageHTTPStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, errOAuthUsageUnsupported):
 		return http.StatusConflict
-	case errors.Is(err, errCodexUsageManagerUnavailable),
-		errors.Is(err, errAnthropicManagerUnavailable),
-		errors.Is(err, errAntigravityManagerUnavailable),
-		errors.Is(err, errCodeBuddyUsageManagerUnavailable),
-		errors.Is(err, errXAIUsageManagerUnavailable),
-		errors.Is(err, errZAIUsageManagerUnavailable),
-		errors.Is(err, errCursorUsageManagerUnavailable):
-		return http.StatusServiceUnavailable
 	case errors.Is(err, errOAuthUsagePersistFailed):
 		return http.StatusInternalServerError
 	default:
@@ -1706,9 +1691,6 @@ func (s *Server) refreshChannelUsage(ctx context.Context, channelID int64) (stri
 			usage, err := s.refreshOAuthUsage(ctx, channelID)
 			return "oauth", usage, nil, err
 		}
-		if s.channelManagement == nil {
-			return "management", nil, nil, errChannelManagementProviderUnavailable
-		}
 		view, err := s.channelManagement.RefreshBalance(ctx, channelID)
 		return "management", nil, view, err
 	}
@@ -1734,9 +1716,6 @@ func (s *Server) persistOAuthUsage(
 	requestedAt time.Time,
 	sampledAt time.Time,
 ) (*oauthUsageSummary, error) {
-	if s == nil || s.store == nil || cfg == nil || summary == nil {
-		return nil, errors.New("OAuth usage persistence is unavailable")
-	}
 	if !cfg.UsesOAuth() {
 		return summary, nil
 	}
@@ -1877,13 +1856,9 @@ func (s *Server) invalidateOAuthCredential(channelID int64, provider string) {
 	case xaiauth.ChannelType:
 		s.xaiCredentials.invalidate(channelID)
 	case zaiauth.ChannelType:
-		if s.zaiCredentials != nil {
-			s.zaiCredentials.invalidate(channelID)
-		}
+		s.zaiCredentials.invalidate(channelID)
 	case cursorauth.ChannelType:
-		if s.cursorCredentials != nil {
-			s.cursorCredentials.invalidate(channelID)
-		}
+		s.cursorCredentials.invalidate(channelID)
 	}
 }
 
@@ -2091,9 +2066,6 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 	case cfg.UsesQoderOAuth():
 		return s.requestQoderUsage(ctx, cfg)
 	case cfg.UsesCodeBuddyOAuth():
-		if s.codeBuddyCredentials == nil || s.codeBuddyService == nil {
-			return nil, errCodeBuddyUsageManagerUnavailable
-		}
 		credential, err := s.codeBuddyCredentials.credential(ctx, cfg, false, "")
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: CodeBuddy credential refresh failed")
@@ -2102,18 +2074,12 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		service.Client = s.getClientForChannel(cfg)
 		return requestCodeBuddyUsage(ctx, &service, credential)
 	case cfg.UsesCodexOAuth():
-		if s.codexCredentials == nil {
-			return nil, errCodexUsageManagerUnavailable
-		}
 		credential, err := s.codexCredentials.credential(ctx, cfg, false)
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Codex credential refresh failed")
 		}
 		return requestCodexUsage(ctx, s.getClientForChannel(cfg), credential)
 	case cfg.UsesAnthropicOAuth():
-		if s.anthropicCredentials == nil {
-			return nil, errAnthropicManagerUnavailable
-		}
 		credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Anthropic credential refresh failed")
@@ -2135,9 +2101,6 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		return summary, nil
 	case cfg.UsesAntigravityOAuth():
-		if s.antigravityCredentials == nil {
-			return nil, errAntigravityManagerUnavailable
-		}
 		credential, err := s.antigravityCredentials.credentialWithMetadata(ctx, cfg)
 		var refreshErr *codexCredentialRefreshError
 		if err != nil && (credential == nil || credential.ProjectID == "" || credential.AccessToken == "" ||
@@ -2154,9 +2117,6 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		return summary, usageErr
 	case cfg.UsesXAIOAuth():
-		if s.xaiCredentials == nil {
-			return nil, errXAIUsageManagerUnavailable
-		}
 		credential, err := s.xaiCredentials.credential(ctx, cfg, false)
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: xAI credential refresh failed")
@@ -2183,9 +2143,6 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 	case cfg.UsesZAIOAuth():
 		return s.fetchZAIUsage(ctx, cfg)
 	case cfg.UsesCursorOAuth():
-		if s.cursorCredentials == nil {
-			return nil, errCursorUsageManagerUnavailable
-		}
 		credential, err := s.cursorCredentials.credential(ctx, cfg, false)
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Cursor credential refresh failed")
@@ -2272,9 +2229,7 @@ func normalizeZAIUsage(limits []zaiauth.QuotaLimit) (*oauthUsageSummary, error) 
 
 func (s *Server) cursorUsageService(cfg *model.Config) *cursorauth.Service {
 	service := cursorauth.NewService(s.getClientForChannel(cfg))
-	if s.cursorService != nil {
-		service.APIBaseURL = s.cursorService.APIBaseURL
-	}
+	service.APIBaseURL = s.cursorService.APIBaseURL
 	return service
 }
 
