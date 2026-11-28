@@ -195,7 +195,7 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return nil, errors.New("credential manager: Antigravity is unavailable")
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	credential, err := m.cachedOrParse(cfg)
@@ -216,7 +216,7 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 	tokenRefreshRequested := forceRefresh || needsRefresh
 
 	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, tokenRefreshRequested), func() (any, error) {
-		refreshCtx := context.Background()
+		var refreshCtx context.Context
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
 			if beginErr != nil {
@@ -224,7 +224,7 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 			}
 			defer done()
 			refreshCtx = trackedCtx
-		} else if ctx != nil {
+		} else {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -278,14 +278,10 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 		return cloneAntigravityCredential(current), nil
 	})
 	var result singleflight.Result
-	if ctx == nil {
-		result = <-resultCh
-	} else {
-		select {
-		case result = <-resultCh:
-		case <-ctx.Done():
-			return cloneAntigravityCredential(credential), ctx.Err()
-		}
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return cloneAntigravityCredential(credential), ctx.Err()
 	}
 	if result.Err != nil {
 		return cloneAntigravityCredential(credential), result.Err
@@ -316,10 +312,7 @@ func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Contex
 func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Context, cfg *model.Config, credential *antigravityauth.Credential, subscription bool) (*antigravityauth.Credential, error) {
 	key := fmt.Sprintf("%s:%t", oauthCredentialRefreshSingleflightKey(cfg.ID, credential.AccessToken, false), subscription)
 	ch := m.metadata.DoChan(key, func() (any, error) {
-		queryCtx := context.Background()
-		if ctx != nil {
-			queryCtx = context.WithoutCancel(ctx)
-		}
+		queryCtx := context.WithoutCancel(ctx)
 		if m.refreshTracker != nil {
 			tracked, done, err := m.refreshTracker.begin()
 			if err != nil {
@@ -386,9 +379,6 @@ func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Contex
 		}
 		return current, errors.New("antigravity metadata retry exhausted")
 	})
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	select {
 	case result := <-ch:
 		if result.Val != nil {

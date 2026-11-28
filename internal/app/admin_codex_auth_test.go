@@ -1342,7 +1342,7 @@ func TestHandleImportOAuthCredentialsDetectsXAIAndExpandsCredentialsMap(t *testi
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)), Request: request}, nil
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	container := fmt.Sprintf(`{"credentials":{"map-key-secret-b":{"type":"xai","access_token":"access-secret-b","refresh_token":"refresh-secret-b","email":"b@example.com","expired":%q},"map-key-secret-a":{"client_id":%q,"access_token":"access-secret-a","refresh_token":"refresh-secret-a","email":"a@example.com","expired":%q}}}`, expiresAt, xaiauth.ClientID, expiresAt)
 
@@ -1402,7 +1402,7 @@ func TestHandleImportOAuthCredentialsCarriesCLIProxyAPIProxyURL(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)), Request: request}, nil
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	account := func(email, proxyURL string) string {
 		return fmt.Sprintf(`{"type":"xai","access_token":"at-%s","refresh_token":"rt-%s","email":%q,"expired":%q,"proxy_url":%q}`,
@@ -1498,7 +1498,7 @@ func TestXAIOAuthHandlersGenerateLocallyAndExchangeManualCallback(t *testing.T) 
 		func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error) { return 99, nil },
 	)
 	t.Cleanup(manager.close)
-	server := &Server{xaiOAuth: manager}
+	server := newTestServer(&Server{xaiOAuth: manager})
 	engine := gin.New()
 	engine.POST("/admin/xai/oauth/start", auth.RequireAdminAuth(), server.HandleStartXAIOAuth)
 	engine.GET("/admin/xai/oauth/status", auth.RequireAdminAuth(), server.HandleXAIOAuthStatus)
@@ -1808,7 +1808,7 @@ func TestXAIRefreshTokenImportAcceptsMoreThanHundredWithBoundedConcurrencyAndRed
 			return nil, fmt.Errorf("unexpected method: %s", request.Method)
 		}
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	values := make([]string, 101)
 	for i := range values {
 		values[i] = fmt.Sprintf("refresh-secret-%d", i+1)
@@ -2018,7 +2018,7 @@ func TestXAIRefreshTokenImportJobSurvivesStartRequestCancellation(t *testing.T) 
 			return nil, fmt.Errorf("unexpected method: %s", request.Method)
 		}
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	values := []string{"refresh-secret-1", "refresh-secret-2", "refresh-secret-3"}
 	requestCtx, cancel := context.WithCancel(context.Background())
 	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
@@ -2068,7 +2068,7 @@ func TestXAISSOImportAcceptsMoreThanTenItems(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	var upstreamCalls atomic.Int32
-	server := &Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+	server := newTestServer(&Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		upstreamCalls.Add(1)
 		return &http.Response{
 			StatusCode: http.StatusUnauthorized,
@@ -2076,7 +2076,7 @@ func TestXAISSOImportAcceptsMoreThanTenItems(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{}`)),
 			Request:    request,
 		}, nil
-	})}}
+	})}})
 	values := make([]string, 11)
 	for i := range values {
 		values[i] = fmt.Sprintf("sso-secret-%d", i)
@@ -2104,7 +2104,7 @@ func TestXAISSOImportReportsErrorsWithBoundedConcurrencyAndRedactsSecrets(t *tes
 		time.Sleep(25 * time.Millisecond)
 		return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	values := []string{"sso-secret-1", "sso-secret-2", "sso-secret-3", "sso-secret-4"}
 	started, startBody := startXAICredentialImportTestJob(t, server, "sso", values, 0)
 	view, statusBody := waitXAICredentialImportTestJob(t, server, started.JobID)
@@ -2756,7 +2756,7 @@ func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
 func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, antigravityService: newAntigravityPaidTierTestService(t)}
+	server := newTestServer(&Server{store: store, antigravityService: newAntigravityPaidTierTestService(t)})
 	existingCredential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "at-existing", RefreshToken: "rt-existing",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "duplicate@example.com", ProjectID: "project-existing",
@@ -2844,7 +2844,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 func TestHandleImportAnthropicClaudeCredentialUsesEmailIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, client: anthropicCatalogTestClient(t)}
+	server := newTestServer(&Server{store: store, client: anthropicCatalogTestClient(t)})
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -2940,9 +2940,9 @@ func TestHandleImportAnthropicRejectsUnavailableModelCatalog(t *testing.T) {
 	} {
 		t.Run(catalog.name, func(t *testing.T) {
 			store := newCodexAuthTestStore(t)
-			server := &Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+			server := newTestServer(&Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 				return jsonResponseStatus(request, catalog.status, catalog.body)
-			})}}
+			})}})
 			var body bytes.Buffer
 			writer := multipart.NewWriter(&body)
 			part, err := writer.CreateFormFile("files", "claude.json")
@@ -3017,7 +3017,7 @@ func TestHandleImportAnthropicRetainsRefreshedCredentialAfterCatalogFailure(t *t
 			})}
 			service := anthropicauth.NewService(client)
 			service.TokenURL = "https://anthropic-refresh.test/token"
-			server := &Server{store: store, client: client, anthropicService: service}
+			server := newTestServer(&Server{store: store, client: client, anthropicService: service})
 			original := &anthropicauth.Credential{
 				Type: anthropicauth.ChannelType, AccessToken: "at-original-file", RefreshToken: "rt-original-file",
 				EmailAddress: "catalog-retry@example.com", AccountUUID: "catalog-retry", Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
@@ -3150,7 +3150,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 			return nil, fmt.Errorf("unexpected OAuth import request: %s %s", request.Method, request.URL.Host)
 		}
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	idToken := codexTestIDToken(t, "refreshable@example.com", "account-refreshable")
 	existingCredential := &codexauth.Credential{
@@ -3286,7 +3286,7 @@ func TestHandleImportOAuthCredentialsImportsTextAndAggregateFormats(t *testing.T
 		}
 		return codexClient.Transport.RoundTrip(request)
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	expiresAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	expiresMillis := expiresAt.UnixMilli()
 
@@ -3440,7 +3440,7 @@ func TestHandleImportOAuthCredentialsImportsTextAndAggregateFormats(t *testing.T
 func TestHandleImportOAuthCredentialsRejectsAggregateExpansionOverEntryLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	server := newTestServer(&Server{store: store, client: newAcceptedCodexImportClient()})
 	accounts := make([]map[string]any, maxOAuthCredentialImportEntries+1)
 	for index := range accounts {
 		accounts[index] = map[string]any{
@@ -3500,10 +3500,10 @@ func TestHandleImportOAuthCredentialsRejectsAggregateExpansionOverEntryLimit(t *
 func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{
+	server := newTestServer(&Server{
 		store: store, client: newAcceptedCodexImportClient(),
 		antigravityService: newAntigravityPaidTierTestService(t),
-	}
+	})
 	existingAntigravity := newAntigravityOAuthChannel("Antigravity-existing", `{}`, antigravityCatalogModels())
 	existingAntigravity.Priority = 40
 	existingCodex := newCodexOAuthChannel("Codex-existing", `{}`, "plus")
@@ -3672,7 +3672,7 @@ func TestHandleImportOAuthCredentialsValidatesConcurrentlyAndContinuesAfterNetwo
 			Request:    request,
 		}, nil
 	})}
-	server := &Server{store: store, client: client}
+	server := newTestServer(&Server{store: store, client: client})
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 
 	var body bytes.Buffer
@@ -3749,7 +3749,7 @@ func TestHandleImportOAuthCredentialsValidatesConcurrentlyAndContinuesAfterNetwo
 func TestHandleImportOAuthCredentialsImportsArchivesByCredentialPriorityThenFileName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	server := newTestServer(&Server{store: store, client: newAcceptedCodexImportClient()})
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	credential := func(account, fileName string, priority any) archiveCredentialTestEntry {
 		priorityJSON, err := json.Marshal(priority)
@@ -3871,7 +3871,7 @@ func TestOAuthCredentialImportJobSurvivesUploadRequestCancellation(t *testing.T)
 		}
 	})}
 	manager := newOAuthCredentialImportJobManager(context.Background(), 2)
-	server := &Server{store: store, client: client, oauthCredentialImportJobs: manager}
+	server := newTestServer(&Server{store: store, client: client, oauthCredentialImportJobs: manager})
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -3951,7 +3951,7 @@ func TestOAuthCredentialImportJobSurvivesUploadRequestCancellation(t *testing.T)
 func TestHandleImportOAuthCredentialsAcceptsMoreThanDefaultMultipartLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	server := newTestServer(&Server{store: store, client: newAcceptedCodexImportClient()})
 
 	const fileCount = 1506
 	var body bytes.Buffer
@@ -4015,7 +4015,7 @@ func TestHandleImportOAuthCredentialsRejectsUnsafeOrOversizedArchives(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newCodexAuthTestStore(t)
-			server := &Server{store: store, client: newAcceptedCodexImportClient()}
+			server := newTestServer(&Server{store: store, client: newAcceptedCodexImportClient()})
 			archive := tt.archive(t)
 			var body bytes.Buffer
 			writer := multipart.NewWriter(&body)
@@ -4104,7 +4104,7 @@ func makeCredentialTarGz(t *testing.T, entries []archiveCredentialTestEntry) byt
 func TestHandleImportOAuthCredentialsRejectsInvalidOptions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store}
+	server := newTestServer(&Server{store: store})
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	tests := []struct {
 		name              string
@@ -4185,7 +4185,7 @@ func TestCodexOAuthManualCallbackCreatesDatabaseChannel(t *testing.T) {
 		t.Fatalf("parse auth URL: %v", err)
 	}
 	redirectURI := parsed.Query().Get("redirect_uri")
-	server := &Server{codexOAuth: manager}
+	server := newTestServer(&Server{codexOAuth: manager})
 
 	invalidRequest := newJSONRequest(t, http.MethodPost, "/admin/codex/oauth/callback", map[string]any{
 		"callback_url": "https://attacker.example/auth/callback?code=stolen&state=" + url.QueryEscape(state),
@@ -4258,7 +4258,7 @@ func TestCodexOAuthCancelStopsPendingSessionAndAllowsRestart(t *testing.T) {
 		t.Fatalf("parse auth URL: %v", err)
 	}
 	callbackURL := parsed.Query().Get("redirect_uri") + "?code=cancelled-code&state=" + url.QueryEscape(state)
-	server := &Server{codexOAuth: manager}
+	server := newTestServer(&Server{codexOAuth: manager})
 
 	request := newJSONRequest(t, http.MethodPost, "/admin/codex/oauth/cancel", map[string]any{"state": state})
 	cancelContext, response := newTestContext(t, request)
@@ -4882,7 +4882,7 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 func TestHandleImportCodexCredentialCreatesSkipsAndReportsFilesWithoutLeakingTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	server := newTestServer(&Server{store: store, client: newAcceptedCodexImportClient()})
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	existing, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
 		Type: "codex", AccessToken: "at-existing", RefreshToken: "rt-existing", Expired: expiresAt,
@@ -5079,7 +5079,7 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
-	server := &Server{store: store}
+	server := newTestServer(&Server{store: store})
 	engine := gin.New()
 	engine.PUT("/channels/:id", server.HandleChannelByID)
 	engine.DELETE("/channels/:id/keys/:keyIndex", server.HandleDeleteAPIKey)
@@ -5721,7 +5721,7 @@ func TestCodexReserveResponsePreservesMainQuotaCost(t *testing.T) {
 			}
 			seedQuotaLedger(t, store, channel.ID, now.Add(-30*time.Minute), "gpt-5.6-sol", 15_000_000)
 			seedQuotaLedger(t, store, channel.ID, now.Add(-2*time.Hour), "gpt-5.6-sol", 16_000_000)
-			s := &Server{store: store, codexCredentials: newCodexCredentialManager(nil, store, nil, nil)}
+			s := newTestServer(&Server{store: store, codexCredentials: newCodexCredentialManager(nil, store, nil, nil)})
 			headers := http.Header{}
 			headers.Set("X-Codex-Active-Limit", test.headerIdentity)
 			headers.Set("X-Codex-Primary-Used-Percent", "2")
@@ -5834,7 +5834,7 @@ func TestCodexWeeklyRoleChangePersistsCost(t *testing.T) {
 			seedQuotaLedger(t, store, channel.ID, base.Add(30*time.Second), "gpt-5.6-sol", 900_000)
 			seedQuotaLedger(t, store, channel.ID, base.Add(-2*time.Hour), "gpt-5.3-codex-spark", 700_000)
 			manager := newCodexCredentialManager(nil, store, nil, nil)
-			server := &Server{store: store, codexCredentials: manager}
+			server := newTestServer(&Server{store: store, codexCredentials: manager})
 			sampledAt := base.Add(3 * time.Minute)
 			if test.stale {
 				sampledAt = base.Add(time.Minute)
@@ -8011,7 +8011,7 @@ func TestPersistOAuthUsageKeepsNewerPassiveQuotaAfterCASConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	raceStore := &concurrentOAuthWinnerStore{Store: store, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON}
-	server := &Server{store: raceStore}
+	server := newTestServer(&Server{store: raceStore})
 	if _, err := server.persistOAuthUsage(ctx, channel, active, base, completedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -10096,7 +10096,7 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := newCodexCredentialManager(nil, store, nil, nil)
-	server := &Server{store: store, codexCredentials: manager}
+	server := newTestServer(&Server{store: store, codexCredentials: manager})
 	poll := func(at time.Time, upstreamPlan string) {
 		t.Helper()
 		if _, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
@@ -10301,7 +10301,7 @@ func TestCodexQuotaEpochRejectsSamplesAfterCASConflict(t *testing.T) {
 					t.Fatalf("fresh passive response updated=%v err=%v", fresh, err)
 				}
 			} else {
-				server := &Server{store: raceStore}
+				server := newTestServer(&Server{store: raceStore})
 				_, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
 					Provider: "codex", UpstreamPlanType: "free", codexAccountID: credential.AccountID,
 					Windows: []oauthUsageWindow{{LimitName: "codex", Kind: "primary", UsedPercent: 5,
@@ -10811,8 +10811,8 @@ func TestCodexRefreshPendingCallerRecoversPersistedReceipt(t *testing.T) {
 	service := codexauth.NewService(tokens.Client())
 	service.TokenURL = tokens.URL
 	failing := &codexRefreshPersistenceFailureStore{Store: store}
-	owner := &Server{store: failing, codexCredentials: newCodexCredentialManager(service, failing, nil, nil)}
-	loser := &Server{store: store, codexCredentials: newCodexCredentialManager(service, store, nil, nil)}
+	owner := newTestServer(&Server{store: failing, codexCredentials: newCodexCredentialManager(service, failing, nil, nil)})
+	loser := newTestServer(&Server{store: store, codexCredentials: newCodexCredentialManager(service, store, nil, nil)})
 	finished := make(chan *httptest.ResponseRecorder, 1)
 	go func() { finished <- requestCodexRefresh(t, owner, channel.ID) }()
 	<-entered

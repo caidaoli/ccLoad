@@ -49,10 +49,10 @@ func TestDoUpstreamRequestHoldsChannelConcurrencyUntilBodyClosed(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := &Server{
+	s := newTestServer(&Server{
 		client:                    newTestHTTPClient(),
 		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
-	}
+	})
 	cfg := &model.Config{ID: 42, MaxConcurrency: 1}
 
 	firstReq, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
@@ -111,7 +111,7 @@ func TestDoUpstreamRequestNonZAICancellationReservation(t *testing.T) {
 		{"cancel-consumes-reserved-rpm", 0, 1, false, context.Canceled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Server{client: newTestHTTPClient(), channelConcurrencyLimiter: newChannelConcurrencyLimiter(), channelRPMLimiter: newRPMLimiter(nil)}
+			s := newTestServer(&Server{client: newTestHTTPClient(), channelConcurrencyLimiter: newChannelConcurrencyLimiter(), channelRPMLimiter: newRPMLimiter(nil)})
 			cfg := &model.Config{ID: 42, MaxConcurrency: tc.concurrency, RPMLimit: tc.rpm}
 			if tc.first {
 				req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
@@ -165,7 +165,7 @@ func TestDoUpstreamRequestNonZAIRedirectRequestIdentity(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, "ok")
 	}))
-	s := &Server{client: newTestHTTPClient()}
+	s := newTestServer(&Server{client: newTestHTTPClient()})
 	req, err := http.NewRequest(http.MethodPost, upstream.URL+"/start", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)

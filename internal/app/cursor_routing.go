@@ -73,9 +73,6 @@ func (s *Server) preferCursorToolRoute(ctx context.Context, candidates []*model.
 			strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != "") {
 			return candidates
 		}
-		if s.protocolRegistry == nil {
-			return candidates
-		}
 		translated, err := s.protocolRegistry.TranslateRequest(client, protocol.OpenAI, reqCtx.originalModel, body, reqCtx.isStreaming)
 		if err != nil {
 			return candidates

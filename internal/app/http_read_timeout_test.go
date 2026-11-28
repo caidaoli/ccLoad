@@ -23,10 +23,10 @@ func TestGetReadTimeoutFallsBackToBuiltInDefault(t *testing.T) {
 	if unset.GetReadTimeout() != config.DefaultHTTPReadTimeout {
 		t.Fatalf("nil server read timeout = %v", unset.GetReadTimeout())
 	}
-	if (&Server{}).GetReadTimeout() != config.DefaultHTTPReadTimeout {
-		t.Fatalf("zero value read timeout = %v", (&Server{}).GetReadTimeout())
+	if (newTestServer(&Server{})).GetReadTimeout() != config.DefaultHTTPReadTimeout {
+		t.Fatalf("zero value read timeout = %v", (newTestServer(&Server{})).GetReadTimeout())
 	}
-	configured := &Server{httpReadTimeout: 10 * time.Minute}
+	configured := newTestServer(&Server{httpReadTimeout: 10 * time.Minute})
 	if configured.GetReadTimeout() != 10*time.Minute {
 		t.Fatalf("configured read timeout = %v", configured.GetReadTimeout())
 	}

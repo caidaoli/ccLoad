@@ -11,7 +11,7 @@ import (
 )
 
 func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {
-	s := &Server{}
+	s := newTestServer(&Server{})
 	cfg := &model.Config{ID: 1}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -36,7 +36,7 @@ func TestTryChannelWithKeys_ContextCanceled_Returns499(t *testing.T) {
 }
 
 func TestTryChannelWithKeys_ContextDeadlineExceeded_Returns504(t *testing.T) {
-	s := &Server{}
+	s := newTestServer(&Server{})
 	cfg := &model.Config{ID: 1}
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))

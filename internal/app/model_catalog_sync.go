@@ -156,9 +156,6 @@ func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, 
 	}
 	defer s.running.Store(false)
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	ctx, cancel := context.WithTimeout(ctx, modelCatalogRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.endpoint, nil)
@@ -292,9 +289,6 @@ func (s *Server) runModelCatalogSyncLoop(syncer *ModelCatalogSyncer, interval ti
 	defer s.wg.Done()
 
 	ctx := s.baseCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	s.syncModelCatalog(ctx, syncer)
 
 	ticker := time.NewTicker(interval)

@@ -1131,9 +1131,9 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 			t.Parallel()
 
 			// 构造 Server（只设置 modelFuzzyMatch）
-			s := &Server{
+			s := newTestServer(&Server{
 				modelFuzzyMatch: tt.modelFuzzyMatch,
-			}
+			})
 
 			// 构造 Config
 			cfg := &model.Config{
@@ -1169,7 +1169,7 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 func TestAPIKeyModelScopeUsesLogicalModelBeforeRedirect(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{modelFuzzyMatch: true}
+	s := newTestServer(&Server{modelFuzzyMatch: true})
 	cfg := &model.Config{
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		ModelEntries: []model.ModelEntry{
@@ -1195,9 +1195,9 @@ func TestAPIKeyModelScopeUsesLogicalModelBeforeRedirect(t *testing.T) {
 func TestPrepareRequestBody_PreservesLargeIntegersOnModelRewrite(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{
+	s := newTestServer(&Server{
 		modelFuzzyMatch: true,
-	}
+	})
 	cfg := &model.Config{
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-3-flash-preview"},

@@ -15,9 +15,6 @@ import (
 )
 
 func configuredChannelTestContent(configService *ConfigService) string {
-	if configService == nil {
-		return config.DefaultChannelTestContent
-	}
 	configured := configService.GetString("channel_test_content", config.DefaultChannelTestContent)
 	for content := range strings.SplitSeq(configured, "|") {
 		if content = strings.TrimSpace(content); content != "" {

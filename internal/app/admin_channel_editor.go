@@ -5,18 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"ccLoad/internal/accioauth"
-	"ccLoad/internal/anthropicauth"
-	"ccLoad/internal/antigravityauth"
-	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
-	"ccLoad/internal/cursorauth"
-	"ccLoad/internal/loomyauth"
 	"ccLoad/internal/model"
-	"ccLoad/internal/qoderauth"
-	"ccLoad/internal/vertexauth"
-	"ccLoad/internal/xaiauth"
-	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,8 +17,7 @@ type channelEditorModelStats struct {
 }
 
 type channelEditorURLStats struct {
-	Available bool      `json:"available"`
-	Items     []URLStat `json:"items"`
+	Items []URLStat `json:"items"`
 }
 
 // channelManagementEditorView is returned only by the authenticated channel
@@ -76,81 +65,19 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	// 凭证合法性由 channelKeysForAdmin 解析合成 Key 时校验；Session 等原始凭证仅在管理员编辑器返回。
 	var oauthCredential json.RawMessage
 	var oauthCredentialInfo *codexauth.IDTokenInfo
+	if cfg.UsesOAuth() {
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	}
 	if cfg.UsesCodexOAuth() {
 		credential, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 		oauthCredentialInfo = credential.DecodedIDToken()
-	} else if cfg.UsesAntigravityOAuth() {
-		_, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesXAIOAuth() {
-		if _, parseErr := xaiauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesAnthropicOAuth() {
-		_, parseErr := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesZAIOAuth() {
-		_, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesCursorOAuth() {
-		_, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesLoomySession() {
-		// Session 凭证仅在管理员编辑器返回，列表与普通详情仍使用掩码。
-		if _, parseErr := loomyauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesAccioOAuth() {
-		if _, parseErr := accioauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesQoderOAuth() {
-		if _, parseErr := qoderauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesCodeBuddyOAuth() {
-		if _, parseErr := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
-	} else if cfg.UsesVertexOAuth() {
-		if _, parseErr := vertexauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}
 	apiKeys, err = channelKeysForAdmin(cfg, apiKeys)
 	if err != nil {
@@ -166,11 +93,7 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		modelStats.Items = stats
 	}
 
-	urlStats := channelEditorURLStats{Items: make([]URLStat, 0)}
-	if s.urlSelector != nil {
-		urlStats.Available = true
-		urlStats.Items = s.urlSelector.GetURLStats(id, cfg.GetURLs())
-	}
+	urlStats := channelEditorURLStats{Items: s.urlSelector.GetURLStats(id, cfg.GetURLs())}
 
 	var managementAccount *channelManagementEditorView
 	if detail.ManagementAccount != nil {

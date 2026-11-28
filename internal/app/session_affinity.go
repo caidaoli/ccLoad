@@ -150,13 +150,10 @@ func (s *Server) preferSessionAffinityChannel(cands []*model.Config, channelID i
 	if bound == nil {
 		return cands
 	}
-	healthCfg := model.HealthScoreConfig{}
+	healthCfg := s.healthCache.Config()
 	var snapshot *channelHealthSnapshot
-	if s.healthCache != nil {
-		healthCfg = s.healthCache.Config()
-		if healthCfg.Enabled {
-			snapshot = s.healthCache.snapshot.Load()
-		}
+	if healthCfg.Enabled {
+		snapshot = s.healthCache.snapshot.Load()
 	}
 	priorityGroup := func(cfg *model.Config) int64 {
 		if healthCfg.Enabled {

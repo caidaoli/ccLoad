@@ -26,16 +26,13 @@ type channelRestrictionState struct {
 }
 
 func withChannelRestrictionToken(ctx context.Context, tokenHash string) context.Context {
-	if ctx == nil || tokenHash == "" {
+	if tokenHash == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, channelRestrictionTokenContextKey{}, &channelRestrictionState{tokenHash: tokenHash})
 }
 
 func channelRestrictionTokenFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
 	state, _ := ctx.Value(channelRestrictionTokenContextKey{}).(*channelRestrictionState)
 	if state == nil {
 		return ""
@@ -44,9 +41,6 @@ func channelRestrictionTokenFromContext(ctx context.Context) string {
 }
 
 func channelRestrictionDeniedFromContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
 	state, _ := ctx.Value(channelRestrictionTokenContextKey{}).(*channelRestrictionState)
 	return state != nil && state.denied
 }
@@ -101,10 +95,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		}
 		// 全冷却兜底：开关控制（false=禁用，true=启用）
 		// 启用时：直接返回"最早恢复"的渠道，让上层继续走正常流程（不要再搞阈值这类花活）。
-		fallbackEnabled := true
-		if s.configService != nil {
-			fallbackEnabled = s.configService.GetBool("cooldown_fallback_enabled", true)
-		}
+		fallbackEnabled := s.configService.GetBool("cooldown_fallback_enabled", true)
 		if !fallbackEnabled {
 			log.Printf("[INFO] 所有渠道冷却中，兜底已禁用（cooldown_fallback_enabled=false）")
 			return nil, nil
@@ -119,7 +110,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	}
 
 	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
-	if s.healthCache != nil && s.healthCache.Config().Enabled {
+	if s.healthCache.Config().Enabled {
 		return s.sortChannelsByHealth(filtered, state.keyCooldowns, state.now), nil
 	}
 
@@ -399,7 +390,7 @@ func (s *Server) pickBestChannelWhenAllCooled(state channelCooldownState, probin
 		return nil, 0
 	}
 
-	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
+	healthEnabled := s.healthCache.Config().Enabled
 	healthCfg := modelpkg.HealthScoreConfig{}
 	var healthSnapshot *channelHealthSnapshot
 	if healthEnabled {
@@ -728,16 +719,8 @@ func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config
 	if len(rows) == 1 && available[0] {
 		return remember(rows[0])
 	}
-	if s.keySelector != nil {
-		if index, ok := s.keySelector.SelectModelRow(cfg.ID, rows[0].logicalModel, available); ok {
-			return remember(rows[index])
-		}
-	} else {
-		for i, ok := range available {
-			if ok {
-				return remember(rows[i])
-			}
-		}
+	if index, ok := s.keySelector.SelectModelRow(cfg.ID, rows[0].logicalModel, available); ok {
+		return remember(rows[index])
 	}
 	return modelRoutingSelection{}, errNoAvailableModelRow
 }
@@ -780,9 +763,6 @@ func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) [
 
 // filterCostLimitExceededChannels 过滤超过每日成本限额的渠道
 func (s *Server) filterCostLimitExceededChannels(channels []*modelpkg.Config) []*modelpkg.Config {
-	if s.costCache == nil {
-		return channels
-	}
 	hasLimit := false
 	for _, ch := range channels {
 		if ch.DailyCostLimit > 0 {

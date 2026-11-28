@@ -123,13 +123,16 @@ func TestScheduledCheckUsesURLProtocol(t *testing.T) {
 				urls := model.ChannelURLs{{URL: upstream.URL, Protocols: tc.protocols}}
 				if tc.multiURL {
 					urls = append(model.ChannelURLs{{URL: upstream.URL + "/first", Protocols: []string{"anthropic"}}}, urls...)
-					srv.urlSelector = nil // Keep the failing URL first to exercise fallback deterministically.
 				}
-				createScheduledCheckChannel(t, srv, &model.Config{
+				cfg := createScheduledCheckChannel(t, srv, &model.Config{
 					Name: "protocol-check", Enabled: true, ScheduledCheckEnabled: true,
 					URLs:                  urls,
 					ProtocolTransformMode: mode, ModelEntries: []model.ModelEntry{{Model: "test-model"}},
 				}, &model.APIKey{APIKey: "sk-test", DetectedModels: []string{"test-model"}})
+				if tc.multiURL {
+					// 已探索的 URL 排在未探索 URL 之后，失败 URL 稳定先行以覆盖回退。
+					srv.urlSelector.RecordLatency(cfg.ID, cfg.URLs[1].RuntimeURL(), time.Millisecond)
+				}
 				ctx := context.Background()
 				if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
 					t.Fatal(err)

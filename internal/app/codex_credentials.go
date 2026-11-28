@@ -172,7 +172,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesCodexOAuth() {
 		return nil, errors.New("codex credential manager is unavailable")
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	credential, err := m.cachedOrParse(cfg)
@@ -199,7 +199,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 		forcedAccessToken = rejectedAccessToken
 	}
 	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, true), func() (any, error) {
-		refreshCtx := context.Background()
+		var refreshCtx context.Context
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
 			if beginErr != nil {
@@ -207,7 +207,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 			}
 			defer done()
 			refreshCtx = trackedCtx
-		} else if ctx != nil {
+		} else {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -274,14 +274,10 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 		return persisted, persistErr
 	})
 	var result singleflight.Result
-	if ctx == nil {
-		result = <-resultCh
-	} else {
-		select {
-		case result = <-resultCh:
-		case <-ctx.Done():
-			return cloneCodexCredential(credential), ctx.Err()
-		}
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return cloneCodexCredential(credential), ctx.Err()
 	}
 	if result.Err != nil {
 		// Early refresh and a real 401 may share the same singleflight result.

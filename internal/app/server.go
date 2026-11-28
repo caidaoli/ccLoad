@@ -674,9 +674,6 @@ func (s *Server) antigravityUserAgent() string {
 }
 
 func loadAntigravityPromptMatcher(configService *ConfigService) *regexp.Regexp {
-	if configService == nil {
-		return nil
-	}
 	var words []string
 	if err := json.Unmarshal([]byte(configService.GetString("antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON)), &words); err != nil {
 		log.Printf("[WARN] 无效的 antigravity_sensitive_words，已禁用提示词替换: %v", err)
@@ -687,9 +684,6 @@ func loadAntigravityPromptMatcher(configService *ConfigService) *regexp.Regexp {
 
 // StartModelCatalogSync 加载本地快照，并在启用时同步官方模型目录。
 func (s *Server) StartModelCatalogSync() {
-	if s == nil || s.configService == nil {
-		return
-	}
 	s.modelCatalogSyncMu.Lock()
 	defer s.modelCatalogSyncMu.Unlock()
 	if s.isShuttingDown.Load() || !s.modelCatalogSyncStarted.CompareAndSwap(false, true) {
@@ -2141,13 +2135,8 @@ func (s *Server) stateCleanupLoop() {
 
 			// [FIX] P1: 清理KeySelector的过期轮询计数器（24小时未使用视为过期）
 			// 避免渠道删除后计数器累积导致内存泄漏
-			if s.keySelector != nil {
-				s.keySelector.CleanupInactiveCounters(24 * time.Hour)
-			}
-
-			if s.channelRPMLimiter != nil {
-				s.channelRPMLimiter.CleanupExpired()
-			}
+			s.keySelector.CleanupInactiveCounters(24 * time.Hour)
+			s.channelRPMLimiter.CleanupExpired()
 			if s.authService != nil {
 				s.authService.tokenRPMLimiter.CleanupExpired()
 			}
@@ -2165,7 +2154,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 	// 更新成本缓存（用于每日成本限额功能）
 	// 语义：缓存累加倍率后成本（effective），与 daily_cost_limit 直接比较
-	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
+	if entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
 		multiplier := entry.CostMultiplier
 		if multiplier < 0 {
 			multiplier = 1
@@ -2180,7 +2169,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 }
 
 func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
-	if s == nil || s.urlSelector == nil || entry == nil || entry.LogSource == model.LogSourceCountTokens {
+	if entry.LogSource == model.LogSourceCountTokens {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)

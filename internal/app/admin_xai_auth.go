@@ -211,9 +211,6 @@ func (s *Server) runXAICredentialImport(
 	batch *xaiCredentialImportBatch,
 	observer oauthCredentialImportObserver,
 ) (oauthCredentialImportSummary, bool) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if batch == nil || len(batch.Values) == 0 {
 		return oauthCredentialImportSummary{}, true
 	}
@@ -433,9 +430,6 @@ func completeXAICredential(
 	}
 	if service == nil {
 		service = xaiauth.NewService(client)
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	completed := *credential
 	if err := completed.Normalize(); err != nil {

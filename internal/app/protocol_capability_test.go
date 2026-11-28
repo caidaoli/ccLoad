@@ -43,7 +43,7 @@ func TestProtocolCapabilityCacheClearChannelsKeepsOtherChannels(t *testing.T) {
 func TestProtocolCapabilityModelUsesRedirectTarget(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{}
+	server := newTestServer(&Server{})
 	cfg := &model.Config{ModelEntries: []model.ModelEntry{
 		{Model: "alias-a", RedirectModel: "GPT-5.5-Codex"},
 		{Model: "plain-b"},

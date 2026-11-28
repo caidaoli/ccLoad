@@ -36,7 +36,7 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建测试渠道，支持不同模型
@@ -109,7 +109,7 @@ func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *te
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
@@ -142,7 +142,7 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 	now := time.Now()
 
@@ -192,7 +192,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	primary, err := store.CreateConfig(ctx, &model.Config{
@@ -249,7 +249,7 @@ func TestSelectRouteCandidates_AccioQuotaWindow(t *testing.T) {
 		store, cleanup := setupTestStore(t)
 		defer cleanup()
 		ctx := t.Context()
-		server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+		server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 		credential := accioTestCredential(t, "global", "selector-accio-token")
 		accio, err := store.CreateConfig(ctx, &model.Config{
 			Name: "accio", AuthType: model.AuthTypeAccioOAuth, OAuthCredential: credential, Priority: 100, Enabled: true,
@@ -312,7 +312,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 	now := time.Now()
 
@@ -367,7 +367,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackDisabledWhenThresholdZero(t *te
 		t.Fatalf("ConfigService加载失败: %v", err)
 	}
 
-	server := &Server{store: store, configService: cs}
+	server := newTestServer(&Server{store: store, configService: cs})
 
 	channels := []*model.Config{
 		{Name: "cooldown-long", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
@@ -405,7 +405,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 	now := time.Now()
 
@@ -466,7 +466,7 @@ func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 	now := time.Now()
 
@@ -534,7 +534,7 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建2个渠道，1个启用，1个禁用
@@ -583,7 +583,7 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建相同优先级的多个渠道
@@ -623,7 +623,7 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	channels := []*model.Config{
@@ -676,7 +676,7 @@ func TestSelectCandidatesByClientProtocol_GeminiClientCanUseAllUpstreamProtocols
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建不同类型的渠道
@@ -709,7 +709,7 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建多个支持不同模型的渠道
@@ -750,7 +750,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建只支持特定模型的渠道
@@ -799,7 +799,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch(t *testing.T) {
 	}
 
 	// 1) 默认关闭：模糊匹配不生效
-	serverDisabled := &Server{store: store, modelFuzzyMatch: false}
+	serverDisabled := newTestServer(&Server{store: store, modelFuzzyMatch: false})
 	candidates, err := serverDisabled.selectCandidatesByModelAndClientProtocol(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
@@ -809,7 +809,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch(t *testing.T) {
 	}
 
 	// 2) 开启后：无日期后缀可匹配到带日期后缀的模型
-	serverEnabled := &Server{store: store, modelFuzzyMatch: true}
+	serverEnabled := newTestServer(&Server{store: store, modelFuzzyMatch: true})
 	candidates, err = serverEnabled.selectCandidatesByModelAndClientProtocol(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
@@ -853,7 +853,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_PreferExact(t *testing.T) {
 		t.Fatalf("创建dated渠道失败: %v", err)
 	}
 
-	server := &Server{store: store, modelFuzzyMatch: true}
+	server := newTestServer(&Server{store: store, modelFuzzyMatch: true})
 
 	// 请求无日期后缀时，应优先精确匹配
 	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "claude-sonnet-4-5", "")
@@ -902,11 +902,11 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_AfterCooldownFiltering(t *testing
 		t.Fatalf("创建fuzzy渠道失败: %v", err)
 	}
 
-	server := &Server{
+	server := newTestServer(&Server{
 		store:           store,
 		channelBalancer: NewSmoothWeightedRR(),
 		modelFuzzyMatch: true,
-	}
+	})
 
 	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gemini-3-flash", "")
 	if err != nil {
@@ -950,11 +950,11 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 		t.Fatalf("create other config: %v", err)
 	}
 
-	server := &Server{
+	server := newTestServer(&Server{
 		store:           store,
 		channelCache:    storage.NewChannelCache(store, time.Hour),
 		channelBalancer: NewSmoothWeightedRR(),
-	}
+	})
 	if _, err := server.channelCache.GetEnabledChannelsByModel(ctx, "*"); err != nil {
 		t.Fatalf("warm channel cache: %v", err)
 	}
@@ -995,7 +995,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	server := &Server{store: store, modelFuzzyMatch: true}
+	server := newTestServer(&Server{store: store, modelFuzzyMatch: true})
 
 	// 请求 "sonnet" 应匹配到 "claude-sonnet-4-5-20250929"
 	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "sonnet", "")
@@ -1015,7 +1015,7 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建不同优先级的渠道
@@ -1069,7 +1069,7 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建两个相同优先级的渠道（模拟渠道22和23）
@@ -1127,7 +1127,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 	// 期望：healthCache 开启时，同有效优先级组内也要按 KeyCount 分流（容量大的拿更多流量）
 	// 这里把健康惩罚权重设为0，确保两个渠道有效优先级完全相同，只验证“组内加权打散”。
 
-	server := &Server{
+	server := newTestServer(&Server{
 		healthCache: &HealthCache{
 			config: model.HealthScoreConfig{
 				Enabled:                  true,
@@ -1136,7 +1136,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 			},
 		},
 		channelBalancer: NewSmoothWeightedRR(),
-	}
+	})
 	empty := make(map[int64]model.ChannelHealthStats)
 	server.healthCache.snapshot.Store(newChannelHealthSnapshot(empty))
 
@@ -1175,7 +1175,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 	// channel-B: 2 keys, 0个冷却 → 有效2个
 	// 结果：两者应该各占约50%
 
-	server := &Server{
+	server := newTestServer(&Server{
 		healthCache: &HealthCache{
 			config: model.HealthScoreConfig{
 				Enabled:                  true,
@@ -1184,7 +1184,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 			},
 		},
 		channelBalancer: NewSmoothWeightedRR(),
-	}
+	})
 	empty := make(map[int64]model.ChannelHealthStats)
 	server.healthCache.snapshot.Store(newChannelHealthSnapshot(empty))
 
@@ -1276,7 +1276,7 @@ func TestSelectCandidatesByClientProtocol_AllCooledFallback(t *testing.T) {
 		t.Fatalf("SetChannelCooldown failed: %v", err)
 	}
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 
 	// 所有协议的渠道都冷却时，兜底返回最早恢复的渠道。
 	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
@@ -1298,7 +1298,7 @@ func TestSelectCandidatesByClientProtocol_ProtocolNormalization(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
@@ -1327,7 +1327,7 @@ func TestSelectCandidatesByClientProtocol_EmptyProtocol(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 创建一个普通渠道。
@@ -1353,7 +1353,7 @@ func TestSelectCandidatesByClientProtocol_WithoutNativeUpstreamStillRoutes(t *te
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	// 只创建 anthropic 渠道
@@ -1380,7 +1380,7 @@ func TestSelectCandidatesByClientProtocol_CooldownFiltering(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 	now := time.Now()
 
@@ -1425,7 +1425,7 @@ func TestSelectCandidatesByClientProtocol_DisabledChannelExcluded(t *testing.T) 
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	server := newTestServer(&Server{store: store, channelBalancer: NewSmoothWeightedRR()})
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
@@ -1460,7 +1460,7 @@ func TestSelectCandidatesByClientProtocol_DisabledChannelExcluded(t *testing.T) 
 func TestAlphaSearchUpstreamURLs_KeepsExactCodexResponses(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{}
+	server := newTestServer(&Server{})
 	t.Run("oauth exact responses stays eligible", func(t *testing.T) {
 		t.Parallel()
 		cfg := &model.Config{
@@ -1497,23 +1497,11 @@ func TestAlphaSearchUpstreamURLs_KeepsExactCodexResponses(t *testing.T) {
 func TestFilterCostLimitExceededChannels(t *testing.T) {
 	t.Parallel()
 
-	// costCache 为 nil 时应返回原始列表
-	t.Run("nil_cost_cache_returns_all", func(t *testing.T) {
-		server := &Server{costCache: nil}
-		channels := []*model.Config{
-			{ID: 1, Name: "ch1", DailyCostLimit: 10},
-		}
-		result := server.filterCostLimitExceededChannels(channels)
-		if len(result) != 1 {
-			t.Errorf("expected 1 channel, got %d", len(result))
-		}
-	})
-
 	// 无限额渠道（DailyCostLimit <= 0）应通过
 	t.Run("no_limit_channels_pass", func(t *testing.T) {
 		cache := NewCostCache()
 		cache.Add(1, 100) // 已使用 100 美元
-		server := &Server{costCache: cache}
+		server := newTestServer(&Server{costCache: cache})
 
 		channels := []*model.Config{
 			{ID: 1, Name: "no-limit", DailyCostLimit: 0},  // 无限额
@@ -1531,7 +1519,7 @@ func TestFilterCostLimitExceededChannels(t *testing.T) {
 		cache.Add(1, 50)  // ch1 已用 50
 		cache.Add(2, 100) // ch2 已用 100（超限）
 		cache.Add(3, 80)  // ch3 已用 80（未超）
-		server := &Server{costCache: cache}
+		server := newTestServer(&Server{costCache: cache})
 
 		channels := []*model.Config{
 			{ID: 1, Name: "ch1", DailyCostLimit: 100}, // 50 < 100，通过

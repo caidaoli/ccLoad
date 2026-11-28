@@ -93,10 +93,10 @@ func TestApplyTokenStatsUpdateAddsCostToCacheWhenStoreFails(t *testing.T) {
 		limitMicroUSD: 1000,
 	}
 
-	srv := &Server{
+	srv := newTestServer(&Server{
 		store:       &failingTokenStatsStore{err: errors.New("database down")},
 		authService: auth,
-	}
+	})
 
 	srv.applyTokenStatsUpdate(tokenStatsUpdate{
 		tokenHash:      tokenHash,

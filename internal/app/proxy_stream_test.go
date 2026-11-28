@@ -615,7 +615,7 @@ func TestHandleSuccessResponseTracksRawStreamAndClientCancel(t *testing.T) {
 	}
 	attachFirstByteDetector(reqCtx, resp, readStats, nil)
 	target := &streamStatsResponseWriter{}
-	result, _, err := (&Server{}).handleSuccessResponse(
+	result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 		reqCtx, resp, resp.Header.Clone(), target, "openai", readStats, nil,
 	)
 	if err == nil || !errors.Is(err, context.Canceled) {
@@ -661,7 +661,7 @@ func TestHandleSuccessResponseTracksTranslatedStream(t *testing.T) {
 	target := &streamStatsResponseWriter{}
 	registry := protocol.NewRegistry()
 	builtin.Register(registry)
-	result, _, err := (&Server{protocolRegistry: registry}).handleSuccessResponse(
+	result, _, err := (newTestServer(&Server{protocolRegistry: registry})).handleSuccessResponse(
 		reqCtx, resp, resp.Header.Clone(), target, "openai", readStats, nil,
 	)
 	if err != nil {

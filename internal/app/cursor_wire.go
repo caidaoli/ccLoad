@@ -189,15 +189,6 @@ func (s *Server) forwardCursorAgent(
 	// The SDK only reads chat-shaped requests. Start from the client protocol
 	// body (full replay for a locally known Responses continuation).
 	if translatedClient != "" {
-		if s.protocolRegistry == nil {
-			return cursorErrorResult(
-				cfg,
-				http.StatusServiceUnavailable,
-				"protocol registry is unavailable for Cursor "+string(translatedClient)+" requests",
-				cooldown.ActionReturnClient,
-				format, "",
-			), nil
-		}
 		translatedBody, err := s.protocolRegistry.TranslateRequest(
 			translatedClient,
 			protocol.OpenAI,
@@ -362,7 +353,7 @@ func (s *Server) forwardCursorAgent(
 	var responseTransformState any
 	var responseErr error
 	var responsesCursor responsesStreamCursor
-	if streaming && translatedClient != "" && s.protocolRegistry != nil {
+	if streaming && translatedClient != "" {
 		_, responseErr = s.protocolRegistry.TranslateResponseStream(ctx, protocol.OpenAI, translatedClient,
 			modelID, originalResponseBody, body, nil, &responseTransformState)
 		if responseErr != nil {
@@ -785,7 +776,7 @@ func (s *Server) captureCursorSDKRequest(
 	reqCtx *proxyRequestContext,
 	modelID, prompt string,
 ) *debugCapture {
-	if s == nil || s.configService == nil || reqCtx == nil {
+	if reqCtx == nil {
 		return nil
 	}
 	payload, _ := json.Marshal(map[string]any{

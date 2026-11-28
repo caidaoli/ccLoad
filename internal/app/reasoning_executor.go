@@ -439,9 +439,7 @@ func (s *Server) routeAfterReasoningAttempt(ctx context.Context, cfg *model.Conf
 	}
 	in = s.completeCooldownInput(cfg, cooldownInputForModel(in, result.actualModel))
 	if multiURL && (in.IsNetworkError || !util.IsModelScopedHTTPStatus(in.StatusCode)) && s.canTryAnotherURL(ctx, cfg, in) {
-		if s.urlSelector != nil {
-			s.urlSelector.CooldownURL(cfg.ID, result.baseURL)
-		}
+		s.urlSelector.CooldownURL(cfg.ID, result.baseURL)
 		if hasNextURL {
 			return cooldown.ActionRetryChannel, true
 		}

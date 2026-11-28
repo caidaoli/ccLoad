@@ -112,9 +112,6 @@ func (s *Server) persistCodexPassiveUsageUpdate(ctx context.Context, cfg *model.
 	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {
 		return
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	updated, err := s.codexCredentials.updatePassiveUsage(persistCtx, cfg, update)

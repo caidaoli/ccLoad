@@ -1135,7 +1135,7 @@ func TestHandleImportOAuthCredentialsDetectsVertexServiceAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := newVertexTestUpstream(t)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store, client: newTestHTTPClient()}
+	server := newTestServer(&Server{store: store, client: newTestHTTPClient()})
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -1187,7 +1187,7 @@ func TestHandleImportVertexCredentialEgressesThroughProxy(t *testing.T) {
 	}))
 	t.Cleanup(proxy.Close)
 	// A real transport: an injected test RoundTripper would bypass the channel proxy.
-	srv := &Server{store: newCodexAuthTestStore(t), client: &http.Client{Transport: &http.Transport{}}}
+	srv := newTestServer(&Server{store: newCodexAuthTestStore(t), client: &http.Client{Transport: &http.Transport{}}})
 	key := vertexTestServiceAccount(t, "http://vertex-token.invalid/token", 0)
 
 	w := importVertexCredential(t, srv, "/admin/vertex/credentials/import?proxy_url=ftp%3A%2F%2Fproxy.invalid", key)

@@ -84,7 +84,7 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
 		return nil, errors.New("anthropic credential manager is unavailable")
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	credential, err := m.cachedOrParse(cfg)
@@ -103,7 +103,7 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 		forcedAccessToken = rejectedAccessToken
 	}
 	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, true), func() (any, error) {
-		refreshCtx := context.Background()
+		var refreshCtx context.Context
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
 			if beginErr != nil {
@@ -111,7 +111,7 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 			}
 			defer done()
 			refreshCtx = trackedCtx
-		} else if ctx != nil {
+		} else {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -151,14 +151,10 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})
 	var result singleflight.Result
-	if ctx == nil {
-		result = <-resultCh
-	} else {
-		select {
-		case result = <-resultCh:
-		case <-ctx.Done():
-			return cloneAnthropicCredential(credential), ctx.Err()
-		}
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return cloneAnthropicCredential(credential), ctx.Err()
 	}
 	if result.Err != nil {
 		return cloneAnthropicCredential(credential), result.Err

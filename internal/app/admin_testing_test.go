@@ -2461,7 +2461,6 @@ func TestChannelAdminUpstreamModePreservesAttemptError(t *testing.T) {
 				}
 
 				srv := newInMemoryServer(t)
-				srv.urlSelector = nil
 				ctx := context.Background()
 				cfg, err := srv.store.CreateConfig(ctx, &model.Config{
 					Name: "upstream-errors", URLs: urls, ProtocolTransformMode: model.ProtocolTransformModeUpstream,
@@ -5075,7 +5074,6 @@ func TestHandleChannelTest_AutoModePrioritizesAutomaticURLBeforeDeclaredConversi
 
 	srv := newInMemoryServer(t)
 	srv.client = automatic.Client()
-	srv.urlSelector = nil
 	ctx := context.Background()
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name: "channel-test-auto-original-first",
@@ -7642,7 +7640,6 @@ func TestHandleChannelImageGeneration_ClientCancellationDoesNotCooldown(t *testi
 
 	srv := newInMemoryServer(t)
 	srv.client = upstream.Client()
-	srv.urlSelector = nil
 	ctx := context.Background()
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name: "cancelled-openai-images-admin-test",
@@ -7664,6 +7661,8 @@ func TestHandleChannelImageGeneration_ClientCancellationDoesNotCooldown(t *testi
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 	}
+	// 已探索的备用 URL 排在未探索的主 URL 之后，保证首跳命中主 URL。
+	srv.urlSelector.RecordLatency(created.ID, fallback.URL, time.Millisecond)
 
 	requestContext, cancel := context.WithCancel(context.Background())
 	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
@@ -7721,7 +7720,6 @@ func TestHandleChannelImageGeneration_ClassifiesHTTP200StructuredError(t *testin
 
 	srv := newInMemoryServer(t)
 	srv.client = upstream.Client()
-	srv.urlSelector = nil
 	ctx := context.Background()
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name: "soft-error-openai-images-admin-test",
@@ -7743,6 +7741,8 @@ func TestHandleChannelImageGeneration_ClassifiesHTTP200StructuredError(t *testin
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 	}
+	// 已探索的备用 URL 排在未探索的主 URL 之后，保证首跳命中主 URL。
+	srv.urlSelector.RecordLatency(created.ID, fallback.URL, time.Millisecond)
 
 	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
 		"generation_api": imageGenerationAPIImages,
@@ -8976,7 +8976,6 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 			wantOutput    int
 			wantEstimated bool
 			wantContext   bool
-			noRegistry    bool
 		}{
 			{
 				name: "estimate is display only", wantEstimated: true,
@@ -9005,7 +9004,6 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 				},
 			},
 			{name: "send failure has no estimate or charge", startErr: cursorauth.ErrAgentMissing},
-			{name: "translation unavailable before send", noRegistry: true},
 		} {
 			t.Run(endpoint.name+"/"+tc.name, func(t *testing.T) {
 				srv := newInMemoryServer(t)
@@ -9020,13 +9018,8 @@ func TestCursorAdminEndpointsOnlyBillActualUsage(t *testing.T) {
 				if tc.startErr != nil {
 					srv.cursorRunner = &fakeCursorRunner{err: tc.startErr}
 				}
-				clientProtocol := "anthropic"
-				if tc.noRegistry {
-					clientProtocol = "codex"
-					srv.protocolRegistry = nil
-				}
 				request := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", cfg.ID), map[string]any{
-					"model": "grok-4.6", "client_protocol": clientProtocol, "content": "hello", "stream": endpoint.stream,
+					"model": "grok-4.6", "client_protocol": "anthropic", "content": "hello", "stream": endpoint.stream,
 				})
 				c, recorder := newTestContext(t, request)
 				c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}

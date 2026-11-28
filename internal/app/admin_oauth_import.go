@@ -340,9 +340,6 @@ func (s *Server) runOAuthCredentialImport(
 	batch *oauthCredentialImportBatch,
 	observer oauthCredentialImportObserver,
 ) (oauthCredentialImportSummary, bool) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	s.oauthCredentialImportRunMu.Lock()
 	defer s.oauthCredentialImportRunMu.Unlock()
 
@@ -1018,9 +1015,6 @@ func completeImportedCodexCredential(
 func probeCodexAccessToken(ctx context.Context, client *http.Client, credential *codexauth.Credential) (bool, error) {
 	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return false, errors.New("codex credential validation is unavailable")
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, oauthUsageTimeout)
 	defer cancel()

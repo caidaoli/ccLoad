@@ -25,7 +25,7 @@ func TestHandleGetModelPricingReturnsSystemDefaults(t *testing.T) {
 		Pricing adminModelPricing `json:"pricing"`
 	}
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=gpt-5.4", nil))
-	(&Server{}).HandleGetModelPricing(c)
+	(newTestServer(&Server{})).HandleGetModelPricing(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
@@ -50,21 +50,21 @@ func TestHandleGetModelPricingReturnsSystemDefaults(t *testing.T) {
 
 	// effective=1 给渠道价格编辑器预填当前实际计费价格，包含全局自定义覆盖。
 	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=gpt-5.4&effective=1", nil))
-	(&Server{}).HandleGetModelPricing(c)
+	(newTestServer(&Server{})).HandleGetModelPricing(c)
 	effective := mustParseAPIResponse[payload](t, w.Body.Bytes()).Data
 	if !effective.Found || effective.Pricing.InputPrice != 99 || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("effective response payload=%#v cache=%q, want uncached custom override", effective, w.Header().Get("Cache-Control"))
 	}
 
 	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=unknown-custom-model", nil))
-	(&Server{}).HandleGetModelPricing(c)
+	(newTestServer(&Server{})).HandleGetModelPricing(c)
 	unknown := mustParseAPIResponse[payload](t, w.Body.Bytes()).Data
 	if w.Code != http.StatusOK || unknown.Found {
 		t.Fatalf("unknown response status=%d payload=%#v", w.Code, unknown)
 	}
 
 	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing", nil))
-	(&Server{}).HandleGetModelPricing(c)
+	(newTestServer(&Server{})).HandleGetModelPricing(c)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing model status=%d, want %d", w.Code, http.StatusBadRequest)
 	}
@@ -80,7 +80,7 @@ func TestHandleGetModelPricingPreservesFreeHighContextTTL(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=gpt-6-luna&effective=1", nil))
-	(&Server{}).HandleGetModelPricing(c)
+	(newTestServer(&Server{})).HandleGetModelPricing(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}

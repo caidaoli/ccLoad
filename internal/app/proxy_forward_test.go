@@ -50,7 +50,7 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	}
 
 	rec := newRecorder()
-	s := &Server{}
+	s := newTestServer(&Server{})
 
 	cfg := &model.Config{ID: 1}
 	res, _, err := s.handleResponse(reqCtx, resp, rec, upstreamProtocol, cfg, "sk-test", nil)
@@ -237,7 +237,7 @@ func TestHandleSuccessResponse_CodexMalformedFixtureEmitsIndependentEvents(t *te
 		Body:       io.NopCloser(bytes.NewReader(input)),
 	}
 	recorder := newRecorder()
-	result, _, err := (&Server{}).handleSuccessResponse(
+	result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 		reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Codex),
 		&streamReadStats{}, nil,
 	)
@@ -264,7 +264,7 @@ func TestHandleSuccessResponse_CodexMalformedFixtureEmitsIndependentEvents(t *te
 func TestHandleSuccessResponse_DynamicCodexMalformedSSEUsesFraming(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
-	s := &Server{protocolRegistry: reg}
+	s := newTestServer(&Server{protocolRegistry: reg})
 	reqCtx := &requestContext{
 		ctx:         context.Background(),
 		startTime:   time.Now(),
@@ -303,7 +303,7 @@ func TestHandleSuccessResponse_DynamicCodexMalformedSSEUsesFraming(t *testing.T)
 func TestHandleSuccessResponse_DynamicCodexGluedSSEWithoutBlankLines(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
-	s := &Server{protocolRegistry: reg}
+	s := newTestServer(&Server{protocolRegistry: reg})
 	input := "event: response.created\ndata: {\"type\":\"response.created\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
 	reqCtx := &requestContext{
 		ctx:         context.Background(),
@@ -349,7 +349,7 @@ func TestHandleSuccessResponse_NonCodexSSEPassesThroughUnchanged(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(input)),
 	}
 	recorder := newRecorder()
-	result, _, err := (&Server{}).handleSuccessResponse(
+	result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 		reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Anthropic),
 		&streamReadStats{}, nil,
 	)
@@ -367,7 +367,7 @@ func TestHandleSuccessResponse_NonCodexSSEPassesThroughUnchanged(t *testing.T) {
 func TestHandleSuccessResponse_AnthropicStreamingSSEPassesThroughUnchanged(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
-	s := &Server{protocolRegistry: reg}
+	s := newTestServer(&Server{protocolRegistry: reg})
 	input := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	reqCtx := &requestContext{
 		ctx:         context.Background(),
@@ -401,7 +401,7 @@ func TestHandleSuccessResponse_AnthropicStreamingSSEPassesThroughUnchanged(t *te
 func TestHandleTranslatedStreamSuccessResponse_CodexMalformedSSEFramesEachEvent(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
-	s := &Server{protocolRegistry: reg}
+	s := newTestServer(&Server{protocolRegistry: reg})
 	reqCtx := &requestContext{
 		ctx:         context.Background(),
 		startTime:   time.Now(),
@@ -505,7 +505,7 @@ func TestTranslatedApplyPatchStreamRetainsFailureEventsAndErrors(t *testing.T) {
 			stats := &streamReadStats{}
 			attachFirstByteDetector(reqCtx, resp, stats, nil)
 			rec := newRecorder()
-			result, _, err := (&Server{protocolRegistry: reg}).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(tt.upstream), stats, nil)
+			result, _, err := (newTestServer(&Server{protocolRegistry: reg})).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(tt.upstream), stats, nil)
 			if (err != nil) != tt.wantError || result == nil || result.ResponseCommitted != tt.committed {
 				t.Fatalf("error=%v result=%#v, want error=%v committed=%v", err, result, tt.wantError, tt.committed)
 			}
@@ -565,7 +565,7 @@ func TestTranslatedApplyPatchNonStreamFailureRetainsUsage(t *testing.T) {
 				transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Codex, UpstreamProtocol: upstream, OriginalModel: "test", ActualModel: "test", OriginalBody: original, TranslatedBody: translated, NeedsTransform: true}}
 			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
 			rec := newRecorder()
-			result, _, err := (&Server{protocolRegistry: reg}).handleTranslatedNonStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(upstream), &streamReadStats{})
+			result, _, err := (newTestServer(&Server{protocolRegistry: reg})).handleTranslatedNonStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(upstream), &streamReadStats{})
 			if err == nil || result == nil || result.InputTokens != 7 || result.OutputTokens != 3 || result.ResponseCommitted || rec.Body.Len() != 0 {
 				t.Fatalf("invalid upstream arguments lost usage or committed success: error=%v result=%#v body=%s", err, result, rec.Body.String())
 			}
@@ -591,7 +591,7 @@ func TestTranslatedApplyPatchStreamPreservesUpstreamError(t *testing.T) {
 	stats := &streamReadStats{}
 	attachFirstByteDetector(reqCtx, resp, stats, nil)
 	rec := newRecorder()
-	result, _, err := (&Server{protocolRegistry: reg}).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(protocol.Anthropic), stats, nil)
+	result, _, err := (newTestServer(&Server{protocolRegistry: reg})).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(protocol.Anthropic), stats, nil)
 	if err != nil || result == nil || !result.ResponseCommitted || gjson.GetBytes(result.SSEErrorEvent, "error.type").String() != "rate_limit_error" || result.InputTokens != 7 {
 		t.Fatalf("provider error or usage was replaced: error=%v result=%#v response=%s", err, result, rec.Body.String())
 	}
@@ -1185,7 +1185,7 @@ func TestCodexOAuthNonStreamReassemblesMalformedSSETerminalResponse(t *testing.T
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 	recorder := newRecorder()
-	result, _, err := (&Server{}).handleSuccessResponse(
+	result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 		reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Codex), &streamReadStats{}, nil,
 	)
 	if err != nil {
@@ -1248,7 +1248,7 @@ func TestResponsesSSENonStreamReassemblesTerminalVariants(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(body)),
 			}
 			recorder := newRecorder()
-			server := &Server{protocolRegistry: reg}
+			server := newTestServer(&Server{protocolRegistry: reg})
 			result, _, err := server.handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Codex), &streamReadStats{}, nil)
 			if tc.status == "failed" {
 				if err != nil || result.ResponseCommitted || gjson.GetBytes(result.SSEErrorEvent, "error.message").String() != "specific upstream reason" {
@@ -1283,7 +1283,7 @@ func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       io.NopCloser(strings.NewReader(partial)),
 		}
-		result, _, err := (&Server{}).handleSuccessResponse(
+		result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil,
 		)
 		if err == nil {
@@ -1304,7 +1304,7 @@ func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
 				iotest.ErrReader(errors.New("websocket: close 1006 (abnormal closure): unexpected EOF")),
 			)),
 		}
-		result, _, err := (&Server{}).handleSuccessResponse(
+		result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil,
 		)
 		if err == nil {
@@ -1347,7 +1347,7 @@ func TestOpenAIStreamCompleteWithoutDoneMarkerSurvivesClientCancel(t *testing.T)
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       newBody(complete),
 		}
-		result, _, err := (&Server{}).handleSuccessResponse(
+		result, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.OpenAI), &streamReadStats{}, nil,
 		)
 		if err != nil {
@@ -1372,7 +1372,7 @@ func TestOpenAIStreamCompleteWithoutDoneMarkerSurvivesClientCancel(t *testing.T)
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       newBody(partial),
 		}
-		_, _, err := (&Server{}).handleSuccessResponse(
+		_, _, err := (newTestServer(&Server{})).handleSuccessResponse(
 			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.OpenAI), &streamReadStats{}, nil,
 		)
 		if err == nil {
@@ -1406,7 +1406,7 @@ func TestAntigravityStreamCompleteSurvivesClientCancel(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       io.NopCloser(io.MultiReader(strings.NewReader(sse), iotest.ErrReader(context.Canceled))),
 		}
-		result, _, err := (&Server{protocolRegistry: reg}).handleSuccessResponse(
+		result, _, err := (newTestServer(&Server{protocolRegistry: reg})).handleSuccessResponse(
 			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Gemini), &streamReadStats{}, nil,
 		)
 		return result, err
@@ -1494,7 +1494,8 @@ func TestHandleSuccessResponse_ExtractsUsageFromLargeCodexJSON(t *testing.T) {
 }
 
 func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
-	body := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":2}}}\n\n"
+	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":2}}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n"
 	res, forwardedBody := runHandleSuccessResponse(
 		t,
 		body,
@@ -2348,7 +2349,7 @@ func TestAnthropicBuildProxyRequestFallsBackRejectedToolPropertyNames(t *testing
 					ctx: context.Background(), startTime: time.Now(),
 					clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
 				}
-				request, err := (&Server{}).buildProxyRequest(requestContext, cfg, "tool-schema-key", http.MethodPost,
+				request, err := (newTestServer(&Server{})).buildProxyRequest(requestContext, cfg, "tool-schema-key", http.MethodPost,
 					body, http.Header{"Content-Type": {"application/json"}}, "", requestPath, cfg.GetURLs()[0])
 				if err != nil {
 					t.Fatal(err)
@@ -2444,7 +2445,7 @@ func TestAnthropicBuildProxyRequestNormalizesAdvisorToolModels(t *testing.T) {
 							ctx: context.Background(), startTime: time.Now(), isStreaming: mode == "stream",
 							clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
 						}
-						request, err := (&Server{}).buildProxyRequest(requestContext, cfg, "advisor-access", http.MethodPost,
+						request, err := (newTestServer(&Server{})).buildProxyRequest(requestContext, cfg, "advisor-access", http.MethodPost,
 							body, headers, "", requestPath, cfg.GetURLs()[0])
 						if err != nil {
 							t.Fatal(err)
@@ -2498,7 +2499,7 @@ func TestAnthropicAdvisorToolModelsPreserveReplayAndZAI(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			body := []byte(`{"model":"` + testCase.model + `","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"advisor_20260301","name":"advisor","model":"override-model(high)"}]}`)
-			out, _, err := (&Server{}).prepareTranslatedUpstreamBody(testCase.cfg, protocol.Anthropic, "/v1/messages",
+			out, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(testCase.cfg, protocol.Anthropic, "/v1/messages",
 				testCase.model, body, body, "advisor-access", http.Header{}, testCase.replay,
 				anthropicOfficialTestURL, testCase.replay, protocol.Anthropic)
 			if err != nil {
@@ -3422,7 +3423,7 @@ func TestHandleTranslatedStreamSuccessResponse_TreatsTranslatedStopAsComplete(t 
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	s := &Server{protocolRegistry: reg}
+	s := newTestServer(&Server{protocolRegistry: reg})
 	reqCtx := &requestContext{
 		ctx:         context.Background(),
 		startTime:   time.Now(),
@@ -3501,7 +3502,7 @@ func TestHandleTranslatedStreamSuccessResponse_SynthesizesTerminatorWhenUpstream
 
 				reg := protocol.NewRegistry()
 				builtin.Register(reg)
-				s := &Server{protocolRegistry: reg}
+				s := newTestServer(&Server{protocolRegistry: reg})
 				reqCtx := &requestContext{
 					ctx:         context.Background(),
 					startTime:   time.Now(),
@@ -3541,7 +3542,7 @@ func TestHandleTranslatedStreamSuccessResponse_SynthesizesTerminatorWhenUpstream
 }
 
 func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
-	s := &Server{} // 关键：logService 为 nil，若 handleErrorResponse 仍写 DB 日志会直接 panic
+	s := newTestServer(&Server{}) // 关键：logService 为 nil，若 handleErrorResponse 仍写 DB 日志会直接 panic
 
 	reqCtx := &requestContext{
 		startTime: time.Now(),
@@ -3939,7 +3940,7 @@ func TestAnthropicClaude55GuardUsesCallerBody(t *testing.T) {
 			if testCase.callerIsAnthropic {
 				callerProtocol = protocol.Anthropic
 			}
-			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+			got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", testCase.model, body, body,
 				"sk-ant-key", http.Header{}, false, anthropicOfficialTestURL, false, callerProtocol,
 			)
@@ -3999,7 +4000,7 @@ func TestAnthropicOAuthNativeClaudeCodeRetryPreservesCallerCCH(t *testing.T) {
 		t.Fatalf("native OAuth body changed before retry:\n got %s\nwant %s", finalized, body)
 	}
 
-	replayed, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+	replayed, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 		cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
 		"", headers, true, anthropicOfficialTestURL, false, protocol.Anthropic,
 	)
@@ -4871,7 +4872,7 @@ func TestAnthropicClaudeCodeRetryReplaysUnsignedMimicWire(t *testing.T) {
 	cfg := &model.Config{Name: "anthropic-api-key"}
 	const requestBody = `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`
 
-	server := &Server{}
+	server := newTestServer(&Server{})
 	for _, testCase := range []struct {
 		name   string
 		target *url.URL
@@ -4922,7 +4923,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}
 
-	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+	got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages", "",
 		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
 		false, protocol.Anthropic,
@@ -4951,7 +4952,7 @@ func TestPrepareTranslatedUpstreamBodyOpenCodeGeminiThinkingDisplay(t *testing.T
 	translated := []byte(`{"model":"claude-sonnet-4-6","max_tokens":1600,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"}}`)
 	source := []byte(`{"generationConfig":{"thinking_config":{"includeThoughts":true}}}`)
 	target := mustParseTestURL("https://opencode.ai/zen/go/v1/messages")
-	body, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+	body, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 		&model.Config{AuthType: model.AuthTypeAPIKey}, protocol.Anthropic, "/v1/messages", modelName,
 		translated, source, "sk-key", http.Header{}, false, target, false, protocol.Gemini,
 	)
@@ -4979,7 +4980,7 @@ func TestPrepareTranslatedUpstreamBodyFillsXAIAnthropicToolDescriptions(t *testi
 	for _, test := range tests {
 		t.Run(test.target, func(t *testing.T) {
 			t.Parallel()
-			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+			got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 				&model.Config{}, protocol.Anthropic, "/v1/messages", "",
 				[]byte(body), []byte(body), "sk-key", http.Header{}, false, mustParseTestURL(test.target),
 				false, protocol.OpenAI,
@@ -5013,7 +5014,7 @@ func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *
 		modelName, want*2,
 	)
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
-	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+	got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 		cfg, protocol.Gemini, "/v1internal:generateContent", modelName,
 		body, body, "", http.Header{}, false, nil, false, protocol.Gemini,
 	)
@@ -5342,7 +5343,7 @@ func TestCodexPurchasedCreditsReachProxyLog(t *testing.T) {
 					"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-credits\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n\n"
 				reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: streaming, responsesSSEUpstreamNonStream: !streaming}
 				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}
-				result, _, err := (&Server{}).handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil)
+				result, _, err := (newTestServer(&Server{})).handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -5404,7 +5405,7 @@ func TestAnthropicNativeTitleHelperPreservesStructuredOutput(t *testing.T) {
 				ctx: context.Background(), startTime: time.Now(), isStreaming: true,
 				clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
 			}
-			request, err := (&Server{}).buildProxyRequest(reqCtx, cfg, "synthetic-access", http.MethodPost,
+			request, err := (newTestServer(&Server{})).buildProxyRequest(reqCtx, cfg, "synthetic-access", http.MethodPost,
 				[]byte(body), headers, "", "/v1/messages", "https://api.anthropic.com")
 			if err != nil {
 				t.Fatal(err)
@@ -5444,7 +5445,7 @@ func TestAnthropicNativeTitleHelperPreservesStructuredOutput(t *testing.T) {
 
 func TestAnthropicOAuthSoftwareProfileSurvivesReplayAndAccountSwitch(t *testing.T) {
 	newer := anthropicTestCLIVersion(t, 0, 0, 1)
-	server := &Server{}
+	server := newTestServer(&Server{})
 	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"s\"}"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=` + newer + `.abc; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"hello"}]}`)
 	headers := http.Header{
 		"User-Agent": {"claude-cli/" + newer + " (external, cli)"}, "X-Stainless-Lang": {"js"},

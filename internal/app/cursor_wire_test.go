@@ -774,7 +774,7 @@ func TestForwardCursorAgentCoolsModelOnUsageLimit(t *testing.T) {
 
 func TestTryCursorOAuthChannelSkipsUnsupportedFamilies(t *testing.T) {
 	t.Parallel()
-	srv := &Server{}
+	srv := newTestServer(&Server{})
 	cfg := &model.Config{ID: 3, AuthType: model.AuthTypeCursorOAuth}
 	result, err := srv.tryCursorOAuthChannel(context.Background(), cfg, &proxyRequestContext{
 		requestPath: "/v1beta/models/test:countTokens",

@@ -68,9 +68,6 @@ func nextLoomyCheckinAttempt(now time.Time) time.Time {
 func (s *Server) loomyCheckinLoop() {
 	defer s.wg.Done()
 	ctx := s.baseCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	ticker := time.NewTicker(channelManagementScheduleInterval)
 	defer ticker.Stop()
 	s.runDueLoomyCheckins(ctx, time.Now())

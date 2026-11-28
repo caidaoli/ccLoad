@@ -30,12 +30,12 @@ import (
 )
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
-	srv := &Server{
+	srv := newTestServer(&Server{
 		bodyLimits:        newRequestBodyLimits(config.DefaultMaxBodyBytes, config.DefaultMaxImageBodyBytes),
 		requestBodyMemory: requestBodyMemoryBudget{limit: config.DefaultRequestBodyMemoryBudgetBytes},
 		concurrencySem:    make(chan struct{}, 1),
 		activeRequests:    newActiveRequestManager(),
-	}
+	})
 
 	body := bytes.NewBufferString(`{"model":"gpt-4"}`)
 	req := newRequest(http.MethodPost, "/v1/unknown", body)
@@ -57,7 +57,7 @@ func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 func TestWriteFinalProxyResponse_DisablesWriteTimeoutForJSONFallback(t *testing.T) {
 	t.Parallel()
 
-	srv := &Server{}
+	srv := newTestServer(&Server{})
 	w := &deadlineRecorderResponseWriter{}
 	c, _ := gin.CreateTestContext(w)
 	c.Request = newRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -348,10 +348,10 @@ func TestParseIncomingRequest_DecodesContentEncoding(t *testing.T) {
 
 // TestAcquireConcurrencySlot 测试并发槽位获取
 func TestAcquireConcurrencySlot(t *testing.T) {
-	srv := &Server{
+	srv := newTestServer(&Server{
 		concurrencySem: make(chan struct{}, 2), // 最大并发数=2
 		maxConcurrency: 2,
-	}
+	})
 
 	// 创建有效的gin.Context
 	c, _ := newTestContext(t, newRequest(http.MethodPost, "/test", nil))
@@ -385,9 +385,9 @@ func TestAcquireConcurrencySlot(t *testing.T) {
 }
 
 func TestAcquireConcurrencySlot_ContextCanceled_Returns499(t *testing.T) {
-	srv := &Server{
+	srv := newTestServer(&Server{
 		concurrencySem: make(chan struct{}, 1),
-	}
+	})
 	srv.concurrencySem <- struct{}{} // 填满槽位，迫使走等待分支
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -405,9 +405,9 @@ func TestAcquireConcurrencySlot_ContextCanceled_Returns499(t *testing.T) {
 }
 
 func TestAcquireConcurrencySlot_DeadlineExceeded_Returns504(t *testing.T) {
-	srv := &Server{
+	srv := newTestServer(&Server{
 		concurrencySem: make(chan struct{}, 1),
-	}
+	})
 	srv.concurrencySem <- struct{}{} // 填满槽位，迫使走等待分支
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
@@ -764,12 +764,12 @@ func TestHandleProxyRequest_BodyMemoryBudgetReleasedAfterFailures(t *testing.T) 
 				budget = 1024
 				maxBody = 2048
 			}
-			srv := &Server{
+			srv := newTestServer(&Server{
 				requestBodyMemory: requestBodyMemoryBudget{limit: budget},
 				bodyLimits:        newRequestBodyLimits(maxBody, maxBody),
 				concurrencySem:    make(chan struct{}, 1),
 				activeRequests:    newActiveRequestManager(),
-			}
+			})
 			var body io.Reader = strings.NewReader(`{"model":`)
 			status := http.StatusBadRequest
 			switch failure {
@@ -864,12 +864,12 @@ func (r *cancelBodyReader) Read(p []byte) (int, error) {
 func TestHandleProxyRequest_BodyMemoryBudgetRejectsSlowUpload(t *testing.T) {
 	for _, encoding := range []string{"identity", "gzip"} {
 		t.Run(encoding, func(t *testing.T) {
-			srv := &Server{
+			srv := newTestServer(&Server{
 				requestBodyMemory: requestBodyMemoryBudget{limit: 512},
 				bodyLimits:        newRequestBodyLimits(4096, 4096),
 				concurrencySem:    make(chan struct{}, 1),
 				activeRequests:    newActiveRequestManager(),
-			}
+			})
 			engine := gin.New()
 			engine.POST("/v1/unknown", srv.HandleProxyRequest)
 			server := httptest.NewUnstartedServer(engine)
@@ -916,12 +916,12 @@ func TestHandleProxyRequest_BodyMemoryBudgetRejectsSlowUpload(t *testing.T) {
  * @param t 当前测试上下文。
  */
 func TestHandleProxyRequest_BodyMemoryBudgetExactCapacity(t *testing.T) {
-	srv := &Server{
+	srv := newTestServer(&Server{
 		requestBodyMemory: requestBodyMemoryBudget{limit: 512},
 		bodyLimits:        newRequestBodyLimits(4096, 4096),
 		concurrencySem:    make(chan struct{}, 1),
 		activeRequests:    newActiveRequestManager(),
-	}
+	})
 	body := `{"model":"valid"}`
 	body += strings.Repeat(" ", 512-len(body))
 	req := httptest.NewRequest(http.MethodPost, "/v1/unknown", strings.NewReader(body))

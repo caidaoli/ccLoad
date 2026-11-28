@@ -64,9 +64,9 @@ func TestChannelProxyDiagnosticsRedactCredentials(t *testing.T) {
 	proxyURL.Fragment = fragmentSecret
 	malformed := "socks5h://" + username + ":proxy-fixture-pass%ZZ@proxy.example:1080"
 
-	server := &Server{
+	server := newTestServer(&Server{
 		client: newUpstreamHTTPClient(buildHTTPTransport(false, 1), 0),
-	}
+	})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		server.credentialTransports.closeAll()
@@ -307,11 +307,11 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 
 	base := buildHTTPTransport(true, 1)
 	maxAge := 100 * time.Millisecond
-	server := &Server{
+	server := newTestServer(&Server{
 		client:                   newUpstreamHTTPClient(base, maxAge),
 		skipTLSVerify:            true,
 		upstreamConnectionMaxAge: maxAge,
-	}
+	})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		if server.credentialTransports != nil {
@@ -377,10 +377,10 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 }
 
 func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
-	server := &Server{
+	server := newTestServer(&Server{
 		client:            http.DefaultClient,
 		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true, 1), 0),
-	}
+	})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
 		if server.credentialTransports != nil {
@@ -423,10 +423,10 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 		_, _ = io.WriteString(w, "ok")
 	}))
 	t.Cleanup(upstream.Close)
-	server := &Server{
+	server := newTestServer(&Server{
 		client:            http.DefaultClient,
 		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(false, 1), 0),
-	}
+	})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
 		if server.credentialTransports != nil {
@@ -538,10 +538,10 @@ func TestServerIsolatesAnthropicConnectionByAccountAndProxy(t *testing.T) {
 	}
 	proxy := newProxy()
 
-	server := &Server{
+	server := newTestServer(&Server{
 		client:        newUpstreamHTTPClient(buildHTTPTransport(true, 2), 0),
 		skipTLSVerify: true,
-	}
+	})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		if server.credentialTransports != nil {
@@ -608,7 +608,7 @@ func TestServerDoesNotReuseAnthropicDirectConnectionAcrossAccounts(t *testing.T)
 		_, _ = io.WriteString(w, "ok")
 	}))
 	t.Cleanup(upstream.Close)
-	server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+	server := newTestServer(&Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		if server.credentialTransports != nil {
@@ -689,7 +689,7 @@ func TestServerIsolatesOtherOAuthConnectionsByAccountAndProxy(t *testing.T) {
 				name = authType + "/proxy"
 			}
 			t.Run(name, func(t *testing.T) {
-				server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+				server := newTestServer(&Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)})
 				t.Cleanup(func() {
 					closeUpstreamHTTPClient(server.client)
 					if server.credentialTransports != nil {
@@ -753,11 +753,11 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 	proxy := httptest.NewServer(respond)
 	t.Cleanup(proxy.Close)
 
-	server := &Server{
+	server := newTestServer(&Server{
 		client:               newUpstreamHTTPClient(buildHTTPTransport(false, 1), 0),
 		antigravityClient:    newAntigravityHTTPClient(buildHTTPTransport(false, 1), 0),
 		credentialTransports: newCredentialHTTPClientCache(1),
-	}
+	})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		closeUpstreamHTTPClient(server.antigravityClient)
@@ -820,7 +820,7 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 }
 
 func TestServerCodexOAuthCloudflareCookiesPerAccountSharedWithWebsocket(t *testing.T) {
-	server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+	server := newTestServer(&Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		if server.credentialTransports != nil {
@@ -902,7 +902,7 @@ func TestServerCodexOAuthPoolOmitsAcceptEncoding(t *testing.T) {
 	proxy := httptest.NewServer(respond)
 	t.Cleanup(proxy.Close)
 
-	server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+	server := newTestServer(&Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)})
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
 		if server.credentialTransports != nil {
@@ -1023,7 +1023,7 @@ func TestServerBoundsSharedProxyHTTPClients(t *testing.T) {
 		_, _ = io.WriteString(w, "proxied")
 	}))
 	t.Cleanup(proxy.Close)
-	server := &Server{credentialTransports: newCredentialHTTPClientCache(2)}
+	server := newTestServer(&Server{credentialTransports: newCredentialHTTPClientCache(2)})
 	t.Cleanup(server.credentialTransports.closeAll)
 	// Proxy credentials distinguish three pools at the same local endpoint.
 	proxyURL := func(identity string) string {
@@ -1319,10 +1319,10 @@ func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *te
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server := &Server{
+	server := newTestServer(&Server{
 		skipTLSVerify:     true,
 		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true, 1), 0),
-	}
+	})
 	server.antigravityService = antigravityauth.NewService(server.antigravityClient)
 	server.antigravityCredentials = newAntigravityCredentialManager(server.antigravityService, store, server.getClientForChannel, nil)
 	t.Cleanup(func() {
@@ -1673,7 +1673,7 @@ func TestServerAppliesUpstreamConnectionMaxAgeToChannelProxy(t *testing.T) {
 	proxy.Start()
 	defer proxy.Close()
 
-	server := &Server{upstreamConnectionMaxAge: 50 * time.Millisecond}
+	server := newTestServer(&Server{upstreamConnectionMaxAge: 50 * time.Millisecond})
 	config := &model.Config{ID: 1, ProxyURL: proxy.URL}
 	client := server.getClientForChannel(config)
 	t.Cleanup(func() {

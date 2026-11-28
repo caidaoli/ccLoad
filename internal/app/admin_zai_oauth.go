@@ -130,9 +130,6 @@ func newZAIOAuthManager(
 	resolve func(context.Context, zaiOAuthOptions, string) (*zaiauth.Credential, error),
 	commit func(context.Context, zaiOAuthOptions, *zaiauth.Credential) (int64, string, error),
 ) *zaiOAuthManager {
-	if baseCtx == nil {
-		baseCtx = context.Background()
-	}
 	manager := &zaiOAuthManager{
 		service: service, resolve: resolve, commit: commit, baseCtx: baseCtx,
 		now: time.Now, sleep: sleepWithContext,

@@ -457,23 +457,21 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 
 		// 导入会更新渠道URL，立即清理 URLSelector 中失效URL状态，避免旧状态长期残留。
-		if s.urlSelector != nil {
-			seenIDs := make(map[int64]struct{}, len(validChannels))
-			for _, channel := range validChannels {
-				if channel == nil || channel.Config == nil || channel.Config.ID <= 0 {
-					continue
-				}
-				seenIDs[channel.Config.ID] = struct{}{}
+		seenIDs := make(map[int64]struct{}, len(validChannels))
+		for _, channel := range validChannels {
+			if channel == nil || channel.Config == nil || channel.Config.ID <= 0 {
+				continue
 			}
-			for channelID := range seenIDs {
-				cfg, getErr := s.store.GetConfig(c.Request.Context(), channelID)
-				if getErr != nil || cfg == nil {
-					continue
-				}
-				s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
-				// 同步清理数据库中已移除URL的禁用状态记录
-				s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
+			seenIDs[channel.Config.ID] = struct{}{}
+		}
+		for channelID := range seenIDs {
+			cfg, getErr := s.store.GetConfig(c.Request.Context(), channelID)
+			if getErr != nil || cfg == nil {
+				continue
 			}
+			s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
+			// 同步清理数据库中已移除URL的禁用状态记录
+			s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
 		}
 		importedIDs := make([]int64, 0, len(validChannels))
 		for _, channel := range validChannels {

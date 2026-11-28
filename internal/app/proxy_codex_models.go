@@ -131,7 +131,7 @@ func (s *Server) codexResponsesRoutes(cfg *model.Config) []codexResponsesRoute {
 	var routes []codexResponsesRoute
 	order := localUpstreamProtocolOrder(cfg.URLs)
 	for _, candidateURL := range orderChannelAttemptURLs(s.urlSelector, cfg, cfg.GetURLs()) {
-		if s.urlSelector != nil && s.urlSelector.IsDisabled(cfg.ID, candidateURL.url) {
+		if s.urlSelector.IsDisabled(cfg.ID, candidateURL.url) {
 			continue
 		}
 		entry := cfg.URLs[candidateURL.idx]

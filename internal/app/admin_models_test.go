@@ -4260,7 +4260,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/models/refresh-batch", []byte(tc.body)))
-			(&Server{}).HandleBatchRefreshModels(c)
+			(newTestServer(&Server{})).HandleBatchRefreshModels(c)
 			response := mustParseAPIResponse[batchRefreshData](t, w.Body.Bytes())
 			if w.Code != http.StatusBadRequest || response.Success || response.Error == "" {
 				t.Fatalf("invalid request status=%d body=%s", w.Code, w.Body.String())
@@ -4690,7 +4690,7 @@ func TestBatchRefreshModelsRechecksConcurrentKeyPolicyAndIdentity(t *testing.T) 
 				case "disable":
 					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/key-disable", map[string]any{"key_index": 0}))
 					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
-					(&Server{store: store}).HandleAPIKeyDisable(c)
+					(newTestServer(&Server{store: store})).HandleAPIKeyDisable(c)
 					if w.Code != http.StatusOK {
 						return fmt.Errorf("disable status=%d body=%s", w.Code, w.Body.String())
 					}

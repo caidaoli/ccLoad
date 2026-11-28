@@ -43,13 +43,13 @@ func TestStartUpdateManagerContainerSkipsReleaseChecks(t *testing.T) {
 	var restartCalls atomic.Int64
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	server := &Server{
+	server := newTestServer(&Server{
 		configService: newStubConfigService(map[string]string{
 			"auto_update_interval_hours": "1",
 			"auto_update_channel":        "stable",
 		}),
 		baseCtx: ctx,
-	}
+	})
 	server.SetRestartFunc(func() { restartCalls.Add(1) })
 
 	server.StartUpdateManager()
@@ -75,13 +75,13 @@ func TestStartUpdateManagerDisabledMakesNoReleaseRequest(t *testing.T) {
 	t.Cleanup(releaseServer.Close)
 
 	t.Setenv("CCLOAD_RELEASE_BASE_URL", releaseServer.URL+"/caidaoli/ccLoad/releases/latest/download")
-	server := &Server{
+	server := newTestServer(&Server{
 		configService: newStubConfigService(map[string]string{
 			"auto_update_interval_hours": "0",
 			"auto_update_channel":        "preview",
 		}),
 		baseCtx: context.Background(),
-	}
+	})
 
 	server.StartUpdateManager()
 	select {
@@ -141,7 +141,7 @@ func TestHandleManualUpdateRunsFullUpdate(t *testing.T) {
 		t.Fatalf("NewUpdateManager: %v", err)
 	}
 
-	server := &Server{updateManager: manager, baseCtx: ctx}
+	server := newTestServer(&Server{updateManager: manager, baseCtx: ctx})
 	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/update/check", nil))
 	server.HandleManualUpdate(c)
 

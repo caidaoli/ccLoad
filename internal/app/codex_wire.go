@@ -379,9 +379,6 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 		}
 		responseBody = translatedBody
 	} else if reqCtx.transformPlan.NeedsTransform {
-		if s.protocolRegistry == nil {
-			return result, reqCtx.Duration().Seconds(), errors.New("protocol registry unavailable for Responses non-stream response transform")
-		}
 		translatedBody, err := s.protocolRegistry.TranslateResponseNonStream(
 			reqCtx.ctx,
 			reqCtx.transformPlan.UpstreamProtocol,

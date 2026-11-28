@@ -137,7 +137,7 @@ func TestLoomyCheckinCASContention(t *testing.T) {
 						http.NotFound(w, r)
 					}
 				}))
-				srv := &Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}}
+				srv := newTestServer(&Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}})
 				credential := &loomyauth.Credential{Session: "session", UserID: "user", OnboardingCompletedAt: time.Now().UTC().Format(time.RFC3339)}
 				raw, err := credential.JSON()
 				if err != nil {
@@ -354,7 +354,7 @@ func TestLoomyCheckinPersistenceRetryAndReauthorization(t *testing.T) {
 			_ = store.Close()
 		}
 	})
-	srv := &Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}}
+	srv := newTestServer(&Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}})
 	ctx := context.Background()
 	cfg, _, err := srv.commitLoomyCredential(ctx, &loomyauth.Credential{Session: "old", UserID: "user"}, "")
 	if err != nil {
@@ -428,7 +428,7 @@ func TestLoomyCheckinPersistenceRetryAndReauthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	restarted := &Server{store: reopened, client: srv.client, loomyService: srv.loomyService}
+	restarted := newTestServer(&Server{store: reopened, client: srv.client, loomyService: srv.loomyService})
 	result, err := restarted.checkInLoomy(ctx, updated, false)
 	if err != nil || result.Onboarding != "skipped" || result.Day != checkinDay || queries.Load() != queryCount {
 		t.Fatalf("restart=%+v queries=%d err=%v", result, queries.Load(), err)
@@ -473,7 +473,7 @@ func TestLoomyCheckinPersistenceRetryAndReauthorization(t *testing.T) {
 		t.Fatalf("failed check-in day=%q next=%s, want %s", failedCredential.LastCheckinDay, failedCredential.NextCheckinAttemptAt, wantNext)
 	}
 	calls := dailyCalls.Load()
-	afterRestart := &Server{store: reopened, client: srv.client, loomyService: srv.loomyService}
+	afterRestart := newTestServer(&Server{store: reopened, client: srv.client, loomyService: srv.loomyService})
 	afterRestart.runDueLoomyCheckins(ctx, time.Now())
 	if dailyCalls.Load() != calls {
 		t.Fatal("restart retried before the persisted check-in time")
@@ -532,7 +532,7 @@ func TestLoomyUsageQuotaSources(t *testing.T) {
 					}
 				}))
 				store := newCodexAuthTestStore(t)
-				srv := &Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}}
+				srv := newTestServer(&Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}})
 				credential := &loomyauth.Credential{Session: "session", UserID: "user", DailyCycleDate: quotaDay, DailyQuota: tc.storedQuota}
 				if tc.legacyCache {
 					previousAt := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
@@ -635,7 +635,7 @@ func TestLoomyUsagePreservesConcurrentSnapshotAtSameTime(t *testing.T) {
 			_, _ = fmt.Fprintf(w, `{"code":"000000","data":{"balance":15000,"dailyBalance":%d,"availableBalance":%d}}`, daily, 15000+daily)
 		}))
 		store := newCodexAuthTestStore(t)
-		srv := &Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}}
+		srv := newTestServer(&Server{store: store, client: newTestHTTPClient(), loomyService: &loomyauth.Service{BaseURL: upstream.URL}})
 		credential := &loomyauth.Credential{Session: "session", UserID: "user"}
 		raw, err := credential.JSON()
 		if err != nil {
@@ -1078,12 +1078,12 @@ func newManagementSchedulerTestServer(t *testing.T) *Server {
 			t.Errorf("store.Close: %v", err)
 		}
 	})
-	return &Server{
+	return newTestServer(&Server{
 		store: store,
 		channelManagement: newChannelManagementService(store, func(*model.Config) *http.Client {
 			return newTestHTTPClient()
 		}),
-	}
+	})
 }
 
 func newDueNewAPIEnvelope(baseURL string) *model.ChannelManagementEnvelope {
@@ -1445,7 +1445,7 @@ func TestManagementCheckinSchedulerCancellationSkipsFalseAuditAndLoopStops(t *te
 		t.Fatalf("completed catch-up repeated POSTs: %d", posts.Load())
 	}
 
-	loop := &Server{baseCtx: context.Background(), shutdownCh: make(chan struct{})}
+	loop := newTestServer(&Server{baseCtx: context.Background(), shutdownCh: make(chan struct{})})
 	loop.wg.Add(1)
 	loopDone := make(chan struct{})
 	go func() { loop.managementCheckinLoop(); close(loopDone) }()

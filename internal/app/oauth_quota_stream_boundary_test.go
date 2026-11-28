@@ -24,7 +24,7 @@ func TestOAuthQuotaLargeSSEOutput(t *testing.T) {
 	stream := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"start\"}\n\n" + "data: " + string(item) + "\n\n" + "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_large\",\"output\":[],\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n"
 	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(&quotaChunkReader{Reader: strings.NewReader(stream)})}
 	rec := httptest.NewRecorder()
-	result, _, err := (&Server{}).handleResponse(&requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true}, resp, rec, "codex", &model.Config{AuthType: model.AuthTypeCodexOAuth}, "", nil)
+	result, _, err := (newTestServer(&Server{})).handleResponse(&requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true}, resp, rec, "codex", &model.Config{AuthType: model.AuthTypeCodexOAuth}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestOAuthQuotaFlushBeforeNextEventCompletes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := &quotaPausedReader{first: []byte(first), rest: strings.NewReader(" message_stop\ndata: {\"type\":\"message_stop\"}\n\n"), release: release}
 		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(body)}
-		_, _, _ = (&Server{}).handleResponse(&requestContext{ctx: r.Context(), startTime: time.Now(), isStreaming: true}, resp, w, "anthropic", &model.Config{AuthType: model.AuthTypeAnthropicOAuth}, "", nil)
+		_, _, _ = (newTestServer(&Server{})).handleResponse(&requestContext{ctx: r.Context(), startTime: time.Now(), isStreaming: true}, resp, w, "anthropic", &model.Config{AuthType: model.AuthTypeAnthropicOAuth}, "", nil)
 	}))
 	defer server.Close()
 	defer unblock()

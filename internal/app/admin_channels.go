@@ -210,7 +210,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	// 健康度模式检查
-	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
+	healthEnabled := s.healthCache.Config().Enabled
 
 	// 排序在分页前完成；健康度开启时优先级键使用 effective_priority。
 	priorityMap, successRateMap := s.computeChannelPriorities(cfgs, healthEnabled)
@@ -1204,11 +1204,6 @@ func (s *Server) handleURLToggle(c *gin.Context, disable bool) {
 		return
 	}
 
-	if s.urlSelector == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "url selector not available")
-		return
-	}
-
 	s.disabledURLSyncMu.Lock()
 	defer s.disabledURLSyncMu.Unlock()
 	if err := s.store.SetURLDisabled(c.Request.Context(), id, req.URL, disable); err != nil {
@@ -1677,9 +1672,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// URL 更新后立即清理失效的 URL 状态（内存+数据库同步）
-	if s.urlSelector != nil {
-		s.urlSelector.PruneChannel(id, upd.GetURLs())
-	}
+	s.urlSelector.PruneChannel(id, upd.GetURLs())
 	// 同步清理数据库中已移除URL的禁用状态记录
 	s.cleanupOrphanedURLStates(c.Request.Context(), id, upd.GetURLs())
 
@@ -1765,7 +1758,7 @@ func (s *Server) resetAllChannelCooldowns(ctx context.Context, channelID int64) 
 		return fmt.Errorf("cooldown manager is not initialized")
 	}
 	err := s.cooldownManager.ClearAllCooldowns(ctx, channelID)
-	if err == nil && s.urlSelector != nil {
+	if err == nil {
 		s.urlSelector.ClearCooldowns(channelID)
 	}
 	s.invalidateChannelRelatedCache(channelID)
@@ -2451,15 +2444,9 @@ func (s *Server) disableChannelIfOAuthSnapshotMatches(
 func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	id := cfg.ID
 	s.protocolCapabilities.clearChannels(id)
-	if s.keySelector != nil {
-		s.keySelector.RemoveChannelCounter(id)
-	}
-	if s.urlSelector != nil {
-		s.urlSelector.RemoveChannel(id)
-	}
-	if s.channelRPMLimiter != nil {
-		s.channelRPMLimiter.Remove(id)
-	}
+	s.keySelector.RemoveChannelCounter(id)
+	s.urlSelector.RemoveChannel(id)
+	s.channelRPMLimiter.Remove(id)
 	if s.codexCredentials != nil {
 		s.codexCredentials.invalidate(id)
 	}

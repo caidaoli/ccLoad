@@ -1612,7 +1612,7 @@ func (s *Server) handleSuccessResponse(
 	if reqCtx.transformPlan.Streaming && isImagesResponsesPlan(reqCtx.transformPlan) {
 		return finishStreaming(s.handleImagesResponsesStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats, observer))
 	}
-	if reqCtx.isStreaming && s.protocolRegistry != nil {
+	if reqCtx.isStreaming {
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
 		if detectedProtocol != "" {
 			upstreamProtocol = string(detectedProtocol)
@@ -1648,7 +1648,7 @@ func (s *Server) handleSuccessResponse(
 		}
 	}
 
-	if !reqCtx.isStreaming && s.protocolRegistry != nil {
+	if !reqCtx.isStreaming {
 		detectedProtocol, transform, err := maybePrepareDynamicNonStreamTransform(reqCtx, resp)
 		if detectedProtocol != "" {
 			upstreamProtocol = string(detectedProtocol)
@@ -1668,7 +1668,6 @@ func (s *Server) handleSuccessResponse(
 	}
 
 	if reqCtx.isStreaming &&
-		s.protocolRegistry != nil &&
 		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || upstreamProtocol == util.ProtocolGemini) &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
@@ -1676,7 +1675,6 @@ func (s *Server) handleSuccessResponse(
 	}
 
 	if !reqCtx.isStreaming &&
-		s.protocolRegistry != nil &&
 		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.responsesCompaction != nil || upstreamProtocol == util.ProtocolGemini) {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
@@ -3114,11 +3112,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		plan.UpstreamPath = buildGeminiGeneratePath(plan.RequestModel(), plan.Streaming)
 		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody
-	} else if plan.NeedsTransform && (translatedRequestOverride != nil || s.protocolRegistry != nil) {
+	} else if plan.NeedsTransform {
 		translatedBody := plan.TranslatedBody
 		if translatedRequestOverride != nil {
 			translatedBody = translatedRequestOverride
-		} else if s.protocolRegistry != nil {
+		} else {
 			if plan.ClientProtocol == protocol.Codex && plan.UpstreamProtocol != protocol.Codex {
 				translatedBody = rewriteCodexMultiAgentV2Input(hdr, translatedBody)
 				if codexMultiAgentV2Enabled(hdr) && len(codexSpawnAgentToolPaths(translatedBody)) > 0 {

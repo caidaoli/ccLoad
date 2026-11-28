@@ -70,7 +70,7 @@ func TestParseMultimodalFallbackModels(t *testing.T) {
 func TestServerMultimodalFallbackModel(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{}
+	server := newTestServer(&Server{})
 	server.setMultimodalFallbackModels(map[string]string{
 		"gpt-text": "gpt-vision",
 	})
@@ -88,7 +88,7 @@ func TestServerMultimodalFallbackModel(t *testing.T) {
 		t.Fatalf("multimodalFallbackModel(gpt-text, false)=%q, want empty", got)
 	}
 	// 未配置任何映射时直接短路。
-	if got := (&Server{}).multimodalFallbackModel("gpt-text", true); got != "" {
+	if got := (newTestServer(&Server{})).multimodalFallbackModel("gpt-text", true); got != "" {
 		t.Fatalf("unconfigured multimodalFallbackModel=%q, want empty", got)
 	}
 }
@@ -96,7 +96,7 @@ func TestServerMultimodalFallbackModel(t *testing.T) {
 func TestServerMultimodalFallbackModelHotSwap(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{}
+	server := newTestServer(&Server{})
 	first := map[string]string{"gpt-text": "gpt-vision-v1"}
 	server.setMultimodalFallbackModels(first)
 	first["gpt-text"] = "mutated-after-publish"
@@ -118,7 +118,7 @@ func TestServerMultimodalFallbackModelHotSwap(t *testing.T) {
 func TestServerMultimodalFallbackModelConcurrentHotSwap(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{}
+	server := newTestServer(&Server{})
 	server.setMultimodalFallbackModels(map[string]string{"gpt-text": "vision-a"})
 
 	const iterations = 1000

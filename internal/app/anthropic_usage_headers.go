@@ -93,9 +93,6 @@ func (s *Server) anthropicPassiveUsageWorker() {
 func (s *Server) persistAnthropicPassiveUsageUpdate(
 	ctx context.Context, cfg *model.Config, update anthropicPassiveUsageUpdate,
 ) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	if _, err := s.anthropicCredentials.updatePassiveUsage(persistCtx, cfg, update); err != nil {

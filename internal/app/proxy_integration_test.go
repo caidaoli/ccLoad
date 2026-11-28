@@ -438,7 +438,6 @@ func TestProxy_DetectedKeyTargetSkipsIncompatibleProtocolURL(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 	env.server.InvalidateAPIKeysCache(cfg.ID)
-	env.server.urlSelector = nil
 
 	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "a", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
@@ -9914,7 +9913,7 @@ func TestProxy_CodexPendingRefreshUsesShortCooldown(t *testing.T) {
 	service.TokenURL = tokens.URL
 	env.server.codexCredentials.service = service
 	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return tokens.Client() }
-	owner := &Server{store: env.store, codexCredentials: newCodexCredentialManager(service, env.store, nil, nil)}
+	owner := newTestServer(&Server{store: env.store, codexCredentials: newCodexCredentialManager(service, env.store, nil, nil)})
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- requestCodexRefresh(t, owner, configs[0].ID) }()
 	<-entered
@@ -13088,7 +13087,6 @@ func TestProxy_IncompatibleURLPreservesUpstreamFailure(t *testing.T) {
 					t.Fatal(err)
 				}
 				env.server.InvalidateChannelListCache()
-				env.server.urlSelector = nil
 
 				var payload struct {
 					Type   string `json:"type"`   ///< WebSocket 错误事件类型。
@@ -13654,8 +13652,6 @@ func TestProxy_AutoModePrioritizesAutomaticURLBeforeDeclaredConversion(t *testin
 		t.Fatalf("UpdateConfig: %v", err)
 	}
 	env.server.InvalidateChannelListCache()
-	// 固定配置顺序，证明 auto 模式会主动把自动检测 URL 提到转换 URL 之前。
-	env.server.urlSelector = nil
 
 	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "shared-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},

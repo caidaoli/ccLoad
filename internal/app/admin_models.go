@@ -1573,7 +1573,7 @@ func (s *Server) fetchAntigravityModelsWithURLFallback(
 		service.Client = client
 	}
 
-	selectorEnabled := s.urlSelector != nil && cfg.ID > 0
+	selectorEnabled := cfg.ID > 0
 	var selector *URLSelector
 	if selectorEnabled {
 		selector = s.urlSelector
@@ -1683,7 +1683,7 @@ func (s *Server) fetchModelsWithURLFallback(
 		return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
 	}
 
-	selectorEnabled := s != nil && s.urlSelector != nil && channelID > 0
+	selectorEnabled := channelID > 0
 	var selector *URLSelector
 	if selectorEnabled {
 		selector = s.urlSelector

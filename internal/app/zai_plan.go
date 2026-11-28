@@ -486,10 +486,8 @@ func (s *Server) zaiAccountPlans(ctx context.Context, cfg *model.Config, credent
 		result := cache.flights.DoChan(key, func() (any, error) {
 			queryCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 			defer cancel()
-			if s.baseCtx != nil {
-				stop := context.AfterFunc(s.baseCtx, cancel)
-				defer stop()
-			}
+			stop := context.AfterFunc(s.baseCtx, cancel)
+			defer stop()
 			queryStarted := time.Now()
 			plans, err := s.zaiPlanService(cfg, credential).FetchPlans(queryCtx, credential)
 			if err != nil {

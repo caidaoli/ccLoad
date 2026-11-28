@@ -66,7 +66,7 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 	if m == nil || m.store == nil || cfg == nil || !cfg.UsesXAIOAuth() {
 		return nil, errors.New("xAI credential manager is unavailable")
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	credential, err := m.cachedOrParse(cfg)
@@ -86,7 +86,7 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 	}
 
 	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, true), func() (any, error) {
-		refreshCtx := context.Background()
+		var refreshCtx context.Context
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
 			if beginErr != nil {
@@ -94,7 +94,7 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 			}
 			defer done()
 			refreshCtx = trackedCtx
-		} else if ctx != nil {
+		} else {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -134,14 +134,10 @@ func (m *xaiCredentialManager) credentialForRejectedAccessToken(
 		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})
 	var result singleflight.Result
-	if ctx == nil {
-		result = <-resultCh
-	} else {
-		select {
-		case result = <-resultCh:
-		case <-ctx.Done():
-			return cloneXAICredential(credential), ctx.Err()
-		}
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return cloneXAICredential(credential), ctx.Err()
 	}
 	if result.Err != nil {
 		return cloneXAICredential(credential), result.Err

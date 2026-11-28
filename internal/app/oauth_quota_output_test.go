@@ -23,7 +23,7 @@ func TestOAuthQuotaOutputHTTP(t *testing.T) {
 				rec := httptest.NewRecorder()
 				req := &requestContext{ctx: context.Background(), startTime: time.Now()}
 				cfg := &model.Config{AuthType: auth, OAuthQuotaPassthrough: enabled}
-				result, _, err := (&Server{}).handleResponse(req, resp, rec, "codex", cfg, "", nil)
+				result, _, err := (newTestServer(&Server{})).handleResponse(req, resp, rec, "codex", cfg, "", nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -70,7 +70,7 @@ func TestOAuthQuotaOutputSSEPreservesAccounting(t *testing.T) {
 			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(&oneByteQuotaReader{data: []byte(body)})}
 			req := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true}
 			rec := httptest.NewRecorder()
-			result, _, err := (&Server{}).handleResponse(req, resp, rec, "codex", &model.Config{AuthType: model.AuthTypeCodexOAuth, OAuthQuotaPassthrough: enabled}, "", nil)
+			result, _, err := (newTestServer(&Server{})).handleResponse(req, resp, rec, "codex", &model.Config{AuthType: model.AuthTypeCodexOAuth, OAuthQuotaPassthrough: enabled}, "", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestOAuthQuotaOutputPlanType(t *testing.T) {
 			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
 			rec := httptest.NewRecorder()
 			req := &requestContext{ctx: context.Background(), startTime: time.Now()}
-			_, _, err := (&Server{}).handleResponse(req, resp, rec, "codex", &model.Config{AuthType: model.AuthTypeCodexOAuth, OAuthQuotaPassthrough: enabled}, "", nil)
+			_, _, err := (newTestServer(&Server{})).handleResponse(req, resp, rec, "codex", &model.Config{AuthType: model.AuthTypeCodexOAuth, OAuthQuotaPassthrough: enabled}, "", nil)
 			if err != nil {
 				t.Fatal(err)
 			}

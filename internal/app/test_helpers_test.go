@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/privacy"
+	"ccLoad/internal/protocol"
+	protocolbuiltin "ccLoad/internal/protocol/builtin"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -616,4 +619,43 @@ func runMiddleware(t testing.TB, middleware gin.HandlerFunc, req *http.Request) 
 
 	engine.ServeHTTP(w, req)
 	return w
+}
+
+/**
+ * @brief 为测试手写的 Server 补齐 NewServer 无条件创建的运行时依赖
+ * @param s 测试显式设置了部分字段的 Server；已设置的字段保持不变
+ * @return 同一个 s，便于直接包裹字面量
+ * @note 修改入参；健康度排序默认关闭且不启动后台协程，ConfigService 使用 s.store 且未加载默认值
+ */
+func newTestServer(s *Server) *Server {
+	if s.baseCtx == nil {
+		s.baseCtx = context.Background()
+	}
+	if s.configService == nil {
+		s.configService = NewConfigService(s.store)
+	}
+	if s.keySelector == nil {
+		s.keySelector = NewKeySelector()
+	}
+	if s.urlSelector == nil {
+		s.urlSelector = NewURLSelector()
+	}
+	if s.healthCache == nil {
+		s.healthCache = NewHealthCache(s.store, model.HealthScoreConfig{}, s.shutdownCh, &s.isShuttingDown, &s.wg)
+	}
+	if s.costCache == nil {
+		s.costCache = NewCostCache()
+	}
+	if s.channelRPMLimiter == nil {
+		s.channelRPMLimiter = newRPMLimiter(time.Now)
+	}
+	if s.privacyEngine == nil {
+		s.privacyEngine = privacy.NewEngine()
+	}
+	if s.protocolRegistry == nil {
+		reg := protocol.NewRegistry()
+		protocolbuiltin.Register(reg)
+		s.protocolRegistry = reg
+	}
+	return s
 }

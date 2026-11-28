@@ -86,7 +86,7 @@ func TestPrepareTranslatedUpstreamBodyMaxTokensRespectsBodyRules(t *testing.T) {
 	headers := http.Header{"Content-Type": []string{"application/json"}}
 	body := []byte(`{"model":"gpt-5.4","max_tokens":128,"max_completion_tokens":256,"messages":[]}`)
 
-	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+	got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(
 		cfg, protocol.OpenAI, "/v1/chat/completions", "gpt-5.4", body, body,
 		"", headers, false, nil, false, protocol.OpenAI,
 	)

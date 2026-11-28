@@ -487,7 +487,7 @@ func TestCSVImportAPIKeyManagementEnvelopeValidation(t *testing.T) {
 		{"oauth credential", `{"refresh_token":"` + secret + `"}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			channel, errMessage, skipped := (&Server{}).parseChannelImportRow(
+			channel, errMessage, skipped := (newTestServer(&Server{})).parseChannelImportRow(
 				[]string{
 					"managed input", "sk-imported", `[{"url":"https://api.example.com"}]`, "gpt-5",
 					model.AuthTypeAPIKey, tc.credential,
@@ -519,7 +519,7 @@ func TestCSVImportBlankAPIKeyCostMultiplierDefaultsToOne(t *testing.T) {
 		"api_key_cost_multipliers": 5,
 	}
 
-	channel, errMessage, skipped := (&Server{}).parseChannelImportRow(
+	channel, errMessage, skipped := (newTestServer(&Server{})).parseChannelImportRow(
 		[]string{
 			"blank multiplier", "sk-imported", `[{"url":"https://api.example.com"}]`, "gpt-5",
 			model.AuthTypeAPIKey, "",
@@ -545,7 +545,7 @@ func TestCSVImportDailyScheduleValidation(t *testing.T) {
 		{"1441", "08:30", "true", false}, {"30", "8:30", "true", false},
 		{"30", "24:00", "true", false}, {"30", "08:30", "invalid", false},
 	} {
-		channel, message, skipped := (&Server{}).parseChannelImportRow(
+		channel, message, skipped := (newTestServer(&Server{})).parseChannelImportRow(
 			[]string{"schedule", "sk-test", `[{"url":"https://example.com"}]`, "gpt-5", tc.minutes, tc.start, tc.enabled},
 			columns, 2, true, false, false, false, false, false, false, false, false, false, false,
 			nil, nil, nil, nil, nil, nil, nil, nil, nil,

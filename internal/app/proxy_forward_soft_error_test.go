@@ -37,7 +37,7 @@ func handleSuccessBodyRuleResponse(ctx context.Context, body io.ReadCloser, writ
 		MessagePattern: "^余额不够这次调用。当前余额", Scope: model.CooldownScopeKey,
 		Mode: model.CooldownModeFixed, CooldownSeconds: 90,
 	}}}}
-	result, _, err := (&Server{}).handleResponse(reqCtx, resp, writer, upstreamProtocol, cfg, "test-key", nil)
+	result, _, err := (newTestServer(&Server{})).handleResponse(reqCtx, resp, writer, upstreamProtocol, cfg, "test-key", nil)
 	return result, err
 }
 
@@ -356,7 +356,7 @@ func TestHandleResponse_SuccessBodyRuleOAuthScope(t *testing.T) {
 			}
 			reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true}
 			recorder := newRecorder()
-			result, _, err := (&Server{}).handleResponse(reqCtx, resp, recorder, "openai", cfg, "", nil)
+			result, _, err := (newTestServer(&Server{})).handleResponse(reqCtx, resp, recorder, "openai", cfg, "", nil)
 			if err != nil || result == nil {
 				t.Fatalf("handleResponse() = %+v, %v", result, err)
 			}

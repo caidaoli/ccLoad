@@ -25,8 +25,8 @@ import (
 )
 
 func TestServerRestartFuncIsConcurrentAndInstanceScoped(t *testing.T) {
-	first := &Server{}
-	second := &Server{}
+	first := newTestServer(&Server{})
+	second := newTestServer(&Server{})
 	var firstCalls atomic.Int64
 	var secondCalls atomic.Int64
 

@@ -91,9 +91,6 @@ func newXAIOAuthManager(
 	complete func(context.Context, oauthLoginOptions, *xaiauth.Credential) (*xaiauth.Credential, error),
 	commit func(context.Context, oauthLoginOptions, *xaiauth.Credential) (int64, error),
 ) *xaiOAuthManager {
-	if baseCtx == nil {
-		baseCtx = context.Background()
-	}
 	manager := &xaiOAuthManager{
 		service: service, complete: complete, commit: commit, baseCtx: baseCtx, now: time.Now,
 		sessions: make(map[string]*xaiOAuthSession), activeByID: make(map[string]string),

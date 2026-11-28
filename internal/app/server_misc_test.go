@@ -58,7 +58,7 @@ func TestStartCursorSDKBridgeIsNonBlockingAndAutomaticallyPublishesRunner(t *tes
 	runnerPath := make(chan string, 1)
 	var calls atomic.Int32
 	readyRunner := &fakeCursorRunner{catalog: cursorauth.ModelCatalog{Models: []string{"grok-4.6"}}}
-	server := &Server{
+	server := newTestServer(&Server{
 		baseCtx: ctx,
 		ensureCursorBridge: func(ctx context.Context) (string, error) {
 			calls.Add(1)
@@ -75,7 +75,7 @@ func TestStartCursorSDKBridgeIsNonBlockingAndAutomaticallyPublishesRunner(t *tes
 			close(runnerStarted)
 			return readyRunner, nil
 		},
-	}
+	})
 	server.StartCursorSDKBridge()
 	if calls.Load() != 0 {
 		t.Fatalf("installer calls without Cursor channel = %d, want 0", calls.Load())
@@ -223,7 +223,7 @@ func TestServer_SetupRoutes_V1BetaCORSHeadersOnAuthFailure(t *testing.T) {
 func TestServer_GetWriteTimeout(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{nonStreamTimeout: 10 * time.Second}
+	s := newTestServer(&Server{nonStreamTimeout: 10 * time.Second})
 	if got := s.GetWriteTimeout(); got != 120*time.Second {
 		t.Fatalf("GetWriteTimeout()=%v, want 120s", got)
 	}
@@ -242,12 +242,12 @@ func TestServer_GetWriteTimeout(t *testing.T) {
 func TestServer_GetWriteTimeout_IncludesProtocolNonStreamTimeout(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{
+	s := newTestServer(&Server{
 		nonStreamTimeout: 10 * time.Second,
 		protocolTimeouts: map[string]protocolTimeoutConfig{
 			util.ProtocolOpenAI: {NonStreamTimeout: 300 * time.Second},
 		},
-	}
+	})
 
 	if got := s.GetWriteTimeout(); got != 300*time.Second {
 		t.Fatalf("GetWriteTimeout()=%v, want 300s", got)
@@ -257,7 +257,7 @@ func TestServer_GetWriteTimeout_IncludesProtocolNonStreamTimeout(t *testing.T) {
 func TestServer_ResolveProtocolTimeouts(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{
+	s := newTestServer(&Server{
 		firstByteTimeout: 90 * time.Second,
 		nonStreamTimeout: 120 * time.Second,
 		protocolTimeouts: map[string]protocolTimeoutConfig{
@@ -270,7 +270,7 @@ func TestServer_ResolveProtocolTimeouts(t *testing.T) {
 				NonStreamTimeout: 22 * time.Second,
 			},
 		},
-	}
+	})
 
 	localPlan := protocol.TransformPlan{
 		ClientProtocol:   protocol.OpenAI,
@@ -294,13 +294,13 @@ func TestServer_ResolveProtocolTimeouts(t *testing.T) {
 func TestServer_ResolveProtocolTimeouts_ZeroProtocolOverrideFallsBackToGlobal(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{
+	s := newTestServer(&Server{
 		firstByteTimeout: 90 * time.Second,
 		nonStreamTimeout: 120 * time.Second,
 		protocolTimeouts: map[string]protocolTimeoutConfig{
 			util.ProtocolCodex: {},
 		},
-	}
+	})
 	plan := protocol.TransformPlan{UpstreamProtocol: protocol.Codex}
 
 	timeouts := s.resolveProtocolTimeouts(plan)
@@ -387,7 +387,7 @@ func TestServer_GetConfig_FallbackToStore(t *testing.T) {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
-	s := &Server{store: store}
+	s := newTestServer(&Server{store: store})
 	got, err := s.GetConfig(context.Background(), cfg.ID)
 	if err != nil {
 		t.Fatalf("GetConfig failed: %v", err)

@@ -78,7 +78,7 @@ func (m *zaiCredentialManager) credential(
 	if m == nil || m.store == nil || cfg == nil || !cfg.UsesZAIOAuth() {
 		return nil, errors.New("z.ai credential manager is unavailable")
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	credential, err := m.cachedOrParse(cfg)
@@ -91,7 +91,7 @@ func (m *zaiCredentialManager) credential(
 	rejectedKey := credential.APIKey
 
 	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, string(credential.Site)+"/"+rejectedKey, true), func() (any, error) {
-		refreshCtx := context.Background()
+		var refreshCtx context.Context
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
 			if beginErr != nil {
@@ -99,7 +99,7 @@ func (m *zaiCredentialManager) credential(
 			}
 			defer done()
 			refreshCtx = trackedCtx
-		} else if ctx != nil {
+		} else {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -136,14 +136,10 @@ func (m *zaiCredentialManager) credential(
 	})
 
 	var result singleflight.Result
-	if ctx == nil {
-		result = <-resultCh
-	} else {
-		select {
-		case result = <-resultCh:
-		case <-ctx.Done():
-			return cloneZAICredential(credential), ctx.Err()
-		}
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return cloneZAICredential(credential), ctx.Err()
 	}
 	if result.Err != nil {
 		return cloneZAICredential(credential), result.Err

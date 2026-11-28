@@ -118,9 +118,6 @@ func (s *Server) reserveChannelRPM(cfg *model.Config) rpmReservation {
 	if cfg == nil || cfg.RPMLimit <= 0 {
 		return rpmReservation{allowed: true}
 	}
-	if s == nil || s.channelRPMLimiter == nil {
-		return rpmReservation{allowed: true}
-	}
 	return s.channelRPMLimiter.reserve(cfg.ID, cfg.RPMLimit)
 }
 

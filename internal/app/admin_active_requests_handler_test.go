@@ -24,7 +24,7 @@ func TestHandleActiveRequests(t *testing.T) {
 	m.AddBytes(id, 123)
 	m.SetClientFirstByteTime(id, 50*time.Millisecond)
 
-	s := &Server{activeRequests: m}
+	s := newTestServer(&Server{activeRequests: m})
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
 
@@ -76,7 +76,7 @@ func TestHandleAbortActiveRequest(t *testing.T) {
 	})
 	notAbortable := beginTestActiveRequest(m, time.Now(), "m2", "1.2.3.4", false)
 
-	s := &Server{activeRequests: m}
+	s := newTestServer(&Server{activeRequests: m})
 
 	abort := func(param string) int {
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/active-requests/"+param+"/abort", nil))
@@ -117,7 +117,7 @@ func TestHandleActiveRequests_PreservesZeroCostMultiplier(t *testing.T) {
 		TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 0,
 	})
 
-	s := &Server{activeRequests: m}
+	s := newTestServer(&Server{activeRequests: m})
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
 

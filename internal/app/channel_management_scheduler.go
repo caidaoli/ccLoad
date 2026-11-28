@@ -27,9 +27,6 @@ func (s *Server) managementCheckinLoop() {
 	defer s.wg.Done()
 
 	ctx := s.baseCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if err := s.runDueManagementCheckins(ctx, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("[WARN] 管理账户每日签到补偿扫描失败: %v", err)
 	}
@@ -73,9 +70,6 @@ func (s *Server) managementCheckinLoop() {
 func (s *Server) runDueCodeBuddyCheckins(ctx context.Context) {
 	if s == nil || s.store == nil || s.codeBuddyService == nil || s.codeBuddyCredentials == nil {
 		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {
@@ -141,9 +135,6 @@ func (s *Server) checkInCodeBuddy(ctx context.Context, cfg *model.Config) (*code
 	if s == nil || s.codeBuddyService == nil || s.codeBuddyCredentials == nil {
 		return nil, errCodeBuddyUsageManagerUnavailable
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	operationCtx, cancel := context.WithTimeout(ctx, codeBuddyCheckinTimeout)
 	defer cancel()
 	cred, err := s.codeBuddyCredentials.credential(operationCtx, cfg, false, "")
@@ -189,7 +180,7 @@ func isInternationalCodeBuddyConfig(cfg *model.Config) bool {
 }
 
 func (s *Server) runCodeBuddyCheckin(ctx context.Context, cfg *model.Config) {
-	if cfg == nil || ctx == nil || ctx.Err() != nil {
+	if cfg == nil || ctx.Err() != nil {
 		return
 	}
 	result, err := s.checkInCodeBuddy(ctx, cfg)
@@ -224,9 +215,6 @@ func (s *Server) addCodeBuddyCheckinAuditLog(
 ) error {
 	if s == nil || s.store == nil || cfg == nil {
 		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	status := ""
@@ -274,9 +262,6 @@ func codeBuddyCheckinSlot(now time.Time) string {
 func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) error {
 	if s == nil || s.store == nil {
 		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {

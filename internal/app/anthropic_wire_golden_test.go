@@ -410,7 +410,7 @@ func TestAnthropicClaude52NativeRequestContract(t *testing.T) {
 		} {
 			t.Run(modelName+"/"+testCase.name, func(t *testing.T) {
 				body := []byte(`{"model":"client-alias","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]` + testCase.fields + `}`)
-				_, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+				_, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
 					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.Anthropic)
 				if (err != nil) != testCase.wantErr {
@@ -471,7 +471,7 @@ func TestAnthropicClaude55ThinkingRequestContract(t *testing.T) {
 		} {
 			t.Run(modelName+"/"+testCase.name, func(t *testing.T) {
 				body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}]` + testCase.fields + `}`)
-				got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+				got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
 					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.Anthropic)
 				wantErr := testCase.haikuErr
@@ -516,7 +516,7 @@ func TestAnthropicClaude55ThinkingRequestContract(t *testing.T) {
 				if testCase.message != "" {
 					body = setJSONValue(body, "messages.1", map[string]any{"role": "system", "content": "continue", "output_config": map[string]any{"effort": testCase.message}})
 				}
-				_, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+				_, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 					protocol.Anthropic, "/v1/messages", modelName, body, body, anthropicGoldenAPIKey,
 					anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.Anthropic)
 				if (err != nil) != testCase.wantErr {
@@ -549,7 +549,7 @@ func TestAnthropicClaude55ConvertedThinkingContract(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+					got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 						protocol.Anthropic, "/v1/messages", modelName, translated, source, anthropicGoldenAPIKey,
 						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.OpenAI)
 					if err != nil {
@@ -608,7 +608,7 @@ func TestAnthropicClaude52ConvertedRequestContract(t *testing.T) {
 						t.Fatal(err)
 					}
 					translated = preserveAnthropicConvertedEffort(translated, source, modelName)
-					got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
+					got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic"},
 						protocol.Anthropic, "/v1/messages", modelName, translated, source, anthropicGoldenAPIKey,
 						anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.OpenAI)
 					if err != nil {
@@ -653,7 +653,7 @@ func TestAnthropicClaude52ConvertedRequestContract(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			body := []byte(`{"model":"claude-mythos-5-2","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"lookup","disable_parallel_tool_use":true},"top_k":50` + testCase.fields + `}`)
-			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic", CustomRequestRules: testCase.rules},
+			got, _, err := (newTestServer(&Server{})).prepareTranslatedUpstreamBody(&model.Config{Name: "anthropic", CustomRequestRules: testCase.rules},
 				protocol.Anthropic, "/v1/messages", "claude-mythos-5-2", body, []byte(`{}`), anthropicGoldenAPIKey,
 				anthropicGoldenCallerHeaders(), false, anthropicOfficialTestURL, false, protocol.OpenAI)
 			if err != nil {

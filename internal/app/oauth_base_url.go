@@ -12,7 +12,7 @@ import (
 // URL comes from the matching global OAuth setting. Cached channel snapshots
 // remain immutable.
 func (s *Server) withOAuthBaseURLOverride(cfg *model.Config) *model.Config {
-	if s == nil || s.configService == nil || cfg == nil {
+	if cfg == nil {
 		return cfg
 	}
 

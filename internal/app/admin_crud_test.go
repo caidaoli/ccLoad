@@ -42,12 +42,12 @@ func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 	}
 
 	statsCache := NewStatsCache(store)
-	server := &Server{
+	server := newTestServer(&Server{
 		store:             store,
 		statsCache:        statsCache,
 		client:            newTestHTTPClient(),
 		antigravityClient: newTestHTTPClient(),
-	}
+	})
 
 	cleanup := func() {
 		statsCache.Close() // 关闭后台清理 goroutine
@@ -1397,8 +1397,8 @@ func TestHandleChannelEditorAggregatesInitialState(t *testing.T) {
 	if !resp.Data.ModelStats.Available || len(resp.Data.ModelStats.Items) != 1 {
 		t.Fatalf("model_stats=%+v, want available stats", resp.Data.ModelStats)
 	}
-	if !resp.Data.URLStats.Available || len(resp.Data.URLStats.Items) != 1 || resp.Data.URLStats.Items[0].Requests != 1 {
-		t.Fatalf("url_stats=%+v, want available runtime stats", resp.Data.URLStats)
+	if len(resp.Data.URLStats.Items) != 1 || resp.Data.URLStats.Items[0].Requests != 1 {
+		t.Fatalf("url_stats=%+v, want runtime stats", resp.Data.URLStats)
 	}
 }
 
