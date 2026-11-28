@@ -561,10 +561,17 @@ func mustUnmarshalAPIResponseData(t testing.TB, body []byte, out any) {
 	}
 }
 
-// newTestAuthService 创建测试用 AuthService（不启动 worker，不加载数据库）
+/**
+ * @brief 创建测试用 AuthService，令牌由测试直接注入内存
+ * @param t 测试句柄，用于注册 store 与服务的清理
+ * @return 带内存 SQLite store 的 AuthService；不启动 worker，令牌视为刚加载，不会自动 reload
+ */
 func newTestAuthService(t testing.TB) *AuthService {
 	t.Helper()
+	store, cleanup := testutil.SetupTestStore(t)
+	t.Cleanup(cleanup)
 	s := &AuthService{
+		store:               store,
 		authTokens:          make(map[string]int64),
 		authTokenIDs:        make(map[string]int64),
 		authTokenModels:     make(map[string][]string),
@@ -577,6 +584,7 @@ func newTestAuthService(t testing.TB) *AuthService {
 		lastUsedCh:          make(chan string, 256),
 		done:                make(chan struct{}),
 	}
+	s.authTokensReloadAt.Store(time.Now().UnixMilli())
 	t.Cleanup(s.Close) // 幂等关闭（closeOnce 保护）
 	return s
 }
@@ -644,6 +652,9 @@ func newTestServer(s *Server) *Server {
 	}
 	if s.configService == nil {
 		s.configService = NewConfigService(s.store)
+	}
+	if s.credentialTransports == nil {
+		s.credentialTransports = newCredentialHTTPClientCache(credentialHTTPClientCacheCapacity)
 	}
 	if s.keySelector == nil {
 		s.keySelector = NewKeySelector()

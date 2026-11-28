@@ -349,9 +349,6 @@ func createOrUpdateZAIChannel(
 	proxyURL string,
 	authorized func(*zaiauth.Credential),
 ) (*model.Config, bool, error) {
-	if store == nil || credential == nil {
-		return nil, false, errors.New("persist z.ai credential: unavailable")
-	}
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return nil, false, err

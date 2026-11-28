@@ -220,9 +220,6 @@ func createOrUpdateCursorChannel(
 	models []string,
 	proxyURL string,
 ) (*model.Config, bool, error) {
-	if store == nil || credential == nil {
-		return nil, false, errors.New("persist cursor credential: unavailable")
-	}
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return nil, false, err

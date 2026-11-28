@@ -132,6 +132,7 @@ func TestRequireWebAuth_RefreshFailureDoesNotRevokeSession(t *testing.T) {
 	svc.apiTokenLoginEnabled = true
 	failingStore := &failingAuthReloadStore{}
 	svc.store = failingStore
+	svc.authTokensReloadAt.Store(0)
 	apiTokenID := int64(42)
 	injectAPIToken(svc, "api-token", 0, apiTokenID)
 	sessionToken := "web-session"

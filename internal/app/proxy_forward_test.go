@@ -2420,7 +2420,7 @@ func TestAnthropicBuildProxyRequestNormalizesAdvisorToolModels(t *testing.T) {
 			for _, mode := range []string{"messages", "stream", "count_tokens"} {
 				for _, override := range []bool{false, true} {
 					t.Run(fmt.Sprintf("oauth=%t/native=%t/%s/override=%t", oauth, native, mode, override), func(t *testing.T) {
-						cfg := &model.Config{ID: 93, Name: "advisor", URLs: channelURLsForTest("https://api.anthropic.com")}
+						cfg := &model.Config{Name: "advisor", URLs: channelURLsForTest("https://api.anthropic.com")}
 						if oauth {
 							cfg.AuthType, cfg.OAuthCredential = model.AuthTypeAnthropicOAuth, credentialJSON
 						}

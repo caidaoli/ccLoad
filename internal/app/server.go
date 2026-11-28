@@ -83,7 +83,6 @@ type Server struct {
 	antigravityClient             *http.Client // Antigravity Cloud Code 和 OAuth 客户端
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
 	credentialTransports          *credentialHTTPClientCache
-	credentialTransportMu         sync.Mutex
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -1312,15 +1311,6 @@ type upstreamHTTPClientCacheKey struct {
 	credentialScope string ///< 共享连接池的账号标识，无账号隔离时为空。
 }
 
-func (s *Server) getCredentialHTTPClientCache() *credentialHTTPClientCache {
-	s.credentialTransportMu.Lock()
-	defer s.credentialTransportMu.Unlock()
-	if s.credentialTransports == nil {
-		s.credentialTransports = newCredentialHTTPClientCache(credentialHTTPClientCacheCapacity)
-	}
-	return s.credentialTransports
-}
-
 // antigravityCredentialPoolScope deliberately uses the refresh token rather
 // than the access token. Access tokens rotate; the refresh token identifies the
 // OAuth identity whose HTTP/1.1 connection pool must remain isolated.
@@ -1538,7 +1528,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 			}
 			return client
 		}
-		cache := s.getCredentialHTTPClientCache()
+		cache := s.credentialTransports
 		client, err := cache.getOrCreate(key, func() (*http.Client, error) {
 			var transport *http.Transport
 			var err error
@@ -1595,7 +1585,7 @@ func (s *Server) proxyHTTPClient(proxyURL string, antigravity bool) (*http.Clien
 		proxyURL:    proxyURL,
 		antigravity: antigravity,
 	}
-	return s.getCredentialHTTPClientCache().getOrCreate(cacheKey, func() (*http.Client, error) {
+	return s.credentialTransports.getOrCreate(cacheKey, func() (*http.Client, error) {
 		t, err := buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
 		if err != nil {
 			return nil, err
@@ -2306,7 +2296,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	closeUpstreamHTTPClient(s.client)
 	closeUpstreamHTTPClient(s.antigravityClient)
 	closeUpstreamHTTPClient(s.xaiSSOClient)
-	s.getCredentialHTTPClientCache().closeAll()
+	s.credentialTransports.closeAll()
 
 	// 无论成功还是超时，都要关闭数据库连接
 	if closer, ok := s.store.(interface{ Close() error }); ok {

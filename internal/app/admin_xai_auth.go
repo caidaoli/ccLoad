@@ -554,9 +554,6 @@ func createOrUpdateXAIChannel(
 	credential *xaiauth.Credential,
 	proxyURL string,
 ) (*model.Config, bool, error) {
-	if store == nil || credential == nil {
-		return nil, false, errors.New("persist xAI credential: unavailable")
-	}
 	normalizedCredential := *credential
 	credential = &normalizedCredential
 	credentialJSON, err := credential.JSON()
@@ -645,9 +642,6 @@ func updateExistingXAIIdentity(
 // createImportedXAIChannel skips an account that already has a channel, so a
 // batch never rewrites the proxy of an existing channel.
 func createImportedXAIChannel(ctx context.Context, store storage.Store, credential *xaiauth.Credential, priority int, proxyURL string) (string, bool, error) {
-	if store == nil || credential == nil {
-		return "", false, errors.New("persist xAI credential: unavailable")
-	}
 	normalizedCredential := *credential
 	credential = &normalizedCredential
 	credentialJSON, err := credential.JSON()

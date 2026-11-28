@@ -2195,7 +2195,7 @@ func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Co
 }
 
 func (s *Server) persistAnthropicOAuthPlatform(ctx context.Context, cfg *model.Config, proposed anthropicOAuthPlatform) (anthropicOAuthPlatform, error) {
-	if s.store == nil || cfg.ID <= 0 || cfg.OAuthCredential == "" {
+	if cfg.ID <= 0 || cfg.OAuthCredential == "" {
 		return proposed, nil
 	}
 	currentCfg := cfg

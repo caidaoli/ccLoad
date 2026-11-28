@@ -346,7 +346,7 @@ func (s *AuthService) webSession(token string) (model.WebSession, bool, error) {
 		}
 	}
 	if !validIdentity {
-		if session.AuthTokenID > 0 && s.store != nil {
+		if session.AuthTokenID > 0 {
 			_ = s.revokeWebSessions([]int64{session.AuthTokenID})
 		} else {
 			s.deleteWebSession(tokenHash)
@@ -989,9 +989,6 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 }
 
 func (s *AuthService) refreshAuthTokensIfStale() error {
-	if s.store == nil {
-		return nil
-	}
 	lastReload := s.authTokensReloadAt.Load()
 	if lastReload > 0 && time.Since(time.UnixMilli(lastReload)) < authTokenReloadInterval {
 		return nil
@@ -1029,9 +1026,6 @@ func (s *AuthService) revokeWebSessions(tokenIDs []int64) error {
 	s.tokensMux.Unlock()
 	s.notifyWebSessionRevoked(revokedSessionHashes)
 
-	if s.store == nil {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, tokenID := range tokenIDs {
