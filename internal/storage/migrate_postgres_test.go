@@ -935,9 +935,6 @@ func TestPostgres(t *testing.T) {
 			if err := store.UpdateAPIKeysStrategy(ctx, ch.ID, model.KeyStrategyRoundRobin); err != nil {
 				t.Fatalf("UpdateAPIKeysStrategy: %v", err)
 			}
-			if err := store.UpdateAPIKeyNotes(ctx, ch.ID, map[int]string{0: "primary", 1: "backup"}); err != nil {
-				t.Fatalf("UpdateAPIKeyNotes: %v", err)
-			}
 			if err := store.SetAPIKeyDisabled(ctx, ch.ID, 0, true); err != nil {
 				t.Fatalf("SetAPIKeyDisabled true: %v", err)
 			}
@@ -1077,12 +1074,6 @@ func TestPostgres(t *testing.T) {
 			}
 			if _, count, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Hour), now.Add(time.Hour), 20, 0, filter); err != nil || count != 3 {
 				t.Fatalf("ListLogsRangeWithCount: count=%d err=%v", count, err)
-			}
-			if count, err := store.CountLogs(ctx, now.Add(-time.Hour), filter); err != nil || count != 3 {
-				t.Fatalf("CountLogs: count=%d err=%v", count, err)
-			}
-			if count, err := store.CountLogsRange(ctx, now.Add(-time.Hour), now.Add(time.Hour), filter); err != nil || count != 3 {
-				t.Fatalf("CountLogsRange: count=%d err=%v", count, err)
 			}
 			if stats, err := store.GetTodayChannelURLStats(ctx, now.Add(-time.Hour)); err != nil || len(stats) != 1 {
 				t.Fatalf("GetTodayChannelURLStats: stats=%v err=%v", stats, err)

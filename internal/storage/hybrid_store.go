@@ -63,15 +63,11 @@ type HybridRuntimeMetricsProvider interface {
 
 // NewHybridStore 创建混合存储实例
 func NewHybridStore(sqlite, primary *sqlstore.SQLStore) *HybridStore {
-	return newHybridStore(sqlite, primary, nil)
-}
-
-func newHybridStore(sqlite, primary *sqlstore.SQLStore, initialize func(context.Context) error) *HybridStore {
 	h := &HybridStore{
 		sqlite:  sqlite,
 		primary: primary,
 	}
-	h.primarySync = newPrimaryWriteBehindWithInitializer(primarySyncRetryDelay, primarySyncTimeout, initialize)
+	h.primarySync = newPrimaryWriteBehind(primarySyncRetryDelay, primarySyncTimeout)
 	h.primarySync.configureReconcile(primarySyncMaxPending, h.reconcilePrimary, h.markPrimaryReconcileDirty)
 	return h
 }
@@ -584,15 +580,6 @@ func (h *HybridStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64
 	return nil
 }
 
-func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error {
-	if err := h.sqlite.UpdateAPIKeyNotes(ctx, channelID, notesByIndex); err != nil {
-		return err
-	}
-
-	h.markChannelDirty(channelID, false)
-	return nil
-}
-
 func (h *HybridStore) UpdateAPIKeyCostMultipliers(ctx context.Context, channelID int64, multipliersByIndex map[int]float64) error {
 	if err := h.sqlite.UpdateAPIKeyCostMultipliers(ctx, channelID, multipliersByIndex); err != nil {
 		return err
@@ -942,18 +929,6 @@ func (h *HybridStore) ListLogsRangeWithCount(ctx context.Context, since, until t
 	return page.entries, page.count, err
 }
 
-func (h *HybridStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
-	return readAnalytics(h, "CountLogs", func(store *sqlstore.SQLStore) (int, error) {
-		return store.CountLogs(ctx, since, filter)
-	})
-}
-
-func (h *HybridStore) CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error) {
-	return readAnalytics(h, "CountLogsRange", func(store *sqlstore.SQLStore) (int, error) {
-		return store.CountLogsRange(ctx, since, until, filter)
-	})
-}
-
 func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error) {
 	return readAnalytics(h, "GetTodayChannelURLStats", func(store *sqlstore.SQLStore) ([]model.ChannelURLLogStat, error) {
 		return store.GetTodayChannelURLStats(ctx, dayStart)
@@ -1295,14 +1270,6 @@ func (h *HybridStore) CreateConfigWithAPIKeys(ctx context.Context, c *model.Conf
 		h.markChannelDirty(created.ID, false)
 	}
 	return created, err
-}
-
-func (h *HybridStore) UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error) {
-	updated, err := h.sqlite.UpdateConfigWithAPIKeys(ctx, id, upd, keys)
-	if err == nil {
-		h.markChannelDirty(id, false)
-	}
-	return updated, err
 }
 
 func (h *HybridStore) UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error) {

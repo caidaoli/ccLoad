@@ -347,11 +347,6 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	return s.updateConfig(ctx, id, upd, nil, false, nil)
 }
 
-// UpdateConfigWithAPIKeys atomically replaces the channel and its complete key set.
-func (s *SQLStore) UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error) {
-	return s.updateConfig(ctx, id, upd, keys, true, nil)
-}
-
 /**
  * @brief 在一个事务中校验并写入渠道表单可编辑状态。
  * @param ctx 数据库操作上下文。

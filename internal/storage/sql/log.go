@@ -606,34 +606,6 @@ func (s *SQLStore) listLogs(ctx context.Context, qb *QueryBuilder, limit, offset
 	return out, nil
 }
 
-// CountLogs 返回符合条件的日志总数（用于分页）
-func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
-	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs"+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).Where("time >= ?", since.UnixMilli())
-	return s.countLogs(ctx, qb, filter)
-}
-
-// CountLogsRange 返回指定时间范围内符合条件的日志总数
-func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error) {
-	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs"+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).
-		Where("time >= ?", since.UnixMilli()).
-		Where("time <= ?", until.UnixMilli())
-	return s.countLogs(ctx, qb, filter)
-}
-
-func (s *SQLStore) countLogs(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (int, error) {
-	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
-		return 0, err
-	} else if isEmpty {
-		return 0, nil
-	}
-	qb.ApplyFilter(filter)
-
-	query, args := qb.Build()
-	var count int
-	err := s.QueryRowContext(ctx, query, args...).Scan(&count)
-	return count, err
-}
-
 // GetTodayChannelURLStats 聚合当日全部渠道的 URL 级日志统计，用于启动时回填 URLSelector 内存态。
 func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error) {
 	sinceMs := dayStart.UnixMilli()

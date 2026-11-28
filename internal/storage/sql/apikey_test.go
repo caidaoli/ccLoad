@@ -144,7 +144,7 @@ func TestAPIKey_UpdateStrategy(t *testing.T) {
 	}
 }
 
-func TestAPIKey_NotesPersistAndUpdate(t *testing.T) {
+func TestAPIKey_NotesPersist(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
@@ -166,19 +166,6 @@ func TestAPIKey_NotesPersistAndUpdate(t *testing.T) {
 	}
 	if got.Note != "backup" {
 		t.Fatalf("note after create = %q, want %q", got.Note, "backup")
-	}
-
-	if err := store.UpdateAPIKeyNotes(ctx, channelID, map[int]string{0: "primary-updated", 1: ""}); err != nil {
-		t.Fatalf("update api key notes: %v", err)
-	}
-
-	allKeys, err := store.GetAPIKeys(ctx, channelID)
-	if err != nil {
-		t.Fatalf("get api keys: %v", err)
-	}
-	if allKeys[0].Note != "primary-updated" || allKeys[1].Note != "" {
-		t.Fatalf("notes after update = [%q, %q], want [%q, %q]",
-			allKeys[0].Note, allKeys[1].Note, "primary-updated", "")
 	}
 }
 

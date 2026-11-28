@@ -46,7 +46,6 @@ type Store interface {
 	UpdateChannelIfEditVersion(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool, expectedVersion string, mergeManagement func(string) (string, error)) (*model.Config, error)
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	CreateConfigWithAPIKeys(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error)
-	UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error)
 	UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
@@ -120,7 +119,6 @@ type Store interface {
 	GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error)
 	CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error
 	UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error
-	UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error
 	UpdateAPIKeyPriorities(ctx context.Context, channelID int64, prioritiesByIndex map[int]int) error
 	UpdateAPIKeyCostMultipliers(ctx context.Context, channelID int64, multipliersByIndex map[int]float64) error
 	UpdateAPIKeyModelScopes(ctx context.Context, channelID int64, scopesByIndex map[int]model.APIKeyModelScope) error
@@ -253,8 +251,6 @@ type Store interface {
 	ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 	ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error)
 	ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error)
-	CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error)
-	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
 	GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
 	CleanupOAuthQuotaLedgerBefore(ctx context.Context, cutoff time.Time) error

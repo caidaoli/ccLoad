@@ -39,7 +39,6 @@ type primaryWriteBehind struct {
 	retry          time.Duration
 	timeout        time.Duration
 	closed         bool
-	initialize     func(context.Context) error
 	maxPending     int
 	reconcile      func(context.Context) error
 	reconcileDirty func()
@@ -48,20 +47,16 @@ type primaryWriteBehind struct {
 	success        atomic.Int64
 }
 
-func newPrimaryWriteBehindWithInitializer(
-	retry, timeout time.Duration,
-	initialize func(context.Context) error,
-) *primaryWriteBehind {
+func newPrimaryWriteBehind(retry, timeout time.Duration) *primaryWriteBehind {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &primaryWriteBehind{
-		tasks:      make(map[string]*primarySyncTask),
-		wake:       make(chan struct{}, 1),
-		ctx:        ctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		retry:      retry,
-		timeout:    timeout,
-		initialize: initialize,
+		tasks:   make(map[string]*primarySyncTask),
+		wake:    make(chan struct{}, 1),
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		retry:   retry,
+		timeout: timeout,
 	}
 	go w.loop()
 	return w
@@ -88,9 +83,6 @@ func (w *primaryWriteBehind) enqueueBestEffort(key, op string, run func(context.
 }
 
 func (w *primaryWriteBehind) enqueueTask(key, op string, bestEffort bool, run func(context.Context) error) {
-	if run == nil {
-		return
-	}
 	w.mu.Lock()
 	if w.closed {
 		w.dropped.Add(1)
@@ -182,9 +174,6 @@ func (w *primaryWriteBehind) signal() {
 
 func (w *primaryWriteBehind) loop() {
 	defer close(w.done)
-	if !w.initializePrimary() {
-		return
-	}
 	for {
 		task, wait := w.nextTask()
 		if task == nil {
@@ -205,46 +194,6 @@ func (w *primaryWriteBehind) loop() {
 			return
 		}
 		w.finish(task, err)
-	}
-}
-
-func (w *primaryWriteBehind) initializePrimary() bool {
-	for {
-		w.mu.Lock()
-		initialize := w.initialize
-		w.mu.Unlock()
-		if initialize == nil {
-			return true
-		}
-		err := initialize(w.ctx)
-		if w.ctx.Err() != nil {
-			return false
-		}
-		if err == nil {
-			w.mu.Lock()
-			w.initialize = nil
-			w.mu.Unlock()
-			w.success.Store(time.Now().UnixMilli())
-			return true
-		}
-		failureCount := w.failures.Add(1)
-		if failureCount%10 == 1 {
-			log.Printf("[WARN] 主库后台初始化失败: %v；%s 后重试 (累计失败: %d)", err, w.retry, failureCount)
-		}
-		if !w.waitRetryDelay() {
-			return false
-		}
-	}
-}
-
-func (w *primaryWriteBehind) waitRetryDelay() bool {
-	timer := time.NewTimer(w.retry)
-	defer timer.Stop()
-	select {
-	case <-w.ctx.Done():
-		return false
-	case <-timer.C:
-		return true
 	}
 }
 
@@ -334,11 +283,7 @@ func (w *primaryWriteBehind) finish(task *primarySyncTask, err error) {
 func (w *primaryWriteBehind) pending() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	pending := len(w.tasks)
-	if w.initialize != nil {
-		pending++
-	}
-	return pending
+	return len(w.tasks)
 }
 
 func (w *primaryWriteBehind) close() {
@@ -349,11 +294,7 @@ func (w *primaryWriteBehind) close() {
 		return
 	}
 	w.closed = true
-	pending := len(w.tasks)
-	if w.initialize != nil {
-		pending++
-	}
-	w.dropped.Add(uint64(pending))
+	w.dropped.Add(uint64(len(w.tasks)))
 	w.mu.Unlock()
 	w.cancel()
 	<-w.done

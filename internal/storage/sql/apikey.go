@@ -249,44 +249,6 @@ func (s *SQLStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, s
 	return nil
 }
 
-// UpdateAPIKeyNotes updates admin-only notes for existing API keys by key index.
-func (s *SQLStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error {
-	if len(notesByIndex) == 0 {
-		return nil
-	}
-	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
-		return err
-	}
-
-	tx, err := s.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update api key notes transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := s.prepareTx(ctx, tx, `
-		UPDATE api_keys
-		SET note = ?, updated_at = ?
-		WHERE channel_id = ? AND key_index = ?
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare update api key notes: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-
-	updatedAtUnix := timeToUnix(time.Now())
-	for keyIndex, note := range notesByIndex {
-		if _, err := stmt.ExecContext(ctx, note, updatedAtUnix, channelID, keyIndex); err != nil {
-			return fmt.Errorf("update api key note index %d: %w", keyIndex, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit update api key notes: %w", err)
-	}
-	return nil
-}
-
 // UpdateAPIKeyCostMultipliers updates cost multipliers for existing API keys by key index.
 // 只更新显式提交的 Key，未提交的 Key 保持现值；负数退化为 1，0 表示免费 Key。
 func (s *SQLStore) UpdateAPIKeyCostMultipliers(ctx context.Context, channelID int64, multipliersByIndex map[int]float64) error {

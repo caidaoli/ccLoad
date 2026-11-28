@@ -515,15 +515,8 @@ func TestHybridStore_FullReconcileMirrorsOAuthQuotaLedger(t *testing.T) {
 	ctx := context.Background()
 	sqlite := createTestSQLiteStore(t)
 	primary := createTestSQLiteStore(t)
-	release := make(chan struct{})
-	hybrid := newHybridStore(sqlite, primary, func(initCtx context.Context) error {
-		select {
-		case <-release:
-			return nil
-		case <-initCtx.Done():
-			return initCtx.Err()
-		}
-	})
+	hybrid := NewHybridStore(sqlite, primary)
+	release := blockPrimarySync(t, hybrid)
 	hybrid.primarySync.configureReconcile(1, hybrid.reconcilePrimary, hybrid.markPrimaryReconcileDirty)
 	t.Cleanup(func() { _ = hybrid.Close() })
 
@@ -854,15 +847,8 @@ func TestHybridStore_HighCardinalityDirtyStateCollapsesToFullReconcile(t *testin
 	ctx := context.Background()
 	sqlite := createTestSQLiteStore(t)
 	primary := createTestSQLiteStore(t)
-	release := make(chan struct{})
-	hybrid := newHybridStore(sqlite, primary, func(initCtx context.Context) error {
-		select {
-		case <-release:
-			return nil
-		case <-initCtx.Done():
-			return initCtx.Err()
-		}
-	})
+	hybrid := NewHybridStore(sqlite, primary)
+	release := blockPrimarySync(t, hybrid)
 	hybrid.primarySync.configureReconcile(2, hybrid.reconcilePrimary, hybrid.markPrimaryReconcileDirty)
 	t.Cleanup(func() { _ = hybrid.Close() })
 
@@ -876,7 +862,7 @@ func TestHybridStore_HighCardinalityDirtyStateCollapsesToFullReconcile(t *testin
 		}
 	}
 	if pending := hybrid.RuntimeMetrics().PrimarySyncPending; pending != 2 {
-		t.Fatalf("pending=%d, want initializer + one full reconciliation", pending)
+		t.Fatalf("pending=%d, want blocker + one full reconciliation", pending)
 	}
 	close(release)
 	waitForCondition(t, 2*time.Second, func() bool {
@@ -929,7 +915,7 @@ func TestHybridStore_AuthoritativeSQLiteFailureIsReturned(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindDoesNotClearNewGeneration(t *testing.T) {
-	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
+	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
 	t.Cleanup(w.close)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -950,7 +936,7 @@ func TestPrimaryWriteBehindDoesNotClearNewGeneration(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindRetriesFailedFinalState(t *testing.T) {
-	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
+	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
 	t.Cleanup(w.close)
 	var attempts atomic.Int64
 	w.enqueue("state", "retry", func(context.Context) error {
@@ -966,7 +952,7 @@ func TestPrimaryWriteBehindRetriesFailedFinalState(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindDoesNotRetryBestEffortLogs(t *testing.T) {
-	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
+	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
 	t.Cleanup(w.close)
 	var attempts atomic.Int64
 	w.enqueueBestEffort("logs/latest", "logs", func(context.Context) error {
@@ -981,7 +967,7 @@ func TestPrimaryWriteBehindDoesNotRetryBestEffortLogs(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindPublishesReconcileOnlyAfterDirtyMarker(t *testing.T) {
-	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
+	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
 	t.Cleanup(w.close)
 	dirtyStarted := make(chan struct{})
 	releaseDirty := make(chan struct{})
@@ -1179,7 +1165,7 @@ func TestHybridStore_ChannelAndKeyTransactionsConverge(t *testing.T) {
 		return err == nil && len(keys) == 1 && keys[0].APIKey == "old"
 	})
 	cfg.Name = "replaced-keys"
-	cfg, err = hybrid.UpdateConfigWithAPIKeys(ctx, cfg.ID, cfg, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "new", AllowedModels: []string{"a"}, ModelScopeAuto: true}})
+	cfg, err = hybrid.UpdateChannelIfEditVersion(ctx, cfg.ID, cfg, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "new", AllowedModels: []string{"a"}, ModelScopeAuto: true}}, true, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1205,4 +1191,26 @@ func TestHybridStore_ChannelAndKeyTransactionsConverge(t *testing.T) {
 		return err == nil && keyErr == nil && len(got.ModelEntries) == 2 && len(keys) == 1 &&
 			reflect.DeepEqual(keys[0].AllowedModels, []string{"a", "b"}) && keys[0].ModelScopeAuto
 	})
+}
+
+/**
+ * @brief 让主库同步 worker 停在一个 best-effort 任务上，便于观察排队状态。
+ * @param t 测试上下文。
+ * @param h 待阻塞的混合存储。
+ * @return 关闭后放行 worker 的通道。
+ */
+func blockPrimarySync(t *testing.T, h *HybridStore) chan struct{} {
+	t.Helper()
+	release, started := make(chan struct{}), make(chan struct{})
+	h.primarySync.enqueueBestEffort("test/block", "test blocker", func(ctx context.Context) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	<-started
+	return release
 }

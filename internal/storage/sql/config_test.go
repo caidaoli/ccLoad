@@ -822,7 +822,7 @@ func TestConfig_DeleteConfig_RemovesLogsAndDebugLogs(t *testing.T) {
 	}
 
 	channelID := created.ID
-	count, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &channelID})
+	_, count, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Minute), now.Add(time.Minute), 1, 0, &model.LogFilter{ChannelID: &channelID})
 	if err != nil {
 		t.Fatalf("count logs after delete: %v", err)
 	}
@@ -888,7 +888,7 @@ func TestLog_AddLogAndBatchAddLogs_IgnoreDeletedChannel(t *testing.T) {
 	}
 
 	deletedChannelID := created.ID
-	deletedCount, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &deletedChannelID})
+	_, deletedCount, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Minute), now.Add(time.Minute), 1, 0, &model.LogFilter{ChannelID: &deletedChannelID})
 	if err != nil {
 		t.Fatalf("count deleted-channel logs: %v", err)
 	}
@@ -940,7 +940,7 @@ func TestConfig_DeleteConfig_PurgesOrphanLogsWhenChannelMissing(t *testing.T) {
 	}
 
 	channelID := orphanChannelID
-	count, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &channelID})
+	_, count, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Minute), now.Add(time.Minute), 1, 0, &model.LogFilter{ChannelID: &channelID})
 	if err != nil {
 		t.Fatalf("count orphan-channel logs: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestConfig_DeleteConfig_ImportBatchWithSameIDAcceptsLogs(t *testing.T) {
 	}
 
 	channelID := created.ID
-	count, err := store.CountLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{ChannelID: &channelID})
+	_, count, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Minute), now.Add(time.Minute), 1, 0, &model.LogFilter{ChannelID: &channelID})
 	if err != nil {
 		t.Fatalf("count restored channel logs: %v", err)
 	}

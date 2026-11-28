@@ -669,11 +669,11 @@ func TestLog_BatchAdd(t *testing.T) {
 	// BatchAddLogs 方法不返回 ID，不需要检查
 
 	since := now.Add(-1 * time.Hour)
-	count, err := store.CountLogs(ctx, since, nil)
+	listed, err := store.ListLogs(ctx, since, 100, 0, nil)
 	if err != nil {
-		t.Fatalf("count logs: %v", err)
+		t.Fatalf("list logs: %v", err)
 	}
-	if count != 3 {
+	if count := len(listed); count != 3 {
 		t.Errorf("expected 3 logs, got %d", count)
 	}
 }
@@ -723,14 +723,6 @@ func TestLog_ListRange(t *testing.T) {
 	}
 	if len(rangeLogs) > 0 && rangeLogs[0].Model != "recent-model" {
 		t.Errorf("model: got %q, want %q", rangeLogs[0].Model, "recent-model")
-	}
-
-	rangeCount, err := store.CountLogsRange(ctx, startTime, endTime, nil)
-	if err != nil {
-		t.Fatalf("count logs range: %v", err)
-	}
-	if rangeCount != 1 {
-		t.Errorf("expected 1 log in range count, got %d", rangeCount)
 	}
 }
 
